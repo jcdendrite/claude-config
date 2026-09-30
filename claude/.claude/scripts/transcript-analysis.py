@@ -7684,8 +7684,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--show-withheld", action="store_true",
         help=(
             "With --pooled: print the figures the dominance-precision floor would"
-            " otherwise withhold, under a DO NOT PUBLISH banner. Never publish this"
-            " output; cite a plain --pooled run instead."
+            " otherwise withhold, plus the two data-quality-gap lines, under a DO NOT"
+            " PUBLISH banner. Never publish this output; cite a plain --pooled run"
+            " instead."
         ),
     )
     p_review_round_cost.set_defaults(func=cmd_review_round_cost)

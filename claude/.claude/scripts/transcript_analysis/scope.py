@@ -17,6 +17,7 @@ import fnmatch
 import hashlib
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -30,7 +31,12 @@ from _config_dir import (
     declared_roots_file_state,
     declared_transcript_roots,
 )
-from transcript_analysis.corpus import _parse_ts, _read_session_file_partitioned, iter_sessions
+from transcript_analysis.corpus import (
+    _parse_ts,
+    _projects_glob_steps_to_parent,
+    _read_session_file_partitioned,
+    iter_sessions,
+)
 
 
 def __getattr__(name: str) -> Path:
@@ -192,7 +198,7 @@ def _repo_scoped_project_slugs(command_label: str = "skill-invocation") -> list[
     return [_path_to_project_slug(p) for p in worktree_paths]
 
 
-def _path_stripped_scan_error(exc: OSError | RuntimeError) -> OSError | RuntimeError:
+def _path_stripped_scan_error(exc: OSError) -> OSError:
     """Same exception type, with any embedded absolute path removed from the
     message.
 
@@ -202,9 +208,22 @@ def _path_stripped_scan_error(exc: OSError | RuntimeError) -> OSError | RuntimeE
     the correct subclass (e.g. `PermissionError`) from `errno`. A caller
     matching on subclass still sees the same type.
     """
-    if isinstance(exc, OSError):
-        return OSError(exc.errno, exc.strerror or "permission denied")
-    return RuntimeError("symlink loop while resolving a project directory")
+    return OSError(exc.errno, exc.strerror or "permission denied")
+
+
+# Errnos that mean the entry is absent (the set CPython 3.12's Path.is_dir()/is_file() ignore). Any other OSError propagates.
+_ABSENT_ENTRY_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP})
+
+
+def _stat_mode_unless_absent(path: Path) -> int | None:
+    """`path.stat().st_mode`, or None when the entry is absent (an errno in
+    `_ABSENT_ENTRY_ERRNOS`). Any other `OSError` propagates."""
+    try:
+        return path.stat().st_mode
+    except OSError as exc:
+        if exc.errno in _ABSENT_ENTRY_ERRNOS:
+            return None
+        raise
 
 
 def _dedup_new_project_dirs(
@@ -223,32 +242,25 @@ def _dedup_new_project_dirs(
     prior root is caught too — not just two roots resolving to the same
     directory.
 
-    `resolve()` runs before `is_dir()` because `is_dir()` silently returns
-    `False` (not `True`) on a symlink loop instead of raising. Either call
-    failing with `OSError`/`RuntimeError` on an existing, non-loop entry
-    (e.g. an unreadable ancestor) is recorded as a scan gap, not treated as
-    an excluded candidate, when `scan_gaps` is given, and propagates instead
-    when `scan_gaps` is `None` -- with the raw path stripped from the
-    propagated exception's message via `_path_stripped_scan_error`, since
-    this level's exception (unlike the root-level one) has no per-account
-    ordinal to label it with instead.
+    A candidate that is not a directory is skipped: a missing path, a
+    non-directory, and a symlink loop all read as absent, not as a gap.
+    An `OSError` from `_stat_mode_unless_absent()` or `resolve()` on an existing entry (e.g. an
+    unreadable ancestor) is recorded as a scan gap when `scan_gaps` is given.
+    With `scan_gaps=None` it propagates instead, with the raw path stripped
+    from the message by `_path_stripped_scan_error`. The path is stripped
+    because this level, unlike the root level, has no per-account ordinal to
+    label it with.
     """
     for candidate in candidates:
         try:
+            mode = _stat_mode_unless_absent(candidate)
+            if mode is None or not stat.S_ISDIR(mode):
+                continue
             resolved_dir = candidate.resolve()
-        except (OSError, RuntimeError) as exc:
+        except OSError as exc:
             if scan_gaps is None:
                 raise _path_stripped_scan_error(exc) from None
             scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1
-            continue
-        try:
-            is_dir = resolved_dir.is_dir()
-        except (OSError, RuntimeError) as exc:
-            if scan_gaps is None:
-                raise _path_stripped_scan_error(exc) from None
-            scan_gaps[_SCAN_GAP_PROJECT_DIR] += 1
-            continue
-        if not is_dir:
             continue
         if resolved_dir in visited_dirs:
             continue
@@ -309,10 +321,12 @@ def _list_dir_recording_gaps(
 def _failed_transcript_read_is_gap(jsonl: Path) -> bool:
     """A transcript that failed to read is a gap only while it is still a
     regular file. A missing path or a non-regular file is an empty scope,
-    as a missing directory is. A failing stat counts as a gap.
+    as a missing directory is. A stat failing with any other errno counts
+    as a gap.
     """
     try:
-        return jsonl.is_file()
+        mode = _stat_mode_unless_absent(jsonl)
+        return mode is not None and stat.S_ISREG(mode)
     except OSError:
         return True
 
@@ -575,8 +589,8 @@ def _resolve_project_scope(
         # Single-root scope reads corpus.iter_sessions, whose Path.glob
         # supports a nested-directory pattern ('/', '**') on its own terms --
         # the one-level restriction below is not needed, and must not apply,
-        # here. iter_sessions itself discards any match that resolves outside
-        # the scan root, so a '..' component in `glob` cannot escape it.
+        # here. iter_sessions itself yields nothing for a '..' component in
+        # `glob`, so it cannot walk out of the scan root.
         return iter_sessions(roots[0], glob, include_subagents=include_subagents), glob
     # Runtime-only, multi-root-only check; see _single_level_projects_glob's
     # own docstring for why.
@@ -782,27 +796,25 @@ def _scan_root_transcripts(root: Path, projects_glob: str, slugs: Sequence[str] 
     a project dir aliased to another (by symlink, whether reached by slug or
     by glob) doesn't double-count in this diagnostic either.
 
-    A project dir that resolves outside `root` is discarded before its
-    transcripts are counted, mirroring iter_sessions' own containment check
-    in corpus.py. `projects_glob` here is an unvalidated, caller-supplied
-    `--projects` value. A `..` component is a real parent-directory step for
-    `Path.glob`, not a no-op, so an unvalidated value could otherwise walk
-    outside this scan root.
+    A `projects_glob` with a `..` component counts nothing (0, 0) when
+    `slugs` is None, mirroring iter_sessions' own check in corpus.py.
+    `projects_glob` here is an unvalidated, caller-supplied `--projects`
+    value, and `..` is a real parent-directory step for `Path.glob`, so it
+    could otherwise walk outside this scan root.
     """
     if not os.access(root, os.R_OK | os.X_OK):
         raise PermissionError(errno.EACCES, "Permission denied", str(root))
-    resolved_root = root.resolve()
+    if slugs is None and _projects_glob_steps_to_parent(projects_glob):
+        return 0, 0
     visited_dirs: set[Path] = set()
     candidates = (root / slug for slug in slugs) if slugs is not None else sorted(root.glob(projects_glob))
     jsonl_paths = [
         jsonl
         # Throwaway counter: this function's own callers in cost.py only catch
         # PermissionError, so scan_gaps must be non-None here to avoid raising
-        # on any other OSError/RuntimeError scan gap. Nothing reads the
-        # counter back, since _scan_root_transcripts tracks no scan gaps of
-        # its own.
+        # on any other OSError scan gap. Nothing reads the counter back, since
+        # _scan_root_transcripts tracks no scan gaps of its own.
         for proj_dir in _dedup_new_project_dirs(candidates, visited_dirs, scan_gaps=Counter())
-        if resolved_root in proj_dir.resolve().parents
         for jsonl in proj_dir.glob("*.jsonl")
     ]
     skipped = 0

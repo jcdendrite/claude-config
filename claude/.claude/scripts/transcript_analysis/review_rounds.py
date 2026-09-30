@@ -194,8 +194,6 @@ def _price_dispatch(
     tool_use_id: str,
     dispatch_index: dict[str, tuple[Path, str | None]],
     visited: set[str],
-    *,
-    scan_gaps: Counter[str] | None = None,
 ) -> tuple[float, int, int, int]:
     """Price one subagent dispatch and recurse into every Agent/Task spawn
     inside its own transcript.
@@ -214,11 +212,6 @@ def _price_dispatch(
     pricing.py). This matches _compute_pr_cost_branch_totals's own
     dedup-then-price sequence, so these dollars are derived the same way
     cost's and pr-cost's are.
-
-    `scan_gaps`, when given, is threaded into corpus._index_subagent_dispatches
-    and into this function's own recursive self-call, so a gap several
-    dispatches deep is still recorded against the same counter the caller's
-    root-level scan uses.
 
     Returns (dollars, unpriced_turns, dangling, resolved_dispatches).
     dangling counts both a dispatch_index lookup miss and an
@@ -239,7 +232,7 @@ def _price_dispatch(
     if records is None:
         return 0.0, 0, 1, 0
     records = pricing.dedup_turns_by_request_id(records)
-    nested_index, _meta_errors = corpus._index_subagent_dispatches(jsonl_path, scan_gaps=scan_gaps)
+    nested_index, _meta_errors = corpus._index_subagent_dispatches(jsonl_path)
 
     dollars = 0.0
     unpriced_turns = 0
@@ -265,7 +258,7 @@ def _price_dispatch(
             if not nested_tool_use_id:
                 continue
             n_dollars, n_unpriced, n_dangling, n_resolved = _price_dispatch(
-                nested_tool_use_id, nested_index, visited, scan_gaps=scan_gaps,
+                nested_tool_use_id, nested_index, visited,
             )
             dollars += n_dollars
             unpriced_turns += n_unpriced
@@ -283,7 +276,6 @@ def compute_review_round_costs(
     since_ts: float | None = None,
     until_ts: float | None = None,
     resolved_roots: Sequence[Path] | None = None,
-    scan_gaps: Counter[str] | None = None,
 ) -> dict:
     """Single pass over session_iter, main-thread only.
 
@@ -328,12 +320,6 @@ def compute_review_round_costs(
     and sort_key. sort_key is (opening-timestamp-or-+inf, session path
     string, opening record index) — the ordering rule sessions written in
     reverse file-path order need.
-
-    `scan_gaps`, when given, is threaded into every
-    corpus._index_subagent_dispatches call and every _price_dispatch call
-    this function makes, so a subagent-side gap (an unreadable subagents/
-    directory, anywhere in the recursive dispatch tree) is recorded against
-    the same counter the caller's own project-dir scan uses.
     """
     multi_root = bool(resolved_roots) and len(resolved_roots) > 1
     all_rounds: list[dict] = []
@@ -344,7 +330,7 @@ def compute_review_round_costs(
         root_idx = scope._root_index_for_path(jsonl, resolved_roots) if multi_root else None
         windows = detect_round_windows(records)
         record_branches = _session_record_branches(records, windows)
-        dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl, scan_gaps=scan_gaps)
+        dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
         visited: set[str] = set()
 
         round_entries: list[dict] = [
@@ -389,7 +375,7 @@ def compute_review_round_costs(
                 if not tool_use_id:
                     continue
                 dollars, unpriced, dangling, resolved = _price_dispatch(
-                    tool_use_id, dispatch_index, visited, scan_gaps=scan_gaps,
+                    tool_use_id, dispatch_index, visited,
                 )
                 branch_totals[(root_idx, record_branches[idx])] += dollars
                 if round_entry is not None:
@@ -477,7 +463,13 @@ _POOLED_PUBLICATION_POINTER = (
     "approval in that artifact. Nothing here checks that for you. Before citing\n"
     "this alongside any rate or count already published elsewhere (e.g. a $/PR\n"
     "rate or a branch count), name that composition in the proposal — these\n"
-    "shares were not designed to be composed with a figure outside this block."
+    "shares were not designed to be composed with a figure outside this block.\n"
+    "Before proposing a plain --pooled figure, run the same command with\n"
+    "--show-withheld first and check the two data-quality gap shares, which\n"
+    "plain --pooled never prints. In the proposal, state without digits\n"
+    "whether either gap share or its upper bound prints above zero and\n"
+    "whether a skipped-account notice appeared on stderr. Keep that\n"
+    "statement out of the artifact and its citation."
 )
 
 _POOLED_SHOW_WITHHELD_BANNER = (
@@ -487,17 +479,19 @@ _POOLED_SHOW_WITHHELD_BANNER = (
 )
 
 _POOLED_CAPTION = (
-    "Pooled across every scan root in scope, machine-wide, whole period. Every\n"
-    "figure below is a share of list-price compute, never of billed spend. No\n"
-    "dollar amount, no raw count, and no per-account, per-project, or per-branch\n"
-    "split is emitted. Each interval is a 2,000-resample percentile bootstrap\n"
-    "resampled over branches, so it reflects branch-to-branch variation, treating\n"
-    "the branches in scope as a sample of ongoing work."
+    "Pooled across the scan roots resolved for this run, whole period. Every\n"
+    "dollar share below is a share of list-price compute, never of billed\n"
+    "spend; the Rounds by skill lines are shares of round count. Every figure\n"
+    "covers only branches with at least one review round. No dollar amount, no\n"
+    "raw count, and no per-account, per-project, or per-branch split is emitted.\n"
+    "Each interval is a 2,000-resample percentile bootstrap resampled over\n"
+    "branches, so it reflects branch-to-branch variation, treating the branches\n"
+    "in scope as a sample of ongoing work."
 )
 
 # Percentile bootstrap resampled over branches. The 2,000-resample count
-# matches this repo's own prior use of the same technique at
-# docs/cost-levers-considered.md:205.
+# matches this repo's own prior use of the same technique in
+# docs/cost-levers-considered.md's "Opus-anchored plan boundary" section.
 _BOOTSTRAP_RESAMPLES = 2000
 # Fixed so a published figure is reproducible by whoever checks it -- the
 # value itself is arbitrary.
@@ -516,8 +510,8 @@ _POOLED_REFUSAL_DOC_POINTER = (
 # does. There, the advice and the find hint don't apply, but the refusal
 # still correctly identifies a partial scan.
 _POOLED_SCAN_GAP_REFUSAL = (
-    "review-round-cost --pooled refuses a partial scan: a resolved scan root, or a directory"
-    " or transcript under one, exists but could not be read, so part of the corpus would"
+    "review-round-cost --pooled refuses a partial scan: a resolved scan root, or a project"
+    " directory or main-thread transcript under one, exists but could not be read, so part of the corpus would"
     " silently drop out of the pooled figure. Check each account's projects/ directory for a"
     " directory or .jsonl transcript you cannot read (with GNU find:"
     " `find <projects-dir> ! -readable`), then restore read access, or remove that account from"
@@ -564,6 +558,17 @@ _POOLED_STAT_KEYS: tuple[str, ...] = (
     *(f"skill_spend:{s}" for s in REVIEW_SKILLS),
     *(f"skill_rounds:{s}" for s in REVIEW_SKILLS),
     "gap_dangling", "gap_unpriced",
+)
+
+# The two data-quality-gap shares print only under --show-withheld. A corpus
+# with no gap has an exact 0% share, which the dominance-precision floor
+# withholds at any weight, so printing them under plain --pooled would
+# withhold the whole block for every healthy corpus. The floor also skips
+# them (_POOLED_PUBLISHED_STAT_KEYS), since a share that is never printed
+# leaks nothing.
+_POOLED_GAP_STAT_KEYS: tuple[str, ...] = ("gap_dangling", "gap_unpriced")
+_POOLED_PUBLISHED_STAT_KEYS: tuple[str, ...] = tuple(
+    key for key in _POOLED_STAT_KEYS if key not in _POOLED_GAP_STAT_KEYS
 )
 
 # Each share's own _PooledBranchTotals denominator field, used only by the
@@ -687,8 +692,7 @@ def _pooled_shares(agg: _PooledBranchTotals) -> dict[str, float | None]:
 def _resample_percentile(sorted_values: Sequence[float]) -> tuple[float, float]:
     """2.5th/97.5th percentile bounds by index into an already-sorted
     resample distribution: lo_idx = round(tail * (B - 1)), hi_idx =
-    round((1 - tail) * (B - 1)), tail = (1 - _CI_LEVEL) / 2 -- the
-    design's documented percentile-bootstrap index formula.
+    round((1 - tail) * (B - 1)), tail = (1 - _CI_LEVEL) / 2.
     """
     b = len(sorted_values)
     tail = (1 - _CI_LEVEL) / 2
@@ -757,6 +761,10 @@ def _single_account_within_stated_precision(
     published CI pins the dominant account's own true share down to the
     CI's own stated precision. That is a true positive for exactly the
     per-account dimension CLAUDE.md's redaction rule bars.
+
+    An exact 0% or 100% share always breaches, at any `w_max`: every branch
+    contributes the same extreme value, so the CI collapses to that point and
+    the exact interval collapses onto it too.
     """
     if not (ci_lo <= p_estimate <= ci_hi):
         # Fail-closed backstop: a percentile bootstrap over few branches can
@@ -771,7 +779,14 @@ def _single_account_within_stated_precision(
         # positive total, so w_max > 0 always holds there. Fail closed
         # anyway, since dividing by w_max below would otherwise raise.
         return True
-    exact_lo = max(0.0, (p_estimate - (1.0 - w_max) * 100.0) / w_max)
+    # Two algebraically equal forms: each rounds one ulp low at different
+    # inputs (the second at p == 100, the first at w_max == 1.0). A low
+    # exact_lo can only hide a breach, so take the larger, fail-closed one.
+    exact_lo = max(
+        0.0,
+        100.0 - (100.0 - p_estimate) / w_max,
+        (p_estimate - (1 - w_max) * 100.0) / w_max,
+    )
     exact_hi = min(100.0, p_estimate / w_max)
     return ci_lo <= exact_lo and exact_hi <= ci_hi
 
@@ -784,15 +799,16 @@ def _pooled_dominance_breach(
     floor (_single_account_within_stated_precision) against its own
     contributing accounts' weights in `account_denominator_totals`.
 
-    A hit on any single share withholds the whole pooled block -- see
-    _render_pooled_block's own comment for why a partial withhold would
-    itself leak which share is dominated.
+    Only the shares printed under plain --pooled
+    (_POOLED_PUBLISHED_STAT_KEYS) are checked. A hit on any single share
+    withholds the whole pooled block, because a blank on one share would
+    itself reveal that it breached.
     """
     pooled_denominator_totals: dict[str, float] = defaultdict(float)
     for totals in account_denominator_totals.values():
         for field, value in totals.items():
             pooled_denominator_totals[field] += value
-    for key in _POOLED_STAT_KEYS:
+    for key in _POOLED_PUBLISHED_STAT_KEYS:
         point, lo, hi = intervals[key]
         if lo is None:
             continue  # zero-denominator share: no figure printed to leak
@@ -854,6 +870,10 @@ def _render_pooled_block(
 
     scan_gaps fills only as the session iterator is consumed, so this
     function's refusal call is the only point the scan-gap clause can fire.
+
+    The printed line set is fixed regardless of the data: nine share lines
+    under plain --pooled, plus the two data-quality-gap lines under
+    --show-withheld (see _POOLED_GAP_STAT_KEYS).
     """
     refusal = _pooled_scope_refusal(args, roots=roots or [], scan_gaps=scan_gaps)
     if refusal is not None:
@@ -878,9 +898,9 @@ def _render_pooled_block(
     )
     # Sorted so bootstrap resampling draws from a content-derived order,
     # never raw rounds-list (file-scan) order. Mirrors the non-pooled
-    # renderer's own sorted(by_branch, key=_branch_label) a few hundred
-    # lines above. See _bootstrap_share_intervals's own reproducibility
-    # comment for why positional draw order matters here.
+    # renderer's own sorted(by_branch, key=_branch_label) in
+    # cmd_review_round_cost. The seeded RNG picks branches by position, so
+    # the same branches in a different order would yield different CIs.
     for branch_key in sorted(by_branch, key=lambda k: (str(k[0]), k[1])):
         branch_rounds = by_branch[branch_key]
         skill_round_counts: dict[str, int] = dict.fromkeys(REVIEW_SKILLS, 0)
@@ -941,9 +961,10 @@ def _render_pooled_block(
     print("  Rounds by skill")
     for skill in REVIEW_SKILLS:
         print(f"    {skill:<30}{fmt(f'skill_rounds:{skill}')}")
-    print("  Rounds affected by a data-quality gap")
-    print(f"    {'dangling dispatch':<30}{fmt('gap_dangling')}")
-    print(f"    {'unpriced turn':<30}{fmt('gap_unpriced')}")
+    if show_withheld:
+        print("  Rounds affected by a data-quality gap")
+        print(f"    {'dangling dispatch':<30}{fmt('gap_dangling')}")
+        print(f"    {'unpriced turn':<30}{fmt('gap_unpriced')}")
 
 
 _SCANNING_ROOT_DIAGNOSTIC_RE = re.compile(r"^scanning root \d+/\d+\.\.\.$")
@@ -1065,15 +1086,15 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
         )
         sys.exit(2)
     # Everything from here down — including resolve_scan_roots and both
-    # refusal layers — runs inside this try. A --pooled run must never let
+    # refusal calls — runs inside this try. A --pooled run must never let
     # an unanticipated exception escape uncaught and print a raw,
     # account-identifying traceback; see the except clause below for how a
     # deliberate refusal and a non-pooled run are each handled differently.
     try:
         if pooled:
-            # Layer 1: before resolve_scan_roots, so a refused run never scans
-            # the corpus at all. roots=None skips the root-count clause,
-            # re-checked below once roots are known.
+            # Pre-scan refusal: before resolve_scan_roots, so a refused run
+            # never scans the corpus at all. roots=None skips the root-count
+            # clause, re-checked below once roots are known.
             refusal = _pooled_scope_refusal(args)
             if refusal is not None:
                 print(refusal, file=sys.stderr)
@@ -1097,9 +1118,10 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
         multi_root = len(roots) > 1
 
         if pooled:
-            # Layer 1's mirror, with roots now in hand: must return before any
-            # print side effect below, including the banner-suppression and
-            # header-suppression branches this same `pooled` flag now gates.
+            # Post-resolution refusal, with roots now in hand: must return
+            # before any print side effect below, including the
+            # banner-suppression and header-suppression branches this same
+            # `pooled` flag gates.
             refusal = _pooled_scope_refusal(args, roots=roots)
             if refusal is not None:
                 print(refusal, file=sys.stderr)
@@ -1109,9 +1131,8 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             print(scope._DO_NOT_PUBLISH_BANNER)
             print(scope._DO_NOT_PUBLISH_BANNER, file=sys.stderr)
 
-        # Only --pooled records scan gaps: every other caller keeps the pre-
-        # existing silent-skip behavior (scope._resolve_project_scope's
-        # scan_gaps=None default).
+        # Only --pooled records scan gaps. Every other caller gets
+        # scan_gaps=None, which skips an unreadable path silently.
         scan_gaps: Counter[str] | None = Counter() if pooled else None
         session_iter, scope_label = scope._resolve_project_scope(
             args, "review-round-cost", roots=roots, scan_gaps=scan_gaps,
@@ -1136,7 +1157,6 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             since_ts=since_ts,
             until_ts=until_ts,
             resolved_roots=resolved_roots,
-            scan_gaps=scan_gaps,
         )
         rounds = data["rounds"]
         branch_totals = data["branch_totals"]

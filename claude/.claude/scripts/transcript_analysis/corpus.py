@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import shlex
-from collections import Counter
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
@@ -13,15 +12,8 @@ from pathlib import Path
 # Subdirectory name where Claude Code writes split subagent transcripts.
 SUBAGENT_SUBDIR = "subagents"
 
-# Scan-gap counter key for an unreadable subagents/ directory.
-# Kept local rather than reusing scope.py's own level tags: this module has
-# no dependency on scope.py (see this file's own module docstring).
-_GAP_LEVEL_SUBAGENT_DIR = "subagent-dir"
 
-
-def _index_subagent_dispatches(
-    jsonl: Path, *, scan_gaps: Counter[str] | None = None,
-) -> tuple[dict[str, tuple[Path, str | None]], int]:
+def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, tuple[Path, str | None]], int]:
     """Map each subagent dispatch's toolUseId to (its paired .jsonl path,
     requested model), for one session.
 
@@ -47,9 +39,8 @@ def _index_subagent_dispatches(
     file) is excluded here rather than reaching a caller that would use it
     as a dict key and crash with an uncaught TypeError.
 
-    `scan_gaps`, when given, records one `_GAP_LEVEL_SUBAGENT_DIR` tag when
-    `subagent_dir`'s own `is_dir()` check raises OSError (e.g. an unreadable
-    ancestor), rather than silently treating it the same as absent.
+    A subagents/ directory that cannot be checked or listed yields an empty
+    index, so every dispatch in that session reads as a dangling dispatch.
     """
     subagent_dir = jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR
     index: dict[str, tuple[Path, str | None]] = {}
@@ -57,8 +48,6 @@ def _index_subagent_dispatches(
     try:
         subagent_dir_exists = subagent_dir.is_dir()
     except OSError:
-        if scan_gaps is not None:
-            scan_gaps[_GAP_LEVEL_SUBAGENT_DIR] += 1
         return index, meta_read_errors
     if not subagent_dir_exists:
         return index, meta_read_errors
@@ -87,18 +76,18 @@ def _parse_jsonl_records(jsonl: Path) -> list[dict] | None:
     Returns None when the file cannot be opened or read, which is distinct
     from an empty but readable file ([]): an unreadable main transcript
     aborts the whole session, while an empty one still carries its subagent
-    files. A UnicodeDecodeError (non-UTF-8 bytes) is a read failure here too,
-    not a crash -- treated identically to an OSError by every caller.
+    files. A line that is not valid UTF-8 or not valid JSON is skipped on its
+    own, so one corrupt line never discards the file's other records.
     """
     records: list[dict] = []
     try:
-        with open(jsonl, encoding="utf-8") as fh:
+        with open(jsonl, "rb") as fh:
             for raw in fh:
                 try:
-                    records.append(json.loads(raw))
-                except json.JSONDecodeError:
+                    records.append(json.loads(raw.decode("utf-8")))
+                except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
-    except (OSError, UnicodeDecodeError):
+    except OSError:
         return None
     return records
 
@@ -111,9 +100,7 @@ def _read_session_file_partitioned(jsonl: Path, include_subagents: bool) -> list
     yields [] (no groups at all); an unreadable subagent file is skipped. A
     readable-but-empty main file still yields its subagent groups, matching
     read_session_file's long-standing behaviour. subagent_dir.is_dir() raising
-    OSError (e.g. an unreadable ancestor) is treated the same as absent --
-    unlike _index_subagent_dispatches, this function has no scan_gaps
-    parameter to record that case separately.
+    OSError (e.g. an unreadable ancestor) is treated the same as absent.
 
     The per-file boundary matters to any caller that differences consecutive
     turns: separate files are separate context windows, so a delta taken across
@@ -164,6 +151,16 @@ def read_session_file(jsonl: Path, include_subagents: bool) -> list[dict]:
     return [rec for group in _read_session_file_partitioned(jsonl, include_subagents) for rec in group]
 
 
+def _projects_glob_steps_to_parent(projects_glob: str) -> bool:
+    """True when `projects_glob` has a `..` path component.
+
+    A textual check, so a project directory or transcript symlinked outside
+    the scan root stays in scope: only a `..` in the raw value can walk out
+    of the root through `Path.glob`.
+    """
+    return ".." in Path(projects_glob).parts
+
+
 def iter_sessions(
     projects_dir: Path,
     projects_glob: str = "*",
@@ -182,17 +179,15 @@ def iter_sessions(
     See read_session_file for the per-file read and the include_subagents
     merge behavior.
 
-    A match that resolves outside `projects_dir` is discarded before it is
-    opened. Unlike the multi-root fnmatch branches, `projects_glob` here is
-    not restricted to one path segment (see scope.py's
-    `_single_level_projects_glob`). A `..` component is a real
-    parent-directory step for `Path.glob`, not a no-op, so an unvalidated
-    value could otherwise walk outside this scan root.
+    A `projects_glob` with a `..` component yields nothing (see
+    `_projects_glob_steps_to_parent`). Unlike the multi-root fnmatch branches,
+    `projects_glob` here is not restricted to one path segment (see scope.py's
+    `_single_level_projects_glob`), and `..` is a real parent-directory step
+    for `Path.glob`, so it could otherwise walk outside this scan root.
     """
-    resolved_root = projects_dir.resolve()
+    if _projects_glob_steps_to_parent(projects_glob):
+        return
     for jsonl in sorted(projects_dir.glob(f"{projects_glob}/*.jsonl")):
-        if resolved_root not in jsonl.resolve().parents:
-            continue
         records = read_session_file(jsonl, include_subagents)
         if records:
             yield jsonl, records

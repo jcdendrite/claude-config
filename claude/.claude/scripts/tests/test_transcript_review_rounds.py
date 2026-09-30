@@ -250,6 +250,36 @@ class TestComputeReviewRoundCosts:
         assert r["agent_dollars"] == pytest.approx(0.0)
         assert r["dangling"] == 1
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_dispatch_under_an_unreadable_session_dir_is_counted_dangling_without_raising(self, fake_projects):
+        """A session directory that cannot be searched makes the dispatch
+        index unreadable, so the dispatch reads as dangling (no priced
+        dollars, no resolved agent) instead of aborting the scan. The
+        dispatch's own files exist and would be priced if readable."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:30.000Z")],  # $1.00
+        )
+        session_dir = fake_projects / session_id
+        os.chmod(session_dir, 0o000)
+        try:
+            data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        finally:
+            os.chmod(session_dir, 0o755)
+        assert len(data["rounds"]) == 1
+        r = data["rounds"][0]
+        assert r["dangling"] == 1
+        assert r["agents"] == 0
+        assert r["agent_dollars"] == pytest.approx(0.0)
+
     def test_round_dollars_plus_non_round_dollars_equal_branch_total(self, fake_projects):
         """No subagent turn is double-counted: a branch's round dollars plus
         its non-round dollars equal its total priced dollars."""
@@ -1438,27 +1468,28 @@ class TestBootstrapShareIntervals:
         _pooled_dominance_breach the first time a pool reaches it."""
         assert set(review_rounds._POOLED_SHARE_DENOMINATOR_FIELD) == set(review_rounds._POOLED_STAT_KEYS)
 
-    def test_pooled_share_denominator_field_maps_every_key_to_its_correct_group(self):
-        """Every _pooled_dominance_breach integration test in this file stubs
-        _bootstrap_share_intervals to return the same tuple for all 11
-        _POOLED_STAT_KEYS, so _pooled_dominance_breach's short-circuit (it
-        returns on the first breaching key) only ever exercises the first key
-        of whichever denominator group a fixture skews: spend_inside,
-        skill_spend:code-review, and skill_rounds:code-review. A copy-paste
-        typo on any of the other 8 keys' mapped value would pass every such
-        test undetected. This test asserts each value individually instead
-        of going through the short-circuit."""
-        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["spend_inside"] == "branch_dollars"
-        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["spend_outside"] == "branch_dollars"
-        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["spend_reviewer_only"] == "branch_dollars"
-        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["skill_spend:code-review"] == "round_dollars"
-        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["skill_spend:plan-review"] == "round_dollars"
-        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["skill_spend:ready-for-review"] == "round_dollars"
-        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["skill_rounds:code-review"] == "round_count"
-        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["skill_rounds:plan-review"] == "round_count"
-        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["skill_rounds:ready-for-review"] == "round_count"
-        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["gap_dangling"] == "round_count"
-        assert review_rounds._POOLED_SHARE_DENOMINATOR_FIELD["gap_unpriced"] == "round_count"
+    @pytest.mark.parametrize("key", review_rounds._POOLED_STAT_KEYS)
+    def test_pooled_share_denominator_field_names_the_field_pooled_shares_divides_by(self, key):
+        """`_POOLED_SHARE_DENOMINATOR_FIELD` feeds the dominance-precision
+        floor's account weights, so it must name the same field
+        `_pooled_shares` actually divides by. Zeroing only the mapped field
+        of an otherwise positive aggregate must make that share undefined
+        (None). Zeroing either other denominator field must leave it
+        defined. The three literal field names below are independent of the
+        map under test.
+        """
+        positive = review_rounds._PooledBranchTotals(
+            round_dollars=6.0, agent_dollars=2.0, branch_dollars=20.0,
+            skill_round_counts={"code-review": 1, "plan-review": 2, "ready-for-review": 3},
+            skill_round_dollars={"code-review": 1.0, "plan-review": 2.0, "ready-for-review": 3.0},
+            rounds_with_dangling=1, rounds_with_unpriced=2, round_count=6,
+        )
+        assert review_rounds._pooled_shares(positive)[key] is not None
+        mapped_field = review_rounds._POOLED_SHARE_DENOMINATOR_FIELD[key]
+
+        assert review_rounds._pooled_shares(positive._replace(**{mapped_field: 0}))[key] is None
+        for other_field in {"branch_dollars", "round_dollars", "round_count"} - {mapped_field}:
+            assert review_rounds._pooled_shares(positive._replace(**{other_field: 0}))[key] is not None
 
 
 def _pooled_two_root_fixture(tmp_path, monkeypatch) -> list[Path]:
@@ -1509,8 +1540,10 @@ def _pooled_two_root_discriminating_skill_fixture(tmp_path, monkeypatch) -> list
     root B the mirror image, so the correct pooled share (50%) differs
     from either root's own share (75%/25%) -- catching a one-root-only
     regression an equal-mix fixture would miss. Four branches per root,
-    not one, to clear the dominance-precision floor
-    (`_pooled_dominance_breach`/`_single_account_within_stated_precision`).
+    not one, so the pool clears the four-branch bootstrap floor with room to
+    spare. Every branch reports 100% of its own dollars inside a round
+    window, so this fixture does not clear the dominance-precision floor
+    (`_pooled_dominance_breach`); every test reading it stubs that floor.
     Every code-review branch costs $1.00 (500,000 input tokens) and every
     plan-review branch $2.00 (1,000,000 input tokens), so skill_spend's
     dollar-weighted share (33.3/66.7) can never coincide with
@@ -1553,8 +1586,11 @@ def _pooled_two_root_zero_priced_dollars_fixture(tmp_path, monkeypatch) -> list[
 
     Root A splits its four branches between code-review and plan-review
     (two apiece); root B's four are all ready-for-review. Four branches
-    per account, not one, to clear the dominance-precision floor
-    (`_pooled_dominance_breach`/`_single_account_within_stated_precision`).
+    per account, not one, so the pool clears the four-branch bootstrap
+    floor with room to spare. Every branch reports 100% of its own dollars
+    inside a round window, so this fixture does not clear the
+    dominance-precision floor (`_pooled_dominance_breach`); every test
+    reading it stubs that floor.
     """
     roots = _two_declared_roots(tmp_path, monkeypatch)
     proj_a = roots[0] / "-home-user-repo-a"
@@ -1580,6 +1616,16 @@ def _pooled_two_root_zero_priced_dollars_fixture(tmp_path, monkeypatch) -> list[
             _user_msg("thanks", branch=branch, ts="2026-08-01T10:01:00.000Z"),
         ])
     return roots
+
+
+_NUMERIC_SHARE_LINE_RE = re.compile(r"^    .{30}\d{1,3}\.\d% \(95% CI \d{1,3}\.\d-\d{1,3}\.\d%\)$", re.MULTILINE)
+
+
+def _count_numeric_share_lines(pooled_block: str) -> int:
+    """Number of figure lines in a printed pooled block that carry a
+    numeric share and CI, as opposed to the withheld or zero-denominator
+    wording."""
+    return len(_NUMERIC_SHARE_LINE_RE.findall(pooled_block))
 
 
 class TestSingleAccountWithinStatedPrecision:
@@ -1630,6 +1676,34 @@ class TestSingleAccountWithinStatedPrecision:
         """
         assert review_rounds._single_account_within_stated_precision(0.9, 50.0, 44.0, 56.0) is True
 
+    # The sweep is dense because the algebraically equivalent form `(p - (1 - w) * 100) / w` misses
+    # 100.0 by one ulp at some weights (for example 0.68), which three friendly weights never hit.
+    @pytest.mark.parametrize("w_max", [k / 1000 for k in range(1, 1001)])
+    @pytest.mark.parametrize("exact_share", [0.0, 100.0])
+    def test_exact_zero_or_hundred_percent_share_breaches_at_any_weight(self, w_max, exact_share):
+        """An exact 0% or 100% share carries the degenerate CI [p, p], and
+        the exact consistent-value interval collapses onto the same point,
+        so containment holds however small the dominant account's weight.
+        This is the intended floor behavior, not a false positive: such a
+        share pins every account to that value.
+        """
+        assert review_rounds._single_account_within_stated_precision(
+            w_max, exact_share, exact_share, exact_share,
+        ) is True
+
+    # Each of 0.1, 0.3, 1.1, 2.6 and 100 * 2 / 7 is a p where `100.0 - (100.0 - p) / 1.0` lands
+    # one ulp below p; 12.5 and 50.0 are exactly representable and pass under either form.
+    @pytest.mark.parametrize("interior_share", [0.1, 0.3, 1.1, 2.6, 100 * 2 / 7, 12.5, 50.0])
+    def test_collapsed_interior_ci_breaches_at_full_weight(self, interior_share):
+        """w_max=1.0 means one account is the whole denominator, so the exact
+        consistent-value interval is the single point [p, p]. A CI collapsed
+        onto p contains it exactly, and float rounding in the interval's
+        lower edge must not hide that breach.
+        """
+        assert review_rounds._single_account_within_stated_precision(
+            1.0, interior_share, interior_share, interior_share,
+        ) is True
+
     @pytest.mark.parametrize("w_max", [0.0, -0.1])
     def test_nonpositive_w_max_is_fail_closed(self, w_max):
         """w_max <= 0 is structurally unreachable from _pooled_dominance_breach
@@ -1638,6 +1712,49 @@ class TestSingleAccountWithinStatedPrecision:
         loses that guarantee.
         """
         assert review_rounds._single_account_within_stated_precision(w_max, 50.0, 44.0, 56.0) is True
+
+
+class TestPooledDominanceBreachKeySet:
+    """Direct calls to _pooled_dominance_breach with hand-built intervals:
+    which shares the floor weighs, independent of any bootstrap."""
+
+    @staticmethod
+    def _balanced_account_totals() -> dict[int | None, dict[str, float]]:
+        return {
+            0: {"branch_dollars": 50.0, "round_dollars": 25.0, "round_count": 10},
+            1: {"branch_dollars": 50.0, "round_dollars": 25.0, "round_count": 10},
+        }
+
+    @staticmethod
+    def _interior_intervals() -> dict[str, tuple[float, float, float]]:
+        """Every key at 50% with a CI (45-55) far narrower than a balanced
+        pair's exact interval (0-100), so no share breaches on its own."""
+        return dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (50.0, 45.0, 55.0))
+
+    def test_all_interior_shares_do_not_breach(self):
+        breach = review_rounds._pooled_dominance_breach(
+            self._interior_intervals(), self._balanced_account_totals(),
+        )
+        assert breach is False
+
+    @pytest.mark.parametrize("zero_share_key", review_rounds._POOLED_PUBLISHED_STAT_KEYS)
+    def test_one_exact_zero_share_line_breaches_even_at_balanced_weights(self, zero_share_key):
+        intervals = {**self._interior_intervals(), zero_share_key: (0.0, 0.0, 0.0)}
+        breach = review_rounds._pooled_dominance_breach(intervals, self._balanced_account_totals())
+        assert breach is True
+
+    @pytest.mark.parametrize("gap_key", review_rounds._POOLED_GAP_STAT_KEYS)
+    def test_exact_zero_gap_share_does_not_breach_because_it_is_never_printed_under_plain_pooled(self, gap_key):
+        intervals = {**self._interior_intervals(), gap_key: (0.0, 0.0, 0.0)}
+        breach = review_rounds._pooled_dominance_breach(intervals, self._balanced_account_totals())
+        assert breach is False
+
+    def test_gap_keys_are_exactly_the_stat_keys_absent_from_the_published_set(self):
+        assert set(review_rounds._POOLED_GAP_STAT_KEYS) == {"gap_dangling", "gap_unpriced"}
+        assert set(review_rounds._POOLED_PUBLISHED_STAT_KEYS) | set(review_rounds._POOLED_GAP_STAT_KEYS) == set(
+            review_rounds._POOLED_STAT_KEYS
+        )
+        assert not set(review_rounds._POOLED_PUBLISHED_STAT_KEYS) & set(review_rounds._POOLED_GAP_STAT_KEYS)
 
 
 # _render_pooled_block's own figure-line format is `f"    {label:<30}{value}"`
@@ -1679,15 +1796,13 @@ class TestCmdReviewRoundCostPooled:
         figure_lines = [line for line in lines if line.startswith("    ")]
 
         assert section_headers == [
-            "Share of branch spend", "Round-window spend by skill",
-            "Rounds by skill", "Rounds affected by a data-quality gap",
+            "Share of branch spend", "Round-window spend by skill", "Rounds by skill",
         ]
 
         expected_labels = (
             "inside round windows", "outside every round window", "reviewer dispatches only",
             "code-review", "plan-review", "ready-for-review",
             "code-review", "plan-review", "ready-for-review",
-            "dangling dispatch", "unpriced turn",
         )
         found_labels = tuple(line[4:_POOLED_FIGURE_LABEL_FIELD_END].strip() for line in figure_lines)
         assert found_labels == expected_labels
@@ -1735,9 +1850,11 @@ class TestCmdReviewRoundCostPooled:
         section" from "right value, wrong section" once the label text
         repeats across sections.
 
-        Stubs _bootstrap_share_intervals with a pairwise-distinct point per
-        _POOLED_STAT_KEYS entry, then asserts the exact ordered
-        (header, label, value) triples _render_pooled_block emits. A
+        Runs with --show-withheld, the only mode that prints the
+        data-quality-gap section. Stubs _bootstrap_share_intervals with a
+        pairwise-distinct point per _POOLED_STAT_KEYS entry, then asserts
+        the exact ordered (header, label, value) triples
+        _render_pooled_block emits. A
         key-swap between skill_spend/skill_rounds, or between
         gap_dangling/gap_unpriced, changes which triple appears under which
         header even though every individual line stays well-formed.
@@ -1767,7 +1884,7 @@ class TestCmdReviewRoundCostPooled:
             (0, "feat-a"): 0.40, (0, "feat-a-filler"): 0.0,
             (1, "feat-b"): 1.00, (1, "feat-b-filler"): 0.0,
         }
-        args = _review_round_cost_args(pooled=True)
+        args = _review_round_cost_args(pooled=True, show_withheld=True)
 
         intervals = {
             key: (10.0 + i, 10.0 + i - 0.5, 10.0 + i + 0.5)
@@ -1817,6 +1934,106 @@ class TestCmdReviewRoundCostPooled:
         for key in review_rounds._POOLED_STAT_KEYS:
             formatted_value = review_rounds._fmt_share_with_ci(*intervals[key])
             assert formatted_value in block, f"formatted value for {key!r} missing from the rendered block"
+
+    def test_data_quality_gap_lines_print_only_under_show_withheld(self, tmp_path, monkeypatch, capsys):
+        """The printed line set is fixed by the flag alone. Plain --pooled
+        prints nine share lines and no data-quality-gap section, and
+        --show-withheld adds the section's two lines, whatever the data.
+        Stubs the bootstrap so both runs render numeric figures.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = [
+            {"branch_key": (root_idx, f"feat-{root_idx}-{i}"), "skill": "code-review",
+             "main_dollars": 1.0, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0}
+            for root_idx in (0, 1) for i in range(2)
+        ]
+        branch_totals = {round_["branch_key"]: 2.0 for round_ in rounds}
+        stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (50.0, 45.0, 55.0))
+        monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
+
+        review_rounds._render_pooled_block(
+            _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals, scan_gaps=Counter(),
+        )
+        # The publication pointer names the gap shares, so strip it before
+        # asserting the gap section's own wording is absent.
+        plain_out = capsys.readouterr().out.replace(review_rounds._POOLED_PUBLICATION_POINTER, "")
+        review_rounds._render_pooled_block(
+            _review_round_cost_args(pooled=True, show_withheld=True), roots, "*", rounds, branch_totals,
+            scan_gaps=Counter(),
+        )
+        show_withheld_out = capsys.readouterr().out
+
+        figure_line = "50.0% (95% CI 45.0-55.0%)"
+        assert plain_out.count(figure_line) == 9
+        assert "data-quality gap" not in plain_out
+        assert "dangling dispatch" not in plain_out
+        assert "unpriced turn" not in plain_out
+        assert show_withheld_out.count(figure_line) == 11
+        assert "Rounds affected by a data-quality gap" in show_withheld_out
+
+    def test_real_floor_and_real_bootstrap_print_every_published_share_on_a_varied_pool(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Neither the floor nor the bootstrap is stubbed: 120 hand-built
+        branches split evenly across both accounts, each with its own
+        varying inside-round, reviewer-dispatch, and skill mix, print a
+        numeric line for every published share under plain --pooled. This is
+        the composed behavior every stubbed test in this class skips.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = []
+        branch_totals = {}
+        for i in range(120):
+            branch_key = (i % 2, f"feat-{i}")
+            main_dollars = 0.10 + 0.01 * (i % 7)
+            agent_dollars = 0.02 * (i % 5)
+            rounds.append({
+                "branch_key": branch_key, "skill": review_rounds.REVIEW_SKILLS[i % 3],
+                "main_dollars": main_dollars, "agent_dollars": agent_dollars,
+                "unpriced_turns": 1 if i % 13 == 0 else 0, "dangling": 1 if i % 9 == 0 else 0,
+            })
+            branch_totals[branch_key] = main_dollars + agent_dollars + 0.05 + 0.03 * (i % 11)
+
+        review_rounds._render_pooled_block(
+            _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals, scan_gaps=Counter(),
+        )
+        out = capsys.readouterr().out
+
+        _, sep, after_caption = out.partition(review_rounds._POOLED_CAPTION)
+        assert sep
+        numeric_figure_re = re.compile(r"\d{1,3}\.\d% \(95% CI \d{1,3}\.\d-\d{1,3}\.\d%\)$")
+        figure_lines = [line for line in after_caption.splitlines() if line.startswith("    ")]
+        assert len(figure_lines) == len(review_rounds._POOLED_PUBLISHED_STAT_KEYS)
+        for line in figure_lines:
+            assert numeric_figure_re.search(line), line
+        assert "not computed" not in out
+
+    def test_pool_with_an_exact_zero_percent_share_prints_all_nine_share_lines_withheld(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Neither the floor nor the bootstrap is stubbed. The two-root
+        fixture has no reviewer dispatches, so "reviewer dispatches only" is
+        an exact 0% share. Plain --pooled must then withhold all nine
+        published lines, not just that one, with no numeric percent anywhere
+        below the caption. The same corpus under --show-withheld prints
+        numeric lines, so the withholding comes from the floor, not from too
+        few branches.
+        """
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        plain_out = capsys.readouterr().out
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        show_withheld_out = capsys.readouterr().out
+
+        _, sep, after_caption = plain_out.partition(review_rounds._POOLED_CAPTION)
+        assert sep, "_POOLED_CAPTION not found verbatim in the printed block"
+        figure_lines = [line for line in after_caption.splitlines() if line.startswith("    ")]
+        assert len(figure_lines) == len(review_rounds._POOLED_PUBLISHED_STAT_KEYS)
+        for line in figure_lines:
+            assert line[_POOLED_FIGURE_LABEL_FIELD_END:].strip() == "(95% CI not computed — too few branches in scope)"
+        assert _count_numeric_share_lines(plain_out) == 0
+        assert _count_numeric_share_lines(show_withheld_out) == len(review_rounds._POOLED_STAT_KEYS)
 
     def test_no_mean_rounds_per_branch_or_totals_line(self, tmp_path, monkeypatch, capsys):
         """A branch is declined as a countable or reportable unit entirely
@@ -1908,6 +2125,38 @@ class TestCmdReviewRoundCostPooled:
                 f"{pointer!r} cites heading {cited.group(1)!r}, which does not "
                 "exist in docs/private-project-redaction.md"
             )
+
+    def test_pooled_publication_pointer_tells_proposer_to_run_show_withheld_and_relay_the_result(self):
+        """Pins the sentences that route a proposer through --show-withheld
+        to the two data-quality gap shares plain --pooled never prints, and
+        that require the proposal to state, without digits, whether either
+        gap share or its upper bound prints above zero and whether a
+        skipped-account notice appeared, and that keep that statement out
+        of the artifact and its citation.
+        Plain --pooled does print the skipped-account notice on stderr, so
+        the notice may appear only in the relay clause, never in the
+        --show-withheld instruction. docs/transcript-analysis.md's sample
+        output must carry the same sentences as the constant.
+
+        Compares whitespace-normalized text so a line-wrap reflow does not
+        fail the pin; the docs containment check stays exact.
+        """
+        pointer = review_rounds._POOLED_PUBLICATION_POINTER
+        proposer_sentences = pointer[pointer.index("Before proposing"):]
+        normalized = " ".join(proposer_sentences.split())
+        run_instruction, relay_marker, relay_clause = normalized.partition("In the proposal")
+        assert relay_marker, "the relay clause 'In the proposal' is missing"
+        assert "--show-withheld" in run_instruction
+        assert "data-quality gap shares" in run_instruction
+        assert "plain --pooled never prints" in run_instruction
+        assert "skipped" not in run_instruction
+        assert "without digits" in relay_clause
+        assert "whether either gap share or its upper bound prints above zero" in relay_clause
+        assert "skipped-account notice" in relay_clause
+        assert "stderr" in relay_clause
+        assert "out of the artifact and its citation" in relay_clause
+        docs_text = (REPO_ROOT / "docs" / "transcript-analysis.md").read_text()
+        assert proposer_sentences in docs_text
 
     def test_cross_root_pooling_has_no_account_label_and_reflects_both_roots(
         self, tmp_path, monkeypatch, capsys,
@@ -2089,7 +2338,7 @@ class TestCmdReviewRoundCostPooled:
         assert scope.TRANSCRIPT_CONFIG_DIRS_LABEL in err
 
     def test_render_pooled_block_called_directly_still_refuses(self, tmp_path, monkeypatch):
-        """Defense-in-depth, layer 2: bypasses cmd_review_round_cost's own
+        """Defense-in-depth: bypasses cmd_review_round_cost's own
         CLI-boundary refusal entirely by calling _render_pooled_block
         directly, the way this module's own tests (and any other direct
         caller) do."""
@@ -2101,10 +2350,10 @@ class TestCmdReviewRoundCostPooled:
 
     def test_render_pooled_block_called_directly_with_none_roots_still_refuses(self):
         """The roots=None sentinel means "defer" only at
-        cmd_review_round_cost's own layer-1, pre-resolution call. A direct
-        caller reaching _render_pooled_block's own layer-2 defense-in-depth
-        call with roots=None must still fail the root-count floor, not
-        silently skip it the way the layer-1 sentinel does."""
+        cmd_review_round_cost's own pre-scan refusal call. A direct caller
+        reaching _render_pooled_block's own defense-in-depth refusal call
+        with roots=None must still fail the root-count floor, not silently
+        skip it the way the pre-scan sentinel does."""
         args = _review_round_cost_args(pooled=True)
         with pytest.raises(SystemExit) as exc:
             review_rounds._render_pooled_block(args, None, "*", [], {}, scan_gaps=Counter())
@@ -2174,7 +2423,7 @@ class TestCmdReviewRoundCostPooled:
         assert scope.TRANSCRIPT_CONFIG_DIRS_LABEL in err
 
     def test_render_pooled_block_called_directly_refuses_on_a_nonempty_scan_gaps_counter(self, tmp_path, monkeypatch):
-        """Defense-in-depth, layer 2, for the scan-gap clause. A direct
+        """Defense-in-depth for the scan-gap clause. A direct
         caller that already holds a non-empty scan_gaps counter (e.g. one
         it built itself, or reused from a prior scan) must still refuse.
         No chmod needed, since the clause reads only the counter."""
@@ -2262,7 +2511,7 @@ class TestCmdReviewRoundCostPooled:
         self, tmp_path, monkeypatch, capsys,
     ):
         """A project-dir entry that is a symlink resolving through a sealed
-        ancestor directory makes candidate.is_dir() raise PermissionError (an
+        ancestor directory makes the candidate's stat raise PermissionError (an
         OSError), not return False -- _dedup_new_project_dirs must catch it
         as a scan gap instead of letting it propagate uncaught."""
         roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
@@ -2283,12 +2532,73 @@ class TestCmdReviewRoundCostPooled:
         assert not any(c.isdigit() for c in err)
         assert str(sealed_target_parent) not in err
 
+    @pytest.mark.parametrize("linked_entry", ["project-dir", "transcript"])
+    def test_entry_symlinked_outside_every_declared_root_aborts_with_the_generic_message(
+        self, tmp_path, monkeypatch, capsys, linked_entry,
+    ):
+        """Single-root scans keep a project directory or transcript symlinked
+        outside the scan root in scope. Under --pooled (always multi-root)
+        the session's real path matches no declared root, so root attribution
+        raises. The abort backstop turns that into the generic refusal: exit
+        2, no figure, no traceback, and neither the link name nor the target
+        path in the output.
+        """
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        outside_proj = tmp_path / "outside-every-root" / "-home-user-repo-elsewhere"
+        outside_proj.mkdir(parents=True)
+        outside_transcript = outside_proj / "sess-outside.jsonl"
+        _write_jsonl(outside_transcript, [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat-outside", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s5", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat-outside", ts="2026-08-01T10:01:00.000Z"),
+        ])
+        link_name = "-home-user-repo-linked-outside"
+        if linked_entry == "project-dir":
+            (roots[1] / link_name).symlink_to(outside_proj, target_is_directory=True)
+        else:
+            (roots[1] / "-home-user-repo-b" / f"{link_name}.jsonl").symlink_to(outside_transcript)
+
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE in err
+        assert "Traceback" not in err
+        assert link_name not in err
+        assert str(outside_proj) not in err
+
+    def test_project_dir_symlinked_to_another_directory_inside_a_declared_root_still_completes(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Paired with the outside-every-root abort above: an alias whose
+        real path stays under a declared root dedups against its target, so
+        the run completes with the same figures as without the alias. Runs
+        with --show-withheld so the compared output carries numeric figures.
+        """
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        without_alias_out, _ = capsys.readouterr()
+        assert _count_numeric_share_lines(without_alias_out) == len(review_rounds._POOLED_STAT_KEYS)
+
+        (roots[1] / "-home-user-repo-b-alias").symlink_to(roots[1] / "-home-user-repo-b", target_is_directory=True)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        with_alias_out, with_alias_err = capsys.readouterr()
+
+        assert with_alias_out == without_alias_out
+        assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE not in with_alias_err
+
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
-    def test_refuses_on_unreadable_subagents_dir_via_cmd_review_round_cost(self, tmp_path, monkeypatch, capsys):
-        """A subagents/ directory reached through a sealed session-id
-        ancestor makes subagent_dir.is_dir() raise PermissionError (an
-        OSError) -- corpus._index_subagent_dispatches must catch it as a
-        scan gap instead of letting it propagate uncaught."""
+    def test_unreadable_session_dir_is_not_a_scan_gap_via_cmd_review_round_cost(self, tmp_path, monkeypatch, capsys):
+        """A session directory holding subagents/ that cannot be searched
+        reads as a session with no dispatches, so it does not refuse: the
+        scan-gap refusal covers scan roots, project directories, and
+        main-thread transcripts only. docs/transcript-analysis.md's Pooled
+        mode section documents the resulting dangling-dispatch residual.
+        """
         roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
         proj_b = roots[1] / "-home-user-repo-b"
         session_dir = proj_b / "sess-b1"  # paired with the existing sess-b1.jsonl
@@ -2296,45 +2606,50 @@ class TestCmdReviewRoundCostPooled:
         (session_dir / "subagents").mkdir()
         os.chmod(session_dir, 0o000)
         try:
-            with pytest.raises(SystemExit) as exc:
-                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         finally:
             os.chmod(session_dir, 0o755)
-        assert exc.value.code == 2
         out, err = capsys.readouterr()
-        assert out == ""
+        assert out.splitlines()[0] == "REVIEW ROUND COST SOURCES (*; pooled)"
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL not in err
         assert "Traceback" not in err
-        assert review_rounds._POOLED_SCAN_GAP_REFUSAL in err
-        assert not any(c.isdigit() for c in err)
         assert str(session_dir) not in err
 
-    def test_refuses_on_non_utf8_transcript_via_cmd_review_round_cost(self, tmp_path, monkeypatch, capsys):
-        """A transcript file containing non-UTF-8 bytes raises
-        UnicodeDecodeError while iterating lines -- corpus._parse_jsonl_records
-        must catch it as a read failure, same as an OSError-unreadable
-        transcript, so scope.py's own gap-vs-empty-scope check still counts
-        it as a scan gap instead of crashing the scan."""
+    def test_non_utf8_line_in_a_transcript_is_skipped_and_does_not_refuse_or_change_the_figures(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """A non-UTF-8 line is skipped on its own like any malformed line,
+        so it neither refuses the pooled run (the file is readable, and the
+        refusal's `find ! -readable` remediation would not find it) nor
+        discards the file's valid records. Runs with --show-withheld so the
+        compared output carries numeric figures.
+        """
         roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
-        bad_jsonl = roots[1] / "-home-user-repo-b" / "sess-non-utf8.jsonl"
-        bad_jsonl.write_bytes(b"\xff\xfe not valid utf-8\n")
-        with pytest.raises(SystemExit) as exc:
-            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
-        assert exc.value.code == 2
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        clean_out, _clean_err = capsys.readouterr()
+        assert _count_numeric_share_lines(clean_out) == len(review_rounds._POOLED_STAT_KEYS)
+
+        with open(roots[1] / "-home-user-repo-b" / "sess-b1.jsonl", "ab") as fh:
+            fh.write(b"\xff\xfe not valid utf-8\n")
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         out, err = capsys.readouterr()
-        assert out == ""
+        assert out == clean_out
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL not in err
         assert "Traceback" not in err
-        assert review_rounds._POOLED_SCAN_GAP_REFUSAL in err
-        assert not any(c.isdigit() for c in err)
-        assert str(bad_jsonl) not in err
 
     def test_pooled_clean_scan_with_harmless_entries_does_not_refuse(self, tmp_path, monkeypatch, capsys):
         """A stray non-project file, a readable-empty transcript, and a
         directory named *.jsonl are all an empty scope, not a gap, so a
         clean scan must not trip the scan-gap clause. Adding them must not
-        change the rendered output."""
+        change the rendered output. Runs with --show-withheld so the
+        compared output carries numeric figures, not the withheld wording
+        this fixture's degenerate shares would otherwise produce.
+        """
         roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         first_out, first_err = capsys.readouterr()
+        assert _count_numeric_share_lines(first_out) == len(review_rounds._POOLED_STAT_KEYS)
         assert review_rounds._POOLED_SCAN_GAP_REFUSAL not in first_err
         assert review_rounds._POOLED_STDERR_WITHHELD_NOTICE not in first_err
 
@@ -2343,7 +2658,7 @@ class TestCmdReviewRoundCostPooled:
         (proj_b / "empty.jsonl").write_text("")
         (proj_b / "stray.jsonl").mkdir()
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         second_out, second_err = capsys.readouterr()
         assert second_out == first_out
         assert review_rounds._POOLED_SCAN_GAP_REFUSAL not in second_err
@@ -2444,9 +2759,16 @@ class TestCmdReviewRoundCostPooled:
 
     def test_pooled_output_is_byte_identical_across_two_separate_subprocesses(self, tmp_path):
         """Two real `python3` subprocesses, not two in-process calls, since
-        PYTHONHASHSEED is fixed per process; four branches (not two) to
-        widen the ordering space so a coincidental pass can't mask a
+        PYTHONHASHSEED is fixed per process. Each gets its own explicit
+        seed (1 and 2 iterate the fixture's branch names in different set
+        order), so an ambient exported seed cannot make them match. Six
+        branches with distinct dollar amounts and non-round activity widen
+        the ordering space so a coincidental pass can't mask a
         `set`-ordering bug.
+
+        Runs with --show-withheld and asserts numeric figure lines with a
+        non-degenerate CI, since a fully withheld block is identical
+        whatever the ordering.
         """
         acct_a = tmp_path / "acct-a"
         proj_a = acct_a / "projects" / "-home-user-repo-a"
@@ -2454,34 +2776,20 @@ class TestCmdReviewRoundCostPooled:
         acct_b = tmp_path / "acct-b"
         proj_b = acct_b / "projects" / "-home-user-repo-b"
         proj_b.mkdir(parents=True)
-        _write_jsonl(proj_a / "sess-a1.jsonl", [
-            _priced(
-                "claude-sonnet-5", input=100_000, branch="feat-a1", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review")],
-            ),
-            _user_msg("thanks", branch="feat-a1", ts="2026-08-01T10:01:00.000Z"),
-        ])
-        _write_jsonl(proj_a / "sess-a2.jsonl", [
-            _priced(
-                "claude-sonnet-5", input=100_000, branch="feat-a2", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s2", "plan-review")],
-            ),
-            _user_msg("thanks", branch="feat-a2", ts="2026-08-01T10:01:00.000Z"),
-        ])
-        _write_jsonl(proj_b / "sess-b1.jsonl", [
-            _priced(
-                "claude-sonnet-5", input=100_000, branch="feat-b1", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s3", "ready-for-review")],
-            ),
-            _user_msg("thanks", branch="feat-b1", ts="2026-08-01T10:01:00.000Z"),
-        ])
-        _write_jsonl(proj_b / "sess-b2.jsonl", [
-            _priced(
-                "claude-sonnet-5", input=100_000, branch="feat-b2", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s4", "code-review")],
-            ),
-            _user_msg("thanks", branch="feat-b2", ts="2026-08-01T10:01:00.000Z"),
-        ])
+        skills = ["code-review", "plan-review", "ready-for-review"]
+        for i in range(6):
+            proj = proj_a if i % 2 == 0 else proj_b
+            branch = f"feat-{i}"
+            _write_jsonl(proj / f"sess-{i}.jsonl", [
+                _priced(  # non-round activity, distinct per branch
+                    "claude-sonnet-5", input=50_000 * (i + 1), branch=branch, ts="2026-08-01T09:00:00.000Z",
+                ),
+                _priced(
+                    "claude-sonnet-5", input=100_000 + 30_000 * i, branch=branch, ts="2026-08-01T10:00:00.000Z",
+                    content=[_skill_block(f"s{i}", skills[i % 3])],
+                ),
+                _user_msg("thanks", branch=branch, ts="2026-08-01T10:01:00.000Z"),
+            ])
         roots_file = tmp_path / "roots"
         roots_file.write_text(f"{acct_b}\n")
         env = {
@@ -2490,17 +2798,20 @@ class TestCmdReviewRoundCostPooled:
             "TRANSCRIPT_CONFIG_DIRS_FILE": str(roots_file),
         }
 
-        def _run() -> subprocess.CompletedProcess:
+        def _run(hash_seed: int) -> subprocess.CompletedProcess:
             return subprocess.run(
-                [sys.executable, str(_SCRIPT), "review-round-cost", "--pooled"],
-                capture_output=True, text=True, timeout=60, env=env,
+                [sys.executable, str(_SCRIPT), "review-round-cost", "--pooled", "--show-withheld"],
+                capture_output=True, text=True, timeout=60, env={**env, "PYTHONHASHSEED": str(hash_seed)},
             )
 
-        first = _run()
-        second = _run()
+        first = _run(1)
+        second = _run(2)
         assert first.returncode == 0, first.stderr
         assert second.returncode == 0, second.stderr
         assert first.stdout == second.stdout
+        assert _count_numeric_share_lines(first.stdout) == len(review_rounds._POOLED_STAT_KEYS)
+        ci_bounds = re.findall(r"\(95% CI (\d+\.\d)-(\d+\.\d)%\)", first.stdout)
+        assert any(lo != hi for lo, hi in ci_bounds), "every CI is degenerate, so ordering could not change it"
 
     def test_bootstrap_ci_bounds_are_invariant_to_branch_insertion_order(
         self, tmp_path, monkeypatch, capsys,
@@ -2513,6 +2824,10 @@ class TestCmdReviewRoundCostPooled:
         (not two) widen the resample-index space enough that a coincidental
         pass can't mask a reordering regression here, the way the
         cross-process subprocess test above does for hash-seed variance.
+
+        Runs with --show-withheld so the block prints numeric CI lines
+        instead of the withheld wording, which would be identical whatever
+        the branch order.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
         rounds = [
@@ -2528,7 +2843,7 @@ class TestCmdReviewRoundCostPooled:
         branch_totals = {
             (0, "feat-a"): 0.40, (1, "feat-b"): 1.00, (0, "feat-c"): 0.55, (1, "feat-d"): 0.30,
         }
-        args = _review_round_cost_args(pooled=True)
+        args = _review_round_cost_args(pooled=True, show_withheld=True)
 
         review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
         forward_out = capsys.readouterr().out
@@ -2539,6 +2854,7 @@ class TestCmdReviewRoundCostPooled:
         reversed_out = capsys.readouterr().out
 
         assert forward_out == reversed_out
+        assert _count_numeric_share_lines(forward_out) == len(review_rounds._POOLED_STAT_KEYS)
 
     def test_point_estimate_is_share_of_sums_not_mean_of_per_branch_shares(
         self, tmp_path, monkeypatch, capsys,
@@ -2740,7 +3056,7 @@ class TestCmdReviewRoundCostPooled:
         assert not any(c.isdigit() for line in too_few_lines for c in line.rsplit("—", 1)[-1])
 
     def test_degenerate_zero_priced_branch_dollars_does_not_raise(self, tmp_path, monkeypatch, capsys):
-        """Two branches, each with an in-scope round but zero priced dollars
+        """Eight branches (four per root), each with an in-scope round but zero priced dollars
         (an unrecognized-model turn) -- proves _render_pooled_block never
         raises ZeroDivisionError, printing the zero-denominator wording for
         every dollar-based share instead.
@@ -2759,62 +3075,76 @@ class TestCmdReviewRoundCostPooled:
         out = capsys.readouterr().out
         assert "(95% CI not computed — no priced branch spend)" in out
 
-    def test_degenerate_branch_with_no_in_scope_rounds_is_excluded_from_the_pool(
+    def test_branch_with_no_in_scope_rounds_does_not_change_the_pooled_figures(
         self, tmp_path, monkeypatch, capsys,
     ):
         """Only a branch key present in the in-scope rounds enters the pool,
         mirroring the per-root footer; a branch with priced non-round spend
-        but zero rounds must not enter via branch_totals alone. No other
-        test in this class exercises this shape.
+        but zero rounds must not enter via branch_totals alone. The pool is
+        four round-bearing branches across two roots, enough to clear both
+        count floors, so a numeric figure prints and any change the extra
+        branch caused would show. Runs with --show-withheld so the
+        dominance-precision floor cannot blank the compared figures.
+        Hand-built rounds/branch_totals via a direct _render_pooled_block
+        call, matching this file's direct-call convention.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
-        proj_a = roots[0] / "-home-user-repo-a"
-        proj_a.mkdir(parents=True)
-        _write_jsonl(proj_a / "sess-a.jsonl", [
-            _priced(
-                "claude-sonnet-5", input=100_000, branch="feat-a", ts="2026-08-01T10:00:00.000Z",
-                content=[_skill_block("s1", "code-review")],
-            ),  # round: $0.20
-            _user_msg("thanks", branch="feat-a", ts="2026-08-01T10:01:00.000Z"),
-        ])
-        proj_b = roots[1] / "-home-user-repo-b"
-        proj_b.mkdir(parents=True)
-        _write_jsonl(proj_b / "sess-b.jsonl", [
-            # No review-skill invocation anywhere -- priced activity, zero rounds.
-            _priced("claude-sonnet-5", input=500_000, branch="feat-b", ts="2026-08-01T10:00:00.000Z"),
-        ])
+        round_dollars_by_branch = {
+            (0, "feat-a1"): 1.0, (0, "feat-a2"): 2.0, (1, "feat-b1"): 3.0, (1, "feat-b2"): 1.5,
+        }
+        rounds = [
+            {"branch_key": branch_key, "skill": "code-review",
+             "main_dollars": dollars, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0}
+            for branch_key, dollars in round_dollars_by_branch.items()
+        ]
+        branch_totals = {branch_key: dollars * 2 for branch_key, dollars in round_dollars_by_branch.items()}
+        args = _review_round_cost_args(pooled=True, show_withheld=True)
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
-        out = capsys.readouterr().out
-        # feat-b's $1.00 never enters the pool: if it wrongly did (via
-        # branch_totals alone), the pool would hold two branches instead of
-        # one and "too few branches" would not fire.
-        assert "(95% CI not computed — too few branches in scope)" in out
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        out_without_idle_branch = capsys.readouterr().out
+        # Priced spend but no round: its $50.00 dwarfs the pool's own spend,
+        # so admitting it would move the inside- and outside-round-window spend shares.
+        branch_totals_with_idle_branch = {**branch_totals, (0, "feat-idle"): 50.0}
+        review_rounds._render_pooled_block(
+            args, roots, "*", rounds, branch_totals_with_idle_branch, scan_gaps=Counter(),
+        )
+        out_with_idle_branch = capsys.readouterr().out
 
+        assert re.search(r"\d+\.\d% \(95% CI \d+\.\d-\d+\.\d%\)", out_without_idle_branch)
+        assert "too few branches" not in out_without_idle_branch
+        assert out_with_idle_branch == out_without_idle_branch
+
+    @pytest.mark.parametrize("show_withheld", [False, True])
     def test_pool_with_two_roots_but_one_contributing_account_stays_degenerate(
-        self, tmp_path, monkeypatch, capsys,
+        self, tmp_path, monkeypatch, capsys, show_withheld,
     ):
-        """Two resolved roots and two branches satisfy both of
-        _render_pooled_block's own count floors, but both branches come
-        from the same root -- only one account actually contributed data.
-        The root-count floor alone would let this bootstrap into a real
-        percentage that is 100% one account's data; must degrade to the
+        """Two resolved roots and four branches, all from the same root --
+        only one account actually contributed data. Four same-root branches
+        clear the branch-count floor, so only the contributing-roots floor
+        can withhold: without it the pool would bootstrap into a real
+        percentage that is 100% one account's data. Must degrade to the
         same "too few branches" wording as a genuinely single-branch pool.
+        The show_withheld=True leg fails if the contributing-roots clause is
+        removed, because --show-withheld skips the dominance floor that
+        would otherwise catch the pool. The show_withheld=False leg pins
+        that a one-account pool never prints a figure.
         Hand-built rounds/branch_totals via a direct _render_pooled_block
         call -- the contributing-roots floor under test needs no corpus
         scan or pricing table, matching this file's established direct-call
         convention for testing _render_pooled_block in isolation.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
-        rounds = [
-            {"branch_key": (0, "feat-a1"), "skill": "code-review",
-             "main_dollars": 0.20, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
-            {"branch_key": (0, "feat-a2"), "skill": "plan-review",
-             "main_dollars": 0.20, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
-        ]
         # roots[1] (acct-b) resolves but contributes no branch at all.
-        branch_totals = {(0, "feat-a1"): 0.20, (0, "feat-a2"): 0.20}
-        args = _review_round_cost_args(pooled=True)
+        round_dollars_by_branch = {
+            (0, "feat-a1"): 0.20, (0, "feat-a2"): 0.30, (0, "feat-a3"): 0.25, (0, "feat-a4"): 0.15,
+        }
+        rounds = [
+            {"branch_key": branch_key, "skill": "code-review",
+             "main_dollars": dollars, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0}
+            for branch_key, dollars in round_dollars_by_branch.items()
+        ]
+        branch_totals = dict(round_dollars_by_branch)
+        args = _review_round_cost_args(pooled=True, show_withheld=show_withheld)
 
         review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
         out = capsys.readouterr().out
@@ -2822,16 +3152,20 @@ class TestCmdReviewRoundCostPooled:
         assert too_few_lines
         assert not any(re.search(r"\d+\.\d%", line) for line in out.splitlines())
 
+    @pytest.mark.parametrize("show_withheld", [False, True])
     def test_pool_with_exactly_three_branches_across_two_roots_stays_degenerate(
-        self, tmp_path, monkeypatch, capsys,
+        self, tmp_path, monkeypatch, capsys, show_withheld,
     ):
         """Pins the bootstrap-validity floor's own threshold
         (len(per_branch) < 4): three branches across two contributing roots
         clear the contributing-roots floor (>= 2) but must still trip the
-        branch-count floor, since no other test in this file exercises
-        exactly three branches with two contributing roots -- every existing
-        "too few branches" test uses one branch or two same-root branches,
-        and every real-CI-computed test uses four or more branches.
+        branch-count floor. This is the only test with two contributing
+        roots and fewer than four branches.
+        The show_withheld=True leg fails if the branch-count clause is
+        removed or relaxed, because --show-withheld skips the dominance floor
+        that would otherwise withhold this exact-0%/100%-share fixture. The
+        show_withheld=False leg pins that the pool never prints a figure end
+        to end, but the dominance floor alone would also satisfy it.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
         rounds = [
@@ -2845,7 +3179,7 @@ class TestCmdReviewRoundCostPooled:
         branch_totals = {
             (0, "feat-a1"): 10.0, (0, "feat-a2"): 10.0, (1, "feat-b1"): 10.0,
         }
-        args = _review_round_cost_args(pooled=True)
+        args = _review_round_cost_args(pooled=True, show_withheld=show_withheld)
 
         review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
         out = capsys.readouterr().out
@@ -2937,12 +3271,12 @@ class TestCmdReviewRoundCostPooled:
         """Mutation-style guard for the extreme-split test above: bypasses
         _pooled_dominance_breach (forcing it to never fire) and reruns
         the identical fixture and CI stub, confirming the block prints
-        real figures once the new check is removed. This proves the
-        extreme-split test's withheld assertion is pinned to this new
-        floor specifically -- the fixture already clears the
+        real figures once the dominance-precision floor is removed. This
+        proves the extreme-split test's withheld assertion is pinned to
+        that floor specifically -- the fixture already clears the
         `contributing_roots` count floor on its own (two roots, two
-        branches), so that pre-existing floor alone cannot be what makes
-        the extreme-split test pass.
+        branches), so that count floor alone cannot be what makes the
+        extreme-split test pass.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
         # feat-a-filler/feat-b-filler: zero branch_dollars each, so they clear
@@ -3153,7 +3487,7 @@ class TestCmdReviewRoundCostPooled:
         assert not any(c.isdigit() for c in err)
 
     def test_pooled_scope_refusal_skips_root_count_clause_when_roots_is_none(self):
-        """The layer-1, pre-resolution call path: no narrowing flag set,
+        """The pre-scan refusal call path: no narrowing flag set,
         and roots=None (the default), returns None without raising -- no
         other test in this class exercises _pooled_scope_refusal directly
         with roots=None."""
@@ -3384,7 +3718,7 @@ class TestPooledShowWithheld:
         self, tmp_path, monkeypatch, capsys,
     ):
         """--show-withheld plus --pooled plus --branches still exits 2 on
-        the pre-existing --branches refusal, not a --show-withheld-specific
+        the --branches refusal, not a --show-withheld-specific
         one -- proves --show-withheld never bypasses an existing
         scope-narrowing refusal."""
         _pooled_two_root_fixture(tmp_path, monkeypatch)
