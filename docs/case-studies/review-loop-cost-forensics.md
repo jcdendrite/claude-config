@@ -9,7 +9,7 @@
 **Short answer.**
 
 - **Review-loop iteration count, carried through context-prefix amplification on every subsequent turn, is the largest attributed causal mechanism** — not the cache-TTL hypothesis the engineer started with. Most of the branch's own spend does not trace to any single named causal mechanism at all; see "Ranked causal decomposition" for the ranking and "Why this generalizes" for the corpus-level evidence this isn't a one-branch anecdote.
-- **One instrumentation defect was corrected so this study could trust its own numbers.** `_dispatch_usage_summary` priced without request-ID deduplication, overstating per-dispatch and per-agent-type dollar figures. Every figure below was computed with the corrected function.
+- **One instrumentation defect was corrected so this study could trust its own numbers.** `_dispatch_usage_summary` priced without request-ID deduplication, overstating per-dispatch and per-agent-type dollar figures.
 - **The one-hour cache tier is a config-selectable lever, not a structural block** (`promptCacheTtl`/`ENABLE_PROMPT_CACHING_1H`). Selecting it would address only idle-gap rebuilds, which rank below review-loop iteration (see "Ranked causal decomposition").
 - **The private project's own repo surface is mostly a red herring**, with one real, small, unconditional cost and one conditional cause this study's own verification step ruled out (see "Is the private project's own surface a cause or a red herring?").
 - **Review-loop cost is a real, recurring driver across this repo's own history**, not an artifact of this one branch — see "Baseline: this repo's own cost distribution" and "Why this generalizes" for the corpus-level evidence.
