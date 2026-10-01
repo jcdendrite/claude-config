@@ -280,9 +280,6 @@ def _strip_markdown_decoration(text: str) -> tuple[str, list[int]]:
 
 # Whitespace other than a newline, so each pattern below matches one line at a time.
 _HSPACE = r"[^\S\n]"
-# The lookbehind after `id` admits only the ends of `id` that can be shortest:
-# the end of its token, the start of a separator run, or the end of a
-# one-character `id` that is itself a separator.
 _RECALL_LABEL_LINE_RE = re.compile(
     rf"(?im)^{_HSPACE}*(?P<id>\S+?)(?:(?={_HSPACE})|(?<=[^\s:\-–—])|(?<=\s[:\-–—])|(?<=^[:\-–—]))"
     rf"{_HSPACE}*{_LABEL_SEPARATOR}{_HSPACE}*(?P<label>NOT[ _]FOUND|FOUND)\b(?P<rest>.*)$"

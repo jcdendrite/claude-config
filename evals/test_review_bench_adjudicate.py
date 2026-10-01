@@ -275,11 +275,6 @@ class TestRecallAnswerParser:
 
 
 class TestAnswerFormatMatchingIsLinearTime:
-    """Each input below made an earlier pattern take seconds to minutes (the
-    cost grew with the square or cube of the input's size); the bound holds the
-    matching to under a second, which a linear scan clears by orders of
-    magnitude on any machine."""
-
     _MAX_SECONDS = 1.0
     _LONG_LINE_LENGTH = 20_000
     _LONG_WHITESPACE_LINE_LENGTH = 40_000
@@ -444,7 +439,7 @@ class TestAnswerFormatLinesKeepTheirAcceptedForms:
         assert adjudicate.normalize_findings_text("Run :") == "> Run :"
 
     def test_a_run_header_whose_only_id_is_a_colon_fails_a_precision_answer(self) -> None:
-        answer = '### Run r1\n1. VALID -- "One problem"\n### Run :\n1. VALID -- "One problem"\n'
+        answer = '### Run r1\n1. VALID -- "One problem"\n### Run :\n'
         result = adjudicate.parse_precision_answer(
             answer, expected_ids=["r1"], normalized_findings_by_id={"r1": "One problem here."},
         )

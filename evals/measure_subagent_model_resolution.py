@@ -61,8 +61,7 @@ SUBAGENT_SUBDIR = "subagents"
 # error or placeholder turn) rather than receives from a model.
 SYNTHETIC_MODEL_ID = "<synthetic>"
 
-# The variables `git rev-parse --local-env-vars` lists (git-rev-parse(1)): each
-# one binds a git process to a particular repository, work tree, or index.
+# The variables `git rev-parse --local-env-vars` lists (git-rev-parse(1)).
 _GIT_LOCAL_ENV_VARS = (
     "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
     "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
@@ -72,9 +71,9 @@ _GIT_LOCAL_ENV_VARS = (
 
 
 def environment_without_git_local_vars() -> dict[str, str]:
-    """A copy of the process environment with the repository-binding git
-    variables removed, not blanked, so git's normal discovery applies to the
-    child's working directory."""
+    """A copy of the process environment without the `_GIT_LOCAL_ENV_VARS`
+    entries, so git's normal discovery applies to the child's working
+    directory."""
     return {name: value for name, value in os.environ.items() if name not in _GIT_LOCAL_ENV_VARS}
 
 
