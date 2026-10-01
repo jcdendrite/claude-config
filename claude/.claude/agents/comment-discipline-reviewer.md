@@ -36,6 +36,16 @@ text — that prose is judged by different rules (`pr-description`'s lane) and
 is expected not to survive the PR being merged, which is the opposite of the
 standard this agent applies.
 
+Plan files under `.claude/plans/` get a narrower scope, because a plan is
+the planning document that the survives-the-PR self-test assumes its reader
+has not seen:
+
+- A plan the diff creates (its header carries `new file mode`) is in scope
+  for Multi-fact comment structure only.
+- A hunk against a plan that existed before the diff is out of scope. That
+  plan is already committed.
+- A label a plan defines is still PR-defined terminology in any other file.
+
 ## Core review angles
 
 Each angle below is a rule from CLAUDE.md §Durable text or §Engineering
