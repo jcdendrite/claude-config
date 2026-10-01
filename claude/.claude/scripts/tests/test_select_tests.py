@@ -663,9 +663,146 @@ class TestSelectPytestTargets:
         assert result.reason == "unmatched-path"
 
     def test_skill_evals_runner_change_selects_skills_tests(self):
+        """Also selects REVIEW_BENCH_TEST_GLOB and MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST
+        (see the SKILL_EVALS_RUNNER comment on CROSS_DOMAIN_EXCEPTIONS)."""
         result = _mod.select_pytest_targets([_mod.SKILL_EVALS_RUNNER])
         assert result.is_full_suite is False
-        assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
+        assert set(result.target_paths) == {
+            _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_evals_readme_change_selects_skills_tests_rather_than_falling_open(self):
+        """test_skills.py reads evals/README.md by path (its state-path doc scan)."""
+        result = _mod.select_pytest_targets([_mod.EVALS_README_MD])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.SKILLS_TESTS_DIR}
+
+    def test_review_bench_dir_change_selects_review_bench_and_measure_subagent_tests(self):
+        result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_DIR}/defects.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_review_bench_runner_change_selects_review_bench_and_measure_subagent_tests(self):
+        result = _mod.select_pytest_targets([_mod.REVIEW_BENCH_RUNNER])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_review_bench_fixtures_dir_change_selects_review_bench_and_measure_subagent_tests(self):
+        """evals/fixtures/review-bench/ selects the review_bench tests rather than falling open."""
+        result = _mod.select_pytest_targets([f"{_mod.REVIEW_BENCH_FIXTURES_DIR}/normal-success/session-1.jsonl"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_review_bench_test_glob_member_change_selects_itself(self):
+        """A test_review_bench*.py file selects itself rather than falling open."""
+        result = _mod.select_pytest_targets(["evals/test_review_bench_mining.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_measure_subagent_model_resolution_test_change_selects_its_own_test(self):
+        """The test file selects itself rather than falling through to the full suite."""
+        result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_evals_conftest_change_selects_every_test_it_applies_to(self):
+        """evals/conftest.py applies to the review_bench tests and the measure_subagent test."""
+        result = _mod.select_pytest_targets([_mod.EVALS_CONFTEST])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_measure_subagent_model_resolution_change_selects_its_own_test(self):
+        """Selects its own test rather than the full suite."""
+        result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        }
+
+    def test_review_bench_scripts_dependency_change_also_selects_review_bench_tests(self):
+        """Every _REVIEW_BENCH_SCRIPTS_DEPENDENCIES member also selects REVIEW_BENCH_TEST_GLOB
+        (see that constant's comment on CROSS_DOMAIN_EXCEPTIONS). Membership rather than
+        set equality, so the generic scripts-directory row can gain or lose its own targets
+        without invalidating this row's assertion."""
+        for dependency in sorted(_mod._REVIEW_BENCH_SCRIPTS_DEPENDENCIES):
+            result = _mod.select_pytest_targets([dependency])
+            assert result.is_full_suite is False, dependency
+            assert _mod.REVIEW_BENCH_TEST_GLOB in result.target_paths, dependency
+
+    def test_config_dir_module_change_also_selects_the_measure_subagent_test(self):
+        """measure_subagent_model_resolution.py reaches _config_dir.py through run_skill_evals.py."""
+        result = _mod.select_pytest_targets(["claude/.claude/scripts/_config_dir.py"])
+        assert result.is_full_suite is False
+        assert _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST in result.target_paths
+
+    def test_review_bench_scripts_dependencies_equal_transitive_first_party_imports(self):
+        """Ground-truths _REVIEW_BENCH_SCRIPTS_DEPENDENCIES against the
+        transitive first-party import closure of every review_bench source,
+        rather than a second hand-written list -- a fixed expected list would
+        tolerate the same added-import-not-added-to-the-frozenset drift this
+        row exists to catch."""
+        evals_dir = _REPO_ROOT / "evals"
+        scripts_dir = _REPO_ROOT / _mod.SCRIPTS_DIR
+
+        def resolve_module_file(module_name: str) -> Path | None:
+            for base_dir in (evals_dir, scripts_dir):
+                module_path = base_dir.joinpath(*module_name.split("."))
+                if module_path.with_suffix(".py").is_file():
+                    return module_path.with_suffix(".py")
+                if (module_path / "__init__.py").is_file():
+                    return module_path / "__init__.py"
+            return None
+
+        def imported_module_names(source_file: Path) -> set[str]:
+            names: set[str] = set()
+            for node in ast.walk(ast.parse(source_file.read_text())):
+                if isinstance(node, ast.Import):
+                    names.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    if node.level > 0:
+                        module = "review_bench" + (f".{module}" if module else "")
+                    if module:
+                        names.add(module)
+                        names.update(f"{module}.{alias.name}" for alias in node.names)
+            return names
+
+        pending = [
+            *(evals_dir / "review_bench").glob("*.py"),
+            evals_dir / "run_review_bench.py",
+            evals_dir / "measure_subagent_model_resolution.py",
+        ]
+        reached: set[Path] = set()
+        while pending:
+            source_file = pending.pop()
+            if source_file in reached:
+                continue
+            reached.add(source_file)
+            pending.extend(
+                module_file for name in imported_module_names(source_file)
+                if (module_file := resolve_module_file(name)) is not None
+            )
+
+        reached_scripts_files = {
+            source_file.relative_to(_REPO_ROOT).as_posix()
+            for source_file in reached if source_file.is_relative_to(scripts_dir)
+        }
+        assert any("transcript_analysis" in name for name in reached_scripts_files), (
+            "expected the walk to reach the transcript_analysis package"
+        )
+        assert reached_scripts_files == _mod._REVIEW_BENCH_SCRIPTS_DEPENDENCIES
 
     def test_handoff_skill_md_change_also_selects_scripts_and_hooks_tests(self):
         """test_check_handoff.py (SCRIPTS_TESTS_DIR) reads HANDOFF_SKILL_MD's
@@ -805,6 +942,33 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is True
         assert result.reason == "global-trigger"
 
+    def test_global_trigger_keeps_domain_targets_outside_the_full_suite_roots(self):
+        """FULL_SUITE_TARGETS never collects evals/, so a review-bench path
+        beside a global-trigger path must still contribute its own tests."""
+        result = _mod.select_pytest_targets(["pyproject.toml", "evals/review_bench/runner.py"])
+        assert result.is_full_suite is True
+        assert result.reason == "global-trigger"
+        assert result.triggering_paths == ("pyproject.toml",)
+        assert result.target_paths == (
+            *_mod.FULL_SUITE_TARGETS,
+            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.REVIEW_BENCH_TEST_GLOB,
+        )
+
+    def test_unmatched_path_keeps_domain_targets_outside_the_full_suite_roots(self):
+        result = _mod.select_pytest_targets([".gitignore", "evals/review_bench/runner.py"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+        assert result.triggering_paths == (".gitignore",)
+        assert result.target_paths == (
+            *_mod.FULL_SUITE_TARGETS,
+            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.REVIEW_BENCH_TEST_GLOB,
+        )
+
+    def test_fail_open_does_not_duplicate_a_domain_target_a_full_suite_root_already_covers(self):
+        result = _mod.select_pytest_targets([".gitignore", "claude/.claude/scripts/mark-terminal.py"])
+        assert result.is_full_suite is True
+        assert result.target_paths == _mod.FULL_SUITE_TARGETS
+
     def test_unmatched_path_falls_open_to_full_suite(self):
         """.gitignore matches no domain rule and no cross-domain exception --
         CI's own SKIP_REGEX doesn't list it either, so select-tests.py must
@@ -826,10 +990,13 @@ class TestSelectPytestTargets:
         (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path, not
         by import. Without this cross-domain exception, a change under
         claude/.claude/agents/ falls open to the full suite instead of
-        selecting the two domains that actually depend on it."""
+        selecting the two domains that actually depend on it. Also selects
+        REVIEW_BENCH_TEST_GLOB (see the AGENTS_DIR comment on CROSS_DOMAIN_EXCEPTIONS)."""
         result = _mod.select_pytest_targets(["claude/.claude/agents/code-writer.md"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+        assert set(result.target_paths) == {
+            _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
+        }
 
     def test_rules_dir_change_also_selects_hooks_and_skills_tests(self):
         """test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
@@ -1034,9 +1201,9 @@ class TestSelectPytestTargets:
 
     def test_matched_and_unmatched_path_together_falls_open_to_full_suite(self):
         """A path that matches a domain rule alongside a path that matches
-        none still falls open to the full suite -- the accumulate-all-
-        unmatched-paths refactor doesn't let a matched domain's targets
-        leak through when another path in the same diff is unmatched."""
+        none still falls open to the full suite. The matched domain's targets
+        add nothing to FULL_SUITE_TARGETS here because they sit inside its
+        roots; only a matched target outside them (e.g. evals/) is kept."""
         result = _mod.select_pytest_targets(
             ["claude/.claude/scripts/mark-terminal.py", ".gitignore"],
         )
@@ -1213,10 +1380,12 @@ class TestSelectPytestTargets:
         }
 
     def test_config_dir_module_change_selects_all_three_declared_importer_sets(self):
-        """CONFIG_DIR_MODULE is imported by three declared importer sets:
+        """CONFIG_DIR_MODULE's own row selects three declared importer sets:
         - HOOKS_TESTS_IMPORTING_CONFIG's test files, via _config.py's own import
         - REVIEW_LEDGER_SCRIPT_TEST_PATH, via transcript_analysis.author_outcome -> scope -> _config_dir
         - SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER's test files, via run_skill_evals
+        A fourth contributor, the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES row, adds
+        REVIEW_BENCH_TEST_GLOB and MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST.
         """
         result = _mod.select_pytest_targets([_mod.CONFIG_DIR_MODULE])
         assert result.is_full_suite is False
@@ -1225,16 +1394,17 @@ class TestSelectPytestTargets:
             _mod.REVIEW_LEDGER_SCRIPT_TEST_PATH,
             *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
             *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
         }
 
     def test_transcript_analysis_package_module_change_selects_review_ledger_script_test(self):
         """TRANSCRIPT_ANALYSIS_PACKAGE_DIR's row covers the whole
         transcript_analysis/ package, not just author_outcome.py, so it
-        stays correct when author_outcome's own imports change. scope.py has
-        no fidelity list guarding TRANSCRIPT_ANALYSIS_PACKAGE_DIR, so this
-        test asserts the file exists on disk before relying on it as a real
-        changed path."""
-        changed_path = "claude/.claude/scripts/transcript_analysis/scope.py"
+        stays correct when author_outcome's own imports change. cost.py is
+        not among the paths in _REVIEW_BENCH_SCRIPTS_DEPENDENCIES, which keeps
+        the exact-set assertion valid. The test asserts the file exists on
+        disk before relying on it as a real changed path."""
+        changed_path = "claude/.claude/scripts/transcript_analysis/cost.py"
         assert (_REPO_ROOT / changed_path).is_file()
         result = _mod.select_pytest_targets([changed_path])
         assert result.is_full_suite is False
@@ -1318,6 +1488,17 @@ class TestResolveTargetPaths:
         )
         assert resolved == [_mod.SCRIPTS_TESTS_DIR]
 
+    def test_full_suite_roots_keep_the_evals_targets_beside_them(self):
+        """A fail-open selection's evals/ targets sit outside every
+        FULL_SUITE_TARGETS root, so none absorbs them."""
+        resolved = _mod.resolve_target_paths(
+            [*_mod.FULL_SUITE_TARGETS, _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST],
+            repo_root=_REPO_ROOT,
+        )
+        assert set(_mod.FULL_SUITE_TARGETS) <= set(resolved)
+        assert _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST in resolved
+        assert any(path.startswith("evals/test_review_bench_") for path in resolved)
+
     def test_three_level_containment_chain_collapses_to_the_outermost_container(self):
         """Structural, synthetic -- not an observed collision. The real
         rule tables are one level deep (ledger row 15), so only a synthetic
@@ -1368,10 +1549,13 @@ class TestResolveTargetPaths:
         DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS target, resolved, must leave no
         pair where one covers the other, so this self-updates when a row
         gains a target. Excludes FULL_SUITE_TARGETS (ledger rows 13/14).
-        Including it collapses the check to two disjoint survivors
-        (claude/.claude/ and plugins/), making the assertion pass
-        regardless of whether _covers works -- and that combined universe
-        isn't a selection select_pytest_targets ever actually returns."""
+        Including it collapses the check to disjoint survivors
+        (claude/.claude/, claude-skills/, plugins/, and the evals/ test
+        files), making the assertion pass regardless of whether _covers
+        works -- and that combined universe (FULL_SUITE_TARGETS plus every
+        inside-root domain target) isn't a selection select_pytest_targets
+        ever actually returns: its fail-open result adds only targets
+        outside those roots."""
         universe: set[str] = set()
         for _predicate, targets in (*_mod.DOMAIN_RULES, *_mod.CROSS_DOMAIN_EXCEPTIONS):
             universe.update(targets)
@@ -1652,8 +1836,9 @@ class TestPytestSubprocessEnv:
         assert result.load_average is None
 
 
-# Every constant backing a `lambda p: p == CONSTANT` exact-match predicate
-# in CROSS_DOMAIN_EXCEPTIONS. A rename that drifts one of these from its
+# Every constant backing an exact-match predicate (`p == CONSTANT`, or
+# membership in a tuple of constants) in DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS.
+# A rename that drifts one of these from its
 # real on-disk path leaves that predicate silently dead -- it matches
 # nothing, and no test fails.
 _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
@@ -1673,16 +1858,22 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.ROOT_CLAUDE_MD,
     _mod.ROOT_SETTINGS_JSON,
     _mod.STATUSLINE_COMMAND_SH,
+    _mod.REVIEW_BENCH_RUNNER,
+    _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION,
+    _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+    _mod.EVALS_README_MD,
+    _mod.EVALS_CONFTEST,
 )
 
-# The CROSS_DOMAIN_EXCEPTIONS targets that name a file rather than a domain
-# directory. Its only consumer is the fidelity partition below --
-# _expand_target (select-tests.py) partitions on "*" in target and has no
+# The CROSS_DOMAIN_EXCEPTIONS/DOMAIN_RULES targets that name a file rather
+# than a domain directory. Its only consumer is the fidelity partition below
+# -- _expand_target (select-tests.py) partitions on "*" in target and has no
 # use for this distinction, so it stays a test-only constant.
 _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
     _mod.SELECT_TESTS_TEST_PATH,
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+    _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
     *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
     *_mod.HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR,
@@ -1786,8 +1977,8 @@ class TestRuleTablePathFidelity:
             assert (_REPO_ROOT / target).is_dir(), f"{target} does not exist as a directory"
 
     def test_every_file_target_exists_on_disk(self):
-        """The CROSS_DOMAIN_EXCEPTIONS targets that name a file rather than
-        a domain directory -- excluded from the directory check above,
+        """The CROSS_DOMAIN_EXCEPTIONS/DOMAIN_RULES targets that name a file
+        rather than a domain directory -- excluded from the directory check above,
         checked as files here instead."""
         for target in _FILE_TARGETS:
             assert (_REPO_ROOT / target).is_file(), f"{target} does not exist as a file"
@@ -1797,6 +1988,10 @@ class TestRuleTablePathFidelity:
         assert glob_targets, "expected at least one glob-pattern target"
         for target in glob_targets:
             assert list(_REPO_ROOT.glob(target)), f"{target} matched no files on disk"
+
+    def test_review_bench_directory_constants_exist_on_disk(self):
+        for constant in (_mod.REVIEW_BENCH_DIR, _mod.REVIEW_BENCH_FIXTURES_DIR):
+            assert (_REPO_ROOT / constant).is_dir(), f"{constant} does not exist as a directory"
 
     def test_every_global_trigger_path_exists_on_disk(self):
         for path in _mod.GLOBAL_TRIGGER_PATHS:
