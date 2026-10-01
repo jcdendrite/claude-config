@@ -9,6 +9,7 @@ import dataclasses
 import json
 import shutil
 import subprocess
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -125,6 +126,24 @@ class TestMissingRunsAreExcludedFromJudgeInput:
         assert "run-gone" not in judge_input.text
         assert "Partial text of a missing run." not in judge_input.text
         assert adjudicate._RUN_HEADER_RE.findall(judge_input.text) == ["run-ok"]
+
+
+class TestRecallJudgeInputIgnoresInheritedGitRedirects:
+    def test_the_defects_diffs_come_from_the_source_repo_when_git_dir_names_another_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        source_repo = tmp_path / "source"
+        defect = _build_two_commit_source_repo(source_repo)
+        decoy_repo = tmp_path / "decoy"
+        _build_two_commit_source_repo(decoy_repo, changed_file_content="decoy_marker = 9\n")
+        monkeypatch.setenv("GIT_DIR", str(decoy_repo / ".git"))
+
+        judge_input = adjudicate.build_recall_judge_input(
+            defect, [_run_record("d1", "current-rule", "run-a", "Real finding.")], source_repo=source_repo, seed=1,
+        )
+
+        assert "+x = 2" in judge_input.text
+        assert "decoy_marker" not in judge_input.text
 
 
 class TestFindingsTextIsFramedAsData:
@@ -253,6 +272,230 @@ class TestRecallAnswerParser:
         findings = {"r1": "1. **Contract compatibility** -- `src/a.py:12` -- leaks a connection."}
         answer = 'r1: FOUND -- "1. Contract compatibility -- src/a.py:99 -- leaks"'
         assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
+
+
+class TestAnswerFormatMatchingIsLinearTime:
+    """Each input below made an earlier pattern take seconds to minutes (the
+    cost grew with the square or cube of the input's size); the bound holds the
+    matching to under a second, which a linear scan clears by orders of
+    magnitude on any machine."""
+
+    _MAX_SECONDS = 1.0
+    _LONG_LINE_LENGTH = 20_000
+    _LONG_WHITESPACE_LINE_LENGTH = 40_000
+    _BLANK_LINE_COUNT_FOR_HEADER = 2_000
+    _BLANK_LINE_COUNT = 20_000
+
+    def _timed(self, work):
+        started = time.perf_counter()
+        result = work()
+        assert time.perf_counter() - started < self._MAX_SECONDS
+        return result
+
+    @pytest.mark.parametrize("separator_char", ["-", ":", "–", "—"])
+    def test_a_long_run_of_separator_characters_is_neutralized_quickly(self, separator_char: str) -> None:
+        text = separator_char * self._LONG_LINE_LENGTH
+        assert self._timed(lambda: adjudicate.normalize_findings_text(text)) == text
+
+    def test_a_long_whitespace_line_is_neutralized_quickly(self) -> None:
+        text = " " * self._LONG_WHITESPACE_LINE_LENGTH + "x"
+        assert self._timed(lambda: adjudicate.normalize_findings_text(text)) == text
+
+    def test_a_long_whitespace_line_before_a_colon_is_neutralized_quickly(self) -> None:
+        text = "Run: a" + " " * self._LONG_WHITESPACE_LINE_LENGTH + "x"
+        assert self._timed(lambda: adjudicate.normalize_findings_text(text)) == text
+
+    @pytest.mark.parametrize("header_prefix", ["Run", "Run ", "# Run "])
+    def test_a_header_followed_by_a_long_colon_run_and_a_non_matching_tail_is_neutralized_quickly(
+        self, header_prefix: str,
+    ) -> None:
+        text = header_prefix + ":" * self._LONG_LINE_LENGTH + "x y"
+        assert self._timed(lambda: adjudicate.normalize_findings_text(text)) == text
+
+    def test_many_blank_lines_before_a_precision_answer_with_no_header_are_rejected_quickly(self) -> None:
+        raw_text = "\n" * self._BLANK_LINE_COUNT_FOR_HEADER + "no header follows"
+        parsed = self._timed(
+            lambda: adjudicate.parse_precision_answer(raw_text, expected_ids=["run-a"], normalized_findings_by_id={})
+        )
+        assert parsed is None
+
+    def test_many_blank_lines_parse_as_recall_answer_quickly(self) -> None:
+        raw_text = "\n" * self._BLANK_LINE_COUNT + "no label follows"
+        parsed = self._timed(
+            lambda: adjudicate.parse_recall_answer(raw_text, expected_ids=["run-a"], normalized_findings_by_id={})
+        )
+        assert parsed is None
+
+    def test_many_blank_lines_parse_as_precision_findings_quickly(self) -> None:
+        section_text = "\n" * self._BLANK_LINE_COUNT + "no finding follows"
+        assert self._timed(lambda: adjudicate.parse_precision_findings(section_text)) == []
+
+    def test_a_long_separator_line_parses_as_recall_answer_quickly(self) -> None:
+        raw_text = "-" * self._LONG_LINE_LENGTH
+        parsed = self._timed(
+            lambda: adjudicate.parse_recall_answer(raw_text, expected_ids=["run-a"], normalized_findings_by_id={})
+        )
+        assert parsed is None
+
+
+class TestAnswerFormatLinesKeepTheirAcceptedForms:
+    """Pins the line shapes each answer-format pattern accepts or rejects, so a
+    pattern rewrite cannot narrow or widen them unnoticed. The patterns match
+    one line at a time: a form that needs a newline inside it is rejected."""
+
+    _RECALL_FINDINGS = {"r1": "Leaks a connection on error."}
+
+    @pytest.mark.parametrize(
+        ("answer", "run_id", "label"),
+        [
+            pytest.param("r1: NOT_FOUND", "r1", "NOT_FOUND", id="colon"),
+            pytest.param("r1 - NOT_FOUND", "r1", "NOT_FOUND", id="hyphen"),
+            pytest.param("r1 -- NOT_FOUND", "r1", "NOT_FOUND", id="double-hyphen"),
+            pytest.param("r1 – NOT_FOUND", "r1", "NOT_FOUND", id="en-dash"),
+            pytest.param("r1 — NOT_FOUND", "r1", "NOT_FOUND", id="em-dash"),
+            pytest.param("r1:NOT_FOUND", "r1", "NOT_FOUND", id="no-space-around-separator"),
+            pytest.param("r1 : NOT_FOUND", "r1", "NOT_FOUND", id="space-before-separator"),
+            pytest.param("r1:\tNOT_FOUND", "r1", "NOT_FOUND", id="tab-after-separator"),
+            pytest.param("r1: NOT FOUND", "r1", "NOT_FOUND", id="space-in-label"),
+            pytest.param("r1: not_found", "r1", "NOT_FOUND", id="lowercase-label"),
+            pytest.param("r1: NOT_FOUND\r\n", "r1", "NOT_FOUND", id="crlf"),
+            pytest.param("r1: NOT_FOUND   ", "r1", "NOT_FOUND", id="trailing-whitespace"),
+            pytest.param("  r1: NOT_FOUND", "r1", "NOT_FOUND", id="leading-whitespace"),
+            pytest.param('"r1": NOT_FOUND', "r1", "NOT_FOUND", id="double-quoted-id"),
+            pytest.param("'r1': NOT_FOUND", "r1", "NOT_FOUND", id="single-quoted-id"),
+            pytest.param("**r1**: NOT_FOUND", "r1", "NOT_FOUND", id="bold-id"),
+            pytest.param("r1- : NOT_FOUND", "r1-", "NOT_FOUND", id="id-ending-in-a-separator-before-whitespace"),
+            pytest.param("-: NOT_FOUND", "-", "NOT_FOUND", id="one-character-separator-id"),
+            pytest.param("  -: NOT_FOUND", "-", "NOT_FOUND", id="one-character-separator-id-after-whitespace"),
+            pytest.param('r1: FOUND -- "Leaks a connection"\r\n', "r1", "FOUND", id="found-with-quote-and-crlf"),
+        ],
+    )
+    def test_recall_label_line_forms_are_accepted(self, answer: str, run_id: str, label: str) -> None:
+        findings = {run_id: self._RECALL_FINDINGS["r1"]}
+        result = adjudicate.parse_recall_answer(answer, expected_ids=[run_id], normalized_findings_by_id=findings)
+        assert result is not None
+        assert result[run_id].label == label
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param("r1\n: NOT_FOUND", id="separator-on-the-next-line"),
+            pytest.param("r1:\nNOT_FOUND", id="label-on-the-next-line"),
+            pytest.param("r1 NOT_FOUND", id="no-separator"),
+            pytest.param("r1: NOT_FOUNDED", id="label-continues-into-a-word"),
+        ],
+    )
+    def test_recall_label_line_forms_that_cross_a_newline_or_lack_a_separator_are_rejected(self, answer: str) -> None:
+        result = adjudicate.parse_recall_answer(
+            answer, expected_ids=["r1"], normalized_findings_by_id=self._RECALL_FINDINGS,
+        )
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            pytest.param("### Run r1", id="h3"),
+            pytest.param("## Run r1", id="h2"),
+            pytest.param("# Run r1", id="h1"),
+            pytest.param("Run r1", id="no-hashes"),
+            pytest.param("  ### Run r1", id="leading-whitespace"),
+            pytest.param("###Run r1", id="no-space-after-hashes"),
+            pytest.param("### run r1", id="lowercase"),
+            pytest.param("### Run: r1", id="colon-after-run"),
+            pytest.param("### Run:r1", id="colon-without-space"),
+            pytest.param("### Run r1:", id="trailing-colon"),
+            pytest.param("### Run\tr1", id="tab-after-run"),
+            pytest.param("### Run r1   ", id="trailing-whitespace"),
+            pytest.param("### Run r1\r", id="crlf"),
+            pytest.param('### Run "r1"', id="double-quoted-id"),
+            pytest.param("### Run 'r1'", id="single-quoted-id"),
+            pytest.param("### Run **r1**", id="bold-id"),
+        ],
+    )
+    def test_run_header_forms_are_accepted(self, header: str) -> None:
+        answer = f'{header}\n1. VALID -- "One problem"\n'
+        result = adjudicate.parse_precision_answer(
+            answer, expected_ids=["r1"], normalized_findings_by_id={"r1": "One problem here."},
+        )
+        assert result is not None
+        assert [finding.label for finding in result["r1"]] == ["VALID"]
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            pytest.param("### Run:\nr1", id="id-on-the-next-line-after-a-colon"),
+            pytest.param("### Run\nr1", id="id-on-the-next-line"),
+            pytest.param("#### Run r1", id="four-hashes"),
+            pytest.param("### Runs r1", id="run-continues-into-a-word"),
+            pytest.param("### Run", id="no-id"),
+        ],
+    )
+    def test_run_header_forms_that_cross_a_newline_or_lack_an_id_are_rejected(self, header: str) -> None:
+        answer = f'{header}\n1. VALID -- "One problem"\n'
+        result = adjudicate.parse_precision_answer(
+            answer, expected_ids=["r1"], normalized_findings_by_id={"r1": "One problem here."},
+        )
+        assert result is None
+
+    def test_a_run_header_whose_only_id_is_a_colon_matches_the_header_pattern(self) -> None:
+        assert adjudicate._RUN_HEADER_RE.findall("### Run :") == [":"]
+
+    def test_a_run_header_whose_only_id_is_a_colon_is_neutralized_in_findings_text(self) -> None:
+        assert adjudicate.normalize_findings_text("Run :") == "> Run :"
+
+    def test_a_run_header_whose_only_id_is_a_colon_fails_a_precision_answer(self) -> None:
+        answer = '### Run r1\n1. VALID -- "One problem"\n### Run :\n1. VALID -- "One problem"\n'
+        result = adjudicate.parse_precision_answer(
+            answer, expected_ids=["r1"], normalized_findings_by_id={"r1": "One problem here."},
+        )
+        assert result is None
+
+    @pytest.mark.parametrize(
+        ("finding_line", "label"),
+        [
+            pytest.param('VALID -- "One problem"', "VALID", id="bare"),
+            pytest.param('INVALID -- "One problem"', "INVALID", id="invalid"),
+            pytest.param('valid -- "One problem"', "VALID", id="lowercase"),
+            pytest.param('- VALID -- "One problem"', "VALID", id="hyphen-bullet"),
+            pytest.param('* VALID -- "One problem"', "VALID", id="asterisk-bullet"),
+            pytest.param('1. VALID -- "One problem"', "VALID", id="numbered"),
+            pytest.param('2) INVALID -- "One problem"', "INVALID", id="parenthesized-number"),
+            pytest.param('  VALID -- "One problem"', "VALID", id="leading-whitespace"),
+            pytest.param('1. VALID -- "One problem"\r', "VALID", id="crlf"),
+            pytest.param('1. VALID -- "One problem"   ', "VALID", id="trailing-whitespace"),
+        ],
+    )
+    def test_precision_finding_line_forms_are_accepted(self, finding_line: str, label: str) -> None:
+        findings = adjudicate.parse_precision_findings(f"{finding_line}\n")
+        assert findings == [adjudicate.PrecisionFinding(label=label, quoted_opening="One problem")]
+
+    @pytest.mark.parametrize(
+        "section_text",
+        [
+            pytest.param("VALIDITY note", id="label-continues-into-a-word"),
+            pytest.param("The finding is VALID", id="label-not-at-line-start"),
+        ],
+    )
+    def test_precision_finding_line_forms_that_are_not_finding_lines_are_ignored(self, section_text: str) -> None:
+        assert adjudicate.parse_precision_findings(section_text) == []
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param("r1: NOT_FOUND", id="recall-label"),
+            pytest.param("r1: NOT_FOUND\r", id="recall-label-with-cr"),
+            pytest.param('r1 - FOUND -- "x"', id="recall-label-with-hyphen"),
+            pytest.param("### Run r1", id="header"),
+            pytest.param("Run: r1", id="header-with-colon"),
+            pytest.param("# Run r1   ", id="header-with-trailing-whitespace"),
+        ],
+    )
+    def test_normalizing_findings_prefixes_each_accepted_answer_format_line(self, line: str) -> None:
+        assert adjudicate.normalize_findings_text(line) == "> " + line
+
+    @pytest.mark.parametrize("text", ["r1\n: NOT_FOUND", "Run:\nr1", "### Run\nr1"])
+    def test_normalizing_findings_leaves_a_form_that_crosses_a_newline_unchanged(self, text: str) -> None:
+        assert adjudicate.normalize_findings_text(text) == text
 
 
 class TestPrecisionSplitCheck:

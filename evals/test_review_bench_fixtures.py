@@ -81,6 +81,44 @@ class TestBuildTwoCommitRepo:
 
         assert len(_git(dest_dir, "log", "--format=%H").strip().splitlines()) == 2
 
+    @pytest.mark.parametrize("redirecting_variable", ["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"])
+    def test_inherited_repository_redirecting_git_variables_never_reach_the_operators_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, redirecting_variable: str,
+    ) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "changed_file.py", "x = 1\n")
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "changed_file.py", "x = 2\n")
+        head_commit = _commit(source_repo, "fix: bug")
+        decoy_repo = _init_repo(tmp_path / "decoy")
+        _write(decoy_repo, "decoy_file.txt", "decoy\n")
+        _commit(decoy_repo, "decoy commit")
+        _write(decoy_repo, "decoy_later_file.txt", "decoy later\n")
+        decoy_head = _commit(decoy_repo, "decoy later commit")
+        decoy_index_before = (decoy_repo / ".git" / "index").read_bytes()
+        decoy_redirect_targets = {
+            "GIT_DIR": decoy_repo / ".git",
+            "GIT_INDEX_FILE": tmp_path / "decoy-index",
+            "GIT_WORK_TREE": decoy_repo,
+        }
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        defect = _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
+
+        with monkeypatch.context() as inherited_environment:
+            inherited_environment.setenv(redirecting_variable, str(decoy_redirect_targets[redirecting_variable]))
+            fixture = fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
+
+        assert _git(decoy_repo, "rev-parse", "HEAD").strip() == decoy_head
+        assert _git(decoy_repo, "rev-list", "--count", "--all").strip() == "2"
+        assert (decoy_repo / ".git" / "index").read_bytes() == decoy_index_before
+        assert not decoy_redirect_targets["GIT_INDEX_FILE"].exists()
+        assert _git(decoy_repo, "status", "--porcelain") == ""
+        assert (dest_dir / ".git").is_dir()
+        assert len(_git(dest_dir, "log", "--format=%H").strip().splitlines()) == 2
+        assert [stat.path for stat in fixture.changed_files] == ["changed_file.py"]
+        assert (dest_dir / ".bench" / "change.diff").read_text() == _git(source_repo, "diff", base_commit, head_commit)
+
     def test_a_same_size_edit_between_commits_sharing_one_timestamp_is_never_dropped(self, tmp_path: Path) -> None:
         """Both source commits share one committer second and the edit keeps the
         file's byte length, so `git archive` stamps both extractions with the
@@ -432,6 +470,30 @@ class TestRefusesExecutableProjectConfig:
         fixture_repo.refuse_executable_project_config_at_commit(source_repo, defect.head_commit)
         with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="hooks"):
             fixture_repo.refuse_executable_project_config_at_commit(source_repo, defect.base_commit)
+
+    @pytest.mark.parametrize(
+        ("head_files", "refusal"),
+        [
+            pytest.param({}, None, id="no-project-config"),
+            pytest.param({".claude/settings.json": json.dumps({"permissions": {}})}, None, id="historical-settings"),
+            pytest.param({".mcp.json": "{}"}, "a session would load", id="mcp-file"),
+            pytest.param({".claude/settings.json": json.dumps({"hooks": {}})}, "hooks", id="unexpected-key"),
+        ],
+    )
+    def test_the_commit_check_gives_its_verdict_from_the_source_repo_when_git_dir_names_another_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, head_files: dict[str, str], refusal: str | None,
+    ) -> None:
+        source_repo, defect = self._source_repo_and_defect(tmp_path, base_files={}, head_files=head_files)
+        decoy_repo = _init_repo(tmp_path / "decoy")
+        _write(decoy_repo, "decoy_file.txt", "decoy\n")
+        _commit(decoy_repo, "decoy commit")
+        monkeypatch.setenv("GIT_DIR", str(decoy_repo / ".git"))
+
+        if refusal is None:
+            fixture_repo.refuse_executable_project_config_at_commit(source_repo, defect.head_commit)
+        else:
+            with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match=refusal):
+                fixture_repo.refuse_executable_project_config_at_commit(source_repo, defect.head_commit)
 
     @pytest.mark.parametrize("not_a_sha", ["--output=leaked", "HEAD", "a" * 39, "a" * 40 + "\n"])
     def test_the_commit_check_refuses_a_value_that_is_not_a_full_sha(self, not_a_sha: str, tmp_path: Path) -> None:

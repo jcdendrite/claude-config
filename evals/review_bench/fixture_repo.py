@@ -23,6 +23,8 @@ import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from measure_subagent_model_resolution import environment_without_git_local_vars
+
 from review_bench.defects import ConfirmedDefect, _validate_sha
 
 # Duplicated from read_scope's chars-per-token estimate to avoid importing that
@@ -72,7 +74,7 @@ class UnsafeFixtureConfigError(ValueError):
 def _run_git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args], cwd=cwd, check=True, timeout=_LOCAL_GIT_TIMEOUT_S,
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=environment_without_git_local_vars(),
     )
 
 
@@ -107,7 +109,7 @@ def _extract_commit_tree(source_repo: Path, commit: str, dest_dir: Path) -> None
     """
     result = subprocess.run(
         ["git", "archive", commit], cwd=source_repo, check=True,
-        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True,
+        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=environment_without_git_local_vars(),
     )
     with tarfile.open(fileobj=io.BytesIO(result.stdout)) as tar:
         tar.extractall(dest_dir, filter="data")
@@ -152,7 +154,7 @@ def refuse_executable_project_config_at_commit(source_repo: Path, commit: str) -
     config_relpaths = [relpath.as_posix() for relpath in (*_FORBIDDEN_PROJECT_CONFIG_RELPATHS, _PROJECT_SETTINGS_RELPATH)]
     listing = subprocess.run(
         ["git", "ls-tree", "-z", "--name-only", commit, "--", *config_relpaths], cwd=source_repo, check=True,
-        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True,
+        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=environment_without_git_local_vars(),
     ).stdout
     present = {os.fsdecode(raw_path) for raw_path in listing.split(b"\0") if raw_path}
     for relpath in _FORBIDDEN_PROJECT_CONFIG_RELPATHS:
@@ -161,7 +163,7 @@ def refuse_executable_project_config_at_commit(source_repo: Path, commit: str) -
     if _PROJECT_SETTINGS_RELPATH.as_posix() in present:
         raw_settings = subprocess.run(
             ["git", "show", f"{commit}:{_PROJECT_SETTINGS_RELPATH.as_posix()}"], cwd=source_repo, check=True,
-            timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True,
+            timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=environment_without_git_local_vars(),
         ).stdout
         _refuse_unsafe_project_settings(raw_settings)
 
@@ -175,7 +177,7 @@ def _commit_snapshot(dest_dir: Path, message: str) -> None:
         ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
          "commit", "-q", "--allow-empty", "-m", message], cwd=dest_dir,
         check=True, timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, text=True,
-        env={**os.environ, **_git_commit_env()},
+        env={**environment_without_git_local_vars(), **_git_commit_env()},
     )
 
 
@@ -222,7 +224,7 @@ def changed_paths_between(repo_dir: Path, base: str, head: str) -> list[str]:
     rename lists both its old and new path."""
     result = subprocess.run(
         ["git", "diff", "-z", "--name-only", "--no-renames", base, head], cwd=repo_dir, check=True,
-        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True,
+        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=environment_without_git_local_vars(),
     )
     return [os.fsdecode(raw_path) for raw_path in result.stdout.split(b"\0") if raw_path]
 

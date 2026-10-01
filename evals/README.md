@@ -558,7 +558,7 @@ differing — this section is their canonical home:
   halt at the end keeps that record, which two matching readings bracket, and
   writes no precision record. Recovery takes one of two paths:
   restore the environment and resume with the same `--campaign-id`, which
-  reruns the partial block whole after the resume sweep; or, if the
+  reruns the partial block after the resume sweep; or, if the
   environment cannot be restored, as after a CLI update, re-freeze and rerun
   all arms in one campaign. The re-freeze path never sweeps the halted
   campaign. That campaign's write-ahead log, `write-ahead.jsonl` in its run
@@ -658,7 +658,8 @@ skipped store stays silently. The judge's cleanup is not in a `finally`, so an
 exception out of a judge run skips it. Only a resume under the same
 `--campaign-id` sweeps what a `run`, `smoke`, or `judge` exit left: its own
 sweep deletes exactly what its own abandoned attempt recorded, then reruns that
-block whole.
+block. A resumed `judge` block reuses a kept recall record and reruns only the
+precision judge.
 The sweep deletes only a `review-bench-` directory directly under the system
 temp dir, and a session store directly under the projects root; any other
 logged path aborts the sweep with nothing deleted. Resume with the `TMPDIR`

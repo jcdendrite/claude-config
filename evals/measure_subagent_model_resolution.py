@@ -61,6 +61,23 @@ SUBAGENT_SUBDIR = "subagents"
 # error or placeholder turn) rather than receives from a model.
 SYNTHETIC_MODEL_ID = "<synthetic>"
 
+# The variables `git rev-parse --local-env-vars` lists (git-rev-parse(1)): each
+# one binds a git process to a particular repository, work tree, or index.
+_GIT_LOCAL_ENV_VARS = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+)
+
+
+def environment_without_git_local_vars() -> dict[str, str]:
+    """A copy of the process environment with the repository-binding git
+    variables removed, not blanked, so git's normal discovery applies to the
+    child's working directory."""
+    return {name: value for name, value in os.environ.items() if name not in _GIT_LOCAL_ENV_VARS}
+
+
 # --- M8: per-run spend cap -------------------------------------------------
 # Derived 2026-08-13 via `.venv/bin/python3
 # claude/.claude/scripts/transcript-analysis.py subagent-mix --this-repo`
@@ -614,7 +631,8 @@ def _run_claude_to_completion(cmd: list[str], cwd: Path, timeout_s: int) -> tupl
     """
     if _launches_aborted.is_set():
         raise LaunchAbortedError("launch aborted before spawning")
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    env = environment_without_git_local_vars()
+    env.pop("CLAUDECODE", None)
     proc = subprocess.Popen(
         cmd, cwd=str(cwd), env=env,
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,

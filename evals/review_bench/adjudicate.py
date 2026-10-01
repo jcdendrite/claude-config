@@ -32,6 +32,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from measure_subagent_model_resolution import environment_without_git_local_vars
+
 from review_bench import fixture_repo, runner
 from review_bench.defects import ConfirmedDefect, atomic_write_text
 
@@ -177,7 +179,7 @@ def _completed_findings_by_id(records: Sequence[runner.RunRecord]) -> dict[str, 
 def _git_show(commit: str, *, repo_dir: Path) -> str:
     result = subprocess.run(
         ["git", "show", commit], cwd=repo_dir, capture_output=True, text=True,
-        timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
+        timeout=_LOCAL_GIT_TIMEOUT_S, check=True, env=environment_without_git_local_vars(),
     )
     return result.stdout
 
@@ -276,8 +278,14 @@ def _strip_markdown_decoration(text: str) -> tuple[str, list[int]]:
     return "".join(text[i] for i in raw_index_by_stripped_index), raw_index_by_stripped_index
 
 
+# Whitespace other than a newline, so each pattern below matches one line at a time.
+_HSPACE = r"[^\S\n]"
+# The lookbehind after `id` admits only the ends of `id` that can be shortest:
+# the end of its token, the start of a separator run, or the end of a
+# one-character `id` that is itself a separator.
 _RECALL_LABEL_LINE_RE = re.compile(
-    rf"(?im)^\s*(?P<id>\S+?)\s*{_LABEL_SEPARATOR}\s*(?P<label>NOT[ _]FOUND|FOUND)\b(?P<rest>.*)$"
+    rf"(?im)^{_HSPACE}*(?P<id>\S+?)(?:(?={_HSPACE})|(?<=[^\s:\-–—])|(?<=\s[:\-–—])|(?<=^[:\-–—]))"
+    rf"{_HSPACE}*{_LABEL_SEPARATOR}{_HSPACE}*(?P<label>NOT[ _]FOUND|FOUND)\b(?P<rest>.*)$"
 )
 
 
@@ -325,8 +333,17 @@ def parse_recall_answer(
     return result
 
 
-_RUN_HEADER_RE = re.compile(r"(?im)^\s*#{0,3}\s*Run[:\s]+(?P<id>\S+?)\s*:?\s*$")
-_PRECISION_FINDING_RE = re.compile(r"(?im)^\s*(?:[-*\d.)]+\s*)?(?P<label>INVALID|VALID)\b(?P<rest>.*)$")
+# In `_RUN_HEADER_RE`, a colon after `Run` belongs to exactly one sub-pattern:
+# the separator run before an `id` that starts with a non-colon, or, when
+# nothing but separators follows, the last colon alone as the `id`.
+_RUN_HEADER_RE = re.compile(
+    rf"(?im)^{_HSPACE}*(?:#{{1,3}}{_HSPACE}*)?Run"
+    rf"(?:(?:{_HSPACE}|:)+(?=[^\s:])|(?:{_HSPACE}|:)+?(?=:{_HSPACE}*$))"
+    rf"(?P<id>[^\s:]\S*?|:){_HSPACE}*(?::{_HSPACE}*)?$"
+)
+_PRECISION_FINDING_RE = re.compile(
+    rf"(?im)^{_HSPACE}*(?:[-*\d.)]+{_HSPACE}*)?(?P<label>INVALID|VALID)\b(?P<rest>.*)$"
+)
 
 
 @dataclass(frozen=True)

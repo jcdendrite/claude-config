@@ -18,6 +18,8 @@ measure_subagent_model_resolution` resolves correctly.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -416,6 +418,35 @@ class TestExecuteMatrixCell:
         )
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+class TestEnvironmentWithoutGitLocalVars:
+    def test_removes_every_variable_git_lists_as_repository_binding(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        listed = subprocess.run(
+            ["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True, check=True,
+        ).stdout.split()
+        assert listed, "git listed no repository-binding variables"
+        for name in listed:
+            monkeypatch.setenv(name, "/decoy")
+
+        environment = msmr.environment_without_git_local_vars()
+
+        assert [name for name in listed if name in environment] == []
+
+    def test_keeps_unrelated_variables_and_git_config_that_does_not_bind_a_repository(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("GIT_DIR", "/decoy")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+        monkeypatch.setenv("UNRELATED_MARKER", "kept")
+
+        environment = msmr.environment_without_git_local_vars()
+
+        assert environment["GIT_CONFIG_GLOBAL"] == "/dev/null"
+        assert environment["UNRELATED_MARKER"] == "kept"
+        assert environment["PATH"] == os.environ["PATH"]
+        assert "GIT_DIR" not in environment
+
+
 class TestRunClaudeToCompletion:
     """_run_claude_to_completion's timeout and cancellation contract, driven
     against real `sh` children -- the pipe-read and process-group behavior
@@ -455,6 +486,29 @@ class TestRunClaudeToCompletion:
         lines, timed_out = msmr._run_claude_to_completion(["sh", "-c", "printf 'a\\nb\\n'"], tmp_path, 10)
         assert lines == [b"a", b"b"]
         assert timed_out is False
+
+    def test_child_environment_drops_claudecode_and_repository_redirecting_git_variables_and_keeps_the_rest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.setenv("GIT_DIR", str(tmp_path / "decoy.git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "decoy-work-tree"))
+        monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "decoy-index"))
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+        monkeypatch.setenv("LAUNCHER_ENV_UNRELATED_MARKER", "kept")
+
+        lines, _ = msmr._run_claude_to_completion(
+            ["sh", "-c", 'echo "claudecode=${CLAUDECODE-unset}"; for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE; do '
+             'if env | grep -q "^$v="; then echo "$v=present"; else echo "$v=unset"; fi; done; '
+             'echo "git_config_global=$GIT_CONFIG_GLOBAL"; echo "marker=$LAUNCHER_ENV_UNRELATED_MARKER"; '
+             'echo "path=$PATH"'],
+            tmp_path, 10,
+        )
+
+        assert lines == [
+            b"claudecode=unset", b"GIT_DIR=unset", b"GIT_WORK_TREE=unset", b"GIT_INDEX_FILE=unset",
+            b"git_config_global=/dev/null", b"marker=kept", b"path=" + os.environ["PATH"].encode(),
+        ]
 
     def test_deadline_holds_for_a_child_that_goes_silent_below_one_read_buffer(self, tmp_path: Path) -> None:
         start = time.monotonic()

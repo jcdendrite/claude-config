@@ -419,7 +419,7 @@ def _run_or_smoke(args: argparse.Namespace, *, fault: str | None, verify_frozen:
 
     selected = _load_defects_for_run(args)
     if not selected:
-        print("run: no confirmed defects selected -- nothing to run", file=sys.stderr)
+        print(f"{args.subcommand}: no confirmed defects selected -- nothing to run", file=sys.stderr)
         return 1
 
     campaign_id, run_store_dir = _select_campaign(
