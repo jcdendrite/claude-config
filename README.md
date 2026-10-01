@@ -536,7 +536,7 @@ Test trees under `claude/.claude/` that carry their own `conftest.py` are Python
 
 CI runs the same pin set on every PR and main push via `.github/workflows/tests.yml`.
 
-For a faster local dev loop, `select-tests.py` runs pytest against just the test domains implicated by what you changed, instead of the whole suite. It computes the changed-file set as the merge-base diff against `origin/main` unioned with your dirty working tree. It then maps each changed path to its test domain. Any change it can't map with confidence falls back to running the full suite:
+For a faster local dev loop, `select-tests.py` runs pytest against just the test domains implicated by what you changed, instead of the whole suite. It computes the changed-file set as the merge-base diff against `origin/main` unioned with your dirty working tree. It then maps each changed path to its test domain. Any change it can't map with confidence fails open to running the full suite plus any domain-selected targets outside its roots (`evals/`):
 
 ```bash
 .venv/bin/python3 claude/.claude/scripts/select-tests.py

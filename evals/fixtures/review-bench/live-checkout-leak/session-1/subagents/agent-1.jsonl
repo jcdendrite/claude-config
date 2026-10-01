@@ -1,0 +1,2 @@
+{"type": "assistant", "message": {"model": "claude-sonnet-5", "content": [{"type": "tool_use", "id": "toolu_read_1", "name": "Read", "input": {"file_path": "{FIXTURE_DIR}/link-to-changed-file.py"}}, {"type": "text", "text": "No findings."}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_read_1", "content": "def f():\n    return 'later fix'\n"}]}}

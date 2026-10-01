@@ -1,0 +1,2 @@
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_dispatch", "name": "Agent", "input": {"subagent_type": "bench-staff-backend-engineer", "prompt": "REVIEW_PROMPT_PLACEHOLDER"}}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_extra", "name": "Read", "input": {"file_path": "some_file.py"}}]}}
