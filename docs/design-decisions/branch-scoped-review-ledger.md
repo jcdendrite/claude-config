@@ -4,8 +4,10 @@
 
 The `/code-review` ledger (`claude/.claude/scripts/review-ledger.sh`) is keyed by branch, so a new session on the same branch can read the branch's earlier findings and dispositions.
 A session-keyed ledger loses them at every handoff, next-day session, and `/clear`.
-This decision ships cross-session visibility only: `show` prints the rows, and the session dashboard prints counts and a date span, never finding text.
-`append` accepts only `ADDRESS`, `DEFER`, and `CLEAN`, and nothing routes a repeat finding to an earlier disposition.
+`show` prints the rows, and the session dashboard prints counts and a date span, never finding text.
+A `SETTLED` disposition records a human's or a consult's decision to keep text as it is.
+A repeat of an earlier finding at an unchanged site carries that decision without a new stop, when the script accepts the carry.
+`render` builds the PR-body block from the ledger's live decisions, not from one round's chat output.
 
 ## Keying and fallbacks
 
@@ -76,9 +78,103 @@ Long-lived non-default branches such as `release/*` are branch-keyed like any fe
 **A branch already in flight starts with an empty branch ledger.**
 Its first new session re-decides its earlier findings once.
 
+**A range that is too narrow reopens nothing.**
+An edit inside the decided block but outside the hashed lines does not reopen the decision.
+A range of short common text, such as a lone `}`, also matches identical text elsewhere, in any file, when a reviewer cites that line.
+A SKILL.md paragraph is one line, so any edit anywhere in it reopens every decision anchored to it, which fails toward a stop.
+
+**Partial staging binds unstaged edits.**
+Under `git add -p`, the hash covers the block's working-tree text, including unstaged edits that the commit-gate reviewers did not see.
+
+**A concurrent fork can leave two live successors.**
+Validation runs before the append lock, so two sessions that validate at the same moment can both land.
+A carry validated against a decision that another session closes before the carry lands is still appended, and `render` omits it.
+
+**Kept rows retire only by hand.**
+`render --pr-json` keeps a PR-block row whose last cell is not a ledger id, which covers rows from before ids existed and rows of a swept ledger.
+Only a hand edit of the PR body retires such a row, and deleting the ledger file clears none of them.
+`render` also regenerates a row planted by hand under the Settled heading as if it were generated, which takes a PR-body editor and so lies outside the cooperative-agent model.
+
 **An idle branch loses its ledger at the retention sweep.**
 Every `append` runs a sweep that removes `*.jsonl` files whose mtime is more than 30 days old, and that window is fixed.
 A long-parked branch therefore loses its recorded rows and its round count.
+
+**A decision whose block was fixed or removed stays live until retired.**
+Liveness never consults `site_hash`, so `render` lists such a decision until a non-carry row names it.
+The `/code-review` prose mitigates this by requiring `--ref <id>` on an `ADDRESS` or a fresh `DEFER` at a live decision's site, but a block deleted and never re-raised still renders.
+
+**A `DEFER` carry is the one unattended carry class.**
+It applies with no engineer stop, and its guards are the unchanged hashed text and the orchestrator re-running the closed list.
+The prose has the orchestrator range a `DEFER` as the whole block, and a one-line range left unwidened is the accepted exposure.
+
+**A new PR has no block until the post-create edit lands.**
+The no-PR path creates the PR from a body without the block, then publishes the block through `render` and `gh pr edit`.
+Between create and edit the PR carries no Deferred or Settled tables, and a failed or denied edit leaves it that way until the next `render` run.
+Whether a `gh pr view` immediately after create returns the new PR's body was not verified.
+
+**The redaction gate is not a completeness check.**
+It blocks the shapes it detects, and a structural fingerprint, private-corpus provenance or a credential value passes it (`docs/hooks.md` states the credential case), so the engineer's quote is published as typed.
+
+## Settled decisions and carries
+
+`SETTLED` takes `--decided-by engineer`, `plan-architect`, or `carry`.
+An engineer decision stores the engineer's words verbatim in `--engineer-quote`, at most 200 characters, rejected and never truncated.
+A consult decision stores no quote.
+`ADDRESS` with a rationale cannot record a keep, because `author_outcome.py` counts every `ADDRESS` row as a failure and `show` cannot tell a keep from a fix.
+A `DEFER` criterion cannot stand in either, because `DEFER` is a closed list for real defects and an enforcement-invariant finding is never `DEFER`-eligible.
+Putting the quote inside `--rationale` would mix the orchestrator's prose with the engineer's words.
+
+Every row gets an `id`, the first 12 hex digits of the row's sha256, and `--ref <id>` links a row to one earlier decision.
+Every rule is one hop: a decision is live until a non-carry row names it, `ADDRESS` closes it, and a fresh `DEFER` or `SETTLED` supersedes it.
+An engineer decision is superseded only by an `ADDRESS` or an engineer `SETTLED`, so a `DEFER` or consult row cannot retire an engineer's words from the PR body.
+Twelve digits stay below the redaction gate's 32-digit hex-run detector, which is why an id can render in the PR body and a full hash cannot.
+
+A `DEFER` or `SETTLED` row with a range-form `--source` stores a `site_hash`: the sha256 of those lines of the working-tree file, kept to 12 digits.
+A carry is accepted only when its `--cited-line` lies inside the carry's own range and that range hashes to the decision's `site_hash`.
+A test of "this round's diff leaves the site untouched" fails in both review timelines.
+A commit-gate round diffs only the staged delta, so it cannot see an earlier commit's edit to the block.
+A cumulative pass diffs the whole branch against its base, so every block the branch wrote sits inside the diff and nothing would carry.
+A whole-file hash reopens every decision in a file on any edit, and a commit anchor fails because settled text is often uncommitted at decision time and a rebase rewrites the SHA.
+The hash reads the working tree, which holds the same bytes before and after a commit and across a rebase, and which reviewers' cited line numbers refer to.
+The orchestrator names the range at decision time and at each carry, because turning a cited line into a block takes judgment the script cannot supply.
+A range that is too wide costs only later stops.
+
+`--carry-forward` is an affirmative per-decision attribute, accepted only on an engineer `SETTLED` with a range-form source and never beside `--enforcement-invariant`.
+An engineer decision without it never carries, so a forgotten flag costs a stop and never a carry.
+Making decisions carryable by default fails open on a forgotten label, and a per-carry attestation flag has one valid value, so it would be ritual.
+A `DEFER` decision needs no such flag, because a `DEFER` carry restates its criterion and the script rejects a mismatch.
+`--enforcement-invariant` is a label with local checks and not a gate: the script accepts it only on an engineer `SETTLED`, rejects it beside `--carry-forward`, and rejects a successor that drops it.
+It never classifies a finding, so the prose of `/code-review` keeps the rule that an invariant-class finding is asked again on every re-raise and never carries.
+Whether a repeat names the same failure mode stays the orchestrator's judgment.
+The hash and the cited-line check limit that judgment to unchanged text that contains the cited line.
+
+A carry is logged `--decided-by carry`, never with the engineer's words, and prints one line naming its decision, date, round, and the command that reopens it.
+A reopen is `ADDRESS --ref <id>`.
+
+## Render
+
+`review-ledger.sh render` builds the PR-body block between `<!-- code-review:deferred:start -->` and `<!-- code-review:deferred:end -->`, the delimiters that blocks already in open PRs use.
+The block holds a Deferred table and a Settled table of live decisions, with each carry beneath its decision and invariant decisions under their own heading.
+Building the block in skill prose could not be tested and invites paraphrasing a quote.
+`--pr-json` returns a whole PR body with the block replaced and every other byte identical, and keeps a row in the old block whose last cell is not a ledger id.
+`--out` receives the result only on success, and the skill runs `gh pr edit --body-file` itself, only after a `changed:` line, so the redaction and escaped-backtick gates read the body file.
+A script-internal edit would bypass both gates.
+A shell redirect to the body file would leave an empty file when `render` fails, and the redaction gate does not reject an empty file, so `gh pr edit` would blank the body.
+
+## Which store is canonical
+
+The branch ledger is canonical for dispositions.
+`/ready-for-review`'s `agent-reviews/code-review-dispositions-<suffix>.md` record is canonical only for the Cap's pass accounting.
+The record stays because it carries four things the ledger lacks:
+- which rounds were cumulative passes;
+- cap rows;
+- which reviewer raised a row;
+- the per-row Outcome column.
+
+Folding the record into the ledger is a follow-up.
+It would cost four schema additions and a rewrite of the Cap clause that tests pin.
+It would gain ordering by a script-stamped `event_time` and an exact branch key.
+Evidence that rows duplicated between the two stores drift apart in practice would change this call.
 
 ## Analysis join
 
@@ -119,8 +215,9 @@ Two earlier decisions reject `review-ledger.sh` as a home in part because it is 
 This decision supersedes the session-keyed statement in each and leaves the decisions themselves standing.
 
 [The fix-loop convergence decision](ready-for-review-fix-loop-convergence.md) rejects the ledger for the disposition record because it is "keyed by session rather than branch" and has no outcome for a contradiction consult's keep verdict or a cap row.
-The keying premise no longer holds.
-The outcome premise still does, since `append` accepts only `ADDRESS`, `DEFER`, and `CLEAN`, so the persisted `agent-reviews/` record stays.
+The keying premise no longer holds, and a consult's keep verdict now has a slot: a `SETTLED` row, for which the script requires a repo-relative `--source`.
+The script requires the range form only for a carry or an engineer `--carry-forward`, so the range form on a consult's keep is a prose rule and not a script check.
+The ledger still has no cap row, pass kind, reviewer, or Outcome, so the persisted `agent-reviews/` record stays, canonical only for the Cap's pass accounting.
 
 [The round-3 consult gate decision](round3-plan-architect-consult-gate.md) rejects the ledger as a round counter because it is "session-keyed, disable-able".
 The keying premise no longer holds, and the sentinel that made the ledger disable-able is no longer honored.
@@ -131,3 +228,4 @@ The gate's `(HEAD, staged-diff)` counter stays, because the other grounds that d
 A revert leaves the branch files in place.
 The per-append retention sweep removes `*.jsonl` files whose mtime is more than 30 days old, and `review-ledger.sh clear-stale` removes them on a window of Claude Code's `cleanupPeriodDays` floored at 30 days.
 The reverted writer never reads a branch file, so the leftover files change no behavior.
+On an open PR, the next `/code-review` round then replaces the delimited block with that round's `DEFER` rows in the four-column shape, dropping the Settled table and any kept rows.

@@ -424,7 +424,7 @@ The engineer's quoted words refer to these by number:
     - **When it runs.**
       - `/code-review` runs it when a round logged a DEFER, SETTLED or `--ref` row, or when the body already holds the block.
       - `gh pr edit` runs only after `render` reports `changed:` (row 42).
-      - With no PR open, RFR step 5 runs `render` itself, which also covers a step-3 cache hit.
+      - RFR step 8 runs the PR-open path once it creates the PR, and step 6 runs it whenever a PR is open, which also covers a step-3 cache hit.
 
     anchors: row33. Lighter options, and why each fails:
     - Today's chat-returned block is lost on a step-3 cache hit or a handoff, and each round replaces it with that round's DEFERs only.
@@ -1021,12 +1021,12 @@ Durable comments and docs must not mention "phase", a scenario number, this issu
 - `:414-428`: consolidate into three paragraphs:
   - when to run `render`;
   - the PR-open path: `gh pr view --json body | ~/.claude/scripts/review-ledger.sh render --pr-json - --out agent-reviews/pr-body-<suffix>.md`, then `gh pr edit <n> --body-file agent-reviews/pr-body-<suffix>.md` only after a `changed:` line;
-  - the no-PR path: RFR step 5 renders.
+  - the no-PR path: persist nothing; RFR step 8 runs the PR-open path once it creates the PR.
 - `:481` (pinned): "A finding logged DEFER or SETTLED (by a consult, the human, or a carry) counts as resolved."
 
 **`ready-for-review/SKILL.md`**, line-neutral:
 - `:84`: the Outcome column also holds `SETTLED <id>` or `carry <id>` (row 17). Dispositions are canonical in the branch ledger; this record is canonical only for the Cap's pass accounting (row 24).
-- `:112-113`: pass `render`'s output when it is non-empty and no PR is open. The new clause replaces "(≥1 DEFER, no open PR)".
+- `:112-113`: drop the "(≥1 DEFER, no open PR)" clause; `pr-description` gets no block on the no-PR path. Step 6 runs the PR-open path whenever a PR is open, and step 8 runs it after the create's confirm re-fetch.
 - `:130-131` (pinned): "DEFERred or SETTLED".
 
 **`pr-description/SKILL.md`**, line-neutral: `:124` and `:131-133` name the block by its delimiters.
@@ -1035,7 +1035,9 @@ Durable comments and docs must not mention "phase", a scenario number, this issu
 - Update the pins at `:5540-5546`, `:5575-5609`, `:5639-5648`, `:5679-5695`, `:5723-5726`.
 - New pins:
   - the delimiter literals in `code-review/SKILL.md` and `pr-description/SKILL.md` equal the script's constants;
-  - the pr-description carve-out names the delimiters.
+  - the pr-description carve-out names the delimiters;
+  - step 6 and step 8 each run the PR-open path.
+- Accepted cost of the post-create edit: a new PR has no block between the create and the edit, and a failed render or denied edit leaves it block-less until the stop's recovery runs. The plan-architect consult chose this over splicing the block before the create, which would add a second mechanism and leave step 6 uncovered. Whether `gh pr view --json body` reflects the body immediately after a create is `[unverified]`; step 8 runs the PR-open path only after its confirm re-fetch succeeds.
 
 **`docs/design-decisions/branch-scoped-review-ledger.md`:** add a section covering:
 - SETTLED, row links, the site hash, the cited-line check, `--carry-forward` and `render`;
@@ -1057,7 +1059,9 @@ Durable comments and docs must not mention "phase", a scenario number, this issu
   - a different failure mode at a carried block leads to a stop;
   - an invariant-class new finding at a `--carry-forward` block takes `:396`'s route, not a carry;
   - an engineer who declines carry-forward gets a keep logged without `--carry-forward`;
-  - a `gh pr edit` denied by the redaction gate leads to a blocking stop naming the gate's reason and the superseding-row recovery.
+  - a `gh pr edit` denied by the redaction gate leads to a blocking stop naming the gate's reason and the superseding-row recovery;
+  - no PR open leads to a create first, then the PR-open path's render and edit;
+  - a re-typed copy of a decision's block from sync mode (rows with their ids intact) is replaced by the ledger's block at step 6; an id-damaged row stays as a kept row and delimiter drift makes `render` stop, as row 42 states.
 
 ## Verification
 

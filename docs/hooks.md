@@ -222,7 +222,7 @@ Cites are to quoted header text, not line numbers, since the tier line's own ins
     - Each cell escapes control characters to spaces. A plain cell also doubles each backslash, escapes each `|` as `\|`, and turns `<!--` into `&lt;!--`. The engineer's quote renders as a code span whose fence is one backtick longer than the quote's longest backtick run, padded by one space, with only `|` escaped.
   - **Ledger runbook.**
     - To reopen a decision, log `ADDRESS --ref <id>`, taking the id from `review-ledger.sh show` or the Id column of the PR block.
-    - A `gh pr edit` denied by the redaction or escaped-backtick gate recovers through a superseding row: a fresh engineer `SETTLED --ref` with the engineer's cleaned statement. Only an `ADDRESS` or an engineer `SETTLED` supersedes an engineer decision, and superseding an invariant decision needs the label. A `DEFER` or consult `SETTLED --ref` supersedes only a decision that is not an engineer's. Superseding a decision also drops its carries from the block.
+    - A `gh pr edit` denied by the redaction or escaped-backtick gate stops and recovers through a superseding row, as `code-review/SKILL.md` § "Review-narrative ledger" states.
     - `review-ledger.sh` exits 2 naming `./install.sh` when `_review-ledger-lib.sh` is not linked beside it. Run `./install.sh` from the claude-config checkout.
     - A credential that reached a published PR body is not caught by any gate. The session stops and tells the owner, who rotates the credential and deletes the PR body revision. `ADDRESS --ref` only stops later renders.
     - A kept row in the PR block retires only by editing the PR body by hand. Deleting the ledger file clears no PR-block row.
