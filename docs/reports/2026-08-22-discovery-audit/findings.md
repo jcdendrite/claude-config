@@ -31,7 +31,7 @@ A 2026-09-28 re-check against `origin/main` at `c42d143f` (newer than this repor
   - S26–S30, I3, SC8: reviewed sound at the baseline, per this report's N/A sections.
   - I5: informational only.
   - C25: cosmetic, with no behavioral effect.
-  - SC6: growth is now gated by `check-claude-md-length.sh`'s byte limit, and the offload path was declined in `docs/design-decisions/declined-sessionstart-additionalcontext-injection.md`.
+  - SC6: growth is gated by `check-claude-md-length.sh`'s byte limit, and the offload path was declined in `docs/design-decisions/declined-sessionstart-additionalcontext-injection.md`.
 - **Tracked by pre-existing issues.**
   - S2's four `show-toplevel` sites: #1137.
   - D10's bare-`&` portion: #1063.
@@ -57,7 +57,7 @@ A 2026-09-28 re-check against `origin/main` at `c42d143f` (newer than this repor
   - #1172: C20, C21, SC3
   - #1173: C15
 - S2 and D10 are the only IDs split across two issues. S2: four sites to #1137, the rest to #1156. D10: bare-`&` portion to #1063, inline-alias portion to #1162.
-- `.claude/plans/discovery-audit-remediation-plan.md` no longer tracks these findings; its phase text remains as reference design, and each tracking issue above cites the phase it draws from.
+- `.claude/plans/discovery-audit-remediation-plan.md` does not track these findings. Its phase text is reference design. Each tracking issue above cites the phase it draws from.
 
 ## Relationship to the prior report
 
