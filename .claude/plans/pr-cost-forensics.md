@@ -122,11 +122,11 @@ Explicitly **not** used, and named as identification bounds in the study rather 
 
 ### Is the private project's own surface a cause or a red herring?
 
-**Mostly red herring, with one real small term and one untested conditional.**
+**Mostly red herring, with one real small term and one conditional that was tested and closed.**
 
 - **Red herring:** the private project's own bulk repo surface. The branch touched none of it and repo size does not enter the prompt. `lsp-token-reduction-feasibility.md` already refuted this exact inference shape on this repo's own transcripts ("portfolio composition does not predict read composition; measure the transcripts, not the tree").
 - **Real, small, unconditional:** a project's own skill descriptions carry an always-resident token cost, adding to claude-config's own always-loaded floor on every turn — true generically, and verifiable from this repo alone. The single item unconditionally on the wire.
-- **Untested conditional (row 15):** a conditionally loaded instruction file under a subtree the branch's own changes do not touch. One grep decides whether it is zero or a first-order cause.
+- **Tested and closed (row 15):** a conditionally loaded instruction file under a subtree the branch's own changes do not touch. A grep of the session files found no structural read under that subtree (case study Gate result 2), so it is not a first-order cause.
 - **Useful negative:** Opus is a small minority of spend here, so no routing change would move the ranking.
 
 ## Critical files

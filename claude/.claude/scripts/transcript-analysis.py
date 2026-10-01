@@ -827,12 +827,8 @@ def cmd_user_input(args: argparse.Namespace) -> None:
 def cmd_duration(args: argparse.Namespace) -> None:
     """Per-branch span/active/idle time split and activity-burst count.
 
-    The "Bursts" column is len(idle_gaps) + 1, the count of contiguous
-    activity bursts separated by an idle gap longer than --gap-minutes:
-    - One burst can span several session files (a continuation with no idle
-      gap between consecutive files' timestamps).
-    - One session file can itself span several bursts (a long idle pause
-      mid-session).
+    The "Bursts" column is len(idle_gaps) + 1. docs/transcript-analysis.md
+    explains what it counts.
     """
     branch_filter = _branch_filter(args)
     gap_secs: int = (getattr(args, "gap_minutes", None) or 30) * 60
