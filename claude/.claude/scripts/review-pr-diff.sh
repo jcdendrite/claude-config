@@ -6,9 +6,7 @@
 # Mirrors review-pr-checkout.sh's self-derivation discipline (own
 # PR-identity parse, own origin-identity check, own paginated file list,
 # own double headRefOid fetch bracketing the pagination) minus everything
-# that only matters once code lands on disk: no symlink scan (a symlink is
-# just a mode-120000 diff line here, reviewable as text, never checked
-# out), and no worktree.
+# that only matters once code lands on disk: no worktree.
 set -euo pipefail
 
 usage() {
@@ -101,9 +99,6 @@ if [[ ! -f "$AUDIT_SCRIPT" ]]; then
   echo "review-pr-diff.sh: audit script not found at $AUDIT_SCRIPT -- the review-pr skill is not installed under this config dir. Abort before any fetch." >&2
   exit 2
 fi
-
-# GH_HOST/GH_ENTERPRISE_TOKEN stripped from every gh call below via
-# _lib_gh, same reasoning as review-pr-checkout.sh.
 
 GH_PR_VIEW_TIMEOUT_SECONDS=10
 HEAD_REF_OID=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID=""
@@ -210,7 +205,10 @@ if ! DIFF_TEXT=$(_lib_gh "$GH_PR_DIFF_TIMEOUT_SECONDS" pr diff "$PR_NUMBER" -R "
 fi
 
 ACTIVE_DIR="$CONFIG_DIR/.review-pr-active.d"
-mkdir -p -- "$ACTIVE_DIR"
+if ! mkdir -p -- "$ACTIVE_DIR"; then
+  echo "review-pr-diff.sh: could not create the active directory $ACTIVE_DIR -- cannot record this diff. Abort." >&2
+  exit 2
+fi
 DIFF_FILE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" diff)
 if ! printf '%s\n' "$DIFF_TEXT" | _lib_write_no_follow "$DIFF_FILE"; then
   echo "review-pr-diff.sh: could not write diff file $DIFF_FILE. Abort." >&2

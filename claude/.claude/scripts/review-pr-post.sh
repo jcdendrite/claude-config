@@ -147,9 +147,6 @@ fi
 # 10s: a network GET carrying no payload, more slack than _lib_capped's 5s
 # local-read default but less than the write-path headroom
 # GH_PR_REVIEW_TIMEOUT_SECONDS gives the POST calls below.
-# GH_HOST/GH_ENTERPRISE_TOKEN stripped via _lib_gh for the same reason as
-# those calls: an ambient GH_HOST would otherwise let adversarial PR
-# content redirect even this identity check to a different host.
 GH_PR_VIEW_TIMEOUT_SECONDS=10
 CURRENT_PR_HEAD=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || CURRENT_PR_HEAD=""
 if [[ -z "$CURRENT_PR_HEAD" || "$CURRENT_PR_HEAD" != "$MARKER_HEAD_REF_OID" ]]; then
@@ -177,10 +174,6 @@ fi
 # carrying a body, not a local git/index read, so it needs more slack than a
 # request with no payload.
 GH_PR_REVIEW_TIMEOUT_SECONDS=20
-# GH_HOST/GH_ENTERPRISE_TOKEN stripped via _lib_gh from gh's environment on
-# both calls: an ambient GH_HOST (adversarial PR content could induce the
-# calling agent to set one) would otherwise silently redirect the post to a
-# different host before this script's own checks have any say in it.
 # The body goes to gh on stdin (`-F -`) from the same bytes that were hashed.
 # gh-pr-review(1), v2.100.0, for -F/--body-file: use "-" to read from standard input.
 # A failing call is captured, not left to `set -e`, so the failure message

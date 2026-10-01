@@ -1,7 +1,6 @@
-"""Tests for review-pr-acquire.sh -- /review-pr's acquire step, replacing a
-hand-typed sequence of `gh` calls with one script that owns its own
-pagination reconciliation for the 100-entry caps `gh pr view --json`
-carries on `files` and `commits`.
+"""Tests for review-pr-acquire.sh -- /review-pr's acquire step, one script
+that owns its own pagination reconciliation for the 100-entry caps
+`gh pr view --json` carries on `files` and `commits`.
 
 The `gh` CLI is replaced by a PATH shim that records every invocation it
 receives, matching the sibling review-pr script test files' own shim
@@ -62,7 +61,7 @@ def _assert_gh_calls_are_read_only(calls: list[list[str]]) -> None:
     or field flag that would flip `gh api`'s default method to POST. Any
     call outside that allowlist fails, including an unanticipated write
     shape this suite's fixtures never modeled -- and `gh pr checks`, which
-    the script no longer calls (statusCheckRollup replaces it).
+    the script does not call (check results come from statusCheckRollup).
 
     Covers only the `gh` invocations the shimmed code paths this suite's
     fixtures drive actually make; it says nothing about a non-`gh` write
@@ -305,6 +304,23 @@ class TestUsageErrors:
         result, call_log = _run(isolated_home, args, tmp_path)
         assert result.returncode == 2
         assert _read_calls(call_log) == []
+
+
+class TestActiveDirectoryCreationFailure:
+    def test_a_file_where_the_active_directory_belongs_aborts_with_exit_two_before_any_gh_call(
+        self, isolated_home, tmp_path
+    ):
+        """`mkdir -p` cannot create a directory over a regular file. Under
+        `set -e` an unguarded call would exit with mkdir's own status 1."""
+        active_path = isolated_home / ".claude" / ".review-pr-active.d"
+        active_path.parent.mkdir(exist_ok=True)
+        active_path.write_text("not a directory\n")
+        result, call_log = _run(isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40)
+        assert result.returncode == 2
+        assert "could not create the active directory" in result.stderr
+        assert result.stdout == ""
+        assert _read_calls(call_log) == []
+        assert active_path.read_text() == "not a directory\n", "pre-existing file is left untouched"
 
 
 class TestGhFailureAborts:

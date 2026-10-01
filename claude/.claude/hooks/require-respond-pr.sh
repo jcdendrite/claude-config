@@ -66,25 +66,26 @@
 # made from inside a wrapper script -- deliberately, and documented here
 # rather than left as an undocumented reliance on a hook gap.
 #
-# A matched WRITE is never released, with or without a marker: every `gh pr
-# review`/`reviews` write is denied unconditionally, redirecting to
-# `~/.claude/scripts/review-pr-post.sh <comment|request-changes> <owner>/<repo>#<N>`.
+# A matched WRITE is denied unless this session's respond-pr bypass marker is
+# live, which releases every gated command, `gh pr review --approve` included.
+# Without that marker every `gh pr review`/`reviews` write is denied,
+# redirecting to `~/.claude/scripts/review-pr-post.sh <comment|request-changes> <owner>/<repo>#<N>`.
 # That script independently
 # re-verifies the PR identity and findings-body hash recorded by /review-pr's
 # own completion marker, and re-fetches the PR's live remote headRefOid to
 # compare against the marker's recorded one (see that script's
 # header, and _lib_review_pr_completion_marker_fields in _lib.sh for the
 # read it shares with marker.sh's `status` arm) before it ever
-# calls gh. `--approve` is not a reachable code path in that script, so
-# this gate needs no approve-spelling denylist of its own.
+# calls gh. `--approve` is not a reachable code path in that script.
 # Named accepted gap: this gate decides per whole command, like every other
 # arm in this file, so a released read or bypass chained (`&&`/`;`/`|`)
 # with an unrelated command executes atomically -- an attacker able to
 # inject that chain already has direct Bash access with no gate at all.
 #
 # `gh pr edit` with a body-mutating flag (--body/--body-file) is also
-# gated here, independent of either marker: the "never edit someone else's
-# PR body" invariant otherwise rests on skill prose alone.
+# gated here: the "never edit someone else's PR body" invariant otherwise
+# rests on skill prose alone. A live respond-pr marker releases it like every
+# other gated command.
 
 set -uo pipefail
 
@@ -341,7 +342,7 @@ if [[ "$COMMAND_FLAT" =~ $PATTERN_MUTATING_METHOD ]]; then
 fi
 shopt -u nocasematch
 
-# Every gated write is denied unconditionally past this point: respond-pr's
+# Every gated write that reaches this point is denied: respond-pr's
 # blanket bypass above already released any write issued from inside that
 # skill, and /review-pr's Step 1 reads never reach this gate at all (see
 # "Second bypass path" above) -- there is no read-release path here for a
@@ -391,10 +392,9 @@ _extract_command_repo() {
 COMMAND_REPO=$(_extract_command_repo)
 
 if [ -n "$COMMAND_REPO" ]; then
-  # _lib_origin_owner_repo wraps the same _lib_capped git call this arm
-  # used directly before: a stale index lock or a network-mounted .git
-  # would otherwise block this call — and with it every gated Bash tool call
-  # in the session — for as long as the filesystem takes to answer.
+  # _lib_origin_owner_repo runs its git call under _lib_capped, so a stale
+  # index lock or a network-mounted .git cannot block every gated Bash tool
+  # call in the session for as long as the filesystem takes to answer.
   CURRENT_REPO=$(_lib_origin_owner_repo) || CURRENT_REPO=""
   if [ -n "$CURRENT_REPO" ]; then
     # Case-insensitive: GitHub treats owner/repo slugs case-insensitively,

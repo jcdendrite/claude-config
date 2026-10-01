@@ -35,6 +35,9 @@ PR_NUMBER = "42"
 PR_IDENTITY = f"{OWNER_REPO}#{PR_NUMBER}"
 SID = "test-session-review-pr-diff"
 
+# A harness bound so a hung bash or interpreter fails one test instead of the suite.
+_SUBPROCESS_TIMEOUT_SECONDS = 60
+
 
 @pytest.fixture
 def isolated_home(tmp_path):
@@ -176,8 +179,16 @@ def _read_calls(call_log: Path) -> list[list[str]]:
 
 def _local_pr_ref_names(repo: Path) -> str:
     return subprocess.run(
-        ["git", "for-each-ref", "refs/review-pr"], cwd=repo, capture_output=True, text=True, check=True
+        ["git", "for-each-ref", "refs/review-pr"], cwd=repo, capture_output=True, text=True, check=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     ).stdout.strip()
+
+
+def _review_worktrees(repo: Path) -> list[Path]:
+    """Every review-pr-* entry under repo's .claude/worktrees, the directory
+    review-pr-checkout.sh names its worktrees in."""
+    worktrees_dir = repo / ".claude" / "worktrees"
+    return sorted(worktrees_dir.glob("review-pr-*")) if worktrees_dir.is_dir() else []
 
 
 def _run(
@@ -215,6 +226,7 @@ def _run(
     env.pop("CLAUDE_CONFIG_DIR", None)
     result = subprocess.run(
         ["bash", str(SCRIPT), *args], cwd=cwd, env=env, capture_output=True, text=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     return result, call_log
 
@@ -298,9 +310,27 @@ class TestNoCheckoutNoWorktreeNoLocalRef:
         assert fields["mode"] == "diff-only"
 
         assert _local_pr_ref_names(repo) == "", "diff-only mode must never fetch a local PR ref"
-        worktree_dir = repo / ".claude" / "worktrees" / f"review-pr-{OWNER_REPO.replace('/', '%')}-{PR_NUMBER}"
-        assert not worktree_dir.exists()
-        assert not Path(f"{worktree_dir}.lock").exists()
+        assert _review_worktrees(repo) == []
+
+
+class TestActiveDirectoryCreationFailure:
+    def test_a_file_where_the_active_directory_belongs_aborts_with_exit_two_and_writes_no_diff(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """`mkdir -p` cannot create a directory over a regular file. Under
+        `set -e` an unguarded call would exit with mkdir's own status 1."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        active_path = isolated_home / ".claude" / ".review-pr-active.d"
+        active_path.parent.mkdir(exist_ok=True)
+        active_path.write_text("not a directory\n")
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 2
+        assert "could not create the active directory" in result.stderr
+        assert result.stdout == ""
+        assert active_path.read_text() == "not a directory\n", "pre-existing file is left untouched"
 
 
 class TestAuditHitReportedNotFatal:

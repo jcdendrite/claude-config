@@ -441,6 +441,7 @@ class TestRequireRespondPr:
         [
             "gh api repos/foo/bar/pulls/5/comments",
             "gh pr comment 5 --body test",
+            "gh pr review 5 --approve",
             "gh api repos/foo/bar/pulls/comments/12345 -X PATCH -F body=oops",
             "gh api repos/foo/bar/issues/comments/12345 -X PATCH -F body=oops",
         ],
@@ -1282,13 +1283,14 @@ class TestGhPrEditBodyMutatingFormsDenied:
 
 
 class TestReviewPrWriteDeniedUnconditionally:
-    """Every `gh pr review`/`reviews` write is denied unconditionally --
-    posting must go through ~/.claude/scripts/review-pr-post.sh instead,
-    which independently re-verifies the completion marker before ever
-    calling gh. Neither a non-approving verdict flag nor a completion
-    marker whose HEAD, PR identity, and body hash all match the gated
-    command changes that: this hook grants no write bypass of its own, for
-    any verdict, with or without a review-pr session in progress."""
+    """With no respond-pr bypass marker live, every `gh pr review`/`reviews`
+    write is denied (see the hook header's "denied unless this session's
+    respond-pr bypass marker is live") -- posting must go through
+    ~/.claude/scripts/review-pr-post.sh instead, which independently
+    re-verifies the completion marker before ever calling gh. Neither a
+    verdict flag nor a review-pr completion marker whose HEAD, PR identity,
+    and body hash all match the gated command releases the write in this
+    hook."""
 
     SID = "test-session-review-pr-write"
 
@@ -1341,11 +1343,10 @@ class TestReviewPrWriteDeniedUnconditionally:
     def test_write_denied_even_with_a_fully_matching_completion_marker(
         self, isolated_home, git_repo_foo_bar_origin, tmp_path
     ):
-        """The write-authorization cross-check this hook used to run is
-        gone: a completion marker whose stored HEAD, PR identity, and body
-        hash all match the gated command exactly no longer releases a write
-        here -- that verification now happens inside review-pr-post.sh,
-        never in this hook."""
+        """A completion marker whose stored HEAD, PR identity, and body
+        hash all match the gated command exactly does not release a write
+        here -- that verification happens inside review-pr-post.sh, never
+        in this hook."""
         sid = self.SID
         body_file, body_hash = _write_findings_body(tmp_path)
         write_review_pr_completion_marker(

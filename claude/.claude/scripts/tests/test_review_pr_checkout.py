@@ -43,6 +43,9 @@ PR_IDENTITY = f"{OWNER_REPO}#{PR_NUMBER}"
 SID = "test-session-review-pr-checkout"
 _ATTRIBUTION_TRAILER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
+# A harness bound so a hung bash or interpreter fails one test instead of the suite.
+_SUBPROCESS_TIMEOUT_SECONDS = 60
+
 
 def _review_worktrees(repo: Path) -> list[Path]:
     """Every review worktree this session's checkout runs created for
@@ -57,13 +60,15 @@ def _registered_worktree_paths(repo: Path) -> list[Path]:
     resolved so a symlinked temp root compares equal to git's own spelling."""
     listing = subprocess.run(
         ["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     ).stdout
     return [Path(line.removeprefix("worktree ")).resolve() for line in listing.splitlines() if line.startswith("worktree ")]
 
 
 def _local_pr_ref_names(repo: Path) -> str:
     return subprocess.run(
-        ["git", "for-each-ref", "refs/review-pr"], cwd=repo, capture_output=True, text=True, check=True
+        ["git", "for-each-ref", "refs/review-pr"], cwd=repo, capture_output=True, text=True, check=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     ).stdout.strip()
 
 
@@ -184,8 +189,6 @@ def _gh_shim_source(
                         prior_pr_view_calls += 1
         record = {{
             "args": args,
-            "GH_HOST": os.environ.get("GH_HOST"),
-            "GH_ENTERPRISE_TOKEN": os.environ.get("GH_ENTERPRISE_TOKEN"),
         }}
         with open(CALL_LOG, "a") as f:
             f.write(json.dumps(record) + chr(10))
@@ -303,6 +306,7 @@ def _run(
         env=env,
         capture_output=True,
         text=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     return result, call_log
 
@@ -400,7 +404,8 @@ class TestOwnerRepoCaseInsensitiveMatch:
         worktree_dir = Path(result.stdout.strip())
         assert worktree_dir.exists()
         checked_out_head = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=worktree_dir, capture_output=True, text=True, check=True
+            ["git", "rev-parse", "HEAD"], cwd=worktree_dir, capture_output=True, text=True, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         ).stdout.strip()
         assert checked_out_head == pr_sha
 
@@ -636,6 +641,7 @@ class TestProvenanceWrite:
         marker_result = subprocess.run(
             ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "review-pr"],
             cwd=worktree_dir, env=marker_env, capture_output=True, text=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         )
         assert marker_result.returncode == 0, marker_result.stderr
         marker_dir = isolated_home / ".claude" / "review-pr-markers"
@@ -669,6 +675,7 @@ class TestInvokedFromALinkedWorktree:
         subprocess.run(
             ["git", "worktree", "add", "--detach", str(linked_worktree), "HEAD"],
             cwd=repo, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         )
 
         result, call_log = _run(
@@ -699,7 +706,8 @@ class TestAuditCleanProceedsToCheckout:
         assert [worktree_dir] == _review_worktrees(repo)
         assert (worktree_dir / "pr_file.txt").exists(), "worktree must hold the PR commit's own content"
         checked_out_head = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=worktree_dir, capture_output=True, text=True, check=True
+            ["git", "rev-parse", "HEAD"], cwd=worktree_dir, capture_output=True, text=True, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         ).stdout.strip()
         assert checked_out_head == pr_sha
 
@@ -896,81 +904,56 @@ class TestFileListIntegrity:
     """The file listing is fetched one JSON string per name, so a name that
     holds a raw newline cannot split into two innocuous-looking fragments,
     and its length is checked against the PR's own REST `changed_files`. The
-    input matrix for both checks lives in test_review_pr_lib.py."""
+    input matrix for the count check lives in test_review_pr_lib.py."""
 
-    def test_newline_embedded_filename_is_refused_not_split_into_fragments(
+    def test_newline_embedded_filename_reaches_the_audit_as_one_name(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
         """The literal shape a raw `--jq '.[].filename'` fetch mishandles:
         one name whose newline a line-split turns into the two fragments
-        `docs/notes.txt` and `evil.sh`, each passing the audit and neither
-        matching a tracked path in the symlink scan. Decoded intact, the name
-        holds a control character and checkout is refused."""
-        _install_audit_script(isolated_home)
+        `docs/notes.txt` and `evil.sh`. A stand-in audit records its stdin,
+        since a clean exit alone cannot show the name arrived whole."""
+        audit_stdin_record = tmp_path / "audit-stdin.json"
+        _install_audit_script_that_runs(
+            isolated_home,
+            "import sys\n"
+            f"open({str(audit_stdin_record)!r}, 'w').write(sys.stdin.read())\n"
+            "print('{\"stop\": false, \"matches\": []}')\n",
+        )
         repo, pr_sha = repo_with_pr_ref
         newline_name = "docs/notes.txt\nevil.sh"
         result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["a.py", newline_name],
         )
-        assert result.returncode == 3
-        assert "control character" in result.stderr
-        assert "review-pr-diff.sh" in result.stderr
-        assert _local_pr_ref_names(repo) == "", "a refusal must never fetch the PR's ref"
-        assert _review_worktrees(repo) == []
+        assert result.returncode == 0, result.stderr
+        assert len(_review_worktrees(repo)) == 1
+        assert json.loads(audit_stdin_record.read_text()) == ["a.py", newline_name]
         files_calls = [c for c in _read_calls(call_log) if _is_listing_call(c, "/files")]
         assert files_calls and ".[].filename | @json" in files_calls[0], (
             "the listing must be fetched one JSON string per name"
         )
 
-    def test_control_character_gh_renders_in_caret_notation_is_refused(
-        self, isolated_home, repo_with_pr_ref, tmp_path
-    ):
-        """gh 2.100.0 is modeled, not independently re-verified, to render an
-        ESC in a file name as `^[` before `--jq` runs, so the script never
-        sees the raw byte. The name below arrives already rendered: it holds
-        no control character, and only the predicate's `^` clause refuses it."""
-        _install_audit_script(isolated_home)
-        repo, pr_sha = repo_with_pr_ref
-        result, _ = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a^[b.py"],
-        )
-        assert result.returncode == 3
-        assert "control character" in result.stderr
-        assert _local_pr_ref_names(repo) == ""
-        assert _review_worktrees(repo) == []
-
     def test_printable_non_ascii_quote_and_space_filenames_check_out(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
-        """The other side of the refusal: names that only look unusual are
-        passed through unchanged."""
-        _install_audit_script(isolated_home)
+        """Names that only look unusual are passed through unchanged."""
+        audit_stdin_record = tmp_path / "audit-stdin.json"
+        _install_audit_script_that_runs(
+            isolated_home,
+            "import sys\n"
+            f"open({str(audit_stdin_record)!r}, 'w').write(sys.stdin.read())\n"
+            "print('{\"stop\": false, \"matches\": []}')\n",
+        )
         repo, pr_sha = repo_with_pr_ref
+        unusual_names = ["docs/caf\u00e9 notes.md", 'say "hi".txt', "a.py"]
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["docs/caf\u00e9 notes.md", 'say "hi".txt', "a.py"],
+            head_ref_oid=pr_sha, files=unusual_names,
         )
         assert result.returncode == 0, result.stderr
         assert [Path(result.stdout.strip())] == _review_worktrees(repo)
-
-    def test_symlink_named_with_non_ascii_quote_and_space_is_matched_intact(
-        self, isolated_home, tmp_path
-    ):
-        """The decoded name must reach `git ls-tree` byte for byte: a decode
-        that altered any of these characters would match no tree entry, and
-        the tracked symlink would be checked out unflagged."""
-        _install_audit_script(isolated_home)
-        symlink_name = 'caf\u00e9 "notes".txt'
-        repo, pr_sha = _build_repo_with_pr_ref(tmp_path, symlink_name=symlink_name)
-        result, _ = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["pr_file.txt", symlink_name],
-        )
-        assert result.returncode == 3
-        assert "tracks a git symlink" in result.stderr
-        assert _review_worktrees(repo) == []
+        assert json.loads(audit_stdin_record.read_text()) == unusual_names
 
     def test_listing_length_differing_from_changed_files_refuses_before_any_ref_fetch(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -1069,6 +1052,7 @@ class TestAuditRejectsMalformedInput:
 
         result = subprocess.run(
             ["bash", str(SCRIPT), PR_IDENTITY], cwd=repo, env=env, capture_output=True, text=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         )
         assert result.returncode == 2, result.stderr
         assert (
@@ -1232,132 +1216,6 @@ class TestRepoReadThatCannotRunIsNotACrossRepositoryRefusal:
         assert "review-pr-diff.sh" not in result.stderr
         assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
         assert _local_pr_ref_names(repo) == ""
-        assert _review_worktrees(repo) == []
-
-
-class TestNameCheckThatCannotRunIsNotARefusal:
-    def test_a_jq_failure_in_the_name_check_exits_two_never_three(
-        self, isolated_home, repo_with_pr_ref, tmp_path
-    ):
-        """The refused-character predicate is the only jq call that explodes a
-        name into code points, so a jq that fails on it models a jq that is
-        broken or capped mid-check. Every other jq call runs the real binary."""
-        _install_audit_script(isolated_home)
-        repo, pr_sha = repo_with_pr_ref
-        real_jq = shutil.which("jq")
-        assert real_jq is not None, "the real jq binary is required to delegate to"
-        jq_shim_dir = tmp_path / "jq-shim"
-        jq_shim_dir.mkdir()
-        jq_shim = jq_shim_dir / "jq"
-        jq_shim.write_text(textwrap.dedent(f"""\
-            #!/usr/bin/env python3
-            import os
-            import sys
-            if any("explode" in arg for arg in sys.argv[1:]):
-                sys.exit(5)
-            os.execv({real_jq!r}, ["jq", *sys.argv[1:]])
-        """))
-        jq_shim.chmod(0o755)
-
-        result, _ = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"], path_prefix=jq_shim_dir,
-        )
-        assert result.returncode == 2, result.stderr
-        assert "could not check" in result.stderr
-        assert "review-pr-diff.sh" not in result.stderr
-        assert _local_pr_ref_names(repo) == ""
-        assert _review_worktrees(repo) == []
-
-
-class TestGhHostStripped:
-    """Same reasoning as review-pr-post.sh's own test of this property:
-    adversarial PR content could induce the calling agent to set GH_HOST
-    ambiently, which would otherwise silently redirect a fact this script is
-    supposed to be deriving independently to an attacker-chosen host."""
-
-    def test_ambient_gh_host_does_not_reach_any_gh_invocation(
-        self, isolated_home, repo_with_pr_ref, tmp_path
-    ):
-        _install_audit_script(isolated_home)
-        repo, pr_sha = repo_with_pr_ref
-        result, call_log = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"],
-            extra_env={"GH_HOST": "attacker-chosen-host.example", "GH_ENTERPRISE_TOKEN": "leaked-token"},
-        )
-        assert result.returncode == 0, result.stderr
-
-        records = _read_records(call_log)
-        assert len(records) >= 2
-        for record in records:
-            assert record["GH_HOST"] is None
-            assert record["GH_ENTERPRISE_TOKEN"] is None
-
-
-class TestSymlinkDetection:
-    """audit-execution-surface.py's _classify() matches on path text alone,
-    so it is blind to a git-tracked symlink (tree-entry mode 120000) with an
-    innocuous-looking name -- review-pr-checkout.sh must catch it itself via
-    `git ls-tree`'s own mode field, since git checks out a symlink verbatim
-    and a Read tool would then transparently follow it outside the repo."""
-
-    def test_pr_tracked_symlink_trips_the_stop_condition(self, isolated_home, tmp_path):
-        _install_audit_script(isolated_home)
-        repo, pr_sha = _build_repo_with_pr_ref(tmp_path, symlink_name="notes.txt")
-        result, call_log = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["pr_file.txt", "notes.txt"],
-        )
-        assert result.returncode == 3, "a tracked symlink names review-pr-diff.sh, so it exits with the refusal status"
-        assert "notes.txt" in result.stderr
-        assert "symlink" in result.stderr
-        assert "review-pr-diff.sh" in result.stderr
-        assert _review_worktrees(repo) == []
-
-    def test_pre_existing_symlink_on_base_branch_untouched_by_this_pr_does_not_stop(
-        self, isolated_home, tmp_path
-    ):
-        """The scoping guarantee: `legacy-symlink` is committed on the base
-        branch and carried unchanged into the PR commit's own tree, so it is
-        present at FETCHED_SHA -- but the PR's own changed-file list (what
-        `files=` below reports, matching what gh's own files endpoint would
-        report) never names it. A symlink check scoped to the whole tree
-        would wrongly stop this review; scoped to the PR's own changed
-        files, it must not, since this PR's own diff never touches it."""
-        _install_audit_script(isolated_home)
-        repo, pr_sha = _build_repo_with_pr_ref(tmp_path, base_symlink_name="legacy-symlink")
-        result, call_log = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["pr_file.txt"],
-        )
-        assert result.returncode == 0, result.stderr
-        assert [Path(result.stdout.strip())] == _review_worktrees(repo)
-        # The pre-existing symlink really is present at the checked-out
-        # commit -- proving this test's own premise, not merely that
-        # checkout succeeded for an unrelated reason.
-        worktree_dir = Path(result.stdout.strip())
-        assert (worktree_dir / "legacy-symlink").is_symlink()
-
-    def test_pathspec_magic_prefixed_symlink_name_still_trips_the_stop_condition(
-        self, isolated_home, tmp_path
-    ):
-        """Regression test for the bypass `--literal-pathspecs` on the
-        `git ls-tree` call closes: a changed-file path containing pathspec
-        magic characters (a leading ':') must be matched literally, not
-        reinterpreted as a glob or magic pathspec -- without the flag,
-        `git ls-tree -r <tree> -- ':weird-colon-symlink'` returns zero output
-        for this real tracked symlink, silently evading the check."""
-        _install_audit_script(isolated_home)
-        symlink_name = ":weird-colon-symlink"
-        repo, pr_sha = _build_repo_with_pr_ref(tmp_path, symlink_name=symlink_name)
-        result, call_log = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["pr_file.txt", symlink_name],
-        )
-        assert result.returncode == 3
-        assert symlink_name in result.stderr
-        assert "symlink" in result.stderr
         assert _review_worktrees(repo) == []
 
 

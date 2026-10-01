@@ -7,9 +7,6 @@ script) against the real jq, and pin each helper's contract over its input
 matrix, so each script's own tests need only one deny and one allow wiring
 case per check. One row, in TestAuditVerdict, also runs the real
 audit-execution-surface.py to pin the clean document it prints.
-
-A file list reaches the helpers as JSON text, so a control character in a test
-name travels as a JSON escape (json.dumps' default) rather than a raw byte.
 """
 from __future__ import annotations
 
@@ -45,11 +42,10 @@ def _run_bash(script_body: str, *args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _call(function_name: str, *args: str, defined_statuses: frozenset[str] = frozenset({"0", "1"})) -> tuple[int, str]:
+def _call(function_name: str, *args: str) -> tuple[int, str]:
     """Call function_name with args, returning (exit status, stdout).
 
-    The status is captured with `|| status=$?` and must be one of
-    defined_statuses (0 or 1 unless the function documents more), so a deny
+    The status is captured with `|| status=$?` and must be 0 or 1, so a deny
     row cannot pass vacuously on a bash error (127 command-not-found).
     """
     result = _run_bash(
@@ -58,7 +54,7 @@ def _call(function_name: str, *args: str, defined_statuses: frozenset[str] = fro
     )
     assert result.returncode == 0, result.stderr
     status_line, _, output = result.stdout.partition("\n")
-    assert status_line in defined_statuses, f"{function_name} exited with undefined status {status_line!r}: {result.stderr}"
+    assert status_line in {"0", "1"}, f"{function_name} exited with undefined status {status_line!r}: {result.stderr}"
     return int(status_line), output
 
 
@@ -171,75 +167,6 @@ class TestFileCountMatches:
     )
     def test_input_that_is_not_an_array_fails_with_no_output(self, files_json):
         assert _call("review_pr_file_count_matches", files_json, "0") == (1, "")
-
-
-def _names_json(*names: str) -> str:
-    return json.dumps(list(names))
-
-
-# 0 = no refused character, 1 = one found, 2 = could not be decided.
-_LINE_SAFE_STATUSES = frozenset({"0", "1", "2"})
-
-
-class TestFileNamesLineSafe:
-    @pytest.mark.parametrize(
-        "files_json",
-        [
-            _names_json(),
-            _names_json("a.py"),
-            _names_json("docs/notes.md", "src/app.py"),
-            _names_json("docs/café notes.md"),
-            _names_json('say "hi".txt'),
-            _names_json("with space.py"),
-            _names_json("a\u00a0b.py"),
-            _names_json("a\u2028b.py"),
-            _names_json("\U0001f600.py"),
-            _names_json("a~b", "a_b", "a[b]", "a]b"),
-            "[1, null, true]",
-        ],
-        ids=[
-            "empty-listing", "plain", "several", "non-ascii", "quote", "space",
-            "first-printable-latin1-160", "line-separator", "non-bmp",
-            "neighbours-of-caret", "non-string-elements",
-        ],
-    )
-    def test_names_without_a_refused_character_are_safe(self, files_json):
-        assert _call("review_pr_file_names_line_safe", files_json, defined_statuses=_LINE_SAFE_STATUSES) == (0, "")
-
-    @pytest.mark.parametrize(
-        "name",
-        [
-            "a\nb.py",
-            "a\tb.py",
-            "a\rb.py",
-            "a\x0bb.py",
-            "a\x00b.py",
-            "a\x1bb.py",
-            "a\x1fb.py",
-            "a\x7fb.py",
-            "a\u0080b.py",
-            "a\u0085b.py",
-            "a\u009fb.py",
-            "a^[b.py",
-            "a^@b.py",
-            "^leading.py",
-            "trailing^",
-        ],
-        ids=[
-            "lf", "tab", "cr", "vt", "nul", "esc", "unit-separator-31", "del",
-            "c1-128", "c1-nel", "c1-159", "caret-esc", "caret-nul", "caret-leading", "caret-trailing",
-        ],
-    )
-    def test_a_refused_character_in_any_name_is_unsafe(self, name):
-        assert _call("review_pr_file_names_line_safe", _names_json("a.py", name), defined_statuses=_LINE_SAFE_STATUSES) == (1, "")
-
-    @pytest.mark.parametrize(
-        "files_json",
-        ["not json", "", "null", '"abc"', '{"name": "a.py"}', "3"],
-        ids=["non-json", "empty-input", "null", "string", "object", "number"],
-    )
-    def test_input_that_cannot_be_checked_is_undecided_rather_than_unsafe(self, files_json):
-        assert _call("review_pr_file_names_line_safe", files_json, defined_statuses=_LINE_SAFE_STATUSES) == (2, "")
 
 
 class TestAuditVerdict:

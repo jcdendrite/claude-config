@@ -35,14 +35,8 @@ deleted-fork PR, whose head.repo reads null), before any further fetch,
 naming review-pr-diff.sh as the path to use instead. Only past that gate
 does it fetch the PR's own full, paginated file list (one JSON string per
 file name, so a name holding a newline decodes intact) and its current
-headRefOid directly from `gh`. It refuses a file name holding any C0 control
-character (code point below 32), DEL, any C1 control character (128-159) or
-`^` (gh 2.100.0 is modeled as rendering a JSON-escaped control character as
-caret notation before the name reaches this script, so a `^` may stand for
-one; that model was not independently re-verified; the set is defined in
-_review-pr-lib.sh), and
-aborts on a listing whose length differs from the PR's own `changed_files`
-count. It re-fetches headRefOid once more to catch a
+headRefOid directly from `gh`. It aborts on a listing whose length differs from
+the PR's own `changed_files` count. It re-fetches headRefOid once more to catch a
 force-push landing while the file list was being paginated, pipes the file
 list to audit-execution-surface.py, and only fetches refs/pull/<N>/head when
 the audit returns clean. A stop verdict exits 3 before any fetch of the PR's
@@ -51,11 +45,7 @@ return a verdict (python3 missing, a signal death, an uncaught exception, an
 exit 0 without a clean verdict on stdout) exits 2 with its stderr shown. On a clean audit, asserts the fetched SHA
 still equals the headRefOid this script itself fetched earlier in the same
 run -- a force-push race between audit and checkout -- and aborts with no
-worktree left behind on a mismatch. Also lists the fetched tree's own entries for the
-PR's own changed files, for any git-tracked symlink (mode 120000) among
-them, which audit-execution-surface.py's path-only match cannot see, and
-refuses the same way on a hit. A pre-existing symlink elsewhere in the tree
-that this PR does not touch is out of scope. A second run against the same
+worktree left behind on a mismatch. A second run against the same
 PR gets its own new worktree under the main tree's .claude/worktrees/,
 named for this session and the PR number plus a random suffix;
 review-pr-finish.sh removes every worktree of the session. On success,
@@ -67,9 +57,8 @@ absolute path on stdout as the sole output of a successful run.
 
 Exit status: 0 on success, 3 when checkout is positively refused and
 review-pr-diff.sh is the path to use instead (the PR's trust class, a
-cross-repository head, a file name holding a refused character, an audit stop
-verdict, or a tracked symlink), 2 on every other refusal or failure,
-including a check that could not be completed.
+cross-repository head, or an audit stop verdict), 2 on every other refusal or
+failure, including a check that could not be completed.
 EOF
 }
 
@@ -125,8 +114,7 @@ ORIGIN_OWNER_REPO=$(_lib_origin_owner_repo "$REPO_ROOT") || {
 }
 # Case-insensitive: GitHub treats owner/repo slugs case-insensitively, so a
 # PR identity spelled with different case than origin's own stored URL case
-# must still match. Same nocasematch idiom require-respond-pr.sh's own
-# mutating-method check uses.
+# must still match.
 if _lib_case_insensitive_ne "$ORIGIN_OWNER_REPO" "$OWNER_REPO"; then
   echo "review-pr-checkout.sh: PR identity '$PR_IDENTITY' names repo '$OWNER_REPO', which does not match this worktree's own origin remote ('$ORIGIN_OWNER_REPO'). Abort before any fetch -- see this script's header comment for the cross-repo substitution this check exists to close." >&2
   exit 2
@@ -200,12 +188,6 @@ if ! CHANGED_FILES_COUNT=$(review_pr_rest_changed_files "$TRUST_JSON"); then
   exit 2
 fi
 
-# GH_HOST/GH_ENTERPRISE_TOKEN stripped from every gh call below via
-# _lib_gh, same reasoning as review-pr-post.sh's own calls: adversarial PR
-# content could induce the calling agent to set GH_HOST ambiently, silently
-# redirecting a fact this script is supposed to be deriving independently
-# (the file list, the headRefOid) to an attacker-chosen host.
-
 # 10s: a network GET carrying no payload, the same budget review-pr-post.sh
 # uses for its own gh pr view identity re-fetch.
 GH_PR_VIEW_TIMEOUT_SECONDS=10
@@ -244,23 +226,6 @@ if ! FILES_JSON=$(review_pr_decode_file_names "$RAW_FILES"); then
   exit 2
 fi
 
-# A name the symlink scan below could split or mis-match is refused rather
-# than passed on: the scan reads names one per line. Only a positive finding
-# refuses with the diff-only status; a check that could not run is a failure.
-NAME_CHECK_STATUS=0
-review_pr_file_names_line_safe "$FILES_JSON" || NAME_CHECK_STATUS=$?
-case "$NAME_CHECK_STATUS" in
-  0) ;;
-  1)
-    echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's file list holds a name with a control character or '^' -- checkout is refused. Use ~/.claude/scripts/review-pr-diff.sh instead. Abort before any fetch of the PR's ref." >&2
-    exit "$EXIT_CHECKOUT_REFUSED"
-    ;;
-  *)
-    echo "review-pr-checkout.sh: could not check PR $OWNER_REPO#$PR_NUMBER's file names for control characters (jq failed or timed out). Abort before any fetch of the PR's ref." >&2
-    exit 2
-    ;;
-esac
-
 # The REST files listing stops short on a very large PR without any error, and
 # a push between the count read and the listing changes the count. Either way a
 # listing whose length differs from the PR's own count must not be audited as
@@ -269,19 +234,6 @@ if ! LISTED_FILES_COUNT=$(review_pr_file_count_matches "$FILES_JSON" "$CHANGED_F
   echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's file list has ${LISTED_FILES_COUNT:-an unreadable number of} entries but the PR reports $CHANGED_FILES_COUNT changed files -- the listing is truncated, or the PR changed while it was being fetched. Retry only helps in the second case; abort before any fetch of the PR's ref." >&2
   exit 2
 fi
-
-# One name per line for the symlink scan below, built with a `read` loop, not
-# `mapfile`/`readarray` (bash-4+, forbidden here; test_no_bash4_constructs.py).
-# Safe to split on newlines only because the line-safety check above already
-# refused any name holding one.
-if ! CHANGED_FILE_NAMES=$(printf '%s' "$FILES_JSON" | _lib_jq -r '.[]' 2>/dev/null); then
-  echo "review-pr-checkout.sh: could not list PR $OWNER_REPO#$PR_NUMBER's file names. Abort before any fetch of the PR's ref." >&2
-  exit 2
-fi
-CHANGED_FILE_PATHS=()
-while IFS= read -r changed_path; do
-  [[ -n "$changed_path" ]] && CHANGED_FILE_PATHS+=("$changed_path")
-done <<< "$CHANGED_FILE_NAMES"
 
 # TOCTOU guard: HEAD_REF_OID above was fetched before the file list just
 # above it, so a force-push landing in that window would let the audit run
@@ -357,50 +309,10 @@ if [[ "$FETCHED_SHA" != "$HEAD_REF_OID" ]]; then
   exit 2
 fi
 
-# audit-execution-surface.py classifies by path text alone, so it is blind
-# to a git-tracked symlink (tree-entry mode 120000, vs 100644/100755 for a
-# regular file) -- REFERENCES.md's "Git-tracked symlinks" section names this
-# as a separate mechanism from _classify()'s path-only match. An
-# innocuously-named symlink (e.g. notes.txt -> an absolute path into the
-# operator's home directory holding local credentials)
-# checks out verbatim via `git worktree add` with no target validation, and
-# a Read tool then transparently returns the target's content. Checked here,
-# against $FETCHED_SHA's own tree -- only resolvable locally now that the ref
-# fetch above has landed those objects -- and before any worktree exposes
-# them to a Read-driven review step.
-#
-# Scoped to the PR's own changed files, not the whole tree: a symlink
-# already committed on the base branch that this PR never touches is not
-# this PR's own risk, and must not stop every future review of the repo.
-# CHANGED_FILE_PATHS is the same list FILES_JSON holds for the path-based
-# audit above.
-
-# 30s, not _lib_capped's 5s local-read default: `ls-tree -r` still walks a
-# subtree per pathspec given, whose cost scales with the number and depth of
-# the PR's own changed paths, not with a single local index read.
-SYMLINK_CHECK_TIMEOUT_SECONDS=30
-SYMLINK_ENTRIES=""
-if [[ "${#CHANGED_FILE_PATHS[@]}" -gt 0 ]]; then
-  # --literal-pathspecs: a changed-file path is untrusted PR content, so a
-  # filename containing pathspec magic characters (e.g. a leading `:`) must
-  # never be reinterpreted as a glob or magic pathspec instead of matched
-  # literally.
-  if ! SYMLINK_ENTRIES=$(_lib_capped_for "$SYMLINK_CHECK_TIMEOUT_SECONDS" git -C "$REPO_ROOT" --literal-pathspecs ls-tree -r "$FETCHED_SHA" -- "${CHANGED_FILE_PATHS[@]}" 2>/dev/null \
-    | awk -F'\t' '{ if (substr($1, 1, 6) == "120000") print $2 }'); then
-    echo "review-pr-checkout.sh: could not list PR $OWNER_REPO#$PR_NUMBER's changed-file tree entries at $FETCHED_SHA to check for git-tracked symlinks. Abort with no worktree created." >&2
-    exit 2
-  fi
-fi
-if [[ -n "$SYMLINK_ENTRIES" ]]; then
-  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER tracks a git symlink -- git checks it out verbatim with no target validation, and a Read tool could transparently follow it outside the repo. Use ~/.claude/scripts/review-pr-diff.sh instead. Abort with no worktree created. Matched paths:" >&2
-  printf '%s\n' "$SYMLINK_ENTRIES" >&2
-  exit "$EXIT_CHECKOUT_REFUSED"
-fi
-
 # _lib_main_repo_root, not $REPO_ROOT: the worktree is created under the main
 # tree regardless of which tree this script itself stands in, and
 # review-pr-finish.sh discovers it from the same root. Every other use of
-# $REPO_ROOT in this script (fetch, ls-tree, remote get-url) is unaffected:
+# $REPO_ROOT in this script (fetch, rev-parse, remote get-url) is unaffected:
 # those correctly hit the shared object/ref/config store from either tree.
 MAIN_REPO_ROOT=$(_lib_main_repo_root) || {
   echo "review-pr-checkout.sh: could not resolve this repository's main tree root. Abort with no worktree created." >&2

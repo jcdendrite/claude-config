@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Single cleanup call for /review-pr's deliver step, on every exit path --
-# posted, declined, or aborted -- replacing prose spread across three
-# SKILL.md locations. review-pr carries no activate/deactivate arms of its
-# own, since the acquire step needs no bypass marker -- see
+# posted, declined, or aborted. review-pr carries no activate/deactivate arms
+# of its own, since the acquire step needs no bypass marker -- see
 # require-respond-pr.sh's own header for why. Idempotent and safe to run
 # with nothing in flight, so a retry or a defensive re-run never errors.
 set -euo pipefail

@@ -28,7 +28,7 @@ import time
 # inside the sibling .provenance file (same directory, same session id) is
 # confirmed dead, never on the entry's own mtime -- cwd activity between
 # writing an artifact and posting it can idle past the 60-minute window
-# below while a review is still in flight. All four now key on the same PID
+# below while a review is still in flight. All four key on the same PID
 # field rather than a per-suffix rule.
 REVIEW_PR_SUFFIXES = (".body", ".provenance", ".diff", ".context.json")
 
@@ -47,10 +47,12 @@ def read_no_follow(path: str) -> bytes | None:
 def pid_alive(pid_text: str | None) -> bool:
     """True only for a well-formed positive-integer PID whose process
     currently exists. ProcessLookupError (ESRCH) means the PID is genuinely
-    dead. PermissionError (EPERM) means the process exists but is owned by
-    another user, so it reports alive rather than being misread as an
-    eviction candidate."""
-    if not re.match(r"^[0-9]+$", pid_text or ""):
+    dead, and so is a PID too large for the C pid type (OverflowError) or past
+    Python's int-conversion digit limit (ValueError), which no process can
+    hold. PermissionError (EPERM) means the process exists but
+    is owned by another user, so it reports alive rather than being misread
+    as an eviction candidate."""
+    if not re.match(r"^[1-9][0-9]*$", pid_text or ""):
         return False
     try:
         os.kill(int(pid_text), 0)
@@ -58,7 +60,7 @@ def pid_alive(pid_text: str | None) -> bool:
         return False
     except PermissionError:
         return True
-    except OSError:
+    except (OSError, OverflowError, ValueError):
         return False
     return True
 

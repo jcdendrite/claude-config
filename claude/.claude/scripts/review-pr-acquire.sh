@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# The acquire step for /review-pr: one script call replacing a hand-typed
-# sequence of `gh` calls, so the pagination reconciliation and the
-# review-thread fetch are performed the same way on every run rather than
-# left to the model's own transcription. Needs no active-bypass marker of
+# The acquire step for /review-pr: one script call running the `gh` calls,
+# so the pagination reconciliation and the review-thread fetch are performed
+# the same way on every run rather than left to the model's own
+# transcription. Needs no active-bypass marker of
 # its own: require-respond-pr.sh matches only the literal Bash-tool command
 # text, which is `~/.claude/scripts/review-pr-acquire.sh <owner>/<repo>#<N>`
 # here -- it never sees the `gh api .../reviews` call this script makes
@@ -81,13 +81,10 @@ if ! _lib_valid_session_id_component "$SESSION_ID"; then
 fi
 
 ACTIVE_DIR="$CONFIG_DIR/.review-pr-active.d"
-mkdir -p -- "$ACTIVE_DIR"
-
-# GH_HOST/GH_ENTERPRISE_TOKEN stripped from every gh call below via
-# _lib_gh -- same reasoning as review-pr-checkout.sh/review-pr-post.sh:
-# adversarial PR content could induce the calling agent to set GH_HOST
-# ambiently, silently redirecting a fact this script derives to an
-# attacker-chosen host.
+if ! mkdir -p -- "$ACTIVE_DIR"; then
+  echo "review-pr-acquire.sh: could not create the active directory $ACTIVE_DIR. Abort before any fetch." >&2
+  exit 2
+fi
 
 # 10s: a network GET carrying no payload, matching review-pr-checkout.sh's
 # own budget for the same call shape.

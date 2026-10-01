@@ -1579,24 +1579,23 @@ def _gh_shim_dir(tmp_path: Path, call_log: Path, exit_code: int = 0) -> Path:
 
 class TestLibGh:
     """Direct unit coverage for _lib_gh -- the one call every review-pr
-    script routes its own `gh` invocations through, replacing each site's
-    identical `env -u GH_HOST -u GH_ENTERPRISE_TOKEN` prefix."""
+    script routes its own `gh` invocations through."""
 
-    def test_strips_gh_host_and_enterprise_token_and_forwards_argv(self, tmp_path: Path) -> None:
+    def test_forwards_argv_and_ambient_gh_host_and_enterprise_token_unchanged(self, tmp_path: Path) -> None:
         call_log = tmp_path / "calls.jsonl"
         shim_dir = _gh_shim_dir(tmp_path, call_log)
         env = {
             **os.environ,
             "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
-            "GH_HOST": "attacker-chosen-host.example",
-            "GH_ENTERPRISE_TOKEN": "leaked-token",
+            "GH_HOST": "ghe.example.com",
+            "GH_ENTERPRISE_TOKEN": "enterprise-token",
         }
         result = _run_lib_call('_lib_gh 5 pr view 42 -R foo/bar --json headRefOid', env=env)
         assert result.returncode == 0, result.stderr
         record = json.loads(call_log.read_text())
         assert record["args"] == ["pr", "view", "42", "-R", "foo/bar", "--json", "headRefOid"]
-        assert record["GH_HOST"] is None
-        assert record["GH_ENTERPRISE_TOKEN"] is None
+        assert record["GH_HOST"] == "ghe.example.com"
+        assert record["GH_ENTERPRISE_TOKEN"] == "enterprise-token"
 
     def test_propagates_ghs_own_nonzero_exit_status(self, tmp_path: Path) -> None:
         call_log = tmp_path / "calls.jsonl"
@@ -1611,10 +1610,9 @@ class TestLibGh:
 
 class TestLibOriginOwnerRepo:
     """Direct unit coverage for _lib_origin_owner_repo -- the one shared
-    extraction review-pr-checkout.sh, review-pr-diff.sh, and
-    review-pr-finish.sh (REPO_ROOT form) and require-respond-pr.sh's own
-    cross-repo check (cwd form) all call, replacing each site's own
-    byte-identical sed extraction."""
+    extraction review-pr-checkout.sh and review-pr-diff.sh (REPO_ROOT form)
+    and review-pr-post.sh and require-respond-pr.sh's own cross-repo check
+    (cwd form) all call."""
 
     def test_extracts_owner_repo_via_explicit_repo_root(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
@@ -1652,9 +1650,8 @@ class TestLibOriginOwnerRepo:
 class TestLibCaseInsensitiveNe:
     """Direct unit coverage for _lib_case_insensitive_ne -- the shared
     nocasematch comparison require-respond-pr.sh, review-pr-checkout.sh,
-    review-pr-diff.sh, and review-pr-finish.sh each call on a pair of
-    _lib_origin_owner_repo results, since GitHub treats owner/repo slugs
-    case-insensitively."""
+    review-pr-diff.sh, and review-pr-post.sh each call on owner/repo slugs,
+    since GitHub treats them case-insensitively."""
 
     def test_exact_match_returns_false(self) -> None:
         result = _run_lib_call('_lib_case_insensitive_ne "foo/bar" "foo/bar"', env=dict(os.environ))
@@ -6204,9 +6201,7 @@ class TestRedactCredentialShapedStrings:
 
 class TestLibSha256NoFollow:
     """Direct unit coverage for _lib_sha256_no_follow -- otherwise only
-    exercised indirectly through marker.sh's `write review-pr` arm and
-    review-pr-post.sh's own re-verification of the same findings-body
-    file."""
+    exercised indirectly through marker.sh's `write review-pr` arm."""
 
     def test_real_file_digest_matches_hashlib(self, tmp_path: Path) -> None:
         target = tmp_path / "body.txt"
@@ -6348,8 +6343,7 @@ class TestLibReviewPrProvenanceSchema:
     _lib_review_pr_provenance_field -- the one writer and reader
     review-pr-acquire.sh/-checkout.sh/-diff.sh, marker.sh's `write
     review-pr` arm, review-pr-finish.sh, and marker-clear-stale.py's own
-    "pid=" read (Python, not this lib) all agree on, replacing the prior
-    positional four-line format."""
+    "pid=" read (Python, not this lib) all agree on."""
 
     def test_round_trips_every_written_field(self, tmp_path: Path) -> None:
         provenance = tmp_path / "sess.provenance"

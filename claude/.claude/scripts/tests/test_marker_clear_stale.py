@@ -70,6 +70,15 @@ class TestPidAlive:
     def test_false_for_a_negative_number(self):
         assert _clear_stale.pid_alive("-1") is False
 
+    def test_false_for_zero_rather_than_signalling_the_callers_process_group(self):
+        assert _clear_stale.pid_alive("0") is False
+
+    def test_false_for_a_pid_too_large_for_the_c_pid_type(self):
+        assert _clear_stale.pid_alive("9" * 40) is False
+
+    def test_false_for_digit_text_past_pythons_int_conversion_limit(self):
+        assert _clear_stale.pid_alive("9" * 5000) is False
+
 
 class TestSweepReviewPrSuffixBranch:
     """sweep()'s REVIEW_PR_SUFFIXES branch derives the owning PID from a

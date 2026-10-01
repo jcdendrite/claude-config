@@ -43,12 +43,11 @@ SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/
 # the same seven names.
 WRITE_SKILLS=(code-review skill-review plan-review ready-for-review cumulative-review review-pr verification)
 
-# Parallel indexed arrays (bash 3.2 has no associative arrays), replacing
-# six near-identical `activate`/`deactivate`/`status` case/call sites that
-# each repeated a skill's own active-bypass directory name. review-pr
-# carries no activate/deactivate arm: its Step 1 reads need no active-bypass
-# marker of their own (see require-respond-pr.sh's own header for why), so
-# it has no directory entry here.
+# Parallel indexed arrays (bash 3.2 has no associative arrays) holding each
+# skill's own active-bypass directory name. review-pr carries no
+# activate/deactivate arm: its Step 1 reads need no active-bypass marker of
+# their own (see require-respond-pr.sh's own header for why), so it has no
+# directory entry here.
 ACTIVE_BYPASS_SKILLS=(plan-review ready-for-review respond-pr memory-skill handoff)
 ACTIVE_BYPASS_DIRS=(.plan-review-active.d .ready-for-review-active.d .respond-pr-active.d .memory-skill-active.d .handoff-active.d)
 

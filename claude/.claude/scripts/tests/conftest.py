@@ -397,7 +397,6 @@ def _git_shim_that_fails_on_worktree_subcommand(
 
 def _build_repo_with_pr_ref(
     tmp_path: Path, owner_repo: str = "foo/bar", pr_number: str = "42",
-    *, symlink_name: str | None = None, base_symlink_name: str | None = None,
 ) -> tuple[Path, str]:
     """A local repo with an `origin` remote and a PR ref pushed directly to
     it under `refs/pull/<N>/head` -- mirrors GitHub's synthetic per-PR ref,
@@ -412,16 +411,6 @@ def _build_repo_with_pr_ref(
     actual origin) sees the same value callers pass as $1 -- the same
     last-two-path-segments shape a real `https://github.com/<owner>/<repo>.git`
     origin parses to.
-
-    symlink_name, when given, adds a git-tracked symlink (tree-entry mode
-    120000) at that path to the PR commit alongside pr_file.txt -- used by
-    the symlink-detection tests below, which need a PR commit that actually
-    is a symlink, not a same-named regular file.
-
-    base_symlink_name, when given, instead commits the symlink on the BASE
-    branch, before the PR commit -- used by the scoping test below, which
-    needs a symlink this PR's own diff never touches, distinct from
-    symlink_name above (which the PR commit itself adds).
     """
     bare = tmp_path / "remote" / owner_repo
     bare.mkdir(parents=True)
@@ -433,25 +422,14 @@ def _build_repo_with_pr_ref(
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
     (repo / "file.txt").write_text("main\n")
-    base_add_paths = ["file.txt"]
-    if base_symlink_name is not None:
-        (repo / base_symlink_name).symlink_to("/etc/passwd")
-        base_add_paths.append(base_symlink_name)
-    # --literal-pathspecs: a pathspec-magic-prefixed symlink name (e.g. a
-    # leading ':') must be added literally, not parsed as a magic-signature
-    # pathspec -- "--" alone does not disable that parsing.
-    subprocess.run(["git", "--literal-pathspecs", "add", *base_add_paths], cwd=repo, check=True)
+    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
     subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=repo, check=True)
     subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"], cwd=repo, check=True)
     main_sha = head_sha(repo)
 
     (repo / "pr_file.txt").write_text("pr change\n")
-    git_add_paths = ["pr_file.txt"]
-    if symlink_name is not None:
-        (repo / symlink_name).symlink_to("/etc/passwd")
-        git_add_paths.append(symlink_name)
-    subprocess.run(["git", "--literal-pathspecs", "add", *git_add_paths], cwd=repo, check=True)
+    subprocess.run(["git", "add", "pr_file.txt"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "pr commit"], cwd=repo, check=True)
     pr_sha = head_sha(repo)
     subprocess.run(["git", "push", "-q", "origin", f"HEAD:refs/pull/{pr_number}/head"], cwd=repo, check=True)

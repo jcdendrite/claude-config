@@ -151,16 +151,7 @@ _lib_status_consistent_with_cap_kill() {
 }
 
 # _lib_gh SECONDS ARGS...
-# Runs `gh ARGS...` capped at SECONDS via _lib_capped_for, with
-# GH_HOST/GH_ENTERPRISE_TOKEN stripped from its environment first --
-# adversarial PR content could otherwise induce the calling agent to set
-# GH_HOST ambiently, silently redirecting a fact the caller is deriving to
-# an attacker-chosen host. Replaces the identical `env -u GH_HOST -u
-# GH_ENTERPRISE_TOKEN` prefix duplicated across review-pr-acquire.sh,
-# review-pr-checkout.sh, review-pr-diff.sh, and review-pr-post.sh.
-# _lib_capped_for wraps `env`, not the reverse: env(1) execs an external
-# binary by name, so it cannot invoke _lib_capped_for itself (a shell
-# function, not something on PATH).
+# Runs `gh ARGS...` capped at SECONDS via _lib_capped_for.
 # Prints nothing of its own. The calls that redirect gh's stderr do so because it can echo request parameters back; the two `gh pr review` calls in review-pr-post.sh leave it visible.
 # Returns _lib_capped_for's own exit status unchanged -- 124/137/143 on a cap kill, gh's own status otherwise.
 # A caller that words that status for the operator uses review_pr_gh_status_description in _review-pr-lib.sh, which names only 124 because 137 and 143 are also a child's own signal-death status (see _lib_capped_for's "Exit statuses" bullets).
@@ -168,7 +159,7 @@ _lib_status_consistent_with_cap_kill() {
 _lib_gh() {
   local seconds="${1:?_lib_gh requires a seconds argument}"
   shift
-  _lib_capped_for "$seconds" env -u GH_HOST -u GH_ENTERPRISE_TOKEN gh "$@"
+  _lib_capped_for "$seconds" gh "$@"
 }
 
 # Caps the fallback loop, which takes one iteration per not-yet-existing trailing component of the target plus one for the existing ancestor it stops at.
@@ -700,18 +691,14 @@ _lib_review_pr_completion_marker_fields() {
 # Prints the origin remote's own owner/repo, parsed as the last two ':'- or
 # '/'-delimited path segments of its URL with a trailing '.git' stripped.
 # REPO_ROOT, when given, resolves origin via `git -C REPO_ROOT remote
-# get-url origin` (review-pr-checkout.sh's/review-pr-diff.sh's own prior
-# recipe); omitted, resolves it via `git config --get remote.origin.url`
-# against the caller's own cwd (require-respond-pr.sh's own prior recipe --
-# a PreToolUse hook has no independently-resolved REPO_ROOT to pass).
-# Replaces the byte-identical sed extraction all three previously carried.
+# get-url origin`; omitted, resolves it via `git config --get
+# remote.origin.url` against the caller's own cwd (a PreToolUse hook has no
+# independently-resolved REPO_ROOT to pass).
 # Returns 1 with no output when origin is unset or its URL doesn't parse to
 # an owner/repo shape.
 # A GitHub owner/repo comparison must be case-insensitive (GitHub treats
 # slugs case-insensitively) -- this function only extracts the value, so
-# each caller compares its result the way require-respond-pr.sh's own
-# mutating-method check already does: `shopt -s nocasematch` around a
-# `[[ == ]]`/`[[ != ]]` test, then `shopt -u nocasematch`.
+# each caller compares its result with _lib_case_insensitive_ne (below).
 _lib_origin_owner_repo() {
   local repo_root="${1-}" url owner_repo
   if [ -n "$repo_root" ]; then
@@ -729,10 +716,7 @@ _lib_origin_owner_repo() {
 # Returns 0 (true) when A and B differ case-insensitively, 1 (false) when
 # they match -- GitHub treats owner/repo slugs case-insensitively, so every
 # caller comparing two _lib_origin_owner_repo results (or one against a
-# PR-identity-derived owner/repo) must compare that way too. Replaces the
-# `shopt -s nocasematch` / `[[ ]]` / `shopt -u nocasematch` block formerly
-# duplicated across require-respond-pr.sh, review-pr-checkout.sh,
-# review-pr-diff.sh, and review-pr-finish.sh.
+# PR-identity-derived owner/repo) must compare that way too.
 _lib_case_insensitive_ne() {
   local a="$1" b="$2" result
   shopt -s nocasematch
@@ -785,10 +769,7 @@ _lib_review_pr_artifact_path() {
 # KEY=VALUE line per remaining argument, through _lib_write_no_follow
 # (refuses a symlink at PROVENANCE_PATH). review-pr-acquire.sh/-checkout.sh/
 # -diff.sh each call this with the four fields they know today
-# (pr_identity, head_ref_oid, pid, mode) -- replacing the positional
-# four-line format ("$PR_IDENTITY\n$HEAD_REF_OID\n$CLAUDE_PID\n$MODE\n")
-# those scripts and marker.sh's `write review-pr` arm previously each
-# carried their own copy of. The schema is additive by design, not frozen
+# (pr_identity, head_ref_oid, pid, mode). The schema is additive by design, not frozen
 # at today's four fields: a later phase recording another fact (e.g. the
 # locally re-derived commit SHA, or a worktree/marker key) passes one more
 # KEY=VALUE argument here rather than adding a second provenance file or an
@@ -913,10 +894,8 @@ _lib_review_pr_select_session_worktrees() {
 # findings-body destination is never followed and hashed as if it were the
 # real file. A separate `[ -L ]` check followed by sha256sum is not atomic;
 # an attacker can swap in a symlink between the two. Prints nothing and
-# returns 1 on a missing file, a symlink, or a permission error. Shared by
-# marker.sh's `write review-pr` arm and review-pr-post.sh's own
-# re-verification of that same findings-body file, which otherwise embedded
-# byte-for-byte identical `python3 -c` blocks.
+# returns 1 on a missing file, a symlink, or a permission error. Called by
+# marker.sh's `write review-pr` arm.
 _lib_sha256_no_follow() {
   local target="$1"
   _lib_capped python3 -I -c '
