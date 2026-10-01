@@ -1328,8 +1328,7 @@ def build_noconflict_rebase_edit_stop(repo: Path, *, file_name: str = "f") -> No
     # Rewrites the todo list's sole "pick" line to "edit" -- one commit is
     # being replayed (HEAD onto its own immediate parent), so line 1 is the
     # only line. `-i.bak` is portable across BSD and GNU sed (both accept a
-    # suffix with no space before it), matching build_conflicted_rebase's
-    # own sequence.editor precedent above.
+    # suffix with no space before it).
     env["GIT_SEQUENCE_EDITOR"] = "sed -i.bak -e '1s/^pick/edit/'"
     result = subprocess.run(
         ["git", "rebase", "-i", "HEAD~1"],

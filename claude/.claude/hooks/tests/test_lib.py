@@ -6314,30 +6314,34 @@ class TestCommandConcludesCommit:
         """A here-string redirect that fails (e.g. an unwritable TMPDIR) skips
         the fragment loop; the matcher must report undetermined, not no-match.
         The `read` shim stands in for that failure without touching the
-        filesystem. Without the shim, the sentinel must not over-deny."""
+        filesystem and prints a marker so a shell syntax error or
+        command-not-found (also status 2) cannot pass for the sentinel.
+        Without the shim, the sentinel must not over-deny."""
+        shim_marker = "read-shim-ran"
 
-        def run(prelude: str) -> int:
+        def run(prelude: str) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
                 [
                     "bash",
                     "-c",
-                    f'. {_LIB_SH}; {prelude} _lib_command_concludes_marker_gated_commit "$1"',
+                    f'. {_LIB_SH}; {prelude or ":"}; _lib_command_concludes_marker_gated_commit "$1"',
                     "bash",
                     command,
                 ],
                 capture_output=True,
                 text=True,
                 check=False,
-            ).returncode
+            )
 
-        assert run("read() { return 1; }") == 2
-        assert run("") == expected_status_without_shim
+        shimmed = run(f"read() {{ echo {shim_marker}; return 1; }}")
+        assert shimmed.returncode == 2
+        assert shim_marker in shimmed.stdout
+        assert shimmed.stderr == ""
+        assert run("").returncode == expected_status_without_shim
 
     def test_continue_flag_outside_matched_verb_does_not_conclude_commit(self) -> None:
-        """The fragment-boundary case _lib_command_concludes_commit_shape's
-        own comment names: `--continue` present elsewhere in COMMAND, not
-        as the matched verb's own argument, must not read as concluding a
-        commit."""
+        """A `--continue` word elsewhere in COMMAND, outside the matched
+        verb's own arguments, must not read as concluding a commit."""
         assert _command_concludes_commit("git rebase origin/main && echo --continue") == 1
 
     # The cases below cover the remaining `--continue` abbreviation
