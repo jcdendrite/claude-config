@@ -1422,6 +1422,23 @@ class TestBootstrapShareIntervals:
         assert round(point, 1) == share_of_sums
         assert lo <= point <= hi
 
+    def test_bootstrap_share_intervals_pin_the_enumerable_two_branch_interval(self):
+        """Two branches give three possible resampled shares: both draws
+        branch A (0.40 / 0.80 = 50.0%, probability 1/4), one of each
+        (0.80 / 1.40 = 57.1%, probability 1/2), both draws branch B
+        (1.20 / 2.00 = 60.0%, probability 1/4). Each tail holds 2.5% of the
+        draws, far less than the 25% mass of each end block, so the bounds
+        are the two end blocks' values whatever the RNG stream. This pins
+        that resampling with replacement spans both branches, giving a
+        non-degenerate interval at the support's extremes. The percentile
+        indices and CI level are pinned by the _resample_percentile tests.
+        Draw size and resample count are not pinned here.
+        """
+        point, lo, hi = review_rounds._bootstrap_share_intervals(
+            _asymmetric_two_branch_pooled_totals()
+        )["spend_inside"]
+        assert (point, lo, hi) == pytest.approx((57.142857142857146, 50.0, 60.0))
+
     def test_bootstrap_share_intervals_with_partial_zero_denominator_draws(self):
         """Adds two zero-branch_dollars branches to the asymmetric
         two-branch fixture. A draw with an all-zero branch_dollars
@@ -3729,9 +3746,9 @@ class TestCmdReviewRoundCostPooled:
         withheld behind _POOLED_STDERR_WITHHELD_NOTICE instead of reaching
         stderr raw, while a "scanning root N/M..." line is still dropped
         entirely. The injected diagnostic is a representative unsafe-shaped
-        string, not one --pooled's real call graph can actually emit today:
-        only _iter_scoped_sessions emits it, and the pooled path always
-        resolves through _iter_glob_scoped_sessions instead.
+        string, not one --pooled's real call graph can emit: only
+        _iter_scoped_sessions emits it, and the pooled path always resolves
+        through _iter_glob_scoped_sessions instead.
         """
         def fake_session_iter():
             print("scanning root 1/2...", file=sys.stderr)
@@ -3772,8 +3789,7 @@ class TestCmdReviewRoundCostPooled:
         --pooled through the filtered compute call, and it names a raw
         requestId. It matches none of the known diagnostic shapes, so it
         must be withheld like any other unrecognized line. This is a real
-        production print reachable under --pooled today, not a
-        source-scanned hypothetical.
+        production print reachable under --pooled.
         """
         monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())
         review_rounds._pooled_filtered_stderr_call(
