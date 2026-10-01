@@ -8,7 +8,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 - **`/plan-review` approval now shows the approved plan's absolute path, and `/plan-it` no longer opens a draft PR at plan time.** See `docs/design-decisions/plans-shared-by-path-not-early-pr.md`.
   - `marker.sh write plan-review` prints the path of each active plan file it covered, and the new PostToolUse `Bash` hook `announce-approved-plan-path.sh` shows those paths as a `systemMessage`.
-  - A plan approved in harness plan mode, an empty active plan set, a delegated review, or a path the hook cannot show (characters outside its allowlist, such as a space) gets no path from the hook.
+  - Some approvals get no path from the hook. The hook header's Known gaps in `claude/.claude/hooks/announce-approved-plan-path.sh` lists them.
   - `/plan-it` shares the plan file's own absolute path instead of a PR opened at plan time.
   - **Re-run `stow` (or `./install.sh`) after pulling.** A `git pull` alone is only sufficient when `~/.claude/hooks` is a single tree-folded symlink; if it exists as a real directory, stow linked each hook individually, so pulling leaves the new hook file unlinked while the `settings.json` registration already names it.
   - Expect a hook error on Bash calls until you re-stow (not verified against the harness).

@@ -50,11 +50,12 @@
 #     outside the trigger's path class announces nothing.
 #   - A repo path containing a space or other character outside the path
 #     allowlist yields the withheld line.
-#   - A Bash call whose raw payload contains both marker.sh and plan-review
-#     passes the raw-stdin prefilter.
-#   - The raw payload includes the command, cwd, transcript path, and output.
-#   - A payload that passes the prefilter pays the _lib.sh sourcing cost before
-#     the trigger rejects it.
+#   - A raw payload containing both marker.sh and plan-review anywhere (command,
+#     cwd, transcript path, or output) passes the raw-stdin prefilter. It then
+#     pays the _lib.sh sourcing cost before the trigger rejects it.
+#   - The trigger and the shape gate accept any absolute `.../.claude/scripts/marker.sh`,
+#     so a different script of that name can print a prefixed line and produce a
+#     "recorded for" line with no approval behind it.
 #   - Unverified: whether the harness fires PostToolUse when the Bash command
 #     exits non-zero.
 #   - marker.sh prints paths only after a successful write, so a failed write
@@ -102,7 +103,7 @@ emit_system_message() {
 STDOUT_TYPE=$(printf '%s\n' "$INPUT" \
   | _lib_jq -r '(.tool_response | if type == "object" then (.stdout | type) else "none" end)' 2>/dev/null) || exit 0
 if [ "$STDOUT_TYPE" != "string" ]; then
-  emit_system_message "announce-approved-plan-path.sh: this Bash result carried no tool_response.stdout string, so the approved plan's path cannot be shown."
+  emit_system_message "announce-approved-plan-path.sh: this Bash result carried no tool_response.stdout string, so no plan path can be shown."
   exit 0
 fi
 

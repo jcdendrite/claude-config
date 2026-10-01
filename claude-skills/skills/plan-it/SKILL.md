@@ -135,13 +135,13 @@ it, and route the narrative through the project's own tracker or
 documentation tool (see that project's `CLAUDE.md`, or ask the
 engineer if undocumented) — the review still counts, it just ships as
 findings rather than a commit. Tell the engineer where the plan file moved,
-because the approval banner's path no longer resolves. Stop here — the choice below is about
+because the path /plan-review gave no longer resolves. Stop here — the choice below is about
 where implementation runs, and there is none.
 
 **Sharing the plan.** This applies only on the branch where the plan file was committed above. Share the plan with the engineer by the plan file's own absolute path. Never open a PR, draft or ready, at plan time. When the plan adds a design document or defines a cross-team contract (a schema shape, enum, or API surface other teams or pipelines depend on), readers outside this session may need lead time, so offer to push the branch with no PR:
 
 - Ask the engineer through `AskUserQuestion`, not a closing chat question.
-- Resolve `gh pr view`, the visibility check, and `gh browse` against the repository that the push URL names (`--repo`), and treat a mismatch as unknown.
+- Resolve `gh pr view`, the visibility check, and `gh browse` against the repository that the push URL names (`--repo OWNER/REPO`).
 - Ask only when the branch is not the default branch and `gh pr view` finds no PR for it (a non-zero exit counts as no PR), since a push to a branch with a PR needs `/ready-for-review` first.
 - The question names that remote's push URL from `git remote get-url --push <remote>` with any userinfo (`user:token@`) stripped.
 - The question also names the commits that push would publish to that remote, and whether the repository is public.

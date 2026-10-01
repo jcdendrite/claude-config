@@ -2153,9 +2153,9 @@ class TestMarkerScriptMergeAwarePlanReviewBase:
 
         # The printed set is the hashed set: one line naming the local-edit plan.
         printed_lines = result.stdout.splitlines()
-        assert len(printed_lines) == 1, result.stdout
-        assert printed_lines[0].startswith("plan-review marker covers: ")
-        assert printed_lines[0].endswith("/.claude/plans/p.md")
+        assert printed_lines == [
+            f"{PLAN_REVIEW_COVERED_PATH_PREFIX}{git_toplevel(repo)}/.claude/plans/p.md"
+        ]
 
         assert (
             run_hook(

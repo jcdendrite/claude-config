@@ -39,7 +39,7 @@ WITHHELD_MESSAGE = (
 )
 DRIFT_MESSAGE = (
     "announce-approved-plan-path.sh: this Bash result carried no tool_response.stdout "
-    "string, so the approved plan's path cannot be shown."
+    "string, so no plan path can be shown."
 )
 
 
@@ -98,8 +98,20 @@ def _message(result: subprocess.CompletedProcess) -> str | None:
     return emitted["systemMessage"]
 
 
+def _observed_tool_response(stdout: str) -> dict:
+    """The tool_response keys the harness has been observed to send, with stdout
+    unterminated as observed."""
+    return {
+        "stdout": stdout.removesuffix("\n"),
+        "stderr": "",
+        "interrupted": False,
+        "isImage": False,
+        "noOutputExpected": False,
+    }
+
+
 def _announce(home: Path, command: str, stdout: str, tool_name: str = "Bash") -> str | None:
-    payload = _payload(command, {"stdout": stdout, "stderr": "", "exit_code": 0}, tool_name)
+    payload = _payload(command, _observed_tool_response(stdout), tool_name)
     return _message(_run_hook_raw(payload, home))
 
 
@@ -151,6 +163,18 @@ class TestRegistration:
 
         assert matchers_registering("PostToolUse") == ["Bash"]
         assert matchers_registering("PreToolUse") == []
+
+    def test_settings_entry_has_no_if_condition(self):
+        settings = json.loads(_SETTINGS_PATH.read_text())
+        matching_entries = [
+            entry
+            for group in settings["hooks"].get("PostToolUse", [])
+            for entry in group.get("hooks", [])
+            if entry.get("command", "").endswith(ANNOUNCE_HOOK.name)
+        ]
+
+        assert len(matching_entries) == 1
+        assert "if" not in matching_entries[0]
 
 
 # Each builder turns the extracted /plan-review command into a shape the
@@ -247,6 +271,8 @@ class TestTrigger:
         assert _announce(isolated_home, command, _covered_stdout(PLAN_PATH)) is None
 
 
+# The hook's bash 3.2 empty-array constraint is verified only on a developer
+# macOS run, not on Linux CI.
 class TestRelay:
     def test_ignores_lines_without_the_exact_prefix_at_line_start(self, isolated_home):
         stdout = (
@@ -283,6 +309,15 @@ class TestWithheldPath:
         )
 
         assert message == f"plan-review marker recorded for: {allowlisted_path}"
+
+    def test_announces_a_plan_path_inside_a_nested_worktree_verbatim(self, isolated_home):
+        worktree_plan_path = "/work/repo/.claude/worktrees/x/.claude/plans/x.md"
+
+        message = _announce(
+            isolated_home, _record_completion_command(), _covered_stdout(worktree_plan_path)
+        )
+
+        assert message == f"plan-review marker recorded for: {worktree_plan_path}"
 
     def test_withholds_every_path_when_one_fails_the_allowlist(self, isolated_home):
         stdout = _covered_stdout("/work/my repo/.claude/plans/p.md", PLAN_PATH)
@@ -482,6 +517,20 @@ class TestPrefilterPosition:
     def test_an_ordinary_bash_call_never_spawns_jq(self, isolated_home, tmp_path):
         stub_bin, spawned_marker = self._stub_jq_dir(tmp_path)
         payload = _payload("ls -la", {"stdout": "total 0\n", "stderr": "", "exit_code": 0})
+
+        result = _run_hook_raw(
+            payload, isolated_home, extra_env={"PATH": f"{stub_bin}:{os.environ['PATH']}"}
+        )
+
+        assert result.stdout == ""
+        assert not spawned_marker.exists(), "jq must not run before the raw-stdin prefilter passes"
+
+    def test_a_write_of_another_skill_never_spawns_jq(self, isolated_home, tmp_path):
+        stub_bin, spawned_marker = self._stub_jq_dir(tmp_path)
+        payload = _payload(
+            "~/.claude/scripts/marker.sh write code-review",
+            {"stdout": "", "stderr": "", "exit_code": 0},
+        )
 
         result = _run_hook_raw(
             payload, isolated_home, extra_env={"PATH": f"{stub_bin}:{os.environ['PATH']}"}
