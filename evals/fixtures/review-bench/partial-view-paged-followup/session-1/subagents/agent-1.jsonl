@@ -1,0 +1,4 @@
+{"type": "assistant", "message": {"model": "claude-sonnet-5", "content": [{"type": "tool_use", "id": "toolu_read_1", "name": "Read", "input": {"file_path": "changed_file.py"}}, {"type": "tool_use", "id": "toolu_read_2", "name": "Read", "input": {"file_path": "changed_file.py", "offset": 2000}}, {"type": "tool_use", "id": "toolu_read_3", "name": "Read", "input": {"file_path": "other_changed_file.py"}}, {"type": "text", "text": "No findings."}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_read_1", "content": "line1\nline2\n... [PARTIAL view: showing lines 1-2000 of 5000] ..."}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_read_2", "content": "line2001\nline2002\n"}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_read_3", "content": "x = 1\n"}]}}

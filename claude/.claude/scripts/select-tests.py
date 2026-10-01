@@ -48,9 +48,44 @@ LOVABLE_CLOUD_SCRIPTS_DIR = "plugins/lovable-cloud/scripts"
 LOVABLE_CLOUD_LIB_DIR = "plugins/lovable-cloud/lib"
 SKILL_MANAGEMENT_SCRIPTS_DIR = "plugins/skill-management/scripts"
 SKILL_EVALS_RUNNER = "evals/run_skill_evals.py"
+EVALS_README_MD = "evals/README.md"
 # Doubles as its own domain: unlike the source-tree/test-dir pairs above, any
 # path under it maps to itself rather than to a separate test directory.
 CLAUDE_TESTS_DIR = "claude/.claude/tests"
+
+# evals/review_bench's own domain: its own source tree, its CLI entry point,
+# and its flat (non-tests/-nested) test files, matched by a glob rather than
+# a directory since evals/ keeps test_*.py alongside the source it exercises.
+REVIEW_BENCH_DIR = "evals/review_bench"
+REVIEW_BENCH_RUNNER = "evals/run_review_bench.py"
+REVIEW_BENCH_TEST_GLOB = "evals/test_review_bench*.py"
+# A sibling tree, not a REVIEW_BENCH_DIR subdirectory: evals/fixtures/, not
+# evals/review_bench/, and hyphenated review-bench, not review_bench.
+# test_review_bench_runner.py loads its scenarios from here.
+REVIEW_BENCH_FIXTURES_DIR = "evals/fixtures/review-bench"
+# Folded into the review_bench predicate below (shared target set) rather than a
+# standalone row -- over-selection here is the safe direction.
+MEASURE_SUBAGENT_MODEL_RESOLUTION = "evals/measure_subagent_model_resolution.py"
+MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST = "evals/test_measure_subagent_model_resolution.py"
+# Applies to every test under evals/, which are exactly the review_bench tests
+# and MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST.
+EVALS_CONFTEST = "evals/conftest.py"
+
+# Every claude/.claude/scripts module the review_bench sources import,
+# transitively -- the transcript_analysis modules and _config_dir.
+# TestSelectPytestTargets' ground-truth test derives this set by walking the
+# imports, so an added import that this set misses fails there.
+_REVIEW_BENCH_SCRIPTS_DEPENDENCIES: frozenset[str] = frozenset({
+    "claude/.claude/scripts/_config_dir.py",
+    "claude/.claude/scripts/transcript_analysis/__init__.py",
+    "claude/.claude/scripts/transcript_analysis/corpus.py",
+    "claude/.claude/scripts/transcript_analysis/pricing.py",
+    "claude/.claude/scripts/transcript_analysis/redaction.py",
+    "claude/.claude/scripts/transcript_analysis/render.py",
+    "claude/.claude/scripts/transcript_analysis/review_rounds.py",
+    "claude/.claude/scripts/transcript_analysis/reviewer_yield.py",
+    "claude/.claude/scripts/transcript_analysis/scope.py",
+})
 
 # Common ancestor for the repo-wide-scan cross-domain exception below,
 # mirroring PLUGINS_DIR's role for the plugin-generic predicates.
@@ -475,6 +510,22 @@ def _is_test_source_change(path: str) -> bool:
     )
 
 
+# Covers review_bench's source tree, fixture tree, CLI entry point, and its own
+# flat test files (matched by glob, since evals/ keeps test_*.py beside its
+# source rather than under tests/). Also covers MEASURE_SUBAGENT_MODEL_RESOLUTION
+# and its test file -- see the constant's own comment above.
+def _is_review_bench_change(path: str) -> bool:
+    return (
+        _is_under(path, REVIEW_BENCH_DIR)
+        or _is_under(path, REVIEW_BENCH_FIXTURES_DIR)
+        or path in (
+            REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            EVALS_CONFTEST,
+        )
+        or (path.startswith("evals/test_review_bench") and path.endswith(".py"))
+    )
+
+
 # (predicate, target paths added when it matches) — a plain domain rule.
 DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, HOOKS_DIR), (HOOKS_TESTS_DIR,)),
@@ -487,6 +538,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, PLANS_DIR), ()),
     (lambda p: p == CHANGELOG_MD, ()),
     (lambda p: _is_under(p, CLAUDE_TESTS_DIR), (CLAUDE_TESTS_DIR,)),
+    (_is_review_bench_change, (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST)),
 )
 
 # (predicate, target paths added when it matches) — a cross-domain exception.
@@ -576,6 +628,12 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # predicate has to be too.
 # AGENTS_DIR: test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
 # (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path.
+# REVIEW_BENCH_TEST_GLOB is also a target of this row: evals/review_bench/
+# arms.py's LENS_READ_CLAUSES hand-copies each lens's exact read-clause
+# wording out of its own production agent file, so an edit to any agent
+# file needs review_bench's own tests re-run too. This selects on every
+# agent file rather than only the lenses with a read clause to copy --
+# over-selection is the safe direction.
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
@@ -600,8 +658,36 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # only a test file under one of the five selectable test directories can
 # introduce a constant TestCrossDomainReadCompleteness's own scan would need
 # to see.
+# _REVIEW_BENCH_SCRIPTS_DEPENDENCIES: evals/review_bench imports these
+# claude/.claude/scripts modules by name rather than by directory containment.
+# A change to one of them needs review_bench's own tests re-run, in addition
+# to the SCRIPTS_TESTS_DIR the blanket SCRIPTS_DIR domain rule already selects.
+# Same undeclared-dependency shape as TRANSCRIPT_ANALYSIS_TEST_GLOB's own row
+# below.
+# SKILL_EVALS_RUNNER: evals/review_bench/runner.py imports run_skill_evals.py
+# and reads its SAMPLE_TIMEOUT_S, DEFAULT_WORKERS, and DISPATCH_TOOL_NAMES.
+# A change here also needs review_bench's own tests re-run. This row stays
+# standalone rather than joining _is_skill_management_or_evals_change's
+# shared SKILLS_TESTS_DIR target below, because that predicate also matches
+# every plugins/skill-management/scripts/*.py change, which has no
+# review_bench dependency.
+# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST (the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES
+# and SKILL_EVALS_RUNNER rows):
+# measure_subagent_model_resolution.py imports run_skill_evals.py, which
+# imports _config_dir.py, so a change to either also needs that test re-run.
+# The dependencies row over-selects it for the transcript_analysis modules,
+# which is the safe direction.
+# EVALS_README_MD: test_skills.py (SKILLS_TESTS_DIR) reads evals/README.md by
+# path in its function-local doc-path scan, which the constant scanner cannot
+# see.
 CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (_is_hooks_or_skills_change, (TRANSCRIPT_ANALYSIS_TEST_GLOB, TRANSCRIPT_DENIALS_TEST_PATH)),
+    (
+        lambda p: p in _REVIEW_BENCH_SCRIPTS_DEPENDENCIES,
+        (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST),
+    ),
+    (lambda p: p == SKILL_EVALS_RUNNER, (REVIEW_BENCH_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST)),
+    (lambda p: p == EVALS_README_MD, (SKILLS_TESTS_DIR,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
     (lambda p: p == CONFIG_MODULE, tuple(sorted(HOOKS_TESTS_IMPORTING_CONFIG))),
@@ -629,7 +715,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == MARKER_CLEAR_STALE_PY, (HOOKS_TESTS_DIR,)),
     (lambda p: p == REVIEW_PR_AUDIT_SCRIPT, (SCRIPTS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
-    (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
+    (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB)),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),
@@ -660,21 +746,31 @@ class SelectionResult(NamedTuple):
     triggering_paths: tuple[str, ...] = ()
 
 
+def _targets_outside_full_suite(targets: Iterable[str]) -> tuple[str, ...]:
+    """The targets no FULL_SUITE_TARGETS root's pytest walk collects (e.g.
+    the evals/ tests), sorted."""
+    roots = [root.rstrip("/") for root in FULL_SUITE_TARGETS]
+    return tuple(sorted(
+        target for target in targets if not any(_is_under(target, root) for root in roots)
+    ))
+
+
 def select_pytest_targets(changed_paths: Iterable[str]) -> SelectionResult:
     """Map a changed-path set to pytest targets via DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS.
 
     Fails open to FULL_SUITE_TARGETS when:
     - the diff is empty
-    - a global-trigger path is present (checked before domain matching, so a
-      domain match can never suppress it)
+    - a global-trigger path is present (a domain match can never suppress it)
     - any changed path matches no rule at all
+
+    The two non-empty fail-open results also keep every domain-selected
+    target outside FULL_SUITE_TARGETS' roots (e.g. the evals/ tests), which
+    the full suite would not otherwise collect. The empty diff selects no
+    domain, so it adds none.
     """
     changed = list(changed_paths)
     if not changed:
         return SelectionResult(FULL_SUITE_TARGETS, True, "empty-diff")
-    global_trigger_paths = tuple(path for path in changed if path in GLOBAL_TRIGGER_PATHS)
-    if global_trigger_paths:
-        return SelectionResult(FULL_SUITE_TARGETS, True, "global-trigger", global_trigger_paths)
 
     targets: set[str] = set()
     unmatched_paths: list[str] = []
@@ -691,8 +787,15 @@ def select_pytest_targets(changed_paths: Iterable[str]) -> SelectionResult:
         if not matched:
             unmatched_paths.append(path)
 
+    global_trigger_paths = tuple(path for path in changed if path in GLOBAL_TRIGGER_PATHS)
+    if global_trigger_paths:
+        return SelectionResult(
+            FULL_SUITE_TARGETS + _targets_outside_full_suite(targets), True, "global-trigger", global_trigger_paths,
+        )
     if unmatched_paths:
-        return SelectionResult(FULL_SUITE_TARGETS, True, "unmatched-path", tuple(unmatched_paths))
+        return SelectionResult(
+            FULL_SUITE_TARGETS + _targets_outside_full_suite(targets), True, "unmatched-path", tuple(unmatched_paths),
+        )
 
     return SelectionResult(tuple(sorted(targets)), False, "domain-selected")
 
