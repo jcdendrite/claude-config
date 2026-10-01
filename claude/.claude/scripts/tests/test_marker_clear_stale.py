@@ -125,21 +125,15 @@ class TestSweepReviewPrSuffixBranch:
         assert not (active_dir / "dead-session.body").exists()
         assert not (active_dir / "dead-session.provenance").exists()
 
-    def test_review_pr_entry_with_legacy_positional_provenance_is_kept(self, tmp_path):
-        """Pre-migration provenance format (positional lines, no `schema=1`
-        header) must be kept rather than evicted -- liveness can't be
-        determined from a format this reader doesn't recognize, and
-        defaulting to eviction here would delete a live session's artifacts
-        under a format written before the schema migration. Mirrors
-        _lib.sh's _lib_review_pr_provenance_field, which fails closed the
-        same way on a missing `schema=1` header."""
+    def test_review_pr_entry_with_provenance_without_a_schema_header_is_kept(self, tmp_path):
+        """A provenance file with no `schema=1` header has no determinable
+        liveness, so its artifacts are kept. Mirrors _lib.sh's
+        _lib_review_pr_provenance_field, which fails closed the same way."""
         active_dir = tmp_path / ".review-pr-active.d"
         active_dir.mkdir()
-        (active_dir / "legacy-session.body").write_text("findings\n")
-        # Old positional format (pre-_lib_write_review_pr_provenance):
-        # PR_IDENTITY, HEAD_REF_OID, PID, MODE -- no `schema=1` header line,
-        # and no "pid=" key at all.
-        (active_dir / "legacy-session.provenance").write_text(
+        (active_dir / "headerless-session.body").write_text("findings\n")
+        # No header line, no "pid=" key.
+        (active_dir / "headerless-session.provenance").write_text(
             "\n".join(["foo/bar#42", "abc123", str(os.getpid()), "checkout"]) + "\n"
         )
 
@@ -147,8 +141,8 @@ class TestSweepReviewPrSuffixBranch:
         # (see the live-sibling test above) are kept.
         evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (0, 2)
-        assert (active_dir / "legacy-session.body").exists()
-        assert (active_dir / "legacy-session.provenance").exists()
+        assert (active_dir / "headerless-session.body").exists()
+        assert (active_dir / "headerless-session.provenance").exists()
 
     @pytest.mark.parametrize("strip_pid_line", [True, False], ids=["no_pid_line", "empty_pid_value"])
     def test_review_pr_entry_with_schema_1_provenance_lacking_a_pid_is_evicted(
@@ -262,6 +256,22 @@ class TestCliSweepsDeadPidMarker:
         entry.write_text(f"{proc.pid}\n")
 
         result = _run_cli(tmp_path, "0")
+        assert result.returncode == 0
+        assert not entry.exists()
+        assert "evicted 1 orphan(s), kept 0 active" in result.stdout
+
+    def test_config_dir_name_with_glob_metacharacters_is_matched_literally(self, tmp_path):
+        """A config dir whose own path holds `[ab]` must still be swept: the
+        path is not a glob pattern, only the `.*-active.d` suffix is."""
+        config_dir = tmp_path / "config[ab]"
+        active_dir = config_dir / ".foo-active.d"
+        active_dir.mkdir(parents=True)
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        entry = active_dir / "session-1"
+        entry.write_text(f"{proc.pid}\n")
+
+        result = _run_cli(config_dir, "0")
         assert result.returncode == 0
         assert not entry.exists()
         assert "evicted 1 orphan(s), kept 0 active" in result.stdout

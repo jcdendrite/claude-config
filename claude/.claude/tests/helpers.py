@@ -1374,10 +1374,8 @@ def write_review_pr_provenance(
     writer (matching write_review_pr_completion_marker's own precedent
     above) so a test seeding provenance here checks marker.sh's/
     marker-clear-stale.py's read side against known-correct content, not
-    against the production writer's own output. `extra_fields` covers a
-    later phase's additional keys (e.g. `fetched_sha`) without this
-    function's signature changing -- the schema is additive by design, see
-    _lib_write_review_pr_provenance's own comment."""
+    against the production writer's own output. `extra_fields` adds keys
+    beyond the four standard ones."""
     provenance = review_pr_provenance_path(home, session_id, config_dir)
     provenance.parent.mkdir(parents=True, exist_ok=True)
     fields = {"pr_identity": pr_identity, "head_ref_oid": head_ref_oid, "pid": str(pid), "mode": mode}

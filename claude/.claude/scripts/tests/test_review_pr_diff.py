@@ -255,6 +255,24 @@ class TestOriginMismatch:
         assert _read_calls(call_log) == []
 
 
+class TestInitialHeadRefOidFetchFailure:
+    def test_failed_initial_headrefoid_fetch_aborts_before_any_artifact_is_written(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, _ = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, fail_pr_view=True, files=["a.py"],
+        )
+        assert result.returncode == 2, result.stderr
+        assert "could not fetch" in result.stderr
+        assert "headRefOid" in result.stderr
+        assert result.stdout == ""
+        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+        assert not active_dir.exists() or list(active_dir.glob(f"{SID}.*")) == []
+        assert not any(c[:2] == ["pr", "diff"] for c in _read_calls(call_log))
+
+
 class TestMissingAuditScript:
     def test_uninstalled_skill_directory_aborts_before_any_fetch(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -618,7 +636,7 @@ class TestGhFailureNeverBypassesTheScrub:
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        secret_shaped_text = "leaked-token=ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII"
+        secret_shaped_text = "leaked-token=ghp_" + "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII"
         result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["a.py"], fail_diff=True, diff_error_text=secret_shaped_text,

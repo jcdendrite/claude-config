@@ -9,6 +9,12 @@ match list still holds.
 
 `gh pr view --json title,body,author,isCrossRepository,baseRefOid,headRefOid,headRepositoryOwner,files,changedFiles,commits,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup`, plus a second REST call, a paginated existing-reviews fetch, and a paginated inline-review-comments fetch — all inside the one script call, not typed out per-run.
 
+- **The printed document overwrites `gh pr view`'s `files` and `commits`
+  keys with different shapes.** `files` is an array of path strings and
+  `commits` an array of commit SHA strings, not `gh`'s own objects, so
+  fields such as per-file additions and deletions and each commit's message,
+  authors, and dates are dropped. `filesComplete` and `commitsComplete`
+  lead the document so a cut at the end of stdout keeps the flags.
 - **`authorAssociation` is not a valid `--json` field on `gh pr view`.**
   Including it makes the whole call error rather than degrade gracefully.
   Author association comes from a second call:
@@ -141,7 +147,11 @@ A spawned review-only subagent carries no Write tool for this path, so requiring
 
 Passing the fixed path as a Bash argument would also put it in the process table and shell history, which the sibling-file design exists to avoid. The findings-body path comes from `review-pr-findings-path.sh`, not from a value the model transcribes, so nothing needs independent verification against `$CONFIG_DIR`/`$SESSION_ID`.
 
-Accepted gap: the Write tool does not open with `O_NOFOLLOW`, so a pre-planted symlink at the fixed body path would be followed. The downstream read path's `O_NOFOLLOW`-guarded hash check (`_lib_sha256_no_follow`, `claude/.claude/hooks/_lib.sh`, called from `marker.sh write review-pr`) rejects the symlink, so the flow fails closed rather than posting unreviewed content. A second, broader accepted consequence of the same followed write: it can overwrite or create an arbitrary file the Claude Code process has write access to. That risk is distinct from, and wider than, the posting-side risk the read-path check above fully mitigates, and it rests on the same local-compromise prerequisite already accepted for that read-side gap.
+Accepted gap: the Write tool does not open with `O_NOFOLLOW`, so a pre-planted symlink at the fixed body path would be followed.
+
+The downstream read path rejects that symlink. `_lib_sha256_no_follow` (`claude/.claude/hooks/_lib.sh`), called from `marker.sh write review-pr`, hashes through an `O_NOFOLLOW` open, so the flow fails closed rather than posting unreviewed content.
+
+The same followed write can also overwrite or create an arbitrary file the Claude Code process has write access to. That risk is wider than the posting-side risk the read-path check mitigates. It rests on the same local-compromise prerequisite as the read-side gap.
 
 ## Known gaps and operator choices
 
@@ -184,17 +194,18 @@ Accepted gap: the Write tool does not open with `O_NOFOLLOW`, so a pre-planted s
   shared object store. `review-pr-finish.sh` does not remove them, and an
   ordinary `git gc` expires them once unreachable (default prune expiry is
   2 weeks, per `git-gc(1)`).
-- **The post gate is a cooperative-mistake check.** Only
-  `review-pr-post.sh`'s own unreachability of `--approve` is unbypassable:
-  its two `gh pr review` calls carry the literal `--comment` and
-  `--request-changes`. A direct `gh pr review --approve` from the session is
-  gated by `require-respond-pr.sh`, which a live `respond-pr` bypass marker
-  releases, and `marker.sh activate respond-pr` is auto-allowed in
-  `settings.json`. The post gate otherwise catches
-  cooperative mistakes, and the boundary against a steered session is the
-  human (Step 8 approval, plus the permission prompt on the
-  non-allowlisted `review-pr-post.sh`, whose strength depends on the
-  operator's permission mode). An operator who wants no post to be possible
-  from the session can run it with a `gh` token that carries no
-  pull-request write permission and post the approved body by hand. That
-  choice is not built.
+- **The post gate is a cooperative-mistake check.**
+  - `review-pr-post.sh` never emits `--approve`: its two `gh pr review` calls
+    carry the literal `--comment` and `--request-changes`. This is the only
+    unbypassable property of the gate.
+  - A direct `gh pr review --approve` from the session is gated by
+    `require-respond-pr.sh`.
+  - A live `respond-pr` bypass marker releases that gate, and
+    `marker.sh activate respond-pr` is auto-allowed in `settings.json`.
+  - Otherwise the post gate catches cooperative mistakes. The boundary
+    against a steered session is the human: Step 8 approval, plus the
+    permission prompt on the non-allowlisted `review-pr-post.sh`, whose
+    strength depends on the operator's permission mode.
+  - An operator who wants no post to be possible from the session can run it
+    with a `gh` token that carries no pull-request write permission and post
+    the approved body by hand. That choice is not built.

@@ -119,7 +119,7 @@ class TestAuditExecutionSurfacePureFunction:
         assert result["stop"] is True
 
     def test_skill_md_outside_a_claude_skills_directory_does_not_match(self):
-        """Bounds the new arm from the other side: a file literally named
+        """Bounds the SKILL.md arm from the other side: a file literally named
         SKILL.md that doesn't sit under a .claude/skills/ directory is not
         loaded by the harness's skill discovery, so it must not stop."""
         result = audit_execution_surface(["docs/SKILL.md"])
@@ -135,6 +135,25 @@ class TestAuditExecutionSurfacePureFunction:
         (`git add -f`) to ship one anyway."""
         result = audit_execution_surface([".claude/settings.local.json"])
         assert result["stop"] is True
+
+    def test_nested_claude_settings_json_matches(self):
+        result = audit_execution_surface(["packages/api/.claude/settings.json"])
+        assert result["stop"] is True
+
+    def test_nested_claude_settings_local_json_matches(self):
+        result = audit_execution_surface(["packages/api/.claude/settings.local.json"])
+        assert result["stop"] is True
+
+    def test_nested_claude_agents_directory_matches(self):
+        result = audit_execution_surface(["packages/api/.claude/agents/rogue-reviewer.md"])
+        assert result["stop"] is True
+
+    def test_backslash_separated_path_matches(self):
+        """A Windows-style separator resolves to the same directory, so the
+        classifier must normalize backslashes before matching."""
+        result = audit_execution_surface([".claude\\hooks\\evil.sh"])
+        assert result["stop"] is True
+        assert result["matches"][0]["path"] == ".claude\\hooks\\evil.sh"
 
     def test_gitmodules_matches(self):
         """A submodule config change can fetch/checkout attacker-controlled

@@ -117,7 +117,8 @@ fi
 
 # Calls the same shared _lib_review_pr_artifact_path helper (_lib.sh) that
 # marker.sh's `write review-pr` arm calls, at the same fixed suffix --
-# SKILL.md Step 7 writes the findings body here and nowhere else.
+# SKILL.md's synthesize-and-record step writes the findings body here and
+# nowhere else.
 FINDINGS_BODY_PATH=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" body)
 
 # One O_NOFOLLOW read supplies both the hash and the bytes posted below, so a

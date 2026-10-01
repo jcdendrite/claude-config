@@ -36,18 +36,14 @@ REVIEW_PR_ATTRIBUTION_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/review-pr-check-att
 # checks at commit time.
 SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'skills/**/SKILL.md' '.claude/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
 
-# Single registry for every `write <skill>` target -- usage()'s own two
-# enum lines (the "status" description and the "Valid combinations" write
-# line) and the `write)` case's own *) rejection message all read this
-# array rather than carrying their own, independently-maintained copy of
-# the same seven names.
+# Single registry for every `write <skill>` target: usage()'s two enum lines
+# (the "status" description and the "Valid combinations" write line) and the
+# `write)` case's *) rejection message all read this array.
 WRITE_SKILLS=(code-review skill-review plan-review ready-for-review cumulative-review review-pr verification)
 
 # Parallel indexed arrays (bash 3.2 has no associative arrays) holding each
-# skill's own active-bypass directory name. review-pr carries no
-# activate/deactivate arm: its Step 1 reads need no active-bypass marker of
-# their own (see require-respond-pr.sh's own header for why), so it has no
-# directory entry here.
+# skill's own active-bypass directory name. review-pr has no
+# activate/deactivate arm, so it has no directory entry here.
 ACTIVE_BYPASS_SKILLS=(plan-review ready-for-review respond-pr memory-skill handoff)
 ACTIVE_BYPASS_DIRS=(.plan-review-active.d .ready-for-review-active.d .respond-pr-active.d .memory-skill-active.d .handoff-active.d)
 
@@ -154,12 +150,8 @@ _resolve_session_id() {
 }
 
 # _resolve_session_and_pid
-# Every `activate` arm below needs both SESSION_ID and CLAUDE_PID.
-# _resolve_session_id alone only returns the session id.
-# Getting the PID too would need a second independent call to
-# _walk_session's ps(1)-based ancestor walk.
-# This function resolves once and sets both as globals, matching this
-# script's existing SESSION_ID/CLAUDE_PID call-site convention.
+# Resolves session id and Claude PID from one _walk_session call and sets
+# both as the globals SESSION_ID and CLAUDE_PID.
 _resolve_session_and_pid() {
   local out sid
   out=$(_walk_session) || return 2
@@ -465,9 +457,9 @@ CONFIG_DIR=$(_lib_config_dir) || {
 
 # Wraps _lib.sh's shared _lib_review_pr_artifact_path helper at the fixed
 # findings-body suffix, so this script's `write review-pr` arm and
-# review-pr-post.sh both resolve the same path through one definition --
-# SKILL.md Step 7 instructs writing the findings body here and nowhere
-# else.
+# review-pr-post.sh both resolve the same path through one definition.
+# SKILL.md's synthesize-and-record step writes the findings body here and
+# nowhere else.
 _review_pr_findings_body_fixed_path() {
   _lib_review_pr_artifact_path "$CONFIG_DIR" "$1" body
 }
@@ -523,9 +515,10 @@ case "$SUBCOMMAND" in
         # despite unchanged staged content.
         # This never causes a false accept, only a false re-review
         # requirement, so it is an availability gap, not a security one.
-        # Compute before redirecting: `>` truncates the marker before the
-        # pipeline runs, so a failed hash would destroy a valid marker and
-        # silently force a re-review. Same shape in every arm below.
+        # Compute before writing: _lib_write_no_follow truncates an existing
+        # marker on open, so a failed hash must exit before it runs or it would
+        # destroy a valid marker and silently force a re-review. Same shape in
+        # every arm below.
         MARKER_VALUE=$(_lib_code_review_marker_value "$REPO_ROOT" "$GATE_DIFF_BASE")
         if [ -z "$MARKER_VALUE" ]; then
           printf 'marker.sh: could not hash the staged diff. Abort without writing a marker.\n' >&2
@@ -562,9 +555,7 @@ case "$SUBCOMMAND" in
         # GATE_DIFF_BASE above -- see
         # docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
         SKILL_REVIEW_BASE=$(_lib_skill_review_diff_base "$REPO_ROOT")
-        # Compute before redirecting: `>` truncates the marker before the
-        # pipeline runs, so a failed hash would destroy a valid marker and
-        # silently force a re-review. Same shape as the code-review arm above.
+        # Compute before writing, same shape as the code-review arm above.
         MARKER_VALUE=$(_lib_staged_diff_hash "$REPO_ROOT" "$SKILL_REVIEW_BASE" "${SKILL_REVIEW_PATHSPECS[@]}")
         if [ -z "$MARKER_VALUE" ]; then
           # _lib_staged_diff_hash's two-outcome contract collapses a cap kill
@@ -615,10 +606,8 @@ case "$SUBCOMMAND" in
           # _lib_active_plan_hash, so the marker records the same
           # trusted-base preimage require-plan-review.sh reads.
           #
-          # Capture into a variable before redirecting. Writing the
-          # function's output straight into the marker path would let `>`
-          # truncate an existing valid marker before the function even runs,
-          # so a failed attempt would destroy a good marker as a side effect.
+          # Capture into a variable before writing, so a failed attempt exits
+          # before _lib_write_no_follow truncates an existing valid marker.
           PLAN_GATE_DIFF_BASE=$(_lib_gate_diff_base "$REPO_ROOT")
           # Same residual as the `write code-review` arm above: this call and
           # require-plan-review.sh's own _lib_gate_diff_base call can disagree
@@ -679,10 +668,7 @@ case "$SUBCOMMAND" in
           printf 'marker.sh: the recorded cumulative-review subject for %s is empty. Run `~/.claude/scripts/pr-diff-against-base.sh --record` (step 3 already runs this) before writing this marker. Abort without writing a marker.\n' "$REPO_ROOT" >&2
           exit 2
         fi
-        # Compute before redirecting -- same shape as every other write arm
-        # above: `>` truncates the marker before the pipeline runs, so a
-        # failed hash would destroy a valid marker and silently force a
-        # re-review.
+        # Compute before writing, same shape as every other write arm above.
         MARKER_VALUE=$(_lib_hash_diff_text "$SUBJECT_TEXT") || {
           printf 'marker.sh: could not hash the recorded cumulative-review subject. Abort without writing a marker.\n' >&2
           exit 2
@@ -695,16 +681,12 @@ case "$SUBCOMMAND" in
       review-pr)
         SESSION_ID=$(_resolve_session_id) || exit 2
         # Provenance file written by review-pr-acquire.sh (mode acquired)
-        # and rewritten by review-pr-checkout.sh/review-pr-diff.sh after
-        # their own independent re-derivation (mode checkout/diff-only): PR
-        # identity, the reviewed headRefOid, the session's Claude PID, and
-        # the mode -- never the findings-body text itself, so the findings
-        # never land in argv, shell history, or the process table. Read via
-        # _lib_review_pr_provenance_field's key=value schema (schema=1
-        # header, one KEY=VALUE line per field), not positional line
-        # numbers -- a field this arm doesn't know about yet (added by a
-        # later phase) is simply never read here rather than shifting every
-        # other field's position.
+        # and rewritten by review-pr-checkout.sh/review-pr-diff.sh (mode
+        # checkout/diff-only): PR identity, the reviewed headRefOid, the
+        # session's Claude PID, and the mode. It never holds the findings-body
+        # text, so the findings never land in argv, shell history, or the
+        # process table. Fields are read by key, not by line position, so an
+        # added field cannot shift another field's read.
         PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
         PR_IDENTITY=$(_lib_review_pr_provenance_field "$PROVENANCE" pr_identity) || PR_IDENTITY=""
         HEAD_REF_OID=$(_lib_review_pr_provenance_field "$PROVENANCE" head_ref_oid) || HEAD_REF_OID=""
@@ -745,36 +727,19 @@ case "$SUBCOMMAND" in
         # The findings-body path is derived here, never read from provenance,
         # so no path-equality guard is needed before using it.
         FINDINGS_BODY_PATH=$(_review_pr_findings_body_fixed_path "$SESSION_ID")
-        # Mechanical backstop for SKILL.md's synthesize-and-record step's own
-        # "start with **[Claude Code]**, end with the trailer" instruction,
-        # plus (in diff-only mode) the reduced-coverage disclosure line:
-        # same rationale as the secret scan below -- a PreToolUse hook never
-        # sees the findings body, since it's composed by the model's own
-        # reasoning rather than passed as a tool-call argument. MODE is
-        # passed through so the disclosure check cannot be opted out of by a
-        # model that never saw the prose stating it. Run before the body is
-        # hashed or the completion marker written, so a missing prefix,
-        # trailer, or disclosure refuses the whole write rather than
-        # getting marker-ized.
-        # _lib_capped (5s default): a local `head`/`grep` read over a
-        # session-owned text file, the same budget the secret scan below
-        # and the BODY_HASH computation further below use for their own
-        # reads of this same file.
+        # Attribution prefix, trailer, and (diff-only mode) disclosure line
+        # check, run before the body is hashed so a failure refuses the whole
+        # write (see review-pr-check-attribution.sh's header for why it is
+        # mechanical). _lib_capped's 5s default bounds a local read of a
+        # session-owned text file.
         if ! ATTRIBUTION_OUTPUT=$(_lib_capped "$REVIEW_PR_ATTRIBUTION_SCRIPT" "$FINDINGS_BODY_PATH" "$MODE" 2>&1); then
           printf '%s\n' "$ATTRIBUTION_OUTPUT" >&2
           printf 'marker.sh: findings-body attribution check failed. Abort without writing a marker.\n' >&2
           exit 2
         fi
-        # Mechanical backstop for SKILL.md's synthesize-and-record step's own
-        # prose scrubbing instruction: a PreToolUse hook never sees the
-        # findings body, since it's composed by the model's own reasoning
-        # rather than passed as a tool-call argument. Run before the body is
-        # hashed or the completion marker written, so a credential-shaped
-        # string still in the body refuses the whole write rather than
-        # getting marker-ized.
-        # _lib_capped (5s default): a local grep over a session-owned text
-        # file, the same budget the BODY_HASH computation just below uses
-        # for its own read of this same file.
+        # Credential-shape scan, run before the body is hashed so a hit
+        # refuses the whole write (see review-pr-scan-findings-body.sh's header
+        # for why it is mechanical).
         if ! SCAN_OUTPUT=$(_lib_capped "$REVIEW_PR_SCAN_SCRIPT" "$FINDINGS_BODY_PATH" 2>&1); then
           printf '%s\n' "$SCAN_OUTPUT" >&2
           printf 'marker.sh: findings-body secret scan failed. Abort without writing a marker.\n' >&2
@@ -782,9 +747,8 @@ case "$SUBCOMMAND" in
         fi
         # _lib_sha256_no_follow reads through a single os.open(O_NOFOLLOW) --
         # a separate `[ -L ]` check followed by `sha256sum` is not atomic, so
-        # an attacker could swap in a symlink between the two. Compute
-        # before redirecting, same reasoning as every arm above: a failed
-        # hash must not truncate a valid existing marker.
+        # an attacker could swap in a symlink between the two. Computed before
+        # writing, same as every arm above.
         BODY_HASH=$(_lib_sha256_no_follow "$FINDINGS_BODY_PATH" 2>/dev/null)
         [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s (missing, unreadable, or a symlink). Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
         mkdir -p "$CONFIG_DIR/review-pr-markers"
@@ -817,17 +781,14 @@ case "$SUBCOMMAND" in
         # hashes the tree (what step 2 executes); `cumulative-review` hashes
         # the diff (what step 3 reads).
         #
-        # Compute before redirecting -- same shape as every other write arm
-        # above: `>` truncates the marker before the pipeline runs, so a
-        # failed hash would destroy a valid marker and silently force a
-        # re-verification.
+        # Compute before writing, same shape as every other write arm above.
         MARKER_VALUE=$(_lib_head_tree_hash uncapped "$REPO_ROOT") || {
           printf 'marker.sh: could not resolve HEAD^{tree}. Abort without writing a marker.\n' >&2
           exit 2
         }
         mkdir -p "$CONFIG_DIR/verification-markers"
-        printf '%s\n' "$MARKER_VALUE" \
-          > "$CONFIG_DIR/verification-markers/$REPO_HASH.$SESSION_ID"
+        printf '%s\n' "$MARKER_VALUE" | _lib_write_no_follow "$CONFIG_DIR/verification-markers/$REPO_HASH.$SESSION_ID" \
+          || { printf 'marker.sh: could not write the completion marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
         ;;
       *)
         printf "marker.sh: 'write %s' is not valid. 'write' supports: %s\n" "$SKILL" "$(_join_words ', ' "${WRITE_SKILLS[@]}")" >&2
@@ -904,16 +865,12 @@ case "$SUBCOMMAND" in
     #   - overwritten on the next gate pass
     #   - revisit only if unbounded accumulation shows up in practice
     #
-    # .review-pr-active.d keeps that name even though review-pr carries no
-    # activate/deactivate arm of its own -- its Step 1 reads need none. This
-    # glob is "$CONFIG_DIR"/.*-active.d, so a renamed directory would never
-    # be swept.
+    # .review-pr-active.d keeps the `-active.d` suffix although review-pr has
+    # no activate/deactivate arm: the sweep globs "$CONFIG_DIR"/.*-active.d,
+    # so a renamed directory would never be swept.
     #
-    # One python3 invocation for the whole sweep, not one per entry: a
-    # per-file bash loop would pay a fresh python3 spawn per file. Extracted
-    # into marker-clear-stale.py per shell-script-conventions.md -- this sweep
-    # has its own control flow and data structures, not a single syscall bash
-    # can't express.
+    # The sweep runs in marker-clear-stale.py (see shell-script-conventions.md)
+    # because it has its own control flow and data structures.
     DRY_RUN=0
     [ "$ARG2" = "--dry-run" ] && DRY_RUN=1
     CLEAR_STALE_OUTPUT=$(python3 -I "$(dirname "$0")/marker-clear-stale.py" "$CONFIG_DIR" "$DRY_RUN")

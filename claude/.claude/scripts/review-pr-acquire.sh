@@ -1,43 +1,47 @@
 #!/usr/bin/env bash
 # The acquire step for /review-pr: one script call running the `gh` calls,
 # so the pagination reconciliation and the review-thread fetch are performed
-# the same way on every run rather than left to the model's own
-# transcription. Needs no active-bypass marker of
-# its own: require-respond-pr.sh matches only the literal Bash-tool command
-# text, which is `~/.claude/scripts/review-pr-acquire.sh <owner>/<repo>#<N>`
-# here -- it never sees the `gh api .../reviews` call this script makes
-# internally, the same gap require-worktree-for-git-writes.sh has against a
-# wrapper script's own internal calls (see docs/hooks.md). require-respond-pr.sh's
-# ungated release of this invocation depends on that gap staying true: this
-# script must never make a write-shaped `gh api`/`gh pr`/etc. call.
+# the same way on every run rather than left to the model's own transcription.
+# Needs no active-bypass marker (see require-respond-pr.sh's header), so this
+# script must never make a write-shaped `gh api`/`gh pr` call.
 set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
 Usage: ~/.claude/scripts/review-pr-acquire.sh <owner>/<repo>#<number>
 
-Fetches everything /review-pr's later steps need in one call: gh pr view's
-own metadata fields (including statusCheckRollup, its entries passed through
-raw and a null value read as an empty list),
-author_association and the PR's own `changed_files`/`commits` totals (a
-separate REST call -- author_association is not a valid `gh pr view --json`
-field), the full paginated changed-files and commits lists (re-fetched via
---paginate when gh pr view's own capped fields disagree with the PR's real
-totals), existing review bodies, and existing inline review comments.
+Fetches everything /review-pr's later steps need in one call:
+- gh pr view's own metadata fields, including statusCheckRollup (entries
+  passed through raw, a null value read as an empty list).
+- author_association and the PR's own `changed_files`/`commits` totals, from a
+  separate REST call (author_association is not a valid `gh pr view --json`
+  field).
+- The full paginated changed-files and commits lists, re-fetched via
+  --paginate when gh pr view's own capped fields disagree with the PR's real
+  totals.
+- Existing review bodies and existing inline review comments.
+
 Prints one JSON document on stdout and writes the identical document to
-$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.context.json, a backstop
-against a harness-truncated stdout on a large PR. The document carries
-`filesComplete` and `commitsComplete`, each true only when the list's length
-equals the PR's own REST total. A re-fetched file list that still differs in
-length from `changed_files` aborts instead. Also writes this
-session's provenance file (mode "acquired") -- review-pr-checkout.sh and
-review-pr-diff.sh each rewrite it (mode "checkout"/"diff-only") after their
-own independent re-derivation; marker.sh write review-pr accepts only
-those two modes, so an acquire-only session can never write a completion
-marker. Any gh failure aborts with no partial document written, and never
-echoes gh's own stderr/error text verbatim -- an API error payload can echo
-request parameters, so only this script's own fixed messages reach stdout/
-stderr.
+$CONFIG_DIR/.review-pr-active.d/$SESSION_ID.context.json, a backstop against
+a harness-truncated stdout on a large PR. The file is pretty-printed
+(multi-line) so the Read tool can page it with offset/limit. Its path is
+printed on stderr before the document is printed on stdout.
+
+The document carries `filesComplete` and `commitsComplete` as its first two
+keys, each true only when the list's length equals the PR's own REST total.
+A re-fetched file list that still differs in length from `changed_files`
+aborts instead.
+
+Also writes this session's provenance file (mode "acquired").
+review-pr-checkout.sh and review-pr-diff.sh each rewrite it (mode
+"checkout"/"diff-only") after their own independent re-derivation.
+marker.sh write review-pr accepts only those two modes, so an acquire-only
+session can never write a completion marker.
+
+Any gh failure aborts with no partial document written. gh's own
+stderr/error text is never echoed verbatim, since an API error payload can
+echo request parameters: only this script's own fixed messages reach
+stdout/stderr.
 EOF
 }
 
@@ -195,13 +199,10 @@ else
 fi
 
 # Existing review bodies -- what other reviewers already raised, so step 7
-# doesn't repeat them. Needs no active-bypass marker (see this script's
-# header comment): require-respond-pr.sh never sees this internal gh api
-# call. No --slurp: `--jq` applied per page (the same proven pattern
-# review-pr-checkout.sh's own file-list fetch already uses) streams each
-# matching review object on its own line; a local `jq -s` afterward
-# combines that stream into one JSON array, same as the files/commits
-# re-fetch encoding steps above.
+# doesn't repeat them. No --slurp: `--jq` applied per page (as in
+# review-pr-checkout.sh's file-list fetch) streams each matching review
+# object on its own line, and a local `jq -s` combines that stream into one
+# JSON array, as in the files/commits re-fetch encoding above.
 REVIEWS_FETCH_STATUS=0
 RAW_REVIEWS=$(_lib_gh "$GH_PR_PAGINATE_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/reviews?per_page=100" --paginate --jq '.[] | select(.body != "") | {id, author: .user.login, state, body}' 2>/dev/null) || REVIEWS_FETCH_STATUS=$?
 if [[ "$REVIEWS_FETCH_STATUS" -ne 0 ]]; then
@@ -255,6 +256,8 @@ fi
 # variables, and double-quoting would trigger shell expansion inside the jq
 # filter instead of leaving the bindings to jq itself.
 # --slurpfile wraps each file's one JSON value in an array, hence `[0]`.
+# The completeness flags lead the document so a cut at the end of stdout
+# keeps the flags.
 if ! CONTEXT_JSON=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -c \
   --arg prIdentity "$PR_IDENTITY" \
   --arg authorAssociation "$AUTHOR_ASSOCIATION" \
@@ -264,14 +267,12 @@ if ! CONTEXT_JSON=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -c \
   --slurpfile commits "$CONTEXT_TMP_DIR/commits.json" \
   --slurpfile existingReviews "$CONTEXT_TMP_DIR/reviews.json" \
   --slurpfile existingInlineComments "$CONTEXT_TMP_DIR/inline-comments.json" \
-  '. + {
+  '{filesComplete: $filesComplete, commitsComplete: $commitsComplete} + . + {
      statusCheckRollup: (.statusCheckRollup // []),
      prIdentity: $prIdentity,
      authorAssociation: $authorAssociation,
      files: $files[0],
-     filesComplete: $filesComplete,
      commits: $commits[0],
-     commitsComplete: $commitsComplete,
      existingReviews: $existingReviews[0],
      existingInlineComments: $existingInlineComments[0]
    }' 2>/dev/null); then
@@ -280,15 +281,13 @@ if ! CONTEXT_JSON=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -c \
 fi
 
 CONTEXT_FILE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" context.json)
-if ! printf '%s\n' "$CONTEXT_JSON" | _lib_write_no_follow "$CONTEXT_FILE"; then
+if ! CONTEXT_FILE_JSON=$(printf '%s' "$CONTEXT_JSON" | _lib_jq . 2>/dev/null) \
+  || ! printf '%s\n' "$CONTEXT_FILE_JSON" | _lib_write_no_follow "$CONTEXT_FILE"; then
   echo "review-pr-acquire.sh: could not write the backstop context file $CONTEXT_FILE. Abort." >&2
   exit 2
 fi
 
-# Provenance write, mode "acquired": review-pr-checkout.sh/review-pr-diff.sh
-# each rewrite this same sibling file (mode "checkout"/"diff-only") after
-# their own independent re-derivation. marker.sh write review-pr accepts
-# only those two modes.
+# Provenance write, mode "acquired" (the usage text names the later rewrites).
 PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
 if ! _lib_write_review_pr_provenance "$PROVENANCE" \
   "pr_identity=$PR_IDENTITY" "head_ref_oid=$HEAD_REF_OID" "pid=$CLAUDE_PID" "mode=acquired"; then
@@ -296,4 +295,6 @@ if ! _lib_write_review_pr_provenance "$PROVENANCE" \
   exit 2
 fi
 
+# The path line precedes the document so a head-truncated merged stream keeps it.
+echo "review-pr-acquire.sh: context backstop file (Read it if stdout was cut off): $CONTEXT_FILE" >&2
 printf '%s\n' "$CONTEXT_JSON"

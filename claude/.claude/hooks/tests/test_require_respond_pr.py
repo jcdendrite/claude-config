@@ -107,80 +107,16 @@ class TestRequireRespondPr:
     def test_non_matching_commands_allowed(self, isolated_home, current_repo_foo_bar, command):
         assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
 
-    # -- Bare pulls/{number} or issues/{number} PATCH/POST/PUT/DELETE -------
-    # GH-critical: a REST write directly against the PR/issue resource
-    # itself carries no /comments or /reviews suffix, so PATTERN_REST_NUMBERED
-    # and PATTERN_REST_COMMENT_ID both miss it -- this is the gap
-    # PATTERN_REST_NUMBERED_ROOT closes.
-
     @pytest.mark.parametrize(
         "command",
         [
-            "gh api repos/foo/bar/pulls/5 -X PATCH -f body=oops",
-            "gh api repos/foo/bar/issues/5 -X PATCH -f body=oops",
-            "gh api repos/foo/bar/pulls/5 -F body=oops",
-            "gh api repos/foo/bar/pulls/5 --input body.json",
+            "gh pr edit 5 --body-file /tmp/body.md",
+            'gh pr edit 5 --body "text"',
         ],
     )
-    def test_bare_pr_issue_root_write_denied(
-        self, isolated_home, current_repo_foo_bar, command
-    ):
-        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "deny"
-
-    def test_bare_pr_issue_root_read_still_allowed(self, isolated_home, current_repo_foo_bar):
-        """No body-setting flag present -- an ordinary read of the bare
-        resource must stay allowed, the same case test_non_matching_commands_allowed
-        already pins; kept here as a paired sanity check next to the write
-        arm it bounds."""
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input("gh api repos/foo/bar/pulls/5"),
-                cwd=current_repo_foo_bar,
-            )
-            == "allow"
-        )
-
-    # -- Bare GraphQL updatePullRequest/updateIssue mutations ----------------
-    # GH-critical: PATTERN_GRAPHQL_MUTATION only matches a mutation name
-    # ending in Comment/Review -- a mutation against the PR/issue resource
-    # itself carries neither suffix and fell through to allow.
-
-    @pytest.mark.parametrize(
-        "mutation_body",
-        [
-            'updatePullRequest(input: {pullRequestId: "PR_kwABC", body: "rewritten"})',
-            'updateIssue(input: {id: "I_kwABC", body: "rewritten"})',
-        ],
-    )
-    def test_graphql_bare_update_pr_or_issue_mutation_denied(
-        self, isolated_home, current_repo_foo_bar, mutation_body
-    ):
-        command = f"gh api graphql -f query='mutation {{ {mutation_body} {{ clientMutationId }} }}'"
-        assert (
-            run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar)
-            == "deny"
-        )
-
-    def test_graphql_read_query_naming_pull_request_field_near_update_token_allowed(
-        self, isolated_home, current_repo_foo_bar
-    ):
-        """Bounds PATTERN_GRAPHQL_PR_ISSUE_MUTATION from the other side,
-        paired with the deny case above the same way test_graphql_non_comment_mutations_allowed
-        bounds PATTERN_GRAPHQL_MUTATION. A read query naming `pullRequest` as
-        a field (not calling the `updatePullRequest` mutation) alongside an
-        unrelated `updatedAt` field must stay allowed: the pattern requires
-        `update` immediately followed by `PullRequest`/`Issue` and only
-        whitespace before the opening paren, so a lowercase field read and a
-        same-prefix field elsewhere in the query text must not trip it."""
-        command = (
-            "gh api graphql -f query='query { repository(owner: \"foo\", name: \"bar\") "
-            "{ pullRequest(number: 5) { updatedAt title } } }'"
-        )
-        assert (
-            run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar)
-            == "allow"
-        )
+    def test_own_pr_body_edit_allowed(self, isolated_home, current_repo_foo_bar, command):
+        """Sanctioned own-PR body-edit flows: /pr-description sync, /ready-for-review step 5, /code-review DEFER persistence."""
+        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "allow"
 
     def test_awk_absent_from_path_denies(self, isolated_home, current_repo_foo_bar, tmp_path):
         """GH-801: status-2 propagation. COMMAND_FLAT's awk fork failing
@@ -611,11 +547,8 @@ class TestRequireRespondPr:
     def test_same_repo_different_case_still_denied(
         self, isolated_home, current_repo_foo_bar, command
     ):
-        """A command targeting the current repo (origin foo/bar) but spelled
-        with different letter case must still hit the same-repo deny path,
-        not the cross-repo bypass's `exit 0` -- before the nocasematch fix,
-        COMMAND_REPO's case-differing spelling compared unequal to
-        CURRENT_REPO and this wrongly took the cross-repo bypass instead."""
+        """A differently-cased spelling of the current repo (origin foo/bar)
+        must hit the same-repo deny path, not the cross-repo release."""
         assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=current_repo_foo_bar) == "deny"
 
     @pytest.mark.parametrize(
@@ -1175,10 +1108,7 @@ class TestRespondPrStructuralInvariants:
 # HEAD (git_repo has a real commit; current_repo_foo_bar does not) but no
 # particular origin.
 #
-# review-pr's own Step 1 reads need no bypass marker: they run inside
-# ~/.claude/scripts/review-pr-acquire.sh, whose internal `gh api` calls this
-# hook never sees (matching only the literal Bash-tool command text) --
-# see this hook's own header for why.
+# review-pr's Step 1 reads need no bypass marker (see this hook's own header).
 
 REVIEW_PR_PR_NUMBER = 42
 REVIEW_PR_PR_IDENTITY = f"foo/bar#{REVIEW_PR_PR_NUMBER}"
@@ -1211,12 +1141,9 @@ def git_repo_foo_bar_origin(git_repo):
     return git_repo
 
 
-class TestReviewPrReadsNoLongerHaveABypassMarker:
+class TestReviewPrBareReadsAreDenied:
     """A bare `gh api .../pulls/N/reviews` read is denied like any other
-    gated read; review-pr-acquire.sh's own top-level command text is the
-    only thing that evades this gate (this hook's own header names the
-    mechanism). A raw gh call typed directly still gates regardless of
-    session state."""
+    gated read, regardless of session state."""
 
     def test_bare_read_is_denied_with_no_review_pr_bypass(self, isolated_home, git_repo):
         sid = "test-session-review-pr-read"
@@ -1234,47 +1161,14 @@ class TestReviewPrReadsNoLongerHaveABypassMarker:
 
 
 class TestReviewPrAcquireInvocationIsAllowedThroughUngated:
-    """This hook sees only the Bash-tool command's own literal text, never
-    the `gh api` calls review-pr-acquire.sh makes internally, so its
-    invocation carries no gated pattern and needs no bypass marker of its
-    own -- pins the reliance `docs/hooks.md` and the script's own header
-    both document."""
+    """review-pr-acquire.sh's invocation carries no gated pattern, so it needs
+    no bypass marker -- pins the reliance this hook's own header documents."""
 
     def test_allowed_with_no_marker(self, isolated_home, git_repo):
         assert (
             run_hook(
                 RESPOND_PR_HOOK,
                 bash_input(f"~/.claude/scripts/review-pr-acquire.sh {REVIEW_PR_PR_IDENTITY}"),
-                cwd=git_repo,
-                home=isolated_home,
-            )
-            == "allow"
-        )
-
-
-class TestGhPrEditBodyMutatingFormsDenied:
-    """The 'never edit someone else's PR body' invariant, folded into this
-    hook's gated-write patterns independent of respond-pr's own bypass
-    marker."""
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            'gh pr edit 5 --body "new body text"',
-            "gh pr edit 5 --body-file /tmp/new-body.md",
-        ],
-    )
-    def test_denied_with_no_marker(self, isolated_home, git_repo, command):
-        assert run_hook(RESPOND_PR_HOOK, bash_input(command), cwd=git_repo, home=isolated_home) == "deny"
-
-    def test_title_only_edit_is_not_gated(self, isolated_home, git_repo):
-        """Bounds the pattern from the other side: only body-mutating forms
-        fold into this gate -- `gh pr edit` covers title, labels, and more,
-        and gating every use would be broader than the invariant this closes."""
-        assert (
-            run_hook(
-                RESPOND_PR_HOOK,
-                bash_input('gh pr edit 5 --title "new title"'),
                 cwd=git_repo,
                 home=isolated_home,
             )

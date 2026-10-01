@@ -14,10 +14,14 @@ SCRIPT = SCRIPTS_DIR / "review-pr-check-attribution.sh"
 TRAILER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 DISCLOSURE_LINE = "Reviewed from the PR diff only — no checkout, no checks run."
 
+# A harness bound so a hung bash fails one test instead of the suite.
+_SUBPROCESS_TIMEOUT_SECONDS = 60
+
 
 def _run(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", str(SCRIPT), *args], capture_output=True, text=True, check=False
+        ["bash", str(SCRIPT), *args], capture_output=True, text=True, check=False,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 

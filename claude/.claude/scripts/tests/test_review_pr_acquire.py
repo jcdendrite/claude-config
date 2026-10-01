@@ -30,6 +30,9 @@ PR_NUMBER = "42"
 PR_IDENTITY = f"{OWNER_REPO}#{PR_NUMBER}"
 SID = "test-session-review-pr-acquire"
 
+# A harness bound so a hung bash fails one test instead of the suite.
+_SUBPROCESS_TIMEOUT_SECONDS = 60
+
 # gh api's own default-method rule (`gh api --help`): GET unless a field flag
 # is present, in which case the default flips to POST.
 _WRITE_METHOD_FLAGS = ("-X", "--method")
@@ -56,12 +59,10 @@ def _assert_gh_calls_are_read_only(calls: list[list[str]]) -> None:
     """Allowlists the exact `gh` call shapes review-pr-acquire.sh's header
     comment documents it as making: `gh pr view` and `gh api` against its
     own known GET endpoints (the bare pulls/{N} resource plus its
-    files/commits/reviews/comments sub-resources, each at the maximum page size),
-    none carrying a method
-    or field flag that would flip `gh api`'s default method to POST. Any
-    call outside that allowlist fails, including an unanticipated write
-    shape this suite's fixtures never modeled -- and `gh pr checks`, which
-    the script does not call (check results come from statusCheckRollup).
+    files/commits/reviews/comments sub-resources, each at the maximum page
+    size), none carrying a method or field flag that would flip `gh api`'s
+    default method to POST. Any call outside that allowlist fails, including
+    an unanticipated write shape this suite's fixtures never modeled.
 
     Covers only the `gh` invocations the shimmed code paths this suite's
     fixtures drive actually make; it says nothing about a non-`gh` write
@@ -119,28 +120,22 @@ def _gh_shim_source(
     fail_inline_comments: bool = False,
     rest_error_text: str | None = None,
 ) -> str:
-    """gh shim recording every invocation. `capped_files`/`capped_commits`
-    model `gh pr view --json files/commits`' own 100-entry-capped arrays;
-    `full_files`/`full_commits` (defaulting to the capped lists, i.e. no
-    truncation) model the ground truth the REST `--paginate` re-fetch and
-    the REST pulls payload's own `commits` integer respectively report --
-    a caller passing a shorter capped list than the full one models the
-    truncation this script must detect and repaginate past.
-    `rest_changed_files`/`rest_commits_total` override the REST payload's own
-    `changed_files`/`commits` integers, which default to the length of the
-    full list, so a test can model a re-fetched list that still falls short
-    of the PR's real total. `gh pr view` returns only the fields named after
-    `--json`, and exits 1 on an unknown field as the real binary does, so a
-    field dropped from or misspelled in the script's request is visible.
-    The files listing prints one JSON string per line under the `@json` jq
-    filter, as real `gh --jq` does for a string result: raw UTF-8, with a
-    control character rendered in caret notation, as gh 2.100.0 is modeled to
-    do (see the shim constant in conftest.py).
+    """gh shim recording every invocation in `call_log`.
+    `capped_files`/`capped_commits` model `gh pr view --json files/commits`'
+    own 100-entry-capped arrays. `full_files`/`full_commits` (default: the
+    capped lists, i.e. no truncation) model the ground truth the `--paginate`
+    re-fetch and the REST `commits` integer report, so a shorter capped list
+    models the truncation the script must detect.
+    `rest_changed_files`/`rest_commits_total` override the REST integers
+    (default: the length of the full list), so a test can model a re-fetch that
+    still falls short of the PR's real total.
+    `gh pr view` returns only the fields named after `--json` and exits 1 on
+    an unknown field, as the real binary does. The files listing prints one
+    JSON string per line under the `@json` jq filter, with a control character
+    rendered in caret notation as gh 2.100.0 is modeled to do (see the shim
+    constant in conftest.py).
     Every listing call must carry `--paginate` and `per_page=100`; the shim
-    exits 97 otherwise, so a script dropping either fails the run.
-    `null_status_check_rollup` makes `gh pr view` return null for
-    `statusCheckRollup`, and `omit_rest_commits_total` drops `commits` from
-    the REST payload."""
+    exits 97 otherwise."""
     capped_files = capped_files if capped_files is not None else []
     full_files = full_files if full_files is not None else capped_files
     capped_commits = capped_commits if capped_commits is not None else []
@@ -287,6 +282,7 @@ def _run(
         env.update(extra_env)
     result = subprocess.run(
         ["bash", str(SCRIPT), *args], cwd=tmp_path, env=env, capture_output=True, text=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     _assert_gh_calls_are_read_only(_read_calls(call_log))
     return result, call_log
@@ -415,6 +411,39 @@ class TestSuccessfulAcquire:
         assert fields["pid"].isdigit()
         assert fields["mode"] == "acquired"
 
+    def test_completeness_flags_are_the_first_keys_of_the_document(self, isolated_home, tmp_path):
+        """The completeness flags SKILL.md tells the model to check come
+        first, so a cut at the end of a large document keeps them."""
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid="a" * 40, capped_files=["a.py"], capped_commits=["c1"],
+        )
+        assert result.returncode == 0, result.stderr
+        assert list(json.loads(result.stdout))[:2] == ["filesComplete", "commitsComplete"]
+
+    def test_last_stderr_line_names_the_context_backstop_file(self, isolated_home, tmp_path):
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid="a" * 40, capped_files=["a.py"], capped_commits=["c1"],
+        )
+        assert result.returncode == 0, result.stderr
+        context_file = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.context.json"
+        assert result.stderr.splitlines()[-1].endswith(f": {context_file}")
+
+    def test_backstop_file_is_multi_line_while_stdout_is_one_compact_line(self, isolated_home, tmp_path):
+        """The Read tool pages a file by line, so a single-line backstop file
+        could not be read in slices; stdout stays one compact document."""
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid="a" * 40, capped_files=["a.py"], capped_commits=["c1"],
+        )
+        assert result.returncode == 0, result.stderr
+        context_file = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.context.json"
+        file_text = context_file.read_text()
+        assert len(file_text.splitlines()) > 1
+        assert json.loads(file_text) == json.loads(result.stdout)
+        assert len(result.stdout.splitlines()) == 1
+
     def test_reviews_with_empty_body_are_excluded(self, isolated_home, tmp_path):
         result, call_log = _run(
             isolated_home, [PR_IDENTITY], tmp_path,
@@ -477,12 +506,12 @@ class TestExistingInlineComments:
 
 
 class TestStatusCheckRollupPassThrough:
-    """`statusCheckRollup` replaces the separate `gh pr checks` call. Its
-    entries are passed through raw -- nothing downstream branches on them, so
-    the CheckRun and StatusContext shapes are not normalized -- and a null
-    value reads as an empty list."""
+    """Check results come from `statusCheckRollup`. Its entries are passed
+    through raw -- nothing downstream branches on them, so the CheckRun and
+    StatusContext shapes are not normalized -- and a null value reads as an
+    empty list."""
 
-    def test_requested_in_the_pr_view_fields_with_no_gh_pr_checks_call(self, isolated_home, tmp_path):
+    def test_status_check_rollup_is_requested_in_the_pr_view_fields(self, isolated_home, tmp_path):
         result, call_log = _run(isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40)
         assert result.returncode == 0, result.stderr
         calls = _read_calls(call_log)
@@ -758,7 +787,7 @@ class TestGhFailureNeverBypassesTheScrub:
     def test_rest_call_failure_error_text_never_reaches_context_json_or_output(
         self, isolated_home, tmp_path
     ):
-        secret_shaped_text = "leaked-token=ghp_AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII"
+        secret_shaped_text = "leaked-token=ghp_" + "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII"
         result, call_log = _run(
             isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
             fail_rest=True, rest_error_text=secret_shaped_text,

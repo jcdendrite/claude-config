@@ -31,9 +31,7 @@ MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 # truth for both test_valid_shapes_allowed (which pins hook acceptance) and
 # TestPrescriptionAllowlistAlignment (which cross-checks permissions.allow
 # coverage over this same set), so the two can't silently drift apart.
-# review-pr carries no activate/deactivate shape: Step 1's own reads need no
-# active-bypass marker once they run inside a script a PreToolUse hook
-# cannot see into (require-respond-pr.sh's own header explains why).
+# review-pr has no activate/deactivate shape.
 TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh write code-review",
     "~/.claude/scripts/marker.sh write skill-review",
@@ -164,8 +162,7 @@ class TestEnforceMarkerScriptShape:
     # permitted for any op/target combination: the chain's end state is   #
     # identical to running each op separately, and every op is already    #
     # individually allowlisted or harmless (clear-stale). These are NOT   #
-    # single shapes and must NOT appear in the 21-shape parametrize list  #
-    # above.                                                              #
+    # single shapes and must NOT appear in TILDE_MARKER_SHAPES.           #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize(
@@ -424,13 +421,13 @@ class TestEnforceMarkerScriptShape:
         cmd = "~/.claude/scripts/marker.sh check review-pr"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
-    def test_activate_review_pr_now_denied(self):
+    def test_activate_review_pr_denied(self):
         """review-pr has no activate arm -- must be denied, mirroring
         test_activate_verification_denied above."""
         cmd = "~/.claude/scripts/marker.sh activate review-pr"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
-    def test_deactivate_review_pr_now_denied(self):
+    def test_deactivate_review_pr_denied(self):
         """review-pr has no deactivate arm -- must be denied, mirroring
         test_deactivate_verification_denied above."""
         cmd = "~/.claude/scripts/marker.sh deactivate review-pr"

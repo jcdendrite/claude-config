@@ -152,10 +152,11 @@ _lib_status_consistent_with_cap_kill() {
 
 # _lib_gh SECONDS ARGS...
 # Runs `gh ARGS...` capped at SECONDS via _lib_capped_for.
-# Prints nothing of its own. The calls that redirect gh's stderr do so because it can echo request parameters back; the two `gh pr review` calls in review-pr-post.sh leave it visible.
+# Prints nothing of its own.
 # Returns _lib_capped_for's own exit status unchanged -- 124/137/143 on a cap kill, gh's own status otherwise.
 # A caller that words that status for the operator uses review_pr_gh_status_description in _review-pr-lib.sh, which names only 124 because 137 and 143 are also a child's own signal-death status (see _lib_capped_for's "Exit statuses" bullets).
 # A caller that wants every cap-kill-consistent status passes it through _lib_status_consistent_with_cap_kill.
+# Leaves gh's stderr to the caller: every caller redirects it to /dev/null except review-pr-post.sh's two `gh pr review` calls, which leave it visible.
 _lib_gh() {
   local seconds="${1:?_lib_gh requires a seconds argument}"
   shift
@@ -515,23 +516,10 @@ _lib_repo_root() {
   printf '%s' "$root"
 }
 
-# Main-tree root, resolved via --git-common-dir rather than --show-toplevel:
-# the two agree from the main working tree, but --show-toplevel returns the
-# CURRENT worktree's own path when run from a linked worktree, while
-# --git-common-dir always points at the shared .git directory regardless of
-# which worktree the call is made from. git-worktree(1)'s "Details" section
-# documents the guarantee this relies on: "$GIT_COMMON_DIR is set to point
-# back to the main worktree's $GIT_DIR" from any linked worktree, so
-# dirname(--git-common-dir) is the main worktree's root regardless of
-# git's own worktree-list ordering -- unlike deriving it from the first
-# entry of `git worktree list --porcelain`, this needs no ordering
-# guarantee at all. See TestLibMainRepoRoot in test_marker_lib.py for the
-# fixture test covering the main-tree-vs-linked-worktree case directly.
-# review-pr-checkout.sh creates review worktrees under this root,
-# review-pr-finish.sh discovers them from it, and
-# _lib_review_pr_marker_repo_hash keys the completion marker to it. All three
-# anchor here rather than at _lib_repo_root's possibly-linked-worktree result,
-# so they agree from any tree.
+# Main-tree root: dirname of --git-common-dir, which points at the shared .git
+# directory from any linked worktree (git-worktree(1), "Details").
+# review-pr-checkout.sh, review-pr-finish.sh, and
+# _lib_review_pr_marker_repo_hash all anchor here, so they agree from any tree.
 # Exit 1, empty stdout: not inside a git repository, git is absent, or the
 # call timed out.
 _lib_main_repo_root() {
@@ -733,10 +721,10 @@ _lib_case_insensitive_ne() {
 # Splits a <owner>/<repo>#<number> PR identity into owner/repo and number,
 # printing owner/repo then number on two lines, and returns 0. Returns 1
 # with no output when the number segment is not purely numeric, or the
-# owner/repo segment doesn't match the tightened shape below. Shared by
-# review-pr-checkout.sh, review-pr-post.sh, review-pr-acquire.sh, and
-# review-pr-diff.sh, so none of them carries its
-# own copy of this split and its validation.
+# owner/repo segment doesn't match the shape below. Shared by
+# review-pr-acquire.sh, review-pr-checkout.sh, review-pr-diff.sh, and
+# review-pr-post.sh, so none of them carries its own copy of this split and
+# its validation.
 #
 # Rejects a bare `.`/`..` segment, which a naive [A-Za-z0-9._-]+ class would
 # otherwise accept and turn into a path-traversal shape.
@@ -755,11 +743,11 @@ _lib_parse_pr_identity() {
 # _lib_review_pr_artifact_path CONFIG_DIR SESSION_ID SUFFIX
 # Prints $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.$SUFFIX -- the one
 # shared derivation for every review-pr session-scoped artifact path
-# (provenance, body, diff, context.json), so review-pr-acquire.sh,
-# review-pr-checkout.sh, review-pr-diff.sh, review-pr-findings-path.sh,
-# review-pr-post.sh, review-pr-finish.sh, and marker.sh's own `write
-# review-pr` arm cannot drift from each other by construction. SUFFIX
-# carries no leading dot (e.g. "body", "provenance", "diff", "context.json").
+# (provenance, body, diff, context.json), so the review-pr scripts that touch
+# those artifacts and marker.sh's `write review-pr` arm agree on it by
+# construction. marker-clear-stale.py keeps its own suffix list.
+# SUFFIX carries no leading dot (e.g. "body", "provenance", "diff",
+# "context.json").
 _lib_review_pr_artifact_path() {
   printf '%s/.review-pr-active.d/%s.%s' "$1" "$2" "$3"
 }
@@ -767,13 +755,9 @@ _lib_review_pr_artifact_path() {
 # _lib_write_review_pr_provenance PROVENANCE_PATH KEY=VALUE [KEY=VALUE ...]
 # Writes PROVENANCE_PATH as a `schema=1` header line followed by one
 # KEY=VALUE line per remaining argument, through _lib_write_no_follow
-# (refuses a symlink at PROVENANCE_PATH). review-pr-acquire.sh/-checkout.sh/
-# -diff.sh each call this with the four fields they know today
-# (pr_identity, head_ref_oid, pid, mode). The schema is additive by design, not frozen
-# at today's four fields: a later phase recording another fact (e.g. the
-# locally re-derived commit SHA, or a worktree/marker key) passes one more
-# KEY=VALUE argument here rather than adding a second provenance file or an
-# env var -- this is the schema's only writer, so
+# (refuses a symlink at PROVENANCE_PATH).
+# The schema is additive: a caller adding a field passes one more KEY=VALUE
+# argument. This is the schema's only writer, so
 # _lib_review_pr_provenance_field below sees every field the same way
 # regardless of which caller added it.
 _lib_write_review_pr_provenance() {
@@ -787,13 +771,8 @@ _lib_write_review_pr_provenance() {
 # or returns 1 with no output if the file is unreadable, its first line
 # isn't exactly `schema=1`, or KEY is absent or holds an empty value.
 # Matches each line against "KEY=" as a fixed prefix (no globbing, no
-# regex), so a value that itself contains '=' (none do today) still
-# round-trips correctly.
-# A caller reads only the keys it knows about, so a provenance file
-# carrying additional keys a newer writer added (e.g. a later phase's
-# fetched_sha) is read correctly by an older caller that has never heard of
-# them -- see _lib_write_review_pr_provenance's own comment for why the
-# schema is additive by design.
+# regex), so a value that itself contains '=' still round-trips correctly.
+# Unknown keys are ignored, so a caller reads only the keys it names.
 _lib_review_pr_provenance_field() {
   local path="$1" key="$2"
   [ -n "$path" ] && [ -n "$key" ] || return 1

@@ -1540,7 +1540,7 @@ def test_parse_pr_identity_rejects_malformed_shapes(tmp_path: Path, pr_identity:
 
 
 def test_parse_pr_identity_accepts_dot_and_hyphen_alongside_alnum(tmp_path: Path) -> None:
-    """Bounds the tightened owner/repo regex from the other side of the
+    """Bounds the owner/repo regex from the other side of the
     traversal-rejection cases above: a segment mixing '.'/'-' with at least
     one alphanumeric character (an ordinary GitHub owner/repo shape) must
     still pass."""
@@ -1649,9 +1649,8 @@ class TestLibOriginOwnerRepo:
 
 class TestLibCaseInsensitiveNe:
     """Direct unit coverage for _lib_case_insensitive_ne -- the shared
-    nocasematch comparison require-respond-pr.sh, review-pr-checkout.sh,
-    review-pr-diff.sh, and review-pr-post.sh each call on owner/repo slugs,
-    since GitHub treats them case-insensitively."""
+    nocasematch comparison for owner/repo slugs, since GitHub treats them
+    case-insensitively."""
 
     def test_exact_match_returns_false(self) -> None:
         result = _run_lib_call('_lib_case_insensitive_ne "foo/bar" "foo/bar"', env=dict(os.environ))
@@ -6315,10 +6314,7 @@ class TestLibCatNoFollow:
 
 class TestLibReviewPrArtifactPath:
     """Direct unit coverage for _lib_review_pr_artifact_path -- the one
-    shared derivation review-pr-acquire.sh, review-pr-checkout.sh,
-    review-pr-diff.sh, review-pr-findings-path.sh, review-pr-post.sh,
-    review-pr-finish.sh, and marker.sh's own `write review-pr` arm all call,
-    so none of them can drift from each other by construction."""
+    shared derivation of every review-pr session-scoped artifact path."""
 
     def test_builds_the_dotted_active_dir_path(self) -> None:
         result = _run_lib_call(
@@ -6340,10 +6336,9 @@ class TestLibReviewPrArtifactPath:
 
 class TestLibReviewPrProvenanceSchema:
     """Direct unit coverage for _lib_write_review_pr_provenance and
-    _lib_review_pr_provenance_field -- the one writer and reader
-    review-pr-acquire.sh/-checkout.sh/-diff.sh, marker.sh's `write
-    review-pr` arm, review-pr-finish.sh, and marker-clear-stale.py's own
-    "pid=" read (Python, not this lib) all agree on."""
+    _lib_review_pr_provenance_field -- the one writer and reader of the
+    provenance schema. marker-clear-stale.py's own "pid=" read (Python, not
+    this lib) follows the same schema."""
 
     def test_round_trips_every_written_field(self, tmp_path: Path) -> None:
         provenance = tmp_path / "sess.provenance"
@@ -6382,10 +6377,9 @@ class TestLibReviewPrProvenanceSchema:
     def test_a_file_with_no_schema_header_is_rejected_even_with_a_matching_key_value_line(
         self, tmp_path: Path
     ) -> None:
-        """A legacy positional-format file, or anything else missing the
-        `schema=1` header, must fail closed rather than being partially
-        read -- even when a line happens to look like a valid key=value
-        pair."""
+        """A file without the `schema=1` header must fail closed rather than
+        being partially read -- even when a line happens to look like a valid
+        key=value pair."""
         provenance = tmp_path / "sess.provenance"
         provenance.write_text("pr_identity=foo/bar#42\nhead_ref_oid=abc123\n")
         result = _run_lib_call(
@@ -6397,9 +6391,8 @@ class TestLibReviewPrProvenanceSchema:
     def test_a_field_unknown_to_this_reader_does_not_break_reading_the_known_fields(
         self, tmp_path: Path
     ) -> None:
-        """The schema is additive by design: a file carrying a key this
-        call never asks for (modeling a later phase's own added field, e.g.
-        fetched_sha) must not disturb any other field's read."""
+        """The schema is additive: a file carrying a key this call never asks
+        for (e.g. fetched_sha) must not disturb any other field's read."""
         provenance = tmp_path / "sess.provenance"
         _run_lib_call(
             f'_lib_write_review_pr_provenance "{provenance}" '

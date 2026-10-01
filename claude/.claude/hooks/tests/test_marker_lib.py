@@ -312,11 +312,9 @@ class TestLibRepoRoot:
 
 
 class TestLibMainRepoRoot:
-    """Direct coverage for _lib_main_repo_root -- the anchor for
-    review-pr-checkout.sh's worktree parent directory, review-pr-finish.sh's
-    worktree discovery, and the review-pr completion marker key, which must
-    resolve to the same main-tree path regardless of which worktree of the
-    repo the caller is standing in."""
+    """Direct coverage for _lib_main_repo_root, which must resolve to the same
+    main-tree path regardless of which worktree of the repo the caller is
+    standing in."""
 
     def test_matches_lib_repo_root_from_the_main_tree(self, tmp_path):
         repo = tmp_path / "main-repo-root-repo"
@@ -372,13 +370,11 @@ class TestLibMainRepoRoot:
 
 
 class TestLibReviewPrMarkerRepoHash:
-    """Direct coverage for _lib_review_pr_marker_repo_hash -- the one key
-    `marker.sh write review-pr`, `marker.sh status`, review-pr-post.sh, and
-    review-pr-finish.sh all derive the review-pr completion marker path
-    from, which must not depend on which tree of the repo the caller
-    stands in. `marker.sh status` is reachable only where _resolve_repo_root
-    allows it: it exits 2 from the main tree of a worktree-enforced repo
-    that has a live linked worktree."""
+    """Direct coverage for _lib_review_pr_marker_repo_hash -- the one key every
+    review-pr completion-marker path derives from, which must not depend on
+    which tree of the repo the caller stands in. `marker.sh status` is
+    reachable only where _resolve_repo_root allows it: it exits 2 from the
+    main tree of a worktree-enforced repo that has a live linked worktree."""
 
     @staticmethod
     def _repo_hash_from(cwd: Path) -> subprocess.CompletedProcess:

@@ -44,12 +44,12 @@ def _build_repo(tmp_path: Path) -> tuple[Path, str]:
     """A repo with one commit -- returns (repo, head_sha)."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=60)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True, timeout=60)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True, timeout=60)
     (repo / "file.txt").write_text("main\n")
-    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True, timeout=60)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True, timeout=60)
     return repo, head_sha(repo)
 
 
@@ -60,7 +60,7 @@ def _add_review_worktree(
     <repo>/.claude/worktrees/review-pr-<session-id>-<number>-<suffix>."""
     worktree_dir = repo / ".claude" / "worktrees" / f"review-pr-{session_id}-{pr_number}-{suffix}"
     worktree_dir.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "worktree", "add", "--detach", str(worktree_dir), sha], cwd=repo, check=True)
+    subprocess.run(["git", "worktree", "add", "--detach", str(worktree_dir), sha], cwd=repo, check=True, timeout=60)
     return worktree_dir
 
 
@@ -92,6 +92,7 @@ def _assert_neighbors_survive(repo: Path, registered_neighbors: list[Path], plai
 def _registered_worktree_paths(repo: Path) -> list[str]:
     listing = subprocess.run(
         ["git", "worktree", "list", "--porcelain"], cwd=repo, capture_output=True, text=True, check=True,
+        timeout=60,
     ).stdout
     return [line.removeprefix("worktree ") for line in listing.splitlines() if line.startswith("worktree ")]
 
@@ -218,7 +219,7 @@ class TestArtifactAndMarkerRemoval:
         _seed_session(isolated_home, SID)
         marker = _write_completion_marker(isolated_home, repo)
         linked_worktree = tmp_path / "linked-session-worktree"
-        subprocess.run(["git", "worktree", "add", "--detach", str(linked_worktree), sha], cwd=repo, check=True)
+        subprocess.run(["git", "worktree", "add", "--detach", str(linked_worktree), sha], cwd=repo, check=True, timeout=60)
 
         result = _run(linked_worktree, isolated_home)
         assert result.returncode == 0, result.stderr
@@ -353,7 +354,7 @@ class TestSessionWideWorktreeSweep:
         worktree_dir = _add_review_worktree(repo, sha)
         subprocess.run(
             ["git", "worktree", "lock", "--reason", "held by another session", str(worktree_dir)],
-            cwd=repo, check=True,
+            cwd=repo, check=True, timeout=60,
         )
 
         result = _run(
@@ -380,7 +381,7 @@ class TestSessionWideWorktreeSweep:
         worktree_dir = _add_review_worktree(repo, sha)
         subprocess.run(
             ["git", "worktree", "lock", "--reason", "held by another session", str(worktree_dir)],
-            cwd=repo, check=True,
+            cwd=repo, check=True, timeout=60,
         )
 
         result = _run(repo, isolated_home)

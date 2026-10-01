@@ -24,36 +24,40 @@ usage() {
 Usage: ~/.claude/scripts/review-pr-checkout.sh <owner>/<repo>#<number>
 
 Self-derives every fact the trust classification, the passive-execution
-audit, and the checkout need rather than trusting them as arguments. First
-checks that <owner>/<repo> matches this worktree's own origin remote,
-aborting before any gh call on a mismatch. Then fetches this PR's own
-author_association and cross-repo status directly from `gh api
-repos/{owner}/{repo}/pulls/{number}` -- unconditionally, on every
-invocation -- and refuses an author whose association is not one of MEMBER,
-OWNER, COLLABORATOR, or CONTRIBUTOR, or a cross-repository PR (including a
-deleted-fork PR, whose head.repo reads null), before any further fetch,
-naming review-pr-diff.sh as the path to use instead. Only past that gate
-does it fetch the PR's own full, paginated file list (one JSON string per
-file name, so a name holding a newline decodes intact) and its current
-headRefOid directly from `gh`. It aborts on a listing whose length differs from
-the PR's own `changed_files` count. It re-fetches headRefOid once more to catch a
-force-push landing while the file list was being paginated, pipes the file
-list to audit-execution-surface.py, and only fetches refs/pull/<N>/head when
-the audit returns clean. A stop verdict exits 3 before any fetch of the PR's
-ref, naming the matched paths and reasons on stderr; an audit that fails to
-return a verdict (python3 missing, a signal death, an uncaught exception, an
-exit 0 without a clean verdict on stdout) exits 2 with its stderr shown. On a clean audit, asserts the fetched SHA
-still equals the headRefOid this script itself fetched earlier in the same
-run -- a force-push race between audit and checkout -- and aborts with no
-worktree left behind on a mismatch. A second run against the same
-PR gets its own new worktree under the main tree's .claude/worktrees/,
-named for this session and the PR number plus a random suffix;
-review-pr-finish.sh removes every worktree of the session. On success,
-rewrites this session's provenance file with mode "checkout" (PR identity,
-the verified headRefOid, this session's Claude PID, the mode) after this
-script's own independent re-derivation -- never trusting
-review-pr-acquire.sh's own mode "acquired" write. Prints the worktree's
-absolute path on stdout as the sole output of a successful run.
+audit, and the checkout need rather than trusting them as arguments. In order:
+1. Checks that <owner>/<repo> matches this worktree's own origin remote,
+   aborting before any gh call on a mismatch.
+2. Fetches this PR's own author_association and cross-repo status from
+   `gh api repos/{owner}/{repo}/pulls/{number}`, on every invocation. Refuses
+   an author whose association is not one of MEMBER, OWNER, COLLABORATOR, or
+   CONTRIBUTOR, and a cross-repository PR (including a deleted-fork PR, whose
+   head.repo reads null), before any further fetch. Both refusals name
+   review-pr-diff.sh as the path to use instead.
+3. Fetches the PR's own full, paginated file list (one JSON string per file
+   name, so a name holding a newline decodes intact) and its current
+   headRefOid directly from `gh`. Aborts on a listing whose length differs
+   from the PR's own `changed_files` count.
+4. Re-fetches headRefOid to catch a force-push landing while the file list was
+   being paginated.
+5. Pipes the file list to audit-execution-surface.py. A stop verdict exits 3
+   before any fetch of the PR's ref, naming the matched paths and reasons on
+   stderr. An audit that fails to return a verdict (python3 missing, a signal
+   death, an uncaught exception, an exit 0 without a clean verdict on stdout)
+   exits 2 with its stderr shown.
+6. On a clean audit, fetches refs/pull/<N>/head and asserts the fetched SHA
+   equals the headRefOid fetched earlier in the same run. A mismatch means a
+   force-push landed between audit and checkout, and aborts with no worktree
+   left behind.
+7. Creates a new worktree under the main tree's .claude/worktrees/, named for
+   this session and the PR number plus a random suffix. A second run against
+   the same PR gets its own worktree; review-pr-finish.sh removes every
+   worktree of the session.
+8. Rewrites this session's provenance file with mode "checkout" (PR identity,
+   the verified headRefOid, this session's Claude PID, the mode), never
+   trusting review-pr-acquire.sh's mode "acquired" write.
+
+Prints the worktree's absolute path on stdout as the sole output of a
+successful run.
 
 Exit status: 0 on success, 3 when checkout is positively refused and
 review-pr-diff.sh is the path to use instead (the PR's trust class, a
@@ -95,19 +99,10 @@ if [[ -z "$REPO_ROOT" ]]; then
   exit 2
 fi
 
-# Self-derive the repo identity too, the same way headRefOid and the file
-# list are self-derived below -- OWNER_REPO above is parsed from $1 alone,
-# never cross-checked against anything this script controls. A PR's
-# headRefOid is content-addressed: an attacker can push the real PR's own
-# head commit to a second, fully-attacker-controlled repo against a decoy
-# base, so that decoy reports the same headRefOid this script fetches for
-# the real PR while its own diff is empty or trivial. The ref fetch further
-# below always targets THIS worktree's origin regardless of $OWNER_REPO, so
-# an unchecked mismatch would let the audit run against the decoy's
-# manufactured file list while the checkout still lands the real PR's
-# unaudited tree -- the headRefOid equality check later in this script
-# can't catch that, since both sides legitimately agree. Comparing
-# $OWNER_REPO against origin here, before either gh call, closes it.
+# OWNER_REPO is compared against origin because headRefOid is content-addressed:
+# a decoy repo can report the real PR's head commit while the ref fetch below
+# always targets this worktree's origin, so the headRefOid equality check
+# further down cannot catch the substitution.
 ORIGIN_OWNER_REPO=$(_lib_origin_owner_repo "$REPO_ROOT") || {
   echo "review-pr-checkout.sh: could not resolve this worktree's origin remote, or parse an owner/repo out of its URL. Abort before any fetch." >&2
   exit 2
@@ -134,11 +129,8 @@ fi
 
 # Unconditional trust classification, enforced by the script rather than
 # left to the model: a stop the model evaluates in prose is not a stop.
-# This script already
-# self-fetches everything else it refuses on, so the trust class belongs
-# beside them, checked on every invocation -- placed before the headRefOid
-# fetch and the paginated file-list call, so a refused PR never has its
-# file list paginated.
+# Placed before the headRefOid fetch and the paginated file-list call, so a
+# refused PR never has its file list paginated.
 # authorAssociation is not a `gh pr view --json` field (REFERENCES.md), so
 # this REST call is the only way to get it; it also carries head.repo/
 # base.repo, deriving cross-repo status independently of step 1's own
@@ -214,13 +206,8 @@ if [[ "$FILES_FETCH_STATUS" -ne 0 ]]; then
 fi
 
 # Decodes those JSON string literals into the JSON array
-# audit-execution-surface.py's stdin contract requires. Kept as its own
-# checked step, separate from the gh fetch above, so a failure here reports
-# "could not decode" rather than being folded into the gh fetch's own "could
-# not fetch" message -- `pipefail` (set at the top of this script) already
-# makes a combined pipeline's exit status the correct rightmost-nonzero
-# value, so this split is for error-message precision, not to work around a
-# pipefail gap.
+# audit-execution-surface.py's stdin contract requires. A separate step so a
+# decode failure reports "could not decode", not "could not fetch".
 if ! FILES_JSON=$(review_pr_decode_file_names "$RAW_FILES"); then
   echo "review-pr-checkout.sh: could not decode PR $OWNER_REPO#$PR_NUMBER's file list as JSON. Abort before any fetch of the PR's ref." >&2
   exit 2
@@ -235,13 +222,8 @@ if ! LISTED_FILES_COUNT=$(review_pr_file_count_matches "$FILES_JSON" "$CHANGED_F
   exit 2
 fi
 
-# TOCTOU guard: HEAD_REF_OID above was fetched before the file list just
-# above it, so a force-push landing in that window would let the audit run
-# against a file list that no longer matches the PR's current head -- the
-# final checkout's own HEAD_REF_OID comparison further below only re-verifies
-# at the fetch/checkout boundary, never at the moment this file list was
-# captured. Re-fetch headRefOid here and compare against the value captured
-# above, before the audit runs against a possibly-stale list.
+# Re-fetch headRefOid after the file list to catch a force-push during
+# pagination, before the audit runs against a possibly-stale list.
 HEAD_REF_OID_RECHECK=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID_RECHECK=""
 if [[ -z "$HEAD_REF_OID_RECHECK" ]]; then
   echo "review-pr-checkout.sh: could not re-fetch PR $OWNER_REPO#$PR_NUMBER's headRefOid to confirm the file list above is still current. Abort before any fetch of the PR's ref." >&2
@@ -360,12 +342,7 @@ if [[ "$WORKTREE_ADD_STATUS" -ne 0 ]]; then
   exit 2
 fi
 
-# Provenance write: rewrite this session's provenance file with mode
-# "checkout" after this script's own independent re-derivation of PR
-# identity and headRefOid -- never trusting
-# review-pr-acquire.sh's own mode "acquired" write. marker.sh write
-# review-pr reads this sibling file; an acquire-only session (mode still
-# "acquired") can never write a completion marker.
+# Provenance write, mode "checkout" (see the usage text).
 PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
 if ! mkdir -p -- "$(dirname "$PROVENANCE")"; then
   echo "review-pr-checkout.sh: could not create the provenance directory $(dirname "$PROVENANCE") -- cannot record this checkout. The worktree at $WORKTREE_DIR was created; run ~/.claude/scripts/review-pr-finish.sh to clean it up. Abort." >&2

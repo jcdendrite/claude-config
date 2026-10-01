@@ -506,7 +506,14 @@ marker call while the plan's own tests pass.
   glob. Per M6. Separately, fold
   body-mutating `gh pr edit` forms into its gated-write patterns: the "never
   edit someone else's PR body" invariant currently rests on skill prose, and
-  this hook is already being modified.
+  this hook is already being modified. **[Superseded, not built: the
+  body-edit arm and its REST/GraphQL bare-resource siblings in
+  `require-respond-pr.sh` were removed at the cumulative review. The hook
+  cannot tell whose PR a body edit targets, and the arm denied the repo's own
+  sanctioned own-PR flows (`/pr-description` sync, `/ready-for-review` step 5,
+  `/code-review` DEFER persistence) while routing them to the `respond-pr`
+  bypass. The "never edit someone else's PR body" invariant stays in
+  `/review-pr`'s Step 5 standing override ("edit no PR body").]**
 - `claude/.claude/hooks/tests/` — extend every test file pinning the enum by
   literal, including `test_marker_script.py`'s `ALL_MARKER_SUBCOMMAND_ARGS` and
   `test_enforce_marker_script_shape.py`'s parametrized target lists. A test file
@@ -534,7 +541,8 @@ change; this plan extends the existing shape rather than bundling that refactor.
 
 - **Hook tests** — a `review-pr` active marker releases `require-respond-pr.sh`;
   its absence still denies; a dead PID is evicted; a body-mutating `gh pr edit`
-  is denied. Mirrors the existing bypass-marker suite in
+  is denied. **[Superseded: the `gh pr edit` denial is not built; see the
+  Critical-files note on `require-respond-pr.sh`.]** Mirrors the existing bypass-marker suite in
   `test_require_respond_pr.py`. Run `.venv/bin/pytest claude/.claude/` from the
   main worktree (`../../../.venv/bin/pytest` from a linked one).
 - **Marker-shape test** — `marker.sh activate review-pr`, `deactivate`, and

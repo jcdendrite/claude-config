@@ -1,5 +1,5 @@
 """Tests for review-pr-scan-findings-body.sh -- the mechanical secret scan
-run over /review-pr's findings-body file before Step 9 posts it.
+run over /review-pr's findings-body file before the deliver step posts it.
 
 Reuses _LIB_CREDENTIAL_VALUE_REGEX (_lib.sh), the same credential-shape
 pattern deny-pii-in-commits.sh and redact-credential-values.sh already use,
@@ -14,10 +14,14 @@ from helpers import SCRIPTS_DIR
 
 SCRIPT = SCRIPTS_DIR / "review-pr-scan-findings-body.sh"
 
+# A harness bound so a hung bash fails one test instead of the suite.
+_SUBPROCESS_TIMEOUT_SECONDS = 60
+
 
 def _run(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", str(SCRIPT), *args], capture_output=True, text=True, check=False
+        ["bash", str(SCRIPT), *args], capture_output=True, text=True, check=False,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 
@@ -41,6 +45,15 @@ class TestUsageErrors:
     def test_unreadable_file_exits_two(self, tmp_path):
         result = _run([str(tmp_path / "does-not-exist.body")])
         assert result.returncode == 2
+
+
+class TestScanThatCannotCompleteFailsClosed:
+    def test_directory_argument_exits_two(self, tmp_path):
+        """A directory passes the -r readability check but grep cannot scan
+        it; that must refuse, not read as a clean body."""
+        result = _run([str(tmp_path)])
+        assert result.returncode == 2
+        assert "did not complete" in result.stderr
 
 
 class TestCleanBodyPasses:
@@ -74,10 +87,19 @@ class TestCredentialShapedHitsFailClosed:
 
     def test_pem_private_key_header_exits_one(self, tmp_path):
         findings_body = _write(
-            tmp_path, "-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAKCAQ==\n"
+            tmp_path, "-----BEGIN RSA " + "PRIVATE KEY-----\nMIIBogIBAAKCAQ==\n"
         )
         result = _run([str(findings_body)])
         assert result.returncode == 1
+
+    def test_body_with_nul_byte_still_scans_and_exits_one(self, tmp_path):
+        """A NUL byte makes plain grep report only "Binary file matches" for
+        the whole file; the scan must still find the token and name the line."""
+        findings_body = tmp_path / "findings.body"
+        findings_body.write_bytes(b"clean\x00line\nleaked: ghp_" + b"a" * 36 + b"\n")
+        result = _run([str(findings_body)])
+        assert result.returncode == 1
+        assert "line 2" in result.stderr
 
     def test_matched_value_never_appears_on_stdout_or_stderr(self, tmp_path):
         """The deny message names the location and type of the hit, never

@@ -14,25 +14,30 @@ usage() {
 Usage: ~/.claude/scripts/review-pr-diff.sh <owner>/<repo>#<number>
 
 Self-derives the PR's own file list and headRefOid, the same discipline
-review-pr-checkout.sh uses, but never checks the PR out. First checks that
-<owner>/<repo> matches this worktree's own origin remote, aborting before
-any gh call on a mismatch. Fetches the PR's own current headRefOid and its
-REST `changed_files` count, and stops naming the limit when the PR changes
-more than 300 files, since GitHub's diff endpoint cannot serve one. Then
-fetches the full, paginated file list (one JSON string per file name, so a
-name holding a newline stays one name), aborts when its length differs from
-`changed_files`, re-fetches headRefOid once more to catch a force-push
-landing while the file list was being paginated, and aborts on drift. Pipes
-the file list to audit-execution-surface.py, but a stop verdict is reported
-on stderr as a mandatory pre-seeded finding rather than a stop -- nothing is
-landing on disk here for that predicate to protect, and a PR touching
-.claude/hooks/** or .mcp.json is precisely what an inbound reviewer must
-flag. An audit that fails to return a verdict (python3 missing, a signal
-death, an uncaught exception, an exit 0 without a clean verdict on stdout)
-aborts with exit 2 and its stderr shown, and is never reported as a finding.
-Fetches `gh pr diff`, writes it to $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff,
-rewrites this session's provenance file with mode "diff-only", and prints the
-diff file's path on stdout as the sole output of a successful run.
+review-pr-checkout.sh uses, but never checks the PR out. In order:
+1. Checks that <owner>/<repo> matches this worktree's own origin remote,
+   aborting before any gh call on a mismatch.
+2. Fetches the PR's current headRefOid and its REST `changed_files` count.
+   Stops naming the limit when the PR changes more than 300 files, since
+   GitHub's diff endpoint cannot serve one.
+3. Fetches the full, paginated file list (one JSON string per file name, so a
+   name holding a newline stays one name) and aborts when its length differs
+   from `changed_files`.
+4. Re-fetches headRefOid to catch a force-push landing while the file list was
+   being paginated, and aborts on drift.
+5. Pipes the file list to audit-execution-surface.py. A stop verdict is
+   reported on stderr as a mandatory pre-seeded finding rather than a stop:
+   nothing is landing on disk here for that predicate to protect, and a PR
+   touching .claude/hooks/** or .mcp.json is precisely what an inbound reviewer
+   must flag. An audit that fails to return a verdict (python3 missing, a
+   signal death, an uncaught exception, an exit 0 without a clean verdict on
+   stdout) aborts with exit 2 and its stderr shown, and is never reported as a
+   finding.
+6. Fetches `gh pr diff`, writes it to
+   $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff, and rewrites this
+   session's provenance file with mode "diff-only".
+
+Prints the diff file's path on stdout as the sole output of a successful run.
 EOF
 }
 

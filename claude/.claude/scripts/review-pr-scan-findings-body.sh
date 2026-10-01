@@ -17,7 +17,8 @@ Usage: ~/.claude/scripts/review-pr-scan-findings-body.sh <findings-body-file>
 
 Exits 0 if the file contains no credential-shaped string. Exits 1 if it
 does, naming the match's line number on stderr -- never the matched value.
-Exits 2 on a usage error or an unreadable file.
+Exits 2 on a usage error, an unreadable file, or a scan that did not
+complete (grep exited with a status other than 0 or 1).
 EOF
 }
 
@@ -44,9 +45,26 @@ fi
 # -n prints the line number, not the match itself -- the deny message below
 # names where the hit is, so the finding can be located and scrubbed
 # without the credential value ever reaching this script's own stdout/stderr.
-if MATCH_LINE=$(grep -nE "$_LIB_CREDENTIAL_VALUE_REGEX" -- "$FINDINGS_BODY_PATH" | cut -d: -f1 | head -1) && [[ -n "$MATCH_LINE" ]]; then
-  echo "review-pr-scan-findings-body.sh: line $MATCH_LINE of $FINDINGS_BODY_PATH matches a credential shape (GitHub token prefix, AWS access key ID, or PEM private-key header). Scrub it to location-and-type only, then re-run this scan before posting." >&2
-  exit 1
-fi
+# -a scans a body holding a NUL byte as text (grep otherwise reports only
+# that a binary file matches, with no line number), and LC_ALL=C keeps
+# invalid UTF-8 from aborting the scan. The verdict is grep's own exit status
+# (0 hit, 1 clean, else the scan failed), captured with no pipe after grep so
+# no other command's status can stand in for it. The `N:` prefix is split off
+# in the shell for the same reason.
+scan_status=0
+GREP_HIT=$(LC_ALL=C grep -a -m 1 -nE "$_LIB_CREDENTIAL_VALUE_REGEX" -- "$FINDINGS_BODY_PATH") || scan_status=$?
+MATCH_LINE=${GREP_HIT%%:*}
 
-exit 0
+case "$scan_status" in
+  0)
+    echo "review-pr-scan-findings-body.sh: line $MATCH_LINE of $FINDINGS_BODY_PATH matches a credential shape (GitHub token prefix, AWS access key ID, or PEM private-key header). Scrub it to location-and-type only, then re-run this scan before posting." >&2
+    exit 1
+    ;;
+  1)
+    exit 0
+    ;;
+  *)
+    echo "review-pr-scan-findings-body.sh: scan of $FINDINGS_BODY_PATH did not complete (exit $scan_status); refusing." >&2
+    exit 2
+    ;;
+esac

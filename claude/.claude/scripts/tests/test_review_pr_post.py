@@ -230,8 +230,8 @@ def _pr_review_records(call_log: Path) -> list[dict]:
 
 def _read_pr_review_calls(call_log: Path) -> list[list[str]]:
     """Calls whose args start with the `pr review` verb -- filters out the
-    PR-identity cross-check's own `gh pr view` call, which every test below
-    that reaches the posting calls now also triggers."""
+    PR-identity cross-check's own `gh pr view` call, which every test that
+    reaches the posting calls also triggers."""
     return [args for args in _read_calls(call_log) if args[:2] == ["pr", "review"]]
 
 
@@ -437,7 +437,7 @@ class TestOwnerRepoRegexAcceptsDotAndHyphenAlongsideAlnum:
     def test_owner_repo_with_dot_and_hyphen_segments_passes_regex_check(
         self, isolated_home, git_repo, tmp_path
     ):
-        """Bounds the tightened owner/repo regex from the other side of
+        """Bounds the owner/repo regex from the other side of
         TestMalformedPrIdentity's dot-only-segment deny case: a segment
         mixing '.'/'-' with at least one alphanumeric character (an
         ordinary GitHub owner/repo shape) must still pass. The shim below

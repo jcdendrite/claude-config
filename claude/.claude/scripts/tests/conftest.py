@@ -265,11 +265,9 @@ def _direnv_shim_source_stalls_without_reading_stdin(seconds: int) -> str:
 # ---------------------------------------------------------------------------
 # review-pr scaffolding shared across its own gh-shimmed test files
 # (test_review_pr_checkout.py, test_review_pr_diff.py,
-# test_review_pr_acquire.py, test_review_pr_finish.py) -- promoted here
-# rather than left as module-level functions inside test_review_pr_checkout.py
-# (where they originated) or imported across sibling test modules, matching
-# _shimmed_env's own precedent above: this suite has no other
-# cross-test-file import.
+# test_review_pr_acquire.py, test_review_pr_finish.py). They live here because
+# this suite has no other cross-test-file import, matching _shimmed_env's own
+# precedent above.
 # ---------------------------------------------------------------------------
 
 

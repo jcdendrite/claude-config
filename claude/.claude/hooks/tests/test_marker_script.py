@@ -4890,12 +4890,9 @@ class TestMarkerScriptStatusActiveBypass:
 
 
 class TestMarkerScriptStatusUsageBannerCompleteness:
-    """GH-critical: the usage() heredoc's `status` description names which
-    completion and active-bypass markers are reported, but nothing kept that
-    prose in sync with the `status)` case body -- review-pr was named
-    nowhere in either list while its markers went unchecked. Scans the
-    script's own source so a future skill added to one side and forgotten
-    on the other fails here instead of silently drifting again."""
+    """The usage banner and the `status)` case body must name the same
+    markers. Scans the script's own source so a skill added to one side and
+    not the other fails here."""
 
     @staticmethod
     def _strip_comment_lines(text: str) -> str:
@@ -4911,11 +4908,10 @@ class TestMarkerScriptStatusUsageBannerCompleteness:
         self, isolated_home, git_repo
     ):
         """usage()'s two enum-list lines are printf-assembled from
-        marker.sh's own WRITE_SKILLS/ACTIVE_BYPASS_SKILLS arrays (the
-        registry collapse), so the banner text is scanned from the
-        rendered `--help` output rather than marker.sh's static source --
-        the source itself contains only the printf format string, not the
-        skill names."""
+        marker.sh's own WRITE_SKILLS/ACTIVE_BYPASS_SKILLS arrays, so the
+        banner text is scanned from the rendered `--help` output rather than
+        marker.sh's static source -- the source itself contains only the
+        printf format string, not the skill names."""
         help_result = _run(["--help"], cwd=git_repo, home=isolated_home)
         assert help_result.returncode == 0, help_result.stderr
         banner_match = re.search(r"completion marker \(([^)]+)\)", help_result.stderr)
@@ -5538,12 +5534,10 @@ class TestMarkerScriptArgumentGrammarIsPositional:
 
 
 class TestMarkerScriptReviewPr:
-    """`write review-pr` -- the provenance-file write arm. review-pr carries
-    no `activate`/`deactivate` arms: Step 1's own reads need no
-    active-bypass marker, since they run inside a script a PreToolUse hook
-    cannot see into. See _lib_review_pr_completion_marker_fields in
-    _lib.sh for the read side the four-line completion marker this arm
-    writes feeds."""
+    """`write review-pr` -- the provenance-file write arm. review-pr has no
+    `activate`/`deactivate` arms. See _lib_review_pr_completion_marker_fields
+    in _lib.sh for the read side of the four-line completion marker this arm
+    writes."""
 
     SID = "test-session-review-pr"
 
@@ -5698,8 +5692,7 @@ class TestMarkerScriptReviewPr:
     def test_write_still_refuses_an_out_of_enum_mode_under_worktree_enforcement(
         self, isolated_home, opted_in_repo, tmp_path
     ):
-        """Dropping the main-tree refusal is scoped to the tree check: an
-        out-of-enum mode is refused in the same enforced setup."""
+        """An out-of-enum mode is refused in an enforced setup too."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         self._write_findings_body_for_mode(isolated_home, "checkout", sid)
@@ -5810,12 +5803,9 @@ class TestMarkerScriptReviewPr:
     def test_write_refuses_a_findings_body_missing_the_attribution_prefix(
         self, isolated_home, git_repo
     ):
-        """Mechanical backstop for SKILL.md's synthesize-and-record step's
-        own "start with **[Claude Code]**" instruction: review-pr-check-attribution.sh
-        runs before the marker is written, the same as the secret scan
-        above -- a `PreToolUse` hook never sees the findings body, since
-        it's composed by the model's own reasoning rather than passed as a
-        tool-call argument."""
+        """review-pr-check-attribution.sh runs before the marker is written,
+        the same as the secret scan above, and refuses a body without the
+        "start with **[Claude Code]**" prefix (see that script's header)."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         findings_body = self._fixed_body_path(isolated_home, sid)
@@ -5830,13 +5820,33 @@ class TestMarkerScriptReviewPr:
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"a findings body missing the attribution prefix must not write a marker: {stray}"
 
+    def test_write_refuses_a_diff_only_findings_body_missing_the_disclosure_line(
+        self, isolated_home, git_repo
+    ):
+        """In diff-only mode the reduced-coverage disclosure is mandatory: a
+        body with the prefix and trailer but no disclosure line is refused,
+        and mode comes from provenance, so the model cannot opt out."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._fixed_body_path(isolated_home, sid)
+        findings_body.parent.mkdir(parents=True, exist_ok=True)
+        findings_body.write_text(
+            f"**[Claude Code]** # findings body\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
+        )
+        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid)
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert result.returncode == 2, result.stderr
+        assert "diff-only disclosure line" in result.stderr
+        marker_dir = isolated_home / ".claude" / "review-pr-markers"
+        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
+        assert stray == [], f"a diff-only body missing the disclosure must not write a marker: {stray}"
+
     def test_write_refuses_a_findings_body_containing_a_credential_shaped_string(
         self, isolated_home, git_repo
     ):
-        """The mechanical scan, not just SKILL.md's prose instruction, must
-        refuse the write -- a `PreToolUse` hook never sees the findings body,
-        since it's composed by the model's own reasoning rather than passed
-        as a tool-call argument."""
+        """The mechanical scan must refuse the write (see
+        review-pr-scan-findings-body.sh's header for why it is mechanical)."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         findings_body = self._fixed_body_path(isolated_home, sid)
@@ -5883,10 +5893,9 @@ class TestMarkerScriptReviewPr:
     def test_write_refuses_a_symlink_at_the_findings_body_location(
         self, isolated_home, git_repo, tmp_path
     ):
-        """The findings-body path is now always derived, never read from
-        provenance, so there is no untrusted-path guard left to test --
-        only that a symlink planted at the derived location itself is
-        rejected before being hashed."""
+        """The findings-body path is derived, never read from provenance. A
+        symlink planted at the derived location must be rejected before
+        hashing."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         fixed_path = self._fixed_body_path(isolated_home, sid)
@@ -5911,8 +5920,7 @@ class TestMarkerScriptReviewPr:
         """TOCTOU regression: the completion marker's own destination path
         is predictable ($CONFIG_DIR/review-pr-markers/<repo-hash>.<session-id>),
         so a pre-planted symlink there must not be followed by the write --
-        a plain `>` redirect follows and truncates through a symlink, the
-        same bug shape already fixed for FINDINGS_BODY_PATH above."""
+        a plain `>` redirect follows and truncates through a symlink."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         findings_body = self._fixed_body_path(isolated_home, sid)
@@ -5999,30 +6007,71 @@ class TestMarkerScriptReviewPr:
 
 
 class TestMarkerWriteSymlinkHardeningAcrossArms:
-    """`_lib_write_no_follow`'s O_NOFOLLOW write hardening (proved for
-    review-pr's own arm in TestMarkerScriptReviewPr) is shared by every
-    `write <skill>` arm, not just review-pr's -- code-review, the
-    most-used arm, stands in for the other four plain-hash arms
-    (skill-review, plan-review, ready-for-review, cumulative-review), which
-    route through the identical shared helper."""
+    """`_lib_write_no_follow`'s O_NOFOLLOW write hardening is shared by every
+    `write <skill>` arm. Each arm is driven to its final write step,
+    then refused when a symlink was pre-planted at its completion-marker
+    path."""
 
-    SID = "test-session-code-review-write-symlink"
+    SID = "test-session-write-symlink"
 
-    def test_code_review_write_refuses_a_symlink_at_the_completion_marker_destination(
-        self, isolated_home, git_repo, tmp_path
+    # Derived from the pinned write-arm roster so a new write arm cannot skip
+    # this test; _reach_the_write_step below needs a branch for it.
+    WRITE_ARMS = [
+        (skill, f"{skill}-markers") for skill in TestMarkerDirectoryNamingConvention.WRITE_SKILLS
+    ]
+
+    def _reach_the_write_step(self, skill, repo, home, tmp_path):
+        """Arrange `repo`/`home` so `write <skill>` passes every guard before
+        its marker write; returns extra env for the run."""
+        if skill == "skill-review":
+            skill_dir = repo / "claude-skills" / "skills" / "test-skill"
+            skill_dir.mkdir(parents=True)
+            skill_md = skill_dir / "SKILL.md"
+            skill_md.write_text("# test skill\n")
+            subprocess.run(["git", "add", str(skill_md)], cwd=repo, check=True)
+        elif skill == "plan-review":
+            plans_dir = repo / ".claude" / "plans"
+            plans_dir.mkdir(parents=True)
+            (plans_dir / "p.md").write_text("# plan\n")
+        elif skill == "cumulative-review":
+            _arm_default_branch_ref_and_second_commit(repo)
+            env = _env_with_gh_shim(tmp_path, None)
+            record_result = _record_subject(repo, home, env)
+            assert record_result.returncode == 0, record_result.stderr
+            return env
+        elif skill == "review-pr":
+            active_dir = home / ".claude" / ".review-pr-active.d"
+            active_dir.mkdir(parents=True, exist_ok=True)
+            (active_dir / f"{self.SID}.body").write_text(
+                f"**[Claude Code]** # findings body\n\n{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
+            )
+            write_review_pr_provenance(
+                home, "foo/bar#42", "abc123", os.getpid(), mode="diff-only", session_id=self.SID
+            )
+        elif skill == "verification":
+            _commit_the_fixtures_staged_change(repo)
+        return None
+
+    @pytest.mark.parametrize("skill,marker_dir_name", WRITE_ARMS)
+    def test_write_refuses_a_symlink_at_the_completion_marker_destination(
+        self, isolated_home, git_repo, tmp_path, skill, marker_dir_name
     ):
         sid = self.SID
         _seed_session(isolated_home, sid)
+        extra_env = self._reach_the_write_step(skill, git_repo, isolated_home, tmp_path)
         repo_hash = hashlib.sha256(git_toplevel(git_repo).encode()).hexdigest()
-        marker_dir = isolated_home / ".claude" / "code-review-markers"
+        marker_dir = isolated_home / ".claude" / marker_dir_name
         marker_dir.mkdir(parents=True, exist_ok=True)
         completion_marker = marker_dir / f"{repo_hash}.{sid}"
-        real_target = tmp_path / "attacker-chosen-marker-target.txt"
+        real_target = tmp_path / f"attacker-chosen-{skill}-target.txt"
         real_target.write_text("pre-existing content\n")
         completion_marker.symlink_to(real_target)
 
-        result = _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
+        result = _run(["write", skill], cwd=git_repo, home=isolated_home, extra_env=extra_env)
         assert result.returncode == 2, result.stderr
+        assert "symlink at destination" in result.stderr, (
+            "the arm must be refused at its marker write, not by an earlier guard"
+        )
         assert completion_marker.is_symlink(), "the symlink itself must survive, unmodified"
         assert real_target.read_text() == "pre-existing content\n", (
             "the write must not follow the symlink and truncate its target"
@@ -6030,12 +6079,8 @@ class TestMarkerWriteSymlinkHardeningAcrossArms:
 
 
 class TestMarkerActivateSymlinkHardeningAcrossArms:
-    """Every `activate <skill>` arm now routes through the same
-    `_lib_write_no_follow` O_NOFOLLOW helper the `write <skill>` arms
-    already used (TestMarkerWriteSymlinkHardeningAcrossArms above) -- a
-    plain `>` redirect at a predictable session-id-keyed active-bypass
-    marker path would otherwise follow a pre-planted symlink there, the
-    same TOCTOU class already closed on the write side."""
+    """Every `activate` arm writes through `_lib_write_no_follow`, which
+    refuses a symlink at the predictable marker path."""
 
     SID = "test-session-activate-symlink"
 

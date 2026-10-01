@@ -53,39 +53,30 @@
 # the gate cannot see inside a query body sourced from a file, so it denies
 # those wholesale rather than inspecting them.
 #
-# Second bypass path: none needed for /review-pr's own reads. Step 1's
-# three-endpoint fetch runs inside ~/.claude/scripts/review-pr-acquire.sh,
-# including the `gh api .../pulls/N/reviews` call the REST arm below would
-# otherwise gate -- a PreToolUse hook sees only the literal Bash-tool
-# command text (`~/.claude/scripts/review-pr-acquire.sh <owner>/<repo>#<N>`,
-# which contains none of the gated REST/GraphQL patterns below) and never
-# inspects a subprocess the script itself spawns. No read-side bypass marker
-# exists for /review-pr's Step 1 reads: the gap this relies on is the same
-# one require-worktree-for-git-writes.sh has (see that hook's header): a hook
-# that matches literal Bash-tool command text can't see a `gh api` call
-# made from inside a wrapper script -- deliberately, and documented here
-# rather than left as an undocumented reliance on a hook gap.
+# Read side: /review-pr's reads need no bypass marker. Step 1's three-endpoint
+# fetch, including the `gh api .../pulls/N/reviews` call the REST arm below
+# would otherwise gate, runs inside ~/.claude/scripts/review-pr-acquire.sh.
+# This hook matches only the literal Bash-tool command text
+# (`~/.claude/scripts/review-pr-acquire.sh <owner>/<repo>#<N>`), which carries
+# no gated pattern, and never inspects a subprocess the script spawns.
+# require-worktree-for-git-writes.sh has the same gap (see its header).
 #
-# A matched WRITE is denied unless this session's respond-pr bypass marker is
-# live, which releases every gated command, `gh pr review --approve` included.
-# Without that marker every `gh pr review`/`reviews` write is denied,
-# redirecting to `~/.claude/scripts/review-pr-post.sh <comment|request-changes> <owner>/<repo>#<N>`.
-# That script independently
-# re-verifies the PR identity and findings-body hash recorded by /review-pr's
-# own completion marker, and re-fetches the PR's live remote headRefOid to
-# compare against the marker's recorded one (see that script's
-# header, and _lib_review_pr_completion_marker_fields in _lib.sh for the
-# read it shares with marker.sh's `status` arm) before it ever
-# calls gh. `--approve` is not a reachable code path in that script.
+# Write side: a matched WRITE is denied unless this session's respond-pr bypass
+# marker is live, which releases every gated command, `gh pr review --approve`
+# included. Without that marker every `gh pr review`/`reviews` write is denied,
+# redirecting to
+# `~/.claude/scripts/review-pr-post.sh <comment|request-changes> <owner>/<repo>#<N>`.
+# That script re-verifies the PR identity and findings-body hash recorded by
+# /review-pr's completion marker, then compares the PR's live remote headRefOid
+# (fetched with `gh pr view`) to the marker's recorded one before it posts with
+# `gh pr review` (see its header, and
+# _lib_review_pr_completion_marker_fields in _lib.sh for the read it shares with
+# marker.sh's `status` arm). `--approve` is not a reachable code path in it.
+#
 # Named accepted gap: this gate decides per whole command, like every other
 # arm in this file, so a released read or bypass chained (`&&`/`;`/`|`)
-# with an unrelated command executes atomically -- an attacker able to
-# inject that chain already has direct Bash access with no gate at all.
-#
-# `gh pr edit` with a body-mutating flag (--body/--body-file) is also
-# gated here: the "never edit someone else's PR body" invariant otherwise
-# rests on skill prose alone. A live respond-pr marker releases it like every
-# other gated command.
+# with an unrelated command executes atomically. An attacker able to inject
+# that chain already has direct Bash access with no gate at all.
 
 set -uo pipefail
 
@@ -241,41 +232,17 @@ fi
 PATTERN_REPO_FLAG_RUN='((-R|--repo)([[:space:]]+|=)?[^[:space:]]+[[:space:]]+)*'
 PATTERN_REST_NUMBERED='gh[[:space:]]+api[[:space:]]+[^|&;]*(pulls|issues)/[0-9]+/(comments|reviews)'
 PATTERN_REST_COMMENT_ID='gh[[:space:]]+api[[:space:]]+[^|&;]*repos/[^/[:space:]]+/[^/[:space:]]+/(pulls|issues)/comments/[0-9]+'
-# The bare PR/issue resource itself, no comments|reviews suffix -- a PATCH
-# here overwrites the PR/issue body directly (`gh pr edit`'s REST twin), a
-# route PATTERN_REST_NUMBERED never reaches since it requires that suffix.
-# Combined with a body-setting signal, never alone: a bare
-# `gh api repos/o/r/pulls/5` is an ordinary read (already allowed by every
-# other arm), so requiring FIELD_FLAG/ANY_FILE_BODY/MUTATING_METHOD here
-# keeps that read allowed while still catching the write shape.
-PATTERN_REST_NUMBERED_ROOT='gh[[:space:]]+api[[:space:]]+[^|&;]*(pulls|issues)/[0-9]+([[:space:]]|$)'
 PATTERN_PR_WRITE_CMD='gh[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'pr[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'(comment|review)([[:space:]]|$)'
 PATTERN_ISSUE_WRITE_CMD='gh[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'issue[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'comment([[:space:]]|$)'
 PATTERN_GRAPHQL_MUTATION='gh[[:space:]]+api[[:space:]]+[^|&;]*graphql[^|&;]*(add|update|delete|submit)[A-Za-z]*(Comment|Review)'
-# updatePullRequest/updateIssue carry no Comment/Review suffix -- the REST
-# twin of PATTERN_REST_NUMBERED_ROOT above, a direct write to the PR/issue
-# resource itself rather than to a comment or review sub-resource.
-# Anchored on the opening paren so the mutation-name match doesn't also
-# swallow an unrelated field named similarly.
-PATTERN_GRAPHQL_PR_ISSUE_MUTATION='gh[[:space:]]+api[[:space:]]+[^|&;]*graphql[^|&;]*update(PullRequest|Issue)[[:space:]]*\('
 PATTERN_GRAPHQL_FILE_BODY='gh[[:space:]]+api[[:space:]]+[^|&;]*graphql[^|&;]*(query=@|--input([[:space:]]|=))'
 PATTERN_ANY_FILE_BODY='gh[[:space:]]+api[[:space:]]+[^|&;]*(query=@|--input([[:space:]]|=))'
 PATTERN_FIELD_FLAG='(-f|-F|--field|--raw-field)[[:space:]=]'
 PATTERN_MUTATING_METHOD='(-X|--method)[[:space:]=]*(POST|PATCH|PUT|DELETE)'
-# `gh pr edit` covers title, labels, reviewers, and more -- only the
-# body-mutating forms fold into this gate ("never edit someone else's PR
-# body" is the invariant being closed here, not every `pr edit` use). Two
-# separate patterns rather than one combined regex: bash ERE has no
-# lookahead, so "pr edit ... AND a body flag somewhere in the command" is
-# expressed as two `[[ ]]` tests joined by `&&`, not one alternation.
-PATTERN_PR_EDIT_CMD='gh[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'pr[[:space:]]+'"$PATTERN_REPO_FLAG_RUN"'edit([[:space:]]|$)'
-PATTERN_PR_EDIT_BODY_FLAG='(--body|--body-file)([[:space:]]|=)'
 
 if [[ "$COMMAND_FLAT" =~ $PATTERN_REST_NUMBERED ]]; then
   :
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_REST_COMMENT_ID ]]; then
-  :
-elif [[ "$COMMAND_FLAT" =~ $PATTERN_REST_NUMBERED_ROOT ]] && { [[ "$COMMAND_FLAT" =~ $PATTERN_FIELD_FLAG ]] || [[ "$COMMAND_FLAT" =~ $PATTERN_ANY_FILE_BODY ]] || [[ "$COMMAND_FLAT" =~ $PATTERN_MUTATING_METHOD ]]; }; then
   :
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_PR_WRITE_CMD ]]; then
   :
@@ -283,11 +250,7 @@ elif [[ "$COMMAND_FLAT" =~ $PATTERN_ISSUE_WRITE_CMD ]]; then
   :
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_GRAPHQL_MUTATION ]]; then
   :
-elif [[ "$COMMAND_FLAT" =~ $PATTERN_GRAPHQL_PR_ISSUE_MUTATION ]]; then
-  :
 elif [[ "$COMMAND_FLAT" =~ $PATTERN_GRAPHQL_FILE_BODY ]]; then
-  :
-elif [[ "$COMMAND_FLAT" =~ $PATTERN_PR_EDIT_CMD ]] && [[ "$COMMAND_FLAT" =~ $PATTERN_PR_EDIT_BODY_FLAG ]]; then
   :
 else
   exit 0
@@ -309,7 +272,6 @@ gated_write_patterns=(
   "$PATTERN_PR_WRITE_CMD"
   "$PATTERN_ISSUE_WRITE_CMD"
   "$PATTERN_GRAPHQL_MUTATION"
-  "$PATTERN_GRAPHQL_PR_ISSUE_MUTATION"
   "$PATTERN_FIELD_FLAG"
   "$PATTERN_ANY_FILE_BODY"
 )
@@ -319,15 +281,6 @@ for write_signal in "${gated_write_patterns[@]}"; do
     break
   fi
 done
-
-# `gh pr edit` carries no read form -- reaching the arm chain above (which
-# requires the body flag too) already means this is a write, so it is set
-# directly rather than added to gated_write_patterns above, which would
-# make the body flag alone (with no `pr edit` anywhere) count as a write
-# signal for every OTHER matched arm too.
-if [[ "$COMMAND_FLAT" =~ $PATTERN_PR_EDIT_CMD ]] && [[ "$COMMAND_FLAT" =~ $PATTERN_PR_EDIT_BODY_FLAG ]]; then
-  GATED_WRITE=1
-fi
 
 # The mutating-method signal is checked separately because it is the one that
 # must fold case, and the patterns above must not: `repos/` path segments and
@@ -342,11 +295,7 @@ if [[ "$COMMAND_FLAT" =~ $PATTERN_MUTATING_METHOD ]]; then
 fi
 shopt -u nocasematch
 
-# Every gated write that reaches this point is denied: respond-pr's
-# blanket bypass above already released any write issued from inside that
-# skill, and /review-pr's Step 1 reads never reach this gate at all (see
-# "Second bypass path" above) -- there is no read-release path here for a
-# write to ride along with.
+# Every gated write that reaches this point is denied.
 if [ "$GATED_WRITE" -eq 1 ]; then
   emit_deny "PR/issue comment write — Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. For posting a /review-pr review: never hand-construct the gh call — run ~/.claude/scripts/review-pr-post.sh <comment|request-changes> <owner>/<repo>#<N> instead, which re-verifies the completion marker before posting and can never emit --approve. Stop and ask the user how they want to proceed."
   exit 0

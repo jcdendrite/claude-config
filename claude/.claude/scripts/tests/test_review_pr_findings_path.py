@@ -16,6 +16,9 @@ from .conftest import _seed_session
 SCRIPT = SCRIPTS_DIR / "review-pr-findings-path.sh"
 SID = "test-session-review-pr-findings-path"
 
+# A harness bound so a hung bash fails one test instead of the suite.
+_SUBPROCESS_TIMEOUT_SECONDS = 60
+
 
 @pytest.fixture
 def isolated_home(tmp_path):
@@ -36,6 +39,7 @@ def _run(home: Path, args: list[str] | None = None) -> subprocess.CompletedProce
     env.pop("CLAUDE_CONFIG_DIR", None)
     return subprocess.run(
         ["bash", str(SCRIPT), *(args or [])], env=env, capture_output=True, text=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
 
 

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Sweeps orphaned session markers under $CONFIG_DIR/.*-active.d/, called by
 marker.sh's `clear-stale` arm. One process for the whole sweep, not one per
-entry: a per-file bash loop would pay a fresh python3 spawn (O_NOFOLLOW read)
-per file. O_NOFOLLOW reads stay -- a symlink planted at one of these
-predictable <active-dir>/<session-id>[.suffix] paths must never be followed,
-the same hardening _lib.sh's _lib_write_no_follow and _lib_cat_no_follow apply
-per-file elsewhere.
+entry: a per-file bash loop would pay a fresh python3 spawn per O_NOFOLLOW
+read. Reads use O_NOFOLLOW so a symlink planted at one of these predictable
+<active-dir>/<session-id>[.suffix] paths is never followed, the same hardening
+_lib.sh's _lib_write_no_follow and _lib_cat_no_follow apply per-file elsewhere.
 
 Usage: marker-clear-stale.py CONFIG_DIR DRY_RUN
 
@@ -71,7 +70,7 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
     kept = 0
     lines: list[str] = []
 
-    for active_dir in sorted(glob.glob(os.path.join(config_dir, ".*-active.d"))):
+    for active_dir in sorted(glob.glob(os.path.join(glob.escape(config_dir), ".*-active.d"))):
         if not os.path.isdir(active_dir):
             continue
         dir_name = os.path.basename(active_dir)
@@ -101,18 +100,17 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
                 provenance_content = read_no_follow(os.path.join(active_dir, owner_session_id + ".provenance"))
                 owner_pid = None
                 # Fails closed the same way _lib.sh's
-                # _lib_review_pr_provenance_field does: a provenance file
-                # whose first line isn't exactly the literal "schema=1" is
-                # an unrecognized (e.g. pre-migration positional) format, so
-                # liveness can't be determined from it -- keep rather than
-                # evict, since defaulting to eviction here would delete a
-                # live session's artifacts under a format this reader
-                # doesn't understand. An empty file is the load-bearing case:
-                # the provenance writer truncates before it writes, so a
-                # concurrent sweep can observe an empty file for a live
-                # review. No age bound applies, so a writer that crashed
-                # mid-write pins its sibling artifacts until they are
-                # removed by hand.
+                # _lib_review_pr_provenance_field does:
+                # - A provenance file whose first line isn't exactly the
+                #   literal "schema=1" is an unrecognized format, so liveness
+                #   can't be determined from it.
+                # - An unrecognized format is kept, not evicted, because
+                #   eviction would delete a live session's artifacts.
+                # - An empty file is the load-bearing case: the provenance
+                #   writer truncates before it writes, so a concurrent sweep
+                #   can observe an empty file for a live review.
+                # - No age bound applies, so a writer that crashed mid-write
+                #   pins its sibling artifacts until they are removed by hand.
                 unrecognized_provenance_format = False
                 if provenance_content is not None:
                     provenance_lines = provenance_content.decode("utf-8", "replace").splitlines()
@@ -122,9 +120,8 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
                         # Keyed on "pid=", not a positional line index: the
                         # provenance file is _lib_write_review_pr_provenance's
                         # key=value schema (a `schema=1` header line, then one
-                        # KEY=VALUE line per field), additive by design -- a
-                        # later phase can add a field without shifting this
-                        # read's line position.
+                        # KEY=VALUE line per field), so an added field cannot
+                        # shift this read.
                         for line in provenance_lines[1:]:
                             if line.startswith("pid=") and line[len("pid="):].strip():
                                 owner_pid = line[len("pid="):].strip()

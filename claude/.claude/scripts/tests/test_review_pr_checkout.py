@@ -118,43 +118,31 @@ def _gh_shim_source(
     omit_changed_files: bool = False,
     files_failure_exit_status: int = 1,
 ) -> str:
-    """gh shim recording every invocation, matching test_review_pr_post.py's
-    own shim shape. Dispatches on the invocation's own first word(s):
-    `gh pr view ... --json headRefOid` returns `head_ref_oid`; `gh api
-    .../pulls/N` (no trailing `/files`) returns the trust-classification
-    payload built from `author_association`/`head_repo_full_name`/
-    `base_repo_full_name` -- both default to `_SAME_AS_REQUEST`, echoing
-    back the request path's own owner/repo, so every pre-existing test
-    below that doesn't care about trust classification still reaches
-    checkout unchanged regardless of which owner/repo it uses; `gh api
-    .../files --paginate ...` prints `files`, one per line. `fail_pr_view`/
-    `fail_files` exit 1 on the matching call only, modeling a `gh` failure
-    (rate limit, network) on that one endpoint without the production `gh`
-    binary's own always-0 stand-in masking the script's failure branch.
-    `partial_files_then_fail` prints those filenames, then exits 1 --
-    `--paginate` failing partway through, after already emitting one or more
-    pages, distinct from `fail_files`'s zero-output failure. `head_ref_oid_second`,
-    when given, is returned by the SECOND `pr view` call onward instead of
-    `head_ref_oid` -- models a force-push landing between
-    review-pr-checkout.sh's initial headRefOid fetch and its own re-fetch of
-    it just before the audit runs. `head_repo_full_name=None` models a
-    deleted-fork PR (REST `head.repo` reads null). `fail_trust_check` exits
-    1 on the trust-check call only; `malformed_trust_check` exits 0 but
-    prints non-JSON, modeling a malformed response distinct from an
-    outright `gh` failure. `changed_files` is the REST payload's own
-    `changed_files` count, independent of the `files` listing the
-    paginated call returns -- it defaults to `len(files)` (a complete
-    listing), and a test sets it apart from `files` to model a listing that
-    is truncated or padded; `omit_changed_files` drops the field entirely.
+    """gh shim recording every invocation, dispatching on the invocation's own
+    first word(s): `gh pr view ... --json headRefOid` returns `head_ref_oid`
+    (`head_ref_oid_second` from the SECOND call onward, modeling a force-push
+    between the initial fetch and the pre-audit re-fetch); `gh api
+    .../pulls/N` returns the trust-classification payload; `gh api
+    .../files --paginate ...` prints `files`.
+    `head_repo_full_name`/`base_repo_full_name` default to
+    `_SAME_AS_REQUEST`, echoing the request path's own owner/repo, so a test
+    that doesn't care about trust classification reaches checkout for any
+    owner/repo. `head_repo_full_name=None` models a deleted-fork PR (REST
+    `head.repo` null); `author_association=None` models a null value.
+    `fail_*` flags exit 1 on the matching call only.
+    `partial_files_then_fail` prints those filenames, then exits 1, modeling
+    `--paginate` failing after emitting a page. `malformed_trust_check` exits 0
+    but prints non-JSON. `fail_files` and `partial_files_then_fail` exit
+    `files_failure_exit_status`.
+    `changed_files` is the REST payload's own count, independent of the
+    `files` listing: it defaults to `len(files)`, a test sets it apart from
+    `files` to model a truncated or padded listing, and `omit_changed_files`
+    drops the field.
     The files listing prints one JSON string per line when the call carries
-    the `@json` jq filter, as real `gh --jq` does for a string result, and
-    raw names otherwise: raw UTF-8, with a control character rendered in caret
-    notation, as gh 2.100.0 is modeled to do (see the shim constant in
-    conftest.py). The listing call must carry `--paginate` and
-    `per_page=100`; the shim exits 97 otherwise, so a script dropping either
-    fails the run. `fail_files` and `partial_files_then_fail` exit
-    `files_failure_exit_status`. `author_association=None` models a payload
-    whose value is null."""
+    the `@json` jq filter, and raw names otherwise: raw UTF-8, with a control
+    character rendered in caret notation as gh 2.100.0 is modeled to do (see
+    the shim constant in conftest.py). The listing call must carry
+    `--paginate` and `per_page=100`; the shim exits 97 otherwise."""
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import json
@@ -341,7 +329,7 @@ class TestOwnerRepoRegexAcceptsDotAndHyphenAlongsideAlnum:
     def test_owner_repo_with_dot_and_hyphen_segments_passes_regex_and_checks_out(
         self, isolated_home, tmp_path
     ):
-        """Bounds the tightened owner/repo regex from the other side of
+        """Bounds the owner/repo regex from the other side of
         TestUsageErrors' dot-only-segment deny cases: a segment mixing '.'/
         '-' with at least one alphanumeric character (an ordinary GitHub
         owner/repo shape) must still pass, and the whole run must still
@@ -428,9 +416,9 @@ class TestMissingAuditScript:
 
 class TestTrustClassificationRefuses:
     """Script exit-code tests with a PATH-shimmed `gh`, not hook-deny tests
-    -- the trust block lives in the script by design (a hook cannot see a
-    subprocess, and cannot verify the audit's own input). Trust
-    classification widens the stop conditions; it never removes one."""
+    -- the trust block lives in the script by design (see
+    review-pr-checkout.sh's header). Trust classification widens the stop
+    conditions; it never removes one."""
 
     # GitHub's eight defined author_association values are OWNER, MEMBER,
     # COLLABORATOR, CONTRIBUTOR (checked out below), and the four refused
@@ -805,7 +793,7 @@ class TestHeadRefOidMismatch:
             head_ref_oid="f" * 40, files=["src/app.py"],
         )
         assert result.returncode == 2, result.stderr
-        assert "force-push" in result.stderr or "headRefOid" in result.stderr
+        assert "between audit and checkout" in result.stderr
         assert _review_worktrees(repo) == []
 
 
