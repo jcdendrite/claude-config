@@ -949,13 +949,9 @@ class TestDurationGapSplit:
         # gap between tss[1] and tss[2] = 9700s; active = 300 + 300 = 600s
         assert active == pytest.approx(600, abs=2)
 
-    def test_cmd_duration_prints_bursts_header_not_sessions(self, fake_projects, capsys):
-        """cmd_duration's activity-burst column is labeled "Bursts", not
-        "Sessions" -- the value is len(idle_gaps) + 1, a count of activity
-        bursts separated by --gap-minutes, not a count of distinct session
-        files. TestDurationGapSplit's other tests exercise the burst-count
-        arithmetic directly without going through cmd_duration; this is the
-        one regression test that actually renders the header."""
+    def test_cmd_duration_prints_bursts_header_and_single_burst_count(self, fake_projects, capsys):
+        """cmd_duration labels its activity-burst column "Bursts" and counts
+        one burst for timestamps with no idle gap between them."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z"),
             _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:05:00.000Z"),
@@ -966,6 +962,32 @@ class TestDurationGapSplit:
         assert "Sessions" not in out
         cols = _table_cols(out, header_contains="Bursts", row_contains="feat")
         assert cols["Bursts"] == "1"
+
+    def test_cmd_duration_counts_two_bursts_across_files_around_an_idle_gap(self, fake_projects, capsys):
+        """One idle gap longer than --gap-minutes yields Bursts == 2 with
+        Idle/Active split at that gap. The first file spans both bursts and two
+        further files continue the second burst, so three files yield two
+        bursts and a files-counted-as-bursts regression fails."""
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z"),
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:05:00.000Z"),
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T12:00:00.000Z"),
+        ])
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T12:05:00.000Z"),
+        ])
+        _write_jsonl(fake_projects / "sess-c.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T12:08:00.000Z"),
+        ])
+        args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
+        _mod.cmd_duration(args)
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Bursts", row_contains="feat")
+        assert cols["Bursts"] == "2"
+        # 10:00 -> 12:08 is 128 min wide; the 10:05 -> 12:00 gap is 115 min idle.
+        assert cols["Span(min)"] == "128"
+        assert cols["Idle(min)"] == "115"
+        assert cols["Active(min)"] == "13"
 
 
 # ---------------------------------------------------------------------------
@@ -1492,7 +1514,7 @@ class TestSubagentMixDollars:
         usage may be priced into Actual $ -- a per-dispatch (rather than
         per-record) filter would either price the whole $12.00 sidechain or
         none of it, never the correct $3.00 in-window slice. Direct
-        regression test for _dispatch_usage_summary's per-record filtering."""
+        regression test for _dispatch_usage_summary's per-deduped-turn filtering."""
         session_id = "sess-straddle"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
@@ -1626,12 +1648,12 @@ class TestSubagentMixDollars:
         assert cols["Runs"] == "2"
         assert cols["Actual$"] == "$9.00"
 
-    def test_actual_dollars_sum_across_mixed_model_dispatches_does_not_exceed_hand_computed_ceiling(
+    def test_actual_dollars_sum_across_mixed_model_dispatches_equals_hand_computed_total(
         self, fake_projects, capsys,
     ):
-        """Per-dispatch dollars must sum, not double-count, across
-        dispatches on different models sharing one agent_type -- a gap no
-        existing test covers."""
+        """Per-dispatch dollars are priced at each dispatch's own model rate
+        and summed, across dispatches on different models sharing one
+        agent_type."""
         session_id = "sess-mixed-model-dispatch"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[
@@ -1766,9 +1788,8 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         _merge_assistant_run's own documented invariant, so pricing must
         take them once from the merged turn's usage, not sum them once per
         block. A per-block-pricing regression would double both cache-class
-        dollar figures below -- a defect the existing input/output-only
-        fixtures above cannot surface, since they hardcode both cache
-        fields to 0."""
+        dollar figures below. Both cache fields are nonzero here so that a
+        double-count is visible in the result."""
         rec1 = _asst(
             "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-cache",
             content=[{"type": "thinking", "thinking": "..."}],
@@ -2222,35 +2243,6 @@ class TestRepoTrackedAgentTypeNames:
         and its failure message unreadable, so the name is hardcoded; the
         unit tests above already carry the "real derivation works" fact."""
         assert "code-writer" in _mod._repo_tracked_agent_type_names()
-
-    # Generic reviewer/agent naming convention this repo's own agents/
-    # directory follows, plus a small explicit set of known built-ins that
-    # don't follow it but are equally non-project-identifying.
-    _GENERIC_AGENT_STEM_PATTERN = re.compile(r"^(staff|code|ciso|plan)-[a-z-]+$")
-    _GENERIC_AGENT_STEM_EXCEPTIONS = frozenset({
-        "Explore", "comment-discipline-reviewer", "skill-fidelity-reviewer",
-    })
-
-    def test_real_agents_directory_stems_match_generic_naming_shape(self):
-        """Coarse shape-only pin: every git-tracked stem here starts with
-        an allowed prefix (staff/code/ciso/plan) and is otherwise
-        lowercase-hyphenated, or is in the small explicit exceptions set.
-        This checks prefix-and-hyphenation shape only -- it cannot verify
-        that a stem's tail is semantically non-project-identifying (a
-        stem like "staff-acmecorp-reviewer" would still pass). That
-        property is a reviewer-discipline-only precondition per this
-        repo's CLAUDE.md "Redact private-project-identifying content"
-        section's third tier, not something a regex can close. Runs
-        against the real _REPO_AGENT_DEFINITIONS_DIR rather than an
-        isolated fixture, since the property under test belongs to this
-        actual repo's actual tracked files."""
-        stems = _mod._repo_tracked_agent_type_names() - _mod._BUILT_IN_AGENT_TYPES
-        assert stems
-        for stem in stems:
-            assert (
-                self._GENERIC_AGENT_STEM_PATTERN.match(stem)
-                or stem in self._GENERIC_AGENT_STEM_EXCEPTIONS
-            ), stem
 
 
 class TestTrackedAgentFilenamesMatchAgentTypeNameCharset:

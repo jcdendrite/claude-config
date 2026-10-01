@@ -11,22 +11,14 @@ command-group module into another.
 from __future__ import annotations
 
 import argparse
-import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from transcript_analysis import corpus, denials, redaction, render, review_rounds, reviewer_yield, scope
+from transcript_analysis import corpus, denials, render, review_rounds, reviewer_yield, scope
 
 # Skills counted as review invocations in review-trace.
 REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
     {"code-review", "plan-review", "ready-for-review", "skill-review", "agent-review", "plan-it"}
-)
-
-# cmd_review_trace's five event["kind"] values, in the docstring's order.
-# A completeness reference for tests only; _review_trace_session_events and
-# cmd_review_trace still dispatch on the literal per event.
-_REVIEW_TRACE_EVENT_KINDS: tuple[str, ...] = (
-    "skill", "denial", "friction", "reviewer-spawn", "architect-consult",
 )
 
 # A plan-architect Agent/Task dispatch whose prompt's first line is anything
@@ -646,185 +638,32 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     surfaces report — only the default timeline and --deny-summary's own
     friction breakout render friction events.
 
-    Per event:
-    - Branch and model are resolved from the record that produced it, not
-      from the session's first record: each is the last non-empty value
-      carried forward up to that point, so a session that moves from one
-      branch (or model) to another attributes each event correctly instead
-      of labelling every event with whatever the session started on.
-    - An event whose branch or model cannot be resolved renders '?'.
-    - --branches filters the emitted event list by this per-event value,
-      not by a single session-wide branch.
-    - A sidechain event's thread field prints as `thread=sidechain` in the
-      timeline; a main-thread event's `thread=main` is the default and
-      stays unprinted.
-    - A sidechain event's line_no is a merged-stream offset, not a real
-      file line (see _review_trace_session_events's docstring), so it
-      prints as `line   n/a` instead of a numeral.
-    - A denial event's hook= label goes through denials._denial_hook_label.
-      Under single-root scope, a legacy denial's own hookName echoes raw
-      when it doesn't match denials._DENIAL_HOOK_LABELS, so a maintainer
-      adding a new hook still sees its real name instead of an opaque
-      "unmatched" bucket. See "Under more than one root scope" below for
-      the multi-root behavior.
+    Branch and model are resolved per event from the record that produced it,
+    not from the session's first record: each is the last non-empty value
+    carried forward up to that point, so a session that moves from one branch
+    (or model) to another attributes each event correctly instead of labelling
+    every event with whatever the session started on. An event whose branch or
+    model cannot be resolved renders '?'. --branches filters the emitted event
+    list by this per-event value, not by a single session-wide branch. A
+    sidechain event's thread field prints as `thread=sidechain` in the
+    timeline; a main-thread event's `thread=main` is the default and stays
+    unprinted. A sidechain event's line_no is a merged-stream offset, not a
+    real file line (see _review_trace_session_events's docstring), so it
+    prints as `line   n/a` instead of a numeral.
 
     --deny-summary delegates its entire accumulation to
     compute_deny_summary_data instead of running its own pass over
     session_iter, so the corpus-wide grouped-count report and cost-ledger's
     per-week denial count can never drift apart.
-
-    Under more than one root scope:
-    - scope._DO_NOT_PUBLISH_BANNER prints on stdout and stderr.
-    - Each session's own "### <path>" header is redacted to an opaque
-      account-<K>/session-<N> label via redaction._root_scoped_display_label
-      instead of the real per-session file path, since that path embeds the
-      real project directory name.
-    - Every branch name printed — in the per-session branches=... summary
-      line and in each event's own (branch=...) suffix — is redacted the
-      same way, to an opaque account-<K>/branch-<N> label. See
-      _redact_branch for why there is no --this-repo disclosure carve-out
-      for this redaction.
-    - model= stays raw regardless of scope, since a model ID is a closed,
-      public, Anthropic-published vocabulary carrying no account, project,
-      or branch identity.
-    - Every denial and friction event's msg=... field is omitted entirely,
-      since this repo's own hook denials routinely embed absolute
-      filesystem paths that would disclose the same project directory name.
-    - hook= is classified through the same denials._denial_hook_label
-      classifier --deny-summary uses, instead of a legacy denial's raw
-      hookName. Unlike the single-root case above, this always classifies
-      here — an unenumerated hookName still falls to
-      denials._DENY_SUMMARY_UNMATCHED_HOOK, since echoing it raw under
-      multi-root would be the same project disclosure the rest of this
-      section closes.
-    - A reviewer-spawn event's subagent_type follows the same closed-
-      vocabulary policy as model= above, gated additionally on --this-repo.
-      See _redact_subagent_type for the membership test and disclose=
-      condition.
-    - A skill event's own skill= field is redacted the same way branch is
-      (opaque account-<K>/skill-<N>, no disclose= carve-out), since the
-      displayed field keeps a plugin:/dir: prefix that REVIEW_TRACE_SKILLS
-      membership testing already stripped away before the event was
-      created. See _redact_skill.
     """
     branch_filter = scope._branch_filter(args)
     deny_only: bool = bool(getattr(args, "deny_only", False))
     deny_summary: bool = bool(getattr(args, "deny_summary", False))
     skill_filter: str | None = getattr(args, "skill", None) or None
-    this_repo: bool = args.this_repo
-
     roots = scope.resolve_scan_roots(args)
-    multi_root = len(roots) > 1
     session_iter, scope_label = scope._resolve_project_scope(args, "review-trace", include_subagents=True, roots=roots)
 
     since_ts, until_epoch = scope._parse_absolute_window_args(args, "review-trace")
-
-    if multi_root:
-        print(scope._DO_NOT_PUBLISH_BANNER)
-        print(scope._DO_NOT_PUBLISH_BANNER, file=sys.stderr)
-
-    resolved_roots = [root.resolve() for root in roots] if multi_root else []
-    # Resolved-path-sorted, not scope._root_index_for_path's raw scan-order
-    # position -- same rationale as every other multi-root diagnostic in
-    # this package (subagent-mix, subagents): the same physical root must
-    # read as the same account-N regardless of which profile is currently
-    # active.
-    redact_ordinals: dict[Path, int] = scope._redaction_ordinals(roots) if multi_root else {}
-    session_redact_map: dict[tuple[int, str], str] = {}
-    branch_redact_map: dict[tuple[int, str], str] = {}
-    subagent_type_redact_map: dict[tuple[int, str], str] = {}
-    skill_redact_map: dict[tuple[int, str], str] = {}
-
-    # root_idx is None under single-root scope, matching cmd_subagent_mix's
-    # own root_idx-or-None convention -- callers below branch on that instead
-    # of re-checking multi_root.
-    # jsonl.resolve() (inside scope._root_index_for_path) is a filesystem
-    # call, so root_idx is resolved once per session here rather than
-    # re-derived by each closure on every event. cost.py's root_position and
-    # transcript-analysis.py's _mix_branch_label/_stype_label take the same
-    # pre-resolved value rather than a raw path.
-
-    def _session_label(root_idx: int | None, jsonl: Path) -> str:
-        """Text for one session's own "### <path>" header.
-
-        The real path under single-root scope; an opaque
-        account-<K>/session-<N> label under multi-root, since the real path
-        embeds the project directory name. (Branch and msg redaction live at
-        their own print sites — see _redact_branch and the denial/friction
-        handlers.)
-        """
-        if root_idx is None:
-            return str(jsonl)
-        ordinal = redact_ordinals[resolved_roots[root_idx]]
-        return redaction._root_scoped_display_label("session", ordinal, jsonl.stem, session_redact_map, disclose=False)
-
-    def _redact_branch(root_idx: int | None, branch: str) -> str:
-        """Redact a branch name under multi-root scope, mirroring subagent-mix's
-        own branch redaction (_mix_branch_label).
-
-        No `--this-repo` carve-out: `--this-repo` only scopes which dirs are
-        scanned, and a carry-forward-attributed branch is itself an
-        approximation that would need `subagents`' own attestation machinery
-        to disclose safely.
-        """
-        if root_idx is None:
-            return render._sanitize_table_cell(branch)
-        ordinal = redact_ordinals[resolved_roots[root_idx]]
-        return redaction._root_scoped_display_label("branch", ordinal, branch, branch_redact_map, disclose=False)
-
-    def _redact_subagent_type(root_idx: int | None, stype: str) -> str:
-        """Redact a reviewer-spawn's subagent_type under multi-root scope,
-        following the same closed-vocabulary disclosure policy
-        cmd_review_trace's own model= bullet states above.
-        redaction._repo_tracked_agent_type_names is the membership test that
-        decides which side of that policy a given subagent_type falls on,
-        matching names tracked in the invoking checkout's index.
-
-        - Mirrors subagent-mix's own subagent_type redaction (_stype_label),
-          including its `this_repo and stype in
-          redaction._repo_tracked_agent_type_names()` disclose= gate. Unlike
-          _redact_branch, disclosure here is an allowlist-membership
-          assertion, not a scan-scope one, so narrowing the scan to this
-          repo via --this-repo is exactly the signal that makes trusting the
-          invoking checkout's own agents/ directory contents appropriate.
-        - A name collision with an independently-named foreign account's
-          agent (e.g. an unrelated third party's own "staff-sdet") is an
-          attribution ambiguity for the reader, not a disclosure. The
-          printed string is public either way regardless of which account
-          actually dispatched it.
-        - Safety depends on a naming-convention precondition. See
-          redaction._repo_tracked_agent_type_names's docstring for what that
-          precondition is.
-        """
-        if root_idx is None:
-            return render._sanitize_table_cell(stype)
-        ordinal = redact_ordinals[resolved_roots[root_idx]]
-        return redaction._root_scoped_display_label(
-            "agent-type", ordinal, stype, subagent_type_redact_map,
-            disclose=this_repo and stype in redaction._repo_tracked_agent_type_names(),
-        )
-
-    def _redact_skill(root_idx: int | None, skill: str) -> str:
-        """Redact a skill event's displayed skill-name field under multi-root
-        scope.
-
-        evt['skill'] is _normalize_skill_name's output, which deliberately
-        keeps a plugin:/dir: prefix as a display label. REVIEW_TRACE_SKILLS
-        membership is tested on the fully-stripped bare name
-        (review_rounds._round_skill_name) before an event is ever created.
-        A private-plugin-namespaced invocation of e.g. code-review therefore
-        matches the filter while this field still carries that namespace.
-
-        No disclose= carve-out, matching _redact_branch. The
-        closed-vocabulary membership test already ran against the bare
-        name, not this (possibly project-identifying) displayed form, so
-        disclosing the displayed value here would be exactly the leak this
-        redaction exists to close.
-        """
-        if root_idx is None:
-            return render._sanitize_table_cell(skill)
-        ordinal = redact_ordinals[resolved_roots[root_idx]]
-        return redaction._root_scoped_display_label("skill", ordinal, skill, skill_redact_map, disclose=False)
 
     if deny_summary:
         # Ahead of the scan, matching the default arm below: a crash partway
@@ -855,12 +694,6 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     emitted_any_session = False
 
     for jsonl, records in session_iter:
-        # jsonl.resolve() (inside scope._root_index_for_path) is a filesystem
-        # call, so root_idx is resolved once per session here and threaded
-        # through every redaction closure below, instead of each one
-        # re-deriving it from jsonl on every event.
-        root_idx = scope._root_index_for_path(jsonl, resolved_roots) if multi_root else None
-
         # session_iter is resolved with include_subagents=True above -- see
         # _fresh_records_and_group_boundaries for why records and
         # group_boundaries must come from one read at the same scope.
@@ -882,12 +715,12 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
         denial_count = sum(1 for e in events if e["kind"] == "denial")
         spawn_count = sum(1 for e in events if e["kind"] == "reviewer-spawn")
         consult_count = sum(1 for e in events if e["kind"] == "architect-consult")
-        branches_seen = ",".join(sorted({_redact_branch(root_idx, e["branch"]) for e in events}))
+        branches_seen = ",".join(sorted({e["branch"] for e in events}))
         models_seen = ",".join(sorted({e["model"] for e in events}))
 
         emitted_any_session = True
 
-        print(f"\n### {_session_label(root_idx, jsonl)}")
+        print(f"\n### {jsonl}")
         print(
             f"branches={branches_seen}  models={models_seen}  skills={skill_count}"
             f"  denials={denial_count}  reviewer-spawns={spawn_count}"
@@ -903,35 +736,25 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
             lno = "n/a" if evt["thread"] == "sidechain" else evt["line_no"]
             kind = evt["kind"]
             thread_suffix = "" if evt["thread"] == "main" else f" thread={evt['thread']}"
-            suffix = f"  (branch={_redact_branch(root_idx, evt['branch'])} model={evt['model']}{thread_suffix})"
+            suffix = f"  (branch={evt['branch']} model={evt['model']}{thread_suffix})"
             if kind == "skill":
-                print(f"  [{ts_label}] line {lno:>5}  skill        {_redact_skill(root_idx, evt['skill'])}{suffix}")
+                print(f"  [{ts_label}] line {lno:>5}  skill        {evt['skill']}{suffix}")
             elif kind == "denial":
-                hook = denials._denial_hook_label(evt['hook_name'], evt['message'], raw_when_unenumerated=not multi_root)
+                hook = evt['hook_name']
                 uid = evt['tool_use_id']
                 msg = evt['message']
                 cause = denials._denial_cause_kind(msg)
-                # msg is raw free text from a foreign account's transcript.
-                # This repo's own hook denials routinely embed absolute
-                # filesystem paths (e.g. worktree-enforcement denials name
-                # .claude/worktrees/<branch>/...). That's the same
-                # project-directory disclosure _session_label exists to
-                # prevent, so msg is omitted entirely under multi-root
-                # rather than redacted.
-                msg_field = "" if multi_root else f"  msg={msg!r}"
                 print(
                     f"  [{ts_label}] line {lno:>5}  denial       hook={hook}  cause={cause}"
-                    f"  id={uid}{msg_field}{suffix}"
+                    f"  id={uid}  msg={msg!r}{suffix}"
                 )
             elif kind == "friction":
                 fkind = denials._friction_kind_label(evt['friction_kind'])
                 uid = evt['tool_use_id']
                 msg = evt['message']
-                msg_field = "" if multi_root else f"  msg={msg!r}"
-                print(f"  [{ts_label}] line {lno:>5}  friction     kind={fkind}  id={uid}{msg_field}{suffix}")
+                print(f"  [{ts_label}] line {lno:>5}  friction     kind={fkind}  id={uid}  msg={msg!r}{suffix}")
             elif kind == "reviewer-spawn":
-                stype = _redact_subagent_type(root_idx, evt['subagent_type'])
-                print(f"  [{ts_label}] line {lno:>5}  reviewer     {stype}{suffix}")
+                print(f"  [{ts_label}] line {lno:>5}  reviewer     {evt['subagent_type']}{suffix}")
             elif kind == "architect-consult":
                 print(f"  [{ts_label}] line {lno:>5}  consult      plan-architect{suffix}")
 

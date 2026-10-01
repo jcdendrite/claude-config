@@ -287,10 +287,6 @@ def _repo_tracked_agent_type_names() -> frozenset[str]:
       here returns the built-ins alone rather than exiting, since failing
       closed means more redaction, and an operator's report should not die
       because git is unavailable.
-    - Safe reuse of this disclosure carve-out requires every git-tracked
-      stem under the invoking checkout's agents/ directory to stay generic
-      and non-project-identifying -- a maintainer convention this code does
-      not check.
     """
     try:
         proc = subprocess.run(

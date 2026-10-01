@@ -108,52 +108,6 @@ class TestFrictionKindLabel:
         assert _mod.denials._friction_kind_label("some-future-kind") == _mod.denials._FRICTION_KIND_OTHER
 
 
-class TestDenialHookLabelRawWhenUnenumerated:
-    """Direct unit coverage for _denial_hook_label's raw_when_unenumerated
-    keyword — the CLI-layer TestReviewTraceMultiRoot/TestReviewTrace tests
-    (test_transcript_review_trace.py) exercise both of its states only
-    indirectly, through a full session-scan + cmd_review_trace print loop."""
-
-    def test_enumerated_hook_name_ignores_the_flag(self):
-        assert _mod.denials._denial_hook_label("code-review", "msg", raw_when_unenumerated=True) == "code-review"
-        assert _mod.denials._denial_hook_label("code-review", "msg", raw_when_unenumerated=False) == "code-review"
-
-    def test_unenumerated_hook_name_collapses_to_unmatched_by_default(self):
-        got = _mod.denials._denial_hook_label("totally-unenumerated-hook", "msg")
-        assert got == _mod.denials._DENY_SUMMARY_UNMATCHED_HOOK
-
-    def test_unenumerated_hook_name_collapses_to_unmatched_when_flag_false(self):
-        got = _mod.denials._denial_hook_label("totally-unenumerated-hook", "msg", raw_when_unenumerated=False)
-        assert got == _mod.denials._DENY_SUMMARY_UNMATCHED_HOOK
-
-    def test_unenumerated_hook_name_echoes_raw_when_flag_true(self):
-        got = _mod.denials._denial_hook_label("totally-unenumerated-hook", "msg", raw_when_unenumerated=True)
-        assert got == "totally-unenumerated-hook"
-
-    def test_raw_echo_strips_control_characters(self):
-        """Same render._sanitize_table_cell bound the branch/subagent_type
-        redaction closures already apply at their own single-root fallback
-        -- a control byte in a legacy transcript's own hookName field must
-        not survive to the raw echo."""
-        got = _mod.denials._denial_hook_label("weird\x01hook", "msg", raw_when_unenumerated=True)
-        assert got == "weirdhook"
-
-    def test_raw_echo_capped_at_denial_hook_name_max_chars(self):
-        got = _mod.denials._denial_hook_label("x" * 100, "msg", raw_when_unenumerated=True)
-        assert len(got) == _mod.denials._DENIAL_HOOK_NAME_MAX_CHARS
-
-    def test_empty_hook_name_routes_to_message_extraction_regardless_of_flag(self):
-        """hook_name being empty (current-shape denials) always falls
-        through to message extraction, which never reads
-        raw_when_unenumerated -- see
-        test_single_root_message_extraction_ignores_raw_when_unenumerated
-        for this same pin at the CLI-integration layer."""
-        message = "Commit blocked by code-review gate: run /code-review."
-        with_flag = _mod.denials._denial_hook_label("", message, raw_when_unenumerated=True)
-        without_flag = _mod.denials._denial_hook_label("", message, raw_when_unenumerated=False)
-        assert with_flag == without_flag == "code-review"
-
-
 # ---------------------------------------------------------------------------
 # _denial_hook_label enumeration — pins _DENIAL_HOOK_LABELS against each
 # hook's real deny-path wording, one case per hooks/*.sh label.

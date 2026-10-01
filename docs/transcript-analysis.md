@@ -53,7 +53,7 @@ This union amplifies two costs, both linearly in the number of declared roots:
 - **Scan time.** Measured on one workstation: ~9s per root at top-level scope, ~16s per root with `--include-subagents`. A four-root union runs roughly 35–65s against ~9s at one root — expect a per-root progress line on stderr above one root so a long-running scan doesn't read as hung. The one narrowing control, if a given invocation needs to run faster or scope to fewer accounts: pass an explicit single top-level `--config-dir PATH`, which overrides the union back to exactly one root (see "Scoping to this repo" above and the `cost`/`context-distribution`/`context-composition` sections below for their own separate, repeatable `--config-dir`).
 - **Redaction's ordinal fingerprint.** `cost` and `audit-routing --redact` already read every project's transcript bytes to build their redact map, even under `--this-repo` (see the `cost` section's `--config-dir` contract below) — a structural fingerprint of the operator's other local projects. A declared-roots union multiplies both the bytes read and that fingerprint's information content: the ordinals now encode which projects exist across every declared account, not just one. Two redacted reports built from the **same** declared-roots file assign the same `account-N` to the same physical root regardless of which profile produced either report, which makes them correlatable by ordinal across time — a property that did not exist before this file was populated, even though neither report reveals `account-2`'s real name. Two reports built from **different** declared-roots files are not comparable; a changed root set can renumber every ordinal. This comparability guarantee excludes `cost --summary`: it always resolves to exactly one root, so its own per-root `cost: account-N: scanned …` line has no second root in the same run to be ordinally consistent against, and its `account-N` for the active root is not guaranteed to match the ordinal a full (non-`--summary`) report built from the same declared-roots file assigns that same physical root.
 
-Redaction — the `DO NOT PUBLISH` banner and `account-N`/`private-project-N` labels — is not uniform across the three subcommands that mention it. `cost` and `audit-routing` build the redact map and print per-project or per-account labels. `context-distribution` prints the same banner and refuses `--no-redact` above one root, but never builds the redact map and emits no project label at all, so there is nothing in its output to actually redact. `review-trace` prints the same banner above one root and redacts each session's own `### <path>` header to an opaque `account-<K>/session-<N>` label (see the `review-trace` section below). Every other subcommand — `audit-routing-samples`, `buckets`, `fail-seq`, `struggle`, `duration`, `subagents`, and `pr-link` — has no redaction of any kind and prints raw branch names, paths, or prior-user text under the default union; none of them narrows the union to one account short of the `--config-dir` escape hatch above. `cost --summary` is now a second narrowing path, but it applies to `cost` specifically, not to any subcommand in this list. `subagent-mix` and `review-round-cost` are outside this three-bucket split entirely: both redact branch names (and, for `subagent-mix`, `subagent_type` values) under more than one root via `account-N/branch-N`-style opaque labels, disclosing the raw value only under `--this-repo` — see their own sections below for the full contract.
+Redaction — the `DO NOT PUBLISH` banner and `account-N`/`private-project-N` labels — is not uniform across the three subcommands that mention it. `cost` and `audit-routing` build the redact map and print per-project or per-account labels. `context-distribution` prints the same banner and refuses `--no-redact` above one root, but never builds the redact map and emits no project label at all, so there is nothing in its output to actually redact. Every other subcommand — `audit-routing-samples`, `buckets`, `review-trace`, `fail-seq`, `struggle`, `duration`, `subagents`, and `pr-link` — has no redaction of any kind and prints raw branch names, paths, or prior-user text under the default union; none of them narrows the union to one account short of the `--config-dir` escape hatch above. `cost --summary` is now a second narrowing path, but it applies to `cost` specifically, not to any subcommand in this list. `subagent-mix` and `review-round-cost` are outside this three-bucket split entirely: both redact branch names (and, for `subagent-mix`, `subagent_type` values) under more than one root via `account-N/branch-N`-style opaque labels, disclosing the raw value only under `--this-repo` — see their own sections below for the full contract.
 
 `context-composition` matches `context-distribution`'s own contract exactly: same banner, same multi-root `--no-redact` refusal, no redact map, and no per-root/per-account/per-project breakdown of its category ranking — only the per-root scan-summary line (`context-composition: account-N: scanned … transcripts`) every multi-root subcommand above already prints.
 
@@ -171,7 +171,7 @@ Branch                                    Span(min) Active(min)  Idle(min)    Bu
 GH-333/audit-routing-samples-subcommand        1553         112       1442         5      30
 ```
 
-**`Bursts` is not a session count.** It is `len(idle_gaps) + 1` — the number of contiguous activity bursts separated by a `--gap-minutes`-or-longer idle gap — not a count of distinct session files:
+**What `Bursts` counts.** It is `len(idle_gaps) + 1` — the number of contiguous activity bursts separated by an idle gap longer than `--gap-minutes`:
 - One burst can span several session files (a continuation with no idle gap between consecutive files' timestamps).
 - One session file can itself span several bursts (a long idle pause mid-session).
 
@@ -449,24 +449,14 @@ CLASSIFICATION SUMMARY
 - `--branches B1,B2,...` — filter to specific branches
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
 - `--until DATE` — inclusive end date (`YYYY-MM-DD`)
-- `--deny-only` — restrict to sessions containing at least one hook denial.
+- `--deny-only` — restrict to sessions containing at least one hook denial
 - `--deny-summary` — replace the per-session event listing with corpus-wide denial-count tables and a friction-kind breakout (see "`--deny-summary`" below)
-- `--skill NAME` — restrict skill-invocation matching to one skill name.
+- `--skill NAME` — restrict skill-invocation matching to one skill name
 - Scope is always the main thread plus every dispatched subagent's own transcript file, merged into one chronological stream — unlike `skill-invocation`, there is no flag to narrow this to main-thread-only. Each event's `thread` field (`main` or `sidechain`) marks which thread it came from.
 
 Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. An event whose branch or model cannot be resolved renders `?`.
 
 `line_no` carries two meanings depending on the event's `thread`. For `thread=main` it is the real 1-based line of the main transcript file, accurate only when every earlier line in the file parsed as valid JSON — a malformed earlier line is silently skipped during parsing, shifting every later line's number down by one. For `thread=sidechain` it is only a position in the merged main+subagent stream, indexing no single file — those rows print `line n/a` instead of a number.
-
-Multi-root scope — the default once `~/.claude/transcript-config-dirs` declares another account, since `review-trace` has no repeatable `--config-dir` of its own:
-
-- `DO NOT PUBLISH` prints on stdout and stderr.
-- Each session's own `### <path>` header is redacted to an opaque `account-<K>/session-<N>` label instead of the real per-session file path, since that path embeds the real project directory name.
-- Every branch name printed — in the per-session `branches=...` summary line and in each event's own `(branch=...)` suffix — is redacted the same way, to an opaque `account-<K>/branch-<N>` label. See `_redact_branch`'s docstring in `transcript-analysis.py` for why there is no `--this-repo` disclosure carve-out for this redaction.
-- `model=` stays raw regardless of scope, since a model ID carries no account or project identity.
-- Every denial and friction event's `msg=...` field is omitted entirely, since this repo's own hook denials routinely embed absolute filesystem paths that would disclose the same project directory name.
-- `hook=` is classified through the same `_denial_hook_label` classifier `--deny-summary` uses, instead of a legacy denial's raw `hookName`, for an unenumerated hook name. This behavior is multi-root-only. Single-root scope carries no disclosure concern here, so a legacy denial's unenumerated `hookName` prints raw there instead.
-- A reviewer-spawn event's `subagent_type` is redacted the same way as branch, except a `subagent_type` tracked in the invoking checkout's own `agents/` directory (or a Claude Code built-in) discloses raw. See `_redact_subagent_type`'s docstring in `transcript-analysis.py` for the membership test and why there is no `--this-repo` disclosure carve-out for this redaction either, and `_repo_tracked_agent_type_names`'s docstring for the naming-convention precondition this disclosure depends on.
 
 **Sample output.**
 ```
@@ -479,7 +469,7 @@ branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spaw
   [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  (branch=my-feature model=sonnet)
   [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet  (branch=my-feature model=sonnet)
   [2026-05-20T10:17:45.000Z] line   n/a  reviewer     staff-sdet  (branch=my-feature model=sonnet thread=sidechain)
-  [2026-05-20T10:45:00.000Z] line  120  denial       hook=marker.sh  cause=behavioral  id=toolu_abc  msg='marker.sh invocation denied...'  (branch=my-feature model=sonnet)
+  [2026-05-20T10:45:00.000Z] line  120  denial       hook=  cause=behavioral  id=toolu_abc  msg='marker.sh invocation denied...'  (branch=my-feature model=sonnet)
   [2026-05-20T11:02:00.000Z] line  145  skill        code-review  (branch=my-feature model=sonnet)
 ```
 

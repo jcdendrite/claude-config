@@ -828,8 +828,7 @@ def cmd_duration(args: argparse.Namespace) -> None:
     """Per-branch span/active/idle time split and activity-burst count.
 
     The "Bursts" column is len(idle_gaps) + 1, the count of contiguous
-    activity bursts separated by a >--gap-minutes idle gap — not a count of
-    distinct session files:
+    activity bursts separated by an idle gap longer than --gap-minutes:
     - One burst can span several session files (a continuation with no idle
       gap between consecutive files' timestamps).
     - One session file can itself span several bursts (a long idle pause
@@ -1645,8 +1644,7 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
                         # _declared_pin reads from the on-disk agent file, so it
                         # needs the real subagent_type (stype), never the
                         # (possibly-redacted) display label built at print time.
-                        declared_pin = _declared_pin(stype, agents_dir, declared_pin_cache)
-                        row["declared_seen"].add(declared_pin)
+                        row["declared_seen"].add(_declared_pin(stype, agents_dir, declared_pin_cache))
                         (
                             observed, actual_dollars, _dollars_by_class, counterfactual_dollars,
                             dispatch_unpriced_turns, dispatch_unpriced_tokens, dispatch_stale_models,
@@ -2044,9 +2042,7 @@ def _dispatch_usage_summary(
     Records are buffered and passed through dedup_turns_by_request_id before
     pricing, since one API call writes one JSONL record per content block, all
     sharing one requestId, and pricing each block separately would overcount
-    every token class. Every other pricing path in this codebase applies the
-    same dedup step (cost.py's `_compute_pr_cost_branch_totals`,
-    `_compute_workstream_dollars`, ...).
+    every token class. This is the same dedup step cost.py's pricing paths use.
 
     Returns (observed_bucket, actual_dollars, dollars_by_class,
     counterfactual_dollars, unpriced_turns, unpriced_tokens, stale_models).

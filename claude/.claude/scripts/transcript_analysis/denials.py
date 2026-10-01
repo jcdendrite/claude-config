@@ -254,7 +254,7 @@ _DENIAL_HOOK_NAME_PATTERNS: tuple[re.Pattern, ...] = (
 )
 
 
-def _denial_hook_label(hook_name: str, message: str, *, raw_when_unenumerated: bool = False) -> str:
+def _denial_hook_label(hook_name: str, message: str) -> str:
     """Return the originating hook/gate name for one denial event.
 
     Legacy-shape denials carry the name directly (hook_name, from the
@@ -264,30 +264,11 @@ def _denial_hook_label(hook_name: str, message: str, *, raw_when_unenumerated: b
     Either source is trusted only if the candidate is a member of
     _DENIAL_HOOK_LABELS — an unenumerated hookName (legacy transcripts predate
     this bound entirely) or an unenumerated extracted candidate both fall to
-    _DENY_SUMMARY_UNMATCHED_HOOK rather than being echoed verbatim, unless
-    raw_when_unenumerated is set. That flag widens only the legacy hookName
-    path. A non-empty but unenumerated hookName then echoes raw (sanitized
-    and capped at _DENIAL_HOOK_NAME_MAX_CHARS, the same bound every other
-    return path in this function already carries) instead of collapsing to
-    _DENY_SUMMARY_UNMATCHED_HOOK. review-trace's single-root timeline uses
-    it because that caller has no disclosure concern and wants an
-    unrecognized hook surfaced, not hidden. A message-extracted candidate
-    always stays classify-only: hook_name being
-    empty is what routes to message extraction in the first place, so there
-    is no raw field left to echo.
+    _DENY_SUMMARY_UNMATCHED_HOOK rather than being echoed verbatim.
     """
     candidate = (hook_name or "").strip()
     if candidate:
-        if candidate in _DENIAL_HOOK_LABELS:
-            return candidate
-        if not raw_when_unenumerated:
-            return _DENY_SUMMARY_UNMATCHED_HOOK
-        # Same bound as every other candidate this function returns
-        # (_DENIAL_HOOK_NAME_MAX_CHARS, render._sanitize_table_cell). A
-        # legacy transcript's own hookName field is otherwise unbounded and
-        # uninspected. The message-extraction path below has no such gap:
-        # its regex capture groups are already charclass- and length-bound.
-        return render._sanitize_table_cell(candidate)[:_DENIAL_HOOK_NAME_MAX_CHARS]
+        return candidate if candidate in _DENIAL_HOOK_LABELS else _DENY_SUMMARY_UNMATCHED_HOOK
     for pattern in _DENIAL_HOOK_NAME_PATTERNS:
         m = pattern.search(message)
         if m is None:
