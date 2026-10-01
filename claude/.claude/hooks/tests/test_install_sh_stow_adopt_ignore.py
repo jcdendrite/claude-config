@@ -234,6 +234,184 @@ class TestStowAdoptIgnorePattern:
             f"under-escaped pattern; stow output: {result.stderr!r}"
         )
 
+    def test_ds_store_conflict_across_packages_is_ignored(self, tmp_path: Path) -> None:
+        """The target already holds a real `.DS_Store` file, as Finder creates.
+        The 'claude-skills' package's `.DS_Store` is the one that would collide
+        with it. Without the ignore, stow would try to link that file over the
+        target's and report a conflict (see install.sh's `ds_store_ignore_arg`
+        comment). The 'claude' package's top-level `.DS_Store` is untracked, so
+        install.sh's untracked-entry `--ignore` already covers it and it cannot
+        collide. The stow run must succeed. The target file must remain a
+        regular, non-symlink file with its original content. Each package's
+        own ordinary entries must still be symlinked, which rules out an
+        --ignore construction broad enough to suppress them."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        (pkg_root / "claude" / ".claude" / ".DS_Store").write_text("finder metadata")
+        (pkg_root / "claude-skills" / ".DS_Store").write_text("finder metadata")
+        target_ds_store = home / ".claude" / ".DS_Store"
+        target_ds_store.parent.mkdir(parents=True)
+        target_ds_store.write_text("target finder metadata")
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert target_ds_store.is_file() and not target_ds_store.is_symlink(), (
+            "a real .DS_Store already in the target must not be replaced by "
+            f"a symlink; stow output: {result.stderr!r}"
+        )
+        assert target_ds_store.read_text() == "target finder metadata", (
+            "the target's real .DS_Store must keep its original content; "
+            f"stow output: {result.stderr!r}"
+        )
+        skills_link = home / ".claude" / "skills"
+        assert skills_link.is_symlink(), (
+            "an --ignore construction bug broad enough to also suppress the "
+            f"'claude' package's own ordinary entries would trivially satisfy "
+            f"the .DS_Store assertion above too; stow output: {result.stderr!r}"
+        )
+        placeholder_link = home / ".claude" / "placeholder"
+        assert placeholder_link.is_symlink(), (
+            "an --ignore construction bug broad enough to also suppress the "
+            f"'claude-skills' package's own ordinary entries would trivially "
+            f"satisfy the .DS_Store assertion above too; stow output: {result.stderr!r}"
+        )
+
+    def test_nested_ds_store_below_package_top_level_is_ignored(
+        self, tmp_path: Path
+    ) -> None:
+        """`ds_store_ignore_arg`'s pattern matches a `.DS_Store` path segment
+        at any depth. The entries in `stow_ignore_args` are instead anchored
+        to the package root. This pins that a `.DS_Store` nested below a
+        package's top level is ignored too, not just one at the package
+        root."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        (pkg_root / "claude" / ".claude" / "skills" / ".DS_Store").write_text("finder metadata")
+        # Pre-create the target "skills" directory for real, not as a
+        # symlink, so stow must descend into it and link each child
+        # individually instead of folding the whole directory into one
+        # symlink. A nested .DS_Store would otherwise never be considered
+        # on its own.
+        target_skills = home / ".claude" / "skills"
+        target_skills.mkdir(parents=True)
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert not (target_skills / ".DS_Store").is_symlink(), (
+            "a .DS_Store nested below a package's top level must be ignored "
+            f"just like one at the package root; stow output: {result.stderr!r}"
+        )
+        example_link = target_skills / "example"
+        assert example_link.is_symlink(), (
+            "an ordinary sibling entry in the same nested directory must "
+            f"still be symlinked normally; stow output: {result.stderr!r}"
+        )
+
+    def test_pre_existing_ds_store_symlink_from_a_prior_partial_run_is_left_alone(
+        self, tmp_path: Path
+    ) -> None:
+        """A pre-existing `.DS_Store` symlink under the stow target, owned by
+        an already-stowed package, must be left alone by a later package's
+        stow run. The fixture seeds it as a relative symlink, matching what
+        stow itself creates. It must not be treated as a conflict. It must
+        not be relinked."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        claude_ds_store = pkg_root / "claude" / ".claude" / ".DS_Store"
+        claude_ds_store.write_text("finder metadata")
+        (pkg_root / "claude-skills" / ".DS_Store").write_text("finder metadata")
+        # Simulates the state left behind by a prior run of the 'claude' row
+        # alone, before 'claude-skills' is also stowed in the same run below.
+        # Its .DS_Store is already linked into the target. The link is
+        # relative, as stow lays it down; an absolute link makes stow report
+        # an absolute/relative mismatch and a different conflict class.
+        target_ds_store = home / ".claude" / ".DS_Store"
+        target_ds_store.parent.mkdir(parents=True)
+        target_ds_store.symlink_to(os.path.relpath(claude_ds_store, target_ds_store.parent))
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert target_ds_store.is_symlink(), (
+            "a pre-existing .DS_Store symlink left over from a prior partial "
+            f"run must be left alone, not removed; stow output: {result.stderr!r}"
+        )
+        assert target_ds_store.resolve() == claude_ds_store.resolve(), (
+            "the pre-existing .DS_Store symlink must still point at the "
+            f"'claude' package's own file, not be relinked; stow output: {result.stderr!r}"
+        )
+        placeholder_link = home / ".claude" / "placeholder"
+        assert placeholder_link.is_symlink(), (
+            "the 'claude-skills' package's own ordinary entry must still be "
+            f"linked, proving its stow row did not abort on the .DS_Store "
+            f"collision; stow output: {result.stderr!r}"
+        )
+
+    def test_ds_store_name_is_ignored_without_over_matching_a_sibling(
+        self, tmp_path: Path
+    ) -> None:
+        """'XDS_Store' is a tracked sibling the same length as '.DS_Store',
+        differing only in the first character -- the position where
+        '.DS_Store' has its literal dot. It would only start matching
+        `ds_store_ignore_arg`'s pattern if the escaped dot were dropped to an
+        unescaped one, since an unescaped dot in the anchored-at-the-end Perl
+        regex matches any character. An under-escaped pattern would therefore
+        sweep in this sibling and leave it un-symlinked."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        (pkg_root / "claude" / ".claude" / ".DS_Store").write_text("finder metadata")
+        sibling = pkg_root / "claude" / ".claude" / "XDS_Store"
+        sibling.write_text("# tracked sibling differing only at the dot position\n")
+        subprocess.run(
+            ["git", "add", "claude/.claude/XDS_Store"], cwd=pkg_root, check=True
+        )
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert not (home / ".claude" / ".DS_Store").is_symlink(), (
+            "a .DS_Store present in a package's tree must never be symlinked "
+            f"into the target; stow output: {result.stderr!r}"
+        )
+        sibling_link = home / ".claude" / "XDS_Store"
+        assert sibling_link.is_symlink(), (
+            "a tracked sibling differing only at the escaped dot's position "
+            f"must still be symlinked normally, not swept in by an "
+            f"under-escaped pattern; stow output: {result.stderr!r}"
+        )
+
+    def test_name_merely_ending_in_ds_store_is_not_swept_in(
+        self, tmp_path: Path
+    ) -> None:
+        """'notes.DS_Store' is a tracked file whose name ends in the literal
+        substring '.DS_Store' without being an exact '.DS_Store' path segment.
+        An unanchored pattern would still match it via the substring, since
+        the pattern is only anchored at the end. This pins that the `(^|/)`
+        anchor in `ds_store_ignore_arg` restricts the match to an exact
+        `.DS_Store` segment, so this sibling must still be symlinked
+        normally."""
+        home = tmp_path / "home"
+        pkg_root = _make_package(tmp_path)
+        notes = pkg_root / "claude" / ".claude" / "notes.DS_Store"
+        notes.write_text("# tracked file whose name merely ends in .DS_Store\n")
+        subprocess.run(
+            ["git", "add", "claude/.claude/notes.DS_Store"], cwd=pkg_root, check=True
+        )
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_stow_adopt_block(pkg_root, home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        notes_link = home / ".claude" / "notes.DS_Store"
+        assert notes_link.is_symlink(), (
+            "a tracked file whose name merely ends in the '.DS_Store' "
+            f"substring must still be symlinked normally, not swept in by "
+            f"the anchored pattern; stow output: {result.stderr!r}"
+        )
+
 
 def _run_ignore_arg_construction_only(pkg_root: Path, home: Path, *, stub: str) -> subprocess.CompletedProcess:
     """Runs the real --ignore-arg-construction loop from the extracted
