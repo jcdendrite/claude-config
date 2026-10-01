@@ -102,7 +102,7 @@ Cites are to quoted header text, not line numbers, since the tier line's own ins
     - `git commit` and all four `--continue` forms: `check-skill-length.sh`, `check-claude-md-length.sh`, `guard-settings-session-keys.sh`, `deny-pii-in-commits.sh`, `deny-private-project-refs.sh`.
     - `git commit` and the `merge`, `cherry-pick`, and `revert` `--continue` forms, with `rebase` excluded by design: `require-code-review.sh`, `require-skill-review.sh`.
     - Literal `git commit` only: `require-plugin-version-bump.sh`, `require-npm-version-bump.sh`.
-  - The hook's own header "Known gaps" list names what still bypasses it, even for the dependents it covers: an execution mechanism outside its wrapper-token list, `$(...)` side-effect execution inside a commit's own arguments, quote/indirection obfuscation of commit detection itself, and an execution mechanism `_lib_split_fragments` doesn't split on (GH-1063).
+  - The hook's own header "Known gaps" list names what still bypasses it, even for the dependents it covers: an execution mechanism outside its wrapper-token list, `$(...)` side-effect execution inside a commit's own arguments, quote/indirection obfuscation of commit detection itself, and a bare `&` background separator `_lib_split_fragments` doesn't split on (GH-1063).
   - Each of those names this dependency in a one-line comment pointing here rather than restating this list.
   - See the hook's own header for the full known-gaps list:
     - bare `--amend` (folds HEAD's tree into the commit; left open because closing it would break the amend-message-only flow every commit gate's empty-diff carve-out exists to permit)

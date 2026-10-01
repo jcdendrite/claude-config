@@ -20,8 +20,8 @@
 # surrounding logic.
 #
 # Dispatched on every Bash tool call; the internal commit-shape check below is
-# the sole dispatch gate. See require-code-review.sh for the same pattern and
-# rationale. _lib_staged_length_gate resolves its base the same way
+# the sole dispatch gate. See require-code-review.sh for the same pattern.
+# _lib_staged_length_gate resolves its base the same way
 # require-code-review.sh does. For why that base is admissible despite being
 # locally forgeable, and its residuals, see:
 # `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "The anchor-admissibility test"

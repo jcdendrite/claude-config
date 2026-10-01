@@ -797,8 +797,8 @@ class TestDenyInvisibleCommitContent:
         ahead of a `--continue` form is invisible to every other commit
         gate's `git diff --cached` snapshot exactly as it is ahead of a bare
         `git commit` -- including the rebase form, which the two
-        review-marker gates' own rebase carve-out does not reach, so this
-        gate is the only one still armed on it. The env-prefixed and
+        review-marker gates' own rebase carve-out does not reach, so no other
+        armed gate can see the chained `git add` ahead of it. The env-prefixed and
         `-c`-qualified spellings are the deny twins of
         `test_bare_continue_form_allowed`'s templates, so an allow there
         cannot come from the hook failing to recognize the spelling."""

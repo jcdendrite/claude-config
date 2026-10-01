@@ -3,7 +3,7 @@
 # tier-threat-model: cooperative
 # Gate: require /code-review before git commit, verified via marker file.
 #
-# WARNING: Do NOT remove the internal git commit check below.
+# WARNING: Do NOT remove the internal commit-shape check below.
 # Dispatched on every Bash tool call; the internal commit-shape check below is
 # the sole dispatch gate.
 # This hook trusts the two locally-forgeable anchors _lib_gate_diff_base
