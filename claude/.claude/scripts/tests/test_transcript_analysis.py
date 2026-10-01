@@ -10808,6 +10808,49 @@ class TestScanGapCounter:
         assert _mod.scope._failed_transcript_read_is_gap(_StatsAsDirectory()) is False
 
 
+class TestGlobScopedSessionsSelection:
+    """_iter_glob_scoped_sessions' own fnmatch selection of project directories
+    and *.jsonl transcripts, which replaces Path.glob above one root. The
+    single-root corpus.iter_sessions (Path.glob) is the reference engine."""
+
+    @pytest.mark.parametrize("projects_glob", ["*", "feat-?", "feat-*", "[ab]*", "zeta", ".hidden*"])
+    def test_multi_root_selection_equals_union_of_per_root_path_glob_selection(self, tmp_path, projects_glob):
+        project_names_by_root = {
+            "acct-a": ["alpha", "feat-a", "feat-bb"],
+            "acct-b": ["beta", "feat-c", "zeta", ".hidden-x"],
+        }
+        roots = []
+        for root_name, project_names in project_names_by_root.items():
+            root = tmp_path / root_name
+            for project_name in project_names:
+                project_dir = root / project_name
+                project_dir.mkdir(parents=True)
+                _write_jsonl(project_dir / "sess.jsonl", [_asst("claude-sonnet-4-6", branch=project_name)])
+            roots.append(root)
+        stray_records = [_asst("claude-sonnet-4-6", branch="not-a-transcript")]
+        backup_copy = roots[0] / "feat-a" / "sess.jsonl.bak"
+        non_transcript = roots[0] / "feat-a" / "notes.txt"
+        _write_jsonl(backup_copy, stray_records)
+        _write_jsonl(non_transcript, stray_records)
+
+        yielded_paths = {
+            jsonl for jsonl, _records in _mod.scope._iter_glob_scoped_sessions(roots, projects_glob, False)
+        }
+        every_project_paths = {
+            jsonl for jsonl, _records in _mod.scope._iter_glob_scoped_sessions(roots, "*", False)
+        }
+
+        expected_paths = {
+            jsonl for root in roots for jsonl, _records in _mod.corpus.iter_sessions(root, projects_glob)
+        }
+        assert expected_paths
+        assert yielded_paths == expected_paths
+        if projects_glob != "*":
+            assert yielded_paths < every_project_paths
+        assert backup_copy not in every_project_paths
+        assert non_transcript not in every_project_paths
+
+
 class TestProjectsGlobStepsToParent:
     @pytest.mark.parametrize("projects_glob", ["..", "../x", "x/..", "a/../.."])
     def test_dotdot_path_component_steps_to_parent(self, projects_glob):

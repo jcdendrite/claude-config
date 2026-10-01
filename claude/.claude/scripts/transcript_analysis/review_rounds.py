@@ -525,9 +525,9 @@ _POOLED_SCAN_GAP_REFUSAL = (
 # printed only when an exception the scan-gap accounting above doesn't anticipate escapes it.
 # Never interpolates the caught exception's str(), which may embed a raw filesystem path.
 _POOLED_SCAN_ABORTED_MESSAGE = (
-    "review-round-cost --pooled refuses a partial scan: an unexpected error interrupted the"
-    " corpus scan or the pooled render, so part of the corpus may have silently dropped out of"
-    " the pooled figure. Resolve the underlying problem before retrying --pooled."
+    "review-round-cost --pooled produced no valid pooled figure: an unexpected error interrupted"
+    " the corpus scan or the pooled render. Rerun without --pooled to read the diagnostics; if"
+    " that run succeeds, the failure was transient or is in the pooled render itself."
 )
 
 
@@ -638,8 +638,9 @@ def _pooled_scope_refusal(
     if roots is not None and len(roots) < 2:
         return (
             "review-round-cost --pooled requires more than one resolved scan root: a"
-            " single-account figure is a per-account figure. Declare another account in"
-            f" {scope.TRANSCRIPT_CONFIG_DIRS_LABEL}." + _POOLED_REFUSAL_DOC_POINTER
+            " single-account figure is a per-account figure. Check that"
+            f" {scope.TRANSCRIPT_CONFIG_DIRS_LABEL} exists, is readable, and declares another account."
+            + _POOLED_REFUSAL_DOC_POINTER
         )
     if scan_gaps:
         return _POOLED_SCAN_GAP_REFUSAL + _POOLED_REFUSAL_DOC_POINTER
@@ -777,10 +778,11 @@ def _single_account_within_stated_precision(
         return True
     if w_max <= 0:
         # Structurally unreachable in production: _pooled_dominance_breach's
-        # own caller only reaches this function after a denom_total > 0
-        # check, and w_max is a ratio of one account's contribution to that
-        # positive total, so w_max > 0 always holds there. Fail closed
-        # anyway, since dividing by w_max below would otherwise raise.
+        # own caller only reaches this function for a share whose interval
+        # exists (lo is not None), which requires a positive denominator
+        # total, and w_max is a ratio of one account's contribution to that
+        # total, so w_max > 0 always holds there. Fail closed anyway, since
+        # dividing by w_max below would otherwise raise.
         return True
     # Two algebraically equal forms: each rounds one ulp low at different
     # inputs (the second at p == 100, the first at w_max == 1.0). A low
@@ -814,11 +816,11 @@ def _pooled_dominance_breach(
     for key in _POOLED_PUBLISHED_STAT_KEYS:
         point, lo, hi = intervals[key]
         if lo is None:
-            continue  # zero-denominator share: no figure printed to leak
+            # A zero-denominator share prints no figure to leak.
+            # This guard also keeps the division by denom_total below defined.
+            continue
         field = _POOLED_SHARE_DENOMINATOR_FIELD[key]
         denom_total = pooled_denominator_totals[field]
-        if denom_total <= 0:
-            continue
         w_max = max(totals[field] for totals in account_denominator_totals.values()) / denom_total
         if _single_account_within_stated_precision(w_max, point, lo, hi):
             return True

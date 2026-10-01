@@ -138,17 +138,13 @@ def read_session_file(jsonl: Path, include_subagents: bool) -> list[dict]:
     """Read one transcript file's records, merging its subagent files when asked.
 
     The shared merged-records read, so callers cannot drift in how they parse
-    records or merge subagent files. Inside scope.py, `_iter_project_dir_sessions`
-    calls `_read_session_file_partitioned` directly instead, to tell an
-    unreadable main file from a readable empty one, and repeats only the
-    flatten below.
+    records or merge subagent files.
 
     When include_subagents=True, records from split subagent files under
     <session_id>/subagents/*.jsonl are appended. Those files carry
     isSidechain: true on assistant records. Returns [] for an unreadable file.
 
-    Flattens _read_session_file_partitioned in source-file order, so the merged
-    sequence is exactly the concatenation it has always been.
+    Flattens _read_session_file_partitioned in source-file order.
     """
     return [rec for group in _read_session_file_partitioned(jsonl, include_subagents) for rec in group]
 

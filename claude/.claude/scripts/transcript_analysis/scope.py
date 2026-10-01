@@ -338,6 +338,10 @@ def _iter_project_dir_sessions(
     (_iter_scoped_sessions, _iter_glob_scoped_sessions): lists each project
     directory, reads every *.jsonl entry, and yields non-empty results.
 
+    Calls corpus._read_session_file_partitioned directly instead of
+    corpus.read_session_file, to tell an unreadable main file from a readable
+    empty one. It repeats only that function's flatten.
+
     `scan_gaps` here can't see _read_session_file_partitioned's own
     subagent_dir.is_dir() OSError swallowing (corpus.py) -- that function
     takes no scan_gaps parameter, so a future include_subagents=True

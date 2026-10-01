@@ -1,4 +1,5 @@
 """Tests for transcript_analysis/review_rounds.py (review-round-cost)."""
+import argparse
 import importlib.util
 import os
 import re
@@ -1707,9 +1708,9 @@ class TestSingleAccountWithinStatedPrecision:
     @pytest.mark.parametrize("w_max", [0.0, -0.1])
     def test_nonpositive_w_max_is_fail_closed(self, w_max):
         """w_max <= 0 is structurally unreachable from _pooled_dominance_breach
-        (its own denom_total > 0 guard forces w_max > 0), but this direct call
-        pins the guard's own fail-closed return against a future caller that
-        loses that guarantee.
+        (it skips any share whose interval is None, which a zero denominator
+        total forces, so w_max > 0), but this direct call pins the guard's own
+        fail-closed return against a future caller that loses that guarantee.
         """
         assert review_rounds._single_account_within_stated_precision(w_max, 50.0, 44.0, 56.0) is True
 
@@ -2327,6 +2328,38 @@ class TestCmdReviewRoundCostPooled:
             _mod.cmd_review_round_cost(args)
         assert exc.value.code == 2
         assert "--branches" in capsys.readouterr().err
+
+    def test_every_review_round_cost_option_is_either_refused_under_pooled_or_scope_neutral(self):
+        """Walks every option build_parser() registers for review-round-cost
+        (its own and the top-level parser's), so a new option cannot ship
+        without a decision on whether --pooled must refuse it. A refused
+        option must also trip _pooled_scope_refusal when set, so the
+        classification cannot drift from the refusal chain."""
+        refused = {"branches", "projects", "skill", "since", "until", "config_dir", "this_repo"}
+        scope_neutral = {
+            "pooled",  # selects the mode itself
+            "show_withheld",  # widens what the pooled block prints, never what is scanned
+            "help",  # exits before any scan
+            "subcommand",  # the top-level parser's own subparser selector
+        }
+        parser = _mod.build_parser()
+        subparsers_action = next(
+            action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+        )
+        registered_dests = {
+            action.dest
+            for registering_parser in (parser, subparsers_action.choices["review-round-cost"])
+            for action in registering_parser._actions
+        }
+        assert registered_dests == refused | scope_neutral
+
+        assert review_rounds._pooled_scope_refusal(_review_round_cost_args(pooled=True)) is None
+        for dest in sorted(refused):
+            truthy_value = True if dest == "this_repo" else "named-value"
+            refusal = review_rounds._pooled_scope_refusal(
+                _review_round_cost_args(pooled=True, **{dest: truthy_value})
+            )
+            assert refusal is not None, dest
 
     def test_refuses_this_repo_on_single_root_fixture(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc:
@@ -3212,6 +3245,45 @@ class TestCmdReviewRoundCostPooled:
         _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         out = capsys.readouterr().out
         assert "(95% CI not computed — no priced branch spend)" in out
+
+    def test_zero_denominator_shares_skip_the_dominance_floor_while_round_count_shares_print(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The real dominance floor runs against a pool whose every dollar
+        denominator is zero. Each of the four branches holds one round of
+        every review skill, so each account holds the same skill mix and no
+        round-count share is an exact 0% or 100% (either would trip the
+        floor for a reason unrelated to the zero denominators). The six
+        dollar-keyed shares must print the zero-denominator wording instead
+        of dividing by their zero pooled denominator, and the three
+        round-count shares must print figures. Hand-built rounds via a
+        direct _render_pooled_block call, with no stub on the floor.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        branch_keys = [(0, "feat-a1"), (0, "feat-a2"), (1, "feat-b1"), (1, "feat-b2")]
+        rounds = [
+            {"branch_key": branch_key, "skill": skill, "main_dollars": 0.0, "agent_dollars": 0.0,
+             "unpriced_turns": 0, "dangling": 0}
+            for branch_key in branch_keys
+            for skill in review_rounds.REVIEW_SKILLS
+        ]
+        branch_totals = dict.fromkeys(branch_keys, 0.0)
+
+        review_rounds._render_pooled_block(
+            _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals, scan_gaps=Counter(),
+        )
+        out = capsys.readouterr().out
+
+        zero_denominator_wording = "(95% CI not computed — no priced branch spend)"
+        dollar_keyed_labels = [
+            "inside round windows", "outside every round window", "reviewer dispatches only",
+            *review_rounds.REVIEW_SKILLS,
+        ]
+        assert [line for line in out.splitlines() if zero_denominator_wording in line] == [
+            f"    {label:<30}{zero_denominator_wording}" for label in dollar_keyed_labels
+        ]
+        rounds_by_skill_section = out.split("  Rounds by skill\n")[1]
+        assert _count_numeric_share_lines(rounds_by_skill_section) == len(review_rounds.REVIEW_SKILLS)
 
     def test_branch_with_no_in_scope_rounds_does_not_change_the_pooled_figures(
         self, tmp_path, monkeypatch, capsys,
