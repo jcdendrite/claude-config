@@ -29,17 +29,6 @@
       "Bash(~/.claude/scripts/worktree-removal-status.sh)",
       "Bash(worktree-removal-status)"
     ],
-    "ask": [
-      "Bash(~/.claude/scripts/cleanup-merged-branches.sh)",
-      "Bash(cleanup-merged-branches)",
-      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects)",
-      "Bash(cleanup-merged-branches --all-projects)",
-      "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects --dry-run)",
-      "Bash(cleanup-merged-branches --all-projects --dry-run)",
-      "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)",
-      "Bash(cleanup-idle-open-pr-worktrees)",
-      "Edit(//**/.claude/settings*.json)"
-    ],
     "deny": [
       "Bash(sudo *)",
       "Bash(sudo)",
@@ -82,7 +71,8 @@
       "Bash(~/.claude/scripts/cleanup-merged-branches.sh --all-projects --dry-run)",
       "Bash(cleanup-merged-branches --all-projects --dry-run)",
       "Bash(~/.claude/scripts/cleanup-idle-open-pr-worktrees.sh)",
-      "Bash(cleanup-idle-open-pr-worktrees)"
+      "Bash(cleanup-idle-open-pr-worktrees)",
+      "Edit(//**/.claude/settings*.json)"
     ]
   },
   "disableArtifact": true,

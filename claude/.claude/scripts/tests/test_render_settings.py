@@ -1273,6 +1273,38 @@ class TestRuleFourGuardedKeysCrossCheck:
         assert sorted(_rule4_dotted_paths_from_render_settings()) == dotted_subset
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+    keys = [key for key, _ in pairs]
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    assert not duplicates, f"duplicate JSON keys: {duplicates}"
+    return dict(pairs)
+
+
+class TestBaseFileShape:
+    def test_base_file_has_no_duplicate_keys_at_any_depth(self) -> None:
+        """json.load keeps only the last of two same-named keys, so a duplicate
+        silently drops the first block's entries from the rendered file (a
+        duplicated `permissions.ask` once dropped a settings-file-edit ask
+        rule this way)."""
+        json.loads(_SETTINGS_BASE_JSON.read_text(), object_pairs_hook=_reject_duplicate_keys)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '{"a": 1, "a": 2}',
+            '{"outer": {"a": 1, "a": 2}}',
+            '{"outer": [{"x": 1}, {"a": 1, "a": 2}]}',
+        ],
+        ids=["top-level", "nested-object", "object-in-list"],
+    )
+    def test_duplicate_key_helper_rejects_a_duplicate_at_every_depth(self, text: str) -> None:
+        with pytest.raises(AssertionError, match="duplicate JSON keys"):
+            json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+
+    def test_duplicate_key_helper_accepts_a_repeated_array_value(self) -> None:
+        json.loads('{"a": [1, 1], "b": 1}', object_pairs_hook=_reject_duplicate_keys)
+
+
 class TestBaseOverlayDisjointness:
     """Regression guard: git merge-tree's auto-merge can silently land one
     of the overlay's allowed keys into base with no conflict marker.
