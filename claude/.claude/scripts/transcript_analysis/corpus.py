@@ -29,20 +29,24 @@ def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, tuple[Path, str |
     subagent transcript, to descend into a dispatch's own further spawns.
 
     Returns (index, meta_read_errors): meta_read_errors counts *.meta.json
-    files present but unusable -- unreadable or non-UTF-8 bytes, invalid
-    JSON, valid JSON missing a string-typed toolUseId, or valid JSON whose
-    "model" key is present but not a string -- distinct from a dispatch with
-    no meta.json at all (the caller's own, separately-documented exclusion
-    path). meta.json is written by Claude Code's own harness, not by this
-    repo, so its "model" and "toolUseId" fields are external input: a
-    non-string value for either (a future harness change, or a corrupted
-    file) is excluded here rather than reaching a caller that would use it
-    as a dict key and crash with an uncaught TypeError.
+    files present but unusable. A file is unusable when it is:
+    - unreadable or not valid UTF-8,
+    - not valid JSON,
+    - valid JSON without a string-typed toolUseId,
+    - valid JSON whose "model" key is present but not a string.
+
+    This is distinct from a dispatch with no meta.json at all, which is the
+    caller's own, separately-documented exclusion path.
+
+    meta.json is written by Claude Code's own harness, not by this repo, so
+    its "model" and "toolUseId" fields are external input: a non-string
+    value for either (a future harness change, or a corrupted file) is
+    excluded here rather than reaching a caller that would use it as a dict
+    key and crash with an uncaught TypeError.
 
     A subagents/ directory that cannot be listed or checked yields an empty
     index and adds nothing to meta_read_errors, the same result as a session
     with no subagents.
-    Each caller interprets an index miss itself.
     """
     subagent_dir = jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR
     index: dict[str, tuple[Path, str | None]] = {}
@@ -56,6 +60,9 @@ def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, tuple[Path, str |
     for meta_path in sorted(subagent_dir.glob("*.meta.json")):
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        # A file that raises any other exception (e.g. a pathological integer
+        # literal or deep nesting) aborts the scan rather than counting as an
+        # error, which is fail-closed by design.
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             meta_read_errors += 1
             continue
@@ -87,6 +94,9 @@ def _parse_jsonl_records(jsonl: Path) -> list[dict] | None:
             for raw in fh:
                 try:
                     records.append(json.loads(raw.decode("utf-8")))
+                # A line that raises any other exception (e.g. a pathological
+                # integer literal or deep nesting) aborts the scan rather than
+                # being skipped, which is fail-closed by design.
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
     except OSError:

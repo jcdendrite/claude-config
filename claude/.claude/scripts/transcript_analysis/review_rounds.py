@@ -834,8 +834,8 @@ def _fmt_share_with_ci(point: float | None, lo: float | None, hi: float | None) 
     `point` is None when the whole pool has too few branches to bootstrap.
     `lo` is None (with `point` defined but unused) when this one share's
     own denominator is zero. Neither degenerate wording carries a figure:
-    the only digits are the CI level, which the enforcing grammar test's
-    figure pattern admits.
+    their reason clauses contain no digit, and the only digits are in the
+    fixed "95% CI" frame.
     """
     if point is None:
         return "(95% CI not computed — too few branches in scope)"

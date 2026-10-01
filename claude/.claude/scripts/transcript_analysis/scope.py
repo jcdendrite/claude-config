@@ -342,10 +342,13 @@ def _iter_project_dir_sessions(
     corpus.read_session_file, to tell an unreadable main file from a readable
     empty one. It repeats only that function's flatten.
 
-    `scan_gaps` here can't see _read_session_file_partitioned's own
-    subagent_dir.is_dir() OSError swallowing (corpus.py) -- that function
-    takes no scan_gaps parameter, so a future include_subagents=True
-    caller passing a real Counter would still silently drop that gap type.
+    `scan_gaps` here cannot see any subagent-level drop. With
+    include_subagents=True, a real Counter stays blind to all of:
+    - _read_session_file_partitioned's subagent_dir.is_dir() OSError
+      swallowing (that function takes no scan_gaps parameter),
+    - an unlistable subagents/ directory (Path.glob swallows the OSError),
+    - an unreadable subagent file (_parse_jsonl_records returns None and the
+      file is skipped).
     """
     for project_dir in project_dirs:
         for jsonl in _list_dir_recording_gaps(project_dir, scan_gaps, _SCAN_GAP_PROJECT_DIR):
@@ -560,8 +563,8 @@ def _resolve_project_scope(
     `scan_gaps`, when given, records one level tag per unreadable directory
     or transcript the returned iterator skips. The single-root glob branch
     cannot record gaps, so it raises ValueError rather than ignore the
-    counter. See _iter_project_dir_sessions's own docstring for the one
-    gap type this counter still can't see even off that branch.
+    counter. See _iter_project_dir_sessions's own docstring for the
+    subagent-level drops this counter cannot see even off that branch.
     """
     if roots is None:
         roots = (_projects_dir(),)

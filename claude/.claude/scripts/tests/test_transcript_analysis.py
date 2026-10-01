@@ -5014,6 +5014,38 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
     def test_parse_jsonl_records_returns_none_when_the_file_cannot_be_opened(self, tmp_path):
         assert _mod.corpus._parse_jsonl_records(tmp_path / "missing.jsonl") is None
 
+    def test_parse_jsonl_records_keeps_valid_multibyte_utf8_lines_on_both_sides_of_a_corrupt_line(self, tmp_path):
+        """A transcript written as raw UTF-8 (not ASCII-escaped, unlike
+        _write_jsonl's output) round-trips every record intact. The
+        assertion compares whole records, so a codec that cannot decode
+        the multi-byte characters, or decodes them wrongly, fails it."""
+        multibyte_text = "café 🎉 — 北京"
+        multibyte_jsonl = tmp_path / "multibyte.jsonl"
+        multibyte_jsonl.write_bytes(
+            json.dumps({"type": "user", "n": 1, "text": multibyte_text}, ensure_ascii=False).encode("utf-8")
+            + b"\n\xff\xfe\x00\x01\n"
+            + json.dumps({"type": "user", "n": 2, "text": multibyte_text}, ensure_ascii=False).encode("utf-8")
+            + b"\n"
+        )
+        assert _mod.corpus._parse_jsonl_records(multibyte_jsonl) == [
+            {"type": "user", "n": 1, "text": multibyte_text},
+            {"type": "user", "n": 2, "text": multibyte_text},
+        ]
+
+    def test_index_subagent_dispatches_reads_a_multibyte_utf8_meta_json_without_a_read_error(self, fake_projects):
+        """A meta.json written as raw UTF-8 with non-ASCII text next to a
+        valid toolUseId is indexed, not counted under meta_read_errors."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir.mkdir(parents=True, exist_ok=True)
+        meta = {"agentType": "reviewer", "description": "café 🎉 — 北京", "toolUseId": "toolu_1", "spawnDepth": 1}
+        (subdir / "agent-1.meta.json").write_bytes(json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+
+        index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+
+        assert index == {"toolu_1": (subdir / "agent-1.jsonl", None)}
+        assert meta_read_errors == 0
+
 
 # ---------------------------------------------------------------------------
 # instrument-authoring
@@ -10487,7 +10519,7 @@ class TestScanGapCounter:
     def test_iter_scoped_sessions_unreadable_project_dir_records_project_dir_gap(self, tmp_path):
         """The structural sibling of the project-dir test above: _iter_scoped_sessions
         selects project dirs by exact slug match rather than glob, but shares
-        _iter_project_dir_sessions, so it gets the same fix."""
+        _iter_project_dir_sessions."""
         root = tmp_path / "acct-a"
         proj_open = root / "-repo-open"
         proj_open.mkdir(parents=True)
@@ -10515,7 +10547,7 @@ class TestScanGapCounter:
             _mod.scope._resolve_project_scope(args, "buckets", roots=[root], scan_gaps=Counter())
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
-    def test_unreadable_project_dir_without_scan_gaps_still_skips_it_silently(self, tmp_path):
+    def test_unreadable_project_dir_without_scan_gaps_skips_it_silently(self, tmp_path):
         """Same fixture as the project-dir gap test above, with scan_gaps
         omitted -- a caller passing no counter skips the unreadable
         directory silently, with no exception and the same sessions
@@ -10581,10 +10613,9 @@ class TestScanGapCounter:
         assert scan_gaps == Counter()
 
     def test_stray_regular_file_directly_under_root_records_no_gap(self, tmp_path):
-        """Pins existing behaviour: _dedup_new_project_dirs' S_ISDIR skip
-        filters a stray file (e.g. .DS_Store) before any project-dir
-        listing, so it passes with or without the NotADirectoryError branch
-        _list_dir_recording_gaps also has."""
+        """Asserts _dedup_new_project_dirs' S_ISDIR skip filters a stray file
+        (e.g. .DS_Store) before any project-dir listing, independent of the
+        NotADirectoryError branch _list_dir_recording_gaps also has."""
         root = tmp_path / "acct-a"
         proj = root / "-repo-a"
         proj.mkdir(parents=True)

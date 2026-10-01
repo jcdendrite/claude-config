@@ -1846,10 +1846,10 @@ class TestCmdReviewRoundCostPooled:
         skill_spend:*) and the "Rounds by skill" section (keyed by
         skill_rounds:*) print the same three skill labels back to back. The
         data-quality-gap section's two labels likewise sit under one header
-        shared by both. Every existing figure-line assertion in this file is
-        `expected_line in out`, which cannot distinguish "right value, right
-        section" from "right value, wrong section" once the label text
-        repeats across sections.
+        shared by both. A bare `expected_line in out` assertion, as the
+        figure-line tests elsewhere in this file use, cannot distinguish
+        "right value, right section" from "right value, wrong section" once
+        the label text repeats across sections.
 
         Runs with --show-withheld, the only mode that prints the
         data-quality-gap section. Stubs _bootstrap_share_intervals with a
@@ -2406,8 +2406,7 @@ class TestCmdReviewRoundCostPooled:
 
     def test_render_pooled_block_called_directly_with_empty_roots_still_refuses(self):
         """Same floor as the None case above, reached instead with an
-        empty (not None) roots list -- the other bypass shape closed
-        alongside it."""
+        empty (not None) roots list."""
         args = _review_round_cost_args(pooled=True)
         with pytest.raises(SystemExit) as exc:
             review_rounds._render_pooled_block(args, [], "*", [], {}, scan_gaps=Counter())
@@ -3456,7 +3455,7 @@ class TestCmdReviewRoundCostPooled:
         assert "too few branches" not in out
         assert "50.0% (95% CI 30.0-70.0%)" in out
 
-    def test_dominance_precision_floor_extreme_split_depends_on_the_new_check(
+    def test_dominance_precision_floor_extreme_split_depends_on_the_dominance_floor(
         self, tmp_path, monkeypatch, capsys,
     ):
         """Mutation-style guard for the extreme-split test above: bypasses
@@ -3465,8 +3464,8 @@ class TestCmdReviewRoundCostPooled:
         real figures once the dominance-precision floor is removed. This
         proves the extreme-split test's withheld assertion is pinned to
         that floor specifically -- the fixture already clears the
-        `contributing_roots` count floor on its own (two roots, two
-        branches), so that count floor alone cannot be what makes the
+        `contributing_roots` count floor on its own (two roots, four
+        branches including the fillers), so that count floor alone cannot be what makes the
         extreme-split test pass.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
@@ -3500,7 +3499,7 @@ class TestCmdReviewRoundCostPooled:
     def test_dominance_precision_floor_withholds_on_a_round_dollars_imbalance_alone(
         self, tmp_path, monkeypatch, capsys,
     ):
-        """Earlier dominance tests imbalance round_dollars and branch_dollars
+        """The other dominance tests imbalance round_dollars and branch_dollars
         together. This fixture holds branch_dollars (the
         spend_inside/outside/reviewer_only denominator) perfectly balanced
         (50/50 between the two accounts) while splitting round_dollars --
@@ -3606,7 +3605,7 @@ class TestCmdReviewRoundCostPooled:
         insertion loop walks branches in sorted branch_key order, so root 0
         is first regardless of dollar amounts) -- so "true max over every
         account" and "always read the first-inserted account" coincide in
-        every existing fixture. Reruns the extreme-split
+        every one of them. Reruns the extreme-split
         shape with the dollar split reversed -- root 1 dominant (99), root 0
         minor (1) -- which the two computations disagree on: a
         first-inserted-account bug would read root 0's 1% weight and never
@@ -3684,15 +3683,12 @@ class TestCmdReviewRoundCostPooled:
         assert review_rounds._pooled_scope_refusal(args, roots=None) is None
 
     def test_pooled_run_prints_no_root_count_diagnostic_to_stderr(self, tmp_path, monkeypatch, capsys):
-        """Regression test for the "scanning root N/M..." leak.
+        """A successful two-root --pooled run prints no digit on stderr.
 
-        scope's own multi-root diagnostic prints that line on stderr
-        whenever more than one root is scanned, disclosing the resolved
-        root count on the one output stream _pooled_resolved_scope_header
-        doesn't reach -- stderr, not stdout.
-
-        A successful two-root --pooled run must produce no digit on
-        stderr at all.
+        scope's own multi-root diagnostic prints "scanning root N/M..." on
+        stderr whenever more than one root is scanned, which would disclose
+        the resolved root count on the one output stream
+        _pooled_resolved_scope_header doesn't reach.
         """
         _pooled_two_root_fixture(tmp_path, monkeypatch)
         _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
