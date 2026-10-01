@@ -450,8 +450,11 @@ def compute_review_round_counts(
 # --- --pooled: cross-account share block ------------------------------------
 #
 # Everything below prints percentages and 95% confidence intervals only --
-# no dollar amount, no raw count, no per-account/per-project/per-branch
-# split. See docs/private-project-redaction.md § "The owner can authorize
+# no dollar amount, no raw count printed directly, no per-account/
+# per-project/per-branch split. In a small pool the percentages can still
+# reveal the round count and approximate the per-branch spread; see
+# docs/transcript-analysis.md § "review-round-cost" Small-pool residual.
+# See docs/private-project-redaction.md § "The owner can authorize
 # one figure, case by case". Promotion trigger: when a second subcommand
 # grows a pooled mode, move the doc pointer and approval pointer below to
 # scope.py, beside scope._DO_NOT_PUBLISH_BANNER.
@@ -469,7 +472,11 @@ _POOLED_PUBLICATION_POINTER = (
     "plain --pooled never prints. In the proposal, state without digits\n"
     "whether either gap share or its upper bound prints above zero and\n"
     "whether a skipped-account notice appeared on stderr. Keep that\n"
-    "statement out of the artifact and its citation."
+    "statement out of the artifact and its citation. The proposal must also say,\n"
+    "without digits, whether the pool is small (few branch units or few rounds;\n"
+    "docs/transcript-analysis.md § review-round-cost, Small-pool residual, says\n"
+    "how to judge). Keep the small-pool statement out of the artifact and its\n"
+    "citation as well."
 )
 
 _POOLED_SHOW_WITHHELD_BANNER = (
@@ -483,7 +490,10 @@ _POOLED_CAPTION = (
     "dollar share below is a share of list-price compute, never of billed\n"
     "spend; the Rounds by skill lines are shares of round count. Every figure\n"
     "covers only branches with at least one review round. No dollar amount, no\n"
-    "raw count, and no per-account, per-project, or per-branch split is emitted.\n"
+    "raw count, and no per-account, per-project, or per-branch split is\n"
+    "emitted directly. In a small pool, the Rounds by skill shares can still\n"
+    "reveal the round count, and the interval endpoints can approximate the\n"
+    "per-branch spread.\n"
     "Each interval is a 2,000-resample percentile bootstrap resampled over\n"
     "branches, so it reflects branch-to-branch variation, treating the branches\n"
     "in scope as a sample of ongoing work. The 95% level is nominal. Actual\n"
@@ -864,8 +874,11 @@ def _render_pooled_block(
     scan_gaps: Counter[str],
 ) -> None:
     """--pooled's entire render path: shares and 95% confidence intervals
-    only, never a dollar amount, a raw count, or a per-account/per-project/
-    per-branch split. See docs/private-project-redaction.md
+    only, never a dollar amount, a directly printed raw count, or a
+    per-account/per-project/per-branch split. A small pool can still reveal
+    its round count through the shares; see docs/transcript-analysis.md
+    § "review-round-cost" Small-pool residual. See
+    docs/private-project-redaction.md
     § "The owner can authorize one figure, case by case".
 
     Re-derives cmd_review_round_cost's own refusal check as defense in
@@ -937,6 +950,8 @@ def _render_pooled_block(
     # `docs/transcript-analysis.md` § "review-round-cost" for both floors'
     # own residual.
     contributing_roots = {branch_key[0] for branch_key in by_branch}
+    # docs/transcript-analysis.md's Small-pool residual cites these literals as
+    # "four branch units and two accounts".
     too_few_for_bootstrap = len(per_branch) < 4 or len(contributing_roots) < 2
     intervals = (
         dict.fromkeys(_POOLED_STAT_KEYS, (None, None, None))

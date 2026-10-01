@@ -1177,13 +1177,15 @@ Unpriced turns inside round windows: 0
 
 `#` is the branch-wide round ordinal; `n` is that skill's own ordinal within the branch (the sub-breakdown). A skill with zero rounds anywhere in scope prints `no data` for its own "Mean $ per round" entry, never a computed `0.00` or a division-by-zero.
 
-**Pooled mode.** `--pooled` renders a fixed cross-account block of dimensionless shares with bootstrap confidence intervals, in place of every per-branch row and the footer above. It never emits a dollar amount, a raw count, or a per-account/per-project/per-branch split. Each dollar share is a share of list-price compute, never billed spend, and each "Rounds by skill" line is a share of round count, all over branches with at least one review round in scope. A branch with priced spend and no round never enters the pool. Rerun with `--show-withheld` to also see the figures the dominance-precision floor withholds and the two data-quality-gap lines. `--show-withheld` output is never publishable, even when the figures it shows would not have breached the floor. Plain `--pooled` never prints the two gap lines, because a gap-free corpus has an exact 0% share on both and the dominance-precision floor, which does not otherwise weigh them, would withhold every healthy corpus. See `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case" for the approval gate a pooled figure must satisfy; nothing in this command checks it.
+**Pooled mode.** `--pooled` renders a fixed cross-account block of dimensionless shares with bootstrap confidence intervals, in place of every per-branch row and the footer above. It never directly prints a dollar amount, a raw count, or a per-account/per-project/per-branch split. A small pool can still reveal its round count through the shares (see "Small-pool residual" below). Each dollar share is a share of list-price compute, never billed spend, and each "Rounds by skill" line is a share of round count, all over branches with at least one review round in scope. A branch with priced spend and no round never enters the pool. Rerun with `--show-withheld` to also see the figures the dominance-precision floor withholds and the two data-quality-gap lines. `--show-withheld` output is never publishable, even when the figures it shows would not have breached the floor. Plain `--pooled` never prints the two gap lines, because a gap-free corpus has an exact 0% share on both and the dominance-precision floor, which does not otherwise weigh them, would withhold every healthy corpus. See `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case" for the approval gate a pooled figure must satisfy; nothing in this command checks it.
 
 **Withholding floors.** A breach of either floor degrades every printed share to `(95% CI not computed — too few branches in scope)`, not one share, because a single blank would itself reveal which share breached:
 
 - Count floor: fewer than four branches in scope, or fewer than two contributing accounts, withholds the block. The root-count refusal below does not guarantee two accounts actually contributed a branch.
 - Dominance-precision floor: for each printed share, the dominant account's weight in that share's denominator is compared with the share's 95% CI. When the CI contains every value that account's own share could take, with the other accounts' combined share anywhere in 0-100%, the figure is functionally a single-account disclosure at the CI's stated precision. An exact 0% or 100% share always trips this floor, at any weight. Its CI collapses to that single point, and so does the set of values the dominant account's own share could take. A corpus with no reviewer dispatches (0% on "reviewer dispatches only") is therefore withheld whole.
   The floor weighs each account's share of the denominator the printed share divides by. It does not weigh how much of the share's own numerator one account supplies. A printed per-skill share can therefore still be drawn mostly from one account, for example when that skill ran in only one account.
+
+**Small-pool residual (not a floor or a refusal).** A branch unit is one branch in one account with at least one review round in scope. The only pool-size floor is four branch units and two accounts, so a block that clears it can still describe a small pool. The four-unit floor is sized for bootstrap validity. The two-account floor bounds single-account disclosure. In a small pool the printed CI endpoints can approximate the spread of per-branch shares. The three "Rounds by skill" shares can also reveal the round count itself. A three-way split printed at one decimal stops identifying the total somewhere past roughly 100-200 rounds. Below that, the smallest total consistent with the printed triple is usually the exact count. A proposer therefore says, without digits, whether the pool is small. The statement belongs in the proposal only, and stays out of the artifact and its citation. A small-pool claim is a bounded range on a private-corpus count, which `docs/private-project-redaction.md` bars from any artifact. The block does not print pool size, so the proposer reads it from a non-pooled `review-round-cost` run over the same scope. That footer is per account: each account with rounds in scope prints its own block, prefixed with an account label and starting "Totals: N branches, M rounds", and an account with no rounds prints none. Pool size is the sum across the printed blocks. Treat the pool as small below about 100 rounds (the round-count path) or about 8 branch units (the CI-spread path). Both thresholds are rough and not measured on a corpus. When in doubt, call the pool small.
 
 `--pooled` refuses each of these, exiting 2 with a message that names the cause:
 
@@ -1227,13 +1229,20 @@ Before proposing a plain --pooled figure, run the same command with
 plain --pooled never prints. In the proposal, state without digits
 whether either gap share or its upper bound prints above zero and
 whether a skipped-account notice appeared on stderr. Keep that
-statement out of the artifact and its citation.
+statement out of the artifact and its citation. The proposal must also say,
+without digits, whether the pool is small (few branch units or few rounds;
+docs/transcript-analysis.md § review-round-cost, Small-pool residual, says
+how to judge). Keep the small-pool statement out of the artifact and its
+citation as well.
 
 Pooled across the scan roots resolved for this run, whole period. Every
 dollar share below is a share of list-price compute, never of billed
 spend; the Rounds by skill lines are shares of round count. Every figure
 covers only branches with at least one review round. No dollar amount, no
-raw count, and no per-account, per-project, or per-branch split is emitted.
+raw count, and no per-account, per-project, or per-branch split is
+emitted directly. In a small pool, the Rounds by skill shares can still
+reveal the round count, and the interval endpoints can approximate the
+per-branch spread.
 Each interval is a 2,000-resample percentile bootstrap resampled over
 branches, so it reflects branch-to-branch variation, treating the branches
 in scope as a sample of ongoing work. The 95% level is nominal. Actual

@@ -7676,7 +7676,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--pooled", action="store_true",
         help=(
             "Print only a cross-account pooled block of shares (no dollar amounts, no"
-            " raw counts, no per-branch rows). Refuses every scope-narrowing flag; see"
+            " raw counts printed directly, no per-branch rows). Refuses every scope-narrowing flag; see"
             " docs/private-project-redaction.md."
         ),
     )

@@ -190,8 +190,7 @@ The mechanical backstop is this repository's own human-only merge
 gate: the owner reviews every PR before it merges and can catch a
 citation for a yes that was never given.
 
-`transcript-analysis.py review-round-cost --pooled` is a worked
-instrument for this section. `docs/transcript-analysis.md` § "review-round-cost" is the canonical home for its refusal list, contributing-account floor, and output grammar.
+`review-round-cost --pooled` prints a publication pointer and refusals; it checks no authorization. `docs/transcript-analysis.md` § "review-round-cost" holds its refusal list, withholding floors, and sample output.
 
 An authorization covers the figure, the command, and the artifact it
 named. The following each count as a fresh ask:

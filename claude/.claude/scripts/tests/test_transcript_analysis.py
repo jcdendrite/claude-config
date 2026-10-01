@@ -10839,8 +10839,9 @@ class TestScanGapCounter:
 
 class TestGlobScopedSessionsSelection:
     """_iter_glob_scoped_sessions' own fnmatch selection of project directories
-    and *.jsonl transcripts, which replaces Path.glob above one root. The
-    single-root corpus.iter_sessions (Path.glob) is the reference engine."""
+    and *.jsonl transcripts. The class covers the multi-root selection
+    engine only; single-root scope uses corpus.iter_sessions (Path.glob),
+    which is the reference engine."""
 
     @pytest.mark.parametrize("projects_glob", ["*", "feat-?", "feat-*", "[ab]*", "zeta", ".hidden*"])
     def test_multi_root_selection_equals_union_of_per_root_path_glob_selection(self, tmp_path, projects_glob):
@@ -10926,9 +10927,9 @@ class TestSingleLevelProjectsGlob:
 
     def test_every_projects_registration_across_every_subcommand_has_no_argparse_type(self):
         """Walks every subparser build_parser() registers: --projects's
-        one-level restriction must never be reinstated as an argparse type=,
-        since whether it applies depends on how many roots this invocation
-        resolves at runtime, not on the flag's syntax alone."""
+        one-level restriction must stay runtime-validated, since whether it
+        applies depends on how many roots this invocation resolves, not on
+        the flag's syntax alone."""
         parser = _mod.build_parser()
         subparsers_action = next(
             action for action in parser._actions

@@ -1558,7 +1558,7 @@ def _pooled_two_root_discriminating_skill_fixture(tmp_path, monkeypatch) -> list
     root B the mirror image, so the correct pooled share (50%) differs
     from either root's own share (75%/25%) -- catching a one-root-only
     regression an equal-mix fixture would miss. Four branches per root,
-    not one, so the pool clears the four-branch bootstrap floor with room to
+    so the pool clears the four-branch bootstrap floor with room to
     spare. Every branch reports 100% of its own dollars inside a round
     window, so this fixture does not clear the dominance-precision floor
     (`_pooled_dominance_breach`); every test reading it stubs that floor.
@@ -1604,7 +1604,7 @@ def _pooled_two_root_zero_priced_dollars_fixture(tmp_path, monkeypatch) -> list[
 
     Root A splits its four branches between code-review and plan-review
     (two apiece); root B's four are all ready-for-review. Four branches
-    per account, not one, so the pool clears the four-branch bootstrap
+    per account, so the pool clears the four-branch bootstrap
     floor with room to spare. The round-count-keyed `skill_rounds:*` shares
     trip the dominance-precision floor (`_pooled_dominance_breach`), so every
     test reading this fixture stubs that floor. The dollar-keyed shares have
@@ -2137,13 +2137,16 @@ class TestCmdReviewRoundCostPooled:
                 "exist in docs/private-project-redaction.md"
             )
 
-    def test_pooled_publication_pointer_tells_proposer_to_run_show_withheld_and_relay_the_result(self):
+    def test_pooled_publication_pointer_routes_show_withheld_relay_and_small_pool_statement(self):
         """Pins the sentences that route a proposer through --show-withheld
         to the two data-quality gap shares plain --pooled never prints, and
         that require the proposal to state, without digits, whether either
         gap share or its upper bound prints above zero and whether a
         skipped-account notice appeared, and that keep that statement out
-        of the artifact and its citation.
+        of the artifact and its citation. Also pins the separate sentence
+        requiring the proposal to state, without digits, whether the pool
+        is small, its pointer to the Small-pool residual, and its own
+        keep-out-of-the-artifact clause.
         Plain --pooled does print the skipped-account notice on stderr, so
         the notice may appear only in the relay clause, never in the
         --show-withheld instruction. docs/transcript-analysis.md's sample
@@ -2155,8 +2158,12 @@ class TestCmdReviewRoundCostPooled:
         pointer = review_rounds._POOLED_PUBLICATION_POINTER
         proposer_sentences = pointer[pointer.index("Before proposing"):]
         normalized = " ".join(proposer_sentences.split())
-        run_instruction, relay_marker, relay_clause = normalized.partition("In the proposal")
+        run_instruction, relay_marker, relay_and_small_pool = normalized.partition("In the proposal")
         assert relay_marker, "the relay clause 'In the proposal' is missing"
+        relay_clause, small_pool_marker, small_pool_clause = relay_and_small_pool.partition(
+            "The proposal must also say"
+        )
+        assert small_pool_marker, "the small-pool sentence 'The proposal must also say' is missing"
         assert "--show-withheld" in run_instruction
         assert "data-quality gap shares" in run_instruction
         assert "plain --pooled never prints" in run_instruction
@@ -2166,8 +2173,14 @@ class TestCmdReviewRoundCostPooled:
         assert "skipped-account notice" in relay_clause
         assert "stderr" in relay_clause
         assert "out of the artifact and its citation" in relay_clause
+        assert "without digits" in small_pool_clause
+        assert "pool is small" in small_pool_clause
+        assert "Small-pool residual" in small_pool_clause
+        assert "out of the artifact and its citation" in small_pool_clause
         docs_text = (REPO_ROOT / "docs" / "transcript-analysis.md").read_text()
         assert proposer_sentences in docs_text
+        review_round_cost_section = docs_text.split("\n## review-round-cost\n", 1)[1].split("\n## ", 1)[0]
+        assert "**Small-pool residual" in review_round_cost_section
 
     def test_pooled_docs_sample_output_carries_the_publication_pointer_and_caption(self):
         """docs/transcript-analysis.md's sample --pooled output must contain
@@ -2176,6 +2189,16 @@ class TestCmdReviewRoundCostPooled:
         docs_text = (REPO_ROOT / "docs" / "transcript-analysis.md").read_text()
         assert review_rounds._POOLED_PUBLICATION_POINTER in docs_text
         assert review_rounds._POOLED_CAPTION in docs_text
+
+    def test_pooled_caption_names_both_small_pool_residuals(self):
+        """The caption states that a small pool can reveal the round count
+        through the Rounds by skill shares and that the interval endpoints
+        can approximate the per-branch spread, without pointing at any
+        other printed element, since --show-withheld prints no pointer."""
+        caption = " ".join(review_rounds._POOLED_CAPTION.split())
+        assert "the Rounds by skill shares can still reveal the round count" in caption
+        assert "interval endpoints can approximate the per-branch spread" in caption
+        assert "pointer" not in caption
 
     def test_pooled_printed_ci_parameters_track_their_constants(self):
         """The caption's resample count and every figure's CI level are
@@ -2462,6 +2485,8 @@ class TestCmdReviewRoundCostPooled:
         assert out == ""
         assert not any(c.isdigit() for c in err)
         assert scope.TRANSCRIPT_CONFIG_DIRS_LABEL in err
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL in err
+        assert str(roots[1]) not in err
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_refuses_unreadable_active_profile_scan_root_via_cmd_review_round_cost(self, tmp_path, monkeypatch, capsys):
@@ -2482,6 +2507,8 @@ class TestCmdReviewRoundCostPooled:
         assert out == ""
         assert not any(c.isdigit() for c in err)
         assert scope.TRANSCRIPT_CONFIG_DIRS_LABEL in err
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL in err
+        assert str(roots[0]) not in err
 
     def test_render_pooled_block_called_directly_refuses_on_a_nonempty_scan_gaps_counter(self, tmp_path, monkeypatch):
         """Defense-in-depth for the scan-gap clause. A direct
@@ -3397,8 +3424,8 @@ class TestCmdReviewRoundCostPooled:
     def test_dominance_precision_floor_withholds_the_whole_block_on_an_extreme_split(
         self, tmp_path, monkeypatch, capsys,
     ):
-        """A 99/1 split between two contributing accounts clears the
-        `contributing_roots` count floor (two roots, two branches), but
+        """A 99/1 split between two contributing accounts, with filler
+        branches bringing the pool to four, clears the count floor but
         must still be withheld by the dominance-precision floor: even a
         CI as wide as (85, 95) around a point of 90 can't rule out that
         the dominant account (99% of this share's own denominator) alone
