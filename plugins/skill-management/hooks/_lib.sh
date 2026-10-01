@@ -769,9 +769,10 @@ _lib_fragment_concludes_commit_shape() {
 # _lib_command_concludes_commit_shape COMMAND VERBS
 # Private. True iff any fragment of COMMAND concludes a commit per
 # _lib_fragment_concludes_commit_shape above, for the verb set VERBS. A
-# clean merge, cherry-pick, or revert creates its commit inside the
-# initiating command with no separate `git commit` call, so `--continue` is
-# the only PreToolUse shape a conflict-resolution commit takes.
+# conflict-stopped operation is concluded by its `--continue` invocation,
+# which creates the commit with no separate `git commit` call, so VERBS
+# decides which verbs' `--continue` forms match alongside a literal
+# `git commit`.
 # Tri-state via exit status: 0 = match, 1 = no match, 2 = undetermined (the
 # quote-strip or fragment-split fork failed, or a fragment read never ran).
 _lib_command_concludes_commit_shape() {

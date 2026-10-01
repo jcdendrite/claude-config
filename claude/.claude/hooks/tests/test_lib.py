@@ -6314,8 +6314,8 @@ class TestCommandConcludesCommit:
         """A here-string redirect that fails (e.g. an unwritable TMPDIR) skips
         the fragment loop; the matcher must report undetermined, not no-match.
         The `read` shim stands in for that failure without touching the
-        filesystem and prints a marker so a shell syntax error or
-        command-not-found (also status 2) cannot pass for the sentinel.
+        filesystem and prints a marker so a shell syntax error (which also
+        exits 2) cannot pass for the sentinel.
         Without the shim, the sentinel must not over-deny."""
         shim_marker = "read-shim-ran"
 

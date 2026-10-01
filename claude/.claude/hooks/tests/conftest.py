@@ -257,9 +257,7 @@ def sed_call_counting_shim(tmp_path):
     tmp_path) and fails (exit 1, no output) on every invocation after that.
 
     The counter file is unlocked, so concurrent pipeline stages race on it
-    and the failing invocation is not deterministic. Assert only the
-    invariant a caller can rely on: some sed call fails and the hook exits
-    with status 2.
+    and the failing invocation is not deterministic.
     """
     real_sed = shutil.which("sed")
     if not real_sed:
