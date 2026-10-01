@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -967,16 +967,18 @@ class TestDurationGapSplit:
         """One idle gap longer than --gap-minutes yields Bursts == 2 with
         Idle/Active split at that gap. The first file spans both bursts and two
         further files continue the second burst, so three files yield two
-        bursts and a files-counted-as-bursts regression fails."""
-        _write_jsonl(fake_projects / "sess-a.jsonl", [
+        bursts and a files-counted-as-bursts regression fails. File names sort
+        in the reverse of timestamp order, so cmd_duration reads the later
+        records first and a dropped per-branch timestamp sort fails."""
+        _write_jsonl(fake_projects / "sess-z.jsonl", [
             _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z"),
             _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:05:00.000Z"),
             _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T12:00:00.000Z"),
         ])
-        _write_jsonl(fake_projects / "sess-b.jsonl", [
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
             _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T12:05:00.000Z"),
         ])
-        _write_jsonl(fake_projects / "sess-c.jsonl", [
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
             _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T12:08:00.000Z"),
         ])
         args = type("A", (), {"projects": "*", "this_repo": False, "branches": None})()
@@ -1817,8 +1819,9 @@ class TestDispatchUsageSummaryDedupBeforePricing:
 
     def test_dollars_by_class_covers_cache_write_1h_via_nested_cache_creation_block(self, tmp_path):
         """_cache_write_split reads cache_write_1h only from the nested
-        cache_creation.ephemeral_1h_input_tokens field, which the sibling
-        test above never sets."""
+        cache_creation.ephemeral_1h_input_tokens field, which
+        test_dollars_by_class_reflects_merged_cache_usage_not_summed_per_block
+        never sets."""
         rec1 = _asst(
             "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-cache-1h",
             content=[{"type": "thinking", "thinking": "..."}],
@@ -1848,6 +1851,42 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         assert dollars_by_class["cache_read"] == pytest.approx(0.06)
         assert dollars_by_class["cache_write_5m"] == pytest.approx(0.5625)
         assert dollars_by_class["cache_write_1h"] == pytest.approx(1.50)
+
+    def test_missing_path_returns_empty_summary(self, tmp_path):
+        """A path that is not a readable file returns the documented empty
+        tuple, the caller's dangling-dispatch exclusion signal."""
+        result = _mod._dispatch_usage_summary(
+            tmp_path / "absent.jsonl", None, None, None, date(2026, 8, 2)
+        )
+        assert result == (None, 0.0, {}, None, 0, 0, set())
+
+    def test_file_that_fails_to_open_returns_empty_summary(self, tmp_path, monkeypatch):
+        """A file that passes is_file() but raises OSError on open takes the
+        same empty-tuple return as a missing path rather than raising."""
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        _write_jsonl(jsonl_path, self._two_block_run("claude-sonnet-4-6"))
+
+        def _open_failing(*_args, **_kwargs):
+            raise PermissionError("denied")
+
+        # Shadows the builtin only inside the module under test.
+        monkeypatch.setattr(_mod, "open", _open_failing, raising=False)
+        result = _mod._dispatch_usage_summary(jsonl_path, None, None, None, date(2026, 8, 2))
+        assert result == (None, 0.0, {}, None, 0, 0, set())
+
+    def test_priced_model_past_rate_expiry_lands_in_stale_models(self, tmp_path):
+        """A priced model is reported in stale_models only when the
+        caller-supplied today is after its _MODEL_RATE_EXPIRES date."""
+        model = "claude-sonnet-4-6"
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        _write_jsonl(jsonl_path, self._two_block_run(model))
+        expiry = _mod._MODEL_RATE_EXPIRES[model]
+        *_, stale_on_expiry_day = _mod._dispatch_usage_summary(jsonl_path, None, None, None, expiry)
+        *_, stale_day_after_expiry = _mod._dispatch_usage_summary(
+            jsonl_path, None, None, None, expiry + timedelta(days=1)
+        )
+        assert stale_on_expiry_day == set()
+        assert stale_day_after_expiry == {model}
 
     def test_reprice_as_counterfactual_prices_deduped_turn_once_alongside_actual(self, tmp_path):
         """The reprice_as arm is a sibling of the actual-dollar arm, so a
