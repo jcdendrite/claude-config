@@ -642,3 +642,51 @@ def test_transcript_analysis_audit_routing_samples_subprocess_finds_seeded_turn(
 
     assert result.returncode == 0, result.stderr
     json.loads(result.stdout)
+
+
+def test_transcript_analysis_cost_ledger_help_exits_zero():
+    result = _run("transcript-analysis.py", "cost-ledger", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--record" in result.stdout
+
+
+def test_transcript_analysis_cost_ledger_subprocess_finds_seeded_session(tmp_path):
+    """Proves `from transcript_analysis.cost_ledger import cmd_cost_ledger`
+    resolves under a real subprocess -- no in-process `_mod.cmd_cost_ledger(...)`
+    test can see a broken re-export in the real shim entrypoint. Read mode needs
+    no sentinel and no wall clock, so a ledger file holding only the canonical
+    header and separator (no data rows) is enough to exercise it."""
+    config_dir = _seed_priced_account(tmp_path)
+    ledger_path = tmp_path / "cost-ledger.md"
+    ledger_path.write_text(
+        "| week | machine | rates | usd | context_pct | opus_pct | ge200k_pct | denials | reviewer_gap_pp | note |\n"
+        "|---|---|---|---|---|---|---|---|---|---|\n"
+    )
+    env = {
+        **_isolated_config_env(config_dir, tmp_path),
+        # Explicit, so a contributor's own shell value for this var can't leak in.
+        "COST_LEDGER_PATH": str(ledger_path),
+    }
+
+    result = _run("transcript-analysis.py", "cost-ledger", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert "2026-W21" in result.stdout  # the seed's unrecorded week
+
+
+def test_transcript_analysis_workstream_cost_help_exits_zero():
+    result = _run("transcript-analysis.py", "workstream-cost", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--check-pr-status" in result.stdout
+
+
+def test_transcript_analysis_workstream_cost_subprocess_finds_seeded_session(tmp_path):
+    """Proves `from transcript_analysis.workstream_cost import cmd_workstream_cost`
+    resolves under a real subprocess -- no in-process `_mod.cmd_workstream_cost(...)`
+    test can see a broken re-export in the real shim entrypoint."""
+    config_dir = _seed_priced_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "workstream-cost", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "WORKSTREAM COST SOURCES (" in result.stdout

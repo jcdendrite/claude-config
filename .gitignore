@@ -46,6 +46,13 @@ claude/.claude/plans/
 # inline output automatically. No repo depends on this line being committed.
 agent-reviews/
 
+# The review bench's local state (evals/review_bench's mine-szz and
+# mine-rounds shortlists, run and judge records, run stores, and the
+# spot-check export). Candidate data can carry real session excerpts and cited
+# paths before an engineer confirms and redescribes each one from public git
+# history alone, and run records hold raw reviewer output -- never committed.
+evals/review_bench/.local/
+
 # Belt-and-suspenders: the user-local private-projects blocklist read by
 # deny-private-project-refs.sh lives at ~/.claude/private-projects.md
 # directly, NOT inside the stowed claude/ subdir. If a user accidentally

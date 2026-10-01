@@ -1,5 +1,6 @@
 """Tests for transcript_analysis/cost.py's _compute_workstream_dollars and
-transcript-analysis.py's workstream-cost subcommand (cmd_workstream_cost)."""
+transcript_analysis/workstream_cost.py's workstream-cost subcommand
+(cmd_workstream_cost)."""
 import importlib.util
 import json
 import subprocess
@@ -378,7 +379,7 @@ class TestPrintWorkstreamSessionStats:
             "branch-b": {"session_count": 2, "total_dollars": 3.00, "startup_burn_dollars": 2.00},
             "branch-c": {"session_count": 4, "total_dollars": 4.00, "startup_burn_dollars": 3.00},
         }
-        _mod._print_workstream_session_stats(workstream)
+        _mod.workstream_cost._print_workstream_session_stats(workstream)
         out = capsys.readouterr().out
         assert out == (
             "Sessions per branch -- mean: 2.33, median: 2.00\n"
@@ -397,7 +398,7 @@ class TestPrintWorkstreamSessionStats:
             "branch-zero": {"session_count": 1, "total_dollars": 0.0, "startup_burn_dollars": 0.0},
             "branch-a": {"session_count": 3, "total_dollars": 5.00, "startup_burn_dollars": 2.00},
         }
-        _mod._print_workstream_session_stats(workstream)
+        _mod.workstream_cost._print_workstream_session_stats(workstream)
         out = capsys.readouterr().out
         assert out == (
             "Sessions per branch -- mean: 2.00, median: 2.00\n"
@@ -416,7 +417,7 @@ class TestCmdWorkstreamCostDefaultMode:
             _priced("claude-sonnet-5", input=500_000, branch="branch-a", ts="2026-08-01T10:00:00.000Z"),
         ])
 
-        _mod.cmd_workstream_cost(_workstream_cost_args())
+        _mod.workstream_cost.cmd_workstream_cost(_workstream_cost_args())
         out = capsys.readouterr().out
 
         assert "Branches: 1" in out
@@ -425,7 +426,7 @@ class TestCmdWorkstreamCostDefaultMode:
         """Zero session files in scope -- cmd_workstream_cost's own
         `if not workstream` branch prints the exact message and returns,
         with no traceback."""
-        _mod.cmd_workstream_cost(_workstream_cost_args())
+        _mod.workstream_cost.cmd_workstream_cost(_workstream_cost_args())
         out = capsys.readouterr().out
 
         assert out.rstrip("\n").splitlines()[-1] == "No branches with corpus activity were found."
@@ -453,7 +454,7 @@ class TestCmdWorkstreamCostCheckPrStatus:
             closed_unmerged_prs=[{"headRefName": "closed-branch"}],
         ))
 
-        _mod.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
+        _mod.workstream_cost.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
         out = capsys.readouterr().out
 
         assert "Branches: 3" in out
@@ -486,10 +487,10 @@ class TestCmdWorkstreamCostCheckPrStatus:
             return fake_run(cmd, *args, **kwargs)
 
         monkeypatch.setattr(subprocess, "run", logging_fake_run)
-        monkeypatch.setattr(_mod, "_gh_auth_preflight_ok", lambda hostname: False)
+        monkeypatch.setattr(_mod.gh_cli, "_gh_auth_preflight_ok", lambda hostname: False)
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
+            _mod.workstream_cost.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
 
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
@@ -513,7 +514,7 @@ class TestCmdWorkstreamCostCheckPrStatus:
         ])
         monkeypatch.setattr(subprocess, "run", _fake_workstream_cost_subprocess_run())
 
-        _mod.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
+        _mod.workstream_cost.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
         out = capsys.readouterr().out
 
         header = "Branches with no PR match at all (merged or closed-unmerged), by last-activity age (days), oldest first:"
@@ -537,7 +538,7 @@ class TestCmdWorkstreamCostCheckPrStatus:
         ])
         monkeypatch.setattr(subprocess, "run", _fake_workstream_cost_subprocess_run())
 
-        _mod.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
+        _mod.workstream_cost.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
         out = capsys.readouterr().out
 
         assert "Branches: 1" in out
