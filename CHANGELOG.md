@@ -6,6 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`comment-discipline-reviewer` narrows its scope for plan files under `.claude/plans/`.** A plan the diff creates is checked for Multi-fact comment structure only. A hunk against a plan that existed before the diff is not reviewed. A label a plan defines is still flagged as PR-defined terminology in any other file.
 - **`ask-review-permissions.sh` closes two gaps in settings-file matching.** See `docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md`'s Known gaps list. Pinned by `test_ask_review_permissions.py`. See GH-1094.
   - Now asks on a settings file at a config-dir root with no `.claude/` segment (gap (c)).
   - Now normalizes path aliasing and case before matching (gap (h)).
