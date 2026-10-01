@@ -123,12 +123,12 @@ This study's own plan puts every pipeline-behavior change out of scope, on the g
 
 ## Sources
 
-- **`claude/.claude/scripts/transcript-analysis.py`** — the subcommands behind the branch-level figures:
+- **`claude/.claude/scripts/transcript-analysis.py`** — the subcommands behind the branch-level findings:
   - `cost --branches`: token-class and thread splits.
   - `subagents --branches`: turn-count reconciliation.
   - `cache-rebuild --since`: idle-gap rebuild share, both thresholds.
   - `review-round-cost --branches`: per-review-round cost attribution.
-  - All of these ran against the active account's transcript scope, restricted with `--projects`/`--branches` rather than a bare `--config-dir`.
+  - These ran at each command's default transcript scope, restricted with `--projects`/`--branches`. They are measurement instruments for the branch-level findings, not publication instruments, and no numeric figure from these runs is published beyond the owner-ruled coarse descriptors recorded below.
   - The corpus-level `review-round-cost --this-repo` invocation below instead passes an explicit single-account `--config-dir`, whose own header confirmed a single scan root.
 - **`~/.claude/pr-cost-ledger.tsv`** — Baseline Leg 1 and "Why this generalizes," this repo's own ledger, the corpus this study publishes in absolute dollars and in a single-account correlation. Its scope is a single account's repo:
   - The recipe reads one local file, and its one distinct repo is this repository.

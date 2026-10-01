@@ -14,7 +14,7 @@ Why now: the branch's transcripts self-delete on the default 30-day `cleanupPeri
 
 Two decisions carry this plan. First, the branch's cost is not a cache-TTL problem: most of the branch's spend is not attributed to any named causal mechanism at all, and the dominant attributed term is review-loop iteration count carried through context-prefix amplification, not through anything the engineer's hypothesis reaches. Second, before the case study can be written, one printed dollar figure in the tooling is materially wrong — `_dispatch_usage_summary` prices without requestId dedup — so the instrument fix is a prerequisite for the record, not a parallel deliverable.
 
-The plan therefore runs in three sequenced phases: correct one pricing defect and one mislabelled column; add the two attribution surfaces whose absence blocked the dissection; re-measure and author the forensic record. No pipeline behaviour changes.
+The plan therefore runs in three sequenced phases: correct one pricing defect and one mislabelled column; document the corrected `duration` column and the `cost`-vs-`subagents` denominators, reusing the existing per-review-round cost subcommand; re-measure and author the forensic record. No pipeline behaviour changes.
 
 **No branch-specific figures:** The published case study follows CLAUDE.md's "Also redact structural fingerprints and provenance" section and `docs/private-project-redaction.md` directly: even a ratio- or share-form figure computed from one private branch's own transcripts still carries a per-project, per-account, or per-engagement dimension, which that rule bars absolutely. It publishes no ratio, share, or count tied to the one private branch at all — only qualitative findings, structural facts, and figures from this repo's own public corpus, backed by "Why this generalizes" and Baseline Leg 1 in the case study.
 
@@ -70,7 +70,7 @@ Three conditions that read like givens are not: transcript retention, the privat
 | 13 | `subagent-mix` discloses `subagent_type` only under `--this-repo` **and** only for repo-tracked names, and `--this-repo` prints branch names raw with no attestation gate. Running it with `--this-repo` from claude-config against another repo's branch would disclose that branch name — so the correct handling is to not use it cross-repo, not to widen disclosure. | `[verified: transcript-analysis.py, cmd_subagent_mix (docstring)]` |
 | 14 | All token figures in the evidence are bytes÷4 estimates, not tokenizer counts. Every one must be labelled as an estimate in the case study. | `[verified: arithmetic against the byte counts gathered in discovery]` |
 | 15 | A conditionally loaded instruction file in the private project loads on a touch under a subtree the branch's own changes do not touch, so it plausibly never loaded. A reviewer or explorer read under that tree would have made it a first-order cause. Tested and closed: no session made a structural read under that subtree (case study Gate result 2). | `[verified: docs/case-studies/review-loop-cost-forensics.md, Gate result 2]` |
-| 16 | Main-thread cost is predominantly review-loop-driven rather than baseline session cost. Load-bearing for rank #1; the Phase 2 instrument exists to test it, and the rank must be restated if it fails. Tested with `review-round-cost`, which finds a real but minority in-round share. That refutes "predominantly in-window." It does not refute "predominantly review-loop-driven," since out-of-window spend includes review-caused work the instrument cannot separate. Rank #1 is restated to "largest attributed mechanism" on the subagent-thread floor, not overturned. | `[verified: docs/case-studies/review-loop-cost-forensics.md, Gate result 4]` |
+| 16 | Main-thread cost is predominantly review-loop-driven rather than baseline session cost. Load-bearing for rank #1; `review-round-cost` is the instrument that tests it, and the rank must be restated if it fails. Tested with that subcommand, which finds a real but minority in-round share. That refutes "predominantly in-window." It does not refute "predominantly review-loop-driven," since out-of-window spend includes review-caused work the instrument cannot separate. Rank #1 is restated to "largest attributed mechanism" on the subagent-thread floor, not overturned. | `[verified: docs/case-studies/review-loop-cost-forensics.md, Gate result 4]` |
 
 ### Mechanisms
 
@@ -101,7 +101,7 @@ Explicitly **not** used, and named as identification bounds in the study rather 
 
 **Cut line: fix what makes a printed number wrong or a needed attribution impossible; record what only makes a future question cheaper.**
 
-**Closed (2):** the dedup defect (row 6 — a wrong number on screen) and per-review-round cost (the two attributions whose absence actually blocked this dissection).
+**Closed (2):** the dedup defect (row 6 — a wrong number on screen) and the per-review-round cost attribution this dissection needed, met by reusing `review-round-cost`.
 
 **Recorded, not closed** — with the reason each stayed out:
 
@@ -131,7 +131,7 @@ Explicitly **not** used, and named as identification bounds in the study rather 
 
 ## Critical files
 
-Three sequenced dispatches. Phases 1 and 2 touch the same two files, so they are sequenced rather than parallel; Phase 3 consumes their output.
+Three sequenced dispatches; each consumes the previous one's output.
 
 Before Phase 1 begins — decoupled from Phase 1/2's own review-cycle time, which is what this study measures — an interim snapshot copies the branch's session JSONL files and the current baseline measurement outputs to a local, gitignored directory outside this repo (e.g. `~/tmp/pr-cost-forensics-evidence/`), uncommitted, so a review-round slip in Phase 1/2 cannot cost the study its evidence before the retention window closes. Create the directory `0700` and its files `0600`, matching the restrictive permissions `docs/pr-cost.md` already applies to its own ledger file for a less sensitive extract of the same class of data. The destination must not sit inside a cloud-sync folder or a bare-repo-dotfile-managed tree — see `docs/pr-cost.md`'s residual-replication-paths section for why those two are git-invisible. Delete the snapshot once Phase 3's case study lands, so it does not outlive the evidence-gathering it was created to bridge.
 
@@ -142,11 +142,10 @@ Before Phase 1 begins — decoupled from Phase 1/2's own review-cycle time, whic
 - **Reuse:** `transcript_analysis.pricing.dedup_turns_by_request_id`, `_price_turn`, `_token_counts` — do not reimplement.
 - **Verification:** `.venv/bin/python3 claude/.claude/scripts/select-tests.py`
 
-**Phase 2 — attribution surfaces** (`code-writer`)
+**Phase 2 — documentation** (`code-writer`)
 
 - `docs/transcript-analysis.md` — document the corrected `duration` column semantics, and the `cost`-vs-`subagents` turn-count denominators (row 8).
-- **Reuse:** `_index_subagent_dispatches` (already imported), `_dispatch_usage_summary`, `_branch_filter`.
-- **Verification:** `.venv/bin/python3 claude/.claude/scripts/select-tests.py` and `.venv/bin/ruff check claude/.claude/`
+- **Verification:** `.venv/bin/python3 claude/.claude/scripts/select-tests.py`
 
 **Phase 3 — re-measure and record** (main session or `code-writer`; authoring, not code)
 
@@ -158,7 +157,7 @@ Before Phase 1 begins — decoupled from Phase 1/2's own review-cycle time, whic
 
 ## Verification
 
-**Automated.** `.venv/bin/python3 claude/.claude/scripts/select-tests.py` after each of Phases 1 and 2; `.venv/bin/ruff check claude/.claude/` after Phase 2. Do not widen to the full suite — `select-tests.py` widens on its own when the diff warrants it.
+**Automated.** `.venv/bin/python3 claude/.claude/scripts/select-tests.py` after each of Phases 1 and 2; `.venv/bin/ruff check claude/.claude/` after Phase 1. Do not widen to the full suite — `select-tests.py` widens on its own when the diff warrants it.
 
 **Instrument correctness (Phase 1 gate).** Re-run `subagent-mix --branches <B>` after the dedup fix and confirm the per-agent-type Opus total no longer exceeds `cost --branches <B>`'s branch-wide Opus figure. That single inequality is the pass condition; it is currently violated.
 
