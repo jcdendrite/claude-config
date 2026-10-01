@@ -1855,17 +1855,10 @@ class TestCmdReviewRoundCostPooled:
         data-quality-gap section. Stubs _bootstrap_share_intervals with a
         pairwise-distinct point per _POOLED_STAT_KEYS entry, then asserts
         the exact ordered (header, label, value) triples
-        _render_pooled_block emits. A
-        key-swap between skill_spend/skill_rounds, or between
-        gap_dangling/gap_unpriced, changes which triple appears under which
-        header even though every individual line stays well-formed.
-
-        Stubbing the bootstrap makes the real per_branch arithmetic
-        irrelevant. This therefore calls _render_pooled_block directly with
-        hand-built rounds/branch_totals, matching
-        test_pool_with_two_roots_but_one_contributing_account_stays_degenerate's
-        own direct-call convention, instead of routing through
-        cmd_review_round_cost's full JSONL scan and pricing pipeline.
+        _render_pooled_block emits. A key-swap between
+        skill_spend/skill_rounds, or between gap_dangling/gap_unpriced,
+        changes which triple appears under which header even though every
+        individual line stays well-formed.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
         # feat-a-filler/feat-b-filler: zero branch_dollars each, needed only
@@ -2393,8 +2386,7 @@ class TestCmdReviewRoundCostPooled:
     def test_render_pooled_block_called_directly_still_refuses(self, tmp_path, monkeypatch):
         """Defense-in-depth: bypasses cmd_review_round_cost's own
         CLI-boundary refusal entirely by calling _render_pooled_block
-        directly, the way this module's own tests (and any other direct
-        caller) do."""
+        directly."""
         roots = _two_declared_roots(tmp_path, monkeypatch)
         args = _review_round_cost_args(pooled=True, branches="feat")
         with pytest.raises(SystemExit) as exc:
@@ -2423,7 +2415,7 @@ class TestCmdReviewRoundCostPooled:
 
     def test_render_pooled_block_called_directly_with_single_root_still_refuses(self):
         """Same floor with a genuinely single-element roots list -- the
-        realistic shape the root-count clause was always meant to catch,
+        realistic shape the root-count clause is meant to catch,
         pinned here at the direct-call layer specifically. The clause only
         inspects len(roots) and returns before any filesystem access, so a
         fabricated path stands in for a real declared root."""
@@ -2746,13 +2738,9 @@ class TestCmdReviewRoundCostPooled:
     def test_pooled_backstop_covers_resolve_scan_roots_failure(
         self, tmp_path, monkeypatch, capsys,
     ):
-        """Pins the specific try/except widening that moved the boundary
-        to also enclose scope.resolve_scan_roots(...): an unanticipated
-        exception raised there -- not inside compute_review_round_costs --
-        must still be caught by the same backstop and rendered as the
-        generic _POOLED_SCAN_ABORTED_MESSAGE. A regression that narrowed
-        the try: block back to start just after resolve_scan_roots would
-        let this exception propagate uncaught instead."""
+        """An unanticipated exception raised by scope.resolve_scan_roots(...),
+        outside compute_review_round_costs, must still be caught by the
+        backstop and rendered as _POOLED_SCAN_ABORTED_MESSAGE."""
         _pooled_two_root_fixture(tmp_path, monkeypatch)
         marker = "synthetic-marker-7c1d4e"
 
@@ -2798,7 +2786,7 @@ class TestCmdReviewRoundCostPooled:
     def test_pooled_backstop_does_not_engage_on_the_non_pooled_path(self, tmp_path, monkeypatch):
         """Paired with the pooled case above: the same unanticipated
         exception under pooled=False must propagate unmodified, confirming
-        the widened try/except backstop only swallows it when pooled is
+        the try/except backstop only swallows it when pooled is
         True."""
         _pooled_two_root_fixture(tmp_path, monkeypatch)
         marker = "synthetic-marker-3f9a2b"
@@ -3048,12 +3036,7 @@ class TestCmdReviewRoundCostPooled:
         gives any branch more than one in-scope round, so an
         `=`-instead-of-`+=` accumulation regression would otherwise go
         uncaught. Hand-built rounds/branch_totals via a direct
-        _render_pooled_block call, matching
-        test_bootstrap_ci_bounds_are_invariant_to_branch_insertion_order's own
-        convention -- the accumulation loop under test needs no corpus scan
-        or pricing table, so going through cmd_review_round_cost's full JSONL
-        pipeline would only add incidental coupling to those independently-
-        churning subsystems. Five padding branches, split across both
+        _render_pooled_block call. Five padding branches, split across both
         accounts and repeating skills, clear the four-branch bootstrap floor.
 
         Stubs `_pooled_dominance_breach` to isolate this test from the
@@ -3296,7 +3279,7 @@ class TestCmdReviewRoundCostPooled:
         branch caused would show. Runs with --show-withheld so the
         dominance-precision floor cannot blank the compared figures.
         Hand-built rounds/branch_totals via a direct _render_pooled_block
-        call, matching this file's direct-call convention.
+        call.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
         round_dollars_by_branch = {
@@ -3339,9 +3322,7 @@ class TestCmdReviewRoundCostPooled:
         would otherwise catch the pool. The show_withheld=False leg pins
         that a one-account pool never prints a figure.
         Hand-built rounds/branch_totals via a direct _render_pooled_block
-        call -- the contributing-roots floor under test needs no corpus
-        scan or pricing table, matching this file's established direct-call
-        convention for testing _render_pooled_block in isolation.
+        call.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
         # roots[1] (acct-b) resolves but contributes no branch at all.
@@ -3661,8 +3642,8 @@ class TestCmdReviewRoundCostPooled:
         assert not any(re.search(r"\d+\.\d%", line) for line in out.splitlines())
 
     def test_no_print_before_refusal_on_single_root_case(self, fake_projects, capsys):
-        """The single-root refusal fires last in _pooled_scope_refusal's
-        check order, so it's most exposed to a reordering regression;
+        """The single-root refusal fires last among _pooled_scope_refusal's
+        pre-scan checks, so it's most exposed to a reordering regression;
         confirms no header/pointer/banner text reaches stdout ahead of the
         exit(2). Every other refusal test in this class besides this one
         and its unreadable-declared-root sibling below checks the exit and
@@ -3698,9 +3679,7 @@ class TestCmdReviewRoundCostPooled:
 
     def test_pooled_scope_refusal_skips_root_count_clause_when_roots_is_none(self):
         """The pre-scan refusal call path: no narrowing flag set,
-        and roots=None (the default), returns None without raising -- no
-        other test in this class exercises _pooled_scope_refusal directly
-        with roots=None."""
+        and roots=None (the default), returns None without raising."""
         args = _review_round_cost_args(pooled=True)
         assert review_rounds._pooled_scope_refusal(args, roots=None) is None
 
@@ -3725,11 +3704,11 @@ class TestCmdReviewRoundCostPooled:
         self, tmp_path, monkeypatch, capsys,
     ):
         """declared_transcript_roots()'s own "declared root N unreadable"
-        warning fires inside scope.resolve_scan_roots(), before either
-        --pooled refusal call runs. It is root-count-revealing the same way
-        "scanning root N/M..." is, so both need the same filter.
+        warning fires inside scope.resolve_scan_roots(), before the
+        post-resolution refusal. It reveals the root count the same way
+        "scanning root N/M..." does, so both need the same filter.
 
-        Still-poolable case: two valid roots plus two invalid declared-
+        Poolable case: two valid roots plus two invalid declared-
         roots-file entries (directories with no projects/ subdirectory).
         The replacement notice's own per-call dedup is exercised this way,
         not just its digit-free wording.
@@ -3836,7 +3815,7 @@ class TestCmdReviewRoundCostPooled:
 
 
 class TestPooledShowWithheld:
-    """--show-withheld: the account owner's own view of a share the
+    """--show-withheld: the view of whoever runs the command, of a share the
     dominance-precision floor would otherwise withhold. Reuses
     TestCmdReviewRoundCostPooled's dominance-floor fixtures above."""
 

@@ -804,9 +804,6 @@ def _scan_root_transcripts(root: Path, projects_glob: str, slugs: Sequence[str] 
 
     A `projects_glob` with a `..` component counts nothing (0, 0) when
     `slugs` is None, mirroring iter_sessions' own check in corpus.py.
-    `projects_glob` here is an unvalidated, caller-supplied `--projects`
-    value, and `..` is a real parent-directory step for `Path.glob`, so it
-    could otherwise walk outside this scan root.
     """
     if not os.access(root, os.R_OK | os.X_OK):
         raise PermissionError(errno.EACCES, "Permission denied", str(root))
@@ -816,10 +813,10 @@ def _scan_root_transcripts(root: Path, projects_glob: str, slugs: Sequence[str] 
     candidates = (root / slug for slug in slugs) if slugs is not None else sorted(root.glob(projects_glob))
     jsonl_paths = [
         jsonl
-        # Throwaway counter: this function's own callers in cost.py only catch
-        # PermissionError, so scan_gaps must be non-None here to avoid raising
-        # on any other OSError scan gap. Nothing reads the counter back, since
-        # _scan_root_transcripts tracks no scan gaps of its own.
+        # Throwaway counter: a non-None scan_gaps makes _dedup_new_project_dirs skip a
+        # project dir whose stat fails instead of raising. An EACCES raise would reach the
+        # callers' PermissionError handler (cost.py, transcript-analysis.py), which reports
+        # it and zeroes the whole root. Nothing reads the counter back.
         for proj_dir in _dedup_new_project_dirs(candidates, visited_dirs, scan_gaps=Counter())
         for jsonl in proj_dir.glob("*.jsonl")
     ]

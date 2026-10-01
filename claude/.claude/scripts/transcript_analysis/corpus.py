@@ -150,7 +150,8 @@ def read_session_file(jsonl: Path, include_subagents: bool) -> list[dict]:
 
 
 def _projects_glob_steps_to_parent(projects_glob: str) -> bool:
-    """True when `projects_glob` has a `..` path component.
+    """True when `projects_glob` (caller-supplied, unvalidated) has a `..`
+    path component.
 
     A textual check, so a project directory or transcript symlinked outside
     the scan root stays in scope: only a `..` in the raw value can walk out
@@ -180,8 +181,7 @@ def iter_sessions(
     A `projects_glob` with a `..` component yields nothing (see
     `_projects_glob_steps_to_parent`). Unlike the multi-root fnmatch branches,
     `projects_glob` here is not restricted to one path segment (see scope.py's
-    `_single_level_projects_glob`), and `..` is a real parent-directory step
-    for `Path.glob`, so it could otherwise walk outside this scan root.
+    `_single_level_projects_glob`).
     """
     if _projects_glob_steps_to_parent(projects_glob):
         return

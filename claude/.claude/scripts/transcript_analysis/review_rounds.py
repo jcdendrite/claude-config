@@ -517,7 +517,8 @@ _POOLED_SCAN_GAP_REFUSAL = (
     " directory or main-thread transcript under one, exists but could not be read, so part of the corpus would"
     " silently drop out of the pooled figure. Check each account's projects/ directory for a"
     " directory or .jsonl transcript you cannot read (with GNU find:"
-    " `find <projects-dir> ! -readable`), then restore read access, or remove that account from"
+    " `find <projects-dir> ! -readable`; the paths it lists can name a private project, so keep"
+    " them in your own session), then restore read access, or remove that account from"
     f" {scope.TRANSCRIPT_CONFIG_DIRS_LABEL} if it is a declared entry you no longer need."
 )
 
@@ -597,7 +598,7 @@ def _pooled_scope_refusal(
     scan_gaps: Counter[str] | None = None,
 ) -> str | None:
     """The first applicable --pooled refusal message, or None once every
-    check passes -- evaluated in the table order documented in
+    check passes -- evaluated in the list order documented in
     docs/transcript-analysis.md's Pooled mode subsection.
 
     roots=None defers the root-count check. scan_gaps=None defers the
@@ -977,9 +978,9 @@ def _render_pooled_block(
 _SCANNING_ROOT_DIAGNOSTIC_RE = re.compile(r"^scanning root \d+/\d+\.\.\.$")
 # declared_transcript_roots()'s own per-line warning
 # (_config_dir.py's declared_roots_matching, warn_prefix="declared_transcript_roots").
-# It is raised by scope.resolve_scan_roots() before either refusal call in
-# cmd_review_round_cost runs. The line-index it names is still a lower bound
-# on the declared-roots file's size, so it is root-count-revealing too.
+# It is raised by scope.resolve_scan_roots(), before the post-resolution refusal.
+# The line index it names is a lower bound on the declared-roots file's size, so
+# it reveals the root count.
 _DECLARED_ROOT_DIAGNOSTIC_RE = re.compile(r"^declared_transcript_roots: declared root \d+ unreadable$")
 # Fail-open notice for the declared-root case: declared_roots_matching's own
 # docstring documents skipping an invalid entry as intended. This restores
@@ -1107,9 +1108,9 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
         skill_filter = {skill_arg} if skill_arg else None
         since_ts, until_ts = scope._parse_absolute_window_args(args, "review-round-cost")
 
-        # Also routed through the diagnostic filter on both the poolable and
-        # single-root-refusal paths: declared_transcript_roots()'s own "declared
-        # root N unreadable" warning is root-count-revealing too.
+        # resolve_scan_roots runs through the diagnostic filter too, because
+        # declared_transcript_roots()'s own "declared root N unreadable" warning
+        # reveals the root count.
         roots = (
             _pooled_filtered_stderr_call(scope.resolve_scan_roots, args)
             if pooled
@@ -1118,10 +1119,9 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
         multi_root = len(roots) > 1
 
         if pooled:
-            # Post-resolution refusal, with roots now in hand: must return
-            # before any print side effect below, including the
-            # banner-suppression and header-suppression branches this same
-            # `pooled` flag gates.
+            # Post-resolution refusal: must return before any print side effect
+            # below, including the banner-suppression and header-suppression
+            # branches this same `pooled` flag gates.
             refusal = _pooled_scope_refusal(args, roots=roots)
             if refusal is not None:
                 print(refusal, file=sys.stderr)
@@ -1138,10 +1138,8 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             args, "review-round-cost", roots=roots, scan_gaps=scan_gaps,
         )
         if not pooled:
-            # --pooled prints its own header (_pooled_resolved_scope_header)
-            # instead, which never discloses the resolved root count. This
-            # unconditional call is skipped so the root-count-bearing header
-            # does not also print, a second time, ahead of it.
+            # --pooled prints _pooled_resolved_scope_header instead, because
+            # print_resolved_scope discloses the root count.
             scope.print_resolved_scope("review-round-cost", scope_label, roots)
 
         resolved_roots = [root.resolve() for root in roots] if multi_root else None

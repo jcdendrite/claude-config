@@ -241,8 +241,8 @@ things stay barred alongside it:
   two-point before/after split) drawn from a wider corpus — barred
   even as a single authorized figure, since no split mechanism
   exists here to sanction one.
-- `review-round-cost --pooled --show-withheld` output. It shows the
-  account owner a figure the dominance-precision floor withholds from a
+- `review-round-cost --pooled --show-withheld` output. It shows
+  whoever runs it a figure the dominance-precision floor withholds from a
   plain `--pooled` run. It is barred outright and is never a candidate
   for owner authorization. A floor breach means the figure is
   functionally a single-account disclosure

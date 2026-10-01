@@ -3596,12 +3596,10 @@ class TestScanRootTranscripts:
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_project_dir_through_sealed_ancestor_is_silently_skipped_not_raised(self, tmp_path):
-        """This is the scenario that motivates _scan_root_transcripts's own
-        callers in cost.py only catching PermissionError: a project dir
-        reached through a sealed intermediate directory makes its stat raise
-        PermissionError (an OSError subclass). _scan_root_transcripts must
-        keep silently skipping it and still count the healthy sibling
-        project dir."""
+        """A project dir reached through a sealed intermediate directory makes
+        its stat raise PermissionError (an OSError subclass).
+        _scan_root_transcripts skips it without raising and still counts the
+        healthy sibling project dir."""
         root = tmp_path / "acct-a"
         proj_open = root / "-repo-open"
         proj_open.mkdir(parents=True)
@@ -10888,7 +10886,7 @@ class TestSingleLevelProjectsGlob:
         ids=["buckets", "skill-invocation"],
     )
     def test_cli_accepts_a_multi_segment_projects_value_at_parse_time(self, cli_args):
-        """No subcommand's --projects carries an argparse type= any more, so
+        """No subcommand's --projects carries an argparse type=, so
         parsing alone never rejects a nested-directory value -- rejection, when
         it applies, happens later, only under multi-root scope."""
         parser = _mod.build_parser()
@@ -10914,10 +10912,9 @@ class TestSingleLevelProjectsGlob:
         assert typed == []
 
     def test_multi_root_scope_rejects_a_multi_segment_projects_value_at_runtime(self, tmp_path):
-        """_resolve_project_scope's own multi-root branch is where the
-        restriction now lives: a nested-directory --projects value under two
-        roots exits 2, the same user-facing error _single_level_projects_glob
-        always raised, just moved from parse time to scope-resolution time."""
+        """The one-level `--projects` restriction applies in
+        `_resolve_project_scope`'s multi-root branch: a nested-directory value
+        under two roots exits 2."""
         root_a = tmp_path / "acct-a"
         root_a.mkdir()
         root_b = tmp_path / "acct-b"
@@ -10929,8 +10926,8 @@ class TestSingleLevelProjectsGlob:
 
     def test_single_root_scope_accepts_a_multi_segment_projects_value_at_runtime(self, tmp_path):
         """The single-root branch reads corpus.iter_sessions, whose own
-        Path.glob supports a nested-directory pattern -- this must keep
-        working exactly as it did before the validator existed."""
+        Path.glob supports a nested-directory pattern, so this branch accepts
+        a multi-segment `--projects` value."""
         root = tmp_path / "acct-a"
         nested = root / "sub" / "-repo-main"
         nested.mkdir(parents=True)
