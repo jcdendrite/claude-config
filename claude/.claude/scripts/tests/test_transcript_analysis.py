@@ -1812,8 +1812,6 @@ class TestDispatchUsageSummaryDedupBeforePricing:
             jsonl_path, None, None, None, date(2026, 8, 2)
         )
         # claude-sonnet-4-6: cache_read $0.30/MTok, cache_write_5m $3.75/MTok.
-        # A per-block-pricing regression would double both, since each block
-        # carries the same nonzero cache counts.
         assert dollars_by_class["cache_read"] == pytest.approx(0.06)
         assert dollars_by_class["cache_write_5m"] == pytest.approx(1.50)
 
@@ -1850,6 +1848,55 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         assert dollars_by_class["cache_read"] == pytest.approx(0.06)
         assert dollars_by_class["cache_write_5m"] == pytest.approx(0.5625)
         assert dollars_by_class["cache_write_1h"] == pytest.approx(1.50)
+
+    def test_reprice_as_counterfactual_prices_deduped_turn_once_alongside_actual(self, tmp_path):
+        """The reprice_as arm is a sibling of the actual-dollar arm, so a
+        deduped two-block run must price once in both. Repricing sonnet-4-6
+        usage as opus-4-8 pins counterfactual_dollars next to actual_dollars;
+        a dedup applied to only one arm would skew the pair."""
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        _write_jsonl(jsonl_path, self._two_block_run("claude-sonnet-4-6"))
+        _, actual_dollars, _, counterfactual_dollars, _, _, _ = _mod._dispatch_usage_summary(
+            jsonl_path, None, None, "claude-opus-4-8", date(2026, 8, 2)
+        )
+        # Merged usage is the run's last record (1,000,000 input + 50 output).
+        # claude-sonnet-4-6: $3.00/MTok input, $15.00/MTok output.
+        # claude-opus-4-8: $5.00/MTok input, $25.00/MTok output.
+        assert actual_dollars == pytest.approx(3.00075)
+        assert counterfactual_dollars == pytest.approx(5.00125)
+
+    def test_mixed_model_dispatch_prices_each_turn_at_its_own_model_rate(self, tmp_path):
+        """One dispatch holding a sonnet-4-6 turn and an opus-4-8 turn, with
+        distinct input counts and distinct requestIds, prices each turn at its
+        own model's rate and reports the literal "mixed" bucket. A model
+        hoisted out of the per-turn loop would price both turns at one rate."""
+        sonnet_turn = _asst(
+            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-sonnet",
+            content=[{"type": "text", "text": "first"}],
+        )
+        sonnet_turn["message"]["usage"] = {
+            "input_tokens": 1_000_000, "output_tokens": 50,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        }
+        opus_turn = _asst(
+            "claude-opus-4-8", branch="feature-a", sidechain=True, request_id="req-opus",
+            content=[{"type": "text", "text": "second"}],
+        )
+        opus_turn["message"]["usage"] = {
+            "input_tokens": 2_000_000, "output_tokens": 100,
+            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+        }
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        _write_jsonl(jsonl_path, [sonnet_turn, opus_turn])
+        observed_bucket, actual_dollars, _, _, _, _, _ = _mod._dispatch_usage_summary(
+            jsonl_path, None, None, None, date(2026, 8, 2)
+        )
+        # claude-sonnet-4-6: 1,000,000 input at $3.00/MTok + 50 output at $15.00/MTok.
+        # claude-opus-4-8: 2,000,000 input at $5.00/MTok + 100 output at $25.00/MTok.
+        sonnet_turn_dollars = 1_000_000 / 1_000_000 * 3.00 + 50 / 1_000_000 * 15.00
+        opus_turn_dollars = 2_000_000 / 1_000_000 * 5.00 + 100 / 1_000_000 * 25.00
+        assert actual_dollars == pytest.approx(sonnet_turn_dollars + opus_turn_dollars)
+        assert observed_bucket == "mixed"
 
     def test_non_contiguous_run_with_interleaved_tool_result_still_merges(self, tmp_path):
         """A same-requestId run whose two assistant records straddle an
@@ -1904,8 +1951,7 @@ class TestDispatchUsageSummaryDedupBeforePricing:
     def test_unpriced_turn_count_is_once_per_deduped_turn_not_per_raw_record(self, tmp_path):
         """A two-content-block, one-requestId run on an unpriced model
         surfaces as 1 unpriced turn, not 2. The diagnostic counts (and
-        totals tokens for) the merged turn's final usage only, shifted from
-        once-per-raw-record along with the pricing fix."""
+        totals tokens for) the merged turn's final usage only."""
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, self._two_block_run("claude-unreleased-model"))
         _, actual_dollars, _, _, unpriced_turns, unpriced_tokens, _ = _mod._dispatch_usage_summary(

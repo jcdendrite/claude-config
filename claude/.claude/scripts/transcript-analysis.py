@@ -2023,11 +2023,12 @@ def _dispatch_usage_summary(
     dispatch's model identity isn't scoped to a reporting window.
 
     actual_dollars/dollars_by_class price (via _price_turn) only the deduped
-    turns whose first-block timestamp falls in [since_ts, until_ts) — per
+    turns whose first-block timestamp falls in [since_ts, until_ts). Per
     _merge_assistant_run's convention, a merged turn takes run[0]'s
-    timestamp — not by the dispatch's own start time, since a dispatch's
-    sidechain can straddle a window edge and a start-time-only filter would
-    attribute post-cutoff spend to an "in-window" total.
+    timestamp. The filter is per turn, not by the dispatch's own start time,
+    since a dispatch's sidechain can straddle a window edge and a
+    start-time-only filter would attribute post-cutoff spend to an
+    "in-window" total.
     counterfactual_dollars re-prices that same in-window usage at
     reprice_as, or is None when reprice_as is not given.
 
