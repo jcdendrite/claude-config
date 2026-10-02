@@ -699,6 +699,10 @@ The engineer's quoted words refer to these by number:
 
     [verified: `deny-private-project-refs.sh:47-54` (regular, readable body file required; the pseudo-file `-` is blocked); `deny-escaped-backticks-in-pr-body.sh:4-9`, `:26-29`; `findings-path-suffix.sh:27-43`; `CLAUDE.md` Working Style, the worktree Bash-guard bullet] [unverified: that `gh pr view --json body` without `--jq` prints `{"body": ...}`; that `-q .body` appends a newline]
 
+43. **Dispatch 2c's four Critical files are in scope.** They are the hook, its test file, `docs/hooks.md` and `test_hook_alignment.py` (one stale exemption entry). [engineer-verified: "Keep all three (Recommended)"] That label answers a question listing the first three files. [engineer-verified: "Add test_hook_alignment.py (Recommended)"] That label answers a question about the fourth. The design (extend `enforce-marker-script-shape.sh`, no new hook) is a plan-architect consult's choice, not the engineer's.
+
+44. **An `append` carrying `--engineer-quote` is denied for every non-empty `agent_type`.** The engineer answered "Ask the architect" to the roster-only versus all-agents question, and the plan-architect consult recommended the all-agents deny for that token. That is the consult's recommendation, not an engineer decision. [verified: `_review-ledger-lib.sh:110-137`, per the consult] [unverified: that a fork's PreToolUse payload carries `agent_type`; that `test_review_ledger_lib.py` pins the `--enforcement-invariant` coupling]
+
 ## Critical files
 
 Durable comments and docs must not mention "phase", a scenario number, this issue, or earlier behavior. Where a comment is prescribed, it is one line of durable fact.
@@ -1063,6 +1067,70 @@ Durable comments and docs must not mention "phase", a scenario number, this issu
   - no PR open leads to a create first, then the PR-open path's render and edit;
   - a re-typed copy of a decision's block from sync mode (rows with their ids intact) is replaced by the ledger's block at step 6; an id-damaged row stays as a kept row and delimiter drift makes `render` stop, as row 42 states.
 
+### Phase 2, dispatch 2c (after 2b, same PR): hook backstop for reviewer-agent ledger writes, one commit
+
+The prose rule at `code-review/SKILL.md:268` and `:378` stays the primary control. This dispatch adds a backstop by extending an existing hook, with no new hook. It touches no `SKILL.md`, so Phase 0's budget does not apply.
+
+Why: `review-ledger.sh` copies `marker.sh`'s session-id resolution, so a subagent's row lands in the parent's ledger (the flaw `docs/hooks.md` states for the marker deny). A forged DEFER row, a forged `--decided-by engineer` row and a forged SETTLED `--carry-forward` row are all load-bearing. The script cannot check its caller, because it has no hook payload.
+
+Two predicates, each resting on its own claim. The roster (`_LIB_NO_GATE_RELEASE_AGENTS`) rests on "these agents could not have run the review", so every `append` from one is denied. An engineer row rests on "an engineer turn", which no dispatched agent holds (`claude/.claude/CLAUDE.md:3` has a dispatched agent report an ask rather than act on it). So an `append` carrying `--engineer-quote` is denied for every non-empty `agent_type`. That one token covers every engineer-authority row, because `_review_ledger_validate_flags` (`_review-ledger-lib.sh:110-137`) rejects `--decided-by engineer` without a quote and rejects `--carry-forward` or `--enforcement-invariant` without `--decided-by engineer`. A subagent relaying an engineer's answer is denied once and reports upward, and the main session logs the row itself.
+
+**`claude/.claude/hooks/enforce-marker-script-shape.sh`:**
+- Bash arm, helper:
+  - Factor the existing two-detector logic (raw-text regex `<script>[[:space:]]+<op>` plus `_lib_command_invokes_tool_subcmd`) into a helper in this hook file, called for `marker.sh write|activate` and for `review-ledger.sh append`.
+  - The helper returns a status (0 matched, 1 none, 2 indeterminate) and never calls `emit_deny`; each call site emits its own denial at top level.
+  - It does not set `IFS` in its own scope, and a match anywhere beats an indeterminate op.
+  - The regex fragment is passed literally per call site (`marker\.sh`, `review-ledger\.sh`), not derived by substitution.
+  - The status-2 message names the script and does not echo the command text.
+  - Every existing test in `test_enforce_marker_script_shape.py` passes unmodified.
+- Bash arm, ledger call site:
+  - It sits after the write scan (about `:505`) and before `TRIMMED`, and so before Stage 1, whose `grep -qF 'marker.sh' || exit 0` exits on every ledger command. It never exits on no-match.
+  - It runs only for a non-empty `$AGENT_TYPE` and a pure-bash `*review-ledger.sh*` match on the raw or the quote-stripped command (`MARKER_WRITE_COMMAND_UNQUOTED`). Only the raw command goes to `_lib_command_invokes_tool_subcmd`, because `_lib_strip_shell_quotes` is not idempotent.
+  - A roster agent (`_lib_is_no_gate_release_agent`) is denied any `append`. Any other agent is denied an `append` whose raw or quote-stripped command contains `--engineer-quote`, tested before the detectors run.
+  - The raw-text detector treats a backslash-newline between script and op as whitespace.
+  - `show`, `render` and `clear-stale` stay ungated.
+- State arm: add `review-narrative-ledger/*` to the three case patterns in `_marker_shape_match` (`*/.claude/review-narrative-ledger/*`, and the resolved and realpath config-dir forms). Keep the function's name and widen its comment. Give the Write/Edit and redirect call sites a ledger-specific denial reason when the matched path is under the ledger directory.
+- Denial text: two lead lines. Each says the match was on command text and that the `Grep` and `Read` tools are unaffected, and names the escape for a false-deny (search without the op word, for example `grep -rn review-ledger.sh`).
+  - Roster `append` and ledger-state writes: the named agent cannot append review-ledger rows, and the row would be attributed to the parent session as a decision it never made. Then the "report the denial upward" paragraph of `GATE_RELEASE_DENIAL_GUIDANCE`, factored into a shared variable and not copied. Paragraphs 1 and 3 of it describe marker semantics and are not reused.
+  - Engineer row: the named agent cannot log an engineer decision, because only the main session holds the engineer's turn and the quote is published in the PR body under the engineer's name. Report the engineer's answer and the planned row in the return, and the main session logs it. This branch does not append the delegate-to-`general-purpose` advice.
+- Header: widen job 1 to both ledger predicates, and add per-fire-cost wording (0 forks on the common path). Name these residuals for the ledger:
+  - the `append` Bash arm is text-only, with no path arm, no Stage 2 backstop and no `permissions.allow` entry;
+  - variable and function indirection, brace expansion, `$'\x..'` escapes, and sourcing `_review-ledger-lib.sh` are not matched;
+  - a config dir with no `.claude` segment is invisible to the Bash redirect scan, while the Write/Edit arm still covers it;
+  - the engineer-row deny depends on the script's quote requirement.
+- The `# tier-threat-model:` line, `settings.json` and `_lib.sh` are unchanged.
+
+**`claude/.claude/hooks/tests/test_enforce_marker_script_shape.py`:** parametrize over the file's `NO_GATE_RELEASE_AGENTS` roster and over the existing state-arm tests where one exists, and set `home=` and `extra_env` explicitly wherever config-dir resolution matters.
+- Bash deny, roster `append`:
+  - a bare, a `~/.claude/scripts/`, a `$HOME/.claude/scripts/` and a `cd x &&` form, and an `env X=1` prefix;
+  - a `bash -c` wrapper (raw detector only);
+  - a path-prefixed quote-split, `"$HOME/.claude/scripts/review-ledger.sh" append` and `~/.claude/scripts/"review-ledger.sh" append` (command-word detector only);
+  - a backslash-newline between script and op;
+  - a mid-name quote split, `review-led''ger.sh append`;
+  - combined commands: `review-ledger.sh show && marker.sh write code-review` (denied by the marker arm) and `marker.sh status; review-ledger.sh append ...` (denied by the ledger arm).
+- Bash allow: an `append` without `--engineer-quote` from `general-purpose` (an ADDRESS row and a `--decided-by carry` row), and an `append ... --decided-by engineer --engineer-quote ... --carry-forward` from the main session.
+- Bash deny, engineer row: that engineer `append` from `general-purpose`, from an agent-type string in no roster (plugin-shaped, `someplugin:agent`), and with a quote-split `--engineer-''quote`.
+- Allow from a roster agent: `show`, `render --out agent-reviews/x.md`, `grep -rn review-ledger.sh`, and `clear-stale` with and without `--dry-run`.
+- Fail-closed: a shimmed `sed`/`tr` failure through the ledger entry point (command-word detector isolated by a quote-split) denies, and the reason names the ledger script and does not echo the command.
+- Reason text: use `run_hook_reason` on the Bash `append`, Write/Edit and redirect surfaces. Assert the reason names the ledger and the agent type, says to report, and does not claim a gate release.
+- State arm:
+  - Write, Edit and MultiEdit under the ledger directory are denied for a roster agent, with the denied path derived from the real writer (the Phase 1 path oracle in `hooks/tests/conftest.py`, or a temp-config-dir `append` followed by a lookup of the file it produced), including its `.lock` file.
+  - Allowed for the main session and `general-purpose`.
+  - Over-match negatives: `agent-reviews/review-ledger-x.md`, `<config-dir>/review-narrative-ledger-x/y`, and a `.claude/plans/` path naming the ledger stay writable.
+  - A Bash `>>` in the `~/.claude/review-narrative-ledger/...` form is denied, and a paired `_allowed_residual` test pins the config-dir-without-`.claude` form.
+- Residual pins (allowed, as `test_bash_arm_does_not_match_shell_indirection` does for markers): variable-wrapped script name, variable-wrapped op, and brace expansion.
+- Pinned false-deny: a roster-agent `grep` of the literal `review-ledger.sh append`, whose reason carries the escape wording, and a `general-purpose` `append` whose `--finding` text names `--engineer-quote`.
+- Drift guards: the hook's ledger directory name equals the basename of `LEDGER_DIR` in `review-ledger.sh`, and the denied op `append` equals a case arm of the script.
+
+**`claude/.claude/hooks/tests/test_hook_alignment.py`:** `test_no_inline_command_matcher_regex[enforce-marker-script-shape.sh]` keeps its `_INLINE_COMMAND_MATCHER_EXEMPT_HOOKS` entry alive only through the literal at `:570`, so the helper makes the entry stale. Remove it, or re-justify it if the new code still trips the detector. Add no other edit to this file.
+
+**`docs/hooks.md`:**
+- The per-hook entry and one paragraph in "Marker keying and gate-release authority", stating both predicates, the claim each rests on, their shared session-key limit, and the residuals above.
+- Keep the sentence "Defense-in-depth against prompt-injection escalation through the `marker.sh` allow rules." verbatim in the hook's bullet (`test_tier_rationale_doc_sentence_pinned`).
+- Do not copy the `permissions.allow` sentence for the ledger.
+
+**Verify:** the three commands in the Verification section. Run `claude-hook-review` on the hook diff. The pre-PR dry-run's `append` calls run in the main session, because a `code-writer` is denied them. The path-prefixed match is settled by the deny tests above, which exercise the command-word detector alone.
+
 ## Verification
 
 Run these per dispatch, and again before each commit, from the worktree root:
@@ -1114,7 +1182,7 @@ Run these per dispatch, and again before each commit, from the worktree root:
   - `ai-instruction-and-memory-files` for `CLAUDE.md`;
   - `staff-sdet` for the tests.
 - `staff-backend-engineer` on 1a, 1b and 2a, because shared `_lib.sh` changes.
-- `ciso-reviewer` on 2a and 2b: quotes go to public PR bodies, and pinned stop regions change.
+- `ciso-reviewer` on 2a, 2b and 2c: quotes go to public PR bodies, pinned stop regions change, and 2c changes an authorization gate.
 - `/skill-review` on every SKILL.md commit (hook-enforced).
 
 Run `/ready-for-review` before the PR opens or is pushed.
@@ -1126,6 +1194,7 @@ Run `/ready-for-review` before the PR opens or is pushed.
 - **What a carry needs.** The text at the orchestrator-named range must be unchanged, and the reviewer's cited line must lie inside it. Only that range is hashed, so an edit outside it but inside the block does not reopen the decision.
 - **DEFER carries.** A DEFER repeat carries without a stop when its criterion is restated and its text is unchanged.
 - **Reviewers still re-raise.** A carried finding is still raised; "suppresses" in the acceptance criteria means no new stop.
+- **Engineer decisions are main-session only.** A subagent's `append` carrying `--engineer-quote` is denied by the hook. The main session logs a relayed engineer answer itself. The Bash arm is text-only, so shell indirection is not matched.
 - **Failure-mode reading.** How "a different failure mode" is read (row 18).
 - **Published quotes.** Engineer quotes are published in the PR body. A credential pasted into one needs the owner to rotate it and delete the PR body revision; a closing row only stops later renders.
 - **Rollback.** A revert leaves branch files that the sweep removes within 30 days. The next round on an open PR then rewrites the block in the DEFER-only 4-column shape.

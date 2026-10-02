@@ -13,6 +13,7 @@ import pytest
 from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
+    SCRIPTS_DIR,
     bash_input,
     build_path_without,
     edit_input,
@@ -21,6 +22,8 @@ from helpers import (
     run_hook_reason,
     write_input,
 )
+
+from .conftest import _review_ledger_path, _seed_session
 
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 
@@ -52,6 +55,12 @@ TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh check code-review",
     "~/.claude/scripts/marker.sh check verification",
 ]
+
+# About 320 KB in 32 lines. It must be multi-line: `grep -q` over one unbroken
+# line reads the whole line before it exits, so only a command whose first
+# line matches and whose remainder is large makes a `printf | grep -q`
+# pipeline see SIGPIPE under pipefail. Few lines keep the per-fragment scan fast.
+LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
 
 
 class TestEnforceMarkerScriptShape:
@@ -685,6 +694,9 @@ class TestDevNullRedirectBoundaryDenied:
 
 
 MARKER = "~/.claude/scripts/marker.sh"
+# Spellings the shell reads as MARKER, with no contiguous `marker.sh` in the text.
+MARKER_SPLIT_BY_BACKSLASH_NEWLINE = "~/.claude/scripts/marker.\\\nsh"
+MARKER_SPLIT_BY_QUOTES = '~/.claude/scripts/mark""er.sh'
 
 # Representative members of _LIB_NO_GATE_RELEASE_AGENTS. The full-roster
 # coverage lives in test_lib.py against the array itself; these exercise the
@@ -918,6 +930,9 @@ class TestGateReleaseAuthority:
             "MS=~/.claude/scripts/marker.sh; $MS write plan-review",
             # Function-wrapper indirection: same adjacency break.
             'f() { ~/.claude/scripts/marker.sh "$@"; }; f write plan-review',
+            # A case-varied script name runs on a case-insensitive volume, but
+            # neither Stage 1 nor the raw-text detector folds case.
+            "~/.claude/scripts/Marker.SH write code-review",
         ],
     )
     def test_bash_arm_does_not_match_shell_indirection(self, command):
@@ -1059,8 +1074,9 @@ class TestGateReleaseAuthority:
         this hook's earlier, unconditional MARKER_WRITE_COMMAND_UNQUOTED
         quote-strip check and so never actually isolates this arm.
 
-        The command here is quote-split (`"marker.sh" write ...`), which
-        makes the raw-text detector NOT match, and contains no `.claude`
+        The command here names an op (`status`) neither raw-text pass
+        matches, since the quote-stripped command would match a quote-split
+        `write`, and contains no `.claude`
         substring, which skips the pre-Stage-1 redirect-candidate scan (it
         requires a literal `.claude` to run at all). A sed shim that
         succeeds only for _lib_strip_shell_quotes's own `-e`-flagged
@@ -1093,7 +1109,7 @@ class TestGateReleaseAuthority:
 
         reason = run_hook_reason(
             ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-            bash_input('"marker.sh" write code-review', agent_type="code-writer"),
+            bash_input('"marker.sh" status', agent_type="code-writer"),
             extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
         )
         assert reason is not None
@@ -1124,6 +1140,10 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             "install /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
             "dd if=/tmp/attacker-plan.md of=~/.claude/code-review-markers/forged",
             "sed -i 's/a/b/' ~/.claude/code-review-markers/forged",
+            # The per-fragment utility guard folds case and accepts a path
+            # component, as the command-word check it fronts does.
+            "CP /tmp/attacker-plan.md ~/.claude/code-review-markers/forged",
+            "echo x | /usr/bin/tee -a ~/.claude/code-review-markers/forged",
         ],
     )
     def test_write_utility_to_marker_path_denied(self, command):
@@ -1154,6 +1174,34 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 bash_input(command, agent_type="general-purpose"),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("utility", ["cp", "mv", "install"])
+    def test_directory_copy_into_the_bare_marker_directory_denied(self, utility):
+        """The destination names the directory itself, with no file component:
+        the utility writes the file inside it."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    f"{utility} /tmp/attacker-plan.md ~/.claude/code-review-markers",
+                    agent_type="code-writer",
+                ),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("utility", ["cp", "mv", "install"])
+    def test_full_tool_set_agent_may_copy_into_the_bare_marker_directory(self, utility):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    f"{utility} /tmp/attacker-plan.md ~/.claude/code-review-markers",
+                    agent_type="general-purpose",
+                ),
             )
             == "allow"
         )
@@ -1386,16 +1434,25 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             == "allow"
         )
 
-    def test_symlink_with_no_claude_in_its_own_path_allowed_residual(self, marker_home, tmp_path):
+    @pytest.mark.parametrize(
+        "state_directory_name",
+        ["code-review-markers", "review-narrative-ledger"],
+        ids=["markers-directory", "ledger-directory"],
+    )
+    def test_symlink_with_no_claude_in_its_own_path_allowed_residual(
+        self, marker_home, tmp_path, state_directory_name
+    ):
         """Accepted residual: this scan's fast-reject requires the literal
-        `.claude` in the command text, unlike the Write/Edit arm's
-        unconditional realpath resolution -- a symlink whose own path
-        carries no `.claude` segment but resolves into the markers directory
-        is not caught here."""
+        `.claude` or the ledger directory name in the command text, unlike the
+        Write/Edit arm's unconditional realpath resolution -- a symlink whose
+        own path carries neither but resolves into the markers or the ledger
+        directory is not caught here."""
+        state_directory = marker_home / ".claude" / state_directory_name
+        state_directory.mkdir(exist_ok=True)
         alias_dir = tmp_path / "aliasdir"
         alias_dir.mkdir()
         symlinked_path = alias_dir / "notclaudepath"
-        symlinked_path.symlink_to(marker_home / ".claude" / "code-review-markers")
+        symlinked_path.symlink_to(state_directory)
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -1890,6 +1947,37 @@ class TestGateReleaseAuthorityBashArmConfigDirResidual:
             == "allow"
         )
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "printf x > $CLAUDE_CONFIG_DIR/code-review-markers/deadbeef",
+            # The per-candidate filter drops the target even when `.claude`
+            # appears elsewhere in the command.
+            "printf x > $CLAUDE_CONFIG_DIR/code-review-markers/deadbeef && ls ~/.claude",
+        ],
+        ids=["no-dotclaude-anywhere", "dotclaude-elsewhere"],
+    )
+    def test_redirect_through_the_config_dir_variable_to_a_marker_path_allowed_residual(
+        self, tmp_path, command
+    ):
+        """The leading `$CLAUDE_CONFIG_DIR` rewrite runs inside
+        `_marker_shape_match`, after the pre-filter, so it is effective for
+        ledger targets only. Invert this to deny if the pre-filter ever admits
+        a candidate that names the variable."""
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        (config_dir / "code-review-markers").mkdir(parents=True)
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "allow"
+        )
+
 
 class TestGateReleaseAuthorityBashArmConfigDirShapeSurvivesBudgetExhaustion:
     """_lib_config_dir is subprocess-free, so _marker_shape_match resolves it
@@ -1937,6 +2025,1203 @@ class TestGateReleaseAuthorityBashArmConfigDirShapeSurvivesBudgetExhaustion:
                 bash_input(f"tee {padding} {forged}", agent_type="general-purpose"),
                 home=home,
                 extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
+    def test_config_dir_ledger_shape_denied_past_realpath_budget(self, tmp_path, agent_type):
+        """The ledger twin: with the realpath budget spent, the target is
+        tested only against its raw text, so only the resolved-config-dir
+        ledger pattern can match a config dir with no `.claude` segment."""
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        ledger_target = config_dir / "review-narrative-ledger" / "x.jsonl"
+        padding = " ".join(f"~/.claude/pad{i}" for i in range(11))
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"tee {padding} {ledger_target}", agent_type=agent_type),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "deny"
+        )
+
+    def test_main_session_allowed_for_the_same_ledger_shape_past_realpath_budget(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        ledger_target = config_dir / "review-narrative-ledger" / "x.jsonl"
+        padding = " ".join(f"~/.claude/pad{i}" for i in range(11))
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"tee {padding} {ledger_target}"),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "allow"
+        )
+
+
+class TestGateReleaseRawDetectorOnQuotedAndLargeCommands:
+    """The marker.sh Bash arm's detectors must not depend on quoting or on
+    pipeline exit status. A multi-line command over the pipe buffer makes a
+    `printf | grep -q` pipeline return 141 under pipefail, which would read as
+    no match."""
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"bash -c '{MARKER} write code-review'" + LARGE_MULTILINE_TAIL,
+            "marker.sh write code-review" + LARGE_MULTILINE_TAIL,
+            # Stage 0's `.claude` fast-reject on a large command whose first line
+            # names a marker path.
+            "printf x > ~/.claude/code-review-markers/forged" + LARGE_MULTILINE_TAIL,
+        ],
+        ids=["bash-c-wrapper", "bare-script-name", "redirect-to-marker-path"],
+    )
+    def test_roster_agent_denied_for_a_large_multiline_command(self, agent_type, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # A quote between script and op breaks the raw-text adjacency, and
+            # the `bash -c` wrapper hides the command word from the other detector.
+            f"bash -c '{MARKER} \"write\" code-review'",
+            f"bash -c '{MARKER} \"activate\" plan-review'",
+        ],
+        ids=["quoted-write", "quoted-activate"],
+    )
+    def test_roster_agent_denied_for_a_quote_split_op_inside_a_wrapper(self, agent_type, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+            )
+            == "deny"
+        )
+
+    # The script name never appears contiguously in the raw text, so only the
+    # quote-stripped, backslash-newline-joined text names it at Stage 1.
+    SCRIPT_NAME_SPLIT_MARKER_WRITES = [
+        f"{MARKER_SPLIT_BY_BACKSLASH_NEWLINE} write code-review",
+        f"{MARKER_SPLIT_BY_QUOTES} write code-review",
+        f"bash -c '{MARKER_SPLIT_BY_BACKSLASH_NEWLINE} write code-review'",
+        f"bash -c '{MARKER_SPLIT_BY_QUOTES} write code-review'",
+    ]
+    SCRIPT_NAME_SPLIT_MARKER_WRITE_IDS = [
+        "backslash-newline-in-name",
+        "quote-in-name",
+        "backslash-newline-in-name-in-wrapper",
+        "quote-in-name-in-wrapper",
+    ]
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "command",
+        SCRIPT_NAME_SPLIT_MARKER_WRITES,
+        ids=SCRIPT_NAME_SPLIT_MARKER_WRITE_IDS,
+    )
+    def test_roster_agent_denied_for_a_script_name_split_by_a_quote_or_a_continuation(
+        self, agent_type, command
+    ):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
+    @pytest.mark.parametrize(
+        "command",
+        SCRIPT_NAME_SPLIT_MARKER_WRITES,
+        ids=SCRIPT_NAME_SPLIT_MARKER_WRITE_IDS,
+    )
+    def test_full_tool_set_agent_allowed_for_the_same_split_script_name(self, agent_type, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+            )
+            == "allow"
+        )
+
+    # The quote-stripped copy reads a regex-escaped `marker\.sh` as the script
+    # name, but the raw text never names it, so the raw-text traversal guard
+    # has no marker.sh invocation to protect. The `..` segment is the trigger.
+    ESCAPED_NAME_PATTERN_WITH_PARENT_SEGMENT = [
+        "grep -rn 'marker\\.sh' claude/.claude/hooks/../scripts",
+        "grep -rn 'marker\\.sh' claude/.claude/hooks/..",
+    ]
+    ESCAPED_NAME_PATTERN_WITH_PARENT_SEGMENT_IDS = ["mid-path-segment", "trailing-segment"]
+
+    @pytest.mark.parametrize("agent_type", [*GATE_RELEASE_ALLOWED_AGENTS, None])
+    @pytest.mark.parametrize(
+        "command",
+        ESCAPED_NAME_PATTERN_WITH_PARENT_SEGMENT,
+        ids=ESCAPED_NAME_PATTERN_WITH_PARENT_SEGMENT_IDS,
+    )
+    def test_non_roster_caller_allowed_for_an_escaped_name_pattern_with_a_parent_segment(
+        self, agent_type, command
+    ):
+        """None is the main session, which carries no agent_type."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "command",
+        ESCAPED_NAME_PATTERN_WITH_PARENT_SEGMENT,
+        ids=ESCAPED_NAME_PATTERN_WITH_PARENT_SEGMENT_IDS,
+    )
+    def test_roster_agent_allowed_for_an_escaped_name_pattern_without_an_op_word(
+        self, agent_type, command
+    ):
+        """The roster scan still runs for these commands and finds no write or
+        activate op, so the early exit is what allows them."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_roster_agent_denied_for_an_escaped_name_with_a_write_op(self, agent_type):
+        """The roster scan reads the quote-stripped text, so the escaped spelling
+        of a write is denied (an accepted false-deny for a grep pattern)."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("grep -rn 'marker\\.sh write' .", agent_type=agent_type),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
+    def test_full_tool_set_agent_allowed_for_the_same_large_command(self, agent_type):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    f"bash -c '{MARKER} write code-review'" + LARGE_MULTILINE_TAIL,
+                    agent_type=agent_type,
+                ),
+            )
+            == "allow"
+        )
+
+
+LEDGER = "~/.claude/scripts/review-ledger.sh"
+LEDGER_APPEND_ARGS = 'append code-review --finding "F1 sample" --disposition ADDRESS --round 1'
+LEDGER_APPEND_CARRY_ARGS = (
+    'append code-review --finding "F1 sample" --disposition SETTLED --decided-by carry --ref abc123'
+)
+LEDGER_APPEND_ENGINEER_ARGS = (
+    'append code-review --finding "F1 sample" --disposition SETTLED --decided-by engineer '
+    '--engineer-quote "keep it as is" --carry-forward'
+)
+LEDGER_APPEND_ENGINEER_QUOTE_SPLIT_ARGS = LEDGER_APPEND_ENGINEER_ARGS.replace(
+    "--engineer-quote", "--engineer-''quote"
+)
+# The shell deletes a backslash-newline pair, so this still runs as the flag.
+LEDGER_APPEND_ENGINEER_BACKSLASH_NEWLINE_ARGS = LEDGER_APPEND_ENGINEER_ARGS.replace(
+    "--engineer-quote", "--engineer-\\\nquote"
+)
+
+# Agent-type strings that sit in no roster: the two full-tool-set built-ins and
+# a plugin-shaped name. The engineer-row and ledger-state predicates apply to
+# them; the roster's `append` predicate does not.
+NON_ROSTER_AGENT_TYPES = ["general-purpose", "claude", "someplugin:agent"]
+
+# Every op of review-ledger.sh, and whether the hook denies it to the roster.
+LEDGER_SCRIPT_OPS_GATED_FOR_ROSTER = {
+    "append": True,
+    "show": False,
+    "render": False,
+    "clear-stale": False,
+}
+
+
+class TestReviewLedgerAppendAuthority:
+    """The Bash arm's ledger predicates.
+
+    A roster agent is denied every `review-ledger.sh append`, because the row
+    lands in the parent session's ledger. Any non-empty agent type is denied an
+    `append` carrying `--engineer-quote`, because only the main session holds
+    the engineer's turn.
+    """
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"review-ledger.sh {LEDGER_APPEND_ARGS}",
+            f"{LEDGER} {LEDGER_APPEND_ARGS}",
+            f"$HOME/.claude/scripts/review-ledger.sh {LEDGER_APPEND_ARGS}",
+            f"cd somedir && {LEDGER} {LEDGER_APPEND_ARGS}",
+            f"env X=1 {LEDGER} {LEDGER_APPEND_ARGS}",
+            # Raw-text detector only: the command-word detector cannot see
+            # inside a `bash -c` wrapper.
+            f"bash -c '{LEDGER} {LEDGER_APPEND_ARGS}'",
+            # Quote splits. Either detector denies each of these, so they pin
+            # neither alone; the wrapper cases further down pin the raw-text one.
+            f'"$HOME/.claude/scripts/review-ledger.sh" {LEDGER_APPEND_ARGS}',
+            f'~/.claude/scripts/"review-ledger.sh" {LEDGER_APPEND_ARGS}',
+            # Raw-text detector only: a backslash-newline is whitespace to the
+            # shell, and splits the command into two fragments for the
+            # command-word detector.
+            f"{LEDGER} \\\n  {LEDGER_APPEND_ARGS}",
+            # Mid-name quote split; either detector denies it.
+            f"~/.claude/scripts/review-led''ger.sh {LEDGER_APPEND_ARGS}",
+        ],
+        ids=[
+            "bare",
+            "tilde-path",
+            "home-var-path",
+            "cd-chain",
+            "env-prefix",
+            "bash-c-wrapper",
+            "quote-split-home-var-path",
+            "quote-split-script-name",
+            "backslash-newline",
+            "mid-name-quote-split",
+        ],
+    )
+    def test_append_denied_for_roster_agents(self, agent_type, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # A quote inside the wrapper breaks the raw text's adjacency, and the
+            # wrapper hides the command word from the other detector. Only the
+            # raw-text detector on the quote-stripped command sees these.
+            f"bash -c \"review-led''ger.sh {LEDGER_APPEND_ARGS}\"",
+            "bash -c 'review-ledger.sh \"append\" code-review --finding x'",
+            # Raw-text detector on a command over the pipe buffer.
+            f"bash -c '{LEDGER} {LEDGER_APPEND_ARGS}'" + LARGE_MULTILINE_TAIL,
+        ],
+        ids=["quote-split-name-in-wrapper", "quoted-op-in-wrapper", "large-multiline-command"],
+    )
+    def test_append_denied_for_roster_agents_through_quoting_and_size(self, agent_type, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NON_ROSTER_AGENT_TYPES)
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash -c 'review-ledger.sh \"append\" code-review --finding x --engineer-quote q'",
+            f"bash -c '{LEDGER} {LEDGER_APPEND_ENGINEER_ARGS}'" + LARGE_MULTILINE_TAIL,
+        ],
+        ids=["quoted-op-in-wrapper", "large-multiline-command"],
+    )
+    def test_engineer_append_denied_for_non_roster_agents_through_quoting_and_size(
+        self, agent_type, command
+    ):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # A backslash-newline inside the op word: the shell deletes it, so
+            # the op runs as `append`, but spacing it out leaves `app end`.
+            f"{LEDGER} app\\\nend code-review --finding x --disposition ADDRESS --round 1",
+            # The same inside the script name.
+            "~/.claude/scripts/review-led\\\nger.sh append code-review --finding x "
+            "--disposition ADDRESS --round 1",
+        ],
+        ids=["split-op-word", "split-script-name"],
+    )
+    def test_append_denied_for_a_roster_agent_through_an_in_token_backslash_newline(self, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+            )
+            == "deny"
+        )
+
+    def test_roster_agent_append_with_a_marker_status_prefix_denied_by_the_ledger_arm(self):
+        """Without the ledger arm, Stage 2 denies this compound command and
+        echoes its first 80 characters, which name the ledger script too. Only
+        the ledger arm's own wording tells the two apart."""
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(
+                f"{MARKER} status; {LEDGER} {LEDGER_APPEND_ARGS}", agent_type="code-writer"
+            ),
+        )
+        assert reason is not None
+        assert "cannot append review-ledger rows" in reason
+        assert "marker.sh invocation denied" not in reason
+
+    def test_roster_agent_ledger_show_chained_to_a_marker_write_denied_by_the_marker_arm(self):
+        """The ledger arm never exits on a non-match, so the marker arm still
+        runs on a combined command."""
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"{LEDGER} show && {MARKER} write code-review", agent_type="code-writer"),
+        )
+        assert reason is not None
+        assert "Marker write" in reason
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"{LEDGER} show",
+            f"{LEDGER} render --out agent-reviews/x.md",
+            "grep -rn review-ledger.sh claude/",
+            f"{LEDGER} clear-stale",
+            f"{LEDGER} clear-stale --dry-run",
+        ],
+    )
+    def test_non_append_ops_allowed_for_roster_agents(self, agent_type, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", NON_ROSTER_AGENT_TYPES)
+    @pytest.mark.parametrize(
+        "append_args",
+        [LEDGER_APPEND_ARGS, LEDGER_APPEND_CARRY_ARGS],
+        ids=["address-row", "carry-row"],
+    )
+    def test_append_without_engineer_quote_allowed_for_non_roster_agents(
+        self, agent_type, append_args
+    ):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{LEDGER} {append_args}", agent_type=agent_type),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", [None, ""], ids=["no-agent-type", "empty-agent-type"])
+    def test_engineer_append_allowed_for_main_session(self, agent_type):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{LEDGER} {LEDGER_APPEND_ENGINEER_ARGS}", agent_type=agent_type),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", NON_ROSTER_AGENT_TYPES)
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"{LEDGER} {LEDGER_APPEND_ENGINEER_ARGS}",
+            # A quote between the flag's halves defeats a raw-text test of
+            # `--engineer-quote` but not the quote-stripped one.
+            f"{LEDGER} {LEDGER_APPEND_ENGINEER_QUOTE_SPLIT_ARGS}",
+            f"{LEDGER} {LEDGER_APPEND_ENGINEER_BACKSLASH_NEWLINE_ARGS}",
+        ],
+        ids=["plain-flag", "quote-split-flag", "backslash-newline-flag"],
+    )
+    def test_engineer_append_denied_for_every_non_roster_agent_type(self, agent_type, command):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NON_ROSTER_AGENT_TYPES)
+    def test_engineer_flag_text_on_a_non_append_op_allowed(self, agent_type):
+        """The flag text only selects which commands the append detectors run
+        on; a `show` that names it is not an append."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{LEDGER} show --engineer-quote", agent_type=agent_type),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Variable-wrapped script name: the name and the op are no longer adjacent.
+            f"LS={LEDGER}; $LS {LEDGER_APPEND_ARGS}",
+            # Variable-wrapped op.
+            f"OP=append; {LEDGER} $OP code-review",
+            # One brace word that the shell expands to `append code-review`, a
+            # working invocation with no literal op next to the script name.
+            f"{LEDGER} {{append,code-review}} --finding x --disposition ADDRESS --round 1",
+            # Op supplied by command substitution at run time.
+            f"{LEDGER} $(echo append) code-review --finding x --disposition ADDRESS --round 1",
+            # Op supplied on stdin by xargs.
+            f"echo append code-review --finding x --disposition ADDRESS --round 1 | xargs {LEDGER}",
+            # A glob the shell resolves to the script name.
+            f"~/.claude/scripts/review-ledg*.sh {LEDGER_APPEND_ARGS}",
+            # A case-varied script name runs on a case-insensitive volume, but
+            # neither text detector folds case.
+            f"~/.claude/scripts/Review-Ledger.SH {LEDGER_APPEND_ARGS}",
+        ],
+        ids=[
+            "variable-script-name",
+            "variable-op",
+            "brace-expanded-op-and-gate",
+            "command-substitution-op",
+            "xargs-supplied-op",
+            "globbed-script-name",
+            "case-varied-script-name",
+        ],
+    )
+    def test_shell_indirection_allowed_residual(self, command):
+        """Pins the Bash arm's ACCEPTED scope limit rather than an intended
+        behavior, as test_bash_arm_does_not_match_shell_indirection does for
+        markers. Invert these to deny if the arm ever becomes indirection-proof."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="code-writer"),
+            )
+            == "allow"
+        )
+
+    def test_roster_agent_grep_of_the_literal_op_denied_with_the_escape_wording(self):
+        """Pinned false-deny: the raw-text detector matches the quoted search
+        string. The reason names the escape that avoids it."""
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input('grep -rn "review-ledger.sh append" claude/', agent_type="staff-sdet"),
+        )
+        assert reason is not None
+        assert "command text" in reason
+        assert "grep -rn review-ledger.sh" in reason
+        assert "Grep and Read tools are unaffected" in reason
+
+    def test_non_roster_append_whose_finding_text_names_the_quote_flag_denied(self):
+        """Pinned false-deny: the flag test is a substring match on the whole
+        command, so finding text that names the flag trips it."""
+        command = f'{LEDGER} append code-review --finding "the --engineer-quote flag" --disposition ADDRESS'
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="general-purpose"),
+            )
+            == "deny"
+        )
+
+    def test_roster_deny_reason_names_the_ledger_and_directs_upward(self):
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"{LEDGER} {LEDGER_APPEND_ARGS}", agent_type="code-writer"),
+        )
+        assert reason is not None
+        assert "review-ledger" in reason
+        assert "code-writer" in reason
+        assert "report" in reason.lower()
+        assert "release" not in reason.lower()
+        # The dispatcher logs a ledger row; it does not rerun a review.
+        assert "re-dispatches you" not in reason
+        assert "review skill" not in reason
+
+    def test_engineer_deny_reason_names_the_agent_and_the_main_session(self):
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"{LEDGER} {LEDGER_APPEND_ENGINEER_ARGS}", agent_type="someplugin:agent"),
+        )
+        assert reason is not None
+        assert "someplugin:agent" in reason
+        assert "engineer" in reason
+        assert "main session" in reason
+        assert "report" in reason.lower()
+        assert "release" not in reason.lower()
+        assert "general-purpose" not in reason
+
+    def test_engineer_deny_reason_says_the_match_was_on_the_flag_text_anywhere(self):
+        """The flag test is a substring match, so the reason names that and the
+        way out of a false match: rewording the row text."""
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(
+                f'{LEDGER} append code-review --finding "the --engineer-quote flag" --disposition ADDRESS',
+                agent_type="general-purpose",
+            ),
+        )
+        assert reason is not None
+        assert "anywhere in the command" in reason
+        assert "rewording" in reason
+        assert "grep -rn" not in reason
+
+    @pytest.mark.parametrize(
+        ("agent_type", "command"),
+        [
+            ("code-writer", "review-ledger.sh show --finding SENTINELFINDINGTEXT"),
+            ("general-purpose", "review-ledger.sh show --engineer-quote SENTINELFINDINGTEXT"),
+        ],
+        ids=["roster-kind", "engineer-kind"],
+    )
+    def test_ledger_scan_status2_denied_without_echoing_the_command(
+        self, tmp_path, agent_type, command
+    ):
+        """A sed shim that fails outside _lib_strip_shell_quotes's `-e` call
+        shape isolates the ledger arm's own fail-closed branch. Neither raw-text
+        detector matches a non-`append` op, so only the command-word detector
+        decides, and it cannot determine an answer."""
+        real_sed = shutil.which("sed")
+        assert real_sed, "test host must have a real sed binary on PATH"
+
+        shim_dir = tmp_path / "sed-fails-outside-strip-shell-quotes-shape"
+        shim_dir.mkdir()
+        shim_script = textwrap.dedent(f"""\
+            #!/bin/bash
+            if [ "$2" != "-e" ]; then
+              exit 1
+            fi
+            exec "{real_sed}" "$@"
+        """)
+        (shim_dir / "sed").write_text(shim_script)
+        (shim_dir / "sed").chmod(0o755)
+
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(command, agent_type=agent_type),
+            extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+        )
+        assert reason is not None
+        assert "could not determine whether" in reason
+        assert "review-ledger.sh append" in reason
+        assert "SENTINELFINDINGTEXT" not in reason
+
+    def test_every_script_op_has_an_explicit_gating_decision(self):
+        """A source scan, kept narrow: the script's `case` arms are the only
+        list of its ops, so a new op fails here until it is classified in
+        LEDGER_SCRIPT_OPS_GATED_FOR_ROSTER."""
+        script_text = (SCRIPTS_DIR / "review-ledger.sh").read_text()
+        script_ops = {
+            op
+            for arm in re.findall(r"^  ([a-z][a-z|-]*)\)$", script_text, re.M)
+            for op in arm.split("|")
+        }
+        assert script_ops == set(LEDGER_SCRIPT_OPS_GATED_FOR_ROSTER)
+
+    @pytest.mark.parametrize(("op", "gated"), sorted(LEDGER_SCRIPT_OPS_GATED_FOR_ROSTER.items()))
+    def test_roster_decision_for_each_script_op_matches_its_classification(self, op, gated):
+        assert run_hook(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"{LEDGER} {op}", agent_type="code-writer"),
+        ) == ("deny" if gated else "allow")
+
+
+class TestReviewLedgerStatePaths:
+    """The path-keyed arms: Write/Edit/MultiEdit and a Bash redirect into the
+    ledger directory are denied for every non-empty agent type, with the denied
+    path derived from the documented key rules (the conftest oracle), not typed
+    here. The oracle itself is pinned against the real resolver in
+    test_lib_reviewer_round_state.py, and the hook reads only the directory, so
+    one branch-scope key shape is enough here."""
+
+    @pytest.fixture
+    def ledger_files(self, isolated_home, git_repo):
+        subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=git_repo, check=True)
+        ledger_file = _review_ledger_path(isolated_home, git_repo, "sess-ledger-test")
+        return [ledger_file, ledger_file.with_name(ledger_file.name + ".lock")]
+
+    @pytest.fixture
+    def written_ledger_file(self, isolated_home, git_repo):
+        """The file the real review-ledger.sh appends to, so the hook is
+        exercised against the writer's own directory name."""
+        _seed_session(isolated_home, "sess-ledger-test")
+        env = {**os.environ, "HOME": str(isolated_home)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        subprocess.run(
+            [
+                "bash", str(SCRIPTS_DIR / "review-ledger.sh"),
+                "append", "code-review", "--disposition", "CLEAN", "--round", "1",
+            ],
+            cwd=git_repo, env=env, check=True, capture_output=True,
+        )
+        written = _review_ledger_path(isolated_home, git_repo, "sess-ledger-test")
+        assert written.is_file(), "the oracle path is not where the real writer wrote"
+        return written
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "tool_input_builder", [write_input, edit_input, multiedit_input],
+        ids=["write", "edit", "multiedit"],
+    )
+    @pytest.mark.parametrize("lock_file", [False, True], ids=["ledger-file", "lock-file"])
+    def test_file_write_tools_denied_for_roster_agents(
+        self, isolated_home, ledger_files, agent_type, tool_input_builder, lock_file
+    ):
+        target = ledger_files[1] if lock_file else ledger_files[0]
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                tool_input_builder(str(target), agent_type=agent_type),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NON_ROSTER_AGENT_TYPES)
+    @pytest.mark.parametrize(
+        "tool_input_builder", [write_input, edit_input, multiedit_input],
+        ids=["write", "edit", "multiedit"],
+    )
+    def test_file_write_tools_denied_for_non_roster_agents(
+        self, isolated_home, ledger_files, agent_type, tool_input_builder
+    ):
+        """Only review-ledger.sh writes ledger files, so a full-tool-set agent
+        has no more claim to a direct write than the roster does."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                tool_input_builder(str(ledger_files[0]), agent_type=agent_type),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", [None, ""], ids=["no-agent-type", "empty-agent-type"])
+    def test_file_write_allowed_for_the_main_session(self, isolated_home, ledger_files, agent_type):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(ledger_files[0]), agent_type=agent_type),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("lock_file", [False, True], ids=["ledger-file", "lock-file"])
+    def test_file_write_deny_reason_names_the_ledger_path_and_directs_upward(
+        self, isolated_home, ledger_files, lock_file
+    ):
+        target = ledger_files[1] if lock_file else ledger_files[0]
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            write_input(str(target), agent_type="code-writer"),
+            home=isolated_home,
+        )
+        assert reason is not None
+        assert "review-ledger state" in reason
+        assert str(target) in reason
+        assert "code-writer" in reason
+        assert "report" in reason.lower()
+        assert "release" not in reason.lower()
+        # A lock file holds no row, so the reason must not claim one.
+        assert "row would be" not in reason
+        assert "re-dispatches you" not in reason
+
+    def test_file_write_deny_reason_for_a_non_roster_agent_names_it(self, isolated_home, ledger_files):
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            write_input(str(ledger_files[0]), agent_type="general-purpose"),
+            home=isolated_home,
+        )
+        assert reason is not None
+        assert "general-purpose" in reason
+        assert "review-ledger state" in reason
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect"])
+    def test_marker_path_deny_reason_keeps_the_gate_release_wording(self, isolated_home, via):
+        """The two call sites that word their denial by the matched kind must
+        still call a marker path a gate release, not ledger state."""
+        marker_path = isolated_home / ".claude" / "code-review-markers" / "deadbeef.session"
+        payload = (
+            write_input(str(marker_path), agent_type="code-writer")
+            if via == "write-tool"
+            else bash_input(f"printf x > {marker_path}", agent_type="code-writer")
+        )
+        reason = run_hook_reason(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home)
+        assert reason is not None
+        assert "release a review gate" in reason
+        assert "review-ledger state" not in reason
+
+    @pytest.mark.parametrize(
+        "relative_path",
+        [
+            "agent-reviews/review-ledger-x.md",
+            ".claude/review-narrative-ledger-x/y",
+            ".claude/plans/review-narrative-ledger.md",
+            # The directory name sits mid-path, which the shape must not match.
+            ".claude/plans/review-narrative-ledger/x.md",
+        ],
+    )
+    def test_over_match_negatives_stay_writable(self, isolated_home, relative_path):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(isolated_home / relative_path), agent_type="code-writer"),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS + NON_ROSTER_AGENT_TYPES)
+    def test_redirect_into_the_ledger_directory_denied_for_every_agent_type(
+        self, isolated_home, agent_type
+    ):
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(
+                "echo x >> ~/.claude/review-narrative-ledger/abc.def.jsonl", agent_type=agent_type
+            ),
+            home=isolated_home,
+        )
+        assert reason is not None
+        assert "review-ledger state" in reason
+        # The `.claude` in the displayed path would satisfy a bare name check
+        # for the `claude` agent type.
+        assert f"'{agent_type}' agent" in reason
+
+    def test_redirect_into_the_ledger_directory_allowed_for_the_main_session(self, isolated_home):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("echo x >> ~/.claude/review-narrative-ledger/abc.def.jsonl"),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
+    @pytest.mark.parametrize("utility", ["cp", "mv", "install"])
+    @pytest.mark.parametrize(
+        "destination",
+        ["~/.claude/review-narrative-ledger", "~/.claude/review-narrative-ledger/"],
+        ids=["bare-directory", "trailing-slash-directory"],
+    )
+    def test_directory_copy_into_the_ledger_directory_denied(
+        self, isolated_home, agent_type, utility, destination
+    ):
+        """The destination names the directory itself, with no file component:
+        the utility writes the file inside it."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{utility} /tmp/x {destination}", agent_type=agent_type),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
+    @pytest.mark.parametrize("utility", ["cp", "mv", "install"])
+    def test_directory_copy_into_a_similarly_named_directory_allowed(
+        self, isolated_home, agent_type, utility
+    ):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    f"{utility} /tmp/x ~/.claude/review-narrative-ledger-x", agent_type=agent_type
+                ),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("utility", ["cp", "mv", "install"])
+    def test_directory_copy_into_the_config_dir_ledger_directory_denied(self, tmp_path, utility):
+        """A config dir with no `.claude` segment reaches only the config-dir arms."""
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    f"{utility} /tmp/x {config_dir / 'review-narrative-ledger'}",
+                    agent_type="general-purpose",
+                ),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "deny"
+        )
+
+    def test_directory_copy_into_the_ledger_directory_allowed_for_the_main_session(
+        self, isolated_home
+    ):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("cp /tmp/x ~/.claude/review-narrative-ledger"),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect"])
+    @pytest.mark.parametrize(
+        "path_form",
+        ["case-varied", "stow-fold-physical", "dot-dot-traversal"],
+    )
+    def test_alias_forms_of_the_ledger_path_denied(self, isolated_home, tmp_path, via, path_form):
+        """The ledger directory has the aliases the marker directories do: a
+        case-insensitive volume, a stow directory-fold, and a `..` route."""
+        ledger_path = {
+            "case-varied": isolated_home / ".Claude" / "Review-Narrative-Ledger" / "abc.def.jsonl",
+            "stow-fold-physical": (
+                tmp_path / "repo" / "claude" / ".claude" / "review-narrative-ledger" / "abc.def.jsonl"
+            ),
+            "dot-dot-traversal": (
+                isolated_home / ".claude" / "plans" / ".." / "review-narrative-ledger" / "abc.def.jsonl"
+            ),
+        }[path_form]
+        payload = (
+            write_input(str(ledger_path), agent_type="code-writer")
+            if via == "write-tool"
+            else bash_input(f"printf x >> {ledger_path}", agent_type="code-writer")
+        )
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home) == "deny"
+
+    def test_hook_denies_the_file_the_real_writer_produced(self, isolated_home, written_ledger_file):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(written_ledger_file), agent_type="code-writer"),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect"])
+    @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
+    def test_hook_denies_the_writers_directory_name_under_a_custom_config_dir(
+        self, tmp_path, written_ledger_file, via, agent_type
+    ):
+        """A config dir with no `.claude` segment reaches only the config-dir
+        arms, so the real writer's directory name is checked against those."""
+        home = tmp_path / "home"
+        config_dir = tmp_path / "profile-container"
+        target = config_dir / written_ledger_file.parent.name / written_ledger_file.name
+        payload = (
+            write_input(str(target), agent_type=agent_type)
+            if via == "write-tool"
+            else bash_input(f"printf x >> {target}", agent_type=agent_type)
+        )
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                payload,
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_write_denied_when_config_dir_is_a_symlink(
+        self, tmp_path, written_ledger_file, agent_type
+    ):
+        """_lib_config_dir returns CLAUDE_CONFIG_DIR verbatim, so a write through
+        the physical path of a symlinked config dir reaches only the realpath arm."""
+        home = tmp_path / "home"
+        physical = tmp_path / "physical-profile"
+        (physical / written_ledger_file.parent.name).mkdir(parents=True)
+        symlinked = tmp_path / "symlinked-profile"
+        symlinked.symlink_to(physical)
+        target = physical / written_ledger_file.parent.name / written_ledger_file.name
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(target), agent_type=agent_type),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(symlinked)},
+            )
+            == "deny"
+        )
+
+    def test_main_session_write_allowed_under_a_config_dir_with_no_dotclaude_segment(
+        self, tmp_path, written_ledger_file
+    ):
+        home = tmp_path / "home"
+        config_dir = tmp_path / "profile-container"
+        target = config_dir / written_ledger_file.parent.name / written_ledger_file.name
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(target)),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
+    @pytest.mark.parametrize("tool", ["write-tool", "bash-redirect"])
+    def test_denied_when_config_dir_is_unresolvable_and_the_reason_covers_ledger_paths(
+        self, tmp_path, agent_type, tool
+    ):
+        """A relative CLAUDE_CONFIG_DIR leaves the target unclassifiable, so
+        every non-empty agent type is denied, and the reason must not call the
+        target only a marker path."""
+        home = tmp_path / "home"
+        target = tmp_path / "somewhere" / ".claude" / "review-narrative-ledger" / "abc.def.jsonl"
+        payload = (
+            write_input(str(target), agent_type=agent_type)
+            if tool == "write-tool"
+            else bash_input(f"printf x >> {target}", agent_type=agent_type)
+        )
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            payload,
+            home=home,
+            extra_env={"CLAUDE_CONFIG_DIR": "relative-profile"},
+        )
+        assert reason is not None
+        assert "could not resolve the Claude Code config directory" in reason
+        assert "review-ledger path" in reason
+
+    def test_similarly_named_directory_under_a_custom_config_dir_stays_writable(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        config_dir.mkdir()
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(
+                    str(config_dir / "review-narrative-ledger-x" / "y"), agent_type="code-writer"
+                ),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "echo x >> {target}",
+            # A `.claude` mention elsewhere in the command must not be what decides.
+            "echo x >> {target} && ls ~/.claude",
+        ],
+        ids=["no-dotclaude-anywhere", "dotclaude-elsewhere"],
+    )
+    @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
+    def test_redirect_to_a_config_dir_ledger_path_denied(
+        self, tmp_path, command_template, agent_type
+    ):
+        """The Bash scan also runs when the command names the ledger directory,
+        so a config dir with no `.claude` segment is covered."""
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        target = config_dir / "review-narrative-ledger" / "abc.def.jsonl"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command_template.format(target=target), agent_type=agent_type),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "deny"
+        )
+
+    def test_redirect_to_a_config_dir_ledger_path_allowed_for_the_main_session(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        target = config_dir / "review-narrative-ledger" / "abc.def.jsonl"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"echo x >> {target}"),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "allow"
+        )
+
+    def test_redirect_into_a_ledger_path_split_by_a_backslash_newline_denied(self, isolated_home):
+        """The shell deletes the backslash-newline pair, so the write lands in
+        the ledger directory even though no line names it."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    "echo x >> ~/.claude/review-narr\\\native-ledger/x.jsonl",
+                    agent_type="general-purpose",
+                ),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_redirect_on_a_line_after_an_escaped_backslash_denied(self, isolated_home):
+        """A line ending in `\\\\` ends in a literal backslash, not a
+        continuation, so the next line is its own command. Deleting every
+        backslash-newline pair would glue `x>>` into one word and hide the
+        redirect, so the unjoined text is scanned too."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    "echo x\\\\\n>> ~/.claude/review-narrative-ledger/x.jsonl",
+                    agent_type="general-purpose",
+                ),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    # Each form reaches the ledger directory of a config dir with no `.claude`
+    # segment through a leading variable the shell expands before the write.
+    LEADING_VARIABLE_LEDGER_REDIRECTS = [
+        'echo x >> "$CLAUDE_CONFIG_DIR/review-narrative-ledger/f.jsonl"',
+        'echo x >> "${CLAUDE_CONFIG_DIR}/review-narrative-ledger/f.jsonl"',
+        "echo x >> $HOME/profile-container/review-narrative-ledger/f.jsonl",
+        "echo x >> ${HOME}/profile-container/review-narrative-ledger/f.jsonl",
+    ]
+    LEADING_VARIABLE_LEDGER_REDIRECT_IDS = [
+        "config-dir-var",
+        "braced-config-dir-var",
+        "home-var",
+        "braced-home-var",
+    ]
+
+    @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
+    @pytest.mark.parametrize(
+        "command", LEADING_VARIABLE_LEDGER_REDIRECTS, ids=LEADING_VARIABLE_LEDGER_REDIRECT_IDS
+    )
+    def test_redirect_through_a_leading_variable_to_a_ledger_path_denied(
+        self, tmp_path, command, agent_type
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(home / "profile-container")},
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "command", LEADING_VARIABLE_LEDGER_REDIRECTS, ids=LEADING_VARIABLE_LEDGER_REDIRECT_IDS
+    )
+    def test_redirect_through_a_leading_variable_to_a_ledger_path_allowed_for_the_main_session(
+        self, tmp_path, command
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(home / "profile-container")},
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # The relative target is resolved against the hook's directory, not
+            # the `cd`, and carries neither `.claude` nor the ledger name.
+            "cd ~/.claude/review-narrative-ledger && echo x >> f.jsonl",
+            # `rm`, `truncate` and `mv` with a ledger file as the source are not
+            # write shapes the scan extracts a target from.
+            "rm ~/.claude/review-narrative-ledger/abc.def.jsonl",
+            "truncate -s 0 ~/.claude/review-narrative-ledger/abc.def.jsonl",
+            "mv ~/.claude/review-narrative-ledger/abc.def.jsonl /tmp/x",
+        ],
+        ids=["relative-target-after-cd", "rm-ledger-file", "truncate-ledger-file", "mv-ledger-file"],
+    )
+    def test_ledger_state_shapes_allowed_residual(self, isolated_home, command):
+        """Pins accepted scan limits rather than intended behavior. Invert these
+        to deny if the scan ever resolves a `cd` target or extracts a source
+        operand."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="general-purpose"),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # `>&` reaches the extractor as a glued target `&`, and the real path
+            # is the next word.
+            "echo x >& ~/.claude/review-narrative-ledger/f.jsonl",
+            # A trailing redirect, not the destination, is the last argument.
+            "cp /tmp/x ~/.claude/review-narrative-ledger/f.jsonl 2>/dev/null",
+            # The command word is the wrapper or the compound keyword, not the utility.
+            'bash -c "cp /tmp/x ~/.claude/review-narrative-ledger/f.jsonl"',
+            "if true; then cp /tmp/x ~/.claude/review-narrative-ledger/f.jsonl; fi",
+            # The utility's own argument walk compares its name case-sensitively.
+            "echo x | TEE ~/.claude/review-narrative-ledger/f.jsonl",
+        ],
+        ids=[
+            "ampersand-redirect",
+            "redirect-after-copy-destination",
+            "utility-behind-bash-c",
+            "utility-behind-compound-keyword",
+            "case-varied-tee",
+        ],
+    )
+    def test_ledger_write_shapes_beyond_the_extractor_allowed_residual(
+        self, isolated_home, command
+    ):
+        """Pins accepted extractor limits rather than intended behavior. Invert
+        these to deny if the scan ever reads the word after `>&`, skips a
+        trailing redirect, unwraps `bash -c` or a compound keyword, or compares
+        a write utility's name case-insensitively."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type="general-purpose"),
+                home=isolated_home,
             )
             == "allow"
         )
