@@ -111,8 +111,8 @@ def _read_session_file_partitioned(jsonl: Path, include_subagents: bool) -> list
     <session_id>/subagents/*.jsonl in sorted order. An unreadable main file
     yields [] (no groups at all); an unreadable subagent file is skipped. A
     readable-but-empty main file still yields its subagent groups.
-    subagent_dir.is_dir() raising
-    OSError (e.g. an unreadable ancestor) is treated the same as absent.
+    subagent_dir.is_dir() raising OSError (e.g. an unreadable ancestor) is
+    treated the same as absent.
 
     The per-file boundary matters to any caller that differences consecutive
     turns: separate files are separate context windows, so a delta taken across

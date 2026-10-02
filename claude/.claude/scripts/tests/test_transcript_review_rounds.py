@@ -1293,8 +1293,8 @@ class TestCmdReviewRoundCost:
 def _asymmetric_two_branch_pooled_totals() -> list[review_rounds._PooledBranchTotals]:
     """Two branches with unequal branch_dollars (0.40/1.00) so share-of-sums
     (57.1%) and mean-of-shares (55.0%) diverge, catching a mean-of-shares
-    regression; reused by TestCmdReviewRoundCostPooled's point-estimate test
-    via an equivalent JSONL fixture.
+    regression. TestCmdReviewRoundCostPooled's point-estimate test reuses the
+    helper through an equivalent JSONL fixture.
     """
     branch_a = review_rounds._PooledBranchTotals(
         round_dollars=0.20, agent_dollars=0.0, branch_dollars=0.40,
@@ -3810,20 +3810,78 @@ class TestCmdReviewRoundCostPooled:
         assert "cannot scan account-9" not in err
         assert err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
 
-    def test_pooled_stderr_filter_withholds_a_pricing_non_contiguous_merge_notice(
-        self, monkeypatch, capsys,
+    @pytest.mark.parametrize("merged", [True, False])
+    def test_pooled_stderr_filter_drops_a_pricing_non_contiguous_merge_notice(
+        self, monkeypatch, capsys, merged,
     ):
-        """pricing.dedup_turns_by_request_id's own NOTICE line
-        (pricing._log_non_contiguous_merge_decision) is reachable under
-        --pooled through the filtered compute call, and it names a raw
-        requestId. It matches none of the known diagnostic shapes, so it
-        must be withheld like any other unrecognized line. This is a real
-        production print reachable under --pooled.
+        """pricing's own NOTICE line (pricing._log_non_contiguous_merge_decision)
+        names a raw requestId and is printed for any scanned transcript with
+        one non-contiguous same-requestId run, so it is dropped rather than
+        withheld behind the notice. Both decision kinds are covered, since
+        pricing rate-limits each kind independently.
         """
         monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())
+        pricing._log_non_contiguous_merge_decision("<placeholder-request-id>", 2, merged=merged)
+        emitted_line = capsys.readouterr().err.strip()
+        assert review_rounds._PRICING_NON_CONTIGUOUS_MERGE_NOTICE_RE.match(emitted_line)
+
+        # The unfiltered call above consumed the producer's rate-limit state, so
+        # reset before the filtered call or it would print nothing regardless of the filter.
+        monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())
         review_rounds._pooled_filtered_stderr_call(
-            pricing._log_non_contiguous_merge_decision, "<placeholder-request-id>", 2, merged=True,
+            pricing._log_non_contiguous_merge_decision, "<placeholder-request-id>", 2, merged=merged,
         )
+        assert capsys.readouterr().err == ""
+
+    @pytest.mark.parametrize("merged", [True, False])
+    @pytest.mark.parametrize(
+        "deviate_from_emitted_line",
+        [
+            pytest.param(
+                lambda emitted_line: emitted_line.partition(", ")[0] + ", <placeholder-unrecognized-tail>",
+                id="different-tail",
+            ),
+            pytest.param(
+                lambda emitted_line: emitted_line + " <placeholder-unrecognized-tail>",
+                id="trailing-suffix",
+            ),
+        ],
+    )
+    def test_pooled_stderr_filter_withholds_a_line_deviating_from_the_merge_notice(
+        self, monkeypatch, capsys, merged, deviate_from_emitted_line,
+    ):
+        """A line that shares pricing's NOTICE prefix but alters its tail, or
+        appends text after the full line, is unrecognized, so it is withheld
+        behind the notice rather than silently dropped or printed raw. The
+        deviating line is derived from what the real producer emits, for each
+        decision kind, so it stays a near-miss if the producer's wording drifts.
+        """
+        monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())
+        pricing._log_non_contiguous_merge_decision("<placeholder-request-id>", 2, merged=merged)
+        emitted_line = capsys.readouterr().err.strip()
+        deviating_line = deviate_from_emitted_line(emitted_line)
+        assert deviating_line != emitted_line
+
+        def emit_deviating_line():
+            print(deviating_line, file=sys.stderr)
+
+        review_rounds._pooled_filtered_stderr_call(emit_deviating_line)
+        err = capsys.readouterr().err
+        assert "<placeholder-request-id>" not in err
+        assert "<placeholder-unrecognized-tail>" not in err
+        assert err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
+
+    def test_pooled_stderr_filter_withholds_a_pricing_usage_drift_warning(
+        self, monkeypatch, capsys,
+    ):
+        """pricing's usage-drift WARNING names a raw requestId and has no
+        known pattern, so it falls to the closed default and is withheld."""
+        monkeypatch.setattr(pricing, "_usage_drift_warned", False)
+        drifting_run = [
+            {"requestId": "<placeholder-request-id>", "message": {"usage": {"input_tokens": 1}}},
+            {"requestId": "<placeholder-request-id>", "message": {"usage": {"input_tokens": 2}}},
+        ]
+        review_rounds._pooled_filtered_stderr_call(pricing._warn_if_run_usage_drift, drifting_run)
         err = capsys.readouterr().err
         assert "<placeholder-request-id>" not in err
         assert err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1

@@ -608,8 +608,8 @@ def _pooled_scope_refusal(
     scan_gaps: Counter[str] | None = None,
 ) -> str | None:
     """The first applicable --pooled refusal message, or None once every
-    check passes -- evaluated in the list order documented in
-    docs/transcript-analysis.md's Pooled mode subsection.
+    check passes -- evaluated in the order of the `--pooled` refusal list under
+    docs/transcript-analysis.md § "review-round-cost".
 
     roots=None defers the root-count check. scan_gaps=None defers the
     scan-gap check. Only cmd_review_round_cost's own calls may rely on
@@ -997,6 +997,17 @@ _SCANNING_ROOT_DIAGNOSTIC_RE = re.compile(r"^scanning root \d+/\d+\.\.\.$")
 # The line index it names is a lower bound on the declared-roots file's size, so
 # it reveals the root count.
 _DECLARED_ROOT_DIAGNOSTIC_RE = re.compile(r"^declared_transcript_roots: declared root \d+ unreadable$")
+# pricing's calibration-audit line, matched in full: any scanned transcript with one
+# non-contiguous same-requestId run prints it, so it is routine and not a per-account signal.
+_PRICING_NON_CONTIGUOUS_MERGE_NOTICE_RE = re.compile(
+    r"^NOTICE: non-contiguous requestId run "
+    r"(?:merged -- requestId .+? has \d+ non-contiguous assistant records, "
+    r"merged into one turn \(usage matched on every record\) "
+    r"\(further merged occurrences this run of the CLI are suppressed\)\."
+    r"|rejected -- requestId .+? has \d+ non-contiguous assistant records, "
+    r"left as separate turns \(usage did not match on every record\) "
+    r"\(further rejected occurrences this run of the CLI are suppressed\)\.)$"
+)
 # Fail-open notice for the declared-root case: declared_roots_matching's own
 # docstring documents skipping an invalid entry as intended. This restores
 # the non-pooled path's drop-out signal without naming which account or how
@@ -1013,6 +1024,7 @@ _DECLARED_ROOT_SKIPPED_NOTICE = (
 _POOLED_STDERR_DIAGNOSTIC_RES: tuple[tuple[re.Pattern[str], str | None], ...] = (
     (_SCANNING_ROOT_DIAGNOSTIC_RE, None),
     (_DECLARED_ROOT_DIAGNOSTIC_RE, _DECLARED_ROOT_SKIPPED_NOTICE),
+    (_PRICING_NON_CONTIGUOUS_MERGE_NOTICE_RE, None),
 )
 # Withheld in place of any stderr line matching none of the known shapes
 # above, since an unrecognized line has not been checked for per-account
