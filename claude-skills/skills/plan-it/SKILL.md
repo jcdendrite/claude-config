@@ -121,8 +121,6 @@ Invoke `/plan-review` against the written plan file. Address any findings before
 
 **If plan mode is active:** after `/plan-review` is clean and findings are addressed, call `ExitPlanMode` to request approval. The harness shows the plan file's contents in the approval UI; do not also ask conversationally.
 
-**Draft-PR handoff for design-doc or cross-team contract changes.** If the plan introduces a new design document (e.g., a new file under `docs/design/`) or defines a cross-team data contract (a schema shape, enum, or API surface that downstream teams or analytical pipelines depend on), after `ExitPlanMode` is approved and the plan + doc are committed on the implementation branch, push the branch and open a **draft** PR before starting implementation. Async comments on the rendered diff are easier to thread than prose in a plan file, and downstream reviewers may need lead time. Skip this for plans that are implementation-only (no new design doc, no cross-team contract).
-
 ## Step 7 — Commit or unwind the plan, then choose where implementation runs
 
 **If the Critical files section names at least one file:** commit the
@@ -136,8 +134,23 @@ out of `.claude/plans/`, remove the branch and worktree created for
 it, and route the narrative through the project's own tracker or
 documentation tool (see that project's `CLAUDE.md`, or ask the
 engineer if undocumented) — the review still counts, it just ships as
-findings rather than a commit. Stop here — the choice below is about
+findings rather than a commit. Tell the engineer where the plan file moved,
+because the path /plan-review gave no longer resolves. Stop here — the choice below is about
 where implementation runs, and there is none.
+
+**Sharing the plan.** This applies only on the branch where the plan file was committed above. Share the plan with the engineer by the plan file's own absolute path. Never open a PR, draft or ready, at plan time. When the plan adds a design document or defines a cross-team contract (a schema shape, enum, or API surface other teams or pipelines depend on), readers outside this session may need lead time, so offer to push the branch with no PR:
+
+- Ask the engineer through `AskUserQuestion`, not a closing chat question.
+- Resolve `gh pr view`, the visibility check, and `gh browse` against the repository that the push URL names (`--repo OWNER/REPO`).
+- Ask only when the branch is not the default branch and `gh pr view` finds no PR for it (a non-zero exit counts as no PR), since a push to a branch with a PR needs `/ready-for-review` first.
+- The question names that remote's push URL from `git remote get-url --push <remote>` with any userinfo (`user:token@`) stripped.
+- The question also names the commits that push would publish to that remote, and whether the repository is public.
+- State the visibility as unknown, and treat it as public, when the host cannot confirm it.
+- No answer means no push.
+- Push only after a yes, with an explicit `git push --no-follow-tags <remote> <branch>`.
+- A yes covers only that remote, that branch, and those commits.
+- Autonomous shipping does not waive the question.
+- After a yes and the push, give the plan file's URL from `gh browse <repo-relative plan path> --branch <branch> --no-browser`, and give other readers that URL, not the local path.
 
 Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`, following `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for how to read its result: hand off when it says the session is past its threshold. When the check can't resolve a measurement (`"status":"cannot-resolve"` or `"status":"schema-drift"`), say the estimate is unavailable, name the `reason`, and fall back to judgment: the plan boundary is itself a natural seam, weighed against how much of the plan remains.
 

@@ -20,6 +20,10 @@ PR_DIFF_SCRIPT="$(dirname "$0")/pr-diff-against-base.sh"
 # checks at commit time.
 SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'skills/**/SKILL.md' '.claude/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
 
+# Paired literal: announce-approved-plan-path.sh matches this exact prefix on the
+# `write plan-review` output lines.
+PLAN_REVIEW_COVERED_PATH_PREFIX='plan-review marker covers: '
+
 usage() {
   cat >&2 <<'EOF'
 Usage: ~/.claude/scripts/marker.sh <subcommand> [<skill>|--dry-run]
@@ -476,6 +480,9 @@ case "$SUBCOMMAND" in
         # the sibling file's own bytes and not any hash computed earlier — so
         # a plan revision mid-review is still caught.
         PLANMODE_SIBLING="$CONFIG_DIR/.plan-review-active.d/$SESSION_ID.planmode-path"
+        # Newline-delimited string, not an array: an empty "${arr[@]}" aborts
+        # under `set -u` on bash 3.2, after the marker is already written.
+        COVERED_PLAN_PATHS=""
         if PLANMODE_TARGET=$(_lib_capped cat "$PLANMODE_SIBLING" 2>/dev/null); then
           PLAN_HASH=$(_lib_capped sha256sum -- "$PLANMODE_TARGET" 2>/dev/null | awk '{print $1}')
           if [ -z "$PLAN_HASH" ]; then
@@ -509,10 +516,24 @@ case "$SUBCOMMAND" in
             printf 'marker.sh: cannot read active plan file %s — cannot compute the plan-review hash. Abort without writing a marker.\n' "$PLAN_HASH" >&2
             exit 2
           fi
+          # Re-enumerated with the same base the hash used. On a non-zero
+          # status _lib_active_plan_files prints the plans directory itself,
+          # so that output is discarded and nothing is announced.
+          if PLAN_FILES=$(_lib_active_plan_files "$REPO_ROOT" "$PLAN_GATE_DIFF_BASE"); then
+            while IFS= read -r PLAN_FILE; do
+              [ -n "$PLAN_FILE" ] || continue
+              COVERED_PLAN_PATHS="${COVERED_PLAN_PATHS}${REPO_ROOT}/${PLAN_FILE}"$'\n'
+            done <<< "$PLAN_FILES"
+          fi
         fi
         mkdir -p "$CONFIG_DIR/plan-review-markers"
+        # A bare `exit` after `||` keeps the failed redirect's own status.
         printf '%s\n' "$PLAN_HASH" \
-          > "$CONFIG_DIR/plan-review-markers/$REPO_HASH.$SESSION_ID"
+          > "$CONFIG_DIR/plan-review-markers/$REPO_HASH.$SESSION_ID" || exit
+        while IFS= read -r COVERED_PLAN_PATH; do
+          [ -n "$COVERED_PLAN_PATH" ] || continue
+          printf '%s%s\n' "$PLAN_REVIEW_COVERED_PATH_PREFIX" "$COVERED_PLAN_PATH"
+        done <<< "$COVERED_PLAN_PATHS"
         ;;
       ready-for-review)
         SESSION_ID=$(_resolve_session_id) || exit 2
