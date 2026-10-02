@@ -13,7 +13,6 @@ import pytest
 from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
-    REPO_ROOT,
     SCRIPTS_DIR,
     bash_input,
     build_path_without,
@@ -27,7 +26,7 @@ from helpers import (
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 
-# The 23 single-command tilde-form shapes the hook accepts — single source of
+# The single-command tilde-form shapes the hook accepts — single source of
 # truth for both test_valid_shapes_allowed (which pins hook acceptance) and
 # TestPrescriptionAllowlistAlignment (which cross-checks permissions.allow
 # coverage over this same set), so the two can't silently drift apart.
@@ -61,7 +60,7 @@ TILDE_MARKER_SHAPES = [
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
-    # Valid shapes — 23 single-command shapes, each must be allowed       #
+    # Valid shapes — single-command shapes, each must be allowed          #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize("command", TILDE_MARKER_SHAPES)
@@ -2026,9 +2025,8 @@ class TestPrescriptionAllowlistAlignment:
 
 class TestMarkerRegistryShapeCountConsistency:
     """Derives the valid shape set from marker.sh's own registry arrays
-    and cross-checks it against TILDE_MARKER_SHAPES, the denial list, the
-    header comment, and docs/scripts.md's two integers, so the four can't
-    independently drift."""
+    and cross-checks it against TILDE_MARKER_SHAPES and the hook's denial
+    list, so the three can't independently drift."""
 
     NON_ARRAY_SUBCOMMANDS = [
         "clear-stale",
@@ -2074,21 +2072,3 @@ class TestMarkerRegistryShapeCountConsistency:
             if line.strip().startswith("~/.claude/scripts/marker.sh")
         ]
         assert len(denial_lines) == len(TILDE_MARKER_SHAPES)
-
-    def test_header_comment_integer_matches_the_registry(self):
-        hook_text = ENFORCE_MARKER_SCRIPT_SHAPE_HOOK.read_text()
-        header_match = re.search(r"must\n#\s*match one of the (\d+) single-command shapes", hook_text)
-        assert header_match, "header comment's shape-count integer not found"
-        assert int(header_match.group(1)) == len(TILDE_MARKER_SHAPES)
-
-    def test_docs_scripts_md_integers_match_the_registry_and_the_allowlist(self):
-        docs_text = (REPO_ROOT / "docs" / "scripts.md").read_text()
-        counts_match = re.search(
-            r"enumerates (\d+) valid invocation shapes; (\d+) of them", docs_text
-        )
-        assert counts_match, "docs/scripts.md's marker.sh two-number sentence not found"
-        total, allowlisted = int(counts_match.group(1)), int(counts_match.group(2))
-        assert total == len(TILDE_MARKER_SHAPES)
-        assert allowlisted == len(TILDE_MARKER_SHAPES) - len(
-            TestPrescriptionAllowlistAlignment.ALLOWLIST_EXCEPTIONS
-        )

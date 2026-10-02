@@ -555,7 +555,7 @@ class TestTrustClassificationRefuses:
     ):
         """A `gh` failure on the trust-check call itself must never be read
         as 'no restriction found' -- the same "any gh failure aborts"
-        discipline this plan states elsewhere, extended to this call."""
+        discipline SKILL.md Step 1 states, extended to this call."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         result, call_log = _run(
@@ -607,10 +607,10 @@ class TestProvenanceWrite:
         review-pr-checkout.sh and marker.sh's `write review-pr` arm
         produce: the provenance file's key=value schema is read by key
         (_lib_review_pr_provenance_field), immune to a future field being
-        added anywhere in the file, while the completion marker still uses
-        the older 4-line positional schema (mode is its LAST field, not
+        added anywhere in the file, while the completion marker is a 4-line
+        positional schema (mode is its LAST field, not
         merely index 3) -- a future field inserted there must not silently
-        break marker.sh's own sed -n '4p' / this test's lines[-1] read."""
+        break _lib_review_pr_completion_marker_fields's sed -n '4p' / this test's lines[-1] read."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         result, call_log = _run(

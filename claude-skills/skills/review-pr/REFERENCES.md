@@ -101,7 +101,8 @@ The backstops are the `author_association` allowlist in
 matches command text only (`docs/hooks.md`, `docs/security-hardening.md`).
 A third, `redact-credential-values.sh`, replaces credential values in a tool
 result, but only vendor-fixed shapes (a GitHub token prefix, an AWS access
-key ID, a full PEM private-key block), so it does not close the gap.
+key ID, a PEM private-key header or full block) plus any patterns an operator
+adds in `credential-value-patterns.md`, so it does not close the gap.
 
 ## The no-checkout path's reduced coverage (`review-pr-diff.sh`, Step 2)
 

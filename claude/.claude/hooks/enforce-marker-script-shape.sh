@@ -97,7 +97,7 @@
 # gate. The "if" field is a hint only.
 #
 # Commands that start directly with the marker.sh path (~/ or absolute) must
-# match one of the 23 single-command shapes, the marker.sh write chain to git
+# match one of the single-command shapes in MARKER_SHAPE, the marker.sh write chain to git
 # commit, or a chain of two-or-more valid marker.sh shapes joined by `&&`
 # (any op/target combination) — equivalent to running each op separately,
 # since every marker operation is independently allowlisted or harmless. No
@@ -660,8 +660,9 @@ fi
 # Marker-chain allowance. A chain of two-or-more valid marker.sh shapes
 # joined by `&&`, any op/target combination, is permitted — the chain's end
 # state is identical to running each op separately, and every op is already
-# individually allowlisted (the 21 shapes in permissions.allow) or harmless
-# (clear-stale only evicts dead-PID bypass markers). No new capability is
+# individually allowlisted in permissions.allow (every shape except the two
+# clear-stale forms) or harmless (clear-stale only evicts orphaned entries
+# under the `.*-active.d` directories). No new capability is
 # reachable through the chain that isn't already reachable by running the
 # calls one at a time.
 #

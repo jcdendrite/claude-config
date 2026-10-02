@@ -1339,9 +1339,10 @@ def write_review_pr_completion_marker(
     produces and `_lib_review_pr_completion_marker_fields` (_lib.sh) reads.
     Written independently of the real write arm (unlike
     write_plan_review_marker, which shells out to the production hash
-    function) so a test seeding a marker here checks require-respond-pr.sh's
-    read side against known-correct content, not against marker.sh's own
-    output. `repo` may be any tree of the repository, since the marker path
+    function) so a test seeding a marker here checks the readers
+    (review-pr-post.sh and marker.sh's `status` arm, through
+    `_lib_review_pr_completion_marker_fields`) against known-correct content,
+    not against marker.sh's own output. `repo` may be any tree of the repository, since the marker path
     hashes the main tree's root. mode defaults to "checkout"."""
     marker = review_pr_completion_marker_path(home, repo, session_id, config_dir)
     marker.parent.mkdir(parents=True, exist_ok=True)

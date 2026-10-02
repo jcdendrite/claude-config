@@ -1499,8 +1499,8 @@ def test_review_pr_completion_marker_fields_rejects_traversal_session_id(tmp_pat
 
 # --- _lib_parse_pr_identity -------------------------------------------------
 #
-# review-pr-checkout.sh and review-pr-post.sh both call this helper for their
-# PR-identity split and validation, so neither carries its own copy.
+# Every review-pr script that takes a PR identity calls this helper for its
+# split and validation, so none carries its own copy.
 
 
 def _parse_pr_identity(pr_identity: str) -> subprocess.CompletedProcess:

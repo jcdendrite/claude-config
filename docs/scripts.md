@@ -122,7 +122,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
 - **`marker.sh`** — write and remove review markers on behalf of workflow skills. `/code-review`, `/skill-review`, `/plan-review`, `/ready-for-review`, `/respond-pr`, and `/ai-instruction-and-memory-files` write or activate markers via `~/.claude/scripts/marker.sh`. `enforce-marker-script-shape.sh`'s `MARKER_SHAPE` enumerates the valid invocation shapes; every shape except the two `clear-stale` forms (which prompt for confirmation instead) is allowlisted in `settings.json` for silent auto-approval (see [`docs/hooks.md`](hooks.md)).
 
-- **`marker-clear-stale.py`** — the sweep `marker.sh clear-stale [--dry-run]` runs to evict orphaned active-bypass markers under `<config-dir>/.*-active.d/`. Usage: `marker-clear-stale.py CONFIG_DIR DRY_RUN` (`DRY_RUN` is `"1"` or `"0"`). The script's module docstring owns the output format and the exit status.
+- **`marker-clear-stale.py`** — the sweep `marker.sh clear-stale [--dry-run]` runs to evict orphaned entries under `<config-dir>/.*-active.d/`: active-bypass markers, plus the `.body`, `.provenance`, `.diff`, and `.context.json` artifacts `review-pr` leaves in `.review-pr-active.d/`. Usage: `marker-clear-stale.py CONFIG_DIR DRY_RUN` (`DRY_RUN` is `"1"` or `"0"`). The script's module docstring owns the output format and the exit status.
 
 - **`findings-path-suffix.sh`** — prepares this review round's reviewer-findings destination and prints its `<epoch>-<slug>` suffix. Invoked once per round by `/code-review`, `/plan-review`, and `/ready-for-review`, each of which reuses the printed suffix across every reviewer spawned in that round. See [`docs/design-decisions.md`](design-decisions.md) §12 for the `findings_path` mechanism this feeds.
 
@@ -148,7 +148,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
 - **`review-pr-post.sh`** — the only code path `/review-pr` Step 8 may use to post a `gh pr review`; takes two arguments, the verdict `comment` or `request-changes` (a two-element `case`) and the target `<owner>/<repo>#<N>`, so `--approve` is not a reachable invocation. Exits 0 once the review posted, and 2 on any failed verification or failed post. The script's usage text owns the verification list.
 
-- **`review-pr-finish.sh`** — the single cleanup call `/review-pr` Step 8 runs on every exit path (posted, declined, or aborted). Zero arguments, idempotent, and always exits 0, whether or not anything was in flight. The script's usage text owns the removal sequence.
+- **`review-pr-finish.sh`** — the single cleanup call `/review-pr` Step 8 runs on every exit path (posted, declined, or aborted) except after a post of unknown outcome, where it waits for the human to re-arm or abandon. Zero arguments, idempotent, and always exits 0, whether or not anything was in flight. The script's usage text owns the removal sequence.
 
 - **`review-pr-scan-findings-body.sh`** — mechanical secret scan `/review-pr`'s synthesize-and-record step runs over the findings-body file before the deliver step posts it, using `_LIB_CREDENTIAL_VALUE_REGEX` (`claude/.claude/hooks/_lib.sh`). Exits 0 on no hit, 1 on a hit, and 2 on a usage error or a scan that did not complete. `marker.sh`'s `write review-pr` arm calls it before writing the completion marker and refuses the write on a non-zero exit. The script's usage text owns the rest.
 
