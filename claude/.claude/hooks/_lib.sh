@@ -436,10 +436,9 @@ _lib_parse_tool_input_or_deny() {
   # .cwd, .session_id, and .agent_type silently stringify via jq's \(...)
   # interpolation rather than erroring when the field holds a non-string
   # JSON value (a number, object, or array).
-  # For AGENT_TYPE this is safe because both of its consumers
-  # (_lib_is_review_only_agent, _lib_is_no_gate_release_agent) are
-  # exact-match denylists, so a garbled value just fails to match and
-  # falls through to the existing safe default.
+  # For AGENT_TYPE this is safe because every consumer either tests it for
+  # emptiness or matches it exactly against a roster. A garbled value is
+  # non-empty and matches no roster name, so it reads as an unlisted subagent.
   local jq_out
   # WARNING: the format string below contains five literal 0x1f (ASCII Unit
   # Separator) bytes, one between each of the six interpolated fields. They
