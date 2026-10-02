@@ -779,6 +779,9 @@ class TestPostFailureConsumesTheMarker:
         assert second.returncode != 0
         assert "completion marker" in second.stderr
         assert "previous post attempt" in second.stderr
+        assert "must not post that body again" in second.stderr
+        assert "if no post has been attempted, run the skill through Step 7" in second.stderr
+        assert "must not post that body again" in first.stderr
         assert len(_read_pr_review_calls(call_log)) == 1, (
             "the retry must not reach gh pr review a second time"
         )

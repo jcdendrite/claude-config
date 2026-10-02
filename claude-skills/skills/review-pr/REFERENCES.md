@@ -197,8 +197,9 @@ The same followed write can also overwrite or create an arbitrary file the Claud
     post.
   - A post whose outcome is unknown is not retried from session state:
     `review-pr-finish.sh` removes the provenance and findings body a new
-    completion marker needs. Recovery is a hand-post of the approved body or
-    a fresh `/review-pr`.
+    completion marker needs. Until `finish` runs, only SKILL.md's instruction
+    stops a re-arm; no mechanism does. Recovery is a hand-post of the approved
+    body or a fresh `/review-pr`.
   - `review-pr-post.sh` never emits `--approve`: its two `gh pr review` calls
     carry the literal `--comment` and `--request-changes`. This is the only
     unbypassable property of the gate.
