@@ -184,6 +184,64 @@ class TestSweepReviewPrSuffixBranch:
         assert not (active_dir / "reused-pid-session.body").exists()
         assert not (active_dir / "reused-pid-session.provenance").exists()
 
+    @pytest.mark.parametrize(
+        "ps_failure",
+        [OSError("synthetic: ps cannot run"), subprocess.TimeoutExpired(["ps"], 5)],
+        ids=["ps_cannot_run", "ps_times_out"],
+    )
+    def test_review_pr_entry_is_kept_when_ps_cannot_verify_the_live_sessions_start_time(
+        self, tmp_path, monkeypatch, ps_failure
+    ):
+        """An unverifiable start time reads as a match, so a live review's
+        artifacts are never evicted on a ps failure."""
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        (active_dir / "resumed-session.body").write_text("findings\n")
+        write_review_pr_provenance(
+            tmp_path, "foo/bar#42", "abc123", proc.pid,
+            mode="checkout", session_id="resumed-session", config_dir=tmp_path,
+        )
+        _write_session_file(tmp_path / "sessions", os.getpid(), "resumed-session")
+
+        def failing_ps(*args, **kwargs):
+            raise ps_failure
+
+        monkeypatch.setattr(_clear_stale.subprocess, "run", failing_ps)
+        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        assert (evicted, kept) == (0, 2)
+        assert (active_dir / "resumed-session.body").exists()
+        assert (active_dir / "resumed-session.provenance").exists()
+
+    def test_review_pr_entry_is_evicted_when_ps_cannot_run_and_the_session_entry_names_a_dead_pid(
+        self, tmp_path, monkeypatch
+    ):
+        """With ps unable to verify any start time, only the liveness check on
+        the sessions/<pid> file's own PID separates a dead session's leftover
+        entry from a live one."""
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        (active_dir / "ended-session.body").write_text("findings\n")
+        write_review_pr_provenance(
+            tmp_path, "foo/bar#42", "abc123", proc.pid,
+            mode="checkout", session_id="ended-session", config_dir=tmp_path,
+        )
+        _write_session_file(
+            tmp_path / "sessions", proc.pid, "ended-session", start_time="Thu Jan  1 00:00:00 1970"
+        )
+
+        def failing_ps(*args, **kwargs):
+            raise OSError("synthetic: ps cannot run")
+
+        monkeypatch.setattr(_clear_stale.subprocess, "run", failing_ps)
+        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        assert (evicted, kept) == (2, 0)
+        assert not (active_dir / "ended-session.body").exists()
+        assert not (active_dir / "ended-session.provenance").exists()
+
     def test_review_pr_entry_whose_owning_session_differs_from_a_live_session_entry_is_evicted(self, tmp_path):
         active_dir = tmp_path / ".review-pr-active.d"
         active_dir.mkdir()

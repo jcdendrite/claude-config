@@ -53,9 +53,10 @@
 # the gate cannot see inside a query body sourced from a file, so it denies
 # those wholesale rather than inspecting them.
 #
-# Read side: /review-pr's reads need no bypass marker. Step 1's three-endpoint
-# fetch, including the `gh api .../pulls/N/reviews` call the REST arm below
-# would otherwise gate, runs inside ~/.claude/scripts/review-pr-acquire.sh.
+# Read side: /review-pr's reads need no bypass marker. Step 1's fetch,
+# including the `gh api .../pulls/N/reviews` and `.../pulls/N/comments` calls
+# the REST arm below would otherwise gate, runs inside
+# ~/.claude/scripts/review-pr-acquire.sh.
 # This hook matches only the literal Bash-tool command text
 # (`~/.claude/scripts/review-pr-acquire.sh <owner>/<repo>#<N>`), which carries
 # no gated pattern, and never inspects a subprocess the script spawns.

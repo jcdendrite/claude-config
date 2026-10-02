@@ -255,6 +255,25 @@ class TestOriginMismatch:
         assert _read_calls(call_log) == []
 
 
+class TestOriginCaseInsensitiveMatch:
+    def test_pr_identity_case_differing_from_origin_still_produces_a_diff(self, isolated_home, tmp_path):
+        """GitHub treats owner/repo slugs case-insensitively, so a PR identity
+        spelled with different case than origin's own stored URL case must
+        match, not be misread as a cross-repo target and refused by
+        TestOriginMismatch's own check above."""
+        origin_owner_repo = "Foo-Org/Bar-Repo"
+        repo, pr_sha = _build_repo_with_pr_ref(tmp_path, owner_repo=origin_owner_repo, pr_number=PR_NUMBER)
+        _install_audit_script(isolated_home)
+        result, _ = _run(
+            repo, isolated_home, [f"foo-org/bar-repo#{PR_NUMBER}"], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 0, result.stderr
+        diff_path = Path(result.stdout.strip())
+        assert diff_path == isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.diff"
+        assert diff_path.exists()
+
+
 class TestInitialHeadRefOidFetchFailure:
     def test_failed_initial_headrefoid_fetch_aborts_before_any_artifact_is_written(
         self, isolated_home, repo_with_pr_ref, tmp_path

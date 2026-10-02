@@ -18,8 +18,8 @@ review-pr-checkout.sh uses, but never checks the PR out. In order:
 1. Checks that <owner>/<repo> matches this worktree's own origin remote,
    aborting before any gh call on a mismatch.
 2. Fetches the PR's current headRefOid and its REST `changed_files` count.
-   Stops naming the limit when the PR changes more than 300 files, since
-   GitHub's diff endpoint cannot serve one.
+   Stops naming the limit when the PR changes more than 300 files, a limit
+   third parties report for GitHub's diff endpoint (see REFERENCES.md).
 3. Fetches the full, paginated file list (one JSON string per file name, so a
    name holding a newline stays one name) and aborts when its length differs
    from `changed_files`.
@@ -130,7 +130,7 @@ fi
 # [unverified] 300 is the limit in GitHub's 406 error text as third parties report it; no REST reference page states it.
 DIFF_MAX_CHANGED_FILES=300
 if [[ "$CHANGED_FILES_COUNT" -gt "$DIFF_MAX_CHANGED_FILES" ]]; then
-  echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER changes $CHANGED_FILES_COUNT files, over the $DIFF_MAX_CHANGED_FILES-file limit GitHub's diff endpoint serves -- no diff can be fetched. Abort; this PR needs a route other than gh pr diff." >&2
+  echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER changes $CHANGED_FILES_COUNT files, over the $DIFF_MAX_CHANGED_FILES-file limit third parties report for GitHub's diff endpoint -- no diff can be fetched. Abort; this PR needs a route other than gh pr diff." >&2
   exit 2
 fi
 

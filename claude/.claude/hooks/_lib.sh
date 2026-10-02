@@ -3290,7 +3290,7 @@ _lib_has_unsafe_ssh_dir_reference() {
   return 1
 }
 
-# Credential-shaped VALUE patterns, sourced by redact-credential-values.sh (jq gsub) and deny-pii-in-commits.sh's credential-value sub-check (grep -E). Must compile under both POSIX ERE and jq's Oniguruma engine, so only dialect-neutral syntax is used.
+# Credential-shaped VALUE patterns, sourced by _lib_redact_credential_shaped_strings below (jq gsub), deny-pii-in-commits.sh's credential-value sub-check (grep -E), and review-pr-scan-findings-body.sh (grep -E). Must compile under both POSIX ERE and jq's Oniguruma engine, so only dialect-neutral syntax is used.
 # Token prefixes (ghp_/gho_/ghu_/ghs_/ghr_ classic and github_pat_ fine-grained) per GitHub's "About authentication to GitHub" docs. The {20,} length floor is NOT vendor-grounded — chosen low enough that a genuine token is never missed, not a verified minimum.
 # AKIA (long-term access key) and ASIA (temporary/STS access key) prefixes per AWS's "IAM identifiers" doc (Understanding unique ID prefixes table). The 16-character suffix length is the widely-observed convention for these IDs, not independently vendor-confirmed for this exact length — same non-verified-minimum caveat as the GitHub {20,} floor above.
 # The PEM alternative matches only the BEGIN header line: grep -E is line-oriented and can't match across a newline, so a header-only form is what lets deny-pii-in-commits.sh detect a PEM key at commit time at all. See _LIB_PEM_PRIVATE_KEY_BLOCK_REGEX below for the full-block counterpart.

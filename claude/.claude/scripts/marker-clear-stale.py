@@ -9,10 +9,10 @@ _lib.sh's _lib_write_no_follow and _lib_cat_no_follow apply per-file elsewhere.
 Usage: marker-clear-stale.py CONFIG_DIR DRY_RUN
 
 DRY_RUN is "1" or "0". Prints one line per evicted entry in both modes, and
-one line per kept entry in dry-run mode only, followed by a summary line,
-and exits 0 unconditionally -- a stale marker left behind on an unexpected
-error is a slow leak, not a correctness failure, so this never aborts the
-caller.
+one line per kept entry in dry-run mode only, followed by a summary line.
+
+Exit status: 0 after a completed sweep, 2 on a wrong argument count, and 1 when
+an unhandled exception escapes (an active directory that cannot be listed).
 """
 from __future__ import annotations
 

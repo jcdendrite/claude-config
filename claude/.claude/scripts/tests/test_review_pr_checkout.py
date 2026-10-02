@@ -750,6 +750,48 @@ class TestAuditCleanProceedsToCheckout:
         for worktree_dir in (first_dir, second_dir):
             assert (worktree_dir / "pr_file.txt").exists()
 
+    def test_force_pushed_pr_head_replaces_the_stale_local_ref_and_checks_out_the_new_head(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """A re-review after the PR's author force-pushed a head that is not a
+        descendant of the earlier one: the local ref from the first run
+        already exists at the old commit, and the fetch must move it, not
+        reject the update as non-fast-forward."""
+        _install_audit_script(isolated_home)
+        repo, first_pr_sha = repo_with_pr_ref
+        first, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=first_pr_sha, files=["src/app.py"],
+        )
+        assert first.returncode == 0, first.stderr
+
+        # A sibling of the first PR commit (same parent), so the new head is not
+        # a fast-forward of the old one.
+        (repo / "pr_file_rewritten.txt").write_text("rewritten pr change\n")
+        subprocess.run(["git", "add", "pr_file_rewritten.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "rewritten pr commit"], cwd=repo, check=True)
+        rewritten_pr_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "push", "-q", "origin", f"+HEAD:refs/pull/{PR_NUMBER}/head"], cwd=repo, check=True,
+        )
+        assert rewritten_pr_sha != first_pr_sha
+
+        second, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=rewritten_pr_sha, files=["src/app.py"],
+        )
+        assert second.returncode == 0, second.stderr
+        second_worktree = Path(second.stdout.strip())
+        assert (second_worktree / "pr_file_rewritten.txt").exists()
+        checked_out_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=second_worktree, capture_output=True, text=True, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        ).stdout.strip()
+        assert checked_out_head == rewritten_pr_sha
+
 
 class TestCheckoutRunsNoGitHooks:
     def test_no_git_hook_runs_during_the_pr_ref_fetch_or_the_worktree_add(

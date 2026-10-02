@@ -100,8 +100,8 @@ The backstops are the `author_association` allowlist in
 `cat` through a link is not covered, since `deny-credential-bash-reads.sh`
 matches command text only (`docs/hooks.md`, `docs/security-hardening.md`).
 A third, `redact-credential-values.sh`, replaces credential values in a tool
-result, but only vendor-fixed shapes (a GitHub token prefix, a full PEM
-private-key block), so it does not close the gap.
+result, but only vendor-fixed shapes (a GitHub token prefix, an AWS access
+key ID, a full PEM private-key block), so it does not close the gap.
 
 ## The no-checkout path's reduced coverage (`review-pr-diff.sh`, Step 2)
 
@@ -127,7 +127,7 @@ left implicit:
   REST `changed_files` count exceeds 300, a limit third parties report for
   GitHub's diff endpoint and that no GitHub reference confirms, and aborts
   (exit 2) when the paginated file list's length differs from
-  `changed_files`. No script checks the completeness of either diff's
+  `changed_files`. No script checks the completeness of the `gh pr diff`
   text. The 300-file precheck and the truncation caveat apply to this path
   only: in `checkout` mode, Step 5 takes a local three-dot `git diff`.
 - **The diff text is not verbatim.** `review-pr-diff.sh` does not pass
