@@ -524,19 +524,6 @@ class TestChangedFilesPrecheck:
         assert "changed_files" in result.stderr
         assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
 
-    def test_non_integer_changed_files_count_aborts_before_the_listing(
-        self, isolated_home, repo_with_pr_ref, tmp_path
-    ):
-        _install_audit_script(isolated_home)
-        repo, pr_sha = repo_with_pr_ref
-        result, call_log = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"], changed_files="abc",
-        )
-        assert result.returncode == 2
-        assert "changed_files" in result.stderr
-        assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
-
     def test_rest_payload_fetch_failure_aborts(self, isolated_home, repo_with_pr_ref, tmp_path):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref

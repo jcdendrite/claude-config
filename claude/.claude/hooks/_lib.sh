@@ -918,7 +918,7 @@ with os.fdopen(fd, "rb") as f:
 # symlink at the final path component atomically with the write, so a
 # pre-planted symlink at a predictable session-scoped destination is never
 # followed and truncated the way a plain `>` redirect would follow it.
-# Shared by marker.sh's `write <skill>` arms and the review-pr scripts that
+# Shared by marker.sh's `write <skill>` and `activate` arms and the review-pr scripts that
 # write session-scoped provenance/context/diff artifacts at an identically
 # predictable, session-ID-keyed path.
 _lib_write_no_follow() {

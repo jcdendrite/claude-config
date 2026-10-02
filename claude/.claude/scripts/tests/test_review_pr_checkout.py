@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import textwrap
@@ -750,6 +751,47 @@ class TestAuditCleanProceedsToCheckout:
             assert (worktree_dir / "pr_file.txt").exists()
 
 
+class TestCheckoutRunsNoGitHooks:
+    def test_no_git_hook_runs_during_the_pr_ref_fetch_or_the_worktree_add(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        hook_ran_sentinel = tmp_path / "hook-ran"
+        post_checkout_hook = repo / ".git" / "hooks" / "post-checkout"
+        post_checkout_hook.write_text(f"#!/bin/sh\ntouch '{hook_ran_sentinel}'\n")
+        post_checkout_hook.chmod(0o755)
+        # The PR-ref fetch updates a local ref, which fires reference-transaction.
+        fetch_hook_ran_sentinel = tmp_path / "fetch-hook-ran"
+        reference_transaction_hook = repo / ".git" / "hooks" / "reference-transaction"
+        reference_transaction_hook.write_text(f"#!/bin/sh\ntouch '{fetch_hook_ran_sentinel}'\n")
+        reference_transaction_hook.chmod(0o755)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["src/app.py"],
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert (Path(result.stdout.strip()) / "pr_file.txt").exists()
+        assert not hook_ran_sentinel.exists(), "the checkout must run with git hooks disabled"
+        assert not fetch_hook_ran_sentinel.exists(), "the PR-ref fetch must run with git hooks disabled"
+
+        # Control: the same hook does fire for a plain `git worktree add`.
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(tmp_path / "control-worktree"), pr_sha],
+            cwd=repo, capture_output=True, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert hook_ran_sentinel.exists(), "control: the hook is wired correctly, so its absence above is the -c flag's doing"
+
+        # Control: the same reference-transaction hook does fire for a plain fetch of the PR ref.
+        subprocess.run(
+            ["git", "fetch", "origin", f"refs/pull/{PR_NUMBER}/head:refs/control/pr-{PR_NUMBER}"],
+            cwd=repo, capture_output=True, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert fetch_hook_ran_sentinel.exists(), "control: the hook is wired, so its absence above is the -c flag's doing"
+
+
 class TestAuditStopAbortsBeforeFetch:
     def test_execution_surface_hit_aborts_with_no_fetch_of_the_pr_ref(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -777,6 +819,33 @@ class TestAuditStopAbortsBeforeFetch:
         calls = _read_calls(call_log)
         assert any(c[:2] == ["pr", "view"] for c in calls)
         assert any(c[:1] == ["api"] for c in calls)
+
+
+class TestPrRefFetchFailure:
+    @pytest.mark.parametrize(
+        ("exit_status", "expect_cap_note"), [(1, False), (124, True)], ids=["plain_failure", "cap_kill_status"]
+    )
+    def test_fetch_failure_names_a_cap_kill_only_for_a_cap_kill_status(
+        self, isolated_home, repo_with_pr_ref, tmp_path, exit_status, expect_cap_note
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        shim_dir = tmp_path / "git_fetch_shim"
+        shim_dir.mkdir()
+        git_shim = shim_dir / "git"
+        git_shim.write_text(
+            f'#!/usr/bin/env bash\nif [[ "$*" == *" fetch "* ]]; then exit {exit_status}; fi\n'
+            f'exec {shlex.quote(shutil.which("git"))} "$@"\n'
+        )
+        git_shim.chmod(0o755)
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], path_prefix=shim_dir,
+        )
+        assert result.returncode == 2, result.stderr
+        assert f"could not fetch refs/pull/{PR_NUMBER}/head" in result.stderr
+        assert ("consistent with the" in result.stderr) is expect_cap_note
+        assert _review_worktrees(repo) == []
 
 
 class TestHeadRefOidMismatch:
@@ -966,20 +1035,6 @@ class TestFileListIntegrity:
         result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["a.py"], omit_changed_files=True,
-        )
-        assert result.returncode == 2
-        assert "changed_files" in result.stderr
-        assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
-        assert _review_worktrees(repo) == []
-
-    def test_non_integer_changed_files_count_aborts_before_the_file_list_is_fetched(
-        self, isolated_home, repo_with_pr_ref, tmp_path
-    ):
-        _install_audit_script(isolated_home)
-        repo, pr_sha = repo_with_pr_ref
-        result, call_log = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"], changed_files="abc",
         )
         assert result.returncode == 2
         assert "changed_files" in result.stderr

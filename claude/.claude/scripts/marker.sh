@@ -4,10 +4,6 @@
 # Usage: marker.sh <write|activate|deactivate|clear-stale> [<skill>|--dry-run]
 # _marker_lib_repo_hash is defined in the sourced library so the hash recipe
 # stays in sync with the read side (require-*.sh hooks) automatically.
-# BASH_SOURCE[0], not $0: a test that sources this file (rather than
-# executing it) to call a function like _hash_staged_diff directly leaves
-# $0 naming the outer interpreter, not this file -- BASH_SOURCE[0] always
-# names this file regardless of how it was reached.
 # shellcheck source=../hooks/_lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../hooks/_lib.sh"
 

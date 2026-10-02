@@ -92,8 +92,6 @@ ORIGIN_OWNER_REPO=$(_lib_origin_owner_repo "$REPO_ROOT") || {
   echo "review-pr-diff.sh: could not resolve this worktree's origin remote, or parse an owner/repo out of its URL. Abort before any fetch." >&2
   exit 2
 }
-# Case-insensitive: GitHub treats owner/repo slugs case-insensitively, same
-# reasoning as review-pr-checkout.sh's own identical check.
 if _lib_case_insensitive_ne "$ORIGIN_OWNER_REPO" "$OWNER_REPO"; then
   echo "review-pr-diff.sh: PR identity '$PR_IDENTITY' names repo '$OWNER_REPO', which does not match this worktree's own origin remote ('$ORIGIN_OWNER_REPO'). Abort before any fetch." >&2
   exit 2

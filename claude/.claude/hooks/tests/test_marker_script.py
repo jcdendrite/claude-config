@@ -471,6 +471,9 @@ class TestMarkerScriptSessionMissing:
             f"marker.sh {' '.join(args)} should exit 2 when session file is absent, "
             f"got {result.returncode}. stderr: {result.stderr!r}"
         )
+        assert "SESSION_ID empty" in result.stderr, (
+            "exit 2 must come from the session-resolution guard, not another refusal"
+        )
 
     def test_no_marker_written_when_session_file_missing(self, isolated_home, git_repo):
         _run(["write", "code-review"], cwd=git_repo, home=isolated_home)
@@ -497,6 +500,9 @@ class TestMarkerScriptSessionIdValidation:
         assert result.returncode == 2, (
             f"marker.sh {' '.join(args)} should exit 2 for a path-escaping "
             f"session id, got {result.returncode}. stderr: {result.stderr!r}"
+        )
+        assert "is not a valid path component" in result.stderr, (
+            "exit 2 must come from the session-id validation guard, not another refusal"
         )
 
     def test_no_marker_written_for_path_escaping_session_id(self, isolated_home, git_repo):
@@ -5588,9 +5594,10 @@ class TestMarkerScriptReviewPr:
     def test_write_does_not_execute_a_hashlib_planted_in_the_pr_checkout(
         self, isolated_home, git_repo
     ):
-        """SKILL.md runs this arm from inside the PR checkout, and `python3 -c`
-        would put that directory first on sys.path: a PR-planted hashlib.py
-        must neither run nor keep the marker from being written."""
+        """SKILL.md runs this arm from any tree of the repo, which can be the PR
+        checkout, and `python3 -c` would put the current directory first on
+        sys.path: a PR-planted hashlib.py must neither run nor keep the marker
+        from being written."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         findings_body = self._write_findings_body_for_mode(isolated_home, "checkout", sid)

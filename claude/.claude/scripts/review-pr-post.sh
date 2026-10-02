@@ -13,15 +13,17 @@ Posts the /review-pr findings body recorded by this session's `marker.sh
 write review-pr` completion marker, as the named gh pr review verdict.
 Before posting, verifies: a completion marker exists for this repo (keyed
 to its main tree root, so any tree of it resolves the same marker) and
-session; the target argument equals both the marker's recorded PR identity
-and this repo's origin remote (owner/repo); the findings-body file's sha256
-still equals the marker's recorded hash; and the marker's PR number/owner/
-repo names a real PR whose current headRefOid still matches the marker's
-recorded HEAD. Fails closed (no gh call) on any missing or mismatched
-piece. The marker is consumed before the post call: gh pr review has no
-idempotency key, so a retry after a post that landed, or that failed after
-landing, could double-post. A post that fails therefore leaves it unknown
-whether the review landed.
+session; the marker's recorded mode is checkout or diff-only; the marker's
+recorded PR identity is a valid <owner>/<repo>#<number>; the target argument
+equals both that identity and this repo's origin remote (owner/repo); the
+findings-body file is readable, not a symlink, and its sha256 still equals
+the marker's recorded hash; and the marker's PR number/owner/repo names a
+real PR whose current headRefOid still matches the marker's recorded HEAD.
+Fails closed (no gh call) on any missing or mismatched piece. The marker is
+consumed before the post call, and a failure to consume it refuses before
+any post: gh pr review has no idempotency key, so a retry after a post that
+landed, or that failed after landing, could double-post. A post that fails
+therefore leaves it unknown whether the review landed.
 EOF
 }
 

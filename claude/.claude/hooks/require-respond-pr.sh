@@ -66,12 +66,10 @@
 # included. Without that marker every `gh pr review`/`reviews` write is denied,
 # redirecting to
 # `~/.claude/scripts/review-pr-post.sh <comment|request-changes> <owner>/<repo>#<N>`.
-# That script re-verifies the PR identity and findings-body hash recorded by
-# /review-pr's completion marker, then compares the PR's live remote headRefOid
-# (fetched with `gh pr view`) to the marker's recorded one before it posts with
-# `gh pr review` (see its header, and
-# _lib_review_pr_completion_marker_fields in _lib.sh for the read it shares with
-# marker.sh's `status` arm). `--approve` is not a reachable code path in it.
+# That script's usage text lists every check it makes before it posts with
+# `gh pr review` (see _lib_review_pr_completion_marker_fields in _lib.sh for
+# the marker read it shares with marker.sh's `status` arm). `--approve` is not
+# a reachable code path in it.
 #
 # Named accepted gap: this gate decides per whole command, like every other
 # arm in this file, so a released read or bypass chained (`&&`/`;`/`|`)
@@ -346,8 +344,6 @@ if [ -n "$COMMAND_REPO" ]; then
   # call in the session for as long as the filesystem takes to answer.
   CURRENT_REPO=$(_lib_origin_owner_repo) || CURRENT_REPO=""
   if [ -n "$CURRENT_REPO" ]; then
-    # Case-insensitive: GitHub treats owner/repo slugs case-insensitively,
-    # matching the mutating-method check's own nocasematch use above.
     if _lib_case_insensitive_ne "$COMMAND_REPO" "$CURRENT_REPO"; then
       exit 0
     fi

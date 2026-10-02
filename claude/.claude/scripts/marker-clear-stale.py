@@ -20,15 +20,20 @@ import contextlib
 import glob
 import os
 import re
+import subprocess
 import sys
 import time
 
-# review-pr's own artifacts, never a bare PID: reaped once the PID recorded
-# inside the sibling .provenance file (same directory, same session id) is
-# confirmed dead, never on the entry's own mtime -- cwd activity between
-# writing an artifact and posting it can idle past the 60-minute window
-# below while a review is still in flight. All four key on the same PID
-# field rather than a per-suffix rule.
+# review-pr's own artifacts, never a bare PID. Each is reaped only when both hold:
+# - The PID recorded inside the sibling .provenance file (same directory, same
+#   session id) is dead.
+# - No sessions/<pid> file with a live, start-time-matching PID names the owning
+#   session id, because a resumed session runs under a new PID while its
+#   provenance keeps the old one.
+# The entry's own mtime never decides: cwd activity between writing an artifact
+# and posting it can idle past the 60-minute window below while a review is
+# still in flight. All four suffixes use the same two checks rather than a
+# per-suffix rule.
 REVIEW_PR_SUFFIXES = (".body", ".provenance", ".diff", ".context.json")
 
 
@@ -64,11 +69,54 @@ def pid_alive(pid_text: str | None) -> bool:
     return True
 
 
+def start_time_matches(pid_text: str, recorded_start: str) -> bool:
+    """True when pid's current `ps -o lstart=` equals recorded_start, the same
+    exact comparison, pinned TZ/locale, and 5-second cap as _lib.sh's
+    _lib_resolve_claude_pid. A mismatch means the PID was reused since
+    capture-session-id.sh wrote the entry. A ps that cannot run or times out
+    reads as a match, so an unverifiable entry keeps its artifacts."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", pid_text],
+            env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return result.stdout.rstrip("\n") == recorded_start
+
+
+def live_session_ids(sessions_dir: str) -> set[str]:
+    """Session ids named by capture-session-id.sh's sessions/<pid> files whose
+    <pid> is alive and whose recorded start time still matches that process.
+    Line 1 of each file is the session id, line 2 the process start time."""
+    session_ids: set[str] = set()
+    try:
+        file_names = os.listdir(sessions_dir)
+    except OSError:
+        return session_ids
+    for file_name in file_names:
+        if not pid_alive(file_name):
+            continue
+        content = read_no_follow(os.path.join(sessions_dir, file_name))
+        if content is None:
+            continue
+        session_id, _, recorded_start = content.decode("utf-8", "replace").partition("\n")
+        recorded_start = recorded_start.partition("\n")[0]
+        if session_id.strip() and recorded_start and start_time_matches(file_name, recorded_start):
+            session_ids.add(session_id.strip())
+    return session_ids
+
+
 def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
     """Returns (evicted, kept, dry-run-only display lines)."""
     evicted = 0
     kept = 0
     lines: list[str] = []
+    live_sessions = live_session_ids(os.path.join(config_dir, "sessions"))
 
     for active_dir in sorted(glob.glob(os.path.join(glob.escape(config_dir), ".*-active.d"))):
         if not os.path.isdir(active_dir):
@@ -131,10 +179,13 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
                     kept += 1
                     if dry_run:
                         lines.append(f"  keep: {dir_name}/{entry_name} (unrecognized provenance format, keeping conservatively)")
-                elif owner_alive:
+                elif owner_alive or owner_session_id in live_sessions:
                     kept += 1
                     if dry_run:
-                        lines.append(f"  keep: {dir_name}/{entry_name} (owning PID {owner_pid} alive)")
+                        keep_reason = (
+                            f"owning PID {owner_pid} alive" if owner_alive else f"owning session {owner_session_id} alive"
+                        )
+                        lines.append(f"  keep: {dir_name}/{entry_name} ({keep_reason})")
                 else:
                     evicted += 1
                     display_pid = owner_pid or "empty"

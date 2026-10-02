@@ -60,7 +60,7 @@ loading a project directory:
 | Pattern | Vector |
 |---|---|
 | `.gitattributes` (any depth) | git executes clean/smudge filter drivers named in it at checkout |
-| `.githooks/**`, `.husky/**` | conventional `core.hooksPath` target directory names; a repo commonly points `core.hooksPath` at one of these via setup instructions or a tool (Husky), and git then executes any file placed under it at checkout. `core.hooksPath` itself is local git config, not something a PR's file list carries directly — this is a heuristic over common target-directory names, not an exhaustive read of the actual configured value. |
+| `.githooks/**`, `.husky/**` | conventional `core.hooksPath` target directory names; a repo commonly points `core.hooksPath` at one of these via setup instructions or a tool (Husky), and git runs a hook-named file there (such as `post-checkout`) when its event fires. `core.hooksPath` itself is local git config, not something a PR's file list carries directly — this is a heuristic over common target-directory names, not an exhaustive read of the actual configured value. `review-pr-checkout.sh` also runs its PR-ref `git fetch` and its `git worktree add` with `-c core.hooksPath=/dev/null`, so no hook runs during that checkout whatever the configured path. |
 | `CLAUDE.md` (any path segment) | loaded as standing instructions by the reviewing harness when it works inside the checked-out tree |
 | `CLAUDE.local.md` (any path segment) | concatenated into the same standing-instructions load as CLAUDE.md (`claude/.claude/rules/claude-md-conventions.md`'s precedence list) |
 | `.claude/settings.json`, `.claude/settings.local.json` | configures hooks and permissions the harness applies |
@@ -145,7 +145,7 @@ left implicit:
 
 A spawned review-only subagent carries no Write tool for this path, so requiring the Write tool makes the step un-completable from a subagent by construction, rather than by convention.
 
-Passing the fixed path as a Bash argument would also put it in the process table and shell history, which the sibling-file design exists to avoid. The findings-body path comes from `review-pr-findings-path.sh`, not from a value the model transcribes, so nothing needs independent verification against `$CONFIG_DIR`/`$SESSION_ID`.
+Passing the fixed path as a Bash argument would also put it in the command's argv, which appears in shell history and the process table. The findings-body path comes from `review-pr-findings-path.sh`, not from a value the model transcribes, so nothing needs independent verification against `$CONFIG_DIR`/`$SESSION_ID`.
 
 Accepted gap: the Write tool does not open with `O_NOFOLLOW`, so a pre-planted symlink at the fixed body path would be followed.
 
@@ -166,8 +166,8 @@ The same followed write can also overwrite or create an arbitrary file the Claud
   until someone removes it. A manual sweep, run from inside the repository,
   is
   `find <main tree>/.claude/worktrees -maxdepth 1 -name 'review-pr-*' -mtime +N -exec git worktree remove --force --force {} \;`.
-  Widening `cleanup-idle-open-pr-worktrees.sh` to match by directory-name
-  pattern would automate it; that is not built.
+  No script automates this; widening `cleanup-idle-open-pr-worktrees.sh` to
+  match by directory-name pattern would.
   While a review worktree remains, `marker.sh` refuses to write any other
   skill's marker from the main tree under worktree enforcement, and skips
   that refusal only for `write review-pr`. Running `review-pr-finish.sh` or
@@ -177,8 +177,9 @@ The same followed write can also overwrite or create an arbitrary file the Claud
   `mktemp -d` assembly directory, and that trap is not proven to run when
   the process is killed by a signal. `review-pr-checkout.sh` registers no
   trap: a signal between its worktree `mktemp -d` and `git worktree add`
-  leaves an empty, unregistered directory, which `review-pr-finish.sh`
-  does not sweep (`docs/scripts.md`'s `review-pr-finish.sh` entry says why).
+  leaves an empty, unregistered directory. `review-pr-finish.sh` does not
+  sweep it, because it finds worktrees through `git worktree list`, which
+  never lists an unregistered directory.
   `docs/hooks.md`'s "Gate deadlock recovery" section covers only a
   git lock file stranded by a killed process, not these directories.
   Remove an unregistered `review-pr-<session-id>-<number>-<suffix>`
@@ -194,7 +195,11 @@ The same followed write can also overwrite or create an arbitrary file the Claud
   shared object store. `review-pr-finish.sh` does not remove them, and an
   ordinary `git gc` expires them once unreachable (default prune expiry is
   2 weeks, per `git-gc(1)`).
-- **The post gate is a cooperative-mistake check.**
+- **The post gate is a cooperative-mistake check.** The checks `review-pr-post.sh`
+  makes are listed in its usage text.
+  - `review-pr-post.sh` consumes the completion marker with `unlink(1)`, an
+    external requirement: a host without it fails closed, refusing before any
+    post.
   - `review-pr-post.sh` never emits `--approve`: its two `gh pr review` calls
     carry the literal `--comment` and `--request-changes`. This is the only
     unbypassable property of the gate.
@@ -208,4 +213,4 @@ The same followed write can also overwrite or create an arbitrary file the Claud
     strength depends on the operator's permission mode.
   - An operator who wants no post to be possible from the session can run it
     with a `gh` token that carries no pull-request write permission and post
-    the approved body by hand. That choice is not built.
+    the approved body by hand. The skill ships no setting for this.

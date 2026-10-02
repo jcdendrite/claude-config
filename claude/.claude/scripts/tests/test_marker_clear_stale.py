@@ -80,6 +80,23 @@ class TestPidAlive:
         assert _clear_stale.pid_alive("9" * 5000) is False
 
 
+def _write_session_file(sessions_dir: Path, pid: int, session_id: str, start_time: str | None = None) -> None:
+    """Write sessions/<pid> in capture-session-id.sh's two-line format. A None
+    start_time records the process's real `ps -o lstart=` value, so the entry
+    reads as a live, unreused PID."""
+    if start_time is None:
+        start_time = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        ).stdout.rstrip("\n")
+    sessions_dir.mkdir(exist_ok=True)
+    (sessions_dir / str(pid)).write_text(f"{session_id}\n{start_time}\n")
+
+
 class TestSweepReviewPrSuffixBranch:
     """sweep()'s REVIEW_PR_SUFFIXES branch derives the owning PID from a
     sibling .provenance file rather than the entry's own content -- a
@@ -124,6 +141,101 @@ class TestSweepReviewPrSuffixBranch:
         assert (evicted, kept) == (2, 0)
         assert not (active_dir / "dead-session.body").exists()
         assert not (active_dir / "dead-session.provenance").exists()
+
+    def test_review_pr_entry_with_a_dead_provenance_pid_but_a_live_session_entry_is_kept(self, tmp_path):
+        """A resumed session runs under a new PID, so its provenance still
+        names the old, dead one; capture-session-id.sh's sessions/<pid> file
+        for the live PID is what shows the session is still running."""
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        (active_dir / "resumed-session.body").write_text("findings\n")
+        write_review_pr_provenance(
+            tmp_path, "foo/bar#42", "abc123", proc.pid,
+            mode="checkout", session_id="resumed-session", config_dir=tmp_path,
+        )
+        _write_session_file(tmp_path / "sessions", os.getpid(), "resumed-session")
+
+        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        assert (evicted, kept) == (0, 2)
+        assert (active_dir / "resumed-session.body").exists()
+        assert (active_dir / "resumed-session.provenance").exists()
+
+    def test_review_pr_entry_whose_live_session_entry_has_a_mismatched_start_time_is_evicted(self, tmp_path):
+        """A sessions/<pid> file naming a live PID whose recorded start time
+        differs from the process's current one is a reused PID, the same rule
+        _lib_resolve_claude_pid applies, so it does not count as a live session."""
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        (active_dir / "reused-pid-session.body").write_text("findings\n")
+        write_review_pr_provenance(
+            tmp_path, "foo/bar#42", "abc123", proc.pid,
+            mode="checkout", session_id="reused-pid-session", config_dir=tmp_path,
+        )
+        _write_session_file(
+            tmp_path / "sessions", os.getpid(), "reused-pid-session", start_time="Thu Jan  1 00:00:00 1970"
+        )
+
+        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        assert (evicted, kept) == (2, 0)
+        assert not (active_dir / "reused-pid-session.body").exists()
+        assert not (active_dir / "reused-pid-session.provenance").exists()
+
+    def test_review_pr_entry_whose_owning_session_differs_from_a_live_session_entry_is_evicted(self, tmp_path):
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        (active_dir / "ended-session.body").write_text("findings\n")
+        write_review_pr_provenance(
+            tmp_path, "foo/bar#42", "abc123", proc.pid,
+            mode="checkout", session_id="ended-session", config_dir=tmp_path,
+        )
+        _write_session_file(tmp_path / "sessions", os.getpid(), "some-other-live-session")
+
+        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        assert (evicted, kept) == (2, 0)
+        assert not (active_dir / "ended-session.body").exists()
+        assert not (active_dir / "ended-session.provenance").exists()
+
+    def test_dry_run_reports_a_live_session_entry_as_the_keep_reason(self, tmp_path):
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        (active_dir / "resumed-session.body").write_text("findings\n")
+        write_review_pr_provenance(
+            tmp_path, "foo/bar#42", "abc123", proc.pid,
+            mode="checkout", session_id="resumed-session", config_dir=tmp_path,
+        )
+        _write_session_file(tmp_path / "sessions", os.getpid(), "resumed-session")
+
+        evicted, kept, lines = _clear_stale.sweep(str(tmp_path), dry_run=True)
+        assert (evicted, kept) == (0, 2)
+        assert "  keep: .review-pr-active.d/resumed-session.body (owning session resumed-session alive)" in lines
+        assert (active_dir / "resumed-session.body").exists()
+
+    def test_review_pr_entry_with_a_dead_provenance_pid_and_only_a_dead_session_entry_is_evicted(self, tmp_path):
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        (active_dir / "ended-session.body").write_text("findings\n")
+        write_review_pr_provenance(
+            tmp_path, "foo/bar#42", "abc123", proc.pid,
+            mode="checkout", session_id="ended-session", config_dir=tmp_path,
+        )
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        (sessions_dir / str(proc.pid)).write_text("ended-session\nstart-time\n")
+
+        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        assert (evicted, kept) == (2, 0)
+        assert not (active_dir / "ended-session.body").exists()
+        assert not (active_dir / "ended-session.provenance").exists()
 
     def test_review_pr_entry_with_provenance_without_a_schema_header_is_kept(self, tmp_path):
         """A provenance file with no `schema=1` header has no determinable

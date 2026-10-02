@@ -107,9 +107,6 @@ ORIGIN_OWNER_REPO=$(_lib_origin_owner_repo "$REPO_ROOT") || {
   echo "review-pr-checkout.sh: could not resolve this worktree's origin remote, or parse an owner/repo out of its URL. Abort before any fetch." >&2
   exit 2
 }
-# Case-insensitive: GitHub treats owner/repo slugs case-insensitively, so a
-# PR identity spelled with different case than origin's own stored URL case
-# must still match.
 if _lib_case_insensitive_ne "$ORIGIN_OWNER_REPO" "$OWNER_REPO"; then
   echo "review-pr-checkout.sh: PR identity '$PR_IDENTITY' names repo '$OWNER_REPO', which does not match this worktree's own origin remote ('$ORIGIN_OWNER_REPO'). Abort before any fetch -- see this script's header comment for the cross-repo substitution this check exists to close." >&2
   exit 2
@@ -271,8 +268,17 @@ LOCAL_REF="refs/review-pr/pr-$PR_NUMBER"
 # 30s, matching the files-listing budget above: a network fetch, not a local
 # read.
 GH_FETCH_TIMEOUT_SECONDS=30
-if ! _lib_capped_for "$GH_FETCH_TIMEOUT_SECONDS" git -C "$REPO_ROOT" fetch origin "refs/pull/$PR_NUMBER/head:$LOCAL_REF" --force >/dev/null 2>&1; then
-  echo "review-pr-checkout.sh: could not fetch refs/pull/$PR_NUMBER/head for PR $OWNER_REPO#$PR_NUMBER from origin. Abort." >&2
+if _lib_capped_for "$GH_FETCH_TIMEOUT_SECONDS" git -C "$REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/pull/$PR_NUMBER/head:$LOCAL_REF" --force >/dev/null 2>&1; then
+  FETCH_STATUS=0
+else
+  FETCH_STATUS=$?
+fi
+if [[ "$FETCH_STATUS" -ne 0 ]]; then
+  if _lib_status_consistent_with_cap_kill "$FETCH_STATUS"; then
+    echo "review-pr-checkout.sh: could not fetch refs/pull/$PR_NUMBER/head for PR $OWNER_REPO#$PR_NUMBER from origin: git fetch exited $FETCH_STATUS, consistent with the ${GH_FETCH_TIMEOUT_SECONDS}s cap firing. Abort." >&2
+  else
+    echo "review-pr-checkout.sh: could not fetch refs/pull/$PR_NUMBER/head for PR $OWNER_REPO#$PR_NUMBER from origin. Abort." >&2
+  fi
   exit 2
 fi
 
@@ -321,7 +327,8 @@ if ! mkdir -p -- "$MAIN_REPO_ROOT/.claude/worktrees" \
   exit 2
 fi
 
-if WORKTREE_ADD_OUTPUT=$(_lib_capped_for "$_LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" worktree add --detach "$WORKTREE_DIR" "$FETCHED_SHA" 2>&1); then
+# core.hooksPath=/dev/null disables hooks: a relative hooksPath resolves inside the PR's own tree, so post-checkout would run PR-supplied code.
+if WORKTREE_ADD_OUTPUT=$(_lib_capped_for "$_LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null worktree add --detach "$WORKTREE_DIR" "$FETCHED_SHA" 2>&1); then
   WORKTREE_ADD_STATUS=0
 else
   WORKTREE_ADD_STATUS=$?

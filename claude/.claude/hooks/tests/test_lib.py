@@ -1597,7 +1597,7 @@ class TestLibGh:
         assert record["GH_HOST"] == "ghe.example.com"
         assert record["GH_ENTERPRISE_TOKEN"] == "enterprise-token"
 
-    def test_propagates_ghs_own_nonzero_exit_status(self, tmp_path: Path) -> None:
+    def test_propagates_gh_own_nonzero_exit_status(self, tmp_path: Path) -> None:
         call_log = tmp_path / "calls.jsonl"
         shim_dir = _gh_shim_dir(tmp_path, call_log, exit_code=1)
         env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
@@ -6404,6 +6404,40 @@ class TestLibReviewPrProvenanceSchema:
         )
         assert result.returncode == 0, result.stderr
         assert result.stdout == "checkout"
+
+    def test_a_value_containing_equals_signs_round_trips_whole(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "sess.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" pr_identity=foo/bar#42 head_ref_oid=a=b=c',
+            env=dict(os.environ),
+        )
+        result = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" head_ref_oid', env=dict(os.environ)
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "a=b=c"
+
+    def test_a_key_that_is_a_prefix_of_another_key_reads_only_its_own_line(self, tmp_path: Path) -> None:
+        """`pid` must not match the `pid_extra=` line that precedes its own."""
+        provenance = tmp_path / "sess.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" pid_extra=111 pid=999', env=dict(os.environ)
+        )
+        present = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" pid', env=dict(os.environ)
+        )
+        assert present.returncode == 0, present.stderr
+        assert present.stdout == "999"
+
+        only_longer_key = tmp_path / "only-longer-key.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{only_longer_key}" pid_extra=111', env=dict(os.environ)
+        )
+        absent = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{only_longer_key}" pid', env=dict(os.environ)
+        )
+        assert absent.returncode != 0
+        assert absent.stdout == ""
 
     def test_writer_refuses_a_symlinked_destination(self, tmp_path: Path) -> None:
         real = tmp_path / "real.provenance"

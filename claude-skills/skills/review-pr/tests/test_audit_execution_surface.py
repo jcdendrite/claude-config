@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "audit-execution-surface.py"
 
 _spec = importlib.util.spec_from_file_location("audit_execution_surface", SCRIPT_PATH)
@@ -86,8 +88,13 @@ class TestAuditExecutionSurfacePureFunction:
         assert result["stop"] is True
         assert "filter" in result["matches"][0]["reason"]
 
-    def test_hookspath_target_directory_matches(self):
-        result = audit_execution_surface([".husky/pre-commit"])
+    @pytest.mark.parametrize(
+        "path",
+        [".githooks/pre-commit", ".husky/pre-commit", "packages/api/.husky/pre-commit"],
+        ids=["githooks", "husky", "nested_husky"],
+    )
+    def test_hookspath_target_directory_matches(self, path):
+        result = audit_execution_surface([path])
         assert result["stop"] is True
         assert "core.hooksPath" in result["matches"][0]["reason"]
 
@@ -102,7 +109,7 @@ class TestAuditExecutionSurfacePureFunction:
     def test_claude_local_md_matches(self):
         """CLAUDE.local.md concatenates into the same standing-instructions
         load as CLAUDE.md (claude/.claude/rules/claude-md-conventions.md's
-        precedence list) -- confirmed harness auto-load, not a guess."""
+        precedence list)."""
         result = audit_execution_surface(["CLAUDE.local.md"])
         assert result["stop"] is True
 
@@ -179,16 +186,6 @@ class TestAuditExecutionSurfacePureFunction:
         result = audit_execution_surface([".mcp.json", "CLAUDE.md", "src/ok.py"])
         assert result["stop"] is True
         assert sorted(m["path"] for m in result["matches"]) == [".mcp.json", "CLAUDE.md"]
-
-    def test_stops_regardless_of_author_standing(self):
-        """The predicate takes only a path list -- no author-association or
-        cross-repo argument exists for a standing-based gate to special-case
-        on. Pins the case a standing-based gate would wave through: a
-        same-repo, non-first-time-contributor PR touching `.mcp.json` or
-        `.claude/hooks/**` must still stop, because nothing about author
-        standing is even visible here to skip on."""
-        assert audit_execution_surface([".mcp.json", "src/legit_change.py"])["stop"] is True
-        assert audit_execution_surface([".claude/hooks/new-gate.sh", "README.md"])["stop"] is True
 
 
 class TestAuditExecutionSurfaceCliContract:

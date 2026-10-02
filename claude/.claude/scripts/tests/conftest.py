@@ -340,9 +340,7 @@ def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
     resolves its own session id (and, for the provenance-writing scripts,
     its own Claude PID) by walking process ancestors via
     _lib_resolve_claude_pid, so a test exercising a success path needs a
-    live session file for that walk to find. Duplicated from
-    test_review_pr_post.py's own helper of the same name rather than
-    imported across test trees, matching _shimmed_env's precedent above.
+    live session file for that walk to find.
 
     pid defaults to this test process's own pid: marker.sh (invoked by
     several of these scripts) resolves its session id by walking process
@@ -358,6 +356,7 @@ def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
         capture_output=True,
         text=True,
         check=True,
+        timeout=60,  # same bound as the _SUBPROCESS_TIMEOUT_SECONDS the review-pr test modules declare
     ).stdout.rstrip("\n")
     (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
 

@@ -22,7 +22,7 @@ from helpers import (
     write_review_pr_completion_marker,
 )
 
-from .conftest import _shimmed_env
+from .conftest import _seed_session, _shimmed_env
 
 SCRIPT = SCRIPTS_DIR / "review-pr-post.sh"
 SID = "test-session-review-pr-post"
@@ -31,32 +31,6 @@ PR_IDENTITY = f"{OWNER_REPO}#42"
 
 # A harness bound so a hung bash or interpreter fails one test instead of the suite.
 _SUBPROCESS_TIMEOUT_SECONDS = 60
-
-
-def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
-    """Write $HOME/.claude/sessions/<pid> in the two-line format
-    capture-session-id.sh writes. Duplicated from
-    hooks/tests/conftest.py's helper of the same name rather than
-    cross-imported -- that file documents the same neither-test-tree-
-    imports-the-other convention this mirrors.
-
-    pid defaults to this test process's own pid: marker.sh (invoked by
-    review-pr-post.sh) resolves its session id by walking process
-    ancestors, and when it runs as a subprocess of pytest, that walk
-    reaches the pytest process itself.
-    """
-    target_pid = os.getpid() if pid is None else pid
-    sessions_dir = home / ".claude" / "sessions"
-    sessions_dir.mkdir(parents=True, exist_ok=True)
-    start_time = subprocess.run(
-        ["ps", "-o", "lstart=", "-p", str(target_pid)],
-        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-    ).stdout.rstrip("\n")
-    (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
 
 
 @pytest.fixture

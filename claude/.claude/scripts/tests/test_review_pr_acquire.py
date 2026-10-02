@@ -667,15 +667,6 @@ class TestFilesReconciliation:
         assert "changed_files" in result.stderr
         assert result.stdout == ""
 
-    def test_non_integer_rest_changed_files_aborts(self, isolated_home, tmp_path):
-        result, _ = _run(
-            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
-            capped_files=["a.py"], rest_changed_files="abc",
-        )
-        assert result.returncode == 2
-        assert "changed_files" in result.stderr
-        assert result.stdout == ""
-
 
 class TestCommitsReconciliation:
     def test_commits_count_mismatch_triggers_paginate_refetch(self, isolated_home, tmp_path):

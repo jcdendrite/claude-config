@@ -3,9 +3,10 @@
 
 Reads a JSON array of PR-changed file paths on stdin (the full,
 paginated `changedFiles` list -- see REFERENCES.md on why the raw `files`
-field alone is not safe input here) and reports which paths git executes
-at checkout, or the reviewing harness may load from a project directory,
-with no explicit run. A pure function of a path list: no `gh` call, no
+field alone is not safe input here) and reports which paths could run code
+or load instructions with no explicit run: git filter drivers at checkout,
+hook runners under a conventional `core.hooksPath` directory, or files the
+reviewing harness may load from a project directory. A pure function of a path list: no `gh` call, no
 repo checkout, no LLM judgment -- the skill invokes this script via Bash
 rather than leaving the match logic to prose interpretation.
 
@@ -51,7 +52,7 @@ def _classify(path: str) -> str | None:
         return "git executes .gitattributes clean/smudge filter drivers at checkout"
 
     if any(seg in _HOOKSPATH_TARGET_DIRS for seg in segments[:-1]):
-        return "path sits under a conventional core.hooksPath target directory (git executes it at checkout)"
+        return "path sits under a conventional core.hooksPath target directory that a repo's hook runner may execute"
 
     if segments[-1] == "claude.md":
         return "CLAUDE.md is loaded as standing instructions by the reviewing harness"
