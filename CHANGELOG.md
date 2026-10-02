@@ -18,6 +18,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - A chained `git add <file> && git <merge|rebase|cherry-pick|revert> --continue` in one Bash call now denies, via `deny-invisible-commit-content.sh`. Run the staging and the `--continue` as two separate Bash calls.
   - `claude/.claude/settings.json` no longer carries `"if": "Bash(git commit *)"` on `require-code-review.sh`, `guard-settings-session-keys.sh`, `check-skill-length.sh`, and `check-claude-md-length.sh`, so those four hooks are dispatched on every Bash call like the plugin hook.
   - **Migration:** run `claude plugin install skill-management@claude-config --scope project` in each consuming repo to refresh the plugin, then `/reload-plugins` (or restart Claude Code).
+- **`comment-discipline-reviewer` narrows its scope for plan files under `.claude/plans/`.** A plan the diff creates is checked for Multi-fact comment structure only. A hunk against a plan that existed before the diff is not reviewed. A label a plan defines is still flagged as PR-defined terminology in any other file.
 - **`ask-review-permissions.sh` closes two gaps in settings-file matching.** See `docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md`'s Known gaps list. Pinned by `test_ask_review_permissions.py`. See GH-1094.
   - Now asks on a settings file at a config-dir root with no `.claude/` segment (gap (c)).
   - Now normalizes path aliasing and case before matching (gap (h)).
