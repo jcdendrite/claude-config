@@ -909,6 +909,7 @@ _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
     "deny-pii-in-commits.sh",
     "require-ready-for-review.sh",
     "enforce-marker-script-shape.sh",
+    "deny-invisible-commit-content.sh",
     # Carry no "Bash(git commit *)" `if`; each self-filters on its own
     # in-body commit-shape matcher.
     "require-code-review.sh",

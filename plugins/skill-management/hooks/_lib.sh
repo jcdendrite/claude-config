@@ -673,8 +673,6 @@ _lib_fragment_invokes_git() {
 # later line is one of its own arguments. Prints nothing when no subcommand
 # word follows the flags (`git --version`).
 # Globbing is disabled so a wildcard in the command text is not expanded.
-# The value-taking flag list is git 2.43's global-options list; a future
-# git version adding another needs it updated by hand.
 # Caller contract: comparisons are quote-blind, same as
 # _lib_fragment_invokes_git.
 _lib_git_argv_from_subcmd() {

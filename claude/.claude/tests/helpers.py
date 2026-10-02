@@ -1088,9 +1088,8 @@ def build_conflicted_cherry_pick(
     resolve_to_head=True (opt-in; default False) additionally resolves the
     conflict by writing `file_name` back to HEAD's own pre-cherry-pick
     content and staging it, leaving CHERRY_PICK_HEAD present but the index
-    clean (`git diff --cached` empty against HEAD), so a resolution that
-    reintroduces no novel content leaves nothing for require-code-review.sh's
-    empty-staged-diff early exit to see."""
+    clean (`git diff --cached` empty against HEAD), so require-code-review.sh
+    takes its empty-staged-diff early exit."""
     base_branch = _current_branch(repo)
     target = _seed_tracked_file(repo, file_name)
     _run_git(repo, "checkout", "-qb", "source")
