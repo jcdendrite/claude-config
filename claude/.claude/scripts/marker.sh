@@ -92,7 +92,10 @@ Subcommands:
   clear-stale [--dry-run]
              Evict active-bypass markers whose originating session is no
              longer alive, or whose mtime has aged past the 60-minute idle
-             window. --dry-run reports without removing.
+             window. Also removes the review-pr artifacts (.body,
+             .provenance, .diff, .context.json under .review-pr-active.d)
+             whose owning session is dead. --dry-run reports without
+             removing.
   resolve-session-id
              Print this session's canonically-resolved session id. Takes no
              skill argument.

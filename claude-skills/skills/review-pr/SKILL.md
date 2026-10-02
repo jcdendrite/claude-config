@@ -90,9 +90,9 @@ or
 ```
 ~/.claude/scripts/review-pr-post.sh comment <owner>/<repo>#<number>
 ```
-Re-verifies the completion marker, that the target equals the marker's recorded PR identity and this repo's origin, the reviewed `headRefOid` against the PR's current remote value, and the findings-body hash before posting. It consumes the completion marker before the post call, success or failure, so a retry can't double-post. A failed post therefore leaves it unknown whether the review landed: check the PR, and leave re-arming (`marker.sh write review-pr`) to the human. If the review is there, run finish below. If not, stop: finish deletes the provenance and body a re-arm needs, so run it only after the human has re-armed and posted, or abandoned the review.
+Re-verifies the completion marker, that the target equals the marker's recorded PR identity and this repo's origin, the reviewed `headRefOid` against the PR's current remote value, and the findings-body hash before posting. It consumes the completion marker before the post call, success or failure, so a retry can't double-post. If it reports that whether the review posted is unknown, this session cannot post that body again. Tell the human; they check the PR on GitHub and, if the review is absent, either post the body shown above by hand or start a fresh `/review-pr`. Do not re-run the marker write or the post after that message.
 
-Then, on every other exit path once step 1 has run — posted, declined, or aborted at any step, including a step 2 stop or a diff-only abort:
+Then, on every exit path once step 1 has run — posted, declined, or aborted at any step, including a step 2 stop or a diff-only abort:
 ```
 ~/.claude/scripts/review-pr-finish.sh
 ```

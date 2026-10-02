@@ -70,7 +70,7 @@ REPO_HASH=$(_lib_review_pr_marker_repo_hash) || {
 
 MARKER_PATH="$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID"
 MARKER_FIELDS=$(_lib_review_pr_completion_marker_fields "$CONFIG_DIR" "$REPO_HASH" "$SESSION_ID") || {
-  echo "review-pr-post.sh: no /review-pr completion marker for this repo and session -- run the skill through Step 7 before posting. If a previous post attempt ran, it consumed the marker: check the PR for its review before re-arming. Abort without posting." >&2
+  echo "review-pr-post.sh: no /review-pr completion marker for this repo and session -- run the skill through Step 7 before posting. If a previous post attempt ran, it consumed the marker: check the PR for its review. Abort without posting." >&2
   exit 2
 }
 MARKER_PR_IDENTITY=$(printf '%s\n' "$MARKER_FIELDS" | sed -n '1p')
@@ -194,6 +194,6 @@ case "$1" in
 esac
 
 if [[ "$POST_STATUS" -ne 0 ]]; then
-  echo "review-pr-post.sh: gh pr review exited $POST_STATUS (failed or timed out), so whether the review posted is unknown. Check PR $OWNER_REPO#$PR_NUMBER for it before retrying. The completion marker was consumed before the post; to post again, re-arm with \`marker.sh write review-pr\`." >&2
+  echo "review-pr-post.sh: gh pr review exited $POST_STATUS (failed or timed out), so whether the review posted is unknown. The completion marker was consumed before the post, so this session cannot post again. Ask the human to check PR $OWNER_REPO#$PR_NUMBER on GitHub and, if the review is absent, post the reviewed body by hand or start a fresh /review-pr." >&2
   exit 2
 fi

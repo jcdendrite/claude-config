@@ -623,7 +623,7 @@ _lib_marker_value_present() {
   # stack rlimit) makes grep fail to exec with E2BIG. That is a nonzero exit,
   # which every call site reads as "no matching marker" — so it fails CLOSED,
   # denying rather than releasing. Completion markers are never pruned today
-  # (marker.sh clear-stale only evicts active-bypass markers), so the ceiling
+  # (marker.sh clear-stale never evicts completion markers), so the ceiling
   # is reachable by unattended growth. Whoever adds marker retention should
   # remove this note; until then a wedged gate at that scale is a deny with no
   # diagnostic, and manual pruning of ~/.claude/*-markers/ is the workaround.

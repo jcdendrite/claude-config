@@ -83,6 +83,7 @@ def _gh_shim_source(
     swap_body_path: Path | None = None,
     swap_body_content: str | None = None,
     swap_body_symlink_target: Path | None = None,
+    remove_marker_path: Path | None = None,
 ) -> str:
     """gh shim recording every invocation.
 
@@ -106,9 +107,14 @@ def _gh_shim_source(
     `swap_body_path` names a findings-body file the shim replaces during
     the `gh pr view` call -- with `swap_body_content`, or with a symlink to
     `swap_body_symlink_target` -- modeling a writer racing the window between
-    the script's read of that file and its post."""
+    the script's read of that file and its post.
+
+    `remove_marker_path` names a completion marker the shim deletes during
+    the `gh pr view` call, modeling a second invocation consuming the marker
+    in the window between this script's read of it and its own removal."""
     pr_view_stdout = "" if pr_view_head_ref_oid is None else pr_view_head_ref_oid
     marker_path_text = None if marker_path is None else str(marker_path)
+    remove_marker_path_text = None if remove_marker_path is None else str(remove_marker_path)
     swap_body_path_text = None if swap_body_path is None else str(swap_body_path)
     swap_body_symlink_target_text = None if swap_body_symlink_target is None else str(swap_body_symlink_target)
     return textwrap.dedent(f"""\
@@ -121,6 +127,7 @@ def _gh_shim_source(
         PR_VIEW_STDOUT = {pr_view_stdout!r}
         PR_REVIEW_EXIT_STATUS = {pr_review_exit_status!r}
         MARKER_PATH = {marker_path_text!r}
+        REMOVE_MARKER_PATH = {remove_marker_path_text!r}
         SWAP_BODY_PATH = {swap_body_path_text!r}
         SWAP_BODY_CONTENT = {swap_body_content!r}
         SWAP_BODY_SYMLINK_TARGET = {swap_body_symlink_target_text!r}
@@ -146,6 +153,8 @@ def _gh_shim_source(
         with open(CALL_LOG, "a") as f:
             f.write(json.dumps(record) + chr(10))
         if args[:2] == ["pr", "view"]:
+            if REMOVE_MARKER_PATH is not None:
+                os.unlink(REMOVE_MARKER_PATH)
             if SWAP_BODY_PATH is not None:
                 os.unlink(SWAP_BODY_PATH)
                 if SWAP_BODY_SYMLINK_TARGET is not None:
@@ -660,6 +669,25 @@ class TestCompletionMarkerSelfConsuming:
         assert "could not consume the completion marker" in result.stderr
         assert _read_pr_review_calls(call_log) == []
 
+    def test_marker_consumed_by_a_racing_invocation_refuses_before_any_post(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        _seed_session(isolated_home, SID)
+        _, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        marker = review_pr_completion_marker_path(isolated_home, git_repo, SID)
+
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, remove_marker_path=marker,
+        )
+        assert result.returncode != 0
+        assert "could not consume the completion marker" in result.stderr
+        assert _read_pr_review_calls(call_log) == [], (
+            "only the invocation that removes the marker may post; one that finds it already gone must not"
+        )
+
     def test_second_invocation_fails_closed_after_the_first_succeeds(
         self, isolated_home, git_repo, tmp_path
     ):
@@ -728,7 +756,8 @@ class TestPostFailureConsumesTheMarker:
         )
         assert "unknown" in result.stderr
         assert PR_IDENTITY in result.stderr
-        assert "marker.sh write review-pr" in result.stderr
+        assert "marker.sh write review-pr" not in result.stderr
+        assert "Ask the human to check" in result.stderr
 
     def test_retry_after_a_failed_post_fails_closed_without_a_second_gh_pr_review(
         self, isolated_home, git_repo, tmp_path

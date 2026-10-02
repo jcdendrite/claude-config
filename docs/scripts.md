@@ -148,7 +148,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
 - **`review-pr-post.sh`** — the only code path `/review-pr` Step 8 may use to post a `gh pr review`; takes two arguments, the verdict `comment` or `request-changes` (a two-element `case`) and the target `<owner>/<repo>#<N>`, so `--approve` is not a reachable invocation. Exits 0 once the review posted, and 2 on any failed verification or failed post. The script's usage text owns the verification list.
 
-- **`review-pr-finish.sh`** — the single cleanup call `/review-pr` Step 8 runs on every exit path (posted, declined, or aborted) except after a post of unknown outcome, where it waits for the human to re-arm or abandon. Zero arguments, idempotent, and always exits 0, whether or not anything was in flight. The script's usage text owns the removal sequence.
+- **`review-pr-finish.sh`** — the single cleanup call `/review-pr` Step 8 runs on every exit path (posted, declined, or aborted). Zero arguments, idempotent, and always exits 0, whether or not anything was in flight. The script's usage text owns the removal sequence.
 
 - **`review-pr-scan-findings-body.sh`** — mechanical secret scan `/review-pr`'s synthesize-and-record step runs over the findings-body file before the deliver step posts it, using `_LIB_CREDENTIAL_VALUE_REGEX` (`claude/.claude/hooks/_lib.sh`). Exits 0 on no hit, 1 on a hit, and 2 on a usage error or a scan that did not complete. `marker.sh`'s `write review-pr` arm calls it before writing the completion marker and refuses the write on a non-zero exit. The script's usage text owns the rest.
 

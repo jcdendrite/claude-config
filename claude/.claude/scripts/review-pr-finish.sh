@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # Single cleanup call for /review-pr's deliver step, on every exit path --
-# posted, declined, or aborted -- except after a post of unknown outcome, where
-# SKILL.md holds it until the human has re-armed or abandoned the review.
-# review-pr has no activate/deactivate arms.
+# posted, declined, or aborted. review-pr has no activate/deactivate arms.
 # Idempotent and safe to run with nothing in flight, so a retry or a defensive
 # re-run never errors.
 set -euo pipefail
