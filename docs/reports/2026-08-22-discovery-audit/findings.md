@@ -6,7 +6,7 @@
 
 ## Status — updated 2026-09-28
 
-The findings below are a record of the repo at `6291b343` and are **not** revised as fixes land; `docs/reports/README.md` states why. This section is the one exception: a reader needs to know which findings are already closed, tracked, or superseded before acting on any of them.
+The findings below are a record of the repo at `6291b343` and are **not** revised as fixes land; `docs/reports/README.md` states why. This section is the one exception: a reader needs to know which findings are closed, tracked, or superseded before acting on any of them.
 
 A 2026-09-28 re-check against `origin/main` at `c42d143f` (newer than this report's `6291b343` baseline) confirms the statuses below.
 
