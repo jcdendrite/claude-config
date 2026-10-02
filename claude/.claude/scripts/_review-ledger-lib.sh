@@ -4,20 +4,6 @@
 # Sourced by review-ledger.sh after hooks/_lib.sh, whose _lib_jq, _lib_capped and
 # _lib_hash_diff_text it calls. Not executable on its own; source it, do not invoke it.
 # It sets no EXIT trap, because _lib_acquire_append_lock owns the sourcing script's one.
-#
-# Provides:
-#   _review_ledger_validate_flags     — per-disposition flag rules, with no I/O
-#   _review_ledger_normalize_location — source and cited-line grammar, repo-relative paths
-#   _review_ledger_site_hash          — hash of a line range of a working-tree file
-#   _review_ledger_read_rows          — the one ledger reader (show, render and --ref use it)
-#   _review_ledger_check_ref          — --ref existence, liveness and successor rules
-#   _review_ledger_check_carry        — a carry's criterion, cited-line and site-hash check
-#   _review_ledger_carry_line         — the one line a carry prints
-#   _review_ledger_row_id             — the script-stamped id of a built row
-#   _review_ledger_check_not_retired  — the --ref liveness rule, once the built row is known
-#   _review_ledger_check_out          — render --out confinement to <repo>/agent-reviews/
-#   _review_ledger_remove_out         — delete a stale regular --out file, or fail
-#   _review_ledger_render             — the PR-body block and its merge into a PR body
 
 _REVIEW_LEDGER_DELIM_START='<!-- code-review:deferred:start -->'
 _REVIEW_LEDGER_DELIM_END='<!-- code-review:deferred:end -->'
@@ -77,16 +63,23 @@ _review_ledger_is_row_id() {
   [ "${#1}" -eq "$_REVIEW_LEDGER_HEX_LENGTH" ]
 }
 
-# _review_ledger_validate_flags DISPOSITION DECIDED_BY QUOTE INVARIANT CARRY_FORWARD CRITERION REF CITED_LINE SOURCE
+# _review_ledger_validate_flags DISPOSITION DECIDED_BY QUOTE INVARIANT CARRY_FORWARD CRITERION REF CITED_LINE SOURCE [EMPTY_VALUE_FLAGS]
 # Flag-shape rules only, with no I/O. INVARIANT and CARRY_FORWARD are "1" when
-# the flag was given. An absent SOURCE is "n/a". Prints the reason to stderr
-# and returns 1 on the first violation.
+# the flag was given. An absent SOURCE is "n/a". EMPTY_VALUE_FLAGS lists, space
+# separated, each value flag the caller received with an empty value, since an
+# empty value is otherwise indistinguishable from an omitted flag. Prints the
+# reason to stderr and returns 1 on the first violation.
 _review_ledger_validate_flags() {
   local disposition="$1" decided_by="$2" quote="$3" invariant="$4" carry_forward="$5"
-  local criterion="$6" ref="$7" cited_line="$8" source="$9"
+  local criterion="$6" ref="$7" cited_line="$8" source="$9" empty_value_flags="${10:-}"
   local is_engineer_settled=0 is_carry=0
   [ "$decided_by" = carry ] && is_carry=1
   [ "$disposition" = SETTLED ] && [ "$decided_by" = engineer ] && is_engineer_settled=1
+
+  if [ -n "$empty_value_flags" ]; then
+    _review_ledger_reject "${empty_value_flags%% *} was given an empty value; pass a value or omit the flag"
+    return 1
+  fi
 
   case "$disposition" in
     ADDRESS|CLEAN)
@@ -104,6 +97,10 @@ _review_ledger_validate_flags() {
         '') _review_ledger_reject "--decided-by engineer|plan-architect|carry is required for --disposition SETTLED"; return 1 ;;
         *) _review_ledger_reject "--decided-by must be engineer, plan-architect, or carry, got '$decided_by'"; return 1 ;;
       esac
+      ;;
+    *)
+      _review_ledger_reject "--disposition must be ADDRESS, DEFER, SETTLED, or CLEAN, got '$disposition'"
+      return 1
       ;;
   esac
 
@@ -346,16 +343,33 @@ _review_ledger_row_id() {
   printf '%s' "${digest:0:$_REVIEW_LEDGER_HEX_LENGTH}"
 }
 
+# _review_ledger_check_regular_file FILE
+# Returns 1 with the reason on stderr when FILE is a symlink, dangling or not,
+# or exists as anything but a regular file. An absent FILE passes. Ledger and
+# lock files are only ever created by review-ledger.sh as regular files, so a
+# symlink there redirects the read or the append to another path.
+# The check is a point-in-time test, not an atomic no-follow open, and it does
+# not detect a hard link, which is a regular file.
+_review_ledger_check_regular_file() {
+  local file="$1"
+  if [ -L "$file" ] || { [ -e "$file" ] && [ ! -f "$file" ]; }; then
+    _review_ledger_reject "refusing '$file': a ledger or lock path must be a regular file, not a symlink or another file type. Do not remove it. Stop and report this path to the engineer, because an object planted there may be evidence of a write that bypassed the review-state hook"
+    return 1
+  fi
+}
+
 # _review_ledger_read_rows FILE...
 # Prints each file's object rows, one compact JSON object per line, each tagged
 # with source_repo_hash (the filename's repo-hash prefix, for display only).
 # A line that is not valid JSON, or not an object, is skipped rather than
 # failing the read. Each file is read by its own jq run, because jq's raw-line
 # reader would join one file's unterminated last line to the next file's first.
-# An absent or empty file yields no rows. Returns 1 when jq fails.
+# An absent or empty file yields no rows. Returns 1 when jq fails, or when a
+# file is a symlink or not a regular file.
 _review_ledger_read_rows() {
   local file
   for file in "$@"; do
+    _review_ledger_check_regular_file "$file" || return 1
     [ -s "$file" ] || continue
     _lib_jq -R -n -c '
       inputs | fromjson? | select(type == "object")
@@ -574,7 +588,7 @@ _review_ledger_carry_line() {
 # Inputs: ledger rows on stdin (JSON lines), $body (raw PR body), $digest
 # (true renders the block alone), $block_start and $block_end (the block delimiters).
 # Exit 3 with a message on stderr when the body's delimiters are unpaired or
-# repeated. The cell-escape rules are the ones docs/hooks.md describes.
+# repeated. The cell-escape rules are the ones docs/scripts.md describes.
 # shellcheck disable=SC2016 # single-quoted on purpose: $rows, $body, $block_start and the rest are jq's own variables.
 _REVIEW_LEDGER_JQ_RENDER='
 def esc_plain: s | gsub("[[:cntrl:]]"; " ") | gsub("\\\\"; "\\\\") | gsub("\\|"; "\\|") | gsub("<!--"; "&lt;!--");
@@ -694,7 +708,8 @@ def last_cell:
 
 # _review_ledger_check_out REPO_ROOT OUT PR_JSON LEDGER_DIR
 # Accepts OUT only as a regular-file target directly under REPO_ROOT's real
-# agent-reviews directory. A relative OUT is taken from the working directory,
+# agent-reviews directory, named review-ledger-<suffix>.md or pr-body-<suffix>.md.
+# A relative OUT is taken from the working directory,
 # as the write below takes it. Rejects a '..' or empty segment, a symlinked
 # agent-reviews directory or target, an existing target that is not a regular
 # file, the same file as PR_JSON, and any directory at or under LEDGER_DIR.
@@ -731,6 +746,13 @@ _review_ledger_check_out() {
   case "$name" in
     */*)
       _review_ledger_reject "render: --out '$out'$origin_note must be a file directly under $agents_dir/, not in a subdirectory"
+      return 1
+      ;;
+  esac
+  case "$name" in
+    review-ledger-?*.md|pr-body-?*.md) ;;
+    *)
+      _review_ledger_reject "render: --out '$out' must be named review-ledger-<suffix>.md or pr-body-<suffix>.md, since --out deletes its target and no other file under agent-reviews/ is a render output"
       return 1
       ;;
   esac
@@ -825,6 +847,7 @@ _review_ledger_render() {
 _review_ledger_render_in() {
   local ledger_file="$1" pr_json="$2" out="$3" work="$4"
   local rows input digest_flag=true out_tmp
+  _review_ledger_check_regular_file "$ledger_file" || return 1
   rows=$(_review_ledger_read_rows "$ledger_file") || {
     _review_ledger_reject "render: could not read the ledger (jq missing, failed, or timed out)"
     return 1

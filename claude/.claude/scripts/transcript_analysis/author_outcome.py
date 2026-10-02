@@ -65,9 +65,12 @@ _OUTCOME_KEYS = (_OUTCOME_FAILURE, _OUTCOME_PASS, _OUTCOME_UNRESOLVED, _OUTCOME_
 # (which increments them) and _print_author_outcome_report (which reads them
 # back in this fixed order) -- named once here so the two can't drift.
 _DQ_CO_AUTHORED_ROUNDS = "rounds co-authored by >1 dispatch"
-_DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW = "rounds with a marker write but no ledger row (every append for the round failed)"
+_DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW = "rounds with a clean marker write but no round-keyed ledger rows"
 _DQ_ROUND_NUMBER_MISMATCH = "sessions whose ledger round sequence doesn't match the transcript's round-opens"
-_DQ_LEDGER_POSSIBLY_SWEPT = "sessions with a code-review round but no ledger file, cold enough to be swept"
+_DQ_LEDGER_POSSIBLY_SWEPT = (
+    "sessions with a code-review round, no attributed ledger row, no opened session-keyed ledger file,"
+    " and a first round older than the sweep floor"
+)
 _DQ_UNDECIDABLE = "dispatches with no paired tool_result (undecidable)"
 _DQ_AUTHORING_AGENT_INCONSISTENT = "authoring_agent inconsistent with the transcript join"
 _DQ_MALFORMED_DISPATCH_ID = "dispatches with a missing or empty tool_use_id"
@@ -231,8 +234,8 @@ def _file_signature(path: Path) -> tuple[int, int] | None:
 
 def _row_session_id(row: dict, ledger_path: Path) -> str | None:
     """The session a ledger row belongs to: its own `session_id` when it
-    has one, else the session id in its file's name (a row from before rows
-    carried session_id). None for a row naming an invalid session id."""
+    has one, else the session id in its file's name (a row with no
+    `session_id`). None for a row naming an invalid session id."""
     if "session_id" not in row:
         return _ledger_file_session_component(ledger_path) or None
     session_id = row["session_id"]
@@ -401,7 +404,7 @@ def _ledger_possibly_swept(
     ledger_rows: list[dict],
     records: list[dict],
     *,
-    any_ledger_file_found: bool,
+    session_keyed_file_opened: bool,
     now: float | None = None,
 ) -> bool:
     """True iff this session opened >=1 code-review round, has no ledger
@@ -422,13 +425,13 @@ def _ledger_possibly_swept(
     that one is unparseable -- accepted because Claude Code transcript
     records reliably carry a `timestamp` field.
 
-    any_ledger_file_found is the caller's own
+    session_keyed_file_opened is the caller's own
     _read_ledger_row_entries_for_session result, resolved once per
     session and passed straight through here instead of re-reading.
     """
     if not code_review_rounds:
         return False
-    if ledger_rows or any_ledger_file_found:
+    if ledger_rows or session_keyed_file_opened:
         return False
     earliest_open_idx = code_review_rounds[0][0]
     ts = corpus._parse_ts(records[earliest_open_idx].get("timestamp"))
@@ -463,10 +466,11 @@ def _classify_round(
             data_quality[_DQ_SETTLED_PASS_ROUNDS] += 1
         return _OUTCOME_PASS, round_rows
     if has_marker_write:
-        # No ledger row at all for this round -- every append attempt
-        # errored before landing. But the round's own clean-marker write
-        # still ran, so the review did conclude clean. Distinct from a
-        # genuine ledger-backed PASS: this bucket is inferred, not asserted.
+        # No round-keyed ledger rows for this round: every append may have
+        # errored, or the rows were swept or predate round keys. The round's
+        # own clean-marker write still ran, so the review did conclude clean.
+        # Distinct from a genuine ledger-backed PASS: this bucket is inferred,
+        # not asserted.
         data_quality[_DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] += 1
         return _OUTCOME_PASS, round_rows
     return _OUTCOME_UNATTRIBUTED, round_rows
@@ -576,7 +580,7 @@ def compute_author_outcomes(
         # Resolved once per session and reused for the round-number-mismatch
         # check, the possibly-swept check, and every round's own
         # classification below, instead of re-reading per lookup.
-        ledger_row_entries, any_ledger_file_found = _read_ledger_row_entries_for_session(
+        ledger_row_entries, session_keyed_file_opened = _read_ledger_row_entries_for_session(
             jsonl, ledger_indexes,
         )
         ledger_rows = [row for _file_index, row in ledger_row_entries]
@@ -587,7 +591,7 @@ def compute_author_outcomes(
 
         session_ledger_possibly_swept = _ledger_possibly_swept(
             code_review_rounds, ledger_rows, records,
-            any_ledger_file_found=any_ledger_file_found, now=now,
+            session_keyed_file_opened=session_keyed_file_opened, now=now,
         )
         if session_ledger_possibly_swept:
             data_quality[_DQ_LEDGER_POSSIBLY_SWEPT] += 1

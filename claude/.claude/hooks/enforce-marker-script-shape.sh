@@ -9,16 +9,21 @@
 #      - Any `review-ledger.sh append` via Bash from those same agent types,
 #        because the row would be attributed to the parent session.
 #      - Ledger-state writes (a ledger path via Write/Edit/MultiEdit or a Bash
-#        redirect) and a `review-ledger.sh append` carrying `--engineer-quote`,
-#        from every non-empty agent type, because only the main session holds
-#        the engineer's turn and only review-ledger.sh writes ledger files.
+#        redirect) from those same agent types, whether or not `.agent_id` is
+#        present, and from every other subagent.
+#      - A `review-ledger.sh append` carrying `--engineer-quote`, from every
+#        subagent.
+#      Ledger state and the engineer-quote row are barred to every subagent
+#      because only the main session holds the engineer's turn and only
+#      review-ledger.sh writes ledger files. A subagent is a payload with a
+#      non-empty `.agent_id`; `.agent_type` alone does not identify one, since
+#      the harness also sets it for a main session started with `--agent`
+#      (primary source quoted in the known-gaps list below). Roster membership
+#      keys on `.agent_type`, so a roster name is barred from marker and ledger
+#      state with or without `.agent_id`.
 #   2. Enforce strict invocation shape for ~/.claude/scripts/marker.sh.
 #
-# Per-fire cost of the ledger Bash arm: 0 forks on the common path (no
-# subagent, or no `review-ledger.sh` in the command), since both of its
-# predicates gate their detectors behind pure-bash `case` matches. The
-# Write/Edit/MultiEdit arm resolves its target for every non-empty agent type,
-# not only the roster, because a ledger path denies all of them.
+# Per-fire cost is stated in the comment above the Bash write scan.
 #
 # Wired on both the Bash and Write|Edit|MultiEdit PreToolUse matchers; job 1
 # needs both surfaces, since gating only the shell leaves a direct file write
@@ -34,28 +39,36 @@
 #     caught. Documented at that check; the path-based arm is what makes the
 #     gate-release property hold regardless.
 #   - A Bash-tool write to a marker path via `>`/`>>`/`&>`/`&>>`/`<>`, `tee`,
-#     `cp`/`mv`/`install` (last-argument form), `dd of=`, or `sed -i` is
-#     caught by a dedicated scan that runs before Stage 1, independent of the
-#     command mentioning `marker.sh`. Still open: `>|` (clobber-override --
+#     `cp`/`mv`/`install`/`ln`/`link` (last-argument form), `dd of=`, or
+#     `sed -i` is caught by a dedicated scan that runs before Stage 1,
+#     independent of the command mentioning `marker.sh`. Still open: `>|` (clobber-override --
 #     its literal `|` gets severed from the operator by the fragment
 #     splitter this scan reuses, before extraction ever sees a whole token);
 #     `python3 -c "open(...).write(...)"` and here-doc bodies handed to an
 #     interpreter; a `$(...)`-computed target path; shell-function/variable
-#     indirection around the write utility itself; `cp`/`mv`/`install -t DIR`
-#     or `--target-directory=DIR` (destination isn't the last argument, so
-#     the last-argument heuristic misses it); a symlink whose own path text
-#     carries no literal `.claude` (e.g. `ln -s ~/.claude/code-review-markers
-#     /tmp/x`, then `printf ... > /tmp/x/forged`) — and the same for a symlink
-#     to the ledger directory, whose path carries no ledger name either. This
-#     scan's fast-reject requires one of those literals, unlike the
-#     Write/Edit arm's unconditional realpath resolution; and, beyond the first
+#     indirection around the write utility itself; `cp`/`mv`/`install`/`ln -t
+#     DIR` or `--target-directory=DIR` (destination isn't the last argument, so
+#     the last-argument heuristic misses it; GNU `link` takes no such option);
+#     a symlink whose own path text carries no literal `.claude` (e.g. `ln -s
+#     ~/.claude/code-review-markers /tmp/x`, then `printf ... > /tmp/x/forged`)
+#     — and the same for a symlink to the ledger directory, whose path carries
+#     no ledger name either. This scan's fast-reject requires one of those
+#     literals, unlike the Write/Edit arm's unconditional realpath resolution.
+#     A symlink alias also goes unresolved past the first
 #     `$MARKER_WRITE_REALPATH_BUDGET` `.claude`-mentioning candidates in one
-#     command, a `..`-traversal or stow-fold-physical-path obfuscation --
-#     candidates past the budget are shape-tested against their raw
-#     tilde-expanded form only, not realpath-normalized, bounding per-fire
-#     cost against a many-target `tee`/`cp`/`mv`/`install` invocation; and a
-#     CLAUDE_CONFIG_DIR with no `.claude` path segment (`_marker_shape_match`'s
-#     config-dir-aware shape, added for the Write/Edit/MultiEdit arm below) —
+#     command (the budget bounds per-fire cost against a many-target
+#     `tee`/`cp`/`mv`/`install` invocation), or with `realpath` missing,
+#     failing or timed out.
+#     A dot-segment (`..`, `.`) or doubled-slash spelling is not affected by
+#     that, because `_marker_shape_match` classifies a lexically normalized
+#     candidate without `realpath`.
+#     Still open: a bare relative spelling with no leading `/` or `./`
+#     (`.claude/review-narrative-ledger/f`) is classified none without a
+#     `realpath` form, since the shape patterns need a `/.claude/` segment.
+#     With a `realpath` form it resolves against the hook's working directory
+#     (see the `cd` residual below).
+#     Still open: a CLAUDE_CONFIG_DIR with no `.claude` path segment
+#     (`_marker_shape_match`'s config-dir-aware shape) —
 #     both this scan's Stage-0 command-level pre-filter and its per-candidate
 #     `_marker_write_candidate_mentions_claude` filter require a literal
 #     `.claude` substring before a candidate ever reaches `_marker_shape_match`,
@@ -70,11 +83,24 @@
 #     re-arm gates rather than release them).
 #   - Marker state reached by a tool other than Bash/Write/Edit/MultiEdit
 #     (none exists today) would be ungated.
-#   - Both arms key on `.agent_type`, which the harness populates only for
-#     subagents it dispatches. A nested top-level session shelled out of a
-#     Bash tool call (`claude -p ...`) would carry no agent_type and read as
-#     the main session. Unconfirmed whether that is reachable from a subagent's
-#     execution context; if it is, every agent-identity-keyed hook shares it
+#   - Both arms identify a subagent by `.agent_id`. The Claude Code hooks
+#     reference (https://code.claude.com/docs/en/hooks.md, common input fields)
+#     says `agent_id` is "Unique identifier for the subagent. Present only when
+#     the hook fires inside a subagent call. Use this to distinguish subagent
+#     hook calls from main-thread calls." and `agent_type` is "Present when the
+#     session uses `--agent` or the hook fires inside a subagent." The same
+#     page says "When a subagent calls a tool, tool events such as `PreToolUse`
+#     and `PostToolUse` fire the same configured hooks as in the main
+#     conversation, and the input carries the `agent_id` and `agent_type`
+#     common input fields that identify the subagent." That sentence is what
+#     the deny's completeness rests on. It does not cover a fork or a nested
+#     `claude -p` session. A payload that lacks `agent_id` reads as the main
+#     session, so the engineer-row and non-roster ledger-state denies fail
+#     open there. That covers a subagent whose payload omits the field, a
+#     nested top-level session shelled out of a Bash tool call
+#     (`claude -p ...`), and a fork, whose payload is unverified. Unconfirmed
+#     whether the nested session is reachable from a subagent's execution
+#     context; if it is, every agent-identity-keyed hook shares it
 #     (deny-reviewer-tree-mutation.sh has the same dependency), so the fix
 #     belongs at the permission layer for the whole class rather than here.
 #   - MARKER_WRITE_COMMAND_UNQUOTED's sed/tr strip and
@@ -135,26 +161,39 @@
 #       glob or `$(...)` is not.
 #     - A relative write target after `cd` into the ledger directory is not
 #       resolved against the `cd`.
-#     - `rm`, `truncate`, and `mv` with a ledger file as its source are not
-#       scanned as writes.
+#     - `rm` and `truncate` on a ledger or marker file are not scanned as
+#       writes.
+#     - `mv` with a ledger or marker file as its source is not scanned as a
+#       write.
 #     - A `>&` redirect (`echo x >& PATH`) yields the glued target `&`, so the
 #       path word after it is never a candidate.
-#     - A trailing redirect after a `cp`/`mv`/`install` destination
+#     - A trailing redirect after a `cp`/`mv`/`install`/`ln`/`link` destination
 #       (`cp SRC DEST 2>/dev/null`) becomes the last argument, so DEST is never
 #       a candidate.
-#     - A `cp`/`mv`/`install` destination that is a symlink to a ledger or
-#       marker directory is not classified as that directory. `realpath -m`
-#       drops the appended trailing slash, so the bare-directory
-#       classification holds for literal directory names only.
-#     - Accepted over-emission: `cp -t DIR <state dir>` and `install -d
-#       <state dir>` are denied for a subagent, because the last argument is
-#       classified as a destination directory. Neither has a legitimate
-#       subagent use.
+#     - A `cp`/`mv`/`install`/`ln`/`link` destination that is a symlink to a
+#       ledger or marker directory is not classified as that directory.
+#       `realpath -m` drops the appended trailing slash, and the lexical form
+#       follows no symlink. A bare destination that names the directory itself,
+#       including a doubled-slash or dot-segment spelling of it, is classified.
+#     - The Bash write scan resolves a symlink only when the candidate text
+#       names `.claude` or the ledger directory and realpath budget remains,
+#       and never follows a hard link. The Write/Edit arm resolves a symlink
+#       but not a hard link. Two routes follow:
+#       - A write through an alias created outside the state directory.
+#       - `ln -f -t <state dir> <same-filesystem file>`, which the `-t` residual
+#         above misses. review-ledger.sh accepts the result, because it refuses
+#         a symlink or non-regular file at a ledger or lock path and a hard link
+#         is a regular file.
+#     - Accepted over-emission: `cp -t DIR <state dir>`, `ln -t DIR <state dir>`
+#       and `install -d <state dir>` are denied for a subagent, because the
+#       last argument is classified as a destination directory. None has a
+#       legitimate subagent use.
 #     - A write utility behind `bash -c` or a compound keyword (`then cp ...`)
 #       is not matched, because the command word is the wrapper or the keyword.
 #       A redirect inside the same text is still matched.
 #     - A case-varied `TEE` command word passes the case-folding command-word
-#       check, then fails the `tee` argument walk, which compares case-sensitively.
+#       check, then fails the `tee` argument walk, which compares
+#       case-sensitively.
 #     - The engineer-row deny depends on the script's own quote requirement:
 #       `_review_ledger_validate_flags` rejects `--decided-by engineer`
 #       without `--engineer-quote`.
@@ -163,10 +202,10 @@
 #       `general-purpose` is the delegated review orchestrator and logs rows
 #       the way the dispatcher would, and plan-architect holds no Bash tool,
 #       so only a dispatcher can log its decision.
-#     - Unverified whether `.agent_type` is empty for a main session started
-#       with a named agent, or for a fork. If it is not, the engineer-row deny
-#       and the ledger-state path deny falsely deny that caller, which is the
-#       fail-closed direction.
+#     - Unverified whether `.agent_id` is present inside a fork. If it is
+#       absent, a fork reads as the main session and is not denied an
+#       engineer-row append or a ledger-state write, unless its `.agent_type`
+#       is in the roster.
 #
 # WARNING: Do NOT remove the internal marker.sh check below.
 # The "if" field in settings.json is unreliable — it has been observed
@@ -252,10 +291,11 @@ LEDGER_COMMAND_TEXT_NOTE="This matched on command text. The Grep and Read tools 
 # _marker_shape_match TARGET_PATH [ALLOW_REALPATH=1]
 # True (exit 0) iff TARGET_PATH matches the marker-directory SHAPE or the
 # review-ledger-directory shape (`review-narrative-ledger/`), tested via
-# the raw tilde-expansion and its `_lib_realpath_m` normalization, so both
-# call sites (Write/Edit/MultiEdit's single target below, the Bash redirect/
-# utility arm's several extracted targets further down) share one pattern
-# that cannot drift between them. Exit 1: no match. Exit 2: the Claude Code
+# the raw tilde-expansion, its lexical normalization and its `_lib_realpath_m`
+# normalization, in that order, so both call sites (Write/Edit/MultiEdit's
+# single target below, the Bash redirect/utility arm's several extracted
+# targets further down) share one pattern that cannot drift between them.
+# Exit 1: no match. Exit 2: the Claude Code
 # config directory could not be resolved, so a config-dir-relative marker
 # alias could not be ruled out — callers must deny, not skip, on exit 2.
 # Shape test only: no agent-type read, no deny decision — callers decide what
@@ -270,16 +310,23 @@ LEDGER_COMMAND_TEXT_NOTE="This matched on command text. The Grep and Read tools 
 # until normalized. A second, independent shape covers CLAUDE_CONFIG_DIR
 # values with no `.claude` segment at all (e.g. ~/.config/claude-accounts/
 # <account>), which the $HOME-relative shape above cannot see.
-# The raw candidate is always tested too, since `_lib_realpath_m` can return
-# empty under `_lib_capped`'s timeout on a stalled $HOME mount.
+# The raw and lexical candidates are always tested, since `_lib_realpath_m` can
+# return empty under `_lib_capped`'s timeout on a stalled $HOME mount. The
+# lexical form (`_lib_normalize_path_lexically`) runs no exec'd command, so ALLOW_REALPATH
+# bounds only symlink resolution, and a `//`, `/./` or `seg/../` spelling is
+# classified whether or not a realpath form exists. The ledger globs have no
+# wildcard between the anchor and the directory name, so only a normalized
+# spelling matches them.
 # `realpath` is still required to catch a symlink whose own path carries no
 # marker-shaped segment but resolves into the markers directory — the same
-# reasoning applies to the config dir itself, so it is realpath'd too.
+# reasoning applies to the config dir itself, so it is realpath'd too. The
+# config dir is also normalized lexically, so an anchor spelled with `//` or
+# `..` still matches a normalized candidate.
 # Only a leading `~`, `$HOME` or `$CLAUDE_CONFIG_DIR` in TARGET_PATH is
 # expanded; any other variable, glob or `$(...)` stays literal.
-# Over-matching is safe: a false marker match only denies an agent that could
-# never legitimately release a gate, and a false ledger match only denies a
-# subagent that has no legitimate direct write to the ledger directory.
+# Over-matching is safe: a false marker or ledger match only denies a roster
+# agent, which has no legitimate direct write to either directory, or a
+# subagent, which has none to the ledger directory.
 #
 # The config-dir branch runs only when CLAUDE_CONFIG_DIR is actually set:
 # _lib_config_dir()'s fallback (unset CLAUDE_CONFIG_DIR) resolves to exactly
@@ -289,9 +336,9 @@ LEDGER_COMMAND_TEXT_NOTE="This matched on command text. The Grep and Read tools 
 # running it would only add a redundant `_lib_config_dir`/`_lib_realpath_m`
 # call for the overwhelming majority of installations that never set
 # CLAUDE_CONFIG_DIR. When it IS set, resolution and its realpath follow the
-# same ALLOW_REALPATH gating as the $HOME-relative candidate: the raw
-# resolved value is always tested, only its realpath normalization is
-# budget-gated, so a budget-exhausted candidate degrades the same way the
+# same ALLOW_REALPATH gating as the $HOME-relative candidate: the raw and
+# lexical resolved values are always tested, only the realpath normalization
+# is budget-gated, so a budget-exhausted candidate degrades the same way the
 # $HOME-relative shape does rather than losing config-dir coverage entirely.
 # A resolution failure denies (return 2) unconditionally once CLAUDE_CONFIG_DIR
 # is set, for the same reason the Write/Edit/MultiEdit arm denies
@@ -299,14 +346,18 @@ LEDGER_COMMAND_TEXT_NOTE="This matched on command text. The Grep and Read tools 
 # verified as NOT a review-marker path, independent of the realpath budget.
 _marker_shape_match() {
   local target_path="$1" allow_realpath="${2:-1}"
-  local expanded normalized candidate matched=1
+  local expanded lexical normalized candidate matched=1
   MARKER_SHAPE_MATCH_KIND=""
-  local config_dir_resolved="" config_dir_realpath=""
+  local config_dir_resolved="" config_dir_lexical="" config_dir_realpath=""
   expanded="${target_path/#\~/$HOME}"
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
     if ! config_dir_resolved=$(_lib_config_dir 2>/dev/null); then
       return 2
     fi
+    _lib_normalize_path_lexically "$config_dir_resolved"
+    # The normalizer keeps a trailing slash, and the anchor patterns append `/`.
+    # A bare `/` config dir strips to empty, which the anchor loop skips.
+    config_dir_lexical="${_LIB_NORMALIZED_PATH%/}"
     if [ "$allow_realpath" = "1" ]; then
       config_dir_realpath=$(_lib_realpath_m "$config_dir_resolved" 2>/dev/null)
     fi
@@ -327,13 +378,17 @@ _marker_shape_match() {
       break
     fi
   done
+  _lib_normalize_path_lexically "$expanded"
+  lexical="$_LIB_NORMALIZED_PATH"
   if [ "$allow_realpath" = "1" ]; then
     normalized=$(_lib_realpath_m "$expanded" 2>/dev/null)
   else
     normalized=""
   fi
-  for candidate in "$expanded" "$normalized"; do
+  local candidate_kind config_dir_anchor
+  for candidate in "$expanded" "$lexical" "$normalized"; do
     [ -n "$candidate" ] || continue
+    candidate_kind=""
     # nocasematch: macOS's default APFS volume is case-insensitive, so a
     # case-varied marker path (~/.Claude/...) resolves to the same on-disk
     # file this case-sensitive pattern would otherwise miss. Scoped tightly
@@ -346,41 +401,43 @@ _marker_shape_match() {
     # plan gate with no hash comparison at all.
     # Ledger files (<config-dir>/review-narrative-ledger/*) carry decision rows
     # the parent session would be credited with, including their `.lock` files.
+    # A ledger shape on any candidate form or pattern list wins over a marker
+    # shape, so `<kind>-markers/../review-narrative-ledger/<file>` is
+    # ledger-kind.
     case "$candidate" in
-      */.claude/*-markers/*|*/.claude/.*-active.d/*) matched=0 MARKER_SHAPE_MATCH_KIND=marker ;;
-      */.claude/review-narrative-ledger/*) matched=0 MARKER_SHAPE_MATCH_KIND=ledger ;;
+      */.claude/review-narrative-ledger/*) candidate_kind=ledger ;;
+      */.claude/*-markers/*|*/.claude/.*-active.d/*) candidate_kind=marker ;;
     esac
-    if [ "$matched" -ne 0 ] && [ -n "$config_dir_resolved" ]; then
+    for config_dir_anchor in "$config_dir_resolved" "$config_dir_lexical" "$config_dir_realpath"; do
+      [ "$candidate_kind" != ledger ] || break
+      [ -n "$config_dir_anchor" ] || continue
       case "$candidate" in
-        "$config_dir_resolved"/*-markers/*|"$config_dir_resolved"/.*-active.d/*) matched=0 MARKER_SHAPE_MATCH_KIND=marker ;;
-        "$config_dir_resolved"/review-narrative-ledger/*) matched=0 MARKER_SHAPE_MATCH_KIND=ledger ;;
+        "$config_dir_anchor"/review-narrative-ledger/*) candidate_kind=ledger ;;
+        "$config_dir_anchor"/*-markers/*|"$config_dir_anchor"/.*-active.d/*) candidate_kind=marker ;;
       esac
-    fi
-    if [ "$matched" -ne 0 ] && [ -n "$config_dir_realpath" ]; then
-      case "$candidate" in
-        "$config_dir_realpath"/*-markers/*|"$config_dir_realpath"/.*-active.d/*) matched=0 MARKER_SHAPE_MATCH_KIND=marker ;;
-        "$config_dir_realpath"/review-narrative-ledger/*) matched=0 MARKER_SHAPE_MATCH_KIND=ledger ;;
-      esac
-    fi
+    done
     shopt -u nocasematch
-    [ "$matched" -eq 0 ] && break
+    [ -n "$candidate_kind" ] || continue
+    matched=0
+    MARKER_SHAPE_MATCH_KIND="$candidate_kind"
+    [ "$candidate_kind" = ledger ] && break
   done
   return "$matched"
 }
 
 # _agent_barred_from_matched_state
-# Exit 0 iff AGENT_TYPE may not write the state kind the last
-# _marker_shape_match call matched. Ledger state is barred to every non-empty
-# agent type, since only the main session holds the engineer's turn and
-# review-ledger.sh is the only legitimate writer. Marker state is barred to
-# the no-gate-release roster only, since a full-tool-set agent may have run
-# the review.
+# Exit 0 iff the caller may not write the state the last _marker_shape_match
+# call matched. A roster agent is barred from any match, marker or ledger,
+# whether or not AGENT_ID is present, since the match reports one kind and a
+# path can carry both (`<kind>-markers/../review-narrative-ledger/<file>`).
+# Any other subagent (non-empty AGENT_ID) is barred from ledger state only,
+# since only the main session holds the engineer's turn and review-ledger.sh
+# is the only legitimate writer. A full-tool-set agent may have run a review,
+# so marker state stays open to it, and a named main session (AGENT_TYPE with
+# no AGENT_ID) stays open to ledger state.
 _agent_barred_from_matched_state() {
-  if [ "${MARKER_SHAPE_MATCH_KIND:-}" = ledger ]; then
-    [ -n "$AGENT_TYPE" ]
-  else
-    _lib_is_no_gate_release_agent "$AGENT_TYPE"
-  fi
+  _lib_is_no_gate_release_agent "$AGENT_TYPE" && return 0
+  [ "${MARKER_SHAPE_MATCH_KIND:-}" = ledger ] && [ -n "$AGENT_ID" ]
 }
 
 # _shape_match_denial_reason DISPLAY_PATH
@@ -391,10 +448,10 @@ _shape_match_denial_reason() {
   local display_path="$1"
   if [ "${MARKER_SHAPE_MATCH_KIND:-}" = ledger ]; then
     printf "Ledger write — the '%s' agent cannot write review-ledger state at '%s'. Only review-ledger.sh writes ledger files, and its rows are credited to the parent session as decisions, so a file written by hand would assert a decision the parent session never made.\n\n%s" \
-      "$AGENT_TYPE" "$display_path" "$LEDGER_UPWARD_GUIDANCE"
+      "$AGENT_DENIAL_LABEL" "$display_path" "$LEDGER_UPWARD_GUIDANCE"
   else
     printf "Marker write — the '%s' agent cannot release a review gate by writing '%s'.\n\n%s" \
-      "$AGENT_TYPE" "$display_path" "$GATE_RELEASE_DENIAL_GUIDANCE"
+      "$AGENT_DENIAL_LABEL" "$display_path" "$GATE_RELEASE_DENIAL_GUIDANCE"
   fi
 }
 
@@ -409,10 +466,13 @@ _config_dir_unresolvable_reason() {
 # settings.json matchers alone. Anything that is neither a file-write tool nor
 # Bash cannot reach marker state.
 #
-# Both arms key on .agent_type; neither pays a per-fire subprocess for it any
-# more, since _lib_parse_tool_input_or_deny already populates AGENT_TYPE
-# (and, for this arm, FILE_PATH) from the single shared parse every hook
-# invocation already pays for.
+# Both arms key on .agent_id and .agent_type; neither pays a per-fire
+# subprocess for them, since _lib_parse_tool_input_or_deny already populates
+# AGENT_ID and AGENT_TYPE (and, for this arm, FILE_PATH) from the single shared
+# parse every hook invocation already pays for.
+# AGENT_DENIAL_LABEL names the caller in deny text; a subagent with no
+# agent_type reads as 'unnamed'.
+AGENT_DENIAL_LABEL="${AGENT_TYPE:-unnamed}"
 case "$TOOL_NAME" in
   Write|Edit|MultiEdit)
     # Path-based arm. Every marker lives under a known directory, so the
@@ -420,9 +480,11 @@ case "$TOOL_NAME" in
     # resolved path answers directly, with no command text to outsmart.
     TARGET_PATH="$FILE_PATH"
 
-    # The main session writes any state. Which other agent types may depends
-    # on the matched kind, so the roster test follows the shape match.
-    [ -n "$AGENT_TYPE" ] || exit 0
+    # The main session writes any state. Which subagents may depends on the
+    # matched kind, so the roster test follows the shape match. A named agent
+    # without an agent_id is a main session started with `--agent`; it still
+    # reaches the shape match so a roster name stays barred from marker state.
+    [ -n "$AGENT_ID" ] || [ -n "$AGENT_TYPE" ] || exit 0
     [ -n "$TARGET_PATH" ] || exit 0
 
     # Shape-tested via _marker_shape_match (defined above; shared with the
@@ -463,9 +525,9 @@ _fragment_may_invoke_tool() {
 # _bash_marker_fragment_candidates FRAGMENT
 # Emits, one per line, every write-target word in FRAGMENT worth
 # shape-testing: `>`/`>>` operands (bare or glued, fd-prefixed), `tee`
-# arguments, `cp`/`mv`/`install` last arguments (each also with a trailing `/`
-# when it has none, so a bare destination directory is classified like a path
-# inside it), `dd of=`
+# arguments, `cp`/`mv`/`install`/`ln`/`link` last arguments (each also with a
+# trailing `/` when it has none, so a bare destination directory is classified
+# like a path inside it), `dd of=`
 # glued arguments, and `sed -i` last arguments. Over-emission is safe — each
 # candidate is independently shape-tested by _marker_shape_match.
 _bash_marker_fragment_candidates() {
@@ -525,7 +587,9 @@ _bash_marker_fragment_candidates() {
 
   if _fragment_may_invoke_tool "$fragment" cp \
     || _fragment_may_invoke_tool "$fragment" mv \
-    || _fragment_may_invoke_tool "$fragment" install; then
+    || _fragment_may_invoke_tool "$fragment" install \
+    || _fragment_may_invoke_tool "$fragment" ln \
+    || _fragment_may_invoke_tool "$fragment" link; then
     printf '%s\n' "${Words[$((n - 1))]}"
     # A destination that is an existing directory receives the file inside it.
     # The shape globs end in `/*`, so a destination with no trailing slash
@@ -680,14 +744,6 @@ _script_op_scan() {
   return 1
 }
 
-# Per-fire cost on every Bash call, not just a marker-shaped one: the
-# quote-strip below is 2 forks (_lib_strip_shell_quotes's sed + tr). The
-# pre-filter and Stage 1's fast-reject are pure bash, and Stage 1 precedes the
-# `TRIMMED` fork, so this arm adds 2 forks regardless of relevance. Necessary
-# ordering, not a simplification target: this scan exists specifically to catch
-# a command that never reaches Stage 1's marker.sh substring check, so it
-# cannot run after that check without reopening the bypass it closes.
-#
 # Bash-tool write to a marker or ledger path via a redirect or write utility
 # that never mentions `marker.sh` — closes the class of bypass Stage 1's
 # substring gate below would otherwise fast-exit as an allow. Runs first for
@@ -702,14 +758,22 @@ _script_op_scan() {
 # time) can't skip this fast-reject by never containing a contiguous `.claude`
 # substring in its raw text.
 #
-# Per-fire cost, counted in subprocesses. The quote-strip is two (sed, tr). The
-# backslash-newline join and the pre-filter are pure bash. Splitting the text
-# into fragments is two seds, once. A join that changes the text makes the scan
-# read the unjoined and the joined copy, which doubles the fragment count.
+# Per-fire cost on every Bash call whether or not it is marker-shaped, counted
+# in exec'd external commands except where a figure says processes. The scan
+# cannot move after Stage 1, since it exists to catch a command that never
+# reaches Stage 1's marker.sh substring check. The quote-strip is two externals (sed,
+# tr), and about seven processes once its `$(...)` substitutions and the
+# builtin `printf` on the left of each pipe are counted (measured on bash 5.2
+# by counting `clone` calls under strace). The backslash-newline join, the
+# pre-filter and Stage 1's fast-reject are pure bash. Splitting the text into
+# fragments is two seds, once, and about four processes. A join that changes
+# the text makes the scan read the unjoined and the joined copy, which doubles
+# the fragment count.
 # Per fragment, `_fragment_may_invoke_tool` rejects with a `case` match, so a
-# fragment that names none of tee, cp, mv, install, dd and sed as a word or
-# path component costs none. Each of those utilities a fragment does name costs
-# one `_lib_fragment_command_word` subshell, at most six per fragment.
+# fragment that names none of tee, cp, mv, install, ln, link, dd and sed as a
+# word or path component costs none. Each of those utilities a fragment does
+# name costs one `_lib_fragment_command_word` command substitution, at most
+# eight per fragment.
 # Per candidate, the pre-filter rejects with a `case` match and costs none. A
 # candidate that reaches _marker_shape_match's realpath resolution costs one
 # `_lib_realpath_m` call in the default configuration (CLAUDE_CONFIG_DIR
@@ -718,12 +782,19 @@ _script_op_scan() {
 # default case, since it would be redundant with the $HOME-relative shape
 # test. MARKER_WRITE_REALPATH_BUDGET below bounds how many candidates in one
 # fire pay that cost, capping worst-case added latency at roughly
-# budget * (1 or 2 realpath calls, depending on CLAUDE_CONFIG_DIR). Fragment
+# budget * (1 or 2 realpath calls, depending on CLAUDE_CONFIG_DIR). The lexical
+# form _marker_shape_match always tests costs no exec'd command. Fragment
 # count is not capped: it scales with the command's line count, at the
 # per-fragment cost above. Absolute per-call latency is too load-dependent on
-# a shared machine to state as a fixed ms figure here. A future edit that
-# removes a pre-filter, raises the budget, or adds a per-fragment or
-# per-candidate subprocess call should re-derive this accounting.
+# a shared machine to state as a fixed ms figure here.
+# The ledger Bash arm costs none on the common path (no subagent, or no
+# `review-ledger.sh` in the command), since both of its predicates gate their
+# detectors behind pure-bash `case` matches. The Write/Edit/MultiEdit arm
+# resolves its target whenever `.agent_id` or `.agent_type` is non-empty, not
+# only for the roster, because a ledger path denies every subagent.
+# A future edit that removes a pre-filter, raises the budget, or adds a
+# per-fragment or per-candidate external command should re-derive this
+# accounting.
 MARKER_WRITE_COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
 MARKER_WRITE_COMMAND_UNQUOTED_EXIT=$?
 if [ "$MARKER_WRITE_COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
@@ -764,8 +835,8 @@ if _text_may_name_state_directory "$MARKER_WRITE_SCAN_TEXT"; then
       exit 0
     fi
     [ "$MARKER_WRITE_SHAPE_STATUS" -eq 0 ] || continue
-    # AGENT_TYPE is already populated by _lib_parse_tool_input_or_deny's
-    # shared parse, at no added per-fire cost.
+    # AGENT_ID and AGENT_TYPE are already populated by
+    # _lib_parse_tool_input_or_deny's shared parse, at no added per-fire cost.
     if _agent_barred_from_matched_state; then
       MARKER_WRITE_CANDIDATE_TRUNCATED=$(printf '%s' "$MARKER_WRITE_CANDIDATE" | cut -c1-80)
       emit_deny "$(_shape_match_denial_reason "$MARKER_WRITE_CANDIDATE_TRUNCATED")"
@@ -781,19 +852,18 @@ fi
 # Review-ledger arm of the authority check. It sits before Stage 1, whose
 # `marker.sh` fast-reject exits on every ledger command, and never exits on
 # a non-match, so a combined command still reaches the marker arm below.
-# The pure-bash `case` matches gate the detectors, so a main-session or
-# ledger-free command pays no fork here. _script_op_scan takes the raw
+# Its cost is stated with the Bash write scan's. _script_op_scan takes the raw
 # $COMMAND for the command-word detector, since _lib_strip_shell_quotes is not
 # idempotent, and the quote-stripped, backslash-newline-joined command for its
 # raw-text detector.
 #   - A roster agent is denied any `append`.
-#   - Any other non-empty agent type is denied an `append` carrying
+#   - Any other subagent (non-empty `AGENT_ID`) is denied an `append` carrying
 #     `--engineer-quote`, tested before the detectors run. That one token marks
 #     every engineer-authority row, since the script rejects an engineer row
 #     without it. The tested text includes a quote-split `--engineer-''quote`
 #     and one split by a backslash-newline.
 # `show`, `render` and `clear-stale` stay ungated.
-if [ -n "$AGENT_TYPE" ]; then
+if [ -n "$AGENT_ID" ] || [ -n "$AGENT_TYPE" ]; then
   LEDGER_SCRIPT_MENTIONED=false
   case "$COMMAND" in *review-ledger.sh*) LEDGER_SCRIPT_MENTIONED=true ;; esac
   case "$MARKER_WRITE_COMMAND_UNQUOTED_JOINED" in *review-ledger.sh*) LEDGER_SCRIPT_MENTIONED=true ;; esac
@@ -801,7 +871,7 @@ if [ -n "$AGENT_TYPE" ]; then
     LEDGER_APPEND_DENIAL_KIND=""
     if _lib_is_no_gate_release_agent "$AGENT_TYPE"; then
       LEDGER_APPEND_DENIAL_KIND=roster
-    else
+    elif [ -n "$AGENT_ID" ]; then
       case "$COMMAND" in *--engineer-quote*) LEDGER_APPEND_DENIAL_KIND=engineer ;; esac
       case "$MARKER_WRITE_COMMAND_UNQUOTED_JOINED" in *--engineer-quote*) LEDGER_APPEND_DENIAL_KIND=engineer ;; esac
     fi
@@ -810,11 +880,11 @@ if [ -n "$AGENT_TYPE" ]; then
       LEDGER_APPEND_SCAN_STATUS=$?
       if [ "$LEDGER_APPEND_SCAN_STATUS" -eq 0 ]; then
         if [ "$LEDGER_APPEND_DENIAL_KIND" = roster ]; then
-          emit_deny "Ledger write — the '$AGENT_TYPE' agent cannot append review-ledger rows, and the row would be attributed to the parent session as a decision it never made. $LEDGER_COMMAND_TEXT_NOTE
+          emit_deny "Ledger write — the '$AGENT_DENIAL_LABEL' agent cannot append review-ledger rows, and the row would be attributed to the parent session as a decision it never made. $LEDGER_COMMAND_TEXT_NOTE
 
 $LEDGER_UPWARD_GUIDANCE"
         else
-          emit_deny "Ledger write — the '$AGENT_TYPE' agent cannot log an engineer decision: only the main session holds the engineer's turn, and the quote is published in the PR body under the engineer's name. Report the engineer's answer and the planned row in your return, and the main session logs it. This matched on the text \`--engineer-quote\` anywhere in the command, including inside the finding or rationale text, so rewording that text to leave out the literal flag avoids a false match. The Grep and Read tools are unaffected."
+          emit_deny "Ledger write — the '$AGENT_DENIAL_LABEL' agent cannot log an engineer decision: only the main session holds the engineer's turn, and the quote is published in the PR body under the engineer's name. Report the engineer's answer and the planned row in your return, and the main session logs it. This matched on the text \`--engineer-quote\` anywhere in the command, including inside the finding or rationale text, so rewording that text to leave out the literal flag avoids a false match. The Grep and Read tools are unaffected."
         fi
         exit 0
       fi
@@ -881,7 +951,7 @@ if _lib_is_no_gate_release_agent "$AGENT_TYPE"; then
   _script_op_scan "$COMMAND" "$MARKER_WRITE_COMMAND_UNQUOTED_JOINED" 'marker\.sh' marker.sh write activate
   MARKER_GATE_SCAN_STATUS=$?
   if [ "$MARKER_GATE_SCAN_STATUS" -eq 0 ]; then
-    emit_deny "Marker write — the '$AGENT_TYPE' agent cannot release a review gate.
+    emit_deny "Marker write — the '$AGENT_DENIAL_LABEL' agent cannot release a review gate.
 
 $GATE_RELEASE_DENIAL_GUIDANCE"
     exit 0

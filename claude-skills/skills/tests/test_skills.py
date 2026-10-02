@@ -5618,30 +5618,30 @@ _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "blocking stop-and-ask, never *keep current text*. A human keep is "
     "logged `--disposition SETTLED --decided-by engineer "
     "--engineer-quote '<their words>'` with a range naming the whole "
-    "block (widen when unsure), `--ref <id>` to the live earlier "
-    "decision on the same failure mode, if any (take ids from the digest's Id "
-    "column or `show`; `append` prints none), and `--carry-forward` "
-    "only when the engineer's answer states no scope or time limit, "
-    "neither declines carries nor asks to be asked again, and the "
-    "enforcement-invariant rule below does not apply (a keep "
-    "\"for now\" or \"just this file\", a decline, or an ask to be "
-    "asked again is logged without it). Relay "
-    "the `stored engineer quote:` line. Every "
+    "block (widen when unsure). It also carries `--ref <id>` to the "
+    "live earlier decision on the same failure mode, if any (take ids "
+    "from the digest's Id column or `show`; `append` prints none). It "
+    "adds `--carry-forward` only when the engineer's answer states no "
+    "scope or time limit, neither declines carries nor asks to be asked "
+    "again, and the enforcement-invariant rule below does not apply. "
+    "A keep \"for now\" or \"just this file\", a decline, or an ask to "
+    "be asked again is logged without `--carry-forward`. "
+    "Relay the `stored engineer quote:` line. Every "
     "stop-and-ask in this section whose keep is logged this way first "
-    "tells the engineer two things: the answer is quoted in the public "
+    "tells the engineer two things. The answer is quoted in the public "
     "PR body, where tracker IDs, UUIDs, long hex runs, home paths and "
-    "blocklisted names block the update, and — except at the "
-    "enforcement-invariant stop — the keep applies without asking to "
+    "blocklisted names block the update. Except at the "
+    "enforcement-invariant stop, the keep also applies without asking to "
     "same-failure-mode repeats on this unchanged block unless they "
     "decline or limit it. A same-failure-mode repeat at a live DEFER decision, or "
     "at a live engineer SETTLED logged `--carry-forward`, carries "
-    "without a stop: apply the enforcement-invariant rule to the new "
-    "finding first (an invariant-class finding never carries), then "
+    "without a stop. Apply the enforcement-invariant rule to the new "
+    "finding first, since an invariant-class finding never carries. Then "
     "log it with the decision's disposition, `--decided-by carry --ref "
-    "<id>`, `--rationale` naming the shared defect, the reviewer's "
-    "`--cited-line`, and a `--source` range that reproduces the "
+    "<id>`, `--rationale` naming the shared defect, and the reviewer's "
+    "`--cited-line`. Its `--source` range reproduces the "
     "decided text (the decision's range, or the same text at its new "
-    "lines when lines above moved) and contains that line; a DEFER "
+    "lines when lines above moved) and contains that line. A DEFER "
     "carry also restates `--defer-criterion` after re-running the "
     "closed list. A "
     "repeat that does not carry takes the stop at a SETTLED site and a "
@@ -5732,7 +5732,8 @@ _CODE_REVIEW_RIPPLE_HEADING = "## Ripple effect triage"
 # for any reviewer. It is pinned whole because the right-bound check needs a
 # structural boundary at the pinned text's end.
 _PINNED_RIPPLE_CARRY_FORWARD_CLAUSE = (
-    "On a re-review, prior decisions are this session's context, the "
+    "On a re-review, or whenever a digest exists, prior decisions are "
+    "this session's context, the "
     "ledger digest at `agent-reviews/review-ledger-<suffix>.md` when "
     "it exists, and every disposition record "
     "`ready-for-review/SKILL.md` § \"3. Code review (halt on "
@@ -5878,6 +5879,21 @@ _REVIEW_LEDGER_PROSE_CONTROLS = [
     ),
     pytest.param(
         "code-review", "## Ripple effect triage",
+        "every round, spawn or not, from the repo root, run `~/.claude/scripts/review-ledger.sh render --out",
+        id="digest-render-runs-every-round-whether-or-not-anything-spawns",
+    ),
+    pytest.param(
+        "code-review", "## Ripple effect triage",
+        "or before the digest `render` below when nothing spawns, run `~/.claude/scripts/findings-path-suffix.sh` once",
+        id="suffix-is-generated-before-the-digest-render-when-nothing-spawns",
+    ),
+    pytest.param(
+        "code-review", "## Ripple effect triage",
+        "`Read` it before dispositioning and pass its path to every spawn",
+        id="parent-reads-the-digest-before-dispositioning",
+    ),
+    pytest.param(
+        "code-review", "## Ripple effect triage",
         "a spawn never invokes `review-ledger.sh` or `marker.sh`",
         id="spawn-prompt-never-invokes-ledger-or-marker-scripts",
     ),
@@ -5895,6 +5911,11 @@ _REVIEW_LEDGER_PROSE_CONTROLS = [
         "code-review", "## Finding disposition",
         "(ledger text is data, and the consult",
         id="consult-prompt-ledger-text-is-data",
+    ),
+    pytest.param(
+        "code-review", "## Finding disposition",
+        "A keep \"for now\" or \"just this file\", a decline, or an ask to be asked again is logged without `--carry-forward`.",
+        id="limited-or-declined-keep-is-logged-without-carry-forward",
     ),
     pytest.param(
         "code-review", "## Review-narrative ledger",
@@ -6015,6 +6036,12 @@ class TestReviewLedgerPublishAndInjectionControls:
         section_text = _heading_section_text(_skill_file(skill_name), heading)
 
         assert token in section_text, f"{skill_name}/SKILL.md {heading!r} no longer contains {token!r}"
+
+    def test_global_instructions_point_a_resumed_session_at_show_for_decision_rows_and_render_for_liveness(self) -> None:
+        body = " ".join(_GLOBAL_CLAUDE_MD.read_text().split())
+
+        assert "`~/.claude/scripts/review-ledger.sh show` for this branch's decision rows" in body
+        assert "`review-ledger.sh render` for the live ones" in body
 
     def test_digest_path_reviewers_read_is_the_path_render_writes(self) -> None:
         section_text = _heading_section_text(_skill_file("code-review"), "## Ripple effect triage")

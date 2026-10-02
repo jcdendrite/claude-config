@@ -118,8 +118,9 @@ Subcommands:
              appended when absent, and dropped when it would hold no rows; every
              byte outside the block stays identical, and a row whose last cell
              is not a ledger id is kept. With --out the result goes to <path>,
-             which must be a file directly under <repo>/agent-reviews/ (a
-             relative path is taken from the working directory) and is deleted
+             which must be a file directly under <repo>/agent-reviews/ named
+             review-ledger-<suffix>.md or pr-body-<suffix>.md (a relative path
+             is taken from the working directory) and is deleted
              first, then written atomically only on success. stdout reads
              `changed: <path>` or `unchanged` (no file written). Exits 2 on a
              rejected --out, and 1 with no file on empty input, an unreadable
@@ -298,6 +299,9 @@ case "$SUBCOMMAND" in
     DEFER_CRITERION=""
     REF=""
     CITED_LINE=""
+    # Flags given with an empty value. The variables above read the same for an
+    # empty value and an omitted flag, so presence is tracked here.
+    EMPTY_VALUE_FLAGS=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --finding|--disposition|--rationale|--source|--round|--authoring-agent|--authoring-effort|--decided-by|--engineer-quote|--defer-criterion|--ref|--cited-line)
@@ -305,6 +309,11 @@ case "$SUBCOMMAND" in
             printf "review-ledger.sh: %s requires a value\n" "$1" >&2
             exit 2
           fi
+          ;;
+      esac
+      case "$1" in
+        --decided-by|--engineer-quote|--defer-criterion|--ref|--cited-line)
+          [ -n "$2" ] || EMPTY_VALUE_FLAGS="${EMPTY_VALUE_FLAGS:+$EMPTY_VALUE_FLAGS }$1"
           ;;
       esac
       case "$1" in
@@ -402,11 +411,14 @@ case "$SUBCOMMAND" in
       exit 2
     fi
     _review_ledger_validate_flags "$DISPOSITION" "$DECIDED_BY" "$ENGINEER_QUOTE" "$ENFORCEMENT_INVARIANT" \
-      "$CARRY_FORWARD" "$DEFER_CRITERION" "$REF" "$CITED_LINE" "$SOURCE" || exit 2
+      "$CARRY_FORWARD" "$DEFER_CRITERION" "$REF" "$CITED_LINE" "$SOURCE" "$EMPTY_VALUE_FLAGS" || exit 2
 
     SESSION_ID=$(_resolve_session_id) || exit 2
     REPO_ROOT=$(_resolve_repo_root) || exit 2
     _resolve_ledger_location "$REPO_ROOT" "$SESSION_ID" || exit 2
+    LOCK_FILE="$LEDGER_FILE.lock"
+    # Checked before the first read of the ledger.
+    _review_ledger_check_regular_file "$LEDGER_FILE" && _review_ledger_check_regular_file "$LOCK_FILE" || exit 2
 
     # A decision's source is normalized to a repo-relative path. A range-form
     # source gets a site hash, and a carry must reproduce its decision's hash.
@@ -439,7 +451,6 @@ case "$SUBCOMMAND" in
       printf 'review-ledger.sh: could not create the ledger directory %s. Abort without writing.\n' "$LEDGER_DIR" >&2
       exit 2
     fi
-    LOCK_FILE="$LEDGER_FILE.lock"
     if [ "$LEDGER_SCOPE" = "session" ]; then
       printf 'review-ledger.sh: row is session-scoped (HEAD is detached or is the default branch), not shared with the branch ledger: %s\n' "$LEDGER_FILE" >&2
     fi
@@ -506,24 +517,28 @@ case "$SUBCOMMAND" in
     # retirer's own write, which the append below then dedups.
     _review_ledger_check_not_retired "$LEDGER_FILE" "$LINE" "$REF" || exit 2
 
-    # Dedup key excludes schema_version, event_time and id, so two rounds raising
-    # an identical finding both land as separate rows. It includes session_id,
-    # so two sessions on one branch file each keep their own copy.
-    # This tally counts the jq, awk and git calls that can run without a
-    # timeout, the points where an append can hang. Hashing is an in-memory
-    # pipe that cannot hang, so the sha256sum and awk pairs that only hash are
-    # left out.
-    # Each append makes two independently-capped _lib_jq calls (one to build
-    # LINE, one for this dedup check). The retention sweep below passes a fixed
-    # floor rather than resolving one dynamically, so it adds no further call.
+    # The dedup key excludes schema_version, event_time and id, so two rounds
+    # raising an identical finding both land as separate rows.
+    # The dedup key includes session_id, so two sessions on one branch file each
+    # keep their own copy.
+
+    # Call tally: the jq, awk and git calls that can run without a timeout,
+    # which are the points where an append can hang.
+    # Hashing is an in-memory pipe that cannot hang, so the sha256sum and awk
+    # pairs that only hash are left out.
+    # Each append makes two independently-capped _lib_jq calls, one to build LINE
+    # and one for the dedup check.
+    # The retention sweep passes a fixed floor rather than resolving one
+    # dynamically, so it adds no further call.
     # A --ref adds two more capped _lib_jq passes over the resolved file (read,
     # then look up), and a retired --ref two more (read, then compare).
     # A range-form source adds one capped awk read for the site hash.
     # _resolve_ledger_location adds capped git calls: symbolic-ref HEAD, the
     # origin/HEAD resolution, and up to three candidate rev-parse probes.
     # The bare git rev-parse --show-toplevel and the sweep's find are uncapped.
-    # An environment with neither timeout nor gtimeout on PATH therefore has
-    # that many uncapped-hang points per append, not one.
+    # With neither timeout nor gtimeout on PATH, an append therefore has that
+    # many uncapped-hang points, not one.
+
     # The primitive returns nonzero only when the row was neither written nor
     # deduplicated, so the row is lost unless the caller retries.
     _lib_append_json_line_locked "$LEDGER_FILE" "$LOCK_FILE" "$LINE" \
@@ -572,6 +587,7 @@ case "$SUBCOMMAND" in
     fi
     NONEMPTY_LEDGER_FILES=()
     for f in "${LEDGER_FILES[@]}"; do
+      _review_ledger_check_regular_file "$f" || exit 2
       [ -s "$f" ] && NONEMPTY_LEDGER_FILES+=("$f")
     done
     if [ "${#NONEMPTY_LEDGER_FILES[@]}" -eq 0 ]; then

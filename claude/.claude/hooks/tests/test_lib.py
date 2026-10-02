@@ -7,13 +7,14 @@ _lib_is_no_gate_release_agent.
 The parse tests drive the helper via a throwaway shell harness that defines
 emit_deny before sourcing _lib.sh (the canonical caller pattern), then calls
 _lib_parse_tool_input_or_deny and reports either DENY:<msg> or
-OK:<tool>:<cmd><0x1e><cwd><0x1e><session_id><0x1e><file_path><0x1e><agent_type><0x1e><overflow>.
+OK:<tool>:<cmd><0x1e><cwd><0x1e><session_id><0x1e><file_path><0x1e><agent_type><0x1e><agent_id><0x1e><overflow>.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -91,7 +92,7 @@ def _lib_sh_with_missing_config_sh(tmp_path: Path) -> Path:
 
 # Shell harness: define emit_deny BEFORE sourcing _lib.sh (canonical pattern),
 # call the helper, then print OK:<TOOL_NAME>:<COMMAND> on success, followed by
-# the four newly-folded fields and the field-shift overflow variable, each
+# the remaining extracted fields and the field-shift overflow variable, each
 # separated by 0x1e (a delimiter distinct from the parser's own 0x1f, so
 # neither can be mistaken for the other). The "OK:<TOOL_NAME>:<COMMAND>"
 # prefix is kept exactly as before so existing startswith() assertions
@@ -101,8 +102,8 @@ _HARNESS_TEMPLATE = (
     'emit_deny() {{ printf "DENY:%s\\n" "$1"; exit 0; }}; '
     ". {lib}; "
     '_lib_parse_tool_input_or_deny "test-msg"; '
-    'printf "OK:%s:%s\\x1e%s\\x1e%s\\x1e%s\\x1e%s\\x1e%s\\n" '
-    '"$TOOL_NAME" "$COMMAND" "$CWD" "$SESSION_ID" "$FILE_PATH" "$AGENT_TYPE" "$_lib_parse_overflow"'
+    'printf "OK:%s:%s\\x1e%s\\x1e%s\\x1e%s\\x1e%s\\x1e%s\\x1e%s\\n" '
+    '"$TOOL_NAME" "$COMMAND" "$CWD" "$SESSION_ID" "$FILE_PATH" "$AGENT_TYPE" "$AGENT_ID" "$_lib_parse_overflow"'
 )
 
 
@@ -119,7 +120,7 @@ def _run_harness(stdin_text: str, env: dict | None = None) -> subprocess.Complet
 
 
 def _parse_ok_fields(stdout: str) -> dict[str, str]:
-    """Split _HARNESS_TEMPLATE's OK line into its six extracted fields plus
+    """Split _HARNESS_TEMPLATE's OK line into its extracted fields plus
     the trailing field-shift overflow variable.
 
     `OK:<TOOL_NAME>:<COMMAND>` keeps the legacy colon-joined prefix intact
@@ -129,7 +130,7 @@ def _parse_ok_fields(stdout: str) -> dict[str, str]:
     """
     assert stdout.startswith("OK:"), repr(stdout)
     tool_name, _, remainder = stdout[len("OK:") :].partition(":")
-    command, cwd, session_id, file_path, agent_type, overflow = remainder.split("\x1e")
+    command, cwd, session_id, file_path, agent_type, agent_id, overflow = remainder.split("\x1e")
     return {
         "tool_name": tool_name,
         "command": command,
@@ -137,6 +138,7 @@ def _parse_ok_fields(stdout: str) -> dict[str, str]:
         "session_id": session_id,
         "file_path": file_path,
         "agent_type": agent_type,
+        "agent_id": agent_id,
         # printf's own trailing "\n" follows the overflow field; strip
         # exactly that one byte to recover the raw shell value.
         "overflow": overflow[:-1] if overflow.endswith("\n") else overflow,
@@ -221,15 +223,13 @@ def test_non_bash_tool_with_file_path_returns_ok_empty_command() -> None:
     assert result.stdout.startswith("OK:Edit:"), repr(result.stdout)
 
 
-# --- Six-field fold: .cwd, .session_id, .tool_input.file_path, .agent_type,
-# and the field-shift detector ---------------------------------------------
+# --- Folded-field extraction and the field-shift detector ---
 
 
-def test_six_field_payload_returns_all_fields_without_cross_contamination() -> None:
-    """All six fields extracted by the folded jq call land in their own
-    global with the exact payload value — the six-field analogue of
-    test_valid_bash_payload_returns_ok above. Every field is given a
-    distinct value so a field landing in the wrong global would be caught.
+def test_distinct_field_values_land_without_cross_contamination() -> None:
+    """Each payload value lands in its own global with the exact value. This is
+    the all-fields analogue of test_valid_bash_payload_returns_ok above.
+    Distinct values per field catch a value landing in the wrong global.
     """
     payload = json.dumps(
         {
@@ -238,6 +238,7 @@ def test_six_field_payload_returns_all_fields_without_cross_contamination() -> N
             "cwd": "/repo",
             "session_id": "sess-123",
             "agent_type": "main",
+            "agent_id": "agent-abc",
         }
     )
     result = _run_harness(payload)
@@ -249,6 +250,7 @@ def test_six_field_payload_returns_all_fields_without_cross_contamination() -> N
     assert fields["session_id"] == "sess-123"
     assert fields["file_path"] == "/tmp/f.txt"
     assert fields["agent_type"] == "main"
+    assert fields["agent_id"] == "agent-abc"
 
 
 @pytest.mark.parametrize(
@@ -262,12 +264,44 @@ def test_six_field_payload_returns_all_fields_without_cross_contamination() -> N
 def test_non_string_agent_type_stringifies_rather_than_erroring(agent_type_value, expected) -> None:
     """Pins _lib.sh's own comment claim: a non-string .agent_type silently
     stringifies via jq's \\(...) interpolation instead of raising a
-    structural-type error, so the six-field extraction still exits 0."""
+    structural-type error, so the folded extraction still exits 0."""
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "agent_type": agent_type_value})
     result = _run_harness(payload)
     assert result.returncode == 0
     fields = _parse_ok_fields(result.stdout)
     assert fields["agent_type"] == expected
+
+
+@pytest.mark.parametrize(
+    "agent_id_value,expected",
+    [
+        (123, "123"),
+        ({"nested": "x"}, '{"nested":"x"}'),
+        ([1, 2], "[1,2]"),
+    ],
+)
+def test_non_string_agent_id_stringifies_rather_than_erroring(agent_id_value, expected) -> None:
+    """A non-string .agent_id stringifies the same way .agent_type does, so a
+    contract-violating value reads as non-empty rather than aborting the parse."""
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "agent_id": agent_id_value})
+    result = _run_harness(payload)
+    assert result.returncode == 0
+    fields = _parse_ok_fields(result.stdout)
+    assert fields["agent_id"] == expected
+
+
+def test_agent_type_and_agent_id_are_extracted_independently() -> None:
+    """A main session started with `--agent` carries agent_type alone, and a
+    subagent with no agent_type carries agent_id alone; neither value may
+    land in the other's global."""
+    type_only = _parse_ok_fields(
+        _run_harness(json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "agent_type": "x"})).stdout
+    )
+    id_only = _parse_ok_fields(
+        _run_harness(json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "agent_id": "y"})).stdout
+    )
+    assert (type_only["agent_type"], type_only["agent_id"]) == ("x", "")
+    assert (id_only["agent_type"], id_only["agent_id"]) == ("", "y")
 
 
 def test_multiline_command_round_trips_byte_for_byte() -> None:
@@ -283,10 +317,12 @@ def test_multiline_command_round_trips_byte_for_byte() -> None:
 
 
 def test_overflow_variable_holds_only_trailing_newline_for_well_formed_payload() -> None:
-    """The field-shift detector's invariant: a well-formed six-field
+    """The field-shift detector's invariant: a well-formed
     payload leaves the overflow variable holding exactly the herestring's
-    own trailing newline, AGENT_TYPE has no stray whitespace, and no deny
-    fires."""
+    own trailing newline, and no deny fires. AGENT_TYPE and AGENT_ID carry no
+    stray whitespace: the roster test matches AGENT_TYPE exactly, and the
+    engineer-row and ledger-state denies in enforce-marker-script-shape.sh
+    test AGENT_ID for emptiness."""
     payload = json.dumps(
         {
             "tool_name": "Bash",
@@ -294,6 +330,7 @@ def test_overflow_variable_holds_only_trailing_newline_for_well_formed_payload()
             "cwd": "/repo",
             "session_id": "sess-1",
             "agent_type": "main",
+            "agent_id": "agent-abc",
         }
     )
     result = _run_harness(payload)
@@ -301,13 +338,14 @@ def test_overflow_variable_holds_only_trailing_newline_for_well_formed_payload()
     fields = _parse_ok_fields(result.stdout)
     assert fields["overflow"] == "\n"
     assert not any(ch.isspace() for ch in fields["agent_type"])
+    assert not any(ch.isspace() for ch in fields["agent_id"])
 
 
 def test_overflow_variable_holds_only_trailing_newline_when_final_field_absent() -> None:
-    """.agent_type — the last of the six jq fields — entirely absent from
-    the payload (not merely empty) must not be mistaken for an overflow
-    condition: jq's `// ""` default still yields exactly six fields, so
-    dropping the trailing key doesn't drop a delimiter along with it."""
+    """Trailing jq fields entirely absent from the payload (not merely empty)
+    must not be mistaken for an overflow condition. The separators are
+    literals in the jq format string, so an absent key's `// ""` default
+    still yields an empty field and keeps every delimiter."""
     payload = json.dumps(
         {
             "tool_name": "Bash",
@@ -320,6 +358,7 @@ def test_overflow_variable_holds_only_trailing_newline_when_final_field_absent()
     assert result.returncode == 0
     fields = _parse_ok_fields(result.stdout)
     assert fields["agent_type"] == ""
+    assert fields["agent_id"] == ""
     assert fields["overflow"] == "\n"
 
 
@@ -377,6 +416,7 @@ _JQ_FIELD_TO_FLAT_KEY = {
     ".session_id": "session_id",
     ".tool_input.file_path": "file_path",
     ".agent_type": "agent_type",
+    ".agent_id": "agent_id",
 }
 
 _FIELD_SHIFT_DENY_MESSAGE = (
@@ -436,19 +476,20 @@ def _set_dotted_field(payload: dict, jq_field: str, value: str) -> dict:
     return payload
 
 
-def _base_six_field_payload() -> dict:
+def _base_full_payload() -> dict:
     return {
         "tool_name": "Bash",
         "tool_input": {"command": "ls -la", "file_path": "/tmp/f.txt"},
         "cwd": "/repo",
         "session_id": "sess-1",
         "agent_type": "main",
+        "agent_id": "agent-abc",
     }
 
 
 @pytest.mark.parametrize("jq_field", _JQ_FIELDS)
 def test_unit_separator_injected_into_any_field_denies_as_field_shift(jq_field: str) -> None:
-    """A 0x1f inside any one of the six extracted fields must deny with the
+    """A 0x1f inside any one extracted field must deny with the
     field-shift message rather than silently shifting every later field.
     The field-shift detector is a field-count property, not a per-field
     guard.
@@ -457,7 +498,7 @@ def test_unit_separator_injected_into_any_field_denies_as_field_shift(jq_field: 
     text, not harness-controlled, so it is the field an attacker can most
     directly shape.
     """
-    payload = _set_dotted_field(_base_six_field_payload(), jq_field, "va\x1flue")
+    payload = _set_dotted_field(_base_full_payload(), jq_field, "va\x1flue")
     result = _run_harness(json.dumps(payload))
     assert result.returncode == 0
     assert result.stdout.startswith("DENY:"), repr(result.stdout)
@@ -480,7 +521,7 @@ def test_newline_in_field_is_preserved_as_ordinary_data(jq_field: str) -> None:
     """A newline is legal data in a path or command and must not deny —
     paired with the 0x1f-injection test above so the field-shift boundary
     (0x1f specifically, not any control byte) is pinned from both sides."""
-    payload = _set_dotted_field(_base_six_field_payload(), jq_field, "va\nlue")
+    payload = _set_dotted_field(_base_full_payload(), jq_field, "va\nlue")
     result = _run_harness(json.dumps(payload))
     assert result.returncode == 0
     assert result.stdout.startswith("OK:"), repr(result.stdout)
@@ -3671,6 +3712,152 @@ def _run_realpath_m(target: str, forced_fallback: bool = False, tmp_path: Path |
         # the test fast instead of hanging the pytest worker.
         timeout=30,
     )
+
+
+# --- _lib_normalize_path_lexically -------------------------------------
+
+
+def _normalize_lexically(path: str, tmp_path: Path | None = None) -> str:
+    """Run the normalizer on PATH and return `_LIB_NORMALIZED_PATH`."""
+    script = (
+        f'set -uo pipefail; . {_LIB_SH}; '
+        '_lib_normalize_path_lexically "$1" || exit 9; printf "%s" "$_LIB_NORMALIZED_PATH"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "bash", path],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=tmp_path,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def _lexical_normalization_oracle(path: str) -> str:
+    """`posixpath.normpath` with the two documented differences: an empty path
+    stays empty, and a trailing slash is kept. normpath also keeps exactly two
+    leading slashes (POSIX leaves that case implementation-defined), where Linux
+    reads them as one and the normalizer collapses them."""
+    if path == "":
+        return ""
+    result = posixpath.normpath(path)
+    if result.startswith("//"):
+        result = result[1:]
+    if path.endswith("/") and not result.endswith("/"):
+        result += "/"
+    return result
+
+
+_LEXICAL_NORMALIZATION_INPUTS = [
+    pytest.param("/", id="root"),
+    pytest.param("//", id="double-slash-root"),
+    pytest.param("///", id="triple-slash-root"),
+    pytest.param(".", id="dot"),
+    pytest.param("./", id="dot-trailing-slash"),
+    pytest.param("..", id="dotdot-relative"),
+    pytest.param("../", id="dotdot-relative-trailing-slash"),
+    pytest.param("a", id="relative-single"),
+    pytest.param("a/b/c", id="relative-multi"),
+    pytest.param("a/b/", id="relative-trailing-slash"),
+    pytest.param("/a/b/c", id="absolute-multi"),
+    pytest.param("/a/b/", id="absolute-trailing-slash"),
+    pytest.param("//a/b", id="leading-double-slash"),
+    pytest.param("///a/b", id="leading-triple-slash"),
+    pytest.param("/a//b///c", id="interior-double-slashes"),
+    pytest.param("/a/./b/./c", id="interior-dot-segments"),
+    pytest.param("/a/b/.", id="trailing-dot-segment"),
+    pytest.param("/a/b/./", id="trailing-dot-segment-with-slash"),
+    pytest.param("/a/../b", id="dotdot-pops-one"),
+    pytest.param("a/../b", id="relative-dotdot-pops-one"),
+    pytest.param("a/..", id="relative-dotdot-pops-to-nothing"),
+    pytest.param("a/../", id="relative-dotdot-pops-to-nothing-with-slash"),
+    pytest.param("/a/b/..", id="trailing-dotdot"),
+    pytest.param("/a/b/../", id="trailing-dotdot-with-slash"),
+    pytest.param("/..", id="dotdot-at-root"),
+    pytest.param("/../a", id="dotdot-at-root-then-segment"),
+    pytest.param("/a/../..", id="dotdot-past-root"),
+    pytest.param("//..", id="dotdot-at-double-slash-root"),
+    pytest.param("../a", id="relative-leading-dotdot"),
+    pytest.param("../../a", id="relative-leading-dotdot-run"),
+    pytest.param("../../a/../b", id="relative-leading-dotdot-run-then-pop"),
+    pytest.param("a/b/../../..", id="relative-pops-past-start"),
+    pytest.param("/a/b/c/d/../../../x", id="deep-dotdot-chain"),
+    pytest.param("/a/b/c/../../../../../../x", id="deep-dotdot-chain-past-root"),
+    pytest.param("/x/ y/*/..z/..../w/.", id="spaces-glob-and-dot-lookalike-segments"),
+    pytest.param("/x/tab\there/new\nline/../ok", id="tab-and-newline-in-segments"),
+    pytest.param("/x/$HOME/`id`/;&|/..", id="shell-metacharacters-in-segments"),
+    pytest.param("/home/u/.claude//review-narrative-ledger/f.jsonl", id="ledger-doubled-slash"),
+    pytest.param("/home/u/.claude/./review-narrative-ledger/f.jsonl", id="ledger-dot-segment"),
+    pytest.param("/home/u/.claude/x/../review-narrative-ledger/f.jsonl", id="ledger-dotdot-segment"),
+]
+
+
+class TestLibNormalizePathLexically:
+    @pytest.mark.parametrize("path", _LEXICAL_NORMALIZATION_INPUTS)
+    def test_matches_the_normpath_oracle(self, path: str) -> None:
+        assert _normalize_lexically(path) == _lexical_normalization_oracle(path)
+
+    def test_empty_path_yields_an_empty_result(self) -> None:
+        assert _normalize_lexically("") == ""
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            pytest.param("//a//b", "/a/b", id="leading-double-slash-collapses-to-one"),
+            pytest.param("/..", "/", id="dotdot-at-root-is-dropped"),
+            pytest.param("../a", "../a", id="relative-leading-dotdot-is-kept"),
+            pytest.param("a/..", ".", id="relative-path-that-pops-to-nothing-is-dot"),
+            pytest.param("/a/b/", "/a/b/", id="trailing-slash-is-kept"),
+            pytest.param("/a/b/.", "/a/b", id="trailing-dot-segment-is-not-a-trailing-slash"),
+            pytest.param("/a/b/..", "/a", id="trailing-dotdot-is-not-a-trailing-slash"),
+            pytest.param("/a/x/../b//c/", "/a/b/c/", id="trailing-slash-survives-collapsing"),
+            pytest.param("a/../", "./", id="relative-dot-result-keeps-the-trailing-slash"),
+        ],
+    )
+    def test_documented_behavior(self, path: str, expected: str) -> None:
+        assert _normalize_lexically(path) == expected
+
+    def test_a_very_long_path_normalizes_in_bounded_time(self) -> None:
+        """A candidate comes from untrusted command text, so a segment count in
+        the tens of thousands must not turn quadratic."""
+        path = "/" + "/".join(["a"] * 50000) + "/../../b"
+        assert _normalize_lexically(path) == "/" + "/".join(["a"] * 49998) + "/b"
+
+    def test_a_glob_segment_stays_literal(self, tmp_path: Path) -> None:
+        (tmp_path / "matching-file").write_text("")
+        assert _normalize_lexically("*/x/../y", tmp_path=tmp_path) == "*/y"
+
+    def test_runs_no_external_command(self, tmp_path: Path) -> None:
+        """Sourcing _lib.sh needs `dirname`; the call itself runs with an empty
+        PATH, so any external command it ran would fail. A builtin-only
+        command substitution would still pass."""
+        empty_bin = tmp_path / "empty-bin"
+        empty_bin.mkdir()
+        script = (
+            f'. {_LIB_SH}; PATH="$1"; '
+            '_lib_normalize_path_lexically "/a//b/./c/../d/"; printf "%s" "$_LIB_NORMALIZED_PATH"'
+        )
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", str(empty_bin)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        assert (result.returncode, result.stdout, result.stderr) == (0, "/a/b/d/", "")
+
+    @pytest.mark.parametrize("caller_glob_state", ["set -f", "set +f"])
+    def test_leaves_the_callers_ifs_and_glob_setting_unchanged(self, caller_glob_state: str) -> None:
+        script = (
+            f'. {_LIB_SH}; {caller_glob_state}; IFS=":"; '
+            '_lib_normalize_path_lexically "/a/../b"; '
+            'case "$-" in *f*) printf "noglob " ;; *) printf "glob " ;; esac; printf "%s" "$IFS"'
+        )
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+        expected_glob = "noglob" if caller_glob_state == "set -f" else "glob"
+        assert (result.returncode, result.stdout) == (0, f"{expected_glob} :")
 
 
 class TestLibRealpathM:

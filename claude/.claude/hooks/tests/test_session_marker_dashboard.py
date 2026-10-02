@@ -347,7 +347,7 @@ class TestSessionMarkerDashboardLedgerSummary:
         ctx = _additional_context(result)
         assert ctx == (
             "2 findings recorded this session: 1 addressed, 1 deferred, 0 settled"
-            " — see review-narrative-ledger for detail"
+            " — run `review-ledger.sh show` for detail"
         ), "exact match guards against a digit-collision false total (e.g. '42 findings...')"
 
     def test_active_marker_with_clean_only_ledger_shows_marker_but_no_summary(
@@ -403,9 +403,9 @@ class TestSessionMarkerDashboardLedgerSummary:
         assert "findings recorded" not in ctx
 
     def test_retired_opt_out_sentinel_keeps_summary_and_shows_engineer_notice(self, isolated_home, git_repo):
-        """The retired sentinel no longer suppresses the summary. The engineer
-        sees a systemMessage stating the file is ignored, that quotes now reach
-        PR bodies, and that no replacement opt-out exists; none of that text
+        """The sentinel file leaves the summary in place. The engineer sees a
+        systemMessage stating the file is ignored, that quotes reach PR
+        bodies, and that no replacement opt-out exists; none of that text
         enters the model's additionalContext."""
         sid = "sess-ledger-retired-sentinel"
         marker_dir = isolated_home / ".claude" / ".ready-for-review-active.d"
@@ -489,7 +489,7 @@ class TestSessionMarkerDashboardLedgerSummary:
         assert result.returncode == 0
         assert _additional_context(result) == (
             "3 findings recorded on this branch (2026-09-01 to 2026-09-04):"
-            " 1 addressed, 1 deferred, 1 settled — see review-narrative-ledger for detail"
+            " 1 addressed, 1 deferred, 1 settled — run `review-ledger.sh show` for detail"
         )
 
     def test_settled_only_ledger_triggers_summary(self, isolated_home, git_repo):
@@ -510,7 +510,32 @@ class TestSessionMarkerDashboardLedgerSummary:
 
         assert _additional_context(result) == (
             "1 findings recorded on this branch (2026-09-03):"
-            " 0 addressed, 0 deferred, 1 settled — see review-narrative-ledger for detail"
+            " 0 addressed, 0 deferred, 1 settled — run `review-ledger.sh show` for detail"
+        )
+
+    def test_a_carry_row_counts_under_its_own_disposition(self, isolated_home, git_repo):
+        """A carry row has no tally of its own: it is counted by the
+        disposition it restates, like any other row."""
+        subprocess.run(["git", "checkout", "-q", "-b", "feature/carry-row"], cwd=git_repo, check=True)
+        self._write_ledger(
+            isolated_home,
+            git_repo,
+            "sess-carry-author",
+            {"finding": "f1", "disposition": "SETTLED", "decided_by": "engineer", "rationale": "r",
+             "source": "a.py:1-2", "id": "a" * 12, "carry_forward": True,
+             "session_id": "sess-carry-author", "event_time": "2026-09-03T10:00:00Z"},
+            {"finding": "f2", "disposition": "SETTLED", "decided_by": "carry", "rationale": "same defect",
+             "source": "a.py:1-2", "ref": "a" * 12, "id": "b" * 12,
+             "session_id": "sess-carry-author", "event_time": "2026-09-04T10:00:00Z"},
+        )
+
+        result = _run_dashboard(
+            {"session_id": "sess-carry-reader", "cwd": str(git_repo)}, isolated_home, cwd=git_repo
+        )
+
+        assert _additional_context(result) == (
+            "2 findings recorded on this branch (2026-09-03 to 2026-09-04):"
+            " 0 addressed, 0 deferred, 2 settled — run `review-ledger.sh show` for detail"
         )
 
     def test_detached_head_reads_session_file_with_session_wording(self, isolated_home, git_repo):
@@ -537,7 +562,7 @@ class TestSessionMarkerDashboardLedgerSummary:
 
         assert _additional_context(result) == (
             "2 findings recorded this session: 0 addressed, 2 deferred, 0 settled"
-            " — see review-narrative-ledger for detail"
+            " — run `review-ledger.sh show` for detail"
         )
 
     def _summary_for_rows(self, isolated_home: Path, git_repo: Path, sid: str, *records: dict) -> str:
@@ -564,7 +589,7 @@ class TestSessionMarkerDashboardLedgerSummary:
 
         assert ctx == (
             "3 findings recorded this session (2026-09-01 to 2026-09-03):"
-            " 3 addressed, 0 deferred, 0 settled — see review-narrative-ledger for detail"
+            " 3 addressed, 0 deferred, 0 settled — run `review-ledger.sh show` for detail"
         )
 
     def test_date_span_ignores_non_string_event_time(self, isolated_home, git_repo):
@@ -582,7 +607,7 @@ class TestSessionMarkerDashboardLedgerSummary:
 
         assert ctx == (
             "4 findings recorded this session (2026-09-02):"
-            " 4 addressed, 0 deferred, 0 settled — see review-narrative-ledger for detail"
+            " 4 addressed, 0 deferred, 0 settled — run `review-ledger.sh show` for detail"
         )
 
     def test_date_span_uses_latest_date_even_when_not_in_last_row(self, isolated_home, git_repo):
@@ -598,7 +623,7 @@ class TestSessionMarkerDashboardLedgerSummary:
 
         assert ctx == (
             "3 findings recorded this session (2026-09-01 to 2026-09-05):"
-            " 3 addressed, 0 deferred, 0 settled — see review-narrative-ledger for detail"
+            " 3 addressed, 0 deferred, 0 settled — run `review-ledger.sh show` for detail"
         )
 
     def test_corrupt_ledger_lines_are_skipped_not_fatal(self, isolated_home, git_repo):
@@ -618,7 +643,7 @@ class TestSessionMarkerDashboardLedgerSummary:
         assert result.returncode == 0
         assert _additional_context(result) == (
             "2 findings recorded this session (2026-09-01 to 2026-09-02):"
-            " 1 addressed, 1 deferred, 0 settled — see review-narrative-ledger for detail"
+            " 1 addressed, 1 deferred, 0 settled — run `review-ledger.sh show` for detail"
         )
 
     def test_unresolvable_ledger_location_prints_no_summary(self, isolated_home, git_repo, tmp_path):

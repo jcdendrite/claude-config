@@ -1135,6 +1135,51 @@ class TestReviewLedgerLedgerScope:
 
         assert sorted(row["finding"] for row in _shown_rows(result)) == ["branch row", "detached row"]
 
+    def test_a_branch_sessions_show_lists_another_sessions_defer_and_settled_rows_but_not_its_detached_head_rows(
+        self, isolated_home, git_repo
+    ):
+        """Session B must read the branch file and its own session file, not a
+        glob over every session file of the repository."""
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, "session-a")
+        _run(_defer_args(finding="deferred in a", round="2"), cwd=git_repo, home=isolated_home)
+        _run(_engineer_args(finding="settled in a", round="2"), cwd=git_repo, home=isolated_home)
+        _git(git_repo, "checkout", "-q", "--detach")
+        _run(_append_args(finding="detached round", round="7"), cwd=git_repo, home=isolated_home)
+        _git(git_repo, "checkout", "-q", "feature")
+        _seed_session(isolated_home, "session-b")
+
+        result = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert sorted(row["finding"] for row in _shown_rows(result)) == ["deferred in a", "settled in a"]
+        header = _show_header(result)
+        assert (header["scope"], header["rows"], header["max_round"]) == ("branch", "2", "2")
+
+    def test_a_default_branch_sessions_show_lists_none_of_another_sessions_rows(self, isolated_home, git_repo):
+        """On the default branch every row is session-scoped, so session B sees
+        none of session A's, while A still sees its own detached HEAD round."""
+        _seed_session(isolated_home, "session-a")
+        _run(_defer_args(finding="deferred in a", round="2"), cwd=git_repo, home=isolated_home)
+        _run(_engineer_args(finding="settled in a", round="2"), cwd=git_repo, home=isolated_home)
+        _git(git_repo, "checkout", "-q", "--detach")
+        _run(_append_args(finding="detached round", round="7"), cwd=git_repo, home=isolated_home)
+        _git(git_repo, "checkout", "-q", "main")
+
+        _seed_session(isolated_home, "session-b")
+        other = _run(["show"], cwd=git_repo, home=isolated_home)
+        _seed_session(isolated_home, "session-a")
+        own = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        assert other.returncode == 0, other.stderr
+        assert "no ledger for this session" in other.stdout
+        other_header = _show_header(other)
+        assert (other_header["scope"], other_header["rows"], other_header["max_round"]) == ("session", "0", "0")
+        assert sorted(row["finding"] for row in _shown_rows(own)) == [
+            "deferred in a", "detached round", "settled in a",
+        ]
+        assert _show_header(own)["max_round"] == "7"
+
 
 def _ledger_rows(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines()]
@@ -1152,6 +1197,16 @@ def _engineer_args(**overrides) -> list[str]:
         "disposition": "SETTLED", "decided_by": "engineer", "source": "file.txt:1-2",
         "engineer_quote": "keep it as written", "carry_forward": True, "rationale": "engineer kept the text",
         "finding": "wording of the first two lines",
+    }
+    params.update(overrides)
+    return _append_args(**params)
+
+
+def _consult_args(**overrides) -> list[str]:
+    """A plan-architect SETTLED: no quote, range-form source unless overridden."""
+    params = {
+        "disposition": "SETTLED", "decided_by": "plan-architect", "source": "file.txt:1-2", "finding": "f",
+        "rationale": "r",
     }
     params.update(overrides)
     return _append_args(**params)
@@ -1238,6 +1293,48 @@ class TestReviewLedgerSettledAndDeferAppend:
         assert result.returncode == 2
         assert "does not exist" in result.stderr
         assert not _ledger_path(isolated_home, git_repo).exists()
+
+    @pytest.mark.parametrize("source", ["file.txt", "absent.txt"], ids=["existing file", "absent file"])
+    @pytest.mark.parametrize("kind", ["defer", "consult-settled"])
+    def test_a_non_carry_decision_with_a_path_only_source_lands_with_an_empty_site_hash(
+        self, isolated_home, git_repo, kind, source
+    ):
+        """A path-only source is never hashed, so a whole-file DEFER or consult
+        decision lands instead of being rejected for a missing range."""
+        _seed_session(isolated_home, SID)
+        args = (
+            _defer_args(source=source)
+            if kind == "defer"
+            else _consult_args(source=source)
+        )
+
+        result = _run(args, cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        (row,) = _ledger_rows(_ledger_path(isolated_home, git_repo))
+        assert (row["source"], row["site_hash"]) == (source, "")
+
+    @pytest.mark.parametrize("disposition", ["DEFER", "SETTLED"])
+    def test_a_carry_of_a_path_only_decision_exits_2_naming_path_only_and_writes_nothing(
+        self, isolated_home, git_repo, disposition
+    ):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        decision_args = (
+            _defer_args(source="file.txt") if disposition == "DEFER" else _consult_args(source="file.txt")
+        )
+        assert _run(decision_args, cwd=git_repo, home=isolated_home).returncode == 0
+        carry_args = _append_args(
+            disposition=disposition, decided_by="carry", ref=_logged_id(isolated_home, git_repo),
+            cited_line="file.txt:1", source="file.txt:1-2", finding="f", rationale="same defect",
+            defer_criterion=_DEFER_CRITERION if disposition == "DEFER" else None,
+        )
+
+        result = _run(carry_args, cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "path-only" in result.stderr
+        assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 1
 
     def test_the_same_quote_in_another_round_lands_and_an_identical_retry_dedups(self, isolated_home, git_repo):
         _seed_session(isolated_home, SID)
@@ -1540,7 +1637,7 @@ class TestReviewLedgerRenderAndRefReadOnlyTheResolvedFile:
         _git(git_repo, "checkout", "-q", "-b", "feature")
         _seed_session(isolated_home, SID)
         _run(_defer_args(), cwd=git_repo, home=isolated_home)
-        out_path = git_repo / "agent-reviews" / "pr-body.md"
+        out_path = git_repo / "agent-reviews" / "pr-body-test.md"
         pr_json = json.dumps({"body": "Existing description"})
 
         def render_into_out() -> subprocess.CompletedProcess:
@@ -1580,13 +1677,14 @@ class TestReviewLedgerRenderOutConfinement:
 
     @pytest.mark.parametrize("form", ["relative", "absolute"])
     def test_a_file_directly_under_agent_reviews_is_written(self, isolated_home, logged_defer, form):
-        out = "agent-reviews/digest.md" if form == "relative" else str(logged_defer / "agent-reviews" / "digest.md")
+        digest = logged_defer / "agent-reviews" / "review-ledger-digest.md"
+        out = "agent-reviews/review-ledger-digest.md" if form == "relative" else str(digest)
 
         result = _run(["render", "--out", out], cwd=logged_defer, home=isolated_home)
 
         assert result.returncode == 0, result.stderr
         assert result.stdout == f"changed: {out}\n"
-        assert (logged_defer / "agent-reviews" / "digest.md").read_text().startswith("<!-- code-review:deferred:start -->")
+        assert digest.read_text().startswith("<!-- code-review:deferred:start -->")
 
     @pytest.mark.parametrize(
         "out",
@@ -1607,6 +1705,23 @@ class TestReviewLedgerRenderOutConfinement:
         assert (logged_defer / "file.txt").read_text() == tracked_before
         assert (logged_defer / "agent-reviews").is_dir()
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("staff-sdet-1790921348-GH-1182-branch-scope.md", id="a reviewer findings file"),
+            pytest.param("code-review-dispositions-1790921348-GH-1182-branch-scope.md", id="a disposition record"),
+        ],
+    )
+    def test_a_peer_file_under_agent_reviews_is_rejected_and_not_deleted(self, isolated_home, logged_defer, name):
+        peer = logged_defer / "agent-reviews" / name
+        peer.write_text("a peer file")
+
+        result = _run(["render", "--out", f"agent-reviews/{name}"], cwd=logged_defer, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "review-ledger-<suffix>.md or pr-body-<suffix>.md" in result.stderr
+        assert peer.read_text() == "a peer file"
+
     def test_an_absolute_target_outside_the_repo_is_rejected(self, isolated_home, logged_defer, tmp_path):
         outside = tmp_path / "outside.md"
         outside.write_text("keep me")
@@ -1617,11 +1732,11 @@ class TestReviewLedgerRenderOutConfinement:
         assert outside.read_text() == "keep me"
 
     def test_an_existing_directory_target_is_rejected_and_left_in_place(self, isolated_home, logged_defer):
-        directory = logged_defer / "agent-reviews" / "adir"
+        directory = logged_defer / "agent-reviews" / "review-ledger-adir.md"
         directory.mkdir()
         (directory / "inner.md").write_text("inner")
 
-        result = _run(["render", "--out", "agent-reviews/adir"], cwd=logged_defer, home=isolated_home)
+        result = _run(["render", "--out", "agent-reviews/review-ledger-adir.md"], cwd=logged_defer, home=isolated_home)
 
         assert result.returncode == 2
         assert "not a regular file" in result.stderr
@@ -1629,10 +1744,10 @@ class TestReviewLedgerRenderOutConfinement:
 
     def test_a_symlink_target_is_rejected_and_its_referent_is_untouched(self, isolated_home, logged_defer):
         tracked_before = (logged_defer / "file.txt").read_text()
-        link = logged_defer / "agent-reviews" / "link.md"
+        link = logged_defer / "agent-reviews" / "review-ledger-link.md"
         link.symlink_to(logged_defer / "file.txt")
 
-        result = _run(["render", "--out", "agent-reviews/link.md"], cwd=logged_defer, home=isolated_home)
+        result = _run(["render", "--out", "agent-reviews/review-ledger-link.md"], cwd=logged_defer, home=isolated_home)
 
         assert result.returncode == 2
         assert "symlink" in result.stderr
@@ -1645,7 +1760,7 @@ class TestReviewLedgerRenderOutConfinement:
         elsewhere.mkdir()
         (logged_defer / "agent-reviews").symlink_to(elsewhere)
 
-        result = _run(["render", "--out", "agent-reviews/digest.md"], cwd=logged_defer, home=isolated_home)
+        result = _run(["render", "--out", "agent-reviews/review-ledger-digest.md"], cwd=logged_defer, home=isolated_home)
 
         assert result.returncode == 2
         assert "real directory" in result.stderr
@@ -1653,14 +1768,17 @@ class TestReviewLedgerRenderOutConfinement:
 
     @pytest.mark.parametrize("alias", ["same path", "hard link"])
     def test_the_pr_json_file_is_never_the_out_target(self, isolated_home, logged_defer, alias):
-        pr_json = logged_defer / "agent-reviews" / "pr.json"
+        pr_json = logged_defer / "agent-reviews" / "pr-body-input.md"
         pr_json.write_text(json.dumps({"body": "Existing description"}))
-        out = "agent-reviews/pr.json"
+        out = "agent-reviews/pr-body-input.md"
         if alias == "hard link":
-            os.link(pr_json, logged_defer / "agent-reviews" / "alias.md")
-            out = "agent-reviews/alias.md"
+            os.link(pr_json, logged_defer / "agent-reviews" / "review-ledger-alias.md")
+            out = "agent-reviews/review-ledger-alias.md"
 
-        result = _run(["render", "--pr-json", "agent-reviews/pr.json", "--out", out], cwd=logged_defer, home=isolated_home)
+        result = _run(
+            ["render", "--pr-json", "agent-reviews/pr-body-input.md", "--out", out],
+            cwd=logged_defer, home=isolated_home,
+        )
 
         assert result.returncode == 2
         assert "same file" in result.stderr
@@ -1669,10 +1787,10 @@ class TestReviewLedgerRenderOutConfinement:
     def test_a_stale_out_file_is_removed_when_a_later_step_exits_2(self, isolated_home, git_repo):
         """No session is seeded, so the session lookup exits 2 after the arguments are checked."""
         (git_repo / "agent-reviews").mkdir()
-        stale = git_repo / "agent-reviews" / "body.md"
+        stale = git_repo / "agent-reviews" / "pr-body-test.md"
         stale.write_text("previous round's body")
 
-        result = _run(["render", "--out", "agent-reviews/body.md"], cwd=git_repo, home=isolated_home)
+        result = _run(["render", "--out", "agent-reviews/pr-body-test.md"], cwd=git_repo, home=isolated_home)
 
         assert result.returncode == 2
         assert not stale.exists()
@@ -1683,11 +1801,11 @@ class TestReviewLedgerRenderOutConfinement:
         if os.geteuid() == 0:
             pytest.skip("root ignores directory permissions")
         agent_reviews = logged_defer / "agent-reviews"
-        stale = agent_reviews / "body.md"
+        stale = agent_reviews / "pr-body-test.md"
         stale.write_text("previous round's body")
         agent_reviews.chmod(0o500)
         try:
-            result = _run(["render", "--out", "agent-reviews/body.md"], cwd=logged_defer, home=isolated_home)
+            result = _run(["render", "--out", "agent-reviews/pr-body-test.md"], cwd=logged_defer, home=isolated_home)
         finally:
             agent_reviews.chmod(0o700)
 
@@ -1696,7 +1814,7 @@ class TestReviewLedgerRenderOutConfinement:
         assert "changed:" not in result.stdout
 
     def test_a_delete_that_fails_aborts_with_exit_1_and_no_changed_line_even_as_root(self, isolated_home, logged_defer, tmp_path):
-        stale = logged_defer / "agent-reviews" / "body.md"
+        stale = logged_defer / "agent-reviews" / "pr-body-test.md"
         stale.write_text("previous round's body")
         fake_bin = tmp_path / "bin"
         fake_bin.mkdir()
@@ -1704,7 +1822,7 @@ class TestReviewLedgerRenderOutConfinement:
         (fake_bin / "rm").chmod(0o755)
 
         result = _run(
-            ["render", "--out", "agent-reviews/body.md"], cwd=logged_defer, home=isolated_home,
+            ["render", "--out", "agent-reviews/pr-body-test.md"], cwd=logged_defer, home=isolated_home,
             extra_env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
         )
 
@@ -1715,20 +1833,158 @@ class TestReviewLedgerRenderOutConfinement:
 
     @pytest.mark.parametrize("kind", ["missing file", "directory"])
     def test_a_pr_json_path_that_cannot_be_read_exits_1_and_leaves_no_out_file(self, isolated_home, logged_defer, kind):
-        stale = logged_defer / "agent-reviews" / "body.md"
+        stale = logged_defer / "agent-reviews" / "pr-body-test.md"
         stale.write_text("previous round's body")
         pr_json = logged_defer / "pr.json"
         if kind == "directory":
             pr_json.mkdir()
 
         result = _run(
-            ["render", "--pr-json", "pr.json", "--out", "agent-reviews/body.md"],
+            ["render", "--pr-json", "pr.json", "--out", "agent-reviews/pr-body-test.md"],
             cwd=logged_defer, home=isolated_home,
         )
 
         assert result.returncode == 1
         assert "could not read --pr-json file" in result.stderr
         assert not stale.exists()
+
+
+class TestReviewLedgerRefusesIrregularLedgerFiles:
+    """A ledger or lock path that is a symlink or not a regular file is a
+    planted redirect of the read or the append, so every subcommand that
+    touches it refuses and leaves the link target alone."""
+
+    DECOY_ROW = {"round": 9, "finding": "decoy row", "disposition": "ADDRESS", "rationale": "r", "id": "d" * 12}
+
+    @pytest.fixture
+    def decoy(self, tmp_path) -> Path:
+        decoy = tmp_path / "decoy.jsonl"
+        decoy.write_text(json.dumps(self.DECOY_ROW) + "\n")
+        return decoy
+
+    @pytest.fixture
+    def feature_branch(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        _ledger_path(isolated_home, git_repo).parent.mkdir(parents=True)
+        return git_repo
+
+    @staticmethod
+    def _plant(path: Path, kind: str, decoy: Path) -> None:
+        if kind == "symlink":
+            path.symlink_to(decoy)
+        elif kind == "dangling symlink":
+            path.symlink_to(decoy.parent / "absent.jsonl")
+        elif kind == "fifo":
+            os.mkfifo(path)
+        else:
+            path.mkdir()
+
+    @pytest.mark.parametrize("kind", ["symlink", "dangling symlink", "directory", "fifo"])
+    @pytest.mark.parametrize("target", ["ledger", "lock"])
+    def test_append_refuses_and_leaves_the_link_target_alone(
+        self, isolated_home, feature_branch, decoy, kind, target
+    ):
+        ledger = _ledger_path(isolated_home, feature_branch)
+        planted = ledger if target == "ledger" else ledger.with_name(ledger.name + ".lock")
+        self._plant(planted, kind, decoy)
+        decoy_before = decoy.read_text()
+
+        # The timeout bounds a hang if a regression ever opens the FIFO.
+        result = _run(_append_args(), cwd=feature_branch, home=isolated_home, timeout=30)
+
+        assert result.returncode == 2
+        assert "must be a regular file" in result.stderr
+        assert decoy.read_text() == decoy_before
+        assert not (decoy.parent / "absent.jsonl").exists()
+
+    def test_append_with_a_ref_refuses_before_reading_through_the_link(self, isolated_home, feature_branch, decoy):
+        _ledger_path(isolated_home, feature_branch).symlink_to(decoy)
+
+        result = _run(_append_args(ref=self.DECOY_ROW["id"]), cwd=feature_branch, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "must be a regular file" in result.stderr
+        assert "not in this branch's ledger" not in result.stderr
+
+    @pytest.mark.parametrize("kind", ["symlink", "dangling symlink", "directory"])
+    def test_show_refuses_and_prints_no_row_from_behind_the_link(self, isolated_home, feature_branch, decoy, kind):
+        self._plant(_ledger_path(isolated_home, feature_branch), kind, decoy)
+
+        result = _run(["show"], cwd=feature_branch, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "must be a regular file" in result.stderr
+        assert "decoy row" not in result.stdout + result.stderr
+
+    def test_show_refuses_a_symlinked_session_file_beside_a_regular_branch_file(
+        self, isolated_home, feature_branch, decoy
+    ):
+        assert _run(_append_args(finding="real row"), cwd=feature_branch, home=isolated_home).returncode == 0
+        _session_ledger_path(isolated_home, feature_branch).symlink_to(decoy)
+
+        result = _run(["show"], cwd=feature_branch, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "must be a regular file" in result.stderr
+        assert "decoy row" not in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("kind", ["symlink", "dangling symlink", "directory"])
+    def test_render_refuses_and_renders_nothing_from_behind_the_link(
+        self, isolated_home, feature_branch, decoy, kind
+    ):
+        self._plant(_ledger_path(isolated_home, feature_branch), kind, decoy)
+
+        result = _run(["render"], cwd=feature_branch, home=isolated_home)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "must be a regular file" in result.stderr
+
+    def test_a_regular_ledger_and_lock_file_are_still_accepted(self, isolated_home, feature_branch):
+        ledger = _ledger_path(isolated_home, feature_branch)
+        ledger.touch()
+        ledger.with_name(ledger.name + ".lock").touch()
+
+        result = _run(_append_args(), cwd=feature_branch, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+
+
+class TestReviewLedgerRejectsAnEmptyValueFlag:
+    """An empty value reads the same as an omitted flag once parsed, so each
+    value flag that selects or labels a row rejects it by name."""
+
+    @pytest.mark.parametrize(
+        ("flag", "overrides"),
+        [
+            pytest.param("--ref", {"ref": ""}, id="ref on ADDRESS"),
+            pytest.param("--decided-by", {"decided_by": ""}, id="decided-by on ADDRESS"),
+            pytest.param("--engineer-quote", {"engineer_quote": ""}, id="engineer-quote on ADDRESS"),
+            pytest.param("--defer-criterion", {"defer_criterion": ""}, id="defer-criterion on ADDRESS"),
+            pytest.param("--cited-line", {"cited_line": ""}, id="cited-line on ADDRESS"),
+        ],
+    )
+    def test_the_empty_value_is_rejected_by_flag_name_with_nothing_written(
+        self, isolated_home, git_repo, flag, overrides
+    ):
+        _seed_session(isolated_home, SID)
+
+        result = _run(_append_args(**overrides), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert f"{flag} was given an empty value" in result.stderr
+        assert not _ledger_path(isolated_home, git_repo).exists()
+
+    def test_an_empty_ref_does_not_silently_drop_a_requested_reopen(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        assert _run(_defer_args(), cwd=git_repo, home=isolated_home).returncode == 0
+
+        result = _run(_append_args(ref=""), cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert len(_ledger_rows(_ledger_path(isolated_home, git_repo))) == 1
 
 
 # The fields the append's dedup key names, and a value for each that differs from
@@ -2732,19 +2988,27 @@ class TestReviewLedgerDirectoryCreationFailure:
 
 class TestReviewLedgerAppendWriteFailure:
     def test_a_row_that_could_not_be_written_exits_2_and_says_so(self, isolated_home, git_repo):
-        """A directory at the ledger path makes the append redirect fail even
-        for root. The row was neither written nor deduplicated, so the
-        script must not report success."""
+        """A zero file-size limit makes every file write fail, for root as well as any
+        other user, so both the lock write and the append write fail. The run goes through
+        the lock-exhaustion fallthrough before the append fails. The row was neither written
+        nor deduplicated, so the script must not report success. SIGXFSZ is ignored so a
+        failed write returns an error instead of killing the shell."""
         _git(git_repo, "checkout", "-q", "-b", "feature")
         _seed_session(isolated_home, SID)
         ledger = _ledger_path(isolated_home, git_repo)
-        ledger.mkdir(parents=True)
+        ledger.parent.mkdir(parents=True)
+        ledger.touch()
+        env = {**os.environ, "HOME": str(isolated_home)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
 
-        result = _run(_append_args(), cwd=git_repo, home=isolated_home)
+        result = subprocess.run(
+            ["bash", "-c", 'trap "" XFSZ; ulimit -f 0; exec bash "$@"', "bash", str(REVIEW_LEDGER_SCRIPT), *_append_args()],
+            cwd=git_repo, env=env, capture_output=True, text=True, timeout=60,
+        )
 
         assert result.returncode == 2
         assert "could not write the ledger row" in result.stderr
-        assert ledger.is_dir()
+        assert ledger.read_text() == ""
 
     def test_a_deduplicated_row_still_exits_0(self, isolated_home, git_repo):
         _git(git_repo, "checkout", "-q", "-b", "feature")

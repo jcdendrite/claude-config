@@ -14,18 +14,65 @@ from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
     SCRIPTS_DIR,
-    bash_input,
     build_path_without,
-    edit_input,
-    multiedit_input,
     run_hook,
     run_hook_reason,
-    write_input,
 )
+from helpers import bash_input as _bash_input
+from helpers import edit_input as _edit_input
+from helpers import multiedit_input as _multiedit_input
+from helpers import write_input as _write_input
 
 from .conftest import _review_ledger_path, _seed_session
 
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
+
+
+def _marker_write_realpath_budget() -> int:
+    """The hook's own budget, parsed from its source so a budget change cannot
+    leave a past-the-budget test inside the budget."""
+    match = re.search(
+        r"^\s*MARKER_WRITE_REALPATH_BUDGET=(\d+)\s*$",
+        ENFORCE_MARKER_SCRIPT_SHAPE_HOOK.read_text(),
+        re.MULTILINE,
+    )
+    assert match, "MARKER_WRITE_REALPATH_BUDGET assignment not found in the hook"
+    return int(match.group(1))
+
+
+def _past_realpath_budget_padding() -> str:
+    """`tee` targets that each spend one unit of the budget, one more than it
+    holds, so a target listed after them gets no realpath-normalized form."""
+    return " ".join(f"~/.claude/pad{i}" for i in range(_marker_write_realpath_budget() + 1))
+
+
+# The harness sets `agent_id` only inside a subagent call, and sets
+# `agent_type` for a subagent and for a main session started with `--agent`.
+SUBAGENT_ID = "agent-0123456789abcdef"
+_DERIVE_AGENT_ID = object()
+
+
+def _with_agent_id(build_payload):
+    """Wrap a payload builder so a payload naming a non-empty `agent_type`
+    also carries `agent_id`, modelling a subagent call. Pass `agent_id=None`
+    to model a main session started with `--agent`, or an explicit string to
+    model a subagent with no `agent_type`."""
+
+    def build(*args, agent_id=_DERIVE_AGENT_ID, **kwargs):
+        payload = build_payload(*args, **kwargs)
+        if agent_id is _DERIVE_AGENT_ID:
+            agent_id = SUBAGENT_ID if payload.get("agent_type") else None
+        if agent_id is not None:
+            payload["agent_id"] = agent_id
+        return payload
+
+    return build
+
+
+bash_input = _with_agent_id(_bash_input)
+edit_input = _with_agent_id(_edit_input)
+multiedit_input = _with_agent_id(_multiedit_input)
+write_input = _with_agent_id(_write_input)
 
 # The 22 single-command tilde-form shapes the hook accepts — single source of
 # truth for both test_valid_shapes_allowed (which pins hook acceptance) and
@@ -1178,7 +1225,7 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             == "allow"
         )
 
-    @pytest.mark.parametrize("utility", ["cp", "mv", "install"])
+    @pytest.mark.parametrize("utility", ["cp", "mv", "install", "ln", "link"])
     def test_directory_copy_into_the_bare_marker_directory_denied(self, utility):
         """The destination names the directory itself, with no file component:
         the utility writes the file inside it."""
@@ -1193,7 +1240,7 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             == "deny"
         )
 
-    @pytest.mark.parametrize("utility", ["cp", "mv", "install"])
+    @pytest.mark.parametrize("utility", ["cp", "mv", "install", "ln", "link"])
     def test_full_tool_set_agent_may_copy_into_the_bare_marker_directory(self, utility):
         assert (
             run_hook(
@@ -1271,7 +1318,7 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
 
     def test_traversal_path_denied_without_realpath(self, marker_home, tmp_path):
         """Mirrors TestGateReleaseAuthorityFileWrites' same-named test: the
-        nested loop's no-realpath fallback (raw candidate only) has to hold
+        nested loop's no-realpath fallback has to hold
         for N extracted Bash targets, not just the Write arm's one."""
         stub_bin = tmp_path / "no-realpath-bin"
         stub_bin.mkdir()
@@ -1385,6 +1432,8 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             "cp --target-directory=~/.claude/code-review-markers /tmp/attacker-plan.md",
             "mv -t ~/.claude/code-review-markers /tmp/attacker-plan.md",
             "install -t ~/.claude/code-review-markers /tmp/attacker-plan.md",
+            "ln -s -t ~/.claude/code-review-markers /tmp/attacker-plan.md",
+            "ln -s --target-directory=~/.claude/code-review-markers /tmp/attacker-plan.md",
         ],
     )
     def test_target_directory_form_allowed_residual(self, command):
@@ -1395,6 +1444,23 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 bash_input(command, agent_type="code-writer"),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
+    def test_hard_link_into_the_ledger_directory_with_target_directory_allowed_residual(self, agent_type):
+        """Accepted residual: `ln -f -t <ledger directory> <file>` replaces a
+        ledger file with a hard link to a file written elsewhere. The `-t`
+        form puts the destination before the last argument, so the scan never
+        sees the ledger directory, and review-ledger.sh accepts the result
+        because a hard link is a regular file. Invert this to deny if the
+        `-t` forms are ever extracted."""
+        command = "ln -f -t ~/.claude/review-narrative-ledger ./forged-ledger.jsonl"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(command, agent_type=agent_type),
             )
             == "allow"
         )
@@ -2266,10 +2332,12 @@ LEDGER_SCRIPT_OPS_GATED_FOR_ROSTER = {
 class TestReviewLedgerAppendAuthority:
     """The Bash arm's ledger predicates.
 
-    A roster agent is denied every `review-ledger.sh append`, because the row
-    lands in the parent session's ledger. Any non-empty agent type is denied an
-    `append` carrying `--engineer-quote`, because only the main session holds
-    the engineer's turn.
+    A roster agent (`agent_type` in the roster) is denied every
+    `review-ledger.sh append`, because the row lands in the parent session's
+    ledger. Any subagent (non-empty `agent_id`) is denied an `append` carrying
+    `--engineer-quote`, because only the main session holds the engineer's
+    turn. `agent_type` alone does not identify a subagent, so a named main
+    session is allowed that append (TestSubagentIsIdentifiedByAgentId).
     """
 
     @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
@@ -2655,9 +2723,11 @@ class TestReviewLedgerAppendAuthority:
 
 class TestReviewLedgerStatePaths:
     """The path-keyed arms: Write/Edit/MultiEdit and a Bash redirect into the
-    ledger directory are denied for every non-empty agent type, with the denied
+    ledger directory are denied for every subagent (non-empty `agent_id`) and
+    for every roster `agent_type` with or without `agent_id`, with the denied
     path derived from the documented key rules (the conftest oracle), not typed
-    here. The oracle itself is pinned against the real resolver in
+    here. A named main session outside the roster is allowed
+    (TestSubagentIsIdentifiedByAgentId). The oracle itself is pinned against the real resolver in
     test_lib_reviewer_round_state.py, and the hook reads only the directory, so
     one branch-scope key shape is enough here."""
 
@@ -2827,7 +2897,7 @@ class TestReviewLedgerStatePaths:
         )
 
     @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
-    @pytest.mark.parametrize("utility", ["cp", "mv", "install"])
+    @pytest.mark.parametrize("utility", ["cp", "mv", "install", "ln", "link"])
     @pytest.mark.parametrize(
         "destination",
         ["~/.claude/review-narrative-ledger", "~/.claude/review-narrative-ledger/"],
@@ -2848,7 +2918,7 @@ class TestReviewLedgerStatePaths:
         )
 
     @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
-    @pytest.mark.parametrize("utility", ["cp", "mv", "install"])
+    @pytest.mark.parametrize("utility", ["cp", "mv", "install", "ln", "link"])
     def test_directory_copy_into_a_similarly_named_directory_allowed(
         self, isolated_home, agent_type, utility
     ):
@@ -2863,7 +2933,7 @@ class TestReviewLedgerStatePaths:
             == "allow"
         )
 
-    @pytest.mark.parametrize("utility", ["cp", "mv", "install"])
+    @pytest.mark.parametrize("utility", ["cp", "mv", "install", "ln", "link"])
     def test_directory_copy_into_the_config_dir_ledger_directory_denied(self, tmp_path, utility):
         """A config dir with no `.claude` segment reaches only the config-dir arms."""
         home = tmp_path / "home"
@@ -2997,8 +3067,8 @@ class TestReviewLedgerStatePaths:
         self, tmp_path, agent_type, tool
     ):
         """A relative CLAUDE_CONFIG_DIR leaves the target unclassifiable, so
-        every non-empty agent type is denied, and the reason must not call the
-        target only a marker path."""
+        every caller with a non-empty `agent_type` is denied, and the reason
+        must not call the target only a marker path."""
         home = tmp_path / "home"
         target = tmp_path / "somewhere" / ".claude" / "review-narrative-ledger" / "abc.def.jsonl"
         payload = (
@@ -3015,6 +3085,48 @@ class TestReviewLedgerStatePaths:
         assert reason is not None
         assert "could not resolve the Claude Code config directory" in reason
         assert "review-ledger path" in reason
+
+    @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
+    @pytest.mark.parametrize("tool", ["write-tool", "bash-redirect"])
+    def test_a_named_main_session_is_denied_when_config_dir_is_unresolvable(
+        self, tmp_path, agent_type, tool
+    ):
+        """The unresolvable-config-dir deny keys on a non-empty `agent_id` or
+        `agent_type`, so a main session started with `--agent` (an
+        `agent_type` and no `agent_id`) is denied too, roster name or not."""
+        home = tmp_path / "home"
+        target = tmp_path / "somewhere" / ".claude" / "review-narrative-ledger" / "abc.def.jsonl"
+        payload = (
+            write_input(str(target), agent_type=agent_type, agent_id=None)
+            if tool == "write-tool"
+            else bash_input(f"printf x >> {target}", agent_type=agent_type, agent_id=None)
+        )
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                payload,
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": "relative-profile"},
+            )
+            == "deny"
+        )
+
+    def test_an_unnamed_main_session_may_use_the_file_write_tools_when_config_dir_is_unresolvable(
+        self, tmp_path
+    ):
+        """Control for the named-main-session deny: with neither `agent_id`
+        nor `agent_type` the file-write arm exits before resolving the target."""
+        home = tmp_path / "home"
+        target = tmp_path / "somewhere" / ".claude" / "review-narrative-ledger" / "abc.def.jsonl"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(target)),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": "relative-profile"},
+            )
+            == "allow"
+        )
 
     def test_similarly_named_directory_under_a_custom_config_dir_stays_writable(self, tmp_path):
         home = tmp_path / "home"
@@ -3073,6 +3185,520 @@ class TestReviewLedgerStatePaths:
                 bash_input(f"echo x >> {target}"),
                 home=home,
                 extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect"])
+    @pytest.mark.parametrize("marker_directory", ["code-review-markers", ".plan-review-active.d"])
+    def test_a_marker_directory_segment_before_a_traversal_into_the_ledger_directory_denied_for_a_non_roster_agent(
+        self, isolated_home, via, marker_directory
+    ):
+        """The raw form matches the marker shape and only the normalized form
+        matches the ledger shape. The ledger kind must win, or a full-tool-set
+        agent, which may write markers, could forge a ledger row."""
+        forged = isolated_home / ".claude" / marker_directory / ".." / "review-narrative-ledger" / "abc.def.jsonl"
+        payload = (
+            write_input(str(forged), agent_type="general-purpose")
+            if via == "write-tool"
+            else bash_input(f"echo x >> {forged}", agent_type="general-purpose")
+        )
+
+        reason = run_hook_reason(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home)
+
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect"])
+    def test_a_marker_directory_segment_before_a_traversal_into_the_config_dir_ledger_directory_denied(
+        self, tmp_path, via
+    ):
+        """The same ordering rule across the config-dir candidate forms, for a
+        config dir with no `.claude` segment."""
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        forged = config_dir / "code-review-markers" / ".." / "review-narrative-ledger" / "abc.def.jsonl"
+        payload = (
+            write_input(str(forged), agent_type="general-purpose")
+            if via == "write-tool"
+            else bash_input(f"echo x >> {forged}", agent_type="general-purpose")
+        )
+
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect"])
+    def test_a_path_matching_both_the_ledger_and_a_marker_shape_is_ledger_state(self, isolated_home, via):
+        """One pattern list matches both shapes: the ledger directory contains a
+        marker-shaped subdirectory. The ledger arm must come first, or a
+        full-tool-set subagent, which may write markers, could write ledger state."""
+        both_shapes = isolated_home / ".claude" / "review-narrative-ledger" / "x-markers" / "f"
+        payload = (
+            write_input(str(both_shapes), agent_type="general-purpose")
+            if via == "write-tool"
+            else bash_input(f"echo x >> {both_shapes}", agent_type="general-purpose")
+        )
+
+        reason = run_hook_reason(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home)
+
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect"])
+    @pytest.mark.parametrize("config_dir_form", ["verbatim", "symlinked"])
+    def test_a_path_matching_both_shapes_under_a_config_dir_with_no_dotclaude_segment_is_ledger_state(
+        self, tmp_path, via, config_dir_form
+    ):
+        """The config-dir pattern lists carry the same two-arm shape as the
+        `.claude` list, so each needs its ledger arm first. The symlinked
+        form writes through the physical path, which only the realpath-anchored
+        list matches."""
+        home = tmp_path / "home"
+        home.mkdir()
+        physical = tmp_path / "profile-container"
+        physical.mkdir()
+        config_dir = physical
+        if config_dir_form == "symlinked":
+            config_dir = tmp_path / "symlinked-profile"
+            config_dir.symlink_to(physical)
+        both_shapes = physical / "review-narrative-ledger" / "x-markers" / "f"
+        payload = (
+            write_input(str(both_shapes), agent_type="general-purpose")
+            if via == "write-tool"
+            else bash_input(f"echo x >> {both_shapes}", agent_type="general-purpose")
+        )
+
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    def test_a_path_matching_both_shapes_past_the_realpath_budget_is_ledger_state(self, tmp_path):
+        """With the realpath budget spent only the resolved-config-dir list can
+        match the raw text, so this reaches that list's ledger arm alone."""
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        both_shapes = config_dir / "review-narrative-ledger" / "x-markers" / "f"
+        padding = _past_realpath_budget_padding()
+
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"tee {padding} {both_shapes}", agent_type="general-purpose"),
+            home=home,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    @pytest.fixture
+    def no_realpath_path(self, tmp_path):
+        """A PATH holding what the hook needs except `realpath`, so no
+        normalized candidate form exists."""
+        stub_bin = tmp_path / "no-realpath-bin"
+        stub_bin.mkdir()
+        for binary in ("bash", "jq", "grep", "sed", "dirname", "cat", "timeout", "tr"):
+            resolved = shutil.which(binary)
+            if resolved:
+                (stub_bin / binary).symlink_to(resolved)
+        assert shutil.which("realpath", path=str(stub_bin)) is None
+        return str(stub_bin)
+
+    def _ledger_write_payload(self, via, target, **agent_kwargs):
+        """`via` picks the surface that carries TARGET. The tee form lists enough
+        earlier targets to spend the realpath budget, so TARGET gets no
+        normalized form."""
+        if via == "write-tool":
+            return write_input(str(target), **agent_kwargs)
+        if via == "bash-redirect":
+            return bash_input(f"echo x >> {target}", **agent_kwargs)
+        return bash_input(f"tee {_past_realpath_budget_padding()} {target}", **agent_kwargs)
+
+    def _no_normalized_form_env(self, via, no_realpath_path):
+        """The tee form spends the budget; the others remove `realpath`."""
+        return {} if via == "bash-tee-past-realpath-budget" else {"PATH": no_realpath_path}
+
+    def _traversal_into_the_ledger_directory_payload(self, home, via, **agent_kwargs):
+        """The raw form is marker-shaped and only a normalized form could show
+        the ledger directory."""
+        forged = home / ".claude" / "code-review-markers" / ".." / "review-narrative-ledger" / "abc.def.jsonl"
+        return self._ledger_write_payload(via, forged, **agent_kwargs)
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect", "bash-tee-past-realpath-budget"])
+    def test_a_marker_directory_traversal_into_the_ledger_directory_denied_for_a_non_roster_agent_without_a_normalized_form(
+        self, isolated_home, no_realpath_path, via
+    ):
+        """No realpath on PATH (and, for the tee form, a spent budget) leaves the
+        raw marker-shaped text and its lexical form as the only candidates. The
+        lexical form resolves the `..` and matches the ledger glob, so a
+        full-tool-set subagent must not pass as a marker writer."""
+        payload = self._traversal_into_the_ledger_directory_payload(
+            isolated_home, via, agent_type="general-purpose"
+        )
+        extra_env = {} if via == "bash-tee-past-realpath-budget" else {"PATH": no_realpath_path}
+
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home, extra_env=extra_env
+        )
+
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect", "bash-tee-past-realpath-budget"])
+    def test_a_marker_directory_traversal_into_the_ledger_directory_allowed_for_the_main_session_without_a_normalized_form(
+        self, isolated_home, no_realpath_path, via
+    ):
+        payload = self._traversal_into_the_ledger_directory_payload(isolated_home, via)
+        extra_env = {} if via == "bash-tee-past-realpath-budget" else {"PATH": no_realpath_path}
+
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home, extra_env=extra_env
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect"])
+    def test_a_plain_marker_path_stays_writable_for_a_non_roster_agent_without_a_normalized_form(
+        self, isolated_home, no_realpath_path, via
+    ):
+        """Control: with no normalized form, a marker path whose text does not
+        name the ledger directory keeps its marker kind."""
+        marker_path = isolated_home / ".claude" / "code-review-markers" / "deadbeef.session"
+        payload = (
+            write_input(str(marker_path), agent_type="general-purpose")
+            if via == "write-tool"
+            else bash_input(f"echo x >> {marker_path}", agent_type="general-purpose")
+        )
+
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home,
+                extra_env={"PATH": no_realpath_path},
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect", "bash-tee-past-realpath-budget"])
+    @pytest.mark.parametrize(
+        "ledger_path_template",
+        [
+            "{home}/.claude//review-narrative-ledger/abc.def.jsonl",
+            "{home}/.claude/./review-narrative-ledger/abc.def.jsonl",
+            "{home}/.claude/missing/../review-narrative-ledger/abc.def.jsonl",
+            "{home}/.claude/projects/../review-narrative-ledger/abc.def.jsonl",
+        ],
+        ids=[
+            "doubled-slash",
+            "dot-segment",
+            "dotdot-after-a-missing-directory",
+            "dotdot-from-a-non-marker-directory",
+        ],
+    )
+    def test_a_dot_segment_or_doubled_slash_ledger_path_denied_for_a_non_roster_subagent_without_a_normalized_form(
+        self, isolated_home, no_realpath_path, via, ledger_path_template
+    ):
+        """No `realpath` on PATH, or a spent realpath budget, leaves the written
+        text and its lexical form as the only candidates. The ledger globs have
+        no wildcard between the anchor and the directory name, so each of these
+        spellings matches only through the lexical form."""
+        ledger_path = ledger_path_template.format(home=isolated_home)
+        payload = self._ledger_write_payload(via, ledger_path, agent_type="general-purpose")
+
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home,
+            extra_env=self._no_normalized_form_env(via, no_realpath_path),
+        )
+
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect", "bash-tee-past-realpath-budget"])
+    @pytest.mark.parametrize(
+        ("config_dir_value_template", "ledger_path_template"),
+        [
+            ("{config_dir}", "{config_dir}//review-narrative-ledger/abc.def.jsonl"),
+            ("{config_dir}", "{config_dir}/./review-narrative-ledger/abc.def.jsonl"),
+            ("{config_dir}", "{config_dir}/missing/../review-narrative-ledger/abc.def.jsonl"),
+            ("{parent}//profile-container", "{config_dir}/review-narrative-ledger/abc.def.jsonl"),
+            ("{parent}/outer/../profile-container", "{config_dir}/review-narrative-ledger/abc.def.jsonl"),
+            ("{parent}//profile-container", "{parent}//profile-container//review-narrative-ledger/abc.def.jsonl"),
+            ("{config_dir}//", "{config_dir}/review-narrative-ledger/abc.def.jsonl"),
+        ],
+        ids=[
+            "doubled-slash-in-the-target",
+            "dot-segment-in-the-target",
+            "dotdot-in-the-target",
+            "doubled-slash-in-the-config-dir",
+            "dotdot-in-the-config-dir",
+            "doubled-slash-in-both",
+            "trailing-doubled-slash-in-the-config-dir",
+        ],
+    )
+    def test_a_dot_segment_or_doubled_slash_config_dir_ledger_path_denied_for_a_non_roster_subagent_without_a_normalized_form(
+        self, tmp_path, no_realpath_path, via, config_dir_value_template, ledger_path_template
+    ):
+        """The config-dir anchors get the same lexical treatment as the target,
+        for a config dir with no `.claude` segment. Each row matches only
+        through a lexical candidate or the lexical config-dir anchor, which
+        drops the trailing slash a `//`-terminated config dir keeps."""
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        names = {"config_dir": str(config_dir), "parent": str(tmp_path)}
+        payload = self._ledger_write_payload(
+            via, ledger_path_template.format(**names), agent_type="general-purpose"
+        )
+        # The tee form's padding names `~/.claude`, which is under HOME, so the
+        # budget is spent whichever config dir is set.
+        extra_env = {
+            **self._no_normalized_form_env(via, no_realpath_path),
+            "CLAUDE_CONFIG_DIR": config_dir_value_template.format(**names),
+        }
+
+        reason = run_hook_reason(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=home, extra_env=extra_env)
+
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect", "bash-tee-past-realpath-budget"])
+    @pytest.mark.parametrize(
+        "session_kwargs",
+        [{}, {"agent_type": "general-purpose", "agent_id": None}],
+        ids=["unnamed-main-session", "named-non-roster-main-session"],
+    )
+    @pytest.mark.parametrize(
+        "ledger_path_template",
+        [
+            "{home}/.claude//review-narrative-ledger/abc.def.jsonl",
+            "{home}/.claude/missing/../review-narrative-ledger/abc.def.jsonl",
+        ],
+        ids=["doubled-slash", "dotdot-after-a-missing-directory"],
+    )
+    def test_a_dot_segment_or_doubled_slash_ledger_path_allowed_for_a_main_session_without_a_normalized_form(
+        self, isolated_home, no_realpath_path, via, session_kwargs, ledger_path_template
+    ):
+        """A main session writes ledger state, named or not. A named main
+        session has no `agent_id`, so the lexical form's ledger match does not
+        bar it."""
+        ledger_path = ledger_path_template.format(home=isolated_home)
+        payload = self._ledger_write_payload(via, ledger_path, **session_kwargs)
+
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home,
+                extra_env=self._no_normalized_form_env(via, no_realpath_path),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect", "bash-tee-past-realpath-budget"])
+    @pytest.mark.parametrize("anchor", ["home-claude-directory", "config-dir-without-a-claude-segment"])
+    def test_a_ledger_path_whose_raw_text_already_matches_denied_for_a_non_roster_subagent_without_a_normalized_form(
+        self, tmp_path, no_realpath_path, via, anchor
+    ):
+        """Control for the lexical-form cases above: a doubled slash after the
+        ledger directory name leaves the raw text matching the ledger glob, so
+        these pass with or without the lexical candidate."""
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        extra_env = self._no_normalized_form_env(via, no_realpath_path)
+        if anchor == "home-claude-directory":
+            ledger_path = f"{home}/.claude/review-narrative-ledger//abc.def.jsonl"
+        else:
+            ledger_path = f"{config_dir}/review-narrative-ledger//abc.def.jsonl"
+            extra_env = {**extra_env, "CLAUDE_CONFIG_DIR": str(config_dir)}
+        payload = self._ledger_write_payload(via, ledger_path, agent_type="general-purpose")
+
+        reason = run_hook_reason(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=home, extra_env=extra_env)
+
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect", "bash-tee-past-realpath-budget"])
+    def test_a_ledger_path_under_a_trailing_doubled_slash_config_dir_allowed_for_the_unnamed_main_session_without_realpath(
+        self, tmp_path, no_realpath_path, via
+    ):
+        """Counterpart of the `trailing-doubled-slash-in-the-config-dir` deny
+        row: the unnamed main session writes ledger state."""
+        home = tmp_path / "home"
+        home.mkdir()
+        config_dir = tmp_path / "profile-container"
+        payload = self._ledger_write_payload(
+            via, f"{config_dir}/review-narrative-ledger/abc.def.jsonl"
+        )
+
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=home,
+                extra_env={
+                    **self._no_normalized_form_env(via, no_realpath_path),
+                    "CLAUDE_CONFIG_DIR": f"{config_dir}//",
+                },
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect", "bash-tee-past-realpath-budget"])
+    def test_a_bare_relative_ledger_path_allowed_residual_without_a_normalized_form(
+        self, isolated_home, no_realpath_path, via
+    ):
+        """Accepted residual: with no leading `/` or `./` the text carries no
+        `/.claude/` segment, so neither the raw text nor its lexical form
+        matches, and only a `realpath` form resolves it. Invert this to a deny
+        pin if a relative spelling is ever classified without `realpath`."""
+        payload = self._ledger_write_payload(
+            via, ".claude/review-narrative-ledger/abc.def.jsonl", agent_type="general-purpose"
+        )
+
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home,
+                extra_env=self._no_normalized_form_env(via, no_realpath_path),
+            )
+            == "allow"
+        )
+
+    @pytest.fixture
+    def ledger_file_alias(self, isolated_home):
+        """A symlink whose own path names `.claude` but not the ledger directory,
+        pointing at a ledger file."""
+        ledger_dir = isolated_home / ".claude" / "review-narrative-ledger"
+        ledger_dir.mkdir()
+        ledger_file = ledger_dir / "abc.def.jsonl"
+        ledger_file.write_text("")
+        alias = isolated_home / ".claude" / "projects" / "alias.jsonl"
+        alias.parent.mkdir()
+        alias.symlink_to(ledger_file)
+        return alias
+
+    def test_a_symlink_alias_to_a_ledger_file_denied_for_a_non_roster_subagent_while_realpath_budget_remains(
+        self, isolated_home, ledger_file_alias
+    ):
+        """Control for the allowed residual below: the same alias is resolved
+        and denied when its candidate gets a realpath form."""
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"echo x >> {ledger_file_alias}", agent_type="general-purpose"),
+            home=isolated_home,
+        )
+
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect", "bash-tee-past-realpath-budget"])
+    def test_a_symlink_alias_to_a_ledger_file_allowed_residual_without_a_normalized_form(
+        self, isolated_home, no_realpath_path, ledger_file_alias, via
+    ):
+        """Accepted residual: past the realpath budget, or with no `realpath`,
+        a symlink alias goes unresolved, because only `realpath` follows a
+        symlink and the lexical form does not. Invert this to a deny pin if
+        symlink resolution ever stops depending on `realpath`."""
+        payload = self._ledger_write_payload(via, ledger_file_alias, agent_type="general-purpose")
+
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home,
+                extra_env=self._no_normalized_form_env(via, no_realpath_path),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect"])
+    def test_a_marker_directory_traversal_into_the_ledger_directory_allowed_for_the_main_session(
+        self, isolated_home, via
+    ):
+        forged = isolated_home / ".claude" / "code-review-markers" / ".." / "review-narrative-ledger" / "abc.def.jsonl"
+        payload = write_input(str(forged)) if via == "write-tool" else bash_input(f"echo x >> {forged}")
+
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home) == "allow"
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect"])
+    def test_a_plain_marker_path_stays_writable_for_a_non_roster_agent(self, isolated_home, via):
+        """Control for the ledger-wins ordering: a marker path with no ledger
+        form keeps its marker kind, which a full-tool-set agent may write."""
+        marker_path = isolated_home / ".claude" / "code-review-markers" / "deadbeef.session"
+        payload = (
+            write_input(str(marker_path), agent_type="general-purpose")
+            if via == "write-tool"
+            else bash_input(f"echo x >> {marker_path}", agent_type="general-purpose")
+        )
+
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home) == "allow"
+
+    @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
+    @pytest.mark.parametrize("utility", ["ln -s /tmp/forged", "ln -sf /tmp/forged", "link /tmp/forged"])
+    @pytest.mark.parametrize(
+        "link_path",
+        ["~/.claude/review-narrative-ledger/abc.def.jsonl", "~/.claude/review-narrative-ledger/abc.def.jsonl.lock"],
+        ids=["ledger-file", "lock-file"],
+    )
+    def test_a_link_created_at_a_ledger_path_denied(self, isolated_home, agent_type, utility, link_path):
+        """A planted link redirects the script's read and append to a file the
+        agent controls."""
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(f"{utility} {link_path}", agent_type=agent_type),
+            home=isolated_home,
+        )
+
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    def test_a_link_created_at_a_marker_path_denied_for_a_roster_agent(self, isolated_home):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("ln -s /tmp/forged ~/.claude/code-review-markers/deadbeef.session", agent_type="code-writer"),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_a_link_created_at_a_marker_path_allowed_for_a_non_roster_agent(self, isolated_home):
+        """A full-tool-set agent may write markers, so the `ln` extractor keeps the roster test for marker paths."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    "ln -s /tmp/forged ~/.claude/code-review-markers/deadbeef.session", agent_type="general-purpose",
+                ),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    def test_a_link_created_at_a_ledger_path_allowed_for_the_main_session(self, isolated_home):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("ln -s /tmp/forged ~/.claude/review-narrative-ledger/abc.def.jsonl"),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", ["code-writer", "general-purpose"])
+    def test_a_link_to_a_ledger_file_created_elsewhere_allowed(self, isolated_home, agent_type):
+        """The link path, the last argument, is what the scan classifies, so a
+        link that points at a ledger file from outside the directory is not
+        a write to ledger state."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input("ln -s ~/.claude/review-narrative-ledger/abc.def.jsonl /tmp/view", agent_type=agent_type),
+                home=isolated_home,
             )
             == "allow"
         )
@@ -3221,6 +3847,256 @@ class TestReviewLedgerStatePaths:
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 bash_input(command, agent_type="general-purpose"),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+
+class TestSubagentIsIdentifiedByAgentId:
+    """`agent_type` is also set for a main session started with `--agent`, so
+    only a non-empty `agent_id` marks a subagent. The engineer-row deny and
+    the non-roster ledger-state deny key on `agent_id`. Roster membership keys
+    on `agent_type`, whatever `agent_id` says, for `append`, marker state and
+    ledger state alike.
+    """
+
+    @pytest.fixture
+    def ledger_file(self, isolated_home, git_repo):
+        subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=git_repo, check=True)
+        return _review_ledger_path(isolated_home, git_repo, "sess-ledger-test")
+
+    @pytest.mark.parametrize("agent_type", NON_ROSTER_AGENT_TYPES)
+    def test_engineer_append_allowed_for_a_named_main_session(self, agent_type):
+        """`claude --agent <name>`: agent_type present, agent_id absent."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    f"{LEDGER} {LEDGER_APPEND_ENGINEER_ARGS}", agent_type=agent_type, agent_id=None
+                ),
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", NON_ROSTER_AGENT_TYPES)
+    def test_engineer_append_denied_for_a_subagent_with_an_unlisted_agent_type(self, agent_type):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    f"{LEDGER} {LEDGER_APPEND_ENGINEER_ARGS}",
+                    agent_type=agent_type,
+                    agent_id=SUBAGENT_ID,
+                ),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", [None, ""], ids=["no-agent-type", "empty-agent-type"])
+    def test_engineer_append_denied_for_a_subagent_with_no_agent_type(self, agent_type):
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(
+                f"{LEDGER} {LEDGER_APPEND_ENGINEER_ARGS}", agent_type=agent_type, agent_id=SUBAGENT_ID
+            ),
+        )
+        assert reason is not None
+        assert "cannot log an engineer decision" in reason
+        assert "'unnamed' agent" in reason
+
+    def test_non_string_agent_id_reads_as_a_subagent(self):
+        """A contract-violating agent_id is rendered rather than rejected, and
+        any non-empty rendering marks a subagent."""
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"{LEDGER} {LEDGER_APPEND_ENGINEER_ARGS}"},
+            "agent_id": {"unexpected": "object"},
+        }
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload) == "deny"
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_roster_agent_append_denied_without_an_agent_id(self, agent_type):
+        """Roster membership stays on agent_type, so a roster-named session is
+        denied an append whether or not the harness sent an agent_id."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{LEDGER} {LEDGER_APPEND_ARGS}", agent_type=agent_type, agent_id=None),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_roster_agent_marker_write_denied_without_an_agent_id(self, agent_type):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(f"{MARKER} write plan-review", agent_type=agent_type, agent_id=None),
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NON_ROSTER_AGENT_TYPES)
+    @pytest.mark.parametrize(
+        "tool_input_builder", [write_input, edit_input, multiedit_input],
+        ids=["write", "edit", "multiedit"],
+    )
+    def test_ledger_file_write_allowed_for_a_named_main_session(
+        self, isolated_home, ledger_file, agent_type, tool_input_builder
+    ):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                tool_input_builder(str(ledger_file), agent_type=agent_type, agent_id=None),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", NON_ROSTER_AGENT_TYPES)
+    @pytest.mark.parametrize(
+        "tool_input_builder", [write_input, edit_input, multiedit_input],
+        ids=["write", "edit", "multiedit"],
+    )
+    def test_ledger_file_write_denied_for_a_subagent_with_an_unlisted_agent_type(
+        self, isolated_home, ledger_file, agent_type, tool_input_builder
+    ):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                tool_input_builder(str(ledger_file), agent_type=agent_type, agent_id=SUBAGENT_ID),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", [None, ""], ids=["no-agent-type", "empty-agent-type"])
+    def test_ledger_file_write_denied_for_a_subagent_with_no_agent_type(
+        self, isolated_home, ledger_file, agent_type
+    ):
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            write_input(str(ledger_file), agent_type=agent_type, agent_id=SUBAGENT_ID),
+            home=isolated_home,
+        )
+        assert reason is not None
+        assert "review-ledger state" in reason
+        assert "'unnamed' agent" in reason
+
+    def test_ledger_redirect_allowed_for_a_named_main_session(self, isolated_home):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    "echo x >> ~/.claude/review-narrative-ledger/abc.def.jsonl",
+                    agent_type="general-purpose",
+                    agent_id=None,
+                ),
+                home=isolated_home,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("agent_type", [None, "general-purpose"], ids=["no-agent-type", "unlisted"])
+    def test_ledger_redirect_denied_for_a_subagent_without_a_roster_agent_type(
+        self, isolated_home, agent_type
+    ):
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                bash_input(
+                    "echo x >> ~/.claude/review-narrative-ledger/abc.def.jsonl",
+                    agent_type=agent_type,
+                    agent_id=SUBAGENT_ID,
+                ),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize(
+        "tool_input_builder", [write_input, edit_input, multiedit_input],
+        ids=["write", "edit", "multiedit"],
+    )
+    def test_roster_agent_ledger_file_write_denied_without_an_agent_id(
+        self, isolated_home, ledger_file, agent_type, tool_input_builder
+    ):
+        """Roster membership bars ledger state too, so a roster-named session
+        cannot hand-write the rows its `append` is denied."""
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            tool_input_builder(str(ledger_file), agent_type=agent_type, agent_id=None),
+            home=isolated_home,
+        )
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_roster_agent_ledger_redirect_denied_without_an_agent_id(self, isolated_home, agent_type):
+        reason = run_hook_reason(
+            ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+            bash_input(
+                "echo x >> ~/.claude/review-narrative-ledger/abc.def.jsonl",
+                agent_type=agent_type,
+                agent_id=None,
+            ),
+            home=isolated_home,
+        )
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect"])
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_roster_agent_marker_file_reached_through_the_ledger_directory_denied_without_an_agent_id(
+        self, isolated_home, agent_type, via
+    ):
+        """The ledger kind wins the shape match for this path, but the kernel
+        resolves the `..` to a marker file, so the roster bar must not depend
+        on which kind the match reports."""
+        forged = isolated_home / ".claude" / "review-narrative-ledger" / ".." / "code-review-markers" / "deadbeef.session"
+        payload = (
+            write_input(str(forged), agent_type=agent_type, agent_id=None)
+            if via == "write-tool"
+            else bash_input(f"echo x >> {forged}", agent_type=agent_type, agent_id=None)
+        )
+
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home) == "deny"
+
+    @pytest.mark.parametrize("via", ["write-tool", "bash-redirect"])
+    def test_named_main_session_may_write_through_the_ledger_directory_traversal(self, isolated_home, via):
+        """A non-roster named session without an agent_id is a main session:
+        neither the marker nor the ledger kind bars it."""
+        forged = isolated_home / ".claude" / "review-narrative-ledger" / ".." / "code-review-markers" / "deadbeef.session"
+        payload = (
+            write_input(str(forged), agent_type="general-purpose", agent_id=None)
+            if via == "write-tool"
+            else bash_input(f"echo x >> {forged}", agent_type="general-purpose", agent_id=None)
+        )
+
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, payload, home=isolated_home) == "allow"
+
+    @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    def test_roster_agent_marker_file_write_denied_without_an_agent_id(self, isolated_home, agent_type):
+        marker_path = isolated_home / ".claude" / "code-review-markers" / "deadbeef.session"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(marker_path), agent_type=agent_type, agent_id=None),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    def test_marker_file_write_allowed_for_a_subagent_with_no_agent_type(self, isolated_home):
+        """Marker state is barred by roster membership alone, so an agent_id
+        without a roster agent_type does not bar it."""
+        marker_path = isolated_home / ".claude" / "code-review-markers" / "deadbeef.session"
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                write_input(str(marker_path), agent_type=None, agent_id=SUBAGENT_ID),
                 home=isolated_home,
             )
             == "allow"

@@ -40,7 +40,7 @@ Round numbers are branch-wide and stay caller-supplied: a session's first round 
 A branch deleted and recreated under the same name at the same path resolves to the same file.
 Its old rows therefore reach `show` and the dashboard's counts.
 Round numbering continues from the old branch's maximum.
-`show`'s header names the oldest row's date, and `docs/hooks.md` tells the engineer to delete the file `show`'s header names.
+`show`'s header names the oldest row's date, and `docs/scripts.md` tells the engineer to delete the file `show`'s header names.
 
 Ancestry filtering fails for two reasons.
 Rows record no commit SHA, so a filter would need a new field.
@@ -83,6 +83,11 @@ An edit inside the decided block but outside the hashed lines does not reopen th
 A range of short common text, such as a lone `}`, also matches identical text elsewhere, in any file, when a reviewer cites that line.
 A SKILL.md paragraph is one line, so any edit anywhere in it reopens every decision anchored to it, which fails toward a stop.
 
+**A carry binds the decided text, not its site.**
+The script checks that the carry's range hashes to the decision's `site_hash` and does not compare paths.
+A block-length copy of the decided text in another file therefore carries, as a lone `}` does.
+Accepting a carry at a new path is what lets a renamed file keep its decisions.
+
 **Partial staging binds unstaged edits.**
 Under `git add -p`, the hash covers the block's working-tree text, including unstaged edits that the commit-gate reviewers did not see.
 
@@ -113,7 +118,7 @@ Between create and edit the PR carries no Deferred or Settled tables, and a fail
 Whether a `gh pr view` immediately after create returns the new PR's body was not verified.
 
 **The redaction gate is not a completeness check.**
-It blocks the shapes it detects, and a structural fingerprint, private-corpus provenance or a credential value passes it (`docs/hooks.md` states the credential case), so the engineer's quote is published as typed.
+It blocks the shapes it detects, and a structural fingerprint, private-corpus provenance or a credential value passes it (`docs/scripts.md` states the credential case), so the engineer's quote is published as typed.
 
 ## Settled decisions and carries
 
@@ -188,7 +193,7 @@ A session that reviews on two branches and whose round values fall (round 5 on o
 That exclusion is deliberate, and a test pins it.
 
 Rounds of an excluded session are not classified.
-Two data-quality counters therefore stop counting them: rounds with a marker write but no ledger row, and rows whose `authoring_agent` disagrees with the transcript.
+Two data-quality counters therefore stop counting them: "rounds with a clean marker write but no round-keyed ledger rows", and "authoring_agent inconsistent with the transcript join".
 Both read the round-to-row join that the exclusion marks untrusted.
 
 The positional join has one silent residual.

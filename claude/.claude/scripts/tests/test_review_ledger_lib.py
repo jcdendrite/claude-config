@@ -68,11 +68,12 @@ def _call(function: str, *args: str, **kwargs) -> subprocess.CompletedProcess:
 
 def _validate(
     disposition: str, decided_by: str = "", quote: str = "", invariant: str = "", carry_forward: str = "",
-    criterion: str = "", ref: str = "", cited_line: str = "", source: str = "n/a", **kwargs,
+    criterion: str = "", ref: str = "", cited_line: str = "", source: str = "n/a", empty_value_flags: str = "",
+    **kwargs,
 ) -> subprocess.CompletedProcess:
     return _call(
         "_review_ledger_validate_flags", disposition, decided_by, quote, invariant, carry_forward,
-        criterion, ref, cited_line, source, **kwargs,
+        criterion, ref, cited_line, source, empty_value_flags, **kwargs,
     )
 
 
@@ -193,6 +194,28 @@ class TestValidateFlagsRejects:
 
         assert result.returncode == 1
         assert fragment in result.stderr
+
+    @pytest.mark.parametrize("flag", ["--ref", "--decided-by", "--cited-line", "--engineer-quote", "--defer-criterion"])
+    def test_a_value_flag_given_an_empty_value_is_rejected_by_name(self, flag):
+        """The flag's value reads as empty either way, so only the caller's
+        record of its presence tells an empty value from an omitted flag."""
+        result = _validate("ADDRESS", empty_value_flags=flag)
+
+        assert result.returncode == 1
+        assert f"{flag} was given an empty value" in result.stderr
+
+    def test_the_first_of_several_empty_value_flags_is_named(self):
+        result = _validate("ADDRESS", empty_value_flags="--ref --cited-line")
+
+        assert result.returncode == 1
+        assert "--ref was given an empty value" in result.stderr
+
+    @pytest.mark.parametrize("disposition", ["BOGUS", "address", ""], ids=["unknown", "wrong case", "empty"])
+    def test_an_unknown_disposition_is_rejected_even_when_every_other_flag_is_consistent(self, disposition):
+        result = _validate(disposition)
+
+        assert result.returncode == 1
+        assert "--disposition must be ADDRESS, DEFER, SETTLED, or CLEAN" in result.stderr
 
     @pytest.mark.parametrize("source", ["", "n/a"])
     def test_a_defer_source_rejection_names_both_flags_and_all_five_criteria(self, source):
@@ -532,6 +555,73 @@ def _check_ref(
     ledger: Path, disposition: str = "ADDRESS", decided_by: str = "", invariant: str = "", ref: str = _DECISION_ID,
 ) -> subprocess.CompletedProcess:
     return _call("_review_ledger_check_ref", "branch", str(ledger), disposition, decided_by, invariant, ref)
+
+
+class TestCheckRegularFile:
+    def test_an_absent_path_passes(self, tmp_path):
+        assert _call("_review_ledger_check_regular_file", str(tmp_path / "absent.jsonl")).returncode == 0
+
+    def test_a_regular_file_passes(self, tmp_path):
+        regular = tmp_path / "ledger.jsonl"
+        regular.write_text("")
+
+        assert _call("_review_ledger_check_regular_file", str(regular)).returncode == 0
+
+    @pytest.mark.parametrize("kind", ["symlink", "dangling symlink", "directory", "fifo"])
+    def test_a_symlink_or_another_file_type_is_refused_by_path(self, tmp_path, kind):
+        planted = tmp_path / "ledger.jsonl"
+        target = tmp_path / "target.jsonl"
+        target.write_text("")
+        if kind == "symlink":
+            planted.symlink_to(target)
+        elif kind == "dangling symlink":
+            planted.symlink_to(tmp_path / "absent.jsonl")
+        elif kind == "fifo":
+            os.mkfifo(planted)
+        else:
+            planted.mkdir()
+
+        result = _call("_review_ledger_check_regular_file", str(planted))
+
+        assert result.returncode == 1
+        assert f"refusing '{planted}'" in result.stderr
+        assert "must be a regular file" in result.stderr
+        assert "Do not remove it. Stop and report this path to the engineer" in result.stderr
+        assert "may be evidence of a write that bypassed the review-state hook" in result.stderr
+        assert "Remove the link" not in result.stderr
+
+    def test_the_row_reader_refuses_a_symlinked_file_and_prints_no_row_from_it(self, ledger, tmp_path):
+        target = _write_ledger(tmp_path / "decoy.jsonl", [_defer(_DECISION_ID)])
+        ledger.parent.mkdir(parents=True)
+        ledger.symlink_to(target)
+
+        result = _call("_review_ledger_read_rows", str(ledger))
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "must be a regular file" in result.stderr
+
+    def test_a_ref_lookup_refuses_a_symlinked_ledger_instead_of_following_it(self, ledger, tmp_path):
+        target = _write_ledger(tmp_path / "decoy.jsonl", [_defer(_DECISION_ID)])
+        ledger.parent.mkdir(parents=True)
+        ledger.symlink_to(target)
+
+        result = _check_ref(ledger)
+
+        assert result.returncode == 1
+        assert "must be a regular file" in result.stderr
+
+    def test_render_refuses_a_symlinked_ledger_with_one_reason(self, ledger, tmp_path):
+        target = _write_ledger(tmp_path / "decoy.jsonl", [_defer(_DECISION_ID)])
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.symlink_to(target)
+
+        result = _render(ledger)
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "must be a regular file" in result.stderr
+        assert "jq missing" not in result.stderr
 
 
 class TestCheckRef:
@@ -1179,25 +1269,24 @@ def _render_body(ledger: Path, body: str) -> subprocess.CompletedProcess:
 
 
 def _split_gfm_cells(table_row: str) -> list[str]:
-    """Cells of one table row the way a parity-aware table splitter reads it: a
-    pipe splits unless an odd run of backslashes directly precedes it.
+    """Cells of one table row the way GitHub reads it: a pipe splits unless a backslash
+    directly precedes it. The cell text keeps its backslashes.
 
-    Known-unverified, and deliberately not decided here: a code-span quote holding
-    `\\|` renders `\\\\|`, an even run. Under this splitter that pipe splits the
-    cell, and under a splitter where any backslash escapes the pipe it does not.
-    test_a_quote_with_a_backslash_before_a_pipe_renders_an_even_run_before_it pins the
-    bytes. Checking it against GitHub's own renderer (`gh api /markdown`) settles it."""
+    Checked against GitHub's `/markdown` renderer on 2026-10-02 with a synthetic table.
+    Inside a table cell, a code span `a\\|b` rendered `<code>a|b</code>`, `a\\\\|b` rendered
+    `a\\|b`, and `a\\\\\\|b` rendered `a\\\\|b`, with no variant splitting the cell. So each
+    `\\|` reads as one escaped pipe and drops one backslash, whatever run precedes it."""
     inner = table_row.strip()
     assert inner.startswith("|") and inner.endswith("|")
     cells, current = [], []
-    backslash_run = 0
+    previous_char = ""
     for char in inner[1:-1]:
-        if char == "|" and backslash_run % 2 == 0:
+        if char == "|" and previous_char != "\\":
             cells.append("".join(current))
             current = []
         else:
             current.append(char)
-        backslash_run = backslash_run + 1 if char == "\\" else 0
+        previous_char = char
     cells.append("".join(current))
     return [cell.strip() for cell in cells]
 
@@ -1325,11 +1414,11 @@ class TestRenderBlock:
         [
             pytest.param("| a | b |", 2, id="a bare pipe splits"),
             pytest.param("| a\\| b |", 1, id="one backslash escapes the pipe"),
-            pytest.param("| a\\\\| b |", 2, id="two backslashes leave the pipe splitting"),
+            pytest.param("| a\\\\| b |", 1, id="two backslashes still escape the pipe"),
             pytest.param("| a\\\\\\| b |", 1, id="three backslashes escape the pipe"),
         ],
     )
-    def test_the_splitter_used_below_counts_backslash_runs_by_parity(self, row, cell_count):
+    def test_the_splitter_used_below_treats_any_backslash_before_a_pipe_as_an_escape(self, row, cell_count):
         assert len(_split_gfm_cells(row)) == cell_count
 
     @pytest.mark.parametrize("text", ["a|b", "a\\|b", "a\\\\|b", "trailing backslash\\", "\\", "|", "||"])
@@ -1353,13 +1442,20 @@ class TestRenderBlock:
 
         assert len(_split_gfm_cells(row)) == 6, row
 
-    def test_a_quote_with_a_backslash_before_a_pipe_renders_an_even_run_before_it(self, ledger):
-        """Known-unverified shape (see _split_gfm_cells): the bytes are pinned so a change is deliberate."""
-        _write_ledger(ledger, [_engineer_decision(_DECISION_ID, engineer_quote="a\\|b")])
+    @pytest.mark.parametrize("backslash_count", [0, 1, 2])
+    def test_a_quote_with_backslashes_before_a_pipe_renders_one_more_backslash_before_it(self, ledger, backslash_count):
+        """GitHub drops one backslash from each `\\|` in a cell (see _split_gfm_cells), so the
+        code span carries one more backslash than the quote to display the quote's own."""
+        quote = "a" + "\\" * backslash_count + "|b"
+        emitted_backslashes = "\\" * (backslash_count + 1)
+        _write_ledger(ledger, [_engineer_decision(_DECISION_ID, engineer_quote=quote)])
 
         (row,) = _table_rows(_render(ledger).stdout)
 
-        assert "engineer: ` a\\\\|b `" in row
+        cells = _split_gfm_cells(row)
+        assert len(cells) == 6, row
+        assert cells[2] == "engineer: ` a" + emitted_backslashes + "|b `"
+        assert cells[2].replace("\\|", "|") == "engineer: ` " + quote + " `"
 
     @pytest.mark.parametrize("text", ["a|b", "a\\|b", "a\\\\|b", "\\|", "||", "x\\\\\\|y"])
     def test_every_pipe_in_a_plain_cell_follows_an_odd_backslash_run(self, ledger, text):
@@ -1534,35 +1630,35 @@ class TestCheckOut:
     @pytest.mark.parametrize("form", ["relative", "dot-slash", "absolute"])
     def test_a_file_directly_under_agent_reviews_is_accepted(self, repo, agent_reviews, form):
         out = {
-            "relative": "agent-reviews/body.md", "dot-slash": "./agent-reviews/body.md",
-            "absolute": str(agent_reviews / "body.md"),
+            "relative": "agent-reviews/pr-body-1.md", "dot-slash": "./agent-reviews/pr-body-1.md",
+            "absolute": str(agent_reviews / "pr-body-1.md"),
         }[form]
 
         assert _check_out(repo, out).returncode == 0
 
     def test_a_target_that_does_not_exist_yet_under_a_missing_agent_reviews_is_accepted(self, repo):
-        assert _check_out(repo, "agent-reviews/body.md").returncode == 0
+        assert _check_out(repo, "agent-reviews/pr-body-1.md").returncode == 0
 
     def test_an_existing_regular_file_target_is_accepted(self, repo, agent_reviews):
-        (agent_reviews / "body.md").write_text("stale")
+        (agent_reviews / "pr-body-1.md").write_text("stale")
 
-        assert _check_out(repo, "agent-reviews/body.md").returncode == 0
+        assert _check_out(repo, "agent-reviews/pr-body-1.md").returncode == 0
 
     def test_a_relative_target_is_taken_from_the_working_directory(self, repo, agent_reviews):
-        result = _check_out(repo, "agent-reviews/body.md", cwd=repo / "agent-reviews")
+        result = _check_out(repo, "agent-reviews/pr-body-1.md", cwd=repo / "agent-reviews")
 
         assert result.returncode == 1
         assert "must be a file directly under" in result.stderr
 
     def test_a_rejected_relative_target_names_the_working_directory_it_was_resolved_from(self, repo, agent_reviews):
-        result = _check_out(repo, "agent-reviews/body.md", cwd=agent_reviews)
+        result = _check_out(repo, "agent-reviews/pr-body-1.md", cwd=agent_reviews)
 
         assert f"resolved from the working directory {agent_reviews.resolve()}" in result.stderr
 
     def test_a_rejected_relative_subdirectory_target_names_the_working_directory_it_was_resolved_from(
         self, repo, agent_reviews
     ):
-        result = _check_out(repo, "sub/body.md", cwd=agent_reviews)
+        result = _check_out(repo, "sub/pr-body-1.md", cwd=agent_reviews)
 
         assert result.returncode == 1
         assert "not in a subdirectory" in result.stderr
@@ -1579,8 +1675,8 @@ class TestCheckOut:
         [
             pytest.param("tracked.txt", "directly under", id="a file outside agent-reviews"),
             pytest.param("agent-reviews/../tracked.txt", "'..'", id="a dot-dot segment"),
-            pytest.param("agent-reviews//body.md", "empty or '..'", id="an empty segment"),
-            pytest.param("agent-reviews/sub/body.md", "not in a subdirectory", id="a subdirectory"),
+            pytest.param("agent-reviews//pr-body-1.md", "empty or '..'", id="an empty segment"),
+            pytest.param("agent-reviews/sub/pr-body-1.md", "not in a subdirectory", id="a subdirectory"),
             pytest.param("agent-reviews/", "directly under", id="the directory itself"),
             pytest.param("agent-reviews/a\tb.md", "control character", id="a tab in the name"),
             pytest.param("/etc/passwd", "directly under", id="an absolute path outside the repo"),
@@ -1592,18 +1688,52 @@ class TestCheckOut:
         assert result.returncode == 1
         assert fragment in result.stderr
 
-    def test_an_existing_directory_is_rejected(self, repo, agent_reviews):
-        (agent_reviews / "adir").mkdir()
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("review-ledger-1790921348-GH-1182-branch-scope.md", id="a skill-built review-ledger name"),
+            pytest.param("pr-body-1790921348-GH-1182-branch-scope.md", id="a skill-built pr-body name"),
+            pytest.param("review-ledger-x.md", id="the shortest suffix"),
+        ],
+    )
+    def test_a_render_output_filename_is_accepted(self, repo, agent_reviews, name):
+        assert _check_out(repo, f"agent-reviews/{name}").returncode == 0
 
-        result = _check_out(repo, "agent-reviews/adir")
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("staff-sdet-1790921348-GH-1182-branch-scope.md", id="a reviewer findings file"),
+            pytest.param("code-review-dispositions-1790921348-GH-1182-branch-scope.md", id="a disposition record"),
+            pytest.param("review-ledger.md", id="the prefix with no suffix"),
+            pytest.param("review-ledger-.md", id="an empty suffix"),
+            pytest.param("pr-body.md", id="pr-body with no suffix"),
+            pytest.param("review-ledger-x.txt", id="the right prefix with another extension"),
+            pytest.param("my-review-ledger-x.md", id="the prefix mid-name"),
+            pytest.param("body.md", id="an unrelated name"),
+        ],
+    )
+    def test_a_name_outside_the_render_output_grammar_is_rejected_and_left_in_place(self, repo, agent_reviews, name):
+        existing = agent_reviews / name
+        existing.write_text("a peer file")
+
+        result = _check_out(repo, f"agent-reviews/{name}")
+
+        assert result.returncode == 1
+        assert "review-ledger-<suffix>.md or pr-body-<suffix>.md" in result.stderr
+        assert existing.read_text() == "a peer file"
+
+    def test_an_existing_directory_is_rejected(self, repo, agent_reviews):
+        (agent_reviews / "review-ledger-adir.md").mkdir()
+
+        result = _check_out(repo, "agent-reviews/review-ledger-adir.md")
 
         assert result.returncode == 1
         assert "not a regular file" in result.stderr
 
     def test_a_symlink_is_rejected_even_when_dangling(self, repo, agent_reviews):
-        (agent_reviews / "dangling.md").symlink_to(repo / "nowhere.txt")
+        (agent_reviews / "review-ledger-dangling.md").symlink_to(repo / "nowhere.txt")
 
-        result = _check_out(repo, "agent-reviews/dangling.md")
+        result = _check_out(repo, "agent-reviews/review-ledger-dangling.md")
 
         assert result.returncode == 1
         assert "symlink" in result.stderr
@@ -1612,7 +1742,7 @@ class TestCheckOut:
         (repo / "real-dir").mkdir()
         (repo / "agent-reviews").symlink_to(repo / "real-dir")
 
-        result = _check_out(repo, "agent-reviews/body.md")
+        result = _check_out(repo, "agent-reviews/pr-body-1.md")
 
         assert result.returncode == 1
         assert "real directory" in result.stderr
@@ -1620,33 +1750,33 @@ class TestCheckOut:
     def test_an_agent_reviews_that_is_a_file_is_rejected(self, repo):
         (repo / "agent-reviews").write_text("not a directory")
 
-        assert _check_out(repo, "agent-reviews/body.md").returncode == 1
+        assert _check_out(repo, "agent-reviews/pr-body-1.md").returncode == 1
 
     def test_the_pr_json_path_is_rejected_as_the_target_and_another_pr_json_is_accepted(self, repo, agent_reviews):
-        (agent_reviews / "pr.json").write_text("{}")
-        (agent_reviews / "body.md").write_text("stale")
+        (agent_reviews / "pr-body-input.md").write_text("{}")
+        (agent_reviews / "pr-body-1.md").write_text("stale")
 
-        same = _check_out(repo, "agent-reviews/pr.json", pr_json="agent-reviews/pr.json")
-        other = _check_out(repo, "agent-reviews/body.md", pr_json="agent-reviews/pr.json")
-        from_stdin = _check_out(repo, "agent-reviews/body.md", pr_json="-")
+        same = _check_out(repo, "agent-reviews/pr-body-input.md", pr_json="agent-reviews/pr-body-input.md")
+        other = _check_out(repo, "agent-reviews/pr-body-1.md", pr_json="agent-reviews/pr-body-input.md")
+        from_stdin = _check_out(repo, "agent-reviews/pr-body-1.md", pr_json="-")
 
         assert same.returncode == 1 and "same file" in same.stderr
         assert other.returncode == 0, other.stderr
         assert from_stdin.returncode == 0, from_stdin.stderr
 
     def test_a_hard_link_to_the_pr_json_file_is_rejected(self, repo, agent_reviews):
-        (agent_reviews / "pr.json").write_text("{}")
-        os.link(agent_reviews / "pr.json", agent_reviews / "alias.md")
+        (agent_reviews / "pr-body-input.md").write_text("{}")
+        os.link(agent_reviews / "pr-body-input.md", agent_reviews / "review-ledger-alias.md")
 
-        result = _check_out(repo, "agent-reviews/alias.md", pr_json="agent-reviews/pr.json")
+        result = _check_out(repo, "agent-reviews/review-ledger-alias.md", pr_json="agent-reviews/pr-body-input.md")
 
         assert result.returncode == 1
         assert "same file" in result.stderr
 
     def test_a_directory_at_or_under_the_ledger_directory_is_rejected(self, repo, agent_reviews):
-        at = _check_out(repo, "agent-reviews/body.md", ledger_dir=agent_reviews)
-        under = _check_out(repo, "agent-reviews/body.md", ledger_dir=repo)
-        elsewhere = _check_out(repo, "agent-reviews/body.md", ledger_dir=repo.parent / "ledger-dir")
+        at = _check_out(repo, "agent-reviews/pr-body-1.md", ledger_dir=agent_reviews)
+        under = _check_out(repo, "agent-reviews/pr-body-1.md", ledger_dir=repo)
+        elsewhere = _check_out(repo, "agent-reviews/pr-body-1.md", ledger_dir=repo.parent / "ledger-dir")
 
         assert at.returncode == 1 and "ledger directory" in at.stderr
         assert under.returncode == 1 and "ledger directory" in under.stderr
@@ -1829,6 +1959,57 @@ class TestRenderPrBody:
         settled_rows = _table_rows("\n".join(lines[settled_start:]))
         assert [_split_gfm_cells(row)[0] for row in deferred_rows] == ["ledger defer", "legacy defer"]
         assert [_split_gfm_cells(row)[0] for row in settled_rows] == ["ledger keep", "swept keep"]
+
+    def test_a_kept_row_under_the_invariant_heading_stays_in_the_invariant_table(self, ledger):
+        """A row whose decision left the ledger keeps its table, so an
+        invariant decision keeps its "asked again on every repeat" meaning."""
+        _write_ledger(ledger, [_engineer_decision(_SUCCESSOR_ID, finding="ledger keep")])
+        invariant_heading = "### Enforcement-invariant decisions (asked again on every repeat)"
+        body = "\n".join([
+            _DELIM_START,
+            "## Settled review findings",
+            "| Finding | Source | Decided by | Rationale | Decided | Id |",
+            "| --- | --- | --- | --- | --- | --- |",
+            f"| ledger keep | a.py:1-2 | engineer: `keep it` | r | 2026-09-01 round 1 | {_SUCCESSOR_ID} |",
+            "",
+            invariant_heading,
+            "| Finding | Source | Decided by | Rationale | Decided | Id |",
+            "| --- | --- | --- | --- | --- | --- |",
+            "| swept invariant | old.py:3 | engineer: `never` | swept why | 2026-08-01 round 1 | deadbeef0000 |",
+            "| legacy invariant | old.py:4 | engineer: `never` | legacy why |",
+            _DELIM_END,
+        ])
+
+        merged = _render_body(ledger, body).stdout
+
+        lines = merged.splitlines()
+        heading_index = lines.index(invariant_heading)
+        settled_rows = _table_rows("\n".join(lines[lines.index("## Settled review findings"):heading_index]))
+        invariant_rows = _table_rows("\n".join(lines[heading_index:]))
+        assert [_split_gfm_cells(row)[0] for row in settled_rows] == ["ledger keep"]
+        assert [_split_gfm_cells(row)[0] for row in invariant_rows] == ["swept invariant", "legacy invariant"]
+
+    def test_a_prose_line_inside_the_block_is_dropped_and_prose_outside_it_is_kept(self, ledger):
+        _write_ledger(ledger, [_defer(_DECISION_ID, finding="ledger defer")])
+        body = "\n".join([
+            "Head prose",
+            _DELIM_START,
+            "## Deferred review findings",
+            "a hand-written note inside the block",
+            "| Finding | Source | DEFER criterion | Rationale |",
+            "| --- | --- | --- | --- |",
+            "| legacy defer | old.py:1 | orthogonal scope | legacy rationale |",
+            _DELIM_END,
+            "Tail prose",
+            "",
+        ])
+
+        merged = _render_body(ledger, body).stdout
+
+        assert "a hand-written note inside the block" not in merged
+        assert "legacy defer" in merged
+        assert merged.startswith("Head prose\n" + _DELIM_START)
+        assert merged.endswith(_DELIM_END + "\nTail prose\n")
 
     def test_a_kept_row_has_its_comment_opener_neutralized(self, ledger):
         _write_ledger(ledger, [_defer(_DECISION_ID)])

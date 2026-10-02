@@ -948,7 +948,7 @@ def _run_hook_with_jq_failing_on(payload: dict, fail_token: str, tmp_path) -> st
     decision. `agent_type` and `file_path` both appear inside
     _lib_parse_tool_input_or_deny's own combined jq filter string (which reads
     `.agent_type // ""` and `.tool_input.file_path // ""` in the same call as
-    the other four fields), so failing on either token fails that shared
+    every other extracted field), so failing on either token fails that shared
     parse-layer call — this hook issues no jq call of its own for either
     field. Mirrors test_lib.py's PATH-stub pattern; skips when the toolchain
     isn't available."""

@@ -171,20 +171,23 @@ fi
 # scope would need HEAD resolved. Present means either:
 # - the session's own session-scoped file exists; or
 # - some ledger file under this repo-hash holds a row naming the session.
+# The glob for the second case is the session file's path with the session id
+# replaced by `*`, so it follows _lib_review_ledger_session_path's format.
 # The row match is the compact `"session_id":"<id>"` form review-ledger.sh
 # writes. jq escapes a quote inside a finding as `\"`, so a finding cannot
 # reproduce it.
 _session_has_review_ledger() {
   local session_id="$1"
-  local session_file
+  local session_file repo_ledger_prefix
   [ -n "$session_id" ] || return 1
   session_file=$(_lib_review_ledger_session_path "$CONFIG_DIR" "$REPO_ROOT" "$session_id") || return 1
   [ -f "$session_file" ] && return 0
+  repo_ledger_prefix="${session_file%"$session_id".jsonl}"
   # An unmatched glob stays literal, so grep exits 2: that is the intended
   # "absent". A _lib_capped kill also reads as absent because the field is
   # telemetry only.
   _lib_capped grep -qF -e "\"session_id\":\"$session_id\"" \
-    "$CONFIG_DIR/review-narrative-ledger/$REPO_HASH."*.jsonl 2>/dev/null
+    "$repo_ledger_prefix"*.jsonl 2>/dev/null
 }
 
 # Compliance backstop: non-blocking log line recording ledger presence +

@@ -1207,7 +1207,7 @@ Each dispatch classifies by walking three tests against its attributed round, in
 2. The round has >=1 matching ledger row with `disposition: ADDRESS` -> **FAILURE**. ADDRESS presence decides this regardless of whether a marker write or another matching row also exists -- the finding was raised against that diff, and a same-round fix does not undo that.
 3. Otherwise, the dispatch is a **PASS** iff the round has >=1 matching row (necessarily all `DEFER`/`SETTLED`/`CLEAN`) or a `marker.sh write code-review` Bash call inside its own outcome span; **UNATTRIBUTED** if it has neither.
 
-A round with zero matching ledger rows but a marker-write call is inferred clean rather than treated as a genuine ledger-backed PASS. This covers a round whose every append attempt errored before landing. It is counted separately under "rounds with a marker write but no ledger row (every append for the round failed)". A session excluded by the round-number-sequence check below is not classified, so its rounds never count here.
+A round with zero matching ledger rows but a marker-write call is inferred clean rather than treated as a genuine ledger-backed PASS. The cause can be an append that errored, a swept ledger file, or rows that predate round keys, and the data cannot tell them apart. It is counted separately under "rounds with a clean marker write but no round-keyed ledger rows". A session excluded by the round-number-sequence check below is not classified, so its rounds never count here.
 
 **Truth table for a round's matching rows.** A carry row (`decided_by: carry`) counts by its own disposition.
 
@@ -1217,9 +1217,9 @@ A round with zero matching ledger rows but a marker-write call is inferred clean
 | `DEFER` alone, only `DEFER` carries, or `CLEAN` alone | PASS | no |
 | Any `ADDRESS` row, an `ADDRESS --ref` that reopens a decision included | FAILURE | no |
 
-A reopen is a `FAILURE` on purpose, because the engineer now requires the fix. An `ADDRESS --ref` that retracts published text (see `docs/hooks.md`'s ledger runbook) also classifies as `FAILURE`. That rare over-count is accepted.
+A reopen is a `FAILURE` on purpose, because the engineer now requires the fix. An `ADDRESS --ref` that retracts published text (see the ledger runbook in `docs/scripts.md`'s `review-ledger.sh` entry) also classifies as `FAILURE`. That rare over-count is accepted.
 
-The "rounds classified PASS with at least one SETTLED row" counter reflects the change from the earlier practice, in which a consult's keep was logged as `ADDRESS` and made its round a `FAILURE`. It counts every classified round in the scanned corpus. It ignores `--since` and the agent type, so it is not a slice of "Dispatches in scope". It starts counting on each machine when that machine pulls ledger schema v4, because `SETTLED` rows cannot exist earlier. A window that spans that pull mixes the two practices, so read `FAILURE` counts across it with that in mind. A mismatched session (see "Round-number-sequence check") is not classified, so its rounds never count here.
+The "rounds classified PASS with at least one SETTLED row" counter counts every classified round in the scanned corpus. It ignores `--since` and the agent type, so it is not a slice of "Dispatches in scope". Rows before ledger schema v4 log a consult's keep as `ADDRESS`, which classifies `FAILURE`, so a window that spans v4 adoption mixes the two kinds of row. Read `FAILURE` counts across such a window with that in mind. A mismatched session (see "Round-number-sequence check") is not classified, so its rounds never count here.
 
 A dispatch whose paired `tool_result` record is absent has no completion index, so it's classified **UNDECIDABLE** before the three-test walk runs. It counts only under Data quality, never in "Dispatches in scope".
 
@@ -1243,7 +1243,7 @@ Two non-failure buckets, each of which would bias the share if collapsed into PA
 
 A session whose ledger rows are entirely legacy (no row carries a `round` key) or that has no rows at all is not evaluated by this check. A session that fails it has every one of its dispatches excluded from the headline outcomes/"Dispatches in scope" numerator-denominator -- the ledger-to-round join for that session can't be trusted, so its dispatches count toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED.
 
-A mismatched session's rounds are not classified, and its rows are not read by the counters below. Two counters therefore skip it: "rounds with a marker write but no ledger row (every append for the round failed)" and "authoring_agent inconsistent with the transcript join". Both read the round-to-row join that the mismatch marks untrusted, and classifying its rounds as row-less would count every marker-write round as having no row, whether or not it had rows. The other counters -- co-authored rounds, undecidable dispatches, malformed dispatch ids -- are transcript-side and unchanged.
+A mismatched session's rounds are not classified, and its rows are not read by the counters below. Two counters therefore skip it: "rounds with a clean marker write but no round-keyed ledger rows" and "authoring_agent inconsistent with the transcript join". Both read the round-to-row join that the mismatch marks untrusted, and classifying its rounds as row-less would count every marker-write round as having no row, whether or not it had rows. The other counters -- co-authored rounds, undecidable dispatches, malformed dispatch ids -- are transcript-side and unchanged.
 
 Two residuals remain:
 
@@ -1256,13 +1256,13 @@ A narrower gap also remains: a subagent dispatched into a different worktree und
 
 **Residual: branch-scope `show` also reads this worktree's own session file.** That file holds rows appended while HEAD was detached, and also rows appended on the default branch earlier in the same worktree. Those default-branch rows appear in a later feature branch's `show` and count toward its `max_round`. Rows carry no scope field to tell them apart. Any subcommand that builds PR text from the ledger (a `render`) must read only the resolved file, not the session file.
 
-**Ledger-possibly-swept check.** A session counts under "sessions with a code-review round but no ledger file, cold enough to be swept" when all three hold:
+**Ledger-possibly-swept check.** A session counts under "sessions with a code-review round, no attributed ledger row, no opened session-keyed ledger file, and a first round older than the sweep floor" when all three hold:
 
 - It opened >=1 `code-review` round.
 - No ledger rows are attributed to it, and no session-keyed ledger file for it (`*.<session_id>.jsonl`) opened -- a file evicted by a concurrent `clear-stale` sweep between the directory listing and the read counts the same as never having been listed.
 - The record at its earliest code-review round's own open position is older than the fixed 30-day `_LEDGER_SWEEP_FLOOR_DAYS` (GH-973). That's the same floor `review-ledger.sh`'s `append` command passes on its dominant eviction path, not `clear-stale`'s dynamically-resolved `cleanupPeriodDays`-driven window. The earliest round's own open, not the session's newest record, is what's compared. A swept file's last successful append is always at or before that round's own open, so keying there never misses a truly-swept file. This also avoids a bias a ledger file's own mtime -- which only advances on `append` -- would otherwise introduce against a transcript's mtime, which advances for the life of the session: a session that reviews early then keeps working past the sweep window would otherwise misread as clean rather than swept. Only that one record's own timestamp is checked, with no fallback to any other record in the session, accepted because Claude Code transcript records reliably carry a `timestamp` field.
 
-This can't tell a genuinely swept ledger apart from a session whose every append failed, since both leave the identical no-rows signature. It excludes both alike, exactly as the round-number-mismatch exclusion does for its own untrustworthy-join case. Every dispatch in a flagged session counts toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED. A session with no parseable timestamp on that one record is not evaluated by this check.
+This can't tell a swept ledger apart from a session that never landed a row, since both leave the identical no-rows signature. It excludes both alike, exactly as the round-number-mismatch exclusion does for its own untrustworthy-join case. Every dispatch in a flagged session counts toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED. A session with no parseable timestamp on that one record is not evaluated by this check.
 
 **The `authoring_agent inconsistent` counter's own denominator.** Rows with an empty or `unknown` `authoring_agent` are skipped rather than miscounted -- either a pre-migration row, or one that simply never declared the flag. Every other matching row's `authoring_agent` is compared against the transcript-derived determination for that round: whether a `code-writer` dispatch is attributed to the span at all. That comparison deliberately uses an **unfiltered** dispatch count, distinct from the `--since`-filtered count that gates "Dispatches in scope": a round whose authoring dispatch falls just outside a `--since` cutoff still produced its ledger rows without regard to `--since`, so scoping the cross-check to the same filtered count would report every such round as spuriously inconsistent.
 
@@ -1283,13 +1283,13 @@ Dispatches in scope                                 20
 Failure share: 10 of 16 resolved dispatches (62.5%)
 
 Data quality
-  rounds co-authored by >1 dispatch                                                 3
-  rounds with a marker write but no ledger row (every append for the round failed)  0
-  sessions whose ledger round sequence doesn't match the transcript's round-opens   0
-  sessions with a code-review round but no ledger file, cold enough to be swept     0
-  dispatches with no paired tool_result (undecidable)                               0
-  authoring_agent inconsistent with the transcript join                             1
-  rounds classified PASS with at least one SETTLED row                              2
+  rounds co-authored by >1 dispatch                                                                                                               3
+  rounds with a clean marker write but no round-keyed ledger rows                                                                                 0
+  sessions whose ledger round sequence doesn't match the transcript's round-opens                                                                 0
+  sessions with a code-review round, no attributed ledger row, no opened session-keyed ledger file, and a first round older than the sweep floor  0
+  dispatches with no paired tool_result (undecidable)                                                                                             0
+  authoring_agent inconsistent with the transcript join                                                                                           1
+  rounds classified PASS with at least one SETTLED row                                                                                            2
 ```
 
 `Failure share` is `FAILURE / (FAILURE + PASS)` -- UNRESOLVED and UNATTRIBUTED are excluded from both the numerator and the denominator, since neither one is evidence the dispatch's diff was reviewed and judged. The aggregate table and Data-quality counters carry no per-project, per-branch, or per-session dimension by construction, so neither has anything for redaction to pseudonymize. The scope header printed above them is a separate case -- see "Scoping to this repo: `--this-repo`" above for its `--projects` glob echo caveat.

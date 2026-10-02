@@ -573,13 +573,13 @@ class TestLedgerPossiblySwept:
     def test_old_session_with_no_ledger_file_is_possibly_swept(self):
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(
-            [(0, 1)], [], records, any_ledger_file_found=False, now=self._NOW_WELL_PAST_WINDOW,
+            [(0, 1)], [], records, session_keyed_file_opened=False, now=self._NOW_WELL_PAST_WINDOW,
         ) is True
 
     def test_recent_session_with_no_ledger_file_is_not_possibly_swept(self):
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(
-            [(0, 1)], [], records, any_ledger_file_found=False, now=self._NOW_WITHIN_WINDOW,
+            [(0, 1)], [], records, session_keyed_file_opened=False, now=self._NOW_WITHIN_WINDOW,
         ) is False
 
     def test_widened_cleanup_period_days_does_not_delay_possibly_swept(self, tmp_path):
@@ -592,20 +592,20 @@ class TestLedgerPossiblySwept:
         (tmp_path / "settings.json").write_text(json.dumps({"cleanupPeriodDays": 60}))
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(
-            [(0, 1)], [], records, any_ledger_file_found=False, now=self._NOW_WELL_PAST_WINDOW,
+            [(0, 1)], [], records, session_keyed_file_opened=False, now=self._NOW_WELL_PAST_WINDOW,
         ) is True
 
     def test_no_code_review_rounds_is_never_possibly_swept(self):
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(
-            [], [], records, any_ledger_file_found=False, now=self._NOW_WELL_PAST_WINDOW,
+            [], [], records, session_keyed_file_opened=False, now=self._NOW_WELL_PAST_WINDOW,
         ) is False
 
     def test_nonempty_ledger_rows_is_never_possibly_swept(self):
         records = [{"timestamp": self._OLD_RECORD_TS}]
         rows = [_ledger_row(round=1, disposition="DEFER")]
         assert ao._ledger_possibly_swept(
-            [(0, 1)], rows, records, any_ledger_file_found=True, now=self._NOW_WELL_PAST_WINDOW,
+            [(0, 1)], rows, records, session_keyed_file_opened=True, now=self._NOW_WELL_PAST_WINDOW,
         ) is False
 
     def test_nonempty_ledger_rows_with_no_session_keyed_file_is_never_possibly_swept(self):
@@ -614,22 +614,22 @@ class TestLedgerPossiblySwept:
         records = [{"timestamp": self._OLD_RECORD_TS}]
         rows = [_ledger_row(round=1, disposition="DEFER")]
         assert ao._ledger_possibly_swept(
-            [(0, 1)], rows, records, any_ledger_file_found=False, now=self._NOW_WELL_PAST_WINDOW,
+            [(0, 1)], rows, records, session_keyed_file_opened=False, now=self._NOW_WELL_PAST_WINDOW,
         ) is False
 
     def test_ledger_file_present_but_zero_rows_is_never_possibly_swept(self):
         """A ledger file that exists but is empty (or every line malformed)
         is a different failure mode from a swept/never-written ledger --
-        this check keys on any_ledger_file_found, not the row count."""
+        this check keys on session_keyed_file_opened, not the row count."""
         records = [{"timestamp": self._OLD_RECORD_TS}]
         assert ao._ledger_possibly_swept(
-            [(0, 1)], [], records, any_ledger_file_found=True, now=self._NOW_WELL_PAST_WINDOW,
+            [(0, 1)], [], records, session_keyed_file_opened=True, now=self._NOW_WELL_PAST_WINDOW,
         ) is False
 
     def test_no_parseable_timestamp_is_never_possibly_swept(self):
         records = [{"timestamp": None}, {}]
         assert ao._ledger_possibly_swept(
-            [(0, 1)], [], records, any_ledger_file_found=False, now=self._NOW_WELL_PAST_WINDOW,
+            [(0, 1)], [], records, session_keyed_file_opened=False, now=self._NOW_WELL_PAST_WINDOW,
         ) is False
 
     def test_boundary_exactly_at_sweep_window_is_not_possibly_swept(self):
@@ -640,7 +640,7 @@ class TestLedgerPossiblySwept:
         record_ts = corpus._parse_ts(self._OLD_RECORD_TS)
         now = record_ts + ao._LEDGER_SWEEP_FLOOR_DAYS * 86400
         records = [{"timestamp": self._OLD_RECORD_TS}]
-        assert ao._ledger_possibly_swept([(0, 1)], [], records, any_ledger_file_found=False, now=now) is False
+        assert ao._ledger_possibly_swept([(0, 1)], [], records, session_keyed_file_opened=False, now=now) is False
 
     def test_boundary_one_second_past_sweep_window_is_possibly_swept(self):
         """One second older than the exact boundary above crosses onto
@@ -648,7 +648,7 @@ class TestLedgerPossiblySwept:
         record_ts = corpus._parse_ts(self._OLD_RECORD_TS)
         now = record_ts + ao._LEDGER_SWEEP_FLOOR_DAYS * 86400 + 1
         records = [{"timestamp": self._OLD_RECORD_TS}]
-        assert ao._ledger_possibly_swept([(0, 1)], [], records, any_ledger_file_found=False, now=now) is True
+        assert ao._ledger_possibly_swept([(0, 1)], [], records, session_keyed_file_opened=False, now=now) is True
 
     def test_now_omitted_defaults_to_the_real_clock(self, monkeypatch):
         """now=None (the default) falls back to the real time.time() call,
@@ -656,7 +656,7 @@ class TestLedgerPossiblySwept:
         override."""
         monkeypatch.setattr(ao.time, "time", lambda: self._NOW_WELL_PAST_WINDOW)
         records = [{"timestamp": self._OLD_RECORD_TS}]
-        assert ao._ledger_possibly_swept([(0, 1)], [], records, any_ledger_file_found=False) is True
+        assert ao._ledger_possibly_swept([(0, 1)], [], records, session_keyed_file_opened=False) is True
 
     def test_fresh_newest_record_but_stale_earliest_round_open_is_possibly_swept(self):
         """The session's LAST record is fresh (well within the sweep
@@ -669,7 +669,7 @@ class TestLedgerPossiblySwept:
             {"timestamp": "2026-09-14T10:00:00.000Z"},  # fresh, unrelated later activity
         ]
         assert ao._ledger_possibly_swept(
-            [(0, 2)], [], records, any_ledger_file_found=False, now=self._NOW_WELL_PAST_WINDOW,
+            [(0, 2)], [], records, session_keyed_file_opened=False, now=self._NOW_WELL_PAST_WINDOW,
         ) is True
 
 

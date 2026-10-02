@@ -246,6 +246,65 @@ _lib_realpath_m() {
   done
 }
 
+# _lib_normalize_path_lexically PATH
+# Sets _LIB_NORMALIZED_PATH (global) to PATH with empty and `.` segments dropped and each `..` popping the segment before it. Touches no filesystem and runs no exec'd command, so a symlink in PATH is not resolved.
+# Verified on bash 5.2 and with BASH_COMPAT=32, not on a real bash 3.2 binary.
+# `realpath -s -m` is not used because it costs the subprocess that callers bound with a realpath budget.
+# Always returns 0. An empty PATH yields an empty result, not `.`.
+# An absolute PATH collapses any run of leading slashes to one, as Linux does, and a `..` at the root is dropped. A relative PATH keeps a leading `..` run, and one that pops to nothing yields `.`.
+# A trailing slash on PATH is kept (a `.` or `..` last segment does not count as one), because a caller's directory-destination classification depends on it.
+_LIB_NORMALIZED_PATH=""
+_lib_normalize_path_lexically() {
+  local path="$1" segment saved_opts=$-
+  local is_absolute=false keeps_trailing_slash=false
+  local -a kept=()
+  local kept_count=0
+  local IFS=/
+  case "$path" in
+    '')
+      _LIB_NORMALIZED_PATH=""
+      return 0
+      ;;
+    /*) is_absolute=true ;;
+  esac
+  case "$path" in
+    */) keeps_trailing_slash=true ;;
+  esac
+  # An IFS of `/` splits on slashes only, so a newline or space inside a segment survives. Globbing is off so a `*` segment stays literal.
+  set -f
+  for segment in $path; do
+    case "$segment" in
+      '' | .) ;;
+      ..)
+        if [ "$kept_count" -gt 0 ] && [ "${kept[kept_count - 1]}" != ".." ]; then
+          kept_count=$((kept_count - 1))
+        elif ! $is_absolute; then
+          kept[kept_count]=..
+          kept_count=$((kept_count + 1))
+        fi
+        ;;
+      *)
+        kept[kept_count]="$segment"
+        kept_count=$((kept_count + 1))
+        ;;
+    esac
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  local joined=""
+  if [ "$kept_count" -gt 0 ]; then
+    joined="${kept[*]:0:kept_count}"
+  fi
+  if $is_absolute; then
+    joined="/$joined"
+  elif [ -z "$joined" ]; then
+    joined="."
+  fi
+  if $keeps_trailing_slash && [ "${joined: -1}" != "/" ]; then
+    joined="$joined/"
+  fi
+  _LIB_NORMALIZED_PATH="$joined"
+}
+
 # Succeeds only when $1 is non-empty and every byte is in [A-Za-z0-9._/@+-].
 # Matched in bash rather than grep, because BSD grep's -z still anchors ^/$ at each embedded newline.
 # The body is a subshell that sets LC_ALL=C, since bash without `globasciiranges` (bash < 5, including macOS /bin/bash 3.2) orders bracket ranges by locale collation elsewhere.
@@ -396,16 +455,18 @@ _lib_emit_allow_with_context() {
 }
 
 # Reads stdin into INPUT (global), extracts TOOL_NAME, COMMAND, CWD,
-# SESSION_ID, FILE_PATH, and AGENT_TYPE (globals) via a single _lib_jq call
-# using ASCII Unit Separator (0x1f) as delimiter. The single call surfaces a
-# structural-type error when .tool_input is non-object (jq non-zero exit).
+# SESSION_ID, FILE_PATH, AGENT_TYPE, and AGENT_ID (globals) via a single
+# _lib_jq call using ASCII Unit Separator (0x1f) as delimiter. The single call
+# surfaces a structural-type error when .tool_input is non-object (jq non-zero
+# exit).
 #
-# Four deny paths protect against silent-allow:
+# These deny paths protect against silent-allow:
 #   (a) jq non-zero exit (parse failure, cap kill per _lib_capped_for's header above, missing jq binary)
 #   (b) empty INPUT (stdin EOF, closed pipe, harness misbehavior)
 #   (c) empty TOOL_NAME (valid JSON but PreToolUse contract not honored, e.g. "{}")
 #   (d) a 0x1f byte inside any extracted value, which would otherwise shift
 #       every field after it into the wrong global
+#   (e) an embedded newline in TOOL_NAME (the PreToolUse contract violated)
 # Per Anthropic PreToolUse contract, every legitimate event has a non-empty
 # .tool_name; absence indicates the call did not originate from a real tool
 # invocation. Without (b)/(c), downstream gates that early-exit on
@@ -425,27 +486,38 @@ _lib_parse_tool_input_or_deny() {
     emit_deny "$deny_msg"
     exit 0
   fi
-  # Single jq call extracts all six fields delimited by ASCII Unit Separator
+  # Single jq call extracts every field, delimited by ASCII Unit Separator
   # (0x1f) rather than newlines, preventing a value containing an embedded
   # newline from corrupting a later field via line splitting. Unit Separator
   # cannot appear in a valid Claude Code tool name, shell command, cwd,
-  # session id, path, or agent type.
+  # session id, path, agent type, or agent id.
   # The .tool_input.command extraction additionally surfaces a structural-type
   # error when .tool_input is non-object (e.g. "Cannot index string with string
   # 'command'"), returning non-zero.
-  # .cwd, .session_id, and .agent_type silently stringify via jq's \(...)
-  # interpolation rather than erroring when the field holds a non-string
-  # JSON value (a number, object, or array).
-  # For AGENT_TYPE this is safe because every consumer either tests it for
-  # emptiness or matches it exactly against a roster. A garbled value is
-  # non-empty and matches no roster name, so it reads as an unlisted subagent.
+  # .cwd, .session_id, .agent_type, and .agent_id silently stringify via jq's
+  # \(...) interpolation rather than erroring when the field holds a
+  # non-string JSON value (a number, object, or array).
+  # The Claude Code hooks reference (https://code.claude.com/docs/en/hooks.md,
+  # common input fields) says `agent_id` is "Unique identifier for the
+  # subagent. Present only when the hook fires inside a subagent call. Use this
+  # to distinguish subagent hook calls from main-thread calls." and
+  # `agent_type` is "Present when the session uses `--agent` or the hook fires
+  # inside a subagent." So a non-empty AGENT_TYPE does not identify a subagent,
+  # and a subagent payload that lacks agent_id (a fork is unverified) reads as
+  # the main session.
+  # Consumers of AGENT_TYPE either test it for emptiness or match it exactly
+  # against a roster. A garbled AGENT_TYPE is non-empty and matches no roster
+  # name.
+  # A non-string .agent_id stringifies to a non-empty value, which the ledger
+  # predicates in enforce-marker-script-shape.sh read as a subagent (deny).
+  # That hook decides subagent-versus-main from AGENT_ID.
   local jq_out
-  # WARNING: the format string below contains five literal 0x1f (ASCII Unit
-  # Separator) bytes, one between each of the six interpolated fields. They
-  # are invisible in editors and diff views — do not remove them. test_lib.py's
-  # six-field characterization test will fail immediately if a delimiter is
-  # missing, catching accidental deletion.
-  jq_out=$(printf '%s\n' "$INPUT" | _lib_jq -r '"\(.tool_name // "")\(.tool_input.command // "")\(.cwd // "")\(.session_id // "")\(.tool_input.file_path // "")\(.agent_type // "")"' 2>/dev/null)
+  # WARNING: the format string below holds one literal 0x1f (ASCII Unit
+  # Separator) byte between each pair of adjacent interpolated fields. They
+  # are invisible in editors and diff views, so do not remove them. A missing
+  # one leaves _lib_parse_overflow empty, so the field-shift deny below fires
+  # on every call and test_lib.py's OK-path tests fail at once.
+  jq_out=$(printf '%s\n' "$INPUT" | _lib_jq -r '"\(.tool_name // "")\(.tool_input.command // "")\(.cwd // "")\(.session_id // "")\(.tool_input.file_path // "")\(.agent_type // "")\(.agent_id // "")"' 2>/dev/null)
   local jq_exit=$?
   if [ "$jq_exit" -ne 0 ]; then
     emit_deny "$deny_msg"
@@ -458,14 +530,14 @@ _lib_parse_tool_input_or_deny() {
   # includes bash 3.2. `read -r -d ''` returns non-zero at EOF without ever
   # finding that delimiter, on every invocation including this one's own
   # success path, hence the trailing `|| true`.
-  # The appended sixth 0x1f plus the trailing _lib_parse_overflow variable is
-  # a field-shift detector, not a per-field guard. A 0x1f byte inside any one
-  # of the six values raises the split's field count above six regardless of
-  # which field carries it. A well-formed payload therefore leaves
-  # _lib_parse_overflow holding exactly the herestring's own trailing
-  # newline and nothing else.
-  # shellcheck disable=SC2034 # set for hook scripts that source this file and reference $COMMAND/$CWD/$SESSION_ID/$FILE_PATH/$AGENT_TYPE
-  IFS=$'\x1f' read -r -d '' TOOL_NAME COMMAND CWD SESSION_ID FILE_PATH AGENT_TYPE _lib_parse_overflow <<< "$jq_out"$'\x1f' || true
+  # The extra 0x1f appended to the herestring, plus the trailing
+  # _lib_parse_overflow variable, is a field-shift detector, not a per-field
+  # guard. A 0x1f byte inside any extracted value adds a split field, whichever
+  # value carries it, and pushes content into _lib_parse_overflow. A
+  # well-formed payload therefore leaves _lib_parse_overflow holding exactly
+  # the herestring's own trailing newline and nothing else.
+  # shellcheck disable=SC2034 # set for hook scripts that source this file and reference $COMMAND/$CWD/$SESSION_ID/$FILE_PATH/$AGENT_TYPE/$AGENT_ID
+  IFS=$'\x1f' read -r -d '' TOOL_NAME COMMAND CWD SESSION_ID FILE_PATH AGENT_TYPE AGENT_ID _lib_parse_overflow <<< "$jq_out"$'\x1f' || true
   # This deny carries its own message rather than $deny_msg, so a deliberate
   # field-shift attempt classifies as a behavioral denial instead of being
   # filed under the shared parse-failure (infra) reason.
@@ -3697,6 +3769,9 @@ _LIB_APPEND_LOCK_RETRIES=5
 # than at review-ledger.sh's, since a PostToolUse hook is more exposed to
 # being killed mid-lock by the harness's own hook timeout than a
 # skill-invoked CLI script is.
+# Known limit: dead-holder eviction is non-atomic, so two processes can both
+# evict and both acquire, and an EXIT trap can then remove a lock its process
+# does not own. The outcome is a duplicate row.
 _lib_acquire_append_lock() {
   # Deliberately not `local`: the EXIT trap below evaluates this lazily at
   # script-exit time, after this function has already returned, and any

@@ -35,9 +35,9 @@
 # location is unknown, so the summary prints nothing rather than reporting no
 # rows.
 #
-# A leftover ~/.claude/.review-narrative-ledger-disabled sentinel is no longer
-# honored; while it exists the hook shows the engineer a systemMessage saying
-# so. The marker-status reporting above stays always-on.
+# A ~/.claude/.review-narrative-ledger-disabled file has no effect on what the
+# ledger records; while it exists the hook shows the engineer a systemMessage
+# saying so. Marker-status reporting is always on.
 #
 # Exit 0 always — this hook must not block session startup.
 
@@ -125,7 +125,7 @@ if [ -n "$REPO_ROOT" ] && LEDGER_LOCATION=$(_lib_review_ledger_path "$CONFIG_DIR
          elif $dates[0] == $dates[-1] then " (\($dates[0]))"
          else " (\($dates[0]) to \($dates[-1]))" end) as $span
       | if ($addressed + $deferred + $settled) > 0 then
-          "\($addressed + $deferred + $settled) findings recorded \($scope_label)\($span): \($addressed) addressed, \($deferred) deferred, \($settled) settled — see review-narrative-ledger for detail"
+          "\($addressed + $deferred + $settled) findings recorded \($scope_label)\($span): \($addressed) addressed, \($deferred) deferred, \($settled) settled — run `review-ledger.sh show` for detail"
         else empty end
       ' "$LEDGER_FILE" 2>/dev/null)
   fi
