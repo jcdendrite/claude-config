@@ -3051,8 +3051,9 @@ class TestCmdReviewRoundCostPooled:
         # _asymmetric_two_branch_pooled_totals's, plus the two zero-dollar
         # filler rounds above. The real production bootstrap over that
         # equivalent fixture therefore reproduces exactly what the CLI run
-        # above computed -- including branch order, since
-        # _bootstrap_share_intervals's resample draws are order-sensitive:
+        # above computed.
+        # Branch order must match too, because _bootstrap_share_intervals's
+        # resample draws are order-sensitive.
         # _render_pooled_block sorts by (root ordinal, branch_name), which
         # places each filler immediately after its own account's real branch
         # ("feat-a" before "feat-a-filler", "feat-b" before "feat-b-filler").
@@ -3644,20 +3645,21 @@ class TestCmdReviewRoundCostPooled:
         self, tmp_path, monkeypatch, capsys,
     ):
         """Every dominance-floor fixture above puts the larger dollar figure
-        on branch_key[0] (root 0), which is also always the first account
-        _render_pooled_block inserts into account_denominator_totals (that
-        insertion loop walks branches in sorted branch_key order, so root 0
-        is first regardless of dollar amounts) -- so "true max over every
-        account" and "always read the first-inserted account" coincide in
-        every one of them. Reruns the extreme-split
-        shape with the dollar split reversed -- root 1 dominant (99), root 0
-        minor (1) -- which the two computations disagree on: a
-        first-inserted-account bug would read root 0's 1% weight and never
-        breach, while a true max correctly reads root 1's 99% weight and
-        still withholds, exactly like the un-reversed extreme-split test
-        above. The moderate-split shape can't make this distinction here,
-        since even its full 60% weight doesn't breach against its own
-        stubbed CI, so root 0 vs root 1 makes no observable difference there.
+        on branch_key[0] (root 0).
+        Root 0 is also always the first account _render_pooled_block inserts
+        into account_denominator_totals, because that insertion loop walks
+        branches in sorted branch_key order regardless of dollar amounts.
+        So "true max over every account" and "always read the first-inserted
+        account" coincide in every one of those fixtures.
+        This fixture reruns the extreme-split shape with the dollar split
+        reversed: root 1 dominant (99), root 0 minor (1).
+        A first-inserted-account bug would read root 0's 1% weight and never
+        breach.
+        A true max reads root 1's 99% weight and still withholds, exactly
+        like the un-reversed extreme-split test above.
+        The moderate-split shape can't make this distinction, because even
+        its full 60% weight doesn't breach against its own stubbed CI.
+        Root 0 vs root 1 therefore makes no observable difference there.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
         rounds = [

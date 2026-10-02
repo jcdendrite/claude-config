@@ -1003,8 +1003,7 @@ _DECLARED_ROOT_DIAGNOSTIC_RE = re.compile(r"^declared_transcript_roots: declared
 # many.
 _DECLARED_ROOT_SKIPPED_NOTICE = (
     f"review-round-cost --pooled: one or more entries in {scope.TRANSCRIPT_CONFIG_DIRS_LABEL} were"
-    " skipped (not a directory, no projects/ subdirectory, or unreadable); any account they name is"
-    " not in this pool."
+    " skipped (invalid or unreadable); any account they name is not in this pool."
 )
 # Known diagnostic shapes and their replacements. Any stderr line matching
 # none of them is withheld behind _POOLED_STDERR_WITHHELD_NOTICE. A None
