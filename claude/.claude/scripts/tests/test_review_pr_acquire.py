@@ -56,8 +56,8 @@ def _flag_name(token: str) -> str:
 
 
 def _assert_gh_calls_are_read_only(calls: list[list[str]]) -> None:
-    """Allowlists the exact `gh` call shapes review-pr-acquire.sh's header
-    comment documents it as making: `gh pr view` and `gh api` against its
+    """Allowlists the exact `gh` call shapes review-pr-acquire.sh makes (its
+    usage text lists the fetches): `gh pr view` and `gh api` against its
     own known GET endpoints (the bare pulls/{N} resource plus its
     files/commits/reviews/comments sub-resources, each at the maximum page
     size), none carrying a method or field flag that would flip `gh api`'s

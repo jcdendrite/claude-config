@@ -556,9 +556,7 @@ _marker_lib_repo_hash() {
 # tree's root (_lib_main_repo_root), not the current tree's, so `marker.sh
 # write review-pr`, `marker.sh status`, review-pr-post.sh, and
 # review-pr-finish.sh all resolve the same key from any tree of the repo.
-# `marker.sh status` is reachable only where _resolve_repo_root allows it: it
-# exits 2 from the main tree of a worktree-enforced repo that has a live
-# linked worktree.
+# See marker.sh's `status` arm for where `status` is reachable.
 # Exit 1, empty stdout: not inside a git repository, git is absent, the call
 # timed out, or hashing failed.
 _lib_review_pr_marker_repo_hash() {
@@ -705,15 +703,17 @@ _lib_origin_owner_repo() {
 # they match -- GitHub treats owner/repo slugs case-insensitively, so every
 # caller comparing two _lib_origin_owner_repo results (or one against a
 # PR-identity-derived owner/repo) must compare that way too.
+# Restores the caller's own `nocasematch` setting on return.
 _lib_case_insensitive_ne() {
-  local a="$1" b="$2" result
+  local a="$1" b="$2" result had_nocasematch=0
+  shopt -q nocasematch && had_nocasematch=1
   shopt -s nocasematch
   if [[ "$a" != "$b" ]]; then
     result=0
   else
     result=1
   fi
-  shopt -u nocasematch
+  [ "$had_nocasematch" -eq 1 ] || shopt -u nocasematch
   return "$result"
 }
 

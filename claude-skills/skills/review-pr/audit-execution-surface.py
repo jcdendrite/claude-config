@@ -2,13 +2,14 @@
 """Passive-execution audit for /review-pr Step 2.
 
 Reads a JSON array of PR-changed file paths on stdin (the full,
-paginated `changedFiles` list -- see REFERENCES.md on why the raw `files`
+paginated changed-file list -- see REFERENCES.md on why the raw `files`
 field alone is not safe input here) and reports which paths could run code
 or load instructions with no explicit run: git filter drivers at checkout,
 hook runners under a conventional `core.hooksPath` directory, or files the
 reviewing harness may load from a project directory. A pure function of a path list: no `gh` call, no
-repo checkout, no LLM judgment -- the skill invokes this script via Bash
-rather than leaving the match logic to prose interpretation.
+repo checkout, no LLM judgment -- review-pr-checkout.sh and
+review-pr-diff.sh invoke this script rather than leaving the match logic
+to prose interpretation.
 
 Content-blind by design: a hit means the path could be an execution-surface
 file, not that its content is malicious -- over-flagging is the accepted
@@ -20,8 +21,8 @@ file -- `.MCP.json` loads exactly like `.mcp.json` there.
 
 Output (stdout, one JSON object): {"stop": bool, "matches": [{"path":
 str, "reason": str}, ...]}. Exit status mirrors "stop": 1 when any path
-matched (the skill must stop before checkout), 0 when none did. A
-malformed stdin payload (not JSON, not an array of strings) prints
+matched (the checkout script refuses; the diff script reports it), 0 when
+none did. A malformed stdin payload (not JSON, not an array of strings) prints
 {"error": str} and exits 2 -- distinct from both outcomes above, since
 "could not audit" must never read as "audited clean."
 """
@@ -38,7 +39,7 @@ _HOOKSPATH_TARGET_DIRS = (".githooks", ".husky")
 
 def _lower_posix_path(path: str) -> str:
     """Normalize a path for matching: forward slashes, folded case."""
-    return path.replace("\\", "/").lower()
+    return path.replace("\\", "/").casefold()
 
 
 def _classify(path: str) -> str | None:

@@ -78,8 +78,7 @@ PR_IDENTITY="$1"
 # shellcheck source=_review-pr-lib.sh
 . "$(dirname "$0")/_review-pr-lib.sh"
 
-# Same split and validation review-pr-post.sh's own MARKER_PR_IDENTITY
-# handling uses, so the two scripts agree on one PR-identity convention.
+# See _lib_parse_pr_identity (_lib.sh) for the split and validation.
 if ! PR_IDENTITY_FIELDS=$(_lib_parse_pr_identity "$PR_IDENTITY"); then
   echo "review-pr-checkout.sh: PR identity '$PR_IDENTITY' is not a valid <owner>/<repo>#<number>." >&2
   usage
@@ -113,8 +112,8 @@ if _lib_case_insensitive_ne "$ORIGIN_OWNER_REPO" "$OWNER_REPO"; then
 fi
 
 # claude-skills/skills/review-pr/ stows to $CONFIG_DIR/skills/review-pr/
-# (stow-packages.sh) -- the same installed path SKILL.md's own Step 2 names
-# literally. Anchoring on $CONFIG_DIR rather than a relative ../../.. guess
+# (stow-packages.sh), and this script runs the audit by that installed path.
+# Anchoring on $CONFIG_DIR rather than a relative ../../.. guess
 # off this script's own path survives a future scripts/ directory move.
 # Checked before the trust block below (a local misconfiguration, not a gh
 # call) so an uninstalled skill aborts with no network round trip at all.
@@ -318,8 +317,8 @@ if ! _lib_valid_session_id_component "$SESSION_ID"; then
   exit 2
 fi
 
-# Every invocation gets its own mktemp directory, so no two runs share a path
-# and nothing needs a lock. review-pr-finish.sh finds the directory again by
+# Every invocation gets its own mktemp directory, so no two runs share a path.
+# review-pr-finish.sh finds the directory again by
 # the session-scoped name (_lib_review_pr_worktree_template).
 if ! mkdir -p -- "$MAIN_REPO_ROOT/.claude/worktrees" \
   || ! WORKTREE_DIR=$(mktemp -d "$(_lib_review_pr_worktree_template "$MAIN_REPO_ROOT" "$SESSION_ID" "$PR_NUMBER")"); then

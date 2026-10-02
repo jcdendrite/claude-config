@@ -8,6 +8,8 @@ Review a pull request someone else authored: acquire it, audit it for passive-ex
 
 ## Step 1 — Acquire PR context
 
+Form `<owner>/<repo>#<number>` from the argument: a URL supplies all three parts, and a bare number takes this clone's `origin` owner/repo. The checkout and diff scripts refuse a PR whose repository is not `origin`'s.
+
 ```
 ~/.claude/scripts/review-pr-acquire.sh <owner>/<repo>#<number>
 ```
@@ -94,4 +96,4 @@ Then, on every exit path once step 1 has run — posted, declined, or aborted at
 ```
 ~/.claude/scripts/review-pr-finish.sh
 ```
-It takes no argument and runs from inside any tree of the repo. It sweeps every review worktree of this session by its session-scoped name, so it needs neither a `cd` into the worktree nor a lock. Removes provenance, the findings body, the diff file (if any), the context backstop, and the completion marker, plus the session's review worktrees. A ref and fetched base objects outlive it (`REFERENCES.md`, Known gaps). Run this before removing anything yourself.
+It takes no argument and runs from inside any tree of the repo. It sweeps every review worktree of this session by its session-scoped name. Removes provenance, the findings body, the diff file (if any), the context backstop, and the completion marker, plus the session's review worktrees. A ref and fetched base objects outlive it (`REFERENCES.md`, Known gaps). Run this before removing anything yourself.

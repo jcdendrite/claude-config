@@ -83,6 +83,41 @@ class TestAuditExecutionSurfacePureFunction:
         assert result["stop"] is True
         assert result["matches"][0]["path"] == ".MCP.json"
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ".gitattributeſ",
+            ".githookſ/pre-commit",
+            ".huſky/pre-commit",
+            ".gitmoduleſ",
+            ".mcp.jſon",
+            ".claude/skillſ/x/SKILL.md",
+            ".claude/settingſ.json",
+            ".claude/settingſ.local.json",
+            ".claude/hookſ/x.sh",
+            ".claude/agentſ/x.md",
+        ],
+        ids=[
+            "gitattributes",
+            "githooks",
+            "husky",
+            "gitmodules",
+            "mcp_json",
+            "skill_md",
+            "settings_json",
+            "settings_local_json",
+            "claude_hooks",
+            "claude_agents",
+        ],
+    )
+    def test_casefold_only_variant_still_matches(self, path):
+        """U+017F (long s) is left alone by str.lower() but folds to `s` under
+        str.casefold(), which is how a case-insensitive volume may resolve
+        the path -- each gated arm must fold the same way."""
+        result = audit_execution_surface([path])
+        assert result["stop"] is True
+        assert result["matches"][0]["path"] == path
+
     def test_gitattributes_at_any_depth_matches(self):
         result = audit_execution_surface(["packages/api/.gitattributes"])
         assert result["stop"] is True

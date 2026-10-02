@@ -1487,8 +1487,12 @@ def test_review_pr_completion_marker_fields_wrong_repo_hash_returns_1(tmp_path: 
 
 def test_review_pr_completion_marker_fields_rejects_traversal_session_id(tmp_path: Path) -> None:
     """Routed through _lib_valid_session_id_component before ever building
-    the marker path -- a '../' session id must not escape review-pr-markers/."""
-    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "../canary")
+    the marker path -- a '../' session id must not escape review-pr-markers/.
+    The canary is a valid marker the traversing id reaches, so only the guard
+    can produce the refusal."""
+    (tmp_path / "review-pr-markers" / "repohash.x").mkdir(parents=True)
+    (tmp_path / "canary").write_text("foo/bar#42\nabc123\ndef456\ncheckout\n")
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "x/../../canary")
     assert result.returncode != 0
     assert result.stdout == ""
 
@@ -1663,6 +1667,15 @@ class TestLibCaseInsensitiveNe:
     def test_genuine_mismatch_returns_true(self) -> None:
         result = _run_lib_call('_lib_case_insensitive_ne "foo/bar" "foo/baz"', env=dict(os.environ))
         assert result.returncode == 0
+
+    @pytest.mark.parametrize("initial_option_state", ["-s", "-u"], ids=["caller_set", "caller_unset"])
+    def test_leaves_the_callers_nocasematch_setting_as_it_found_it(self, initial_option_state: str) -> None:
+        result = _run_lib_call(
+            f'shopt {initial_option_state} nocasematch; _lib_case_insensitive_ne "foo/bar" "foo/baz"; '
+            "shopt -p nocasematch",
+            env=dict(os.environ),
+        )
+        assert result.stdout == f"shopt {initial_option_state} nocasematch\n"
 
 
 # --- _lib_is_no_gate_release_agent ---------------------------------------

@@ -75,25 +75,15 @@ own editor/IDE auto-run configs (`.vscode/tasks.json` with
 `runOn: folderOpen`, `.idea/` run configs) are outside the reviewing
 harness's control surface, so this audit does not cover them.
 
-Content-blind by design: the predicate takes a path list, not file
-bodies, so a hit means "this path could be an execution-surface file,"
-not "its content is malicious." Over-flagging is the accepted direction
-— see the script's module docstring.
-
-Every match folds case (`.MCP.json` matches the same as `.mcp.json`)
-because a case-insensitive filesystem (macOS default, Windows) resolves
-both to the same loaded file.
+The predicate is content-blind and folds case on every match; the
+script's module docstring owns both rationales.
 
 **Trust classification never removes a stop condition, only widens it.**
 `authorAssociation` and `isCrossRepository` describe an account's
 standing, not the provenance of the commits under review — a compromised
 collaborator account still produces a same-repo, non-first-time-looking
-PR that this audit must still flag on a hit. A cross-repo or
-first-time-contributor PR is refused by `review-pr-checkout.sh`
-unconditionally and routes to `review-pr-diff.sh`, which runs the same
-audit predicate and reports a hit as a finding instead of stopping.
-`review-pr-checkout.sh` enforces its refusal on every invocation, so that
-class never becomes unreviewable.
+PR that this audit must still flag on a hit. The no-checkout path's
+section below covers the PRs the checkout script refuses outright.
 
 ### Git-tracked symlinks are not defended against
 
@@ -140,6 +130,10 @@ left implicit:
   `changed_files`. No script checks the completeness of either diff's
   text. The 300-file precheck and the truncation caveat apply to this path
   only: in `checkout` mode, Step 5 takes a local three-dot `git diff`.
+- **The diff text is not verbatim.** `review-pr-diff.sh` does not pass
+  `--allow-escape-sequences`, so `gh pr diff` neutralizes terminal escape
+  sequences in the diff it captures (`gh pr diff --help`), and a changed
+  line holding one reads differently here than in the repository.
 
 ## Why the findings-body declaration uses the Write tool, not Bash (Step 7)
 

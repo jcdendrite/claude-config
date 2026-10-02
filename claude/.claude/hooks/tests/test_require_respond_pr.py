@@ -1145,7 +1145,7 @@ class TestReviewPrBareReadsAreDenied:
     """A bare `gh api .../pulls/N/reviews` read is denied like any other
     gated read, regardless of session state."""
 
-    def test_bare_read_is_denied_with_no_review_pr_bypass(self, isolated_home, git_repo):
+    def test_bare_read_is_denied_with_no_bypass_marker(self, isolated_home, git_repo):
         sid = "test-session-review-pr-read"
         assert (
             run_hook(

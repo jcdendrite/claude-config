@@ -161,6 +161,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **`/review-pr` skill and its scripts.** Reviews a PR from a checkout or, for a restricted PR, from its diff alone; the `review-pr-*` scripts under `claude/.claude/scripts/` hold the mechanics. Consumer-visible changes:
+  - `settings.json` now allows `marker.sh write review-pr`, `review-pr-findings-path.sh`, and `review-pr-finish.sh` without a prompt. `review-pr-finish.sh` force-removes the session's review worktrees.
+  - `marker.sh write` and `activate` now exit 2 where a symlink sits at the marker's destination, instead of writing through the link.
+  - `marker.sh clear-stale` is now a Python sweep (`marker-clear-stale.py`) that also evicts abandoned review-pr artifacts.
+  - `require-respond-pr.sh` compares the origin slug case-insensitively, and its denial text for a `gh pr review` write names `review-pr-post.sh`.
 - **`post-crash-sessions --json` prints a versioned, machine-readable session list.** For a program that consumes the tool's verdicts without parsing the text report. It emits every classification with raw `config_dir` paths, session ids, working directories, and git branches, so the output is not publish-safe (`"publish_safe": false` in-band) and `--json` with `--redact` exits 2. Contract, refuse-to-act conditions, and stability rules: `docs/scripts.md` § `--json` contract. Pinned by `test_post_crash_sessions.py`. A session whose only evidence is a main transcript gets its own `transcript-only` classification instead of `possible-crash`.
 - **New `# tier-threat-model: <tiers>` header convention for `hook-class: gate` hooks.** Every gate hook now carries a machine-readable tier line at line 3 stating its threat-model classification (agent intent, input trust, consequence reversibility) — see `docs/hooks.md` § "Threat-model tiers" for the axes, the tier definitions, and the full per-hook classification table. `claude-hook-review`'s authoring skill gains a matching checklist paragraph, bumped to 2.4.0 (minor — new checklist requirement). Four sibling plugins carry only the header insertion on their own hook and bump to a patch release: `skill-management`, `plugin-semver`, `npm-semver`, `lovable-cloud`.
   - Run `claude plugin install skill-management@claude-config --scope project` in each consuming repo to refresh it.

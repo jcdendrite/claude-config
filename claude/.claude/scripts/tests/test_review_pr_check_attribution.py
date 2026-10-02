@@ -128,6 +128,17 @@ class TestDiffOnlyDisclosure:
         assert result.returncode == 1
         assert str(body) in result.stderr
 
+    def test_disclosure_sentence_inside_a_longer_line_exits_one(self, tmp_path):
+        """The disclosure must stand as a whole line -- the same sentence
+        embedded in a longer line must still fail."""
+        body = _write(
+            tmp_path,
+            f"**[Claude Code]**\n\nNote: ({DISCLOSURE_LINE}) is what the skill requires.\n\n{TRAILER}\n",
+        )
+        result = _run([str(body), "diff-only"])
+        assert result.returncode == 1
+        assert str(body) in result.stderr
+
     def test_checkout_mode_body_missing_disclosure_line_still_passes(self, tmp_path):
         """The disclosure line is required only in diff-only mode -- a
         checkout-mode body carrying no such line must not fail on it."""

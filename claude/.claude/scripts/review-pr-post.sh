@@ -91,8 +91,7 @@ case "$MARKER_MODE" in
     ;;
 esac
 
-# Same split and validation review-pr-checkout.sh's own PR-identity
-# handling uses, so the two scripts agree on one PR-identity convention.
+# See _lib_parse_pr_identity (_lib.sh) for the split and validation.
 if ! PR_IDENTITY_FIELDS=$(_lib_parse_pr_identity "$MARKER_PR_IDENTITY"); then
   echo "review-pr-post.sh: marker PR identity '$MARKER_PR_IDENTITY' is not a valid <owner>/<repo>#<number>. Abort without posting." >&2
   exit 2
