@@ -1,4 +1,8 @@
-"""Tests for transcript_analysis/subagent_mix.py's cmd_cost_counts: refusals, rendering, disclosure allowlist, charset pin."""
+"""Tests for transcript_analysis/subagent_mix.py's cmd_cost_counts: refusals, rendering, disclosure allowlist, charset pin.
+
+One exception: test_top_level_config_dir_message_omits_flag_recommendation drives the shim's main(),
+so it pins the CLI layer's shared top-level --config-dir refusal rather than cmd_cost_counts.
+"""
 import importlib.util
 import subprocess
 import sys
