@@ -19,9 +19,12 @@
 # structure is kept so future exceptions can slot in without touching the
 # surrounding logic.
 #
-# The "if" field in settings.json is unreliable — the internal
-# _lib_command_invokes_git_subcmd check is the actual gate. See
-# require-code-review.sh for the same pattern and rationale.
+# Dispatched on every Bash tool call; the internal commit-shape check below is
+# the sole dispatch gate. See require-code-review.sh for the same pattern.
+# _lib_staged_length_gate resolves its base the same way
+# require-code-review.sh does. For why that base is admissible despite being
+# locally forgeable, and its residuals, see:
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "The anchor-admissibility test"
 #
 # On a machine lacking both timeout(1) and gtimeout(1), _lib_capped runs the
 # git calls below uncapped, so a stalled git (locked index, network mount)
@@ -78,20 +81,22 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Only gate git commit commands -- checked here, before REPO_ROOT resolution
-# below, so the overwhelming majority of Bash calls this hook is dispatched
-# for (per the "if" field's documented unreliability above) never spawn a
-# git subprocess at all. Matches require-code-review.sh's actual ordering,
-# not just its REPO_ROOT-resolution shape. Checked and fail-closed: an
-# undetermined match (sed/tr missing, killed, or erroring inside the helper)
-# must not silently let an unscanned commit bypass the length check.
-_lib_command_invokes_git_subcmd "$COMMAND" commit
+# Only gate commands that conclude a commit -- checked here, before
+# REPO_ROOT resolution below, so the overwhelming majority of Bash calls
+# this hook is dispatched for never spawn a git subprocess at all. Matches
+# require-code-review.sh's actual ordering, not just its REPO_ROOT-resolution
+# shape. Uses the broad predicate, armed on `git rebase --continue`; see
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "Why `git rebase --continue` is not gated by the marker gates"
+# Checked and fail-closed: an undetermined match (sed/tr missing, killed, or
+# erroring inside the helper) must not silently let an unscanned commit
+# bypass the length check.
+_lib_command_concludes_commit "$COMMAND"
 GIT_COMMIT_MATCH_STATUS=$?
 if [ "$GIT_COMMIT_MATCH_STATUS" -eq 1 ]; then
   exit 0
 fi
 if [ "$GIT_COMMIT_MATCH_STATUS" -ne 0 ]; then
-  emit_deny "could not determine whether this command invokes git commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the length check."
+  emit_deny "could not determine whether this command concludes a commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the length check."
   exit 0
 fi
 

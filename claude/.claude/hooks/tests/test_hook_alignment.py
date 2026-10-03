@@ -910,6 +910,13 @@ _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
     "deny-pii-in-commits.sh",
     "require-ready-for-review.sh",
     "enforce-marker-script-shape.sh",
+    "deny-invisible-commit-content.sh",
+    # Carry no "Bash(git commit *)" `if`; each self-filters on its own
+    # in-body commit-shape matcher.
+    "require-code-review.sh",
+    "guard-settings-session-keys.sh",
+    "check-skill-length.sh",
+    "check-claude-md-length.sh",
 )
 
 
@@ -933,6 +940,43 @@ def test_self_filtering_bash_gate_has_no_if_matcher(hook_name: str) -> None:
             f"{hook_name}: PreToolUse entry carries an 'if' key "
             f"({entry.get('if')!r}) — this gate's header declares "
             f"unconditional dispatch"
+        )
+
+
+def test_skill_management_gate_has_no_if_matcher() -> None:
+    """The plugin's skill-review gate self-filters on its in-body
+    commit-shape predicate, so its hooks.json entry carries no `if` key.
+    Declared-config check only, same limit as
+    test_self_filtering_bash_gate_has_no_if_matcher."""
+    hook = _REPO_ROOT / "plugins" / "skill-management" / "hooks" / "require-skill-review.sh"
+    entries = _pretooluse_entries_for(hook)
+    assert entries, f"{hook.name}: expected at least one PreToolUse entry"
+    for entry in entries:
+        assert "if" not in entry, (
+            f"{hook.name}: PreToolUse entry carries an 'if' key "
+            f"({entry.get('if')!r}) — this gate's header declares "
+            f"unconditional dispatch"
+        )
+
+
+@pytest.mark.parametrize(
+    ("plugin_name", "hook_name"),
+    [
+        ("plugin-semver", "require-plugin-version-bump.sh"),
+        ("npm-semver", "require-npm-version-bump.sh"),
+    ],
+)
+def test_version_bump_plugin_gate_keeps_its_commit_if_matcher(
+    plugin_name: str, hook_name: str
+) -> None:
+    """The version-bump plugins' gates dispatch on a literal `Bash(git commit *)` `if` filter."""
+    hook = _REPO_ROOT / "plugins" / plugin_name / "hooks" / hook_name
+    entries = _pretooluse_entries_for(hook)
+    assert entries, f"{hook_name}: expected at least one PreToolUse entry"
+    for entry in entries:
+        assert entry.get("if") == "Bash(git commit *)", (
+            f"{hook_name}: expected its `Bash(git commit *)` `if` filter, "
+            f"got {entry.get('if')!r}"
         )
 
 

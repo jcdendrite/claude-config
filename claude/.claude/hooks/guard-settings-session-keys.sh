@@ -9,16 +9,23 @@
 # shipped config for every user — see GUARDED_KEYS_JSON below for why each
 # key is guarded.
 #
-# Defense-in-depth: the hook filters its own input by tool name AND checks
-# whether settings.base.json is actually staged — do not rely solely on the
-# settings.base.json `if` condition in settings.base.json.
+# Defense-in-depth: the hook is dispatched on every Bash tool call, and the
+# internal commit-shape check and staged-file check below are the sole
+# dispatch gate.
+# Unlike require-code-review.sh and the two length gates, this hook diffs
+# against a named branch (origin/<default>) rather than a novel-content base,
+# so it does not consume _lib_gate_diff_base. For why that base's two anchors
+# are admitted elsewhere despite being locally forgeable, and their
+# residuals, see:
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "The anchor-admissibility test"
+# For this hook's own origin/<default> resolution via _lib_default_branch_or_guess, see
+# `docs/design-decisions/guard-settings-session-keysshs-default-branch.md`.
 #
 # Coverage boundary: this gate reads the index as it stands before the Bash
 # call runs. deny-invisible-commit-content.sh, registered in the same chain, is
 # the backstop for the all-flag, a commit pathspec, and a chained
 # `git add && git commit`, none of which this gate can see.
-# A commit concluded by `git merge`, `git pull`, or `git <verb> --continue` is
-# never seen here. Only CI catches that shape, through
+# A commit concluded by `git merge` or `git pull` is never seen here. Only CI catches that shape, through
 # test_base_top_level_keys_disjoint_from_guarded_keys in
 # test_guard_settings_session_keys.py.
 #
@@ -100,12 +107,14 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Only gate commands that contain a git commit invocation. Deliberately
-# unchecked, matching this hook's own fail-open posture on the jq-absent
-# path below: status 2 (could not determine) falls through the same "not
-# gated, allow" path as status 1 (no match), rather than gaining a
+# Only gate commands that conclude a commit, using the broad predicate
+# (armed on `git rebase --continue`); see:
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "Why `git rebase --continue` is not gated by the marker gates"
+# Deliberately unchecked, matching this hook's own fail-open posture on the
+# jq-absent path below: status 2 (could not determine) falls through the same
+# "not gated, allow" path as status 1 (no match), rather than gaining a
 # dedicated deny fork.
-_lib_command_invokes_git_subcmd "$COMMAND" commit || exit 0
+_lib_command_concludes_commit "$COMMAND" || exit 0
 
 # Resolve the repo from the payload's cwd rather than this hook process's
 # ambient cwd, matching require-plan-review.sh/require-code-review.sh.
@@ -130,8 +139,8 @@ fi
 # branch or missing file diffs against an empty baseline instead. Against
 # that empty baseline, a staged guarded key denies and a staged file with none
 # of the guarded keys allows.
-# Latency tradeoff: see docs/design-decisions.md's entry for
-# _lib_default_branch_or_guess (#54).
+# Latency tradeoff of the default-branch resolution: see
+# `docs/design-decisions/guard-settings-session-keysshs-default-branch.md`.
 if ! DEFAULT_BRANCH=$(_lib_default_branch_or_guess "$CWD"); then DEFAULT_BRANCH=""; fi
 STAGED_CONTENT=$(_lib_capped git -C "$CWD" show :"$SETTINGS_REPO_PATH" 2>/dev/null)
 if [ -z "$DEFAULT_BRANCH" ] || ! MAIN_CONTENT=$(_lib_capped git -C "$CWD" show "origin/$DEFAULT_BRANCH:$SETTINGS_REPO_PATH" 2>/dev/null); then

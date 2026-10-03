@@ -3,11 +3,14 @@
 # tier-threat-model: cooperative
 # Gate: require /code-review before git commit, verified via marker file.
 #
-# WARNING: Do NOT remove the internal git commit check below.
-# The "if" field in settings.json is unreliable — it has been observed
-# to fire this hook on ALL Bash commands (e.g., git reset, date).
-# The internal _lib_command_invokes_git_subcmd check is the actual gate.
-# The "if" field is a hint only.
+# WARNING: Do NOT remove the internal commit-shape check below.
+# Dispatched on every Bash tool call; the internal commit-shape check below is
+# the sole dispatch gate.
+# This hook trusts the two locally-forgeable anchors _lib_gate_diff_base
+# resolves to exclude a merge/rebase/cherry-pick/revert parent's content from
+# the review hash. For why both anchors are admitted despite neither being
+# unforgeable, and their residuals, see:
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "The anchor-admissibility test"
 #
 # How it works:
 # - The /code-review skill writes
@@ -28,6 +31,11 @@
 #   completed against the identical staged state.
 # - The marker auto-invalidates as soon as the staging area changes, so
 #   re-staging after review correctly forces a re-review.
+#
+# Known gaps this gate does not close:
+#  - The rebase carve-out's split-across-two-Bash-calls exposure; see
+#    `docs/design-decisions/rebase-continue-marker-gate-carveout.md`
+#    § "What the carve-out leaves exposed".
 
 set -uo pipefail
 
@@ -60,17 +68,23 @@ if [ "$TOOL_NAME" != "Bash" ]; then
   exit 0
 fi
 
-# Only gate git commit commands — exit 0 (no opinion) for everything else.
-# Checked and fail-closed: an undetermined match (sed/tr missing, killed, or
-# erroring inside the helper) must not silently let an unscanned commit
-# through the review gate.
-_lib_command_invokes_git_subcmd "$COMMAND" commit
+# Only gate commands that conclude a review-marker-gated commit — exit 0 (no
+# opinion) for everything else.
+# - Uses the narrow predicate _lib_command_concludes_marker_gated_commit,
+#   which excludes `git rebase --continue`; see:
+#   `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "Why `git rebase --continue` is not gated by the marker gates"
+# - `git merge/cherry-pick/revert --continue` and any `git commit` form
+#   reach the gate.
+# - Fails closed on an undetermined match (sed/tr missing, killed, or
+#   erroring inside the helper) rather than silently letting an unscanned
+#   commit through the review gate.
+_lib_command_concludes_marker_gated_commit "$COMMAND"
 GIT_COMMIT_MATCH_STATUS=$?
 if [ "$GIT_COMMIT_MATCH_STATUS" -eq 1 ]; then
   exit 0
 fi
 if [ "$GIT_COMMIT_MATCH_STATUS" -ne 0 ]; then
-  emit_deny "could not determine whether this command invokes git commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the review gate."
+  emit_deny "could not determine whether this command concludes a review-gated commit (status ${GIT_COMMIT_MATCH_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than letting an unscanned git commit bypass the review gate."
   exit 0
 fi
 
@@ -109,10 +123,15 @@ GATE_DIFF_BASE_STATUS=$?
 # different base.
 # deny-invisible-commit-content.sh depends on this branch meaning "this
 # commit authors an empty commit" -- do not remove either half
-# independently.
+# independently. That dependency covers every shape
+# _lib_command_concludes_marker_gated_commit matches (git commit and the
+# three non-rebase --continue forms), not literal git commit alone.
 if [ -z "$GATE_DIFF_BASE" ]; then
   EMPTY_DIFF_CHECK=$(_lib_capped git -C "$REPO_ROOT" diff --cached 2>/dev/null)
-  if [ -z "$EMPTY_DIFF_CHECK" ]; then
+  EMPTY_DIFF_STATUS=$?
+  # A non-zero status (killed past the cap, git error) can leave the output
+  # empty, so "nothing staged" requires a zero status as well as empty output.
+  if [ "$EMPTY_DIFF_STATUS" -eq 0 ] && [ -z "$EMPTY_DIFF_CHECK" ]; then
     exit 0
   fi
 fi

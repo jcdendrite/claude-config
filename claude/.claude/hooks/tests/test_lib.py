@@ -3252,6 +3252,26 @@ class TestCommandInvokesGitSubcmd:
     def test_empty_command_does_not_match(self) -> None:
         assert _command_invokes_git_subcmd("", "commit") == 1
 
+    def test_global_dash_c_flag_prefix_still_matches(self) -> None:
+        """A `-c key=val` global flag ahead of the subcommand must not hide
+        it: the word-walk skips the flag and its value."""
+        assert _command_invokes_git_subcmd("git -c core.editor=true commit", "commit") == 0
+
+    def test_global_dash_cap_c_flag_prefix_still_matches(self) -> None:
+        """A `-C <path>` global flag ahead of the subcommand must not hide
+        it, same rationale as the `-c` case above."""
+        assert _command_invokes_git_subcmd("git -C /tmp commit -m x", "commit") == 0
+
+    def test_continue_form_does_not_match_commit(self) -> None:
+        """`git merge --continue`'s subcommand genuinely is `merge`, not
+        `commit` -- this predicate correctly says no, which is why
+        _lib_command_concludes_commit is a separate predicate from this
+        one."""
+        assert _command_invokes_git_subcmd("git merge --continue", "commit") == 1
+
+    def test_rebase_continue_form_does_not_match_commit(self) -> None:
+        assert _command_invokes_git_subcmd("git rebase --continue", "commit") == 1
+
     def test_wrong_arity_returns_could_not_determine(self) -> None:
         result = subprocess.run(
             ["bash", "-c", f'. {_LIB_SH}; _lib_command_invokes_git_subcmd "git commit"'],
@@ -6174,6 +6194,12 @@ class TestCommandConcludesCommit:
             "git rebase --continue",
             "git cherry-pick --continue",
             "git revert --continue",
+            # git's own option parser accepts any unambiguous prefix of a
+            # long option (gitcli(7)) -- these must match the same way.
+            "git merge --cont",
+            "git rebase --cont",
+            "git cherry-pick --cont",
+            "git revert --cont",
         ],
     )
     def test_broad_predicate_true_for_concluding_shapes(self, command: str) -> None:
@@ -6187,6 +6213,17 @@ class TestCommandConcludesCommit:
             "git rebase --skip",
             "git commit-tree abc123",
             "git status",
+            # A clean cherry-pick or revert creates its commit inside the
+            # initiating command with no separate `git commit` call, so no
+            # gate keyed on this predicate ever sees one -- pinned here as
+            # suite fact rather than only as prose.
+            "git cherry-pick abc123",
+            "git revert abc123",
+            # A real git merge option, not a prefix of --continue.
+            "git merge --commit",
+            # Longer than --continue, not a proper prefix of it.
+            "git merge --continued",
+            "git merge --continue-foo",
         ],
     )
     def test_broad_predicate_false_for_non_concluding_shapes(self, command: str) -> None:
@@ -6213,12 +6250,33 @@ class TestCommandConcludesCommit:
     ) -> None:
         assert _command_concludes_marker_gated_commit(command) == _command_concludes_commit(command)
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git --attr-source HEAD commit -m x",
+            "git --attr-source=HEAD commit -m x",
+        ],
+    )
+    def test_both_predicates_recognize_commit_behind_attr_source_global_flag(
+        self, command: str
+    ) -> None:
+        """`--attr-source <tree-ish>` takes a separate-word value, so the
+        subcommand walk must skip `HEAD` and find `commit` behind it."""
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 0
+
     def test_narrow_predicate_excludes_rebase_continue_while_broad_includes_it(self) -> None:
         """The one input where the two predicates must diverge -- a
         fixture asserting only the narrow predicate's false here would not
         catch a regression that accidentally narrowed both."""
         assert _command_concludes_commit("git rebase --continue") == 0
         assert _command_concludes_marker_gated_commit("git rebase --continue") == 1
+
+    def test_narrow_predicate_excludes_abbreviated_rebase_continue_too(self) -> None:
+        """The rebase carve-out must exclude every abbreviated spelling of
+        `--continue`, not just the exact one."""
+        assert _command_concludes_commit("git rebase --cont") == 0
+        assert _command_concludes_marker_gated_commit("git rebase --cont") == 1
 
     def test_wrong_arity_returns_could_not_determine(self) -> None:
         result = subprocess.run(
@@ -6245,12 +6303,359 @@ class TestCommandConcludesCommit:
         assert _command_concludes_commit("git commit -m x", env=env) == 2
         assert _command_concludes_marker_gated_commit("git commit -m x", env=env) == 2
 
+    @pytest.mark.parametrize(
+        ("command", "expected_status_without_shim"),
+        [("git commit -m x", 0), ("", 1), ("ls", 1)],
+        ids=["concluding-commit", "empty-command", "non-git-command"],
+    )
+    def test_failed_fragment_read_returns_could_not_determine(
+        self, command: str, expected_status_without_shim: int
+    ) -> None:
+        """A here-string redirect that fails (e.g. an unwritable TMPDIR) skips
+        the fragment loop; the matcher must report undetermined, not no-match.
+        The `read` shim stands in for that failure without touching the
+        filesystem and prints a marker so a shell syntax error (which also
+        exits 2) cannot pass for the sentinel.
+        Without the shim, the sentinel must not over-deny."""
+        shim_marker = "read-shim-ran"
+
+        def run(prelude: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'. {_LIB_SH}; {prelude or ":"}; _lib_command_concludes_marker_gated_commit "$1"',
+                    "bash",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        shimmed = run(f"read() {{ echo {shim_marker}; return 1; }}")
+        assert shimmed.returncode == 2
+        assert shim_marker in shimmed.stdout
+        assert shimmed.stderr == ""
+        assert run("").returncode == expected_status_without_shim
+
     def test_continue_flag_outside_matched_verb_does_not_conclude_commit(self) -> None:
-        """The fragment-boundary case _lib_command_concludes_commit_shape's
-        own comment names: `--continue` present elsewhere in COMMAND, not
-        as the matched verb's own argument, must not read as concluding a
-        commit."""
+        """A `--continue` word elsewhere in COMMAND, outside the matched
+        verb's own arguments, must not read as concluding a commit."""
         assert _command_concludes_commit("git rebase origin/main && echo --continue") == 1
+
+    # The cases below cover the remaining `--continue` abbreviation
+    # alternatives in _lib_fragment_concludes_commit_shape's case statement,
+    # plus case-sensitivity and the empty command.
+
+    @pytest.mark.parametrize(
+        "abbreviation",
+        ["--c", "--co", "--con", "--conti", "--contin", "--continu"],
+    )
+    def test_broad_predicate_true_for_remaining_continue_abbreviations(
+        self, abbreviation: str
+    ) -> None:
+        assert _command_concludes_commit(f"git merge {abbreviation}") == 0
+
+    def test_broad_predicate_case_sensitive_on_continue_flag(self) -> None:
+        """`--Continue` is not one of the case statement's alternatives --
+        the match is case-sensitive, and a differently-cased spelling must
+        not be silently accepted."""
+        assert _command_concludes_commit("git merge --Continue") == 1
+
+    def test_broad_predicate_false_for_empty_command(self) -> None:
+        assert _command_concludes_commit("") == 1
+
+    # _lib_split_fragments leaves a bare `&` unsplit (GH-1063), so the shared
+    # matcher tries each `&`-separated piece of a fragment as its own command.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git add . & git commit -m x",
+            "git status & git merge --continue",
+        ],
+    )
+    def test_both_predicates_true_for_concluding_shape_after_single_ampersand(
+        self, command: str
+    ) -> None:
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 0
+
+    def test_rebase_continue_after_single_ampersand_keeps_the_rebase_carve_out(self) -> None:
+        command = "git status & git rebase --continue"
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 1
+
+    def test_ampersand_inside_a_quoted_global_flag_value_still_reaches_commit(self) -> None:
+        assert _command_concludes_commit('git -c "user.name=a&b" commit -m x') == 0
+        assert _command_concludes_marker_gated_commit('git -c "user.name=a&b" commit -m x') == 0
+
+    def test_fd_redirection_ampersand_does_not_conclude_a_commit(self) -> None:
+        assert _command_concludes_commit("git log 2>&1") == 1
+        assert _command_concludes_marker_gated_commit("git log 2>&1") == 1
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "sleep 1 & (git commit -m x)",
+            "(git add) & (git commit -m x)",
+            "git status &(git commit -m x)",
+            "git status & ( git commit -m x )",
+        ],
+    )
+    def test_both_predicates_true_for_parenthesized_commit_after_single_ampersand(
+        self, command: str
+    ) -> None:
+        """Each `&`-separated piece gets the same leading-`(` / trailing-`)`
+        strip a top-level fragment gets."""
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 0
+
+    @pytest.mark.parametrize("initial_noglob", [False, True], ids=["glob-on", "noglob-on"])
+    @pytest.mark.parametrize(
+        ("command", "expected_status"),
+        [("git status & git commit -m x", 0), ("git status & git log", 1)],
+        ids=["concluding-commit", "no-match"],
+    )
+    def test_ampersand_pass_restores_the_callers_ifs_and_noglob_state(
+        self, initial_noglob: bool, command: str, expected_status: int
+    ) -> None:
+        """Pass 2 word-splits on newlines with globbing off. It must hand
+        both settings back as it found them, on a match and on a no-match
+        input alike, or every later word-split in the sourcing hook changes."""
+        noglob_setup = "set -f; " if initial_noglob else ""
+        harness = (
+            f". {_LIB_SH}; {noglob_setup}IFS=$' \\t\\n'; "
+            '_lib_command_concludes_commit "$1"; status=$?; '
+            'case $- in *f*) glob_state=noglob;; *) glob_state=glob;; esac; '
+            '[ "$IFS" = $\' \\t\\n\' ] && ifs_restored=true || ifs_restored=false; '
+            'printf "%s|%s|%s" "$status" "$glob_state" "$ifs_restored"'
+        )
+        result = subprocess.run(
+            ["bash", "-c", harness, "bash", command], capture_output=True, text=True, check=False
+        )
+        expected_glob_state = "noglob" if initial_noglob else "glob"
+        assert result.stdout == f"{expected_status}|{expected_glob_state}|true"
+
+    @pytest.mark.parametrize("nounset", [False, True], ids=["nounset-off", "nounset-on"])
+    def test_ampersand_pass_leaves_an_unset_ifs_unset(self, nounset: bool) -> None:
+        """An unset IFS word-splits like the default; restoring it as an empty
+        string instead would disable word-splitting for every later loop in
+        the sourcing hook."""
+        nounset_setup = "set -u; " if nounset else ""
+        harness = (
+            f". {_LIB_SH}; unset IFS; {nounset_setup}"
+            '_lib_command_concludes_commit "$1"; status=$?; '
+            '[ -z "${IFS+set}" ] && ifs_state=unset || ifs_state=set; '
+            'printf "%s|%s" "$status" "$ifs_state"'
+        )
+        result = subprocess.run(
+            ["bash", "-c", harness, "bash", "git status & git commit -m x"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.stdout == "0|unset"
+
+    @pytest.mark.parametrize(
+        "command",
+        ['bash -c "git commit -m x"', 'eval "git commit -m x"'],
+    )
+    def test_quoted_wrapper_text_naming_a_commit_is_recognized(self, command: str) -> None:
+        """Quote-stripping leaves `git commit` as bare words inside a
+        `bash -c` or `eval` string, so the wrapper does not hide it."""
+        assert _command_concludes_commit(command) == 0
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "c=commit; git $c -m x",
+            "git ci -m x",
+            "bash ./do-commit.sh",
+            "git \\\ncommit -m x",
+            'git -c "user.name=A B" commit -m x',
+            'git -C "dir with space" commit -m x',
+            'git -C "$(pwd)" commit -m x',
+            'git -C "$(git rev-parse --show-toplevel)" commit -m x',
+            'git -C $(pwd) commit -m x',
+            'git --git-dir="a b" commit -m x',
+        ],
+        ids=[
+            "variable-word",
+            "git-alias",
+            "script-file",
+            "backslash-newline-continuation",
+            "quoted-space-in-global-flag-value",
+            "quoted-space-in-dash-C-value",
+            "command-substitution-in-dash-C-value",
+            "rev-parse-toplevel-substitution-in-dash-C-value",
+            "unquoted-command-substitution-in-dash-C-value",
+            "quoted-space-in-attached-git-dir-value",
+        ],
+    )
+    def test_known_bypass_commit_text_assembled_outside_the_command_string_is_not_recognized(
+        self, command: str
+    ) -> None:
+        """A commit whose words never appear together in the command text
+        (a variable, an alias, a script file, a line continuation, a
+        whitespace or fragment-operator value of a global flag that precedes
+        the subcommand) is a documented residual of matching command text;
+        pinned so a later fix flips it deliberately."""
+        assert _command_concludes_commit(command) == 1
+
+    # The matcher is a quote-blind word walk over quote-stripped text, so a
+    # command that only names a commit command as an argument, or quotes an
+    # `&` inside another command's argument, is read as concluding one. That
+    # over-match is the accepted fail-toward-deny posture; each case below pins
+    # it so a later narrowing flips these deliberately.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo git commit",
+            'grep "git commit" docs/x.md',
+            "man git commit",
+            'git log --grep "fix & git commit hook"',
+        ],
+        ids=["echo-argument", "grep-quoted-argument", "man-argument", "quoted-ampersand-in-argument"],
+    )
+    def test_accepted_over_match_command_naming_a_commit_reaches_both_predicates(
+        self, command: str
+    ) -> None:
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 0
+
+
+class TestSplitFragmentsPipefailContract:
+    """_lib_split_fragments' first sed stage failing leaves the second stage
+    reading empty input and succeeding, so the pipeline reports the failure
+    only under `set -o pipefail`; the call-site contract in its header
+    requires a sourcing caller to set it."""
+
+    @pytest.mark.parametrize(
+        ("pipefail_setting", "expected_status"),
+        [("set -o pipefail", 1), ("set +o pipefail", 0)],
+        ids=["pipefail-on-reports-failure", "pipefail-off-hides-failure"],
+    )
+    def test_first_stage_only_failure_is_reported_only_under_pipefail(
+        self, pipefail_setting: str, expected_status: int
+    ) -> None:
+        harness = (
+            f". {_LIB_SH}; {pipefail_setting}; "
+            # Fails only the first stage, keyed on its script starting `s/;/`.
+            "sed() { case \"$2\" in 's/;/'*) return 1;; esac; command sed \"$@\"; }; "
+            'fragments=$(_lib_split_fragments "git add . ; git status"); '
+            'printf "%s|%s" "$?" "$fragments"'
+        )
+        result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, check=False)
+        assert result.stdout == f"{expected_status}|"
+
+
+def _fragment_concludes_commit_via_extraction(fragment: str, env: dict | None = None) -> int:
+    """Mirrors what deny-invisible-commit-content.sh's arm 1 and arm 2 each
+    do: extract the fragment's own subcommand, then feed FRAGMENT and that
+    SUBCMD to _lib_fragment_concludes_commit -- rather than a hand-picked
+    SUBCMD, so a regression in the extraction step itself would also show
+    up here."""
+    result = subprocess.run(
+        [
+            "bash", "-c",
+            f'. {_LIB_SH}; subcmd=$(_lib_extract_git_subcmd "$1"); _lib_fragment_concludes_commit "$1" "$subcmd"',
+            "bash", fragment,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+    return result.returncode
+
+
+class TestFragmentConcludesCommit:
+    """Differential coverage for _lib_fragment_concludes_commit_shape, which
+    deny-invisible-commit-content.sh's arm 1 (raw/stripped-text SUBCMD
+    extraction) and arm 2 (masked-text SUBCMD extraction) share. Asserts the
+    fragment-level answer, via its public _lib_fragment_concludes_commit
+    wrapper, agrees with the command-level predicate's answer for the
+    equivalent single-fragment command."""
+
+    @pytest.mark.parametrize(
+        "fragment",
+        [
+            "git commit",
+            "git -c core.editor=true commit",
+            "git merge --continue",
+            "git rebase --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git merge --c",
+            "git merge --continu",
+        ],
+    )
+    def test_true_matches_command_level_predicate(self, fragment: str) -> None:
+        assert _fragment_concludes_commit_via_extraction(fragment) == 0
+        assert _command_concludes_commit(fragment) == 0
+
+    @pytest.mark.parametrize(
+        "fragment",
+        [
+            "git status",
+            "git rebase --abort",
+            "git rebase --skip",
+            "git merge origin/main",
+            "git cherry-pick abc123",
+        ],
+    )
+    def test_false_matches_command_level_predicate(self, fragment: str) -> None:
+        assert _fragment_concludes_commit_via_extraction(fragment) == 1
+        assert _command_concludes_commit(fragment) == 1
+
+
+def _fragment_concludes_commit_via_arm(fragment: str, transform: str, env: dict | None = None) -> int:
+    """Runs one of deny-invisible-commit-content.sh's two real arm
+    pipelines: TRANSFORM='strip' applies _lib_strip_shell_quotes (arm 1's
+    own transform) and TRANSFORM='mask' applies _lib_mask_shell_quotes
+    (arm 2's own transform) to FRAGMENT before extracting SUBCMD and
+    feeding both to _lib_fragment_concludes_commit -- so a quoted fixture
+    actually exercises the transform each arm runs, not a bypass of both."""
+    transform_fn = "_lib_strip_shell_quotes" if transform == "strip" else "_lib_mask_shell_quotes"
+    result = subprocess.run(
+        [
+            "bash", "-c",
+            f'. {_LIB_SH}; transformed=$({transform_fn} "$1"); '
+            'subcmd=$(_lib_extract_git_subcmd "$transformed"); '
+            '_lib_fragment_concludes_commit "$transformed" "$subcmd"',
+            "bash", fragment,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+    return result.returncode
+
+
+class TestFragmentConcludesCommitQuotedDifferential:
+    """Fragment-level answers agree with the whole-command predicate on
+    quoted input. These fixtures carry a quoted `git` word and a quoted,
+    abbreviated `--continue` form for a non-merge/rebase verb, so arm 1's
+    quote-stripped extraction and arm 2's quote-masked extraction each run
+    for real and must agree with each other and with the command-level
+    predicate's answer for the equivalent whole command."""
+
+    @pytest.mark.parametrize(
+        "fragment,expected",
+        [
+            ('"git" cherry-pick "--c"', 0),
+            ('"git" revert "--c"', 0),
+            ('"git" cherry-pick abc123', 1),
+        ],
+    )
+    def test_stripped_and_masked_arms_agree_with_command_level_predicate(
+        self, fragment: str, expected: int
+    ) -> None:
+        stripped_result = _fragment_concludes_commit_via_arm(fragment, "strip")
+        masked_result = _fragment_concludes_commit_via_arm(fragment, "mask")
+        assert stripped_result == masked_result == _command_concludes_commit(fragment) == expected
 
 
 # --- _lib_git_inprogress_state / _lib_gate_diff_base / _lib_staged_diff_hash --
@@ -6495,9 +6900,11 @@ def test_git_diff_cached_against_unresolved_conflict_git_primitive_fact(
 ) -> None:
     """What `git diff --cached` does against an index still carrying
     unmerged (stage 1/2/3) entries, pinned as a git-primitive fact
-    independent of any hook. A later change wiring deny-pii-in-commits.sh
-    onto `git rebase --continue` recognition needs an end-to-end hook-level
-    version of this same assertion, once that routing exists."""
+    independent of any hook. deny-pii-in-commits.sh and
+    deny-private-project-refs.sh both route `git rebase --continue`, and
+    their hook-level counterparts are
+    test_continue_at_unresolved_conflict_checkpoint_is_a_clean_passthrough in
+    test_deny_pii_in_commits.py and test_deny_private_project_refs.py."""
     repo = tmp_path / "repo"
     _init_repo_on_branch(repo, "main")
     build_conflicted_rebase(repo)  # pre-`git add` checkpoint: unresolved

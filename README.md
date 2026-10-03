@@ -182,11 +182,11 @@ flowchart LR
 | Hook | Gates | Cleared by |
 |---|---|---|
 | `require-plan-review.sh` | `Write`/`Edit`/`ExitPlanMode` while an uncommitted or modified plan file exists in `.claude/plans/`, except a `Write`/`Edit`/`MultiEdit` targeting one of those plan files itself | `/plan-review` marker covering the current plan set |
-| `require-code-review.sh` | `git commit` | `/code-review` run against current staged state |
+| `require-code-review.sh` | `git commit` — see [`docs/hooks.md`](docs/hooks.md)'s `require-code-review.sh` bullet for the exact trigger | `/code-review` run against current staged state |
 | `require-skill-review.sh` | `git commit` — see [`docs/hooks.md`](docs/hooks.md)'s `require-skill-review.sh` bullet for the exact (base-relative) trigger | structural validation + `/skill-review` behavioral-equivalence audit |
 | `require-plugin-version-bump.sh` | `git commit` under a plugin dir without a version bump on the branch (see [Plugins](#plugins-marketplace)) | bump the plugin's `version` field |
-| `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, `gh issue create`, `gh issue comment`, `gh issue edit`, mutating `gh api` | Clean the flagged tracker ID or private-project name from the diff/PR/issue body |
-| `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in), or a credential-shaped value is (always on) | Remove the flagged content; see [`docs/hooks.md`](docs/hooks.md) |
+| `deny-private-project-refs.sh` | `git commit`, `gh pr create`, `gh pr edit`, `gh issue create`, `gh issue comment`, `gh issue edit`, mutating `gh api` — see [`docs/hooks.md`](docs/hooks.md)'s `deny-private-project-refs.sh` bullet for the exact `git commit` trigger | Clean the flagged tracker ID or private-project name from the diff/PR/issue body |
+| `deny-pii-in-commits.sh` | `git commit` when PII/PHI is in the staged diff or commit message (opt-in), or a credential-shaped value is (always on) — see [`docs/hooks.md`](docs/hooks.md)'s `deny-pii-in-commits.sh` bullet for the exact trigger | Remove the flagged content; see [`docs/hooks.md`](docs/hooks.md) |
 | `deny-data-file-reads.sh` | `Read` of a data-shaped file (opt-in) | No clear — inspect data files outside Claude |
 | `deny-credential-bash-reads.sh` | `Bash` command referencing a credential-shaped path (SSH key, `.netrc`, cloud credential store, and similar) | No clear — no bypass valve; inspect/run the specific command outside Claude |
 | `deny-credential-file-reads.sh` | `Read` of a credential-shaped path, including through a symlink | No clear — no bypass valve; inspect the file outside Claude |
