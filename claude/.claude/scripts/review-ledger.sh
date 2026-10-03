@@ -61,8 +61,9 @@ Subcommands:
              DEFER and SETTLED require --source as <repo-relative path> with an
              optional :<start>[-<end>] line range (1 to 9 digits, no leading
              zero, start <= end). A path-only source never carries. An
-             absolute path under the repo is stored repo-relative; any other
-             absolute path, or a '..' segment, is rejected. A range is hashed
+             absolute path under the repo is stored repo-relative, and a
+             leading './' is dropped. Any other absolute path, and a '..',
+             '.' or empty segment, is rejected. A range is hashed
              from the working tree (site_hash), and a missing file, a range
              past the end of file, or blank-only text is rejected.
              DEFER requires --defer-criterion, one of:
@@ -89,7 +90,12 @@ Subcommands:
              carry's range and that range hashes to the decision's site_hash. A
              DEFER carry restates the decision's --defer-criterion. A carry
              prints one line naming the decision and how to reopen it. An
-             engineer SETTLED prints its stored quote.
+             engineer SETTLED prints its stored quote. When jq fails to clean
+             the text, the quote (on a carry line, the finding) reads `(not
+             shown: jq could not clean it)`. The row was recorded either way;
+             show prints the text once jq can clean it. Stored text is verbatim.
+             These two lines and show print it with control and format
+             characters (zero-width, bidi, line separators) shown as spaces.
              A --ref is checked against this branch's ledger file only (this
              session's file in session scope).
              No-ops (exit 0) if the identical line (by round, finding,
@@ -105,9 +111,10 @@ Subcommands:
              max_round=<N> files=<comma-joined paths>`. With no ledger it
              reads rows=0 max_round=0 and an empty files=. files= comes last
              because a path can hold spaces, commas, or '='. An undecodable
-             line is skipped and not counted. If jq fails, show
-             prints the rows without a header and exits 1: the round count is
-             then unknown, not 0.
+             line is skipped and not counted. If the read or sort fails, show
+             prints no rows and no header, and if only the summary fails it
+             prints the cleaned rows without a header. Both exit 1, and the
+             round count is then unknown, not 0.
   render [--pr-json <file|->] [--out <path>]
              Print the PR-body block built from the live decisions in the
              resolved ledger file (this branch's, or this session's in session
@@ -131,6 +138,13 @@ Subcommands:
              than the resolved sweep window (Claude Code's cleanupPeriodDays
              setting, floored at 30 days), across every repo-hash.
              --dry-run reports without removing.
+
+Exit status: append exits 2 on every refusal, a rejected call and an
+environment failure alike, so its message carries the distinction. show and
+render exit 2 for a rejected call or an unresolved ledger location, and 1 when
+a read, sort or write fails. Two cases differ: a symlinked or non-regular
+ledger file exits 2 from show and 1 from render, and render exits 1 when it
+cannot delete a stale --out, before it resolves the ledger location.
 EOF
 }
 
@@ -263,8 +277,7 @@ fi
 # unresolvable CLAUDE_CONFIG_DIR (relative value, or empty $HOME with no
 # override) must abort rather than fall through to a root-anchored path.
 CONFIG_DIR=$(_lib_config_dir) || {
-  # shellcheck disable=SC2016 # single-quoted for literal display text: $HOME
-  # and $CLAUDE_CONFIG_DIR name the env vars in the message, not shell expansions.
+  # shellcheck disable=SC2016 # single-quoted for literal display text: escaping each $ inside double quotes is the alternative, and it would obscure a message that only names the env vars $HOME and $CLAUDE_CONFIG_DIR.
   printf 'review-ledger.sh: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or $HOME is unset/empty). Abort without writing.\n' >&2
   exit 2
 }
@@ -474,7 +487,8 @@ case "$SUBCOMMAND" in
     CARRY_FORWARD_JSON=false
     [ -n "$CARRY_FORWARD" ] && CARRY_FORWARD_JSON=true
     # shellcheck disable=SC2016 # single-quoted on purpose: $finding etc. are
-    # jq's own --arg-bound variables, meant to expand inside jq, not bash.
+    # jq's own --arg-bound variables, and double-quoting would expand them in
+    # the shell before jq sees them.
     LINE=$(_lib_jq -nc --arg finding "$FINDING" --arg disposition "$DISPOSITION" \
       --arg rationale "$RATIONALE" --arg source "$SOURCE" \
       --arg authoring_agent "$AUTHORING_AGENT" --arg authoring_effort "$AUTHORING_EFFORT" \
@@ -500,6 +514,13 @@ case "$SUBCOMMAND" in
       exit 2
     }
     LINE="${LINE%\}},\"id\":\"${ROW_ID}\"}"
+    # The splice is string surgery, and every reader skips a row jq cannot parse,
+    # so the row is parsed back with its id before it is written.
+    # shellcheck disable=SC2016 # single-quoted on purpose: $id is jq's own --arg-bound variable, and double-quoting would expand it in the shell before jq sees it.
+    if ! printf '%s\n' "$LINE" | _lib_jq -e --arg id "$ROW_ID" 'type == "object" and .id == $id' >/dev/null 2>&1; then
+      printf 'review-ledger.sh: the built ledger row did not parse back with its id (jq failed or timed out, or the id splice misexpanded). The row was not recorded.\n' >&2
+      exit 2
+    fi
     # wc -c counts bytes in any locale, unlike ${#LINE}. jq escapes a control
     # character with no two-character form as six bytes (\u0001), so the
     # per-field character caps above do not bound the built line.
@@ -526,18 +547,20 @@ case "$SUBCOMMAND" in
     # which are the points where an append can hang.
     # Hashing is an in-memory pipe that cannot hang, so the sha256sum and awk
     # pairs that only hash are left out.
-    # Each append makes two independently-capped _lib_jq calls, one to build LINE
-    # and one for the dedup check.
+    # Each append makes capped _lib_jq calls to build LINE, to parse it back and
+    # for the dedup check. An engineer SETTLED and a carry add one more to clean
+    # the text they print.
     # The retention sweep passes a fixed floor rather than resolving one
     # dynamically, so it adds no further call.
-    # A --ref adds two more capped _lib_jq passes over the resolved file (read,
-    # then look up), and a retired --ref two more (read, then compare).
+    # A --ref adds capped _lib_jq passes over the resolved file (read, then look
+    # up), and a retired --ref adds a read and a compare. A --ref naming a carry
+    # repeats the read and look-up once for its rejection advice.
     # A range-form source adds one capped awk read for the site hash.
     # _resolve_ledger_location adds capped git calls: symbolic-ref HEAD, the
-    # origin/HEAD resolution, and up to three candidate rev-parse probes.
+    # origin/HEAD resolution, and the candidate rev-parse probes.
     # The bare git rev-parse --show-toplevel and the sweep's find are uncapped.
-    # With neither timeout nor gtimeout on PATH, an append therefore has that
-    # many uncapped-hang points, not one.
+    # With neither timeout nor gtimeout on PATH, each capped call above is an
+    # uncapped-hang point.
 
     # The primitive returns nonzero only when the row was neither written nor
     # deduplicated, so the row is lost unless the caller retries.
@@ -559,7 +582,11 @@ case "$SUBCOMMAND" in
       else
         STORED_QUOTE_NOTE="carry-forward: no"
       fi
-      printf 'review-ledger.sh: stored engineer quote: "%s" (%s)\n' "${ENGINEER_QUOTE//[[:cntrl:]]/ }" "$STORED_QUOTE_NOTE"
+      if SHOWN_QUOTE=$(_review_ledger_clean_text "$ENGINEER_QUOTE"); then
+        printf 'review-ledger.sh: stored engineer quote: "%s" (%s)\n' "$SHOWN_QUOTE" "$STORED_QUOTE_NOTE"
+      else
+        printf 'review-ledger.sh: stored engineer quote: (not shown: jq could not clean it) (%s)\n' "$STORED_QUOTE_NOTE"
+      fi
     fi
 
     # Best-effort retention sweep on every append — see _sweep_stale_ledger_files.
@@ -611,22 +638,24 @@ case "$SUBCOMMAND" in
     SHOW_STATUS=0
     TAGGED_ROWS=$(_review_ledger_read_rows "${NONEMPTY_LEDGER_FILES[@]}") || SHOW_STATUS=1
     if [ "$SHOW_STATUS" -eq 0 ]; then
-      SHOW_OUTPUT=$(printf '%s\n' "$TAGGED_ROWS" | _lib_jq -n -r '[inputs] | sort_by(.event_time // "") | .[] | tojson')
+      SHOW_OUTPUT=$(printf '%s\n' "$TAGGED_ROWS" | _lib_jq -n -r "$_REVIEW_LEDGER_JQ_COMMON"'[inputs] | sort_by(.event_time // "") | .[] | tojson | clean')
       SHOW_STATUS=$?
     fi
     SHOW_FILES_LABEL=$(IFS=,; printf '%s' "${NONEMPTY_LEDGER_FILES[*]}")
     if [ "$SHOW_STATUS" -ne 0 ]; then
-      printf 'review-ledger.sh: could not sort ledger rows for display (jq missing, failed, or timed out) -- printing unsorted with no header; the round count is unknown, not 0.\n' >&2
-      cat -- "${NONEMPTY_LEDGER_FILES[@]}"
+      printf 'review-ledger.sh: could not show ledger rows because jq failed (missing, failed, or timed out), so no rows or header are printed; the round count is unknown, not 0.\n' >&2
       exit 1
     fi
     # Row count, oldest and newest event_time, and max round across the
-    # printed rows; "-" and 0 stand in when no row carries the field.
-    SHOW_STATS=$(printf '%s\n' "$SHOW_OUTPUT" | _lib_jq -r -s '
-      [length,
-       ([.[].event_time // empty | select(. != "")] | min // "-"),
-       ([.[].event_time // empty | select(. != "")] | max // "-"),
-       ([.[].round // empty | select(type == "number")] | max // 0)] | @tsv
+    # printed rows; "-" and 0 stand in when no row carries a well-formed
+    # event_time or a round.
+    # shellcheck disable=SC2016 # single-quoted on purpose: $times is jq's own variable, and double-quoting would expand it in the shell before jq sees it.
+    SHOW_STATS=$(printf '%s\n' "$SHOW_OUTPUT" | _lib_jq -r -s "$_REVIEW_LEDGER_JQ_COMMON"'
+      [.[] | .event_time | event_time_text | select(. != "")] as $times
+      | [length,
+         ($times | min // "-"),
+         ($times | max // "-"),
+         ([.[].round // empty | select(type == "number")] | max // 0)] | @tsv
     ')
     SHOW_STATS_STATUS=$?
     IFS=$'\t' read -r SHOW_ROW_COUNT SHOW_OLDEST SHOW_NEWEST SHOW_MAX_ROUND <<<"$SHOW_STATS"

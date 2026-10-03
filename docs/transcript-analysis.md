@@ -1219,7 +1219,7 @@ A round with zero matching ledger rows but a marker-write call is inferred clean
 
 A reopen is a `FAILURE` on purpose, because the engineer now requires the fix. An `ADDRESS --ref` that retracts published text (see the ledger runbook in `docs/scripts.md`'s `review-ledger.sh` entry) also classifies as `FAILURE`. That rare over-count is accepted.
 
-The "rounds classified PASS with at least one SETTLED row" counter counts every classified round in the scanned corpus. It ignores `--since` and the agent type, so it is not a slice of "Dispatches in scope". Rows before ledger schema v4 log a consult's keep as `ADDRESS`, which classifies `FAILURE`, so a window that spans v4 adoption mixes the two kinds of row. Read `FAILURE` counts across such a window with that in mind. A mismatched session (see "Round-number-sequence check") is not classified, so its rounds never count here.
+The "rounds classified PASS with at least one SETTLED row" counter counts every classified round in the scanned corpus. It ignores `--since` and the agent type, so it is not a slice of "Dispatches in scope". A consult's keep logged as `ADDRESS` classifies `FAILURE`, and one logged as `SETTLED` classifies `PASS`. A mismatched session (see "Round-number-sequence check") is not classified, so its rounds never count here.
 
 A dispatch whose paired `tool_result` record is absent has no completion index, so it's classified **UNDECIDABLE** before the three-test walk runs. It counts only under Data quality, never in "Dispatches in scope".
 
@@ -1243,20 +1243,18 @@ Two non-failure buckets, each of which would bias the share if collapsed into PA
 
 A session whose ledger rows are entirely legacy (no row carries a `round` key) or that has no rows at all is not evaluated by this check. A session that fails it has every one of its dispatches excluded from the headline outcomes/"Dispatches in scope" numerator-denominator -- the ledger-to-round join for that session can't be trusted, so its dispatches count toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED.
 
-A mismatched session's rounds are not classified, and its rows are not read by the counters below. Two counters therefore skip it: "rounds with a clean marker write but no round-keyed ledger rows" and "authoring_agent inconsistent with the transcript join". Both read the round-to-row join that the mismatch marks untrusted, and classifying its rounds as row-less would count every marker-write round as having no row, whether or not it had rows. The other counters -- co-authored rounds, undecidable dispatches, malformed dispatch ids -- are transcript-side and unchanged.
+A mismatched session's rounds are not classified, and its rows are not read by the counters below. The counters "rounds with a clean marker write but no round-keyed ledger rows" and "authoring_agent inconsistent with the transcript join" therefore skip it. Both read the round-to-row join that the mismatch marks untrusted, and classifying its rounds as row-less would count every marker-write round as having no row, whether or not it had rows. The other counters -- co-authored rounds, undecidable dispatches, malformed dispatch ids -- are transcript-side and unchanged.
 
-Two residuals remain:
+These residuals remain:
 
 - **A stray block that makes up for a missing round.** If one round's rows are missing and a stray block with a higher round value appears, the count and order still match. The join then misattributes silently.
 - **A session that reviews on two branches.** A session whose round values fall when it moves to a second branch (for example round 5, then round 1) is excluded. A round-counter restart following a mid-session worktree switch combined with compaction can be excluded the same way.
 
 A narrower gap also remains: a subagent dispatched into a different worktree under the same session id has its rows attributed by the same `session_id` match, so if this session's own primary rows are missing and the subagent's rows alone happen to form a matching sequence, the check passes even though those rows track the subagent's own review activity rather than rounds this session's own transcript opened.
 
-`review-ledger.sh show`'s stderr header names the files it read, the row count, and the max round, for an operator debugging a flagged session. The header has one shape on every path: `show scope=<branch|session> rows=<N> oldest=<time|-> newest=<time|-> max_round=<N> files=<paths>`. With no ledger it reads `rows=0 max_round=0` and an empty `files=`. If jq fails, `show` prints the rows with no header and exits 1, so a caller never reads an unknown round count as 0.
+`review-ledger.sh show`'s stderr header, whose shape `review-ledger.sh --help` states, names the files it read, the row count, and the max round, for an operator debugging a flagged session. In branch scope `show` also reads this worktree's own session file, so its `max_round` can include rows from the default branch (see `docs/scripts.md`'s `review-ledger.sh` entry).
 
-**Residual: branch-scope `show` also reads this worktree's own session file.** That file holds rows appended while HEAD was detached, and also rows appended on the default branch earlier in the same worktree. Those default-branch rows appear in a later feature branch's `show` and count toward its `max_round`. Rows carry no scope field to tell them apart. Any subcommand that builds PR text from the ledger (a `render`) must read only the resolved file, not the session file.
-
-**Ledger-possibly-swept check.** A session counts under "sessions with a code-review round, no attributed ledger row, no opened session-keyed ledger file, and a first round older than the sweep floor" when all three hold:
+**Ledger-possibly-swept check.** A session counts under "sessions with a code-review round, no attributed ledger row, no opened session-keyed ledger file, and a first round older than the sweep floor" when all of these hold:
 
 - It opened >=1 `code-review` round.
 - No ledger rows are attributed to it, and no session-keyed ledger file for it (`*.<session_id>.jsonl`) opened -- a file evicted by a concurrent `clear-stale` sweep between the directory listing and the read counts the same as never having been listed.

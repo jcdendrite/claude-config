@@ -378,15 +378,17 @@ def _ledger_row(
     authoring_agent: str = "",
     authoring_effort: str = "",
     schema_version: int = 2,
-    event_time: str = "2026-08-01T10:00:00Z",
+    event_time: object = "2026-08-01T10:00:00Z",
     session_id: str | None = None,
 ) -> dict:
     """One review-narrative-ledger row, review-ledger.sh's own row shape.
     round=None omits the `round` key entirely rather than setting it null,
     modeling a pre-schema-v2 legacy row. review-ledger.sh itself never
     writes a null round. session_id=None omits the `session_id` key, the
-    shape of a row written before rows carried one (schema v2); pass
-    schema_version=3 alongside a session_id for a current row."""
+    shape of a row written before rows carried one (schema v2). Pass
+    schema_version=3 alongside a session_id for a row that carries one.
+    review-ledger.sh's _LEDGER_SCHEMA_VERSION is the writer's own version, and
+    the readers read no version field."""
     row = {
         "schema_version": schema_version,
         "finding": finding,

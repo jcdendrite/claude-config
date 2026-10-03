@@ -244,6 +244,13 @@ def _row_session_id(row: dict, ledger_path: Path) -> str | None:
     return None
 
 
+def _event_time_sort_key(row: dict) -> str:
+    """The row's `event_time` when it is a string, else "" (see
+    _LedgerIndex.entries_for_session)."""
+    event_time = row.get("event_time")
+    return event_time if isinstance(event_time, str) else ""
+
+
 class _LedgerIndex:
     """The parsed rows of every ledger file under one config-dir root,
     attributed to sessions by _row_session_id.
@@ -298,8 +305,9 @@ class _LedgerIndex:
         a session-keyed file `<repo_hash>.<session_id>.jsonl` was opened).
 
         Rows are stable-sorted by their own `event_time` (an ISO-8601 UTC
-        string that sorts correctly lexically; missing -> "" so a legacy
-        pre-event_time row sorts first). Python's sort is stability-guaranteed,
+        string that sorts correctly lexically; missing or non-string -> "" so a
+        legacy pre-event_time row, or a row a foreign writer typed oddly,
+        sorts first). Python's sort is stability-guaranteed,
         so ties keep file-encounter order. review-ledger.sh's own `show`
         (`sort_by(.event_time // "")`) has no such guarantee from jq -- see
         that comment for the caveat.
@@ -309,7 +317,7 @@ class _LedgerIndex:
             (file_positions.setdefault(ledger_path, len(file_positions)), row)
             for ledger_path, row in self._rows_by_session.get(session_id, [])
         ]
-        entries.sort(key=lambda entry: entry[1].get("event_time") or "")
+        entries.sort(key=lambda entry: _event_time_sort_key(entry[1]))
         return entries, session_id in self._sessions_with_opened_file
 
 

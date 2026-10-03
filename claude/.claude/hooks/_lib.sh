@@ -497,20 +497,13 @@ _lib_parse_tool_input_or_deny() {
   # .cwd, .session_id, .agent_type, and .agent_id silently stringify via jq's
   # \(...) interpolation rather than erroring when the field holds a
   # non-string JSON value (a number, object, or array).
-  # The Claude Code hooks reference (https://code.claude.com/docs/en/hooks.md,
-  # common input fields) says `agent_id` is "Unique identifier for the
-  # subagent. Present only when the hook fires inside a subagent call. Use this
-  # to distinguish subagent hook calls from main-thread calls." and
-  # `agent_type` is "Present when the session uses `--agent` or the hook fires
-  # inside a subagent." So a non-empty AGENT_TYPE does not identify a subagent,
-  # and a subagent payload that lacks agent_id (a fork is unverified) reads as
-  # the main session.
+  # jq's `//` also replaces JSON `false`, so a `false` .agent_id or .agent_type
+  # reads as absent. An empty string reads empty. Any other value is non-empty.
+  # AGENT_ID, not AGENT_TYPE, is the subagent discriminator. The known-gaps list
+  # in enforce-marker-script-shape.sh quotes the hooks reference for why.
   # Consumers of AGENT_TYPE either test it for emptiness or match it exactly
   # against a roster. A garbled AGENT_TYPE is non-empty and matches no roster
   # name.
-  # A non-string .agent_id stringifies to a non-empty value, which the ledger
-  # predicates in enforce-marker-script-shape.sh read as a subagent (deny).
-  # That hook decides subagent-versus-main from AGENT_ID.
   local jq_out
   # WARNING: the format string below holds one literal 0x1f (ASCII Unit
   # Separator) byte between each pair of adjacent interpolated fields. They

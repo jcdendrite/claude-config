@@ -167,10 +167,10 @@ default.** A reviewer's disposition already names the finding, `file:line`, and 
 condition (1) holds by construction. Condition (2) commonly does not hold — locating one named finding is
 usually a single ranged `Read`. That doesn't gate this case, though: the fix is itself review-bearing work,
 since an inline fix would skip the re-review `ready-for-review` step 3 runs on a dispatched one. The edit load
-still accumulates in the parent either way. A review round is the ADDRESS/DEFER disposition output of one
+still accumulates in the parent either way. A review round is the ADDRESS/DEFER/SETTLED disposition output of one
 `/code-review` or `/ready-for-review` invocation, not a span across multiple re-review loop iterations. Dispatch
 one `code-writer` per round, `model: sonnet`, carrying: every ADDRESS row verbatim (finding, `file:line`,
-suggested fix); the diff scope; and the verification command. Never dispatch a DEFER row. The parent keeps the
+suggested fix); the diff scope; and the verification command. Never dispatch a DEFER or SETTLED row. The parent keeps the
 commit, the `/code-review` re-run, and the marker. Two further carve-outs, neither size-based:
 
 - Not code (the review-findings PR-body block, a `respond-pr` reply, a plan-file edit) — stays inline.

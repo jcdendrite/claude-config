@@ -1465,6 +1465,31 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
             == "allow"
         )
 
+    def test_cp_target_directory_with_the_ledger_directory_as_its_last_argument_denied_as_over_emission(self):
+        """Accepted over-emission: the last argument is classified as a
+        destination directory, so `cp -t DIR <ledger directory>` is denied for
+        a subagent although the ledger directory is only a source. Invert this
+        if the last-argument rule is ever narrowed to real destinations."""
+        command = "cp -t /tmp/copies ~/.claude/review-narrative-ledger"
+        reason = run_hook_reason(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command, agent_type="general-purpose"))
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    def test_ln_target_directory_with_the_ledger_directory_as_its_last_argument_denied_as_over_emission(self):
+        """Accepted over-emission, as for `cp -t DIR <ledger directory>`."""
+        command = "ln -s -t /tmp/links ~/.claude/review-narrative-ledger"
+        reason = run_hook_reason(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command, agent_type="general-purpose"))
+        assert reason is not None
+        assert "review-ledger state" in reason
+
+    def test_install_d_of_the_ledger_directory_denied_as_over_emission(self):
+        """Accepted over-emission, as for `cp -t DIR <ledger directory>`:
+        `install -d` makes its last argument a directory."""
+        command = "install -d ~/.claude/review-narrative-ledger"
+        reason = run_hook_reason(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(command, agent_type="general-purpose"))
+        assert reason is not None
+        assert "review-ledger state" in reason
+
     def test_command_substitution_computed_target_allowed_residual(self):
         """Accepted residual: a `$(...)`-computed target is opaque text to
         the word-splitting extraction, which reads the substitution syntax
@@ -2333,8 +2358,9 @@ class TestReviewLedgerAppendAuthority:
     """The Bash arm's ledger predicates.
 
     A roster agent (`agent_type` in the roster) is denied every
-    `review-ledger.sh append`, because the row lands in the parent session's
-    ledger. Any subagent (non-empty `agent_id`) is denied an `append` carrying
+    `review-ledger.sh append`, because the row carries the parent session's id
+    and lands in the file the ledger resolver names for that session. Any
+    subagent (non-empty `agent_id`) is denied an `append` carrying
     `--engineer-quote`, because only the main session holds the engineer's
     turn. `agent_type` alone does not identify a subagent, so a named main
     session is allowed that append (TestSubagentIsIdentifiedByAgentId).
@@ -3303,8 +3329,10 @@ class TestReviewLedgerStatePaths:
 
     @pytest.fixture
     def no_realpath_path(self, tmp_path):
-        """A PATH holding what the hook needs except `realpath`, so no
-        normalized candidate form exists."""
+        """A PATH holding what the hook needs except `realpath` and `grealpath`,
+        so no normalized candidate form exists. The premise is asserted in
+        process here and by running the resolver once, in
+        test_the_stub_path_leaves_no_normalized_form."""
         stub_bin = tmp_path / "no-realpath-bin"
         stub_bin.mkdir()
         for binary in ("bash", "jq", "grep", "sed", "dirname", "cat", "timeout", "tr"):
@@ -3312,7 +3340,23 @@ class TestReviewLedgerStatePaths:
             if resolved:
                 (stub_bin / binary).symlink_to(resolved)
         assert shutil.which("realpath", path=str(stub_bin)) is None
+        assert shutil.which("grealpath", path=str(stub_bin)) is None
         return str(stub_bin)
+
+    def test_the_stub_path_leaves_no_normalized_form(self, tmp_path, no_realpath_path):
+        """Every without-a-normalized-form case below rests on the stub PATH
+        failing to resolve an existing and a missing target, checked once here
+        instead of per case."""
+        for target in (str(tmp_path), str(tmp_path / "missing" / "file")):
+            resolved = subprocess.run(
+                ["bash", "-c", '. "$1"; PATH="$2"; _lib_realpath_m "$3"', "bash",
+                 str(HOOKS_DIR / "_lib.sh"), no_realpath_path, target],
+                capture_output=True, text=True, check=False,
+            )
+            assert resolved.returncode != 0 or resolved.stdout == "", (
+                f"the stub PATH still resolves {target!r} to {resolved.stdout!r}, "
+                "so the without-a-normalized-form cases no longer test that"
+            )
 
     def _ledger_write_payload(self, via, target, **agent_kwargs):
         """`via` picks the surface that carries TARGET. The tee form lists enough

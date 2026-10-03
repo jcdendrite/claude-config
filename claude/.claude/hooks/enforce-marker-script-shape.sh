@@ -9,18 +9,15 @@
 #      - Any `review-ledger.sh append` via Bash from those same agent types,
 #        because the row would be attributed to the parent session.
 #      - Ledger-state writes (a ledger path via Write/Edit/MultiEdit or a Bash
-#        redirect) from those same agent types, whether or not `.agent_id` is
-#        present, and from every other subagent.
+#        redirect) from those same agent types and from every other subagent.
 #      - A `review-ledger.sh append` carrying `--engineer-quote`, from every
 #        subagent.
 #      Ledger state and the engineer-quote row are barred to every subagent
 #      because only the main session holds the engineer's turn and only
-#      review-ledger.sh writes ledger files. A subagent is a payload with a
-#      non-empty `.agent_id`; `.agent_type` alone does not identify one, since
-#      the harness also sets it for a main session started with `--agent`
-#      (primary source quoted in the known-gaps list below). Roster membership
-#      keys on `.agent_type`, so a roster name is barred from marker and ledger
-#      state with or without `.agent_id`.
+#      review-ledger.sh writes ledger files. Roster membership keys on
+#      `.agent_type`, so a roster name is barred from marker and ledger state
+#      with or without `.agent_id`. Every other bar keys on a non-empty
+#      `.agent_id`; the known-gaps list below quotes the primary source.
 #   2. Enforce strict invocation shape for ~/.claude/scripts/marker.sh.
 #
 # Per-fire cost is stated in the comment above the Bash write scan.
@@ -88,16 +85,19 @@
 #     says `agent_id` is "Unique identifier for the subagent. Present only when
 #     the hook fires inside a subagent call. Use this to distinguish subagent
 #     hook calls from main-thread calls." and `agent_type` is "Present when the
-#     session uses `--agent` or the hook fires inside a subagent." The same
+#     session uses `--agent` or the hook fires inside a subagent." So
+#     `.agent_type` alone does not identify a subagent. The same
 #     page says "When a subagent calls a tool, tool events such as `PreToolUse`
 #     and `PostToolUse` fire the same configured hooks as in the main
 #     conversation, and the input carries the `agent_id` and `agent_type`
 #     common input fields that identify the subagent." That sentence is what
 #     the deny's completeness rests on. It does not cover a fork or a nested
 #     `claude -p` session. A payload that lacks `agent_id` reads as the main
-#     session, so the engineer-row and non-roster ledger-state denies fail
-#     open there. That covers a subagent whose payload omits the field, a
-#     nested top-level session shelled out of a Bash tool call
+#     session, unless its `.agent_type` is in the roster. The engineer-row
+#     and non-roster ledger-state denies fail open there, and a row it
+#     appends lands in the file `_lib_review_ledger_path` resolves. That
+#     covers a subagent whose payload omits the field, a nested top-level
+#     session shelled out of a Bash tool call
 #     (`claude -p ...`), and a fork, whose payload is unverified. Unconfirmed
 #     whether the nested session is reachable from a subagent's execution
 #     context; if it is, every agent-identity-keyed hook shares it
@@ -117,10 +117,10 @@
 #     the same way: `marker.s{h,h}` contains no literal `marker.sh` substring,
 #     so the fast-reject exits before the gate-release check ever runs. The
 #     Stage-2 anchor check is defeated identically. This closes no worse than
-#     the eight bypasses already
-#     disclosed above; the `python3 -c 'open(...).write(...)'` and
-#     here-doc-body bypasses are easier for an agent to produce unprompted
-#     than deliberate brace-splitting. This repo has no `permissions.allow`
+#     the bypasses already disclosed above; the
+#     `python3 -c 'open(...).write(...)'` and here-doc-body bypasses are
+#     easier for an agent to produce unprompted than deliberate
+#     brace-splitting. This repo has no `permissions.allow`
 #     entry for `tee`, `cp`, `mv`, `install`, `dd`, `sed`, or `python3`. In a
 #     session running under normal permission mode, an unrecognized
 #     invocation of one of those falls through to the harness's
@@ -145,7 +145,9 @@
 #       it carries neither `.claude` nor `review-narrative-ledger`.
 #     - The quoted-pattern join `${var//"$BACKSLASH_NEWLINE"/...}` is unverified
 #       on bash 3.2, and no test exercises that version. If 3.2 ignores the
-#       quoted pattern, both joins become no-ops there.
+#       quoting, the pattern matches every newline, so both copies lose or
+#       space every newline instead of only escaped ones, and a name split
+#       across a continuation goes unmatched.
 #     - The `append` Bash arm is text-only, with no path arm, no Stage 2
 #       backstop and no `permissions.allow` entry.
 #     - Variable and function indirection, brace expansion, `$'\x..'`
@@ -202,10 +204,6 @@
 #       `general-purpose` is the delegated review orchestrator and logs rows
 #       the way the dispatcher would, and plan-architect holds no Bash tool,
 #       so only a dispatcher can log its decision.
-#     - Unverified whether `.agent_id` is present inside a fork. If it is
-#       absent, a fork reads as the main session and is not denied an
-#       engineer-row append or a ledger-state write, unless its `.agent_type`
-#       is in the roster.
 #
 # WARNING: Do NOT remove the internal marker.sh check below.
 # The "if" field in settings.json is unreliable — it has been observed
@@ -280,7 +278,9 @@ $REPORT_DENIAL_UPWARD_GUIDANCE
 Matching a hash you computed yourself is not authorization — an equal hash shows the state is unchanged, not that anyone reviewed it."
 
 # Ledger rows resolve their session the way marker writes do, so a subagent's
-# row lands in the parent session's ledger.
+# row carries the parent session's id. It lands in the branch's ledger file,
+# which every session on the branch reads and `render` publishes, or in the
+# parent session's own file on the default branch or a detached HEAD.
 LEDGER_UPWARD_GUIDANCE="Report the denial to the dispatching session instead: name the command or path it blocked and the row you meant to log. The dispatching session decides whether to log it."
 
 # Appended to the roster's `append` denial, the only ledger denial whose match
@@ -759,39 +759,42 @@ _script_op_scan() {
 # substring in its raw text.
 #
 # Per-fire cost on every Bash call whether or not it is marker-shaped, counted
-# in exec'd external commands except where a figure says processes. The scan
-# cannot move after Stage 1, since it exists to catch a command that never
-# reaches Stage 1's marker.sh substring check. The quote-strip is two externals (sed,
-# tr), and about seven processes once its `$(...)` substitutions and the
-# builtin `printf` on the left of each pipe are counted (measured on bash 5.2
-# by counting `clone` calls under strace). The backslash-newline join, the
-# pre-filter and Stage 1's fast-reject are pure bash. Splitting the text into
-# fragments is two seds, once, and about four processes. A join that changes
-# the text makes the scan read the unjoined and the joined copy, which doubles
-# the fragment count.
+# in exec'd external commands. The scan cannot move after Stage 1, since it
+# exists to catch a command that never reaches Stage 1's marker.sh substring
+# check. The quote-strip runs sed and tr, and the fragment split runs two
+# seds. Their `$(...)` substitutions and pipes spawn further processes, which
+# `clone` calls under strace count. The backslash-newline
+# join, the pre-filter and Stage 1's fast-reject are pure bash. A join that
+# changes the text makes the scan read the unjoined and the joined copy,
+# which doubles the fragment count.
 # Per fragment, `_fragment_may_invoke_tool` rejects with a `case` match, so a
-# fragment that names none of tee, cp, mv, install, ln, link, dd and sed as a
-# word or path component costs none. Each of those utilities a fragment does
-# name costs one `_lib_fragment_command_word` command substitution, at most
-# eight per fragment.
+# fragment that names none of the write utilities as a word or path component
+# costs none. Each utility a fragment does name costs one
+# `_lib_fragment_command_word` command substitution.
 # Per candidate, the pre-filter rejects with a `case` match and costs none. A
 # candidate that reaches _marker_shape_match's realpath resolution costs one
-# `_lib_realpath_m` call in the default configuration (CLAUDE_CONFIG_DIR
-# unset), or two (target path, then config dir) once CLAUDE_CONFIG_DIR is
-# set -- _marker_shape_match skips the config-dir branch entirely in the
-# default case, since it would be redundant with the $HOME-relative shape
-# test. MARKER_WRITE_REALPATH_BUDGET below bounds how many candidates in one
-# fire pay that cost, capping worst-case added latency at roughly
-# budget * (1 or 2 realpath calls, depending on CLAUDE_CONFIG_DIR). The lexical
-# form _marker_shape_match always tests costs no exec'd command. Fragment
-# count is not capped: it scales with the command's line count, at the
-# per-fragment cost above. Absolute per-call latency is too load-dependent on
-# a shared machine to state as a fixed ms figure here.
+# `_lib_realpath_m` call for the target path, plus one for the config dir once
+# CLAUDE_CONFIG_DIR is set -- _marker_shape_match skips the config-dir branch
+# entirely in the default case, since it would be redundant with the
+# $HOME-relative shape test. MARKER_WRITE_REALPATH_BUDGET below bounds how
+# many candidates in one fire pay that cost. The lexical form
+# _marker_shape_match always tests costs no exec'd command. Fragment count is
+# not capped: it scales with the command's line count, at the per-fragment
+# cost above. Absolute per-call latency is too load-dependent on a shared
+# machine to state as a fixed ms figure here.
+# On a stalled mount each capped call is bounded by `_lib_capped`'s cap plus
+# its kill-after grace (7 s), only while `timeout` or `gtimeout` is on PATH and
+# the child honors the kill. One `_lib_realpath_m` call makes up to three
+# capped calls (`realpath`, `grealpath` where installed, the fallback loop's
+# `test -e`), so one call is bounded by three times that figure, and the
+# per-fire bound multiplies it by the `_lib_realpath_m` calls above.
 # The ledger Bash arm costs none on the common path (no subagent, or no
 # `review-ledger.sh` in the command), since both of its predicates gate their
 # detectors behind pure-bash `case` matches. The Write/Edit/MultiEdit arm
 # resolves its target whenever `.agent_id` or `.agent_type` is non-empty, not
-# only for the roster, because a ledger path denies every subagent.
+# only for the roster, because a ledger path denies every subagent. Every
+# subagent and every named main session therefore pays that resolution, under
+# the same stalled-mount bound.
 # A future edit that removes a pre-filter, raises the budget, or adds a
 # per-fragment or per-candidate external command should re-derive this
 # accounting.

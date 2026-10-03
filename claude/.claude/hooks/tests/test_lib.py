@@ -54,7 +54,7 @@ from helpers import (
 )
 
 from .conftest import _worktree_lock_reason
-from .test_config_lib import _isolated_hooks_dir_missing_key_row
+from .test_config_lib import _isolated_hooks_dir_missing_key_row, _locale_that_widens_ascii_ranges
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
@@ -259,6 +259,8 @@ def test_distinct_field_values_land_without_cross_contamination() -> None:
         (123, "123"),
         ({"nested": "x"}, '{"nested":"x"}'),
         ([1, 2], "[1,2]"),
+        (False, ""),
+        ("", ""),
     ],
 )
 def test_non_string_agent_type_stringifies_rather_than_erroring(agent_type_value, expected) -> None:
@@ -278,11 +280,15 @@ def test_non_string_agent_type_stringifies_rather_than_erroring(agent_type_value
         (123, "123"),
         ({"nested": "x"}, '{"nested":"x"}'),
         ([1, 2], "[1,2]"),
+        (False, ""),
+        ("", ""),
     ],
 )
 def test_non_string_agent_id_stringifies_rather_than_erroring(agent_id_value, expected) -> None:
     """A non-string .agent_id stringifies the same way .agent_type does, so a
-    contract-violating value reads as non-empty rather than aborting the parse."""
+    contract-violating value reads as non-empty rather than aborting the parse.
+    JSON false is the exception: jq's `//` replaces it, so it reads as absent,
+    and an empty string reads empty."""
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "agent_id": agent_id_value})
     result = _run_harness(payload)
     assert result.returncode == 0
@@ -1591,6 +1597,20 @@ def _valid_session_id_component(session_id: str) -> bool:
         check=False,
     )
     return result.returncode == 0
+
+
+def test_valid_session_id_component_rejects_a_non_ascii_letter_under_a_widening_locale() -> None:
+    """Under a locale whose collation puts accented letters inside `[A-Za-z]`,
+    an unpinned regex accepts `sess<e-acute>`. The predicate pins `LC_ALL=C`, so
+    a revert of that pin fails here on any runner that has such a locale."""
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_valid_session_id_component "$1"', "bash", "sess\u00e9"],
+        env={**os.environ, "LC_ALL": _locale_that_widens_ascii_ranges()},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
 
 
 @pytest.mark.parametrize(
@@ -3819,11 +3839,33 @@ class TestLibNormalizePathLexically:
     def test_documented_behavior(self, path: str, expected: str) -> None:
         assert _normalize_lexically(path) == expected
 
-    def test_a_very_long_path_normalizes_in_bounded_time(self) -> None:
+    def test_a_very_long_path_terminates_with_the_correct_result(self) -> None:
         """A candidate comes from untrusted command text, so a segment count in
-        the tens of thousands must not turn quadratic."""
+        the tens of thousands must still finish and come out right. The
+        subprocess timeout is only a hang guard, not a scaling bound."""
         path = "/" + "/".join(["a"] * 50000) + "/../../b"
         assert _normalize_lexically(path) == "/" + "/".join(["a"] * 49998) + "/b"
+
+    def test_matches_the_oracle_under_bash_compat_32(self) -> None:
+        """The normalizer's header claims it was checked with BASH_COMPAT=32.
+        One process normalizes every oracle input at that compatibility level,
+        which emulates bash 3.2's documented differences and is not a real 3.2
+        binary."""
+        paths = [param.values[0] for param in _LEXICAL_NORMALIZATION_INPUTS]
+        script = (
+            f". {_LIB_SH}; for path in \"$@\"; do "
+            '_lib_normalize_path_lexically "$path"; printf "%s\\0" "$_LIB_NORMALIZED_PATH"; done'
+        )
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", *paths],
+            env={**os.environ, "BASH_COMPAT": "32"},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split("\0")[:-1] == [_lexical_normalization_oracle(path) for path in paths]
 
     def test_a_glob_segment_stays_literal(self, tmp_path: Path) -> None:
         (tmp_path / "matching-file").write_text("")

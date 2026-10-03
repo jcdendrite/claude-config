@@ -1025,6 +1025,43 @@ class TestReviewLedgerSubprocessIntegration:
         classification, _matching = ao._classify_round(round_1_rows, has_marker_write=False, data_quality=data_quality)
         assert classification == ao._OUTCOME_PASS
 
+    def test_real_engineer_settled_and_its_carry_classify_as_pass_rounds_and_count_as_settled(self, tmp_path):
+        """The writer's SETTLED and carry rows reach the reader's round
+        classification: each round is a PASS, and each counts under the
+        settled-PASS data-quality key, the carry by its own disposition."""
+        home = tmp_path / "home"
+        home.mkdir()
+        repo = self._make_git_repo(tmp_path)
+        _seed_session(home, self.SESSION_ID)
+        settled = self._run_append(
+            ["--finding", "Missing error handling in foo()", "--disposition", "SETTLED",
+             "--rationale", "kept as written", "--decided-by", "engineer", "--engineer-quote", "keep it",
+             "--carry-forward", "--source", "file.txt:1", "--round", "1"],
+            cwd=repo, home=home,
+        )
+        assert settled.returncode == 0, settled.stderr
+        transcript = self._fake_transcript_path(home)
+        decision_id = ao._read_ledger_row_entries_for_session(transcript)[0][0][1]["id"]
+
+        carry = self._run_append(
+            ["--finding", "foo() still lacks error handling", "--disposition", "SETTLED",
+             "--rationale", "same failure mode", "--decided-by", "carry", "--ref", decision_id,
+             "--cited-line", "file.txt:1", "--source", "file.txt:1", "--round", "2"],
+            cwd=repo, home=home,
+        )
+        assert carry.returncode == 0, carry.stderr
+
+        entries, _any_file_found = ao._read_ledger_row_entries_for_session(transcript)
+        rows = [row for _file_index, row in entries]
+        assert [(row["decided_by"], row["ref"]) for row in rows] == [("engineer", ""), ("carry", decision_id)]
+        data_quality = ao.Counter({key: 0 for key in ao._DATA_QUALITY_KEYS})
+        classifications = [
+            ao._classify_round(round_rows, has_marker_write=False, data_quality=data_quality)[0]
+            for round_rows in ao._round_blocks(entries)
+        ]
+        assert classifications == [ao._OUTCOME_PASS, ao._OUTCOME_PASS]
+        assert data_quality[ao._DQ_SETTLED_PASS_ROUNDS] == 2
+
 
 def _one_code_review_round_transcript(session_id: str, fake_projects: Path) -> None:
     _write_jsonl(fake_projects / f"{session_id}.jsonl", [
@@ -1160,6 +1197,25 @@ class TestLedgerIndex:
         assert len(read_paths) == 2, "the unchanged file must be re-read after a failed open"
         assert len(entries) == 1
         assert session_file_opened is True
+
+    def test_a_non_string_event_time_does_not_abort_the_sort_and_sorts_before_the_dated_rows(self, tmp_path):
+        """A number, list or boolean `event_time` (a foreign or hand-edited
+        row) reads as "", like a missing one, so it sorts first in file order
+        ahead of the string-timed rows instead of raising TypeError."""
+        rows = [
+            _ledger_row(round=1, disposition="DEFER", finding="late", event_time="2026-08-03T10:00:00Z"),
+            _ledger_row(round=1, disposition="DEFER", finding="number", event_time=20260801),
+            _ledger_row(round=1, disposition="DEFER", finding="early", event_time="2026-08-01T10:00:00Z"),
+            _ledger_row(round=1, disposition="DEFER", finding="list", event_time=["2026-08-01"]),
+            _ledger_row(round=1, disposition="DEFER", finding="bool", event_time=True),
+        ]
+        _write_ledger_file(tmp_path, "sess-1", rows)
+        index = self._index_over(tmp_path)
+        index.refresh()
+
+        entries, _session_file_opened = index.entries_for_session("sess-1")
+
+        assert [row["finding"] for _file_index, row in entries] == ["number", "list", "bool", "early", "late"]
 
     def test_a_file_removed_between_refreshes_drops_its_rows(self, tmp_path):
         ledger_path = _write_ledger_file(tmp_path, "sess-1", [_ledger_row(round=1, disposition="DEFER")])

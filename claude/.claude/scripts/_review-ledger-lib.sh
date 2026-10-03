@@ -27,7 +27,7 @@ _REVIEW_LEDGER_QUOTE_MAX_CHARS=200
 _REVIEW_LEDGER_FIELD_SEP=$'\x1f'
 
 # Set by _review_ledger_check_ref: the lookup line of the row --ref names.
-# shellcheck disable=SC2034 # read by review-ledger.sh, which sources this lib, not by the lib itself.
+# shellcheck disable=SC2034 # read by review-ledger.sh, which sources this lib, not by the lib itself. A stdout return was not used, because a command substitution would set it in a subshell the caller cannot read.
 _REVIEW_LEDGER_REF_INFO=""
 # Set by _review_ledger_check_ref when a non-carry row already retired the row
 # --ref names: that retirer's id and disposition.
@@ -56,9 +56,11 @@ _review_ledger_is_criterion() {
 }
 
 # _review_ledger_is_row_id VALUE: true iff VALUE is exactly _REVIEW_LEDGER_HEX_LENGTH lowercase hex digits.
+# The class lists its digits instead of using ranges, because a collating locale
+# without ASCII ranges would otherwise let uppercase letters through.
 _review_ledger_is_row_id() {
   case "$1" in
-    *[!0-9a-f]*) return 1 ;;
+    *[!0123456789abcdef]*) return 1 ;;
   esac
   [ "${#1}" -eq "$_REVIEW_LEDGER_HEX_LENGTH" ]
 }
@@ -177,9 +179,10 @@ _review_ledger_validate_flags() {
 # _review_ledger_repo_relative_path REPO_ROOT SPEC PATH
 # Prints PATH repo-relative: an absolute path under REPO_ROOT loses that prefix,
 # and a leading './' is dropped. SPEC, the caller's whole argument, names it in
-# messages. Rejects any other absolute path, a '..' or empty segment, a control
-# character, and an empty path, because the site hash and --out read or write
-# the file. Returns 1 with the reason on stderr.
+# messages. Rejects any other absolute path, a '..', '.' or empty segment, a
+# control character, and an empty path, because the site hash and --out read or
+# write the file and one site needs one spelling. Returns 1 with the reason on
+# stderr.
 _review_ledger_repo_relative_path() {
   local repo_root="$1" spec="$2" path="$3"
   case "$path" in
@@ -201,6 +204,10 @@ _review_ledger_repo_relative_path() {
   case "/$path/" in
     *//*|*/../*)
       _review_ledger_reject "'$spec' has an empty or '..' path segment; use a repo-relative path"
+      return 1
+      ;;
+    */./*)
+      _review_ledger_reject "'$spec' has a '.' path segment; drop it so the path has one spelling"
       return 1
       ;;
   esac
@@ -381,10 +388,19 @@ _review_ledger_read_rows() {
 # jq definitions shared by the --ref lookup and render. A row is a "decision"
 # when it is a DEFER or SETTLED row with an id that is not a carry. A decision
 # is live unless a non-carry row names its id in `ref`.
-# shellcheck disable=SC2016 # single-quoted on purpose: $rows is jq's own variable, not bash's.
+# `clean` is the one cleaning step for stored text that reaches a reader:
+# control, format (bidi, zero-width) and line or paragraph separator characters
+# read as spaces.
+# `event_time_text` is the one shape check for a stored event_time. It returns
+# the writer's own YYYY-MM-DDThh:mm:ssZ form, or "" for any other value, so a
+# forged or foreign value never reaches a reader. `event_date` is its date part.
+# shellcheck disable=SC2016 # single-quoted on purpose: $rows is jq's own variable, and double-quoting would expand it in the shell before jq sees it.
 _REVIEW_LEDGER_JQ_COMMON='
 def s: if type == "string" then . else "" end;
-def clean: s | gsub("[[:cntrl:]]"; " ");
+def clean: s | gsub("[[:cntrl:]\\p{Cf}\\p{Zl}\\p{Zp}]"; " ");
+def event_time_text:
+  s | if length == 20 and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") then . else "" end;
+def event_date: event_time_text | .[0:10];
 def flag: if . == true then "1" else "0" end;
 def is_carry: (.decided_by | s) == "carry";
 def is_decision: ((.disposition | s) == "DEFER" or (.disposition | s) == "SETTLED")
@@ -394,17 +410,26 @@ def retired_index($rows): $rows
   | from_entries;
 '
 
+# _review_ledger_clean_text TEXT
+# Prints TEXT through the same `clean` step as a published cell, for text echoed
+# to the caller. Returns 1 when jq fails.
+_review_ledger_clean_text() {
+  # shellcheck disable=SC2016 # single-quoted on purpose: $text is jq's own --arg-bound variable, and double-quoting would expand it in the shell before jq sees it.
+  _lib_jq -n -j --arg text "$1" "$_REVIEW_LEDGER_JQ_COMMON"'$text | clean'
+}
+
 # _review_ledger_lookup_ref LEDGER_FILE REF
 # Prints one line of _REVIEW_LEDGER_FIELD_SEP-separated fields describing the
 # row whose id is REF: found, is_decision, ref, retired_by, retired_by_disposition,
 # disposition, decided_by, enforcement_invariant, carry_forward, site_hash,
-# source, defer_criterion, event_time, round, engineer_quote. A row not in the
-# file prints only "0". Control characters in fields read as spaces.
+# source, defer_criterion, event_date, round, engineer_quote. A row not in the
+# file prints only "0". Text fields pass through `clean`, and event_date is the
+# stored event_time's date or empty (see `event_date`).
 # Returns 1 when the read or the lookup jq fails.
 _review_ledger_lookup_ref() {
   local ledger_file="$1" ref="$2" rows
   rows=$(_review_ledger_read_rows "$ledger_file") || return 1
-  # shellcheck disable=SC2016 # single-quoted on purpose: $rows and $row are jq's own variables.
+  # shellcheck disable=SC2016 # single-quoted on purpose: $rows and $row are jq's own variables, and double-quoting would expand them in the shell before jq sees them.
   printf '%s\n' "$rows" | _lib_jq -n -r --arg ref "$ref" "$_REVIEW_LEDGER_JQ_COMMON"'
     [inputs] as $rows
     | ([$rows[] | select((.id | s) == $ref)] | .[0]) as $row
@@ -423,12 +448,50 @@ _review_ledger_lookup_ref() {
             ($row | .site_hash | clean),
             ($row | .source | clean),
             ($row | .defer_criterion | clean),
-            ($row | .event_time | clean),
+            ($row | .event_time | event_date),
             ($row | .round | if type == "number" then tostring else "" end),
             ($row | .engineer_quote | clean)
           ] | join("\u001f")
       end
   '
+}
+
+# _review_ledger_retirer_pointer RETIRER_ID RETIRER_DISP
+# Prints the clause that points a rejected --ref at the row that retired it, and
+# nothing otherwise. A DEFER or SETTLED retirer is itself a --ref target, so it
+# gets a pointer. An ADDRESS retirer is not one, so the clause would send the
+# caller into a second rejection. RETIRER_ID comes from stored text, so it is
+# spliced only when it is a row id.
+_review_ledger_retirer_pointer() {
+  local retirer_id="$1" retirer_disp="$2"
+  _review_ledger_is_row_id "$retirer_id" || return 0
+  case "$retirer_disp" in
+    DEFER | SETTLED) printf '; reference row %s instead if the decision is being revisited' "$retirer_id" ;;
+  esac
+}
+
+# _review_ledger_carry_ref_advice LEDGER_FILE DECISION_ID
+# Prints the tail of the rejection for a --ref that names a carry: the carry's
+# decision, and either how to reopen it or which row already retired it. DECISION_ID
+# comes from stored text, so nothing is printed unless it is a row id and names a
+# decision row in LEDGER_FILE. A retiring row's id is spliced only when it is a row
+# id too. A DEFER or SETTLED retirer is itself a --ref target, so it adds a pointer.
+_review_ledger_carry_ref_advice() {
+  local ledger_file="$1" decision_id="$2" decision_info decision_is_decision decision_retired_by decision_retired_disp
+  _review_ledger_is_row_id "$decision_id" || return 0
+  decision_info=$(_review_ledger_lookup_ref "$ledger_file" "$decision_id") || return 0
+  IFS="$_REVIEW_LEDGER_FIELD_SEP" read -r _ decision_is_decision _ decision_retired_by decision_retired_disp _ \
+    <<<"$decision_info"
+  [ "$decision_is_decision" = 1 ] || return 0
+  if [ -z "$decision_retired_by" ]; then
+    printf '; its decision is %s. ADDRESS --ref %s reopens that decision and retires its carries from the PR block too' \
+      "$decision_id" "$decision_id"
+  elif _review_ledger_is_row_id "$decision_retired_by"; then
+    printf '; its decision is %s, which row %s already retired, so it cannot be reopened' "$decision_id" "$decision_retired_by"
+    _review_ledger_retirer_pointer "$decision_retired_by" "$decision_retired_disp"
+  else
+    printf '; its decision is %s, which is already retired, so it cannot be reopened' "$decision_id"
+  fi
 }
 
 # _review_ledger_check_ref SCOPE_NOUN LEDGER_FILE DISPOSITION DECIDED_BY INVARIANT REF [DEFER_RETIRED]
@@ -464,7 +527,7 @@ _review_ledger_check_ref() {
     return 1
   fi
   if [ "$ref_decided_by" = carry ]; then
-    _review_ledger_reject "--ref $ref names an orchestrator carry, not a decision; its decision is $ref_of"
+    _review_ledger_reject "--ref $ref names an orchestrator carry, not a decision$(_review_ledger_carry_ref_advice "$ledger_file" "$ref_of")"
     return 1
   fi
   if [ "$is_decision" != 1 ]; then
@@ -473,7 +536,7 @@ _review_ledger_check_ref() {
   fi
   if [ -n "$retired_by" ]; then
     if [ "$decided_by" = carry ] || [ "$defer_retired" != 1 ]; then
-      _review_ledger_reject "--ref $ref is no longer live: row $retired_by ($retired_disp) retired it; reference that row if the decision is being revisited"
+      _review_ledger_reject "--ref $ref is no longer live: row $retired_by ($retired_disp) retired it$(_review_ledger_retirer_pointer "$retired_by" "$retired_disp")"
       return 1
     fi
     _REVIEW_LEDGER_REF_RETIRED_BY="$retired_by"
@@ -523,7 +586,7 @@ _review_ledger_check_ref() {
 _review_ledger_check_not_retired() {
   local ledger_file="$1" line="$2" ref="$3" is_retry
   [ -n "$_REVIEW_LEDGER_REF_RETIRED_BY" ] || return 0
-  # shellcheck disable=SC2016 # single-quoted on purpose: $candidate and $ref are jq's own variables.
+  # shellcheck disable=SC2016 # single-quoted on purpose: $candidate and $ref are jq's own variables, and double-quoting would expand them in the shell before jq sees them.
   is_retry=$(_review_ledger_read_rows "$ledger_file" | _lib_jq -n -r --argjson candidate "$line" --arg ref "$ref" \
     "$_REVIEW_LEDGER_JQ_COMMON"'
     def dedup_fields: del(.id, .schema_version, .event_time, .source_repo_hash);
@@ -531,7 +594,7 @@ _review_ledger_check_not_retired() {
     | any(inputs | select((is_carry | not) and ((.ref | s) == $ref)); dedup_fields == $key)
   ') || is_retry=""
   [ "$is_retry" = true ] && return 0
-  _review_ledger_reject "--ref $ref is no longer live: row $_REVIEW_LEDGER_REF_RETIRED_BY ($_REVIEW_LEDGER_REF_RETIRED_DISP) retired it; reference that row if the decision is being revisited"
+  _review_ledger_reject "--ref $ref is no longer live: row $_REVIEW_LEDGER_REF_RETIRED_BY ($_REVIEW_LEDGER_REF_RETIRED_DISP) retired it$(_review_ledger_retirer_pointer "$_REVIEW_LEDGER_REF_RETIRED_BY" "$_REVIEW_LEDGER_REF_RETIRED_DISP")"
   return 1
 }
 
@@ -569,19 +632,26 @@ _review_ledger_check_carry() {
 # _review_ledger_carry_line REF FINDING INFO
 # Prints the one line a carry reports: the decision's id, date, round and
 # basis (criterion, or the engineer's stored quote), the carried finding, and
-# how to reopen. INFO is _REVIEW_LEDGER_REF_INFO.
+# how to reopen. The finding is cleaned for display, so the line stays one line,
+# and reads as a placeholder outside quote marks when jq cannot clean it.
+# INFO is _REVIEW_LEDGER_REF_INFO.
 _review_ledger_carry_line() {
   local ref="$1" finding="$2" info="$3"
-  local ref_disposition ref_criterion ref_event_time ref_round ref_quote basis
+  local ref_disposition ref_criterion ref_event_date ref_round ref_quote basis shown_finding
   IFS="$_REVIEW_LEDGER_FIELD_SEP" read -r _ _ _ _ _ ref_disposition _ _ _ _ _ ref_criterion \
-    ref_event_time ref_round ref_quote <<<"$info"
+    ref_event_date ref_round ref_quote <<<"$info"
   if [ "$ref_disposition" = DEFER ]; then
     basis="DEFER ($ref_criterion)"
   else
     basis="engineer quote: \"$ref_quote\""
   fi
-  printf 'review-ledger.sh: carry of decision %s (decided %s, round %s; %s): the orchestrator matched finding "%s" to it and the engineer did not see this finding; reopen %s by logging ADDRESS --ref %s.\n' \
-    "$ref" "${ref_event_time%%T*}" "$ref_round" "$basis" "$finding" "$ref" "$ref"
+  if shown_finding=$(_review_ledger_clean_text "$finding"); then
+    shown_finding="finding \"$shown_finding\""
+  else
+    shown_finding="a finding (not shown: jq could not clean it)"
+  fi
+  printf 'review-ledger.sh: carry of decision %s (decided %s, round %s; %s): the orchestrator matched %s to it and the engineer did not see this finding; reopen %s by logging ADDRESS --ref %s, which retires that decision and its carries from the PR block.\n' \
+    "$ref" "${ref_event_date:-unknown}" "$ref_round" "$basis" "$shown_finding" "$ref" "$ref"
 }
 
 # Static jq program: render the PR-body block, or merge it into a PR body.
@@ -589,16 +659,16 @@ _review_ledger_carry_line() {
 # (true renders the block alone), $block_start and $block_end (the block delimiters).
 # Exit 3 with a message on stderr when the body's delimiters are unpaired or
 # repeated. The cell-escape rules are the ones docs/scripts.md describes.
-# shellcheck disable=SC2016 # single-quoted on purpose: $rows, $body, $block_start and the rest are jq's own variables.
+# shellcheck disable=SC2016 # single-quoted on purpose: $rows, $body, $block_start and the rest are jq's own variables, and double-quoting would expand them in the shell before jq sees them.
 _REVIEW_LEDGER_JQ_RENDER='
-def esc_plain: s | gsub("[[:cntrl:]]"; " ") | gsub("\\\\"; "\\\\") | gsub("\\|"; "\\|") | gsub("<!--"; "&lt;!--");
+def esc_plain: clean | gsub("\\\\"; "\\\\") | gsub("\\|"; "\\|") | gsub("<!--"; "&lt;!--");
 def codespan:
-  (s | gsub("[[:cntrl:]]"; " ") | gsub("\\|"; "\\|")) as $text
+  (clean | gsub("\\|"; "\\|")) as $text
   | ([$text | scan("`+") | length] | max // 0) as $longest_run
   | ("`" * ($longest_run + 1)) as $fence
   | $fence + " " + $text + " " + $fence;
 def decided_cell:
-  ((.event_time | s | .[0:10]) + " round " + (.round | if type == "number" then tostring else "?" end)) | esc_plain;
+  ((.event_time | event_date) + " round " + (.round | if type == "number" then tostring else "?" end)) | esc_plain;
 def table_row($cells): "| " + ($cells | join(" | ")) + " |";
 def decision_row:
   if (.disposition | s) == "DEFER" then
@@ -710,7 +780,7 @@ def last_cell:
 # Accepts OUT only as a regular-file target directly under REPO_ROOT's real
 # agent-reviews directory, named review-ledger-<suffix>.md or pr-body-<suffix>.md.
 # A relative OUT is taken from the working directory,
-# as the write below takes it. Rejects a '..' or empty segment, a symlinked
+# as the write below takes it. Rejects a '..', '.' or empty segment, a symlinked
 # agent-reviews directory or target, an existing target that is not a regular
 # file, the same file as PR_JSON, and any directory at or under LEDGER_DIR.
 # Prints nothing. Returns 1 with the reason on stderr.
@@ -812,6 +882,9 @@ _review_ledger_remove_out() {
 
 # _review_ledger_render LEDGER_FILE PR_JSON OUT
 # Renders the PR-body block from LEDGER_FILE's live decisions, and only that file.
+# The block has no size cap. It grows with every live decision and every carry
+# of one, so a body past the host's length limit makes the later `gh pr edit`
+# fail.
 # PR_JSON empty: the block alone (the reviewer digest). PR_JSON a path or "-":
 # the JSON of `gh pr view --json body`, whose body is returned with the block
 # replaced, appended when absent, and dropped when it would hold no rows. Every

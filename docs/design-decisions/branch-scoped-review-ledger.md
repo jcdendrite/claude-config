@@ -19,7 +19,7 @@ The branch half is a sha256 of the full branch name, so two branch names never c
 Hooks need the resolver, which is why it lives in `_lib.sh` and not in the script.
 Its header comment states the output shape and exit contract.
 
-Three cases fall back to the per-session file `<repo-hash>.<session-id>.jsonl`:
+These cases fall back to the per-session file `<repo-hash>.<session-id>.jsonl`:
 - A detached HEAD, which includes a rebase in progress.
 - The branch that `_lib_default_branch_or_guess` resolves as the default.
 - When no default resolves, a branch named `main`, `master`, or `develop`. This keeps a local-only `main` from growing one unbounded file.
@@ -42,7 +42,7 @@ Its old rows therefore reach `show` and the dashboard's counts.
 Round numbering continues from the old branch's maximum.
 `show`'s header names the oldest row's date, and `docs/scripts.md` tells the engineer to delete the file `show`'s header names.
 
-Ancestry filtering fails for two reasons.
+Ancestry filtering fails.
 Rows record no commit SHA, so a filter would need a new field.
 Default-branch sync in this repo is a rebase, which rewrites every commit a branch recorded, so each such row would fail the ancestor test.
 A reflog creation filter needs a helper at every reader of the ledger plus reflog behavior that was not verified.
@@ -52,6 +52,10 @@ Branch names in practice embed an incrementing ticket number, so reuse is unlike
 The repo half of the key is the worktree path, so the same branch checked out at another path resolves to a different file.
 The worktree flow keeps one worktree per branch, which makes this rare.
 
+**A branch rename starts a fresh ledger.**
+The branch half of the key hashes the branch name, so `git branch -m` leaves the old file behind and the renamed branch resolves to a new, empty one.
+A published PR block keeps its rows through the kept-row rule, and an old id reads as not in this branch's ledger for `--ref`.
+
 **A mid-rebase append is stranded in the session file.**
 While HEAD is detached, `show` reads only the session file, so the branch's rows are hidden until the rebase ends.
 After the rebase, only the session that wrote the mid-rebase rows sees them.
@@ -60,7 +64,7 @@ While detached, `show`'s max round comes from the session file alone, so a compa
 Reading `rebase-merge/head-name` would make the ledger's key diverge from the round-3 gate's shared key.
 
 **A change in default-branch detection moves a branch between scopes.**
-Detection has three inputs that can differ between calls:
+Detection has inputs that can differ between calls:
 - What `origin/HEAD` names.
 - Whether `origin/HEAD` resolves at all. When it is unset or dangling, the `origin/main`, `origin/master`, and `origin/develop` refs decide, and with none present the name list decides.
 - Whether the capped git call completes. A timeout reads as unresolved.
@@ -71,7 +75,7 @@ Rows written before the move stay in the file the earlier resolution chose.
 After a move to session scope, `show` hides the branch file, as in the mid-rebase case.
 After a move to branch scope, earlier session files stay readable only by the sessions that wrote them.
 
-The fallback has two scope limits that are not moves.
+The fallback has scope limits that are not moves.
 A branch named like `main`, `master`, or `develop` is still branch-keyed when `origin/HEAD` names a different branch.
 Long-lived non-default branches such as `release/*` are branch-keyed like any feature branch.
 
@@ -170,14 +174,14 @@ A shell redirect to the body file would leave an empty file when `render` fails,
 
 The branch ledger is canonical for dispositions.
 `/ready-for-review`'s `agent-reviews/code-review-dispositions-<suffix>.md` record is canonical only for the Cap's pass accounting.
-The record stays because it carries four things the ledger lacks:
+The record stays because it carries these things the ledger lacks:
 - which rounds were cumulative passes;
 - cap rows;
 - which reviewer raised a row;
 - the per-row Outcome column.
 
 Folding the record into the ledger is a follow-up.
-It would cost four schema additions and a rewrite of the Cap clause that tests pin.
+It would cost a schema addition for each of those and a rewrite of the Cap clause that tests pin.
 It would gain ordering by a script-stamped `event_time` and an exact branch key.
 Evidence that rows duplicated between the two stores drift apart in practice would change this call.
 
@@ -193,10 +197,10 @@ A session that reviews on two branches and whose round values fall (round 5 on o
 That exclusion is deliberate, and a test pins it.
 
 Rounds of an excluded session are not classified.
-Two data-quality counters therefore stop counting them: "rounds with a clean marker write but no round-keyed ledger rows", and "authoring_agent inconsistent with the transcript join".
+The data-quality counters "rounds with a clean marker write but no round-keyed ledger rows" and "authoring_agent inconsistent with the transcript join" therefore stop counting them.
 Both read the round-to-row join that the exclusion marks untrusted.
 
-The positional join has one silent residual.
+The positional join has a silent residual.
 When one round's rows are missing and a stray block with a higher round value appears, the count and order still match, and the join misattributes where a value join would have flagged a mismatch.
 `docs/transcript-analysis.md` documents this.
 
@@ -216,7 +220,7 @@ Deleting the file silences the line.
 
 ## Relation to earlier decisions
 
-Two earlier decisions reject `review-ledger.sh` as a home in part because it is session-keyed.
+The fix-loop convergence and round-3 consult gate decisions reject `review-ledger.sh` as a home in part because it is session-keyed.
 This decision supersedes the session-keyed statement in each and leaves the decisions themselves standing.
 
 [The fix-loop convergence decision](ready-for-review-fix-loop-convergence.md) rejects the ledger for the disposition record because it is "keyed by session rather than branch" and has no outcome for a contradiction consult's keep verdict or a cap row.
