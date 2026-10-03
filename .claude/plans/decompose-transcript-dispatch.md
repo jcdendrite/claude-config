@@ -89,7 +89,14 @@ Four conditions look like givens but are not. This repo owns each one, so each i
     - Unchanged: every stdlib name and every name the module defines itself.
   - Prefix code references only. Docstrings name several of these symbols in prose, so let ruff F821 drive every prefix and never run a regex over bare names.
   - Wrap-only reflow is allowed if E501 flags a prefixed line. Report the count.
-  - Chosen: `config_dir` is read as `scope.config_dir()`, by attribute, not through a by-name binding from `_config_dir` (row 59). It is one more rename-map entry. It is behavior-identical for cost-counts: `scope.config_dir` and the shim's `config_dir` are the same `_config_dir.config_dir` function, which reads `CLAUDE_CONFIG_DIR` at call time, and nothing in production reassigns either name. It removes a `fake_projects` line, a doc paragraph, a negative control, and a silent-failure mode where a future test patches only `scope.config_dir`. It departs from cost_ledger.py, ledger_common.py, and pr_cost_ledger.py, which bind it by name for their own roots.
+  - Chosen: `config_dir` is read as `scope.config_dir()`, by attribute, not through a by-name binding from `_config_dir` (row 59). It is one more rename-map entry.
+    - Behavior identity for cost-counts: `scope.config_dir` and the shim's `config_dir` are the same `_config_dir.config_dir` function, which reads `CLAUDE_CONFIG_DIR` at call time. Nothing in production reassigns either name.
+    - It removes:
+      - a `fake_projects` line
+      - a doc paragraph
+      - a negative control
+      - a silent-failure mode where a future test patches only `scope.config_dir`
+    - It departs from cost_ledger.py, ledger_common.py, and pr_cost_ledger.py, which bind it by name for their own roots.
 - **M5: Shim changes.** `anchors: row6, row9, row14`
   - Delete :871–1085, leaving two blank lines between `cmd_duration` and `cmd_judgment_pair`.
   - Delete :1465–2121, leaving two blank lines between `cmd_skill_invocation` and `cmd_skill_pair`.
@@ -299,7 +306,13 @@ Four conditions look like givens but are not. This repo owns each one, so each i
 
     `[verified: Read of every span]`
 32. #981: subagent-mix counts CR/PR/RR only from a `Skill` tool_use whose `input.skill` is in `REVIEW_SKILLS` (:1662–1665). `[verified: Read]` The claim that the issue asks for evidence before any behavior change is `[unverified — relayed from Step 3]`.
-33. #1175 is an open issue; its stated scope touches the shim's import block, the architecture doc, and legacy ranges disjoint from this phase's. `[unverified — relayed from Step 3; no local worktree carrying a handoff_nudge module or a moved _priced_sidechain_asst was found]` `[verified: gh pr view 1175 errors and gh issue view 1175 returns an open issue, run in the authoring session; gh pr list shows no open PR naming it; the open PRs with handoff in the title or branch (#673, #703, #921, #969) touch none of the shim, the architecture doc, conftest, the legacy test file, or the prefix test]` The parent re-checks both at dispatch time with the read-only commands in Precondition and records the result in the dispatch prompt. The plan file is not edited after review.
+33. #1175 is an open issue; its stated scope touches the shim's import block, the architecture doc, and legacy ranges disjoint from this phase's. `[unverified — relayed from Step 3]`
+    - `[unverified — plan-time, this machine only]`: no local worktree carrying a handoff_nudge module or a moved _priced_sidechain_asst was found. The method was a worktree listing at authoring time.
+    - `[verified: gh pr view 1175 errors and gh issue view 1175 returns an open issue, authoring session]`.
+    - `[verified: gh pr list shows no open PR naming #1175, authoring session]`.
+    - `[verified: the open PRs with handoff in the title or branch (#673, #703, #921, #969) touch none of the shim, the architecture doc, conftest, the legacy test file, or the prefix test, authoring session]`.
+    - The parent re-checks the issue state, the open PRs, and their files at dispatch time with the read-only commands in Precondition, and records the result in the dispatch prompt. The worktree claim stays unverified.
+    - The plan file is not edited after review.
 34. Line numbers are at d48a31f8. `[verified: gitStatus]`
 35. Every in-span "above"/"below" comment points within its own function: :940, :968, :974, :1057, :1543, :1575, :1585, :1594, :1754. No production comment is edited. `[verified: grep]`
 36. The limit is 1,000 lines for production and test files (docs/design-decisions/code-file-line-limit.md:19). No test enforces it yet. `[verified: Read; grep]`
@@ -336,7 +349,13 @@ Four conditions look like givens but are not. This repo owns each one, so each i
 ## Critical files
 
 **Precondition.** Do not run concurrently with #1175.
-- Before Verification step 0, the parent runs these read-only commands: `gh issue view 1175 --json state`; `gh pr list --state open --limit 200 --json number,title,headRefName,body,files`; `git worktree list --porcelain`; `git branch --all --list '*1175*' '*handoff*'`; and `git ls-remote --heads origin`. An open PR matches when its body, title, or branch names 1175 or handoff-nudge. A worktree or branch matches on the same names. The parent records the issue state and every PR, worktree, and branch inspected, each marked match or no-match, plus each matching PR's file list, in the dispatch prompt, not in this plan file: a post-review edit to the plan re-arms the plan-review gate and denies the code-writer's first Write. File-level overlap blocks dispatch even when the line ranges are disjoint. Dispatch only if nothing matches, or every matching PR's files include none of these: the shim, the architecture doc, conftest, the legacy test file, and the prefix test. A match that is a branch or worktree with no PR has no file list to test, so it blocks dispatch until the engineer decides. A closed #1175 does not bypass an open matching PR. The scan cannot see work on another machine that has not been pushed.
+- Before Verification step 0, the parent scans for concurrent #1175 work:
+  - Commands, all read-only: `gh issue view 1175 --json state`; `gh pr list --state open --limit 200 --json number,title,headRefName,body,files`; `git worktree list --porcelain`; `git branch --all --list '*1175*' '*handoff*'`; and `git ls-remote --heads origin`.
+  - Match rule: an open PR matches when its body, title, or branch names 1175 or handoff-nudge. A worktree or branch matches on the same names.
+  - Record: the issue state, and every PR, worktree, and branch inspected, each marked match or no-match, plus each matching PR's file list. The record goes in the dispatch prompt, not in this plan file.
+  - Why not in the plan file: a post-review edit to the plan re-arms the plan-review gate and denies the code-writer's first Write.
+  - Dispatch condition: dispatch only if nothing matches, or every matching PR's files include none of these: the shim, the architecture doc, conftest, the legacy test file, and the prefix test. File-level overlap blocks dispatch even when the line ranges are disjoint. A match that is a branch or worktree with no PR has no file list to test, so it blocks dispatch until the engineer decides. A closed #1175 does not bypass an open matching PR.
+  - Known blind spot: the scan cannot see work on another machine that has not been pushed.
 - If `origin/main` has moved past d48a31f8, sync the branch (`git-feature-branch-sync`). Then re-locate every span by its first and last symbol (row 34) and re-run the row 14 and row 20 greps. If #1175 already re-homed `_priced_sidechain_asst`, import it from that home instead of M9's promotion.
 - A sync after step 0 and before the phase's commit re-runs all of step 0 on the synced base, not only the greps. Once the dispatch has edited the tree, that means the abort procedure, then the sync, then step 0, then a fresh dispatch.
 - Immediately before opening the PR, re-check `origin/main`. If it moved and the new commits touch a file under Critical files or a file step 0 baselined, stop and report to the engineer before syncing. Otherwise sync, then re-run Verification 1 and 5. Parity (steps 2–3) was proven against this phase's own base, and a sync that touches none of those files cannot change that result.
@@ -465,7 +484,7 @@ Run everything from the worktree root. `<venv>` is `../../../.venv`, because the
      - (i) `cost-counts --this-repo --branches feat`, run from the worktree root. It needs no git write, because the command's own git calls are reads (row 47). Its output must show a nonzero spawn row.
    - Confirm today's UTC date is on or before `pricing._PRICING_FETCH_DATE` + 90 days, which is 2026-12-04 at d48a31f8 (row 50). After that date, subagent-mix's stale-rate check (shim :2100) fires and changes its output independently of this phase. Step 3 re-confirms the date and reuses these seeded directories; never re-seed.
    - Record `wc -l` for the shim, the legacy file, and conftest.
-1. **Scoped suite.** First stage the seven created files with `git add -- <paths>`; The parent's `git mv` (M13) already staged the rename. Three checks build their corpus from `git ls-files`, which omits untracked files, so until the files are staged those checks are selected without covering them (row 53). Then run `<venv>/bin/python3 claude/.claude/scripts/select-tests.py`. Every selected test must pass.
+1. **Scoped suite.** First stage the seven created files with `git add -- <paths>`. The parent's `git mv` (M13) already staged the rename. Three checks build their corpus from `git ls-files`, which omits untracked files, so until the files are staged those checks are selected without covering them (row 53). Then run `<venv>/bin/python3 claude/.claude/scripts/select-tests.py`. Every selected test must pass.
    - Confirm the selection included:
      - the architecture-doc drift test;
      - `claude/.claude/tests/test_pytest_collection_config.py`, for the conftest-uniqueness and bare-sibling-import tests;
