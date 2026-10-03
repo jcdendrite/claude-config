@@ -251,6 +251,84 @@ def git_timeout_shim(tmp_path):
 
 
 @pytest.fixture
+def sed_call_counting_shim(tmp_path):
+    """`install(fail_after)` writes a `sed` shim that execs the real binary
+    for the first `fail_after` invocations (tracked via a counter file in
+    tmp_path) and fails (exit 1, no output) on every invocation after that.
+
+    The counter file is unlocked, so concurrent pipeline stages race on it
+    and the failing invocation is not deterministic.
+    """
+    real_sed = shutil.which("sed")
+    if not real_sed:
+        pytest.skip("sed not found in PATH")
+
+    def install(fail_after: int) -> dict[str, str]:
+        counter_file = tmp_path / "sed-call-count"
+        counter_file.write_text("0")
+        fake_binary = tmp_path / "sed"
+        fake_binary.write_text(
+            "#!/bin/bash\n"
+            f"count=$(( $(cat {shlex.quote(str(counter_file))}) + 1 ))\n"
+            f"printf '%s' \"$count\" > {shlex.quote(str(counter_file))}\n"
+            f"if [ \"$count\" -gt {fail_after} ]; then\n"
+            "  exit 1\n"
+            "fi\n"
+            f'exec {real_sed} "$@"\n'
+        )
+        fake_binary.chmod(0o755)
+        return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+
+    return install
+
+
+@pytest.fixture
+def sed_split_stage_shim(tmp_path):
+    """`install(succeed_first_calls)` writes a `sed` shim that fails only the
+    FIRST stage of `_lib_split_fragments`'s two-stage sed pipeline, and only
+    after `succeed_first_calls` such invocations succeeded (0 fails the first
+    one). Every other sed invocation execs the real binary.
+
+    The shim keys on its script argument (the first stage's script starts
+    `s/;/`), not on a global call count: the pipeline's two stages start
+    concurrently, so a global counter's order across them is nondeterministic.
+    First-stage invocations are one per split and never concurrent, so
+    counting only those is deterministic.
+
+    The second stage still succeeds on the empty input a failed first stage
+    leaves, so the split reports the failure only under `set -o pipefail`.
+    A test built on this shim goes red when a hook drops `pipefail`.
+    """
+    real_sed = shutil.which("sed")
+    if not real_sed:
+        pytest.skip("sed not found in PATH")
+
+    def install(succeed_first_calls: int = 0) -> dict[str, str]:
+        counter_file = tmp_path / "sed-split-stage-count"
+        counter_file.write_text("0")
+        fake_binary = tmp_path / "sed"
+        fake_binary.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do\n'
+            '  case "$arg" in\n'
+            "    's/;/'*)\n"
+            f"      count=$(( $(cat {shlex.quote(str(counter_file))}) + 1 ))\n"
+            f"      printf '%s' \"$count\" > {shlex.quote(str(counter_file))}\n"
+            f'      if [ "$count" -gt {succeed_first_calls} ]; then\n'
+            "        exit 1\n"
+            "      fi\n"
+            "      ;;\n"
+            "  esac\n"
+            "done\n"
+            f'exec {real_sed} "$@"\n'
+        )
+        fake_binary.chmod(0o755)
+        return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
+
+    return install
+
+
+@pytest.fixture
 def gh_timeout_shim(tmp_path):
     """`install(match_condition)` writes a `gh` shim with the same
     conditional-sleep contract as git_timeout_shim, for regression tests

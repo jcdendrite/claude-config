@@ -1339,11 +1339,9 @@ _lib_git_argv_from_subcmd() {
     fi
     if $skip_next; then skip_next=false; continue; fi
     case "$word" in
-      # Every git 2.43 global flag taking a separate-word value, per `git
-      # help --all`'s global-options list.
-      # A future git version adding another one needs this list updated by
-      # hand.
-      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
+      # The git 2.43 global flags that take a separate-word value. A later git
+      # version adding another needs this list updated by hand.
+      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env|--attr-source)
         skip_next=true ;;
       -*) ;;
       *) printf '%s\n' "$word"; past_subcmd=true ;;
@@ -1437,7 +1435,11 @@ _lib_commit_fragment_has_worktree_target() {
 # fail closed on non-zero, rather than proceeding with a silently empty
 # fragment list — see deny-invisible-commit-content.sh's SPLIT_EXIT
 # computation for the pattern.
+# The two-stage sed pipeline reports a first-stage failure only under
+# `set -o pipefail`, so a sourcing caller must have it set.
+# Spends 2 sed calls per invocation.
 _lib_split_fragments() {
+  # sed_split_stage_shim (conftest.py) keys on the first-stage script starting `s/;/`.
   printf '%s' "$1" \
     | sed -E 's/;/\n/g; s/&&/\n/g; s/\|\|/\n/g; s/\|/\n/g; s/\$\(/\n/g; s/`/\n/g' \
     | sed -E 's/^[[:space:]]*\(//; s/\)[[:space:]]*$//'
@@ -1533,18 +1535,16 @@ _lib_fragment_has_token() {
 # SUBCMD`, 1 if no fragment does, 2 if a fork this needed (the quote-strip
 # or the fragment-split) failed and the answer could not be determined.
 # Composes _lib_strip_shell_quotes, _lib_split_fragments,
-# _lib_fragment_invokes_git, and _lib_extract_git_subcmd, so the eight gate
-# hooks share one fragment-aware matcher instead of each hand-copying a raw
-# regex over unstripped $COMMAND (which a quote-split defeats, e.g. `"git"
-# commit`).
+# _lib_fragment_invokes_git, and _lib_extract_git_subcmd, so a caller gets
+# one fragment-aware matcher instead of a raw regex over unstripped $COMMAND
+# (which a quote-split defeats, e.g. `"git" commit`).
 #
 # Call-site contract (load-bearing): never picks a fail posture itself —
 # every caller must check for status 2 and decide allow-or-deny for its own
 # gate, the same discipline _lib_split_fragments's own call-site contract
-# already requires. Six checked-fail-closed hooks deny on status 2; the two
-# correctly-fail-open hooks (guard-settings-session-keys.sh,
-# require-stow-reminder.sh) treat anything other than 0 as "no match" and
-# stay silent about the distinction, matching their own documented posture.
+# already requires. The commit gates call _lib_command_concludes_commit or
+# _lib_command_concludes_marker_gated_commit instead; this helper is the
+# tri-state contract those predicates follow.
 _lib_command_invokes_git_subcmd() {
   [ "$#" -eq 2 ] || return 2
   local command="$1" subcmd="$2"
@@ -1569,48 +1569,107 @@ _lib_command_invokes_git_subcmd() {
 _LIB_CONTINUE_VERBS_ALL="merge rebase cherry-pick revert"
 _LIB_CONTINUE_VERBS_MARKER_GATED="merge cherry-pick revert"
 
+# _lib_fragment_concludes_commit_shape FRAGMENT SUBCMD VERBS
+# Private. True iff FRAGMENT alone is `git commit` (SUBCMD = commit), or
+# `git <verb> --continue` for a verb in the whitespace-separated VERBS list
+# (SUBCMD = that verb and `--continue` is one of the verb's own arguments,
+# not merely present somewhere else in FRAGMENT). Matches any unambiguous
+# prefix of `--continue` (`--c` through `--continu`), since git's option
+# parser accepts the same abbreviations (gitcli(7), "ENHANCED OPTION
+# PARSER"). This also matches a few prefixes git itself would reject as
+# ambiguous against another long option on the same verb -- a false
+# positive here only denies a command git would have rejected anyway, never
+# a bypass.
+# Caller contract: FRAGMENT must already have passed
+# _lib_fragment_invokes_git, and SUBCMD must be that same fragment's
+# _lib_extract_git_subcmd result -- this function performs neither check
+# nor extraction itself.
+# Plain boolean, not tri-state: _lib_extract_git_subcmd_args runs no sed or tr
+# (_lib_git_argv_from_subcmd is a pure bash word-walk), so no sed/tr failure
+# needs signalling here. The `< <(...)` read below forks a subshell whose
+# failure is not detected, so it reads as no match.
+_lib_fragment_concludes_commit_shape() {
+  local fragment="$1" subcmd="$2" verbs="$3"
+  [ "$subcmd" = commit ] && return 0
+  local verb is_continue_verb=false
+  for verb in $verbs; do
+    if [ "$subcmd" = "$verb" ]; then
+      is_continue_verb=true
+      break
+    fi
+  done
+  $is_continue_verb || return 1
+  local arg
+  while IFS= read -r arg; do
+    case "$arg" in
+      --continue | --c | --co | --con | --cont | --conti | --contin | --continu)
+        return 0
+        ;;
+    esac
+  done < <(_lib_extract_git_subcmd_args "$fragment")
+  return 1
+}
+
 # _lib_command_concludes_commit_shape COMMAND VERBS
-# Private. True iff any fragment of COMMAND is `git commit` (in any form
-# _lib_command_invokes_git_subcmd already recognizes), or `git <verb>
-# --continue` for a verb in the whitespace-separated VERBS list. A clean
-# merge, rebase, or cherry-pick creates its commit inside the initiating
-# command with no separate `git commit` call, so this is the only PreToolUse
-# shape a conflict-resolution commit takes.
-# `--continue` must be one of the matched verb's own arguments, not merely
-# present somewhere else in COMMAND -- `_lib_extract_git_subcmd_args` is
-# checked per matching fragment rather than grepping the whole command
-# string, so `git rebase origin/main && echo --continue` does not match.
+# Private. True iff any fragment of COMMAND concludes a commit per
+# _lib_fragment_concludes_commit_shape above, for the verb set VERBS. A
+# conflict-stopped operation is concluded by its `--continue` invocation,
+# which creates the commit with no separate `git commit` call, so VERBS
+# decides which verbs' `--continue` forms match alongside a literal
+# `git commit`.
 # Tri-state via exit status, same 0/1/2 contract as
-# _lib_command_invokes_git_subcmd, which this delegates the `commit` check
-# to directly.
+# _lib_command_invokes_git_subcmd. Status 2 also covers a failed here-string
+# redirect in the fragment walk below.
 _lib_command_concludes_commit_shape() {
   [ "$#" -eq 2 ] || return 2
   local command="$1" verbs="$2"
   local command_unquoted fragments fragment
   command_unquoted=$(_lib_strip_shell_quotes "$command") || return 2
   fragments=$(_lib_split_fragments "$command_unquoted") || return 2
-  local subcmd verb is_continue_verb arg
-  while IFS= read -r fragment; do
-    [ -z "$fragment" ] && continue
-    _lib_fragment_invokes_git "$fragment" || continue
-    subcmd=$(_lib_extract_git_subcmd "$fragment")
-    if [ "$subcmd" = commit ]; then
-      return 0
+  local subcmd pass piece saved_ifs saved_opts ifs_was_set candidates=$fragments newline=$'\n' walked
+  # _lib_split_fragments leaves a bare `&` unsplit (GH-1063), so pass 2 walks each `&`-separated piece.
+  # Pass 2 only adds candidates, so it can only gain matches, and it is skipped when no `&` is present.
+  # It splits only the fragments containing `&`.
+  # Each piece gets the leading-`(` / trailing-`)` strip _lib_split_fragments gives a fragment, so `x & (git commit)` matches.
+  # A piece without the substring `git` cannot invoke it, so it is dropped before that strip.
+  for pass in 1 2; do
+    if [ "$pass" -eq 2 ]; then
+      [[ "$fragments" == *'&'* ]] || break
+      candidates=""
+      # Word-splitting on newlines is faster than a `read` loop over a large string.
+      # IFS is restored exactly, unset-ness included.
+      ifs_was_set=${IFS+set}
+      saved_ifs=${IFS-}
+      saved_opts=$-
+      set -f
+      IFS=$newline
+      for fragment in $fragments; do
+        [[ "$fragment" == *'&'* ]] || continue
+        for piece in ${fragment//&/$newline}; do
+          [[ "$piece" == *git* ]] || continue
+          piece=${piece#"${piece%%[![:space:]]*}"}
+          piece=${piece#\(}
+          piece=${piece%"${piece##*[![:space:]]}"}
+          piece=${piece%\)}
+          candidates+="$piece$newline"
+        done
+      done
+      if [ -n "$ifs_was_set" ]; then IFS=$saved_ifs; else unset IFS; fi
+      if [[ "$saved_opts" != *f* ]]; then set +f; fi
     fi
-    is_continue_verb=false
-    for verb in $verbs; do
-      if [ "$subcmd" = "$verb" ]; then
-        is_continue_verb=true
-        break
-      fi
-    done
-    $is_continue_verb || continue
-    while IFS= read -r arg; do
-      if [ "$arg" = --continue ]; then
+    walked=false
+    while IFS= read -r fragment; do
+      walked=true
+      [ -z "$fragment" ] && continue
+      _lib_fragment_invokes_git "$fragment" || continue
+      subcmd=$(_lib_extract_git_subcmd "$fragment")
+      if _lib_fragment_concludes_commit_shape "$fragment" "$subcmd" "$verbs"; then
         return 0
       fi
-    done < <(_lib_extract_git_subcmd_args "$fragment")
-  done <<< "$fragments"
+    done <<< "$candidates"
+    # A here-string always supplies at least one line (bash appends a newline, even for empty input), so an unentered loop means its redirect failed.
+    $walked || return 2
+  done
   return 1
 }
 
@@ -1621,11 +1680,9 @@ _lib_command_concludes_commit_shape() {
 # shared by every gate whose recourse on a bad commit is mechanical (unstage
 # a value, shorten a file, remove a session key) rather than a review, so
 # narrowing this predicate to skip a verb would silently disarm those gates
-# for that verb's `--continue` form once wired in. See
-# _lib_command_concludes_marker_gated_commit
-# below for the narrower sibling used by the two gates whose recourse is a
-# review.
-# Not yet called from any hook in this codebase.
+# for that verb's `--continue` form. See
+# _lib_command_concludes_marker_gated_commit below for the narrower sibling
+# used by gates whose recourse is a review.
 _lib_command_concludes_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_ALL"
@@ -1637,17 +1694,22 @@ _lib_command_concludes_commit() {
 # anchor in the ordinary case (see _lib_gate_diff_base), so gating a review
 # marker on it would mean demanding a full review at every conflicted step
 # of a rebase against content that, for the most part, already passed
-# review at its own original commit time. Once wired in, the two gates
-# intended to consume this narrower predicate would still deny an ordinary
-# `git commit` made mid-rebase without `--continue`, while the five gates
-# intended to consume the broad predicate above would stay armed on
-# `git rebase --continue` -- this predicate is designed to narrow
+# review at its own original commit time. An ordinary `git commit` made
+# mid-rebase without `--continue` still matches here, and the broad predicate
+# above still matches `git rebase --continue` -- this predicate narrows
 # review-marker enforcement specifically, not rebase's overall gate
 # coverage.
-# Not yet called from any hook in this codebase.
 _lib_command_concludes_marker_gated_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_MARKER_GATED"
+}
+
+# _lib_fragment_concludes_commit FRAGMENT SUBCMD
+# Plain-boolean fragment-level sibling of _lib_fragment_concludes_commit_shape,
+# fixed to $_LIB_CONTINUE_VERBS_ALL; for callers that already hold each
+# fragment's _lib_extract_git_subcmd result.
+_lib_fragment_concludes_commit() {
+  _lib_fragment_concludes_commit_shape "$1" "$2" "$_LIB_CONTINUE_VERBS_ALL"
 }
 
 # Print a tool fragment's subcommand-word sequence, one word per line, after
@@ -1822,9 +1884,9 @@ _lib_length_ratchet_exceeded() {
 # AND longer than the previously committed version — reducing an
 # already-over-limit file commit by commit is allowed; new bloat is not.
 #
-# Runs only when a Bash command invokes `git commit`, gated behind both
-# callers' `if: git commit *` matcher in settings.json — commit-time-cold,
-# not per-tool-call like most _lib.sh helpers.
+# Runs only when a Bash command concludes a commit, per the caller's
+# _lib_command_concludes_commit check — commit-time-cold, not per-tool-call
+# like most _lib.sh helpers.
 # REPO_ROOT is resolved by the caller from the payload's cwd, the same shape
 # require-code-review.sh uses, and threaded through every git call below --
 # an ambient-cwd call here would let a session whose shell drifted to a
@@ -1848,9 +1910,11 @@ _lib_length_ratchet_exceeded() {
 # Also relies on the caller having already:
 # - populated $COMMAND and $TOOL_NAME via _lib_parse_tool_input_or_deny
 # - exited for a non-Bash TOOL_NAME
-# - confirmed this is a git-commit-shaped command (_lib_command_invokes_git_subcmd
-#   "$COMMAND" commit, failing closed on an undetermined match), before ever
-#   resolving REPO_ROOT or calling this
+# - confirmed this command concludes a commit, via the broad predicate
+#   `_lib_command_concludes_commit "$COMMAND"` (armed on `git rebase
+#   --continue` too, since this gate's recourse is mechanical), failing
+#   closed on an undetermined match, before ever resolving REPO_ROOT or
+#   calling this
 #
 # The commit-shape check must run before any git subprocess spawns, so it lives in
 # the caller, ahead of REPO_ROOT resolution, not in here.
@@ -1959,12 +2023,21 @@ _lib_staged_length_gate() {
 }
 
 # Decide whether a command chains `marker.sh write <skill>` before its first
-# `git commit`. PreToolUse hooks fire once per Bash tool call before the chain
-# runs, so an on-disk marker check denies naturally-typed forms like
-# `marker.sh write code-review && git commit`. When the same Bash call will
-# write the marker before invoking commit, the in-chain marker.sh invocation
-# is the same evidence the on-disk marker would later provide — marker.sh is
-# the only sanctioned writer in either case.
+# commit-concluding command (`git commit`, or `git <merge|rebase|cherry-pick|
+# revert> --continue`). PreToolUse hooks fire once per Bash tool call before
+# the chain runs, so an on-disk marker check denies naturally-typed forms
+# like `marker.sh write code-review && git commit`. When the same Bash call
+# will write the marker before concluding the commit, the in-chain marker.sh
+# invocation is the same evidence the on-disk marker would later provide —
+# marker.sh is the only sanctioned writer in either case.
+#
+# The tail matches the full `--continue` union, deliberately including
+# `rebase --continue`, even though require-code-review.sh's own narrow
+# predicate never checks for this marker on that command shape. This
+# matcher is about chain *shape*, not about which gate the chained command
+# reaches. Denying `marker.sh write code-review && git rebase --continue`
+# would be a confusing footgun for an agent chaining defensively out
+# of habit.
 #
 # **Anchored at command start, not fragment start.** A fragment-walking
 # approach (split on `&&` / `;` / `|`, then scan each fragment) would treat
@@ -1974,9 +2047,10 @@ _lib_staged_length_gate() {
 # wedge the gate open without ever actually invoking marker.sh. The strict
 # command-start anchor here mirrors enforce-marker-script-shape.sh's
 # VALID_CHAINED_COMMIT_PATTERN: only the literal shape
-# `marker.sh write <skill>{,&& marker.sh write <skill2>...} && git commit`
-# is honored. Wrapper commands, env-var prefixes, `bash -c`, heredoc bodies,
-# and pipes all fail the anchor.
+# `marker.sh write <skill>{,&& marker.sh write <skill2>...} && git (commit|
+# (merge|rebase|cherry-pick|revert) --continue)` is honored. Wrapper
+# commands, env-var prefixes, `bash -c`, heredoc bodies, and pipes all fail
+# the anchor.
 #
 # Usage: _lib_chains_marker_write_before_commit "$COMMAND" code-review
 # Returns 0 (true) if the command matches the sanctioned chained shape AND
@@ -1985,17 +2059,22 @@ _lib_chains_marker_write_before_commit() {
   local command="$1" skill="$2"
   # Step 1: command matches the sanctioned chained shape (mirrors
   # enforce-marker-script-shape.sh's VALID_CHAINED_COMMIT_PATTERN). One or
-  # more marker.sh write fragments joined by `&&`, then git commit. Anchored
-  # so wrapper commands cannot trick the gate.
-  if ! printf '%s' "$command" | grep -qE \
-    "^[[:space:]]*((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+commit([[:space:]].*)?$"; then
-    return 1
-  fi
-  # Step 2: target skill is among the chained writes. A chain like
-  # `marker.sh write skill-review && git commit` must not authorize a
+  # more marker.sh write fragments joined by `&&`, then a commit-concluding command. Anchored
+  # so wrapper commands cannot trick the gate. `=~` anchors `^`/`$` to the
+  # whole string and lets `.` cross a newline, so the chain must begin the
+  # whole command and only the commit's tail may span further lines.
+  # The commit's `.*` argument tail is looser than enforce-marker-script-shape.sh's
+  # single-line `[^&|;<>]*` tail, so that hook is the stricter layer.
+  # Group 1 captures the chain, the writes before the `git` token.
+  local chained_shape_re='^[[:space:]]*(((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+)git[[:space:]]+(commit([[:space:]].*)?|(merge|rebase|cherry-pick|revert)[[:space:]]+--continue([[:space:]].*)?)$'
+  [[ "$command" =~ $chained_shape_re ]] || return 1
+  local chain_writes=${BASH_REMATCH[1]}
+  # Step 2: target skill is among the chained writes, searched in the chain
+  # only so a write named in the commit's arguments cannot satisfy it. A chain
+  # like `marker.sh write skill-review && git commit` must not authorize a
   # code-review-gated commit.
-  printf '%s' "$command" | grep -qE \
-    "(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+${skill}([[:space:]]|$)"
+  local target_write_re="(~|/[A-Za-z0-9_./-]+)/\\.claude/scripts/marker\\.sh[[:space:]]+write[[:space:]]+${skill}([[:space:]]|&)"
+  [[ "$chain_writes" =~ $target_write_re ]]
 }
 
 # Shared parenthetical explaining worktree_required's config-dir-or-home
@@ -2762,6 +2841,7 @@ _lib_config_lines() {
 # output back through it — a second pass can further collapse an
 # already-stripped `\` sequence (e.g. `a\\b` strips to `a\b` on the first
 # pass, `ab` on a second).
+# Spends 1 sed call per invocation.
 _lib_strip_shell_quotes() {
   local stripped stripped_exit unquoted unquoted_exit
   stripped=$(printf '%s' "$1" | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g')

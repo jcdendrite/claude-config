@@ -487,7 +487,7 @@ A finding DEFERred under the closed list, or settled *keep current text* by a co
 
 This writes the hash of the currently staged diff into `<config-dir>/code-review-markers/<repo-hash>.<session-id>`. The pre-commit hook recomputes the staged-diff hash and allows the commit when any marker under this repo-hash holds that value — the stored hash is the authorization, so a review still covering the staged state counts even from another session. The session id in the filename only prevents two parallel sessions in the same worktree from overwriting each other's markers. Re-staging any change invalidates the marker automatically.
 
-Run the command standalone, or chained only as `marker.sh write code-review && git commit …` — the invocation-shape gate denies every other chain tail. If it fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since `git commit` will be blocked by the gate.
+Run the command standalone, or chained only as `marker.sh write code-review && git commit …`. If it fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since `git commit` will be blocked by the gate.
 
 **Authoring the commit message.** A single-line message goes inline with `-m`. For a multi-line message, create the file with `mktemp "${TMPDIR:-/tmp}/commit-msg.XXXXXX"`, populate it with the **`Write` tool**, then pass that path to `git commit -F <path>` as literal text — a `$VAR` is opaque to the gates, which resolve the argument statically and fail closed on it.
 

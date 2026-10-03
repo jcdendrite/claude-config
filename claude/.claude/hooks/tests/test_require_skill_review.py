@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -22,11 +23,14 @@ from helpers import (
     build_conflicted_cherry_pick,
     build_conflicted_merge,
     build_conflicted_merge_via_origin_with_upstream_skill_edit,
+    build_conflicted_rebase,
     build_conflicted_revert,
     build_conflicted_revert_with_clean_gated_removal,
+    build_path_without,
     edit_input,
     extract_skill_command,
     push_conflicting_edit_to_origin,
+    resolve_conflicted_rebase,
     revert_subtraction_base,
     run_hook,
     run_hook_reason,
@@ -1046,7 +1050,7 @@ class TestRequireSkillReview:
         silently skip validation."""
         bin_dir = tmp_path / "bin-without-timeout"
         bin_dir.mkdir()
-        for cmd in ("git", "jq", "sha256sum", "awk", "grep", "mktemp", "dirname", "mkdir", "rm", "cat", "python3"):
+        for cmd in ("git", "jq", "sha256sum", "awk", "grep", "mktemp", "dirname", "mkdir", "rm", "cat", "python3", "sed", "tr"):
             cmd_path = shutil.which(cmd)
             if not cmd_path:
                 pytest.skip(f"{cmd} not found in PATH")
@@ -1619,6 +1623,8 @@ class TestRequireSkillReview:
             # so Step 1 (shape) passes while Step 2 (skill match) must fail.
             "~/.claude/scripts/marker.sh write plan-review && git commit -m foo",
             "git commit -m foo",
+            "echo preparing\n~/.claude/scripts/marker.sh write skill-review && git commit -m foo",
+            '~/.claude/scripts/marker.sh write skill-review && git commit -m "subject\n\nbody"',
         ],
     )
     def test_plugin_lib_sh_chains_marker_write_same_as_stowed_lib_sh(self, command):
@@ -1774,6 +1780,96 @@ class TestSharedGateDiffBaseClosureDefinitionEquality:
         assert plugin_result.stdout == stowed_result.stdout, (
             f"plugins/skill-management/hooks/_lib.sh's {function_name} definition "
             "diverges from the stowed claude/.claude/hooks/_lib.sh copy"
+        )
+
+
+_COMMIT_SHAPE_MATCHER_FUNCTIONS = [
+    "_lib_strip_shell_quotes",
+    "_lib_split_fragments",
+    "_lib_fragment_invokes_git",
+    "_lib_git_argv_from_subcmd",
+    "_lib_extract_git_subcmd",
+    "_lib_extract_git_subcmd_args",
+    "_lib_fragment_concludes_commit_shape",
+    "_lib_command_concludes_commit_shape",
+    "_lib_command_concludes_marker_gated_commit",
+    "_lib_chains_marker_write_before_commit",
+]
+
+
+class TestCommitShapeMatcherClosureDefinitionEquality:
+    """Guards the plugin _lib.sh's commit-shape matcher closure, and its
+    chain matcher, against drifting from the stowed copy. Same `declare -f`
+    shape as TestSharedGateDiffBaseClosureDefinitionEquality above."""
+
+    @pytest.mark.parametrize("function_name", _COMMIT_SHAPE_MATCHER_FUNCTIONS)
+    def test_definition_matches_stowed_lib_sh(self, function_name):
+        harness = '. "{lib}" >/dev/null 2>&1; declare -f {fn}'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB, fn=function_name)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB, fn=function_name)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout, f"{function_name} not defined in the plugin's _lib.sh"
+        assert plugin_result.stdout == stowed_result.stdout, (
+            f"plugins/skill-management/hooks/_lib.sh's {function_name} definition "
+            "diverges from the stowed claude/.claude/hooks/_lib.sh copy"
+        )
+
+    @pytest.mark.parametrize("function_name", _COMMIT_SHAPE_MATCHER_FUNCTIONS)
+    def test_every_lib_function_the_body_calls_resolves_in_the_plugin_lib_alone(
+        self, function_name
+    ):
+        """`declare -f` equality stays green when a function gains a callee on
+        both sides but the callee is never copied into the plugin lib. The
+        call then exits 127 at run time, which a `|| continue` guard reads as
+        "no git here". `declare -f` output carries no comments, so the token
+        scan sees code-position tokens only."""
+        body_result = subprocess.run(
+            ["bash", "-c", f'. "{_PLUGIN_LIB}" >/dev/null 2>&1; declare -f {function_name}'],
+            capture_output=True, text=True, check=False,
+        )
+        assert body_result.stdout, f"{function_name} not defined in the plugin's _lib.sh"
+        callees = sorted(set(re.findall(r"\b_lib_[A-Za-z0-9_]+\b", body_result.stdout)))
+        assert function_name in callees, "the token scan missed the function's own name"
+        undefined = subprocess.run(
+            [
+                "bash", "-c",
+                f'. "{_PLUGIN_LIB}" >/dev/null 2>&1; '
+                'for fn in "$@"; do declare -F "$fn" >/dev/null || echo "$fn"; done',
+                "_", *callees,
+            ],
+            capture_output=True, text=True, check=False,
+        ).stdout.split()
+        assert not undefined, (
+            f"{function_name} in the plugin's _lib.sh references functions the plugin lib "
+            f"does not define: {undefined}"
+        )
+        assert set(callees) <= set(_COMMIT_SHAPE_MATCHER_FUNCTIONS), (
+            f"{function_name} calls lib functions outside _COMMIT_SHAPE_MATCHER_FUNCTIONS, "
+            "so their definitions escape the equality guard: "
+            f"{sorted(set(callees) - set(_COMMIT_SHAPE_MATCHER_FUNCTIONS))}"
+        )
+
+    def test_marker_gated_verb_set_value_matches_stowed_lib_sh(self):
+        """`declare -f` of the predicate captures the variable's name, not its
+        value, so the verb set needs its own comparison."""
+        harness = '. "{lib}" >/dev/null 2>&1; declare -p _LIB_CONTINUE_VERBS_MARKER_GATED'
+        plugin_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_PLUGIN_LIB)],
+            capture_output=True, text=True, check=False,
+        )
+        stowed_result = subprocess.run(
+            ["bash", "-c", harness.format(lib=_STOWED_LIB)],
+            capture_output=True, text=True, check=False,
+        )
+        assert plugin_result.stdout, "_LIB_CONTINUE_VERBS_MARKER_GATED not defined in the plugin's _lib.sh"
+        assert plugin_result.stdout == stowed_result.stdout, (
+            "_LIB_CONTINUE_VERBS_MARKER_GATED differs between the plugin's and the stowed _lib.sh: "
+            f"plugin={plugin_result.stdout!r} stowed={stowed_result.stdout!r}"
         )
 
 
@@ -2457,7 +2553,7 @@ class TestCorpusBudgetWarning:
         be allowed, mirroring the structural validator's sibling test above."""
         bin_dir = tmp_path / "bin-without-timeout"
         bin_dir.mkdir()
-        for cmd in ("git", "jq", "sha256sum", "awk", "grep", "mktemp", "dirname", "mkdir", "rm", "cat", "python3"):
+        for cmd in ("git", "jq", "sha256sum", "awk", "grep", "mktemp", "dirname", "mkdir", "rm", "cat", "python3", "sed", "tr"):
             cmd_path = shutil.which(cmd)
             if not cmd_path:
                 pytest.skip(f"{cmd} not found in PATH")
@@ -3098,7 +3194,7 @@ class TestSkillReviewGateNoCapBinaryAndHashFailure:
         bin_dir.mkdir()
         for cmd in (
             "git", "jq", "sha256sum", "awk", "grep", "mktemp", "dirname",
-            "mkdir", "rm", "cat", "python3",
+            "mkdir", "rm", "cat", "python3", "sed", "tr",
         ):
             cmd_path = shutil.which(cmd)
             if not cmd_path:
@@ -5278,3 +5374,616 @@ def test_hooks_json_pretooluse_timeout_covers_the_documented_worst_case():
         + _DOCUMENTED_MAX_STAGED_SKILL_FILES * _SECONDS_PER_STAGED_SKILL_FILE
     )
     assert worst_case_at_file_bound < _DEFAULT_COMMAND_HOOK_TIMEOUT_SECONDS
+
+
+_REACH_PROBE_SKILL_REL = "claude-skills/skills/reach-probe/SKILL.md"
+
+
+def _stage_reach_probe_skill(repo):
+    """Stage a well-formed, novel gated SKILL.md, so a command that reaches the
+    gate denies at the marker check while one that misses the trigger allows.
+    With nothing gated staged, a reached gate disarms and allows, which is
+    indistinguishable from a trigger miss."""
+    _stage_gated_file(repo, _REACH_PROBE_SKILL_REL, _WELL_FORMED_SKILL_MD)
+
+
+class TestSkillReviewGateCommitShapeTrigger:
+    """The trigger is the fragment-aware _lib_command_concludes_marker_gated_commit:
+    the three non-rebase `--continue` forms and global-flag / quoted-`git`
+    commit spellings reach the gate, `rebase --continue` and non-commit
+    commands do not. The trigger runs before REPO_ROOT resolution, so no
+    in-progress state is needed."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git -c core.editor=true commit",
+            "git -c core.editor=true merge --continue",
+            '"git" commit -m x',
+        ],
+    )
+    def test_reaches_gate_and_denies_at_marker_check(self, isolated_home, git_repo, command):
+        _stage_reach_probe_skill(git_repo)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(command, session_id="trigger-reach-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+    def test_git_dash_c_directory_commit_reaches_gate(self, isolated_home, git_repo):
+        """Trigger recognition only: cwd and the `-C` target are the same repo
+        here, so this does not pin which repo the gate evaluates. The hook
+        resolves its repo from the payload cwd, not from `-C`."""
+        _stage_reach_probe_skill(git_repo)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(f"git -C {git_repo} commit -m x", session_id="trigger-reach-dir-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git commit -m x",
+            "git add . & git commit -m x",
+            "git add . && git commit -m x",
+            "git add . ; git commit -m x",
+            "git add . | git commit -m x",
+            "git add . || git commit -m x",
+        ],
+        ids=["start-of-command", "ampersand", "double-ampersand", "semicolon", "pipe", "double-pipe"],
+    )
+    def test_every_shell_separator_before_commit_reaches_gate(
+        self, isolated_home, git_repo, command
+    ):
+        """Each of `&`, `&&`, `;`, `|`, `||` ahead of `git commit` reaches the
+        gate. A single `&` is the shape _lib_split_fragments leaves unsplit
+        (GH-1063)."""
+        _stage_reach_probe_skill(git_repo)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(command, session_id="separator-reach-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+    @pytest.mark.parametrize("verb", ["merge", "cherry-pick", "revert"])
+    def test_non_marker_fragment_chained_before_continue_reaches_gate(
+        self, isolated_home, git_repo, verb
+    ):
+        """`git add <path> && git <verb> --continue`: a `git add` chained ahead
+        of `--continue`. A trigger miss and a marker-chain allow are both `allow`, so this
+        pins the deny on the fragment split, not the chain matcher."""
+        _stage_reach_probe_skill(git_repo)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(
+                f"git add {_REACH_PROBE_SKILL_REL} && git {verb} --continue",
+                session_id=f"chained-{verb}-continue-session",
+            ),
+            cwd=git_repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git rebase --continue",
+            "git status",
+            "git commit-tree abc123",
+            "git rebase --abort",
+            "ls -la",
+        ],
+    )
+    def test_does_not_reach_gate_and_allows(self, isolated_home, git_repo, command):
+        _stage_reach_probe_skill(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(command, session_id="trigger-no-reach-session"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_in_chain_marker_write_before_merge_continue_allows(self, isolated_home, git_repo):
+        """The chain matcher's `--continue` arm: without it this command
+        reaches the gate and denies."""
+        _stage_reach_probe_skill(git_repo)
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(
+                    "~/.claude/scripts/marker.sh write skill-review && git merge --continue",
+                    session_id="chain-merge-continue-session",
+                ),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo git commit",
+            'grep "git commit" docs/x.md',
+            'git log --grep "fix & git commit hook"',
+        ],
+        ids=["echo-argument", "grep-quoted-argument", "quoted-ampersand-in-argument"],
+    )
+    def test_accepted_over_deny_command_naming_a_commit_reaches_gate(
+        self, isolated_home, git_repo, command
+    ):
+        """The trigger is a quote-blind word walk, so a read-only command that
+        only names a commit command as an argument reaches the gate and denies
+        while a novel gated file is staged with no marker. That over-deny is
+        the accepted fail-toward-deny posture, pinned so a later narrowing of
+        the matcher flips this test deliberately."""
+        _stage_reach_probe_skill(git_repo)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(command, session_id="accepted-over-deny-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+    @pytest.mark.parametrize(
+        "command",
+        ["sleep 1 & (git commit -m x)", "(git add .) & (git commit -m x)"],
+    )
+    def test_parenthesized_commit_after_single_ampersand_reaches_gate(
+        self, isolated_home, git_repo, command
+    ):
+        _stage_reach_probe_skill(git_repo)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(command, session_id="paren-after-ampersand-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+    def test_chain_on_a_later_line_of_a_multi_line_command_denies(self, isolated_home, git_repo):
+        """The in-chain shortcut needs the chain to begin the whole command. A
+        per-line anchor would honor this command's second line alone and
+        allow."""
+        _stage_reach_probe_skill(git_repo)
+        command = (
+            "echo preparing\n"
+            "~/.claude/scripts/marker.sh write skill-review && git commit -m x"
+        )
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(command, session_id="chain-later-line-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+    def test_different_skill_chain_with_target_write_quoted_in_commit_tail_denies(
+        self, isolated_home, git_repo
+    ):
+        """The in-chain shortcut reads only the chain before `git`. A
+        skill-review write quoted in the commit's own arguments must not stand
+        in for one in the chain."""
+        _stage_reach_probe_skill(git_repo)
+        command = (
+            "~/.claude/scripts/marker.sh write code-review && git commit -m "
+            '"subject\n\n~/.claude/scripts/marker.sh write skill-review\n"'
+        )
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(command, session_id="chain-quoted-target-write-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+    def test_chain_followed_by_multi_line_commit_message_still_allows(
+        self, isolated_home, git_repo
+    ):
+        """Gate-local: enforce-marker-script-shape.sh's single-line tail is
+        the stricter layer."""
+        _stage_reach_probe_skill(git_repo)
+        command = (
+            '~/.claude/scripts/marker.sh write skill-review && git commit -m "subject\n'
+            "\n"
+            'body line"'
+        )
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(command, session_id="chain-multi-line-message-session"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+
+def _init_repo_with_novel_reach_probe_skill(repo_path):
+    """A second repository, separate from the `git_repo` fixture, with one
+    commit and a novel gated SKILL.md staged."""
+    repo_path.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo_path, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo_path, check=True)
+    (repo_path / "file.txt").write_text("first\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo_path, check=True)
+    _stage_reach_probe_skill(repo_path)
+
+
+class TestSkillReviewGateEvaluationScopeResiduals:
+    """The gate evaluates the index of the repository at the payload `cwd`, as
+    it stands before the Bash call runs. Commit shapes whose target tree is
+    not the payload `cwd`, same-call staging, and a commit that stages
+    working-tree content itself (`-a`) reach the trigger yet name content the
+    gate cannot see. Each is a documented residual
+    (docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md
+    § "Known gap: the plugin matcher"), pinned so a later fix flips it
+    deliberately."""
+
+    def test_git_dash_c_commit_in_another_repo_evaluates_the_cwd_repo_and_allows(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        other_repo = tmp_path / "other-repo"
+        _init_repo_with_novel_reach_probe_skill(other_repo)
+        command = f"git -C {other_repo} commit -m x"
+
+        # Precondition: the same command denies when the target repo is the cwd,
+        # so the allow below comes from evaluating the cwd repo, not a trigger miss.
+        precondition_reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(command, session_id="dash-c-precondition-session"),
+            cwd=other_repo,
+        )
+        assert precondition_reason is not None and _MARKER_GATE_TOKEN in precondition_reason
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(command, session_id="dash-c-other-repo-session"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "cd {other_repo} && git commit -m x",
+            "pushd {other_repo} && git commit -m x",
+            "(cd {other_repo} && git commit -m x)",
+        ],
+        ids=["cd-and", "pushd-and", "cd-in-subshell"],
+    )
+    def test_directory_change_before_commit_in_another_repo_evaluates_the_cwd_repo_and_allows(
+        self, isolated_home, git_repo, tmp_path, command_template
+    ):
+        """A `cd`, `pushd`, or subshell that moves into another repository
+        before the commit leaves the payload `cwd` unchanged, so the gate
+        reads the `cwd` repository's index, like the `git -C` shape."""
+        other_repo = tmp_path / "other-repo"
+        _init_repo_with_novel_reach_probe_skill(other_repo)
+        command = command_template.format(other_repo=other_repo)
+
+        # Precondition: the same command denies when the target repo is the cwd,
+        # so the allow below comes from evaluating the cwd repo, not a trigger miss.
+        precondition_reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(command, session_id="cd-precondition-session"),
+            cwd=other_repo,
+        )
+        assert precondition_reason is not None and _MARKER_GATE_TOKEN in precondition_reason
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(command, session_id="cd-other-repo-session"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_same_call_staging_before_commit_is_invisible_to_the_gate_and_allows(
+        self, isolated_home, git_repo
+    ):
+        """`git add <SKILL.md> & git commit`: nothing gated is staged when the
+        gate reads the index, so it disarms. A plugin-only install has no
+        backstop for this shape."""
+        skill_path = git_repo / _REACH_PROBE_SKILL_REL
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text(_WELL_FORMED_SKILL_MD)
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input(
+                    f"git add {_REACH_PROBE_SKILL_REL} & git commit -m x",
+                    session_id="same-call-staging-session",
+                ),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_commit_dash_a_stages_tracked_changes_after_the_gate_reads_the_index_and_allows(
+        self, isolated_home, git_repo
+    ):
+        """`git commit -am x` stages a tracked file's working-tree edit itself,
+        so the index the gate reads holds nothing gated and it disarms. The
+        stowed deny-invisible-commit-content.sh denies `-a` except behind a
+        read-only first command (GH-1063), and a plugin-only install lacks
+        it."""
+        _stage_gated_file(
+            git_repo,
+            _REACH_PROBE_SKILL_REL,
+            "---\nname: reach-probe\ndescription: ok\n---\n# first version\n",
+        )
+        subprocess.run(["git", "commit", "-q", "-m", "add skill"], cwd=git_repo, check=True)
+        (git_repo / _REACH_PROBE_SKILL_REL).write_text(_WELL_FORMED_SKILL_MD)
+
+        # Precondition: the same edit staged, then the identical `git commit -am x`,
+        # denies at the marker check, so the allow below comes from the gate
+        # reading an index without the edit, not from a trigger miss on `-am`.
+        subprocess.run(["git", "add", _REACH_PROBE_SKILL_REL], cwd=git_repo, check=True)
+        precondition_reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -am x", session_id="dash-a-precondition-session"),
+            cwd=git_repo,
+        )
+        assert precondition_reason is not None and _MARKER_GATE_TOKEN in precondition_reason
+        subprocess.run(["git", "reset", "-q"], cwd=git_repo, check=True)
+
+        assert (
+            run_hook(
+                SKILL_REVIEW_HOOK,
+                bash_input("git commit -am x", session_id="dash-a-unstaged-session"),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+
+class TestPluginChainMatcherAcceptsContinueForms:
+    """The plugin's _lib_chains_marker_write_before_commit copy accepts the
+    stowed copy's full `--continue` union, including `rebase`: the matcher is
+    about chain shape, not about which gate the chained command reaches."""
+
+    _MARKER_WRITE = "~/.claude/scripts/marker.sh write skill-review"
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            "git commit -m x",
+            "git merge --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git rebase --continue",
+        ],
+    )
+    def test_chained_shape_is_accepted(self, tail):
+        result = _run_lib_fn(
+            _PLUGIN_LIB,
+            "_lib_chains_marker_write_before_commit",
+            f"{self._MARKER_WRITE} && {tail}",
+            "skill-review",
+        )
+        assert result.returncode == 0
+
+    def test_chain_writing_a_different_skill_does_not_authorize(self):
+        result = _run_lib_fn(
+            _PLUGIN_LIB,
+            "_lib_chains_marker_write_before_commit",
+            "~/.claude/scripts/marker.sh write code-review && git merge --continue",
+            "skill-review",
+        )
+        assert result.returncode == 1
+
+    def test_continue_without_a_marker_write_prefix_is_not_a_chain(self):
+        result = _run_lib_fn(
+            _PLUGIN_LIB,
+            "_lib_chains_marker_write_before_commit",
+            "git merge --continue",
+            "skill-review",
+        )
+        assert result.returncode == 1
+
+    def test_chain_on_a_later_line_of_a_multi_line_command_is_not_a_chain(self):
+        """The anchor is the whole command: a per-line anchor would accept a
+        command whose second line alone is the sanctioned shape."""
+        result = _run_lib_fn(
+            _PLUGIN_LIB,
+            "_lib_chains_marker_write_before_commit",
+            f"echo preparing\n{self._MARKER_WRITE} && git commit -m x",
+            "skill-review",
+        )
+        assert result.returncode == 1
+
+    def test_chain_writing_a_different_skill_with_target_write_quoted_in_commit_tail_does_not_authorize(
+        self,
+    ):
+        """The target-skill check reads only the chain before `git`, so a
+        target-skill write named in the commit's own arguments does not count."""
+        result = _run_lib_fn(
+            _PLUGIN_LIB,
+            "_lib_chains_marker_write_before_commit",
+            "~/.claude/scripts/marker.sh write code-review && git commit -m "
+            f'"subject\n\n{self._MARKER_WRITE}\n"',
+            "skill-review",
+        )
+        assert result.returncode == 1
+
+    def test_chain_followed_by_multi_line_commit_message_is_accepted(self):
+        """Gate-local: enforce-marker-script-shape.sh's single-line tail is
+        the stricter layer."""
+        result = _run_lib_fn(
+            _PLUGIN_LIB,
+            "_lib_chains_marker_write_before_commit",
+            f'{self._MARKER_WRITE} && git commit -m "subject\n\nbody line"',
+            "skill-review",
+        )
+        assert result.returncode == 0
+
+
+class TestPluginCommitShapePredicateGlobalFlags:
+    """The plugin lib's copy of the narrow predicate skips a separate-word
+    global-flag value (`--attr-source <tree-ish>`) to reach the subcommand."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git --attr-source HEAD commit -m x",
+            "git --attr-source=HEAD commit -m x",
+        ],
+    )
+    def test_commit_behind_attr_source_global_flag_is_recognized(self, command):
+        result = _run_lib_fn(_PLUGIN_LIB, "_lib_command_concludes_marker_gated_commit", command)
+        assert result.returncode == 0
+
+
+class TestSkillReviewGateContinueFormsReachBase:
+    """The `--continue` forms reach the gate's trigger. Two cases also prove the
+    novel-content base is resolved. The merge disarm case does, because a disarm
+    trace on stderr appears only on the disarm exit with a non-empty base. The
+    revert case does, through its subtraction-base precondition. The armed-merge
+    and cherry-pick cases prove trigger reach only, since a HEAD-relative diff
+    denies them too."""
+
+    def test_merge_continue_disarms_on_upstream_reviewed_skill_edit(
+        self, isolated_home, tmp_path
+    ):
+        repo = build_conflicted_merge_via_origin_with_upstream_skill_edit(tmp_path)
+        result = _run_hook_with_stderr(
+            SKILL_REVIEW_HOOK,
+            bash_input("git merge --continue", session_id="continue-disarm-session"),
+            repo,
+        )
+        assert result.returncode == 0 and result.stdout == ""
+        assert "gate disarmed" in result.stderr
+
+    def test_merge_continue_denies_on_armed_fixture(self, isolated_home, tmp_path):
+        repo = _build_armed_fixture(tmp_path)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git merge --continue", session_id="continue-armed-session"),
+            cwd=repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+    def test_revert_continue_stays_armed_with_gated_removal(self, isolated_home, git_repo):
+        """The `--continue` twin of test_revert_stays_armed_with_gated_removal:
+        the revert exclusion in _lib_skill_review_diff_base holds for the `--continue`
+        trigger shape."""
+        build_conflicted_revert_with_clean_gated_removal(git_repo)
+
+        subtraction_base = revert_subtraction_base(git_repo)
+        base_result = _run_lib_fn(_PLUGIN_LIB, "_lib_gate_diff_base", str(git_repo))
+        assert base_result.returncode == 0 and base_result.stdout.strip() == subtraction_base, (
+            "precondition failed: _lib_gate_diff_base did not return the subtraction tree mid-revert"
+        )
+        assert staged_diff_hash_at_base(
+            git_repo, "", *_MARKER_PATHSPECS
+        ) != staged_diff_hash_at_base(git_repo, subtraction_base, *_MARKER_PATHSPECS), (
+            "precondition failed: HEAD-relative and subtraction-relative gated preimages are identical"
+        )
+
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git revert --continue", session_id="revert-continue-armed-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+    def test_cherry_pick_continue_denies_with_novel_gated_file_staged(
+        self, isolated_home, git_repo
+    ):
+        build_conflicted_cherry_pick(git_repo)
+        _stage_reach_probe_skill(git_repo)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git cherry-pick --continue", session_id="cherry-pick-continue-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+
+class TestSkillReviewGateRebaseCarveOutInState:
+    """`git rebase --continue` never reaches the gate, pinned in a real
+    conflicted-rebase state with a novel gated file staged."""
+
+    def test_bare_commit_mid_rebase_denies_but_rebase_continue_allows_silently(
+        self, isolated_home, git_repo
+    ):
+        build_conflicted_rebase(git_repo)
+        resolve_conflicted_rebase(git_repo)
+        _stage_reach_probe_skill(git_repo)
+
+        # Precondition: the gate fires mid-rebase when its trigger matches.
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input("git commit -m resolve", session_id="rebase-commit-session"),
+            cwd=git_repo,
+        )
+        assert reason is not None and _MARKER_GATE_TOKEN in reason
+
+        result = _run_hook_with_stderr(
+            SKILL_REVIEW_HOOK,
+            bash_input("git rebase --continue", session_id="rebase-continue-session"),
+            git_repo,
+        )
+        assert result.returncode == 0 and result.stdout == ""
+        assert "gate disarmed" not in result.stderr
+
+
+class TestSkillReviewGateTriggerFailsClosedWithoutBinary:
+    """The trigger's call chain forks `sed` (quote-strip and fragment-split) and
+    `tr` (quote-strip). _lib_strip_shell_quotes checks each one's exit status
+    separately, so one binary's absence does not stand in for the other's."""
+
+    @pytest.mark.parametrize("command", ["git merge --continue", "ls"])
+    @pytest.mark.parametrize("missing_binary", ["sed", "tr"])
+    def test_missing_binary_denies_as_undetermined_match(
+        self, isolated_home, git_repo, tmp_path, missing_binary, command
+    ):
+        """The deny covers every Bash call, `ls` included: hooks.json carries no
+        `if` pre-filter, so the predicate's forks run before any command-shape
+        check. That scope is deliberate: `CHANGELOG.md` records it in the
+        `skill-management` 4.1.0 entry, and
+        `docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md`
+        § "Performance" measures its cost."""
+        farm_dir = tmp_path / f"path-without-{missing_binary}"
+        farm_dir.mkdir()
+        restricted_path = build_path_without(missing_binary, farm_dir)
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(command, session_id=f"no-{missing_binary}-session"),
+            cwd=git_repo,
+            extra_env={"PATH": restricted_path},
+        )
+        assert reason is not None
+        assert "could not determine" in reason
+        assert "every Bash call" in reason
+        assert _MARKER_GATE_TOKEN not in reason
+
+    @pytest.mark.parametrize("command", ["git merge --continue", "ls"])
+    def test_split_stage_failure_alone_denies_as_undetermined_match(
+        self, isolated_home, git_repo, sed_split_stage_shim, command
+    ):
+        """Only the first stage of the fragment split's two-stage sed pipeline
+        fails; the second stage exits 0 on the empty input it then reads. The
+        split reports the failure only under `set -o pipefail`, so this goes
+        red if the hook drops it: an empty fragment list would read as "no
+        commit here" and allow. The missing-binary tests above fail the
+        quote-strip first and never reach this stage."""
+        reason = run_hook_reason(
+            SKILL_REVIEW_HOOK,
+            bash_input(command, session_id="split-stage-failure-session"),
+            cwd=git_repo,
+            extra_env=sed_split_stage_shim(),
+        )
+        assert reason is not None
+        assert "could not determine" in reason
+        assert _MARKER_GATE_TOKEN not in reason
