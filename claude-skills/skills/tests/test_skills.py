@@ -3771,7 +3771,7 @@ _TIER_DISPOSITION_SECTIONS = [
             "When any of these holds, treat the finding as a regression: "
             "- The comparison against the merge-base is unclear. "
             "- The gate has no merge-base counterpart. "
-            "- A fail-open path has no deny test. "
+            "- A fail-open path the change adds or alters has no deny test. "
             "- The change edits the gate's tier line, its tracking pointer, or this section. "
             "A `CLAUDE.md` or SKILL.md that applies this rule points here rather than "
             "restating it; this section is its only home.",
