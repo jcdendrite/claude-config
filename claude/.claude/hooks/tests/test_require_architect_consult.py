@@ -167,7 +167,7 @@ class TestRequireArchitectConsult:
         failures — the property under test is bounded latency, not a
         decision flip.
 
-        The hook's first jq call (_lib_parse_tool_input_or_deny's six-field
+        The hook's first jq call (_lib_parse_tool_input_or_deny's shared
         extraction) is already _lib_jq-wrapped and would itself resolve
         within budget on an always-hung jq, which would pass this test even
         if the second call (subagent_type, this test's actual target) were

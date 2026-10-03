@@ -246,6 +246,65 @@ _lib_realpath_m() {
   done
 }
 
+# _lib_normalize_path_lexically PATH
+# Sets _LIB_NORMALIZED_PATH (global) to PATH with empty and `.` segments dropped and each `..` popping the segment before it. Touches no filesystem and runs no exec'd command, so a symlink in PATH is not resolved.
+# Verified on bash 5.2 and with BASH_COMPAT=32, not on a real bash 3.2 binary.
+# `realpath -s -m` is not used because it costs the subprocess that callers bound with a realpath budget.
+# Always returns 0. An empty PATH yields an empty result, not `.`.
+# An absolute PATH collapses any run of leading slashes to one, as Linux does, and a `..` at the root is dropped. A relative PATH keeps a leading `..` run, and one that pops to nothing yields `.`.
+# A trailing slash on PATH is kept (a `.` or `..` last segment does not count as one), because a caller's directory-destination classification depends on it.
+_LIB_NORMALIZED_PATH=""
+_lib_normalize_path_lexically() {
+  local path="$1" segment saved_opts=$-
+  local is_absolute=false keeps_trailing_slash=false
+  local -a kept=()
+  local kept_count=0
+  local IFS=/
+  case "$path" in
+    '')
+      _LIB_NORMALIZED_PATH=""
+      return 0
+      ;;
+    /*) is_absolute=true ;;
+  esac
+  case "$path" in
+    */) keeps_trailing_slash=true ;;
+  esac
+  # An IFS of `/` splits on slashes only, so a newline or space inside a segment survives. Globbing is off so a `*` segment stays literal.
+  set -f
+  for segment in $path; do
+    case "$segment" in
+      '' | .) ;;
+      ..)
+        if [ "$kept_count" -gt 0 ] && [ "${kept[kept_count - 1]}" != ".." ]; then
+          kept_count=$((kept_count - 1))
+        elif ! $is_absolute; then
+          kept[kept_count]=..
+          kept_count=$((kept_count + 1))
+        fi
+        ;;
+      *)
+        kept[kept_count]="$segment"
+        kept_count=$((kept_count + 1))
+        ;;
+    esac
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  local joined=""
+  if [ "$kept_count" -gt 0 ]; then
+    joined="${kept[*]:0:kept_count}"
+  fi
+  if $is_absolute; then
+    joined="/$joined"
+  elif [ -z "$joined" ]; then
+    joined="."
+  fi
+  if $keeps_trailing_slash && [ "${joined: -1}" != "/" ]; then
+    joined="$joined/"
+  fi
+  _LIB_NORMALIZED_PATH="$joined"
+}
+
 # Succeeds only when $1 is non-empty and every byte is in [A-Za-z0-9._/@+-].
 # Matched in bash rather than grep, because BSD grep's -z still anchors ^/$ at each embedded newline.
 # The body is a subshell that sets LC_ALL=C, since bash without `globasciiranges` (bash < 5, including macOS /bin/bash 3.2) orders bracket ranges by locale collation elsewhere.
@@ -396,16 +455,18 @@ _lib_emit_allow_with_context() {
 }
 
 # Reads stdin into INPUT (global), extracts TOOL_NAME, COMMAND, CWD,
-# SESSION_ID, FILE_PATH, and AGENT_TYPE (globals) via a single _lib_jq call
-# using ASCII Unit Separator (0x1f) as delimiter. The single call surfaces a
-# structural-type error when .tool_input is non-object (jq non-zero exit).
+# SESSION_ID, FILE_PATH, AGENT_TYPE, and AGENT_ID (globals) via a single
+# _lib_jq call using ASCII Unit Separator (0x1f) as delimiter. The single call
+# surfaces a structural-type error when .tool_input is non-object (jq non-zero
+# exit).
 #
-# Four deny paths protect against silent-allow:
+# These deny paths protect against silent-allow:
 #   (a) jq non-zero exit (parse failure, cap kill per _lib_capped_for's header above, missing jq binary)
 #   (b) empty INPUT (stdin EOF, closed pipe, harness misbehavior)
 #   (c) empty TOOL_NAME (valid JSON but PreToolUse contract not honored, e.g. "{}")
 #   (d) a 0x1f byte inside any extracted value, which would otherwise shift
 #       every field after it into the wrong global
+#   (e) an embedded newline in TOOL_NAME (the PreToolUse contract violated)
 # Per Anthropic PreToolUse contract, every legitimate event has a non-empty
 # .tool_name; absence indicates the call did not originate from a real tool
 # invocation. Without (b)/(c), downstream gates that early-exit on
@@ -425,28 +486,31 @@ _lib_parse_tool_input_or_deny() {
     emit_deny "$deny_msg"
     exit 0
   fi
-  # Single jq call extracts all six fields delimited by ASCII Unit Separator
+  # Single jq call extracts every field, delimited by ASCII Unit Separator
   # (0x1f) rather than newlines, preventing a value containing an embedded
   # newline from corrupting a later field via line splitting. Unit Separator
   # cannot appear in a valid Claude Code tool name, shell command, cwd,
-  # session id, path, or agent type.
+  # session id, path, agent type, or agent id.
   # The .tool_input.command extraction additionally surfaces a structural-type
   # error when .tool_input is non-object (e.g. "Cannot index string with string
   # 'command'"), returning non-zero.
-  # .cwd, .session_id, and .agent_type silently stringify via jq's \(...)
-  # interpolation rather than erroring when the field holds a non-string
-  # JSON value (a number, object, or array).
-  # For AGENT_TYPE this is safe because both of its consumers
-  # (_lib_is_review_only_agent, _lib_is_no_gate_release_agent) are
-  # exact-match denylists, so a garbled value just fails to match and
-  # falls through to the existing safe default.
+  # .cwd, .session_id, .agent_type, and .agent_id silently stringify via jq's
+  # \(...) interpolation rather than erroring when the field holds a
+  # non-string JSON value (a number, object, or array).
+  # jq's `//` also replaces JSON `false`, so a `false` .agent_id or .agent_type
+  # reads as absent. An empty string reads empty. Any other value is non-empty.
+  # AGENT_ID, not AGENT_TYPE, is the subagent discriminator. The known-gaps list
+  # in enforce-marker-script-shape.sh quotes the hooks reference for why.
+  # Consumers of AGENT_TYPE either test it for emptiness or match it exactly
+  # against a roster. A garbled AGENT_TYPE is non-empty and matches no roster
+  # name.
   local jq_out
-  # WARNING: the format string below contains five literal 0x1f (ASCII Unit
-  # Separator) bytes, one between each of the six interpolated fields. They
-  # are invisible in editors and diff views — do not remove them. test_lib.py's
-  # six-field characterization test will fail immediately if a delimiter is
-  # missing, catching accidental deletion.
-  jq_out=$(printf '%s\n' "$INPUT" | _lib_jq -r '"\(.tool_name // "")\(.tool_input.command // "")\(.cwd // "")\(.session_id // "")\(.tool_input.file_path // "")\(.agent_type // "")"' 2>/dev/null)
+  # WARNING: the format string below holds one literal 0x1f (ASCII Unit
+  # Separator) byte between each pair of adjacent interpolated fields. They
+  # are invisible in editors and diff views, so do not remove them. A missing
+  # one leaves _lib_parse_overflow empty, so the field-shift deny below fires
+  # on every call and test_lib.py's OK-path tests fail at once.
+  jq_out=$(printf '%s\n' "$INPUT" | _lib_jq -r '"\(.tool_name // "")\(.tool_input.command // "")\(.cwd // "")\(.session_id // "")\(.tool_input.file_path // "")\(.agent_type // "")\(.agent_id // "")"' 2>/dev/null)
   local jq_exit=$?
   if [ "$jq_exit" -ne 0 ]; then
     emit_deny "$deny_msg"
@@ -459,14 +523,14 @@ _lib_parse_tool_input_or_deny() {
   # includes bash 3.2. `read -r -d ''` returns non-zero at EOF without ever
   # finding that delimiter, on every invocation including this one's own
   # success path, hence the trailing `|| true`.
-  # The appended sixth 0x1f plus the trailing _lib_parse_overflow variable is
-  # a field-shift detector, not a per-field guard. A 0x1f byte inside any one
-  # of the six values raises the split's field count above six regardless of
-  # which field carries it. A well-formed payload therefore leaves
-  # _lib_parse_overflow holding exactly the herestring's own trailing
-  # newline and nothing else.
-  # shellcheck disable=SC2034 # set for hook scripts that source this file and reference $COMMAND/$CWD/$SESSION_ID/$FILE_PATH/$AGENT_TYPE
-  IFS=$'\x1f' read -r -d '' TOOL_NAME COMMAND CWD SESSION_ID FILE_PATH AGENT_TYPE _lib_parse_overflow <<< "$jq_out"$'\x1f' || true
+  # The extra 0x1f appended to the herestring, plus the trailing
+  # _lib_parse_overflow variable, is a field-shift detector, not a per-field
+  # guard. A 0x1f byte inside any extracted value adds a split field, whichever
+  # value carries it, and pushes content into _lib_parse_overflow. A
+  # well-formed payload therefore leaves _lib_parse_overflow holding exactly
+  # the herestring's own trailing newline and nothing else.
+  # shellcheck disable=SC2034 # set for hook scripts that source this file and reference $COMMAND/$CWD/$SESSION_ID/$FILE_PATH/$AGENT_TYPE/$AGENT_ID
+  IFS=$'\x1f' read -r -d '' TOOL_NAME COMMAND CWD SESSION_ID FILE_PATH AGENT_TYPE AGENT_ID _lib_parse_overflow <<< "$jq_out"$'\x1f' || true
   # This deny carries its own message rather than $deny_msg, so a deliberate
   # field-shift attempt classifies as a behavioral denial instead of being
   # filed under the shared parse-failure (infra) reason.
@@ -790,6 +854,9 @@ _lib_active_plan_hash() {
 # use: _lib_cumulative_diff_hash's own post-hash step below, and marker.sh's
 # `write cumulative-review` arm, which hashes a recorded subject through this
 # same function rather than a second, possibly-drifting copy of the recipe.
+# review-ledger.sh's site hash (_review_ledger_site_hash in
+# scripts/_review-ledger-lib.sh) is a third consumer: it hashes a line range of
+# a working-tree file through this function and keeps the first 12 hex digits.
 # TEXT may be empty -- sha256 of an empty string is still a valid digest, so
 # this function doesn't treat empty input as failure. Refusing an empty
 # subject is marker.sh's precondition, not this helper's.
@@ -2201,9 +2268,14 @@ _lib_permission_prompt_tracking_active() {
 # (letters, digits, underscore, hyphen) has ample room without ever needing
 # '.' or '/'. Empty input is rejected — callers must not fall through to an
 # unvalidated empty SESSION_ID.
+# The class spells out each allowed character instead of using ranges, so a
+# locale whose collation puts non-ASCII letters inside a range does not widen
+# the allow-list, and the check forks no subshell.
+# author_outcome.py's _SESSION_ID_PATTERN is the ASCII-only mirror of it.
 _lib_valid_session_id_component() {
-  local session_id="$1"
-  [[ "$session_id" =~ ^[A-Za-z0-9_-]+$ ]]
+  case "${1-}" in
+    '' | *[!-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) return 1 ;;
+  esac
 }
 
 # _lib_active_bypass_marker_live MARKER_DIR_NAME SESSION_ID
@@ -3541,6 +3613,15 @@ _lib_reviewer_round_state_key() {
   local branch
   branch=$(_lib_capped git -C "$repo_root" symbolic-ref -q --short HEAD 2>/dev/null)
   [ -n "$branch" ] || return 1
+  _lib_reviewer_round_state_key_for_branch "$repo_root" "$branch"
+}
+
+# _lib_reviewer_round_state_key_for_branch REPO_ROOT BRANCH
+# The one home for the "<repo-hash>.<branch-hash>" formula, for a caller that
+# has already read BRANCH from HEAD. Returns 1 with no stdout when either
+# hash did not compute.
+_lib_reviewer_round_state_key_for_branch() {
+  local repo_root="$1" branch="$2"
   local repo_hash branch_hash
   repo_hash=$(_marker_lib_repo_hash "$repo_root")
   branch_hash=$(_lib_hash_diff_text "$branch")
@@ -3683,6 +3764,9 @@ _LIB_APPEND_LOCK_RETRIES=5
 # than at review-ledger.sh's, since a PostToolUse hook is more exposed to
 # being killed mid-lock by the harness's own hook timeout than a
 # skill-invoked CLI script is.
+# Known limit: dead-holder eviction is non-atomic, so two processes can both
+# evict and both acquire, and an EXIT trap can then remove a lock its process
+# does not own. The outcome is a duplicate row.
 _lib_acquire_append_lock() {
   # Deliberately not `local`: the EXIT trap below evaluates this lazily at
   # script-exit time, after this function has already returned, and any
@@ -3757,14 +3841,16 @@ _lib_append_line_locked() {
 # projects through DEDUP_KEY_JQ_FILTER instead of taking
 # _lib_append_line_locked's whole-line match.
 # The dedup check below re-reads and re-parses the whole FILE on every call
-# (O(file size) per append). FILE is scoped per session -- review-ledger.sh
-# builds it as $REPO_HASH.$SESSION_ID.jsonl -- so this scan's cost grows
-# with every finding appended across all of that session's review rounds.
+# (O(file size) per append). FILE is scoped per branch or, on a detached
+# HEAD or the default branch, per session -- review-ledger.sh resolves it
+# through _lib_review_ledger_path -- so this scan's cost grows with every
+# finding appended across all of that branch's (or session's) review rounds.
+# Sessions on the same branch append to one FILE, so cross-session appends
+# contend for its lock.
 # review-ledger.sh's per-append call to _sweep_stale_ledger_files (with the
 # fixed _LEDGER_SWEEP_FLOOR_DAYS floor) bounds the ledger directory's overall
-# footprint by evicting whole stale files. It never touches this file while
-# the session that owns it is still live, so it puts no cap on FILE's own
-# growth.
+# footprint by evicting whole stale files. It never touches a file that is
+# still being appended to, so it puts no cap on FILE's own growth.
 _lib_append_json_line_locked() {
   local file="$1" line="$3" dedup_filter="$4"
   # Requires a brace-delimited, comma-separated identifier list -- rejects
@@ -3822,6 +3908,9 @@ _lib_append_json_line_locked() {
       printf '_lib_append_json_line_locked: dedup check failed (jq missing, timed out, or malformed filter) -- proceeding with unconditional append\n' >&2
     fi
   fi
+  # Known limit: when FILE ends in an unterminated line (only a torn write
+  # leaves one), this row joins that line and is unreadable, yet the call
+  # still returns 0.
   printf '%s\n' "$line" >> "$file"
 }
 
@@ -3882,6 +3971,80 @@ _ledger_sweep_window_days() {
     printf '%s' "$_LEDGER_SWEEP_FLOOR_DAYS"
   else
     printf '%s' "$cleanup_period_days"
+  fi
+}
+
+# Branch names _lib_review_ledger_path treats as the default when no default
+# branch resolves. Mirrors _lib_default_branch_or_guess's candidate list; a
+# copy of that function lives in the skill-management plugin's own _lib.sh
+# and must stay text-identical, so the list cannot be shared by reference.
+_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES=(main master develop)
+
+# _lib_review_ledger_session_path CONFIG_DIR REPO_ROOT SESSION_ID
+# Prints <config-dir>/review-narrative-ledger/<repo-hash>.<session-id>.jsonl,
+# the one home for the session-scoped ledger path. Returns 1 with no stdout
+# when REPO_ROOT is empty, its hash did not compute, or SESSION_ID is not a
+# valid path component (an id holding '/' or '..' would escape the ledger
+# directory).
+_lib_review_ledger_session_path() {
+  local config_dir="$1" repo_root="$2" session_id="$3"
+  local repo_hash
+  [ -n "$repo_root" ] || return 1
+  _lib_valid_session_id_component "$session_id" || return 1
+  repo_hash=$(_marker_lib_repo_hash "$repo_root") || return 1
+  [ -n "$repo_hash" ] || return 1
+  printf '%s/review-narrative-ledger/%s.%s.jsonl' "$config_dir" "$repo_hash" "$session_id"
+}
+
+# _lib_review_ledger_path CONFIG_DIR REPO_ROOT SESSION_ID
+# Prints "<scope> <path>" for the review-ledger file this worktree appends to.
+# The path comes last so a CONFIG_DIR containing a space still parses:
+# scope is ${out%% *}, path is ${out#* }.
+# - scope "branch": <repo-hash>.<branch-hash>.jsonl, the same per-branch key
+#   _lib_reviewer_round_state_key gives the round-3 gate.
+# - scope "session": _lib_review_ledger_session_path's file. It is used on a
+#   detached HEAD (mid-rebase included) and on the default branch, so a
+#   local-only main does not grow one unbounded file.
+# Default-branch detection is _lib_default_branch_or_guess. When no default
+# resolves, a branch named like one of _LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES
+# counts as the default.
+# A branch named like one of those names is still branch-keyed when origin/HEAD
+# names a different branch.
+# HEAD is read once. `symbolic-ref -q` exits 1 on a detached HEAD and any
+# status above 1 when git itself failed or timed out, so a git failure does not
+# silently downgrade a branch's rows into the session file.
+# Exit 1, empty stdout: REPO_ROOT is empty, a hash did not compute, git could
+# not read HEAD, or (session scope only) SESSION_ID is not a valid path
+# component.
+# Exit 1 means the location is unknown, whether the cause is transient or
+# permanent. The caller picks fail-open or fail-closed. A hook must not render
+# exit 1 as "no ledger".
+_lib_review_ledger_path() {
+  local config_dir="$1" repo_root="$2" session_id="$3"
+  local branch branch_key default_branch candidate session_path
+  local head_status=0 session_scoped=0
+  [ -n "$repo_root" ] || return 1
+  branch=$(_lib_capped git -C "$repo_root" symbolic-ref -q --short HEAD 2>/dev/null) || head_status=$?
+  [ "$head_status" -le 1 ] || return 1
+  if [ -z "$branch" ]; then
+    session_scoped=1
+  elif default_branch=$(_lib_default_branch_or_guess "$repo_root"); then
+    if [ "$branch" = "$default_branch" ]; then
+      session_scoped=1
+    fi
+  else
+    for candidate in "${_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES[@]}"; do
+      if [ "$branch" = "$candidate" ]; then
+        session_scoped=1
+      fi
+    done
+  fi
+  if [ "$session_scoped" -eq 1 ]; then
+    session_path=$(_lib_review_ledger_session_path "$config_dir" "$repo_root" "$session_id") || return 1
+    printf 'session %s' "$session_path"
+  else
+    branch_key=$(_lib_reviewer_round_state_key_for_branch "$repo_root" "$branch") || return 1
+    printf 'branch %s/review-narrative-ledger/%s.jsonl' "$config_dir" "$branch_key"
   fi
 }
 
