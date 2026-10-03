@@ -771,13 +771,10 @@ class TestDenyInvisibleCommitContent:
         ],
     )
     def test_bare_continue_form_allowed(self, verb, command_template):
-        """Once the fast-reject and both arms recognize the --continue
-        family, a bare `--continue` with nothing chained ahead of it must
-        allow, including behind an env-var prefix or a `-c` global flag -- a
-        regression that widened only the fast-reject while leaving either
-        arm's test at literal `commit` would instead deny every sync in the
-        repo. The worktree-target check is keyed on literal `commit`, so
-        this --continue form never reaches that deny either."""
+        """A bare `--continue` with nothing chained ahead of it must allow,
+        including behind an env-var prefix or a `-c` global flag -- a
+        regression keying either arm's test on literal `commit` would
+        instead deny."""
         assert run_hook(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input(command_template.format(verb=verb)),
@@ -887,10 +884,7 @@ class TestDenyInvisibleCommitContent:
         assert "git cherry-pick --continue" in reason
 
     def test_mutation_after_continue_fragment_allowed(self):
-        """The ordered walk's existing rationale is unchanged by the
-        --continue widening: a mutation *after* the concluding fragment is
-        harmless, since it never reaches this commit's `git diff --cached`
-        snapshot -- the case most likely to regress into an over-deny."""
+        """A mutation *after* the concluding fragment must allow."""
         assert run_hook(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
             bash_input("git merge --continue && git add f"),
