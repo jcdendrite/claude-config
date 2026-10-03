@@ -13,11 +13,16 @@ import pytest
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
+    SCRIPTS_DIR,
     SKILLS_DIR,
     bare_remote_with_default_branch,
     bash_input,
+    build_conflicted_cherry_pick,
+    build_conflicted_merge,
     build_conflicted_rebase,
     build_conflicted_revert,
+    build_conflicted_revert_of_unmerged_commit,
+    build_noconflict_rebase_edit_stop,
     build_path_without,
     edit_input,
     extract_skill_command,
@@ -33,7 +38,7 @@ from helpers import (
     write_marker,
 )
 
-from .conftest import _seed_session
+from .conftest import _review_ledger_path, _seed_session
 
 CODE_REVIEW_HOOK = HOOKS_DIR / "require-code-review.sh"
 CODE_REVIEW_SKILL = SKILLS_DIR / "code-review" / "SKILL.md"
@@ -272,10 +277,62 @@ class TestRequireCodeReview:
             "git status",
             "git log --oneline",
             "git commit-tree abc123",
+            "git merge origin/main",
+            "git rebase --abort",
+            "git rebase --skip",
+            # The rebase carve-out's negative case, pinned alongside the
+            # other non-concluding shapes. `git rebase --continue`
+            # concludes a commit under the broad predicate, but the narrow
+            # predicate this hook calls deliberately excludes it, so this
+            # hook reaches no opinion here exactly like a command that does
+            # not conclude a commit at all. The narrow predicate runs before
+            # any staged-diff or marker logic, so this allow does not depend
+            # on the repo's index.
+            "git rebase --continue",
         ],
     )
     def test_non_commit_git_commands_allowed(self, isolated_home, git_repo, command):
         assert run_hook(CODE_REVIEW_HOOK, bash_input(command), cwd=git_repo) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git -c core.editor=true commit -m foo",
+            "GIT_EDITOR=true git merge --continue",
+        ],
+    )
+    def test_continue_and_concluding_forms_reach_the_gate(self, isolated_home, git_repo, command):
+        """Every commit-concluding shape the narrow predicate recognizes
+        reaches this hook. With no marker present, each denies -- the
+        rebase carve-out's positive case, mirroring the negative case
+        above. The deny depends on git_repo's staged change: with an empty
+        index the gate takes its empty-staged-diff early exit and allows."""
+        assert run_hook(CODE_REVIEW_HOOK, bash_input(command), cwd=git_repo) == "deny"
+
+    def test_noconflict_rebase_edit_stop_with_unrelated_staged_file_does_not_fire(
+        self, isolated_home, tmp_path
+    ):
+        """The rebase carve-out's command-shape exemption (see
+        test_non_commit_git_commands_allowed above) covers more than
+        genuine conflict resolution. At a conflict-free interactive rebase
+        paused on an `edit` step, staging an entirely unrelated file and
+        running `git rebase --continue` with no separate `git commit`
+        never reaches this hook at all. So no marker is required for that
+        file's content -- the narrow predicate's command-shape exclusion of
+        `rebase --continue` is what lets it through, not any conflict-only
+        framing."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+        build_noconflict_rebase_edit_stop(repo)
+        (repo / "unrelated.txt").write_text("unreviewed content\n")
+        subprocess.run(["git", "add", "unrelated.txt"], cwd=repo, check=True)
+        assert run_hook(CODE_REVIEW_HOOK, bash_input("git rebase --continue"), cwd=repo) == "allow"
 
     def test_non_bash_tool_allowed(self, isolated_home, git_repo):
         assert run_hook(CODE_REVIEW_HOOK, edit_input("/tmp/foo.txt"), cwd=git_repo) == "allow"
@@ -299,6 +356,46 @@ class TestRequireCodeReview:
                 CODE_REVIEW_HOOK,
                 bash_input(
                     "~/.claude/scripts/marker.sh write code-review && git commit -m foo",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("verb", ["merge", "cherry-pick", "revert"])
+    def test_chained_marker_write_then_continue_allowed(self, isolated_home, git_repo, verb):
+        """The chain matcher's full --continue union reaches this hook's own
+        in-chain honor check: `marker.sh write code-review && git <verb>
+        --continue` is the natural chained form for every --continue shape
+        the narrow predicate itself recognizes."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    f"~/.claude/scripts/marker.sh write code-review && git {verb} --continue",
+                    session_id=DEFAULT_TEST_SESSION_ID,
+                ),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_marker_write_then_rebase_continue_allowed_but_pointless(
+        self, isolated_home, git_repo
+    ):
+        """`marker.sh write code-review && git rebase --continue` is
+        allowed by the chain matcher, which matches on chain shape rather
+        than on which gate the chained command reaches. This hook's own
+        narrow predicate never recognizes `git rebase --continue` as a
+        commit-concluding shape at all, so the hook exits allow before
+        ever reaching the chain check. The allow is real either way -- this
+        pins that it is not evidence the marker did anything here."""
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(
+                    "~/.claude/scripts/marker.sh write code-review && git rebase --continue",
                     session_id=DEFAULT_TEST_SESSION_ID,
                 ),
                 cwd=git_repo,
@@ -424,6 +521,47 @@ class TestRequireCodeReview:
             == "deny"
         )
 
+    def test_chain_on_a_later_line_of_a_multi_line_command_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """The sanctioned chain must begin the whole command. A per-line
+        anchor would accept this command because its second line alone is
+        the sanctioned shape, e.g. a quoted line in a commit-message
+        heredoc."""
+        cmd = (
+            "echo preparing\n"
+            "~/.claude/scripts/marker.sh write code-review && git commit -m foo"
+        )
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(cmd, session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_chain_followed_by_multi_line_commit_message_still_authorizes(
+        self, isolated_home, git_repo
+    ):
+        """A chain that begins the command keeps its authorization when the
+        commit's own message spans lines: the whole-command anchor lets the
+        tail carry a newline. Gate-local: enforce-marker-script-shape.sh's
+        single-line tail is the stricter layer."""
+        cmd = (
+            '~/.claude/scripts/marker.sh write code-review && git commit -m "subject\n'
+            "\n"
+            'body line"'
+        )
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(cmd, session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+            )
+            == "allow"
+        )
+
     def test_chained_skill_review_marker_does_not_authorize_code_review(
         self, isolated_home, git_repo
     ):
@@ -437,6 +575,25 @@ class TestRequireCodeReview:
                     "~/.claude/scripts/marker.sh write skill-review && git commit -m foo",
                     session_id=DEFAULT_TEST_SESSION_ID,
                 ),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_different_skill_chain_with_target_write_quoted_in_commit_tail_does_not_authorize(
+        self, isolated_home, git_repo
+    ):
+        """The target-skill check reads only the chain before `git`. A
+        `marker.sh write code-review` line quoted in the commit's own
+        arguments must not stand in for a code-review write in the chain."""
+        cmd = (
+            "~/.claude/scripts/marker.sh write skill-review && git commit -m "
+            '"subject\n\n~/.claude/scripts/marker.sh write code-review\n"'
+        )
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input(cmd, session_id=DEFAULT_TEST_SESSION_ID),
                 cwd=git_repo,
             )
             == "deny"
@@ -496,13 +653,13 @@ class TestRequireCodeReview:
         )
 
     def test_sed_absent_from_path_denies(self, isolated_home, git_repo, tmp_path):
-        """Status-2 propagation: the matcher could not determine whether
-        this command invokes git commit, and this gate's own documented
-        fail-closed posture means an undetermined match denies rather than
-        silently falling through to allow. Asserts the distinguishing
-        reason text, not just the verdict, so this test cannot be
-        satisfied by an ordinary missing-review deny reaching "deny" for
-        the wrong reason."""
+        """Status-2 propagation on the specific predicate this hook calls,
+        _lib_command_concludes_marker_gated_commit (the narrow predicate):
+        this gate's own documented fail-closed posture means an
+        undetermined match denies rather than silently falling through to
+        allow. Asserts the distinguishing reason text, not just the
+        verdict, so this test cannot be satisfied by an ordinary
+        missing-review deny reaching "deny" for the wrong reason."""
         farm_dir = tmp_path / "path-without-sed"
         farm_dir.mkdir()
         restricted_path = build_path_without("sed", farm_dir)
@@ -597,14 +754,36 @@ class TestRequireCodeReviewComplianceLog:
     def _log_path(self, isolated_home: Path) -> Path:
         return isolated_home / ".claude" / f".{self.COMPLIANCE_LOG}"
 
-    def _ledger_file_path(self, isolated_home: Path, repo: Path, session_id: str) -> Path:
-        repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
-        return (
-            isolated_home
-            / ".claude"
-            / "review-narrative-ledger"
-            / f"{repo_hash}.{session_id}.jsonl"
+    def _write_ledger_rows(self, isolated_home: Path, repo: Path, session_id: str, *rows: dict) -> None:
+        """Write `rows` to the ledger file review-ledger.sh would append to for
+        `repo`'s current HEAD, in jq -c's compact form (no space after `:` or `,`)."""
+        ledger = _review_ledger_path(isolated_home, repo, session_id)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows))
+
+    def _write_ledger_file(self, isolated_home: Path, file_name: str, *rows: dict) -> None:
+        """Write `rows` to `file_name` in the ledger directory, in jq -c's compact form."""
+        ledger = isolated_home / ".claude" / "review-narrative-ledger" / file_name
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows))
+
+    def _repo_hash(self, repo: Path) -> str:
+        return hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+
+    def _ledger_state_after_commit(
+        self, isolated_home: Path, repo: Path, session_id: str = DEFAULT_TEST_SESSION_ID
+    ) -> str:
+        """Run the gate as `session_id` on a reviewed commit and return the logged ledger= value.
+        The marker is written under the default session id, since the gate matches markers across
+        every session suffix."""
+        write_marker(isolated_home, repo, staged_diff_hash(repo), session_id=DEFAULT_TEST_SESSION_ID)
+        run_hook(
+            CODE_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=session_id),
+            cwd=repo,
         )
+        line = self._log_path(isolated_home).read_text().splitlines()[0]
+        return next(field for field in line.split() if field.startswith("ledger=")).removeprefix("ledger=")
 
     def test_log_line_appended_on_match(self, isolated_home, git_repo):
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=DEFAULT_TEST_SESSION_ID)
@@ -636,10 +815,14 @@ class TestRequireCodeReviewComplianceLog:
         assert "ledger=absent" in lines[0]
 
     def test_log_line_reports_ledger_present(self, isolated_home, git_repo):
+        """Legacy case: a session-scoped file whose rows carry no session_id."""
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=DEFAULT_TEST_SESSION_ID)
-        ledger = self._ledger_file_path(isolated_home, git_repo, DEFAULT_TEST_SESSION_ID)
-        ledger.parent.mkdir(parents=True)
-        ledger.write_text('{"finding":"f","disposition":"ADDRESS","rationale":"r","source":"n/a"}\n')
+        self._write_ledger_rows(
+            isolated_home,
+            git_repo,
+            DEFAULT_TEST_SESSION_ID,
+            {"finding": "f", "disposition": "ADDRESS", "rationale": "r", "source": "n/a"},
+        )
 
         run_hook(
             CODE_REVIEW_HOOK,
@@ -649,6 +832,130 @@ class TestRequireCodeReviewComplianceLog:
 
         lines = self._log_path(isolated_home).read_text().splitlines()
         assert "ledger=present" in lines[0]
+
+    def test_log_line_reports_present_for_own_row_in_branch_file(self, isolated_home, git_repo):
+        subprocess.run(["git", "checkout", "-q", "-b", "feature/own-row"], cwd=git_repo, check=True)
+        self._write_ledger_rows(
+            isolated_home,
+            git_repo,
+            DEFAULT_TEST_SESSION_ID,
+            {"finding": "f", "disposition": "ADDRESS", "session_id": "sess-other"},
+            {"finding": "g", "disposition": "ADDRESS", "session_id": DEFAULT_TEST_SESSION_ID},
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "present"
+
+    def test_log_line_reports_absent_when_branch_file_holds_only_other_sessions_rows(
+        self, isolated_home, git_repo
+    ):
+        subprocess.run(["git", "checkout", "-q", "-b", "feature/other-rows"], cwd=git_repo, check=True)
+        self._write_ledger_rows(
+            isolated_home,
+            git_repo,
+            DEFAULT_TEST_SESSION_ID,
+            {"finding": "f", "disposition": "ADDRESS", "session_id": "sess-other"},
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "absent"
+
+    def test_log_line_reports_absent_when_session_id_only_appears_inside_another_rows_finding(
+        self, isolated_home, git_repo
+    ):
+        """A finding quoting this session's `"session_id":"<id>"` text is
+        escaped by jq (`\\"`), so it must not count as this session's row."""
+        subprocess.run(["git", "checkout", "-q", "-b", "feature/quoted-id"], cwd=git_repo, check=True)
+        self._write_ledger_rows(
+            isolated_home,
+            git_repo,
+            DEFAULT_TEST_SESSION_ID,
+            {
+                "finding": f'row has "session_id":"{DEFAULT_TEST_SESSION_ID}" in its text',
+                "disposition": "ADDRESS",
+                "session_id": "sess-other",
+            },
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "absent"
+
+    def test_log_line_reports_present_for_row_appended_by_review_ledger_script(self, isolated_home, git_repo):
+        """Writer-to-reader round trip: a row the real `review-ledger.sh append`
+        wrote into the branch's file is found by the gate's fixed-string match."""
+        subprocess.run(["git", "checkout", "-q", "-b", "feature/round-trip"], cwd=git_repo, check=True)
+        _seed_session(isolated_home, DEFAULT_TEST_SESSION_ID)
+        env = {**os.environ, "HOME": str(isolated_home)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        subprocess.run(
+            [
+                "bash", str(SCRIPTS_DIR / "review-ledger.sh"), "append", "code-review",
+                "--finding", "f", "--disposition", "ADDRESS", "--rationale", "r", "--round", "1",
+            ],
+            cwd=git_repo,
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+        session_file = (
+            isolated_home / ".claude" / "review-narrative-ledger"
+            / f"{self._repo_hash(git_repo)}.{DEFAULT_TEST_SESSION_ID}.jsonl"
+        )
+        assert not session_file.exists(), "the row must sit in the branch's file so the row match is what is exercised"
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "present"
+
+    def test_log_line_reports_absent_when_only_another_repos_file_names_the_session(
+        self, isolated_home, git_repo
+    ):
+        other_repo_hash = "0" * 64
+        self._write_ledger_file(
+            isolated_home,
+            f"{other_repo_hash}.some-branch-hash.jsonl",
+            {"finding": "f", "disposition": "ADDRESS", "session_id": DEFAULT_TEST_SESSION_ID},
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "absent"
+
+    @pytest.mark.parametrize(
+        "file_key",
+        ["another-branch-hash", "sess-other"],
+        ids=["another-branch-file", "another-session-file"],
+    )
+    def test_log_line_reports_present_when_a_non_current_file_under_this_repo_names_the_session(
+        self, isolated_home, git_repo, file_key
+    ):
+        """The scan covers every file under this repo-hash, so the gate needs no git call to resolve the branch."""
+        self._write_ledger_file(
+            isolated_home,
+            f"{self._repo_hash(git_repo)}.{file_key}.jsonl",
+            {"finding": "f", "disposition": "ADDRESS", "session_id": DEFAULT_TEST_SESSION_ID},
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "present"
+
+    @pytest.mark.parametrize(
+        "session_id",
+        ["", "a.b", "../escape", 'has"quote'],
+        ids=["empty", "dot", "path-escape", "quote"],
+    )
+    def test_log_line_reports_absent_for_invalid_session_id_even_when_a_row_names_it(
+        self, isolated_home, git_repo, session_id
+    ):
+        self._write_ledger_file(
+            isolated_home,
+            f"{self._repo_hash(git_repo)}.some-branch-hash.jsonl",
+            {"finding": "f", "disposition": "ADDRESS", "session_id": session_id},
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo, session_id=session_id) == "absent"
+
+    def test_log_line_reports_absent_when_only_a_longer_session_id_has_rows(self, isolated_home, git_repo):
+        """`x` must not match `x-2`: the match pattern closes the id's quote."""
+        self._write_ledger_file(
+            isolated_home,
+            f"{self._repo_hash(git_repo)}.some-branch-hash.jsonl",
+            {"finding": "f", "disposition": "ADDRESS", "session_id": f"{DEFAULT_TEST_SESSION_ID}-2"},
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "absent"
 
     def test_log_line_has_iso8601_timestamp(self, isolated_home, git_repo):
         run_hook(
@@ -1244,17 +1551,18 @@ class TestRequireCodeReviewMergeAwareBase:
         )
 
 
-def _make_blocking_diff_git(bin_dir: Path) -> Path:
-    """For `diff` specifically, writes a partial line to stdout then blocks
-    past the 5s cap; every other subcommand proxies to the real git. Local
-    copy of test_lib.py's shim of the same name."""
+def _make_blocking_diff_git(bin_dir: Path, stdout_before_block: str = "partialline") -> Path:
+    """For `diff` specifically, writes `stdout_before_block` to stdout (nothing
+    when empty) then blocks past the 5s cap; every other subcommand proxies to
+    the real git. Extended local copy of test_lib.py's shim of the same name
+    (it takes `stdout_before_block`)."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     shim = bin_dir / "git"
     shim.write_text(
         '#!/bin/bash\n'
         'for arg in "$@"; do\n'
         '  if [ "$arg" = "diff" ]; then\n'
-        '    printf "partialline"\n'
+        f'    printf "{stdout_before_block}"\n'
         '    sleep 20\n'
         '    exit 0\n'
         '  fi\n'
@@ -1288,6 +1596,33 @@ class TestRequireCodeReviewEmptyDiffCheckCapFaultInjection:
         unreviewed commit through."""
         bin_dir = tmp_path / "bin-blocking-diff"
         _make_blocking_diff_git(bin_dir)
+        extra_env = {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+        }
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=git_repo,
+                extra_env=extra_env,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.timing
+    @pytest.mark.skipif(
+        not _timeout_binary_present(), reason="no timeout/gtimeout on PATH to fire the cap"
+    )
+    def test_blocked_diff_with_zero_output_denies_rather_than_allows_as_nothing_staged(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """A `git diff --cached` killed past the cap before printing anything
+        leaves EMPTY_DIFF_CHECK empty, indistinguishable by output alone from
+        a genuinely empty diff -- the killed status must keep it from taking
+        the nothing-staged exit, since git_repo has a real staged change."""
+        bin_dir = tmp_path / "bin-blocking-diff-zero-output"
+        _make_blocking_diff_git(bin_dir, stdout_before_block="")
         extra_env = {
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "REAL_GIT": shutil.which("git"),
@@ -1546,5 +1881,182 @@ class TestRequireCodeReviewDiffBaseFixtureShapes:
                 cwd=worktree,
             )
             == "allow"
+        )
+
+
+def _init_repo_on_branch(path: Path, branch: str) -> None:
+    """Same minimal-repo shape as test_lib.py's own private helper of this
+    name. Deliberately duplicated per test file (DAMP over DRY) so each file's
+    fixture setup reads in full without a shared-helper indirection."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "-b", branch], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    (path / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
+
+
+DENY_INVISIBLE_COMMIT_CONTENT_HOOK = HOOKS_DIR / "deny-invisible-commit-content.sh"
+
+
+class TestRequireCodeReviewCleanIndexContinueEmptyDiffBypass:
+    """A cherry-pick or merge whose conflict is resolved to HEAD's own
+    pre-operation content leaves CHERRY_PICK_HEAD/MERGE_HEAD present but the
+    index clean (`git diff --cached` empty). Since neither ref is reachable
+    from a remote-tracking ref (no origin is configured here) or from HEAD
+    (a diverged sibling), GATE_DIFF_BASE is empty exactly as in the ordinary
+    no-in-progress-state case, so a bare `git <verb> --continue` takes
+    require-code-review.sh's empty-staged-diff early exit with no marker
+    required -- the exposure this class pins as suite fact. Chaining a real
+    staged file ahead of the `--continue` in the same Bash call closes it:
+    deny-invisible-commit-content.sh recognizes that shape and denies before
+    the marker gate ever runs. Splitting the same two commands into separate
+    Bash calls also closes it, since the second call's index is dirty and
+    the early exit does not fire.
+
+    The cherry-pick, merge, and revert forms below each pin three parts on an
+    independent construction: the bare `--continue` allows via the early
+    exit, the chained form denies, and the split form denies."""
+
+    # --- cherry-pick form ---
+
+    def test_bare_cherry_pick_continue_allows_via_empty_diff_early_exit(
+        self, isolated_home, tmp_path
+    ):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_cherry_pick(repo, resolve_to_head=True)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git cherry-pick --continue", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_add_then_cherry_pick_continue_denied_by_toctou_gate(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_cherry_pick(repo, resolve_to_head=True)
+        (repo / "unreviewed.txt").write_text("payload\n")
+        assert (
+            run_hook(
+                DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+                bash_input("git add unreviewed.txt && git cherry-pick --continue"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_split_add_then_cherry_pick_continue_denies_on_dirty_index(
+        self, isolated_home, tmp_path
+    ):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_cherry_pick(repo, resolve_to_head=True)
+        (repo / "unreviewed.txt").write_text("payload\n")
+        subprocess.run(["git", "add", "unreviewed.txt"], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git cherry-pick --continue", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    # --- merge form: a fork-branch merge can reach neither trusted anchor
+    # exactly as an unmerged-source cherry-pick can, and merge is the
+    # motivating case for gating --continue commit content at all ---
+
+    def test_bare_merge_continue_allows_via_empty_diff_early_exit(self, isolated_home, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_merge(repo, resolve_to_head=True)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git merge --continue", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_add_then_merge_continue_denied_by_toctou_gate(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_merge(repo, resolve_to_head=True)
+        (repo / "unreviewed.txt").write_text("payload\n")
+        assert (
+            run_hook(
+                DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+                bash_input("git add unreviewed.txt && git merge --continue"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_split_add_then_merge_continue_denies_on_dirty_index(self, isolated_home, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_merge(repo, resolve_to_head=True)
+        (repo / "unreviewed.txt").write_text("payload\n")
+        subprocess.run(["git", "add", "unreviewed.txt"], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git merge --continue", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    # --- revert form: build_conflicted_revert_of_unmerged_commit gives
+    # REVERT_HEAD the same unreached-anchor property CHERRY_PICK_HEAD has
+    # by default, and revert is in _LIB_CONTINUE_VERBS_MARKER_GATED
+    # alongside merge/cherry-pick ---
+
+    def test_bare_revert_continue_allows_via_empty_diff_early_exit(self, isolated_home, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert_of_unmerged_commit(repo, resolve_to_head=True)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git revert --continue", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_chained_add_then_revert_continue_denied_by_toctou_gate(self, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert_of_unmerged_commit(repo, resolve_to_head=True)
+        (repo / "unreviewed.txt").write_text("payload\n")
+        assert (
+            run_hook(
+                DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+                bash_input("git add unreviewed.txt && git revert --continue"),
+                cwd=repo,
+            )
+            == "deny"
+        )
+
+    def test_split_add_then_revert_continue_denies_on_dirty_index(self, isolated_home, tmp_path):
+        repo = tmp_path / "repo"
+        _init_repo_on_branch(repo, "main")
+        build_conflicted_revert_of_unmerged_commit(repo, resolve_to_head=True)
+        (repo / "unreviewed.txt").write_text("payload\n")
+        subprocess.run(["git", "add", "unreviewed.txt"], cwd=repo, check=True)
+        assert (
+            run_hook(
+                CODE_REVIEW_HOOK,
+                bash_input("git revert --continue", session_id=DEFAULT_TEST_SESSION_ID),
+                cwd=repo,
+            )
+            == "deny"
         )
 

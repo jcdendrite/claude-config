@@ -160,18 +160,19 @@ The author-outcome command family: `cmd_author_outcome` and every helper used on
 for each `--agent`-typed dispatch (default `code-writer`), joins it to the `code-review` round
 that judged its diff (`compute_author_outcomes`), by completion-index ordering against
 `review_rounds.detect_round_windows`' own `open_idx`, and classifies the outcome by reading that
-session's own review-narrative-ledger files directly. `_ledger_files_for_session` locates every
-file matching a session-id glob under `<config_dir_root>/review-narrative-ledger/`, and
-`_read_ledger_row_entries_for_session` reads and merges all of them, sorted by `event_time`. See
-`docs/transcript-analysis.md`'s author-outcome section ("Ledger lookup") for the merge behavior
-and the residual gaps it still leaves. Ledger rows are
-matched to a round by exact `round`-field equality against that round's own 1-indexed position in
-the transcript's round-open sequence. The transcript is still the sole source for round-open
-positions, dispatch completion ordering, and the `marker.sh write code-review` Bash `tool_use`
-fallback signal used only when a round has no ledger row at all (`_is_clean_marker_write`).
+session's own review-narrative-ledger rows directly. `_LedgerIndex` holds one config-dir root's
+parsed ledger files, refreshed on every session lookup, and attributes each row to a session by
+its `session_id` field or, for a row without one, by its filename. `_read_ledger_row_entries_for_session`
+returns one session's rows sorted by `event_time`. See `docs/transcript-analysis.md`'s
+author-outcome section ("Ledger lookup") for the attribution rules and the residual gaps they
+still leave. `_round_blocks` groups a session's rows into blocks, and the k-th round-open takes
+the k-th block by rank, not by `round` value. The transcript is still the sole source for
+round-open positions, dispatch completion ordering, and the `marker.sh write code-review` Bash
+`tool_use` fallback signal used only when a round has no ledger row at all
+(`_is_clean_marker_write`).
 
 See `_lib.sh`'s own `_lib_acquire_append_lock`/`_lib_append_json_line_locked`
-docstrings for the append-lock mechanism `review-ledger.sh`'s schema-v2
+docstrings for the append-lock mechanism `review-ledger.sh`'s
 write depends on.
 
 Imports `corpus`, `pricing`, `render`, `review_rounds`, and `scope` all by module

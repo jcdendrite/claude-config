@@ -2342,7 +2342,7 @@ class TestRequirePlanReviewPlanMode:
         falls through to this class's baseline armed-gate logic, which
         denies with no file_path present (see this class's own docstring).
 
-        The hook's first jq call (_lib_parse_tool_input_or_deny's six-field
+        The hook's first jq call (_lib_parse_tool_input_or_deny's shared
         extraction) is already _lib_jq-wrapped and would itself deny within
         budget on an always-hung jq, which would pass this test even if the
         second call (planFilePath, this test's actual target) were still

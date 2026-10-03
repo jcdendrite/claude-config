@@ -18,7 +18,10 @@
 # prefixes, and gh subcommand flags written ahead of the subcommand, then
 # exits immediately — before any git or scan work — when no gated surface
 # (git commit / gh pr create|edit / gh issue create|comment|edit /
-# mutating gh api) is present.
+# mutating gh api) is present. `git <merge|rebase|cherry-pick|revert>
+# --continue` is a gated surface too, via _lib_command_concludes_commit —
+# each of those four conveys new content the same way a literal `git commit`
+# does.
 #
 # Scope and limits:
 # - Catches the mechanical category (tracker IDs shaped like [A-Z]{2,}-\d+).
@@ -362,6 +365,22 @@ while IFS= read -r fragment; do
       ;;
   esac
 done <<< "$FRAGMENTS"
+
+# The fragment loop above only recognizes a literal `git commit`. A `git
+# <merge|rebase|cherry-pick|revert> --continue` concludes a commit too, with
+# no separate `git commit` call for the loop to see — checked here, once,
+# via the broad predicate, which stays armed on `git rebase --continue`; see:
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "Why `git rebase --continue` is not gated by the marker gates"
+if [ "$IS_GIT_COMMIT" -eq 0 ]; then
+  _lib_command_concludes_commit "$COMMAND"
+  CONCLUDES_COMMIT_STATUS=$?
+  if [ "$CONCLUDES_COMMIT_STATUS" -eq 0 ]; then
+    IS_GIT_COMMIT=1
+  elif [ "$CONCLUDES_COMMIT_STATUS" -ne 1 ]; then
+    emit_deny "could not determine whether this command concludes a git commit (status ${CONCLUDES_COMMIT_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command."
+    exit 0
+  fi
+fi
 
 if [ "$IS_GIT_COMMIT" -eq 0 ] && [ "$IS_GH_PR" -eq 0 ] && [ "$IS_GH_ISSUE" -eq 0 ] && [ "$IS_GH_API" -eq 0 ]; then
   exit 0
