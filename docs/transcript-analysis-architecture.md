@@ -15,8 +15,8 @@ Every command-group module moves in leafward first: the shim imports it, never t
 circular import is possible while `cmd_*` functions remain split across both the shim and the
 package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `review_trace.py`,
 `read_scope.py`, `pr_cost.py`, `pr_cost_export.py`, `cache_rebuild.py`, `audit_routing.py`,
-`cost_ledger.py`, and `workstream_cost.py` are the only modules the shim imports back into (not
-just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
+`cost_ledger.py`, `workstream_cost.py`, `subagents.py`, and `subagent_mix.py` are the only modules
+the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. Two
 still-unmigrated friction/command-shape helpers likewise call `denials.py`'s
 `hook_denial_key`/`_drop_denial_command_flag_values` by name from the shim.
@@ -35,6 +35,10 @@ package's first two imports from one command-group module into another.
 `_CACHE_REBUILD_DEFAULT_THRESHOLD`) from the shim.
 `build_parser()` likewise wires up `audit_routing.py`'s `cmd_audit_routing`,
 `cmd_audit_routing_shape`, and `cmd_audit_routing_samples` from the shim.
+`build_parser()` likewise wires up `subagents.py`'s `cmd_subagents` and `subagent_mix.py`'s
+`cmd_subagent_mix`/`cmd_cost_counts` from the shim.
+The still-unmigrated context-composition code reads `subagents.py`'s `_MCP_TOOL_BUCKET_LABEL` by
+name from the shim.
 
 ## The package
 
@@ -72,10 +76,11 @@ and session/branch/subagent-type label assignment. Reads `scope.PROJECTS_DIR` an
 `render._sanitize_table_cell` directly (not by attribute access, since it's a pure function with
 no reassignable state) to strip control characters from a `--this-repo`-disclosed raw label
 before it reaches a table row. No cycle: `render.py` stays a leaf with no dependency back on
-`redaction.py`. The shim's `cmd_subagents`/`cmd_subagent_mix` also call `_sanitize_table_cell`
-directly on their single-root labels, and on `cmd_subagents`' `tool_name` column. Every
-`gitBranch`/`subagent_type`/`tool_name` value these two subcommands print is therefore
-control-character-sanitized unconditionally, regardless of the `--this-repo`/multi-root
+`redaction.py`. `subagents.py`'s `cmd_subagents` and `subagent_mix.py`'s `cmd_subagent_mix` also
+call `render._sanitize_table_cell` on their single-root labels, and `cmd_subagents` also calls it
+on its `tool_name` column. Every `gitBranch`/`subagent_type`/`tool_name` value these two
+subcommands print is therefore control-character-sanitized unconditionally, regardless of the
+`--this-repo`/multi-root
 disclosure gating described above. The model-mix table's `Declared` column is a deliberate
 exception: it's read from a local agent-definition file's own `model:` frontmatter, not from
 transcript content, and is left unsanitized on the theory that a local file's trust boundary
@@ -89,9 +94,9 @@ Also owns the `--this-repo` subagent_type disclosure allowlist:
 - `_repo_tracked_agent_type_names` — the stems of every `agents/*.md` file that directory
   git-tracks, unioned with `_BUILT_IN_AGENT_TYPES`.
 
-The shim's `cmd_subagent_mix` and `cmd_cost_counts` call `_repo_tracked_agent_type_names` bare to gate
-which raw `subagent_type` values a `--this-repo` report may disclose versus fold into a withheld
-row.
+`subagent_mix.py`'s `cmd_subagent_mix` and `cmd_cost_counts` call
+`redaction._repo_tracked_agent_type_names` (attribute access) to gate which raw `subagent_type`
+values a `--this-repo` report may disclose versus fold into a withheld row.
 
 ### `pricing.py`
 
@@ -137,8 +142,8 @@ per-branch review-round-window detection across both the `Skill` tool_use and `/
 shapes, and recursive per-round subagent dollar attribution via `corpus._index_subagent_dispatches`'
 toolUseId join (`compute_review_round_costs`). Also exports `compute_review_round_counts`, a
 count-only sibling reusing the same detection helpers to produce per-skill round counts with no
-pricing, no dispatch index, and no recursion — the shim's `cmd_cost_counts` calls it for the
-`### Review rounds` half of its output. Imports `corpus`, `pricing`, `redaction`, `render`,
+pricing, no dispatch index, and no recursion — `subagent_mix.py`'s `cmd_cost_counts` calls it as
+`review_rounds.compute_review_round_counts` for the `### Review rounds` half of its output. Imports `corpus`, `pricing`, `redaction`, `render`,
 and `scope` all by module (attribute access), matching `cost.py`'s convention — deliberately no
 `cost.py` import: a round's own branch is its opening record's own `gitBranch`, carried forward
 when absent, and every record inside that round's window is attributed to it, never
@@ -325,6 +330,29 @@ classification pass reusing pr-cost's own repo-pinning machinery. Imports `cost`
 and `scope` all by module (attribute access), matching `cost.py`'s convention. `cmd_workstream_cost`
 is the one name reached bare from the shim.
 
+### `subagents.py`
+
+The subagents command: `cmd_subagents` and `_MCP_TOOL_BUCKET_LABEL` — per-branch `isSidechain` turn
+counts by model family, plus tool-result text bytes per thread and per producing tool, with every
+`mcp__<server>__<tool>` name collapsed into the one bucket label (an MCP server name is a per-account
+integration identifier). Imports `corpus`, `pricing`, `redaction`, `render`, and `scope` all by
+module (attribute access), matching `cost.py`'s convention. `cmd_subagents` and
+`_MCP_TOOL_BUCKET_LABEL` are the two names reached bare from the shim: `build_parser()` wires up the
+former, and the still-unmigrated context-composition code reads the latter.
+
+### `subagent_mix.py`
+
+The subagent-mix and cost-counts commands: `cmd_subagent_mix` and `cmd_cost_counts`, plus every helper
+only they use — `_dispatch_usage_summary` (one dispatch's modal observed model and priced dollar
+totals), the `--this-repo` disclosure partition (`_partition_spawn_counts_by_disclosure`), and
+`_UNKNOWN_SUBAGENT_TYPE`, which both commands' spawn counting reads so the two never disagree on the
+fallback `subagent_type`. Imports `corpus`, `pricing`, `redaction`, `render`, `review_rounds`, and
+`scope` all by module (attribute access), matching `cost.py`'s convention.
+`cmd_cost_counts` reads its one root, `config_dir() / "projects"`, as `scope.config_dir()` by
+attribute access, per the rule under `scope.py` above, so `fake_projects`' existing
+`scope.config_dir` patch isolates it with no further patch. `cmd_subagent_mix` and `cmd_cost_counts`
+are the two names reached bare from the shim, from `build_parser()`.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -363,7 +391,7 @@ on. `tests/conftest.py` carries the shared fixtures that reach across the shim/p
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
 `cost_ledger_file`, `cost_ledger_enabled`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`,
 `_compact_boundary_rec`, `_cost_ledger_args`, `_cost_ledger_row`, `_two_declared_roots`,
-`_exit_plan_mode`, `_priced_opus`, `_read_use`, `_thinking_block`); see its own
+`_exit_plan_mode`, `_priced_opus`, `_priced_sidechain_asst`, `_read_use`, `_thinking_block`); see its own
 docstrings for why `fake_projects` patches five `config_dir` bindings: `scope.config_dir` and the
 shim's still-independent `config_dir` (for spend-over-threshold and rearm-backtest, not yet moved
 into the package), plus `cost_ledger.config_dir`, `ledger_common.config_dir`, and
@@ -409,6 +437,23 @@ degenerate corpora, concurrency, and CLI wiring; `tests/test_transcript_cost_led
 covers every path where `--record` must refuse and write nothing, plus each gate's boundary success
 cases (`TestCostLedgerPublishSafety`, `TestCostLedgerSentinelGate`). `workstream_cost.py`'s own
 tests live in `tests/test_transcript_workstream_cost.py`, alongside `cost.py`'s
-`_compute_workstream_dollars` coverage. `tests/test_transcript_cost_ledger_module_prefixes.py` pins
-both new modules' by-module import discipline, and their test files' `_mod.<module>.<name>` reads,
-to real bindings — a permanent check rather than a one-time migration-time script.
+`_compute_workstream_dollars` coverage. `tests/test_transcript_package_module_prefixes.py` pins the
+by-module import discipline of every module in its `PRODUCTION_MODULES` tuple, and the
+`_mod.<module>.<name>` reads in every test file in its `TEST_FILES` tuple, to real bindings — a
+permanent check rather than a one-time migration-time script.
+
+The subagent command family splits at command seams rather than one file per module:
+`tests/test_transcript_subagents.py` covers `cmd_subagents`, plus the declared-roots multi-root class
+for both `cmd_subagents` and `cmd_subagent_mix`; `tests/test_transcript_subagent_mix.py` covers
+`cmd_subagent_mix`'s spawn table, model-mix columns, declared-pin path safety, `--since`, and
+multi-root disclosure; `tests/test_transcript_subagent_mix_dollars.py` covers the `Actual $` and
+`Counterfactual $` columns and `_dispatch_usage_summary`'s dedup-before-pricing; and
+`tests/test_transcript_cost_counts.py` covers `cmd_cost_counts`'s refusals, rendering, disclosure
+allowlist, and the agent-type charset pin. The first three share `tests/_subagent_helpers.py`, a plain
+module, not a test file itself; `tests/test_transcript_analysis.py` imports it too. Its own consumers import it as `from ._subagent_helpers import ...` —
+see `.claude/rules/test-tree-packaging.md` for why. It holds only helpers used by more than one file,
+or by `tests/test_transcript_analysis.py` as well: `_sum_column_across_rows`, `_subagent_mix_args`,
+and `_subagents_args`. Each file keeps its other family-only helpers local to itself.
+`TestFormatDriftCanary` stays in `tests/test_transcript_analysis.py` rather than moving with the
+family: it spans subagents, skill-pair, and cache-efficiency. `TestSubagentFormatContract` stays
+there too: it pins `corpus.py`'s on-disk subagent-file contract and reads no name from the family.
