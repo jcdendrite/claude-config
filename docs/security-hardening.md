@@ -271,6 +271,7 @@ Untested:
 - Headless `-p` runs.
 - Older Claude Code versions.
 - The shipped hook's reason text in any configuration.
+- `dontAsk` in a live session.
 
 Separately, OWASP's [GenAI Security Project — LLM01:2025 Prompt
 Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) gives a
@@ -566,18 +567,21 @@ variables include:
 - `CLAUDE_CODE_ENABLE_TELEMETRY` — OpenTelemetry export (off unless set).
 - `DISABLE_ERROR_REPORTING` — disable error reporting to Anthropic.
 - `DISABLE_BUG_COMMAND` — disable the `/bug` command.
-- `DISABLE_NON_ESSENTIAL_TRAFFIC` — block non-essential external calls.
+- `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` — block non-essential external calls.
 
 Verify exact names against the docs before relying on them — the set
 evolves. Set the chosen values under `env` in
 `<config-dir>/settings.overlay.json` (gitignored), not the tracked
 `settings.base.json`. `render-settings.sh` merges the overlay into the live
-`settings.json`. Only `env` names in a vendor-recognized configuration
-namespace are accepted — see
+`settings.json`. The overlay accepts only the five variables above plus
+`ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` — see
 [`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson) for
-that namespace rule — or enforce the values via managed settings, below.
-A credential-named `env` key is refused; configure credentials through
-`apiKeyHelper` or a shell-profile export instead.
+the allowlist — or enforce the values via managed settings, below.
+Export any other variable from a shell profile. For a credential, prefer
+`apiKeyHelper` over any file, because the credential read gates cover no
+shell profile, overlay, or rendered `settings.json`. A credential exported
+into the shell environment is readable by any Bash call (`printenv`, `env`,
+`/proc/self/environ`), so prefer a helper that reads from a secret store.
 `ensure-settings-render.sh` re-renders on every new shell, which overwrites
 an `env` value hand-edited into the generated `~/.claude/settings.json`; see
 its entry in [`docs/scripts.md`](scripts.md). `env.CLAUDE_CODE_EFFORT_LEVEL`

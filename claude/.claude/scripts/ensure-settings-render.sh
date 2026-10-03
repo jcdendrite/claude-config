@@ -40,8 +40,16 @@ fi
 . "$(dirname "${BASH_SOURCE[0]}")/_capped-for-lib.sh"
 
 # render-settings.sh resolves the same profile from the inherited CLAUDE_CONFIG_DIR.
+# Without a timeout binary the render runs uncapped and silent, since the note
+# _lib_capped_for prints for that case would repeat in every new shell.
+# The probe below must list the same binaries as _lib_capped_for's own probe
+# (hooks/_lib.sh), or a binary added there leaves this branch uncapped.
 render_status=0
-_capped_for 5 "$render_script" || render_status=$?
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+  _capped_for 5 "$render_script" || render_status=$?
+else
+  "$render_script" || render_status=$?
+fi
 if [[ "$render_status" -eq 0 ]]; then
   exit 0
 fi
@@ -54,18 +62,26 @@ else
   failure_detail="failed -- see the error above"
 fi
 
+# -f matches install.sh's notice: a missing or dangling settings.json holds no
+# rules, so reassuring the user about "previous" ones would be false.
+if [[ -f "$config_dir/settings.json" ]]; then
+  render_failure_consequence="an existing settings.json keeps its previous deny rules and hooks, and base changes are not delivered until the render succeeds"
+else
+  render_failure_consequence="settings.json is missing or dangling, so no deny rules or hooks are active until the render succeeds"
+fi
+
 if [[ "$is_default_profile" == "true" ]]; then
   repo_dir=""
   if [[ -r "$HOME/.claude-config-source" ]]; then
     repo_dir="$(cat -- "$HOME/.claude-config-source" 2>/dev/null)" || repo_dir=""
   fi
   if [[ -n "$repo_dir" ]]; then
-    printf 'ensure-settings-render.sh: render of %s/settings.json %s; if settings.base.json or the stow links are missing, run: cd %q && ./install.sh\n' "$config_dir" "$failure_detail" "$repo_dir" >&2
+    printf 'ensure-settings-render.sh: render of %s/settings.json %s; %s; if settings.base.json or the stow links are missing, run: cd %q && ./install.sh\n' "$config_dir" "$failure_detail" "$render_failure_consequence" "$repo_dir" >&2
   else
-    printf 'ensure-settings-render.sh: render of %s/settings.json %s; if settings.base.json or the stow links are missing, re-run install.sh from your claude-config checkout.\n' "$config_dir" "$failure_detail" >&2
+    printf 'ensure-settings-render.sh: render of %s/settings.json %s; %s; if settings.base.json or the stow links are missing, re-run install.sh from your claude-config checkout.\n' "$config_dir" "$failure_detail" "$render_failure_consequence" >&2
   fi
 else
-  printf 'ensure-settings-render.sh: render of %s/settings.json %s; to re-render this profile, run: CLAUDE_CONFIG_DIR=%q ~/.claude/scripts/render-settings.sh\n' "$config_dir" "$failure_detail" "$config_dir" >&2
+  printf 'ensure-settings-render.sh: render of %s/settings.json %s; %s; to re-render this profile, run: CLAUDE_CONFIG_DIR=%q ~/.claude/scripts/render-settings.sh\n' "$config_dir" "$failure_detail" "$render_failure_consequence" "$config_dir" >&2
 fi
 
 exit 0

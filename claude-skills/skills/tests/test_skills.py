@@ -5,11 +5,11 @@ Skills in this repo fall into four invocation categories:
   `description` at session start and auto-loads the skill body when the
   description matches context. These skills MUST carry TRIGGER when: /
   DO NOT TRIGGER when: discipline so the harness fires at the right time.
-- name-only (skillOverrides: name-only in settings.json): description excluded
+- name-only (skillOverrides: name-only in settings.base.json): description excluded
   from the always-loaded listing budget; the model can still invoke by exact
   name when referenced in conversation. No TRIGGER discipline required (no
   description to match on). Also slash-invocable by the user. Controlled via
-  settings.json, not frontmatter — must NOT carry disable-model-invocation: true.
+  settings.base.json, not frontmatter — must NOT carry disable-model-invocation: true.
   Two bundled Claude Code skills (loop, simplify) use this mode with no repo
   SKILL.md — see BUILTIN_NAME_ONLY_SKILLS.
 - User-only commands (disable-model-invocation: true): description excluded from
@@ -150,7 +150,7 @@ def _specialist_skills() -> list[str]:
 
 
 def _settings_skill_overrides() -> dict[str, str]:
-    """Read skillOverrides from the stowed settings.json.
+    """Read skillOverrides from the stow-source settings.base.json.
 
     Returns the override map keyed by skill name. Skills absent from the map
     default to "on" (fully model-invokable with description in budget).
@@ -161,7 +161,7 @@ def _settings_skill_overrides() -> dict[str, str]:
 
 
 def _name_only_skills() -> list[str]:
-    """Skills with skillOverrides: name-only in settings.json.
+    """Skills with skillOverrides: name-only in settings.base.json.
 
     These skills are model-invokable by exact name but their descriptions are
     excluded from the always-loaded listing budget — the harness shows only the
@@ -567,16 +567,16 @@ class TestNameOnlySkillContracts:
         """BUILTIN_NAME_ONLY_SKILLS must exactly match name-only settings entries that have no SKILL.md.
 
         Fails if:
-        - A bundled skill is added to name-only in settings but omitted from BUILTIN_NAME_ONLY_SKILLS
-        - A BUILTIN_NAME_ONLY_SKILLS entry is no longer name-only in settings
+        - A bundled skill is added to name-only in settings.base.json but omitted from BUILTIN_NAME_ONLY_SKILLS
+        - A BUILTIN_NAME_ONLY_SKILLS entry is no longer name-only in settings.base.json
         - A BUILTIN_NAME_ONLY_SKILLS entry actually has a repo SKILL.md (repo skills use the
           regular contract and do not belong in the allowlist)
         """
         computed = {n for n in _name_only_skills() if not _skill_file(n).exists()}
         assert computed == BUILTIN_NAME_ONLY_SKILLS, (
-            f"BUILTIN_NAME_ONLY_SKILLS is out of sync with settings.json. "
-            f"In settings (no SKILL.md) but not in allowlist: {computed - BUILTIN_NAME_ONLY_SKILLS!r}. "
-            f"In allowlist but not in settings or has a SKILL.md now: {BUILTIN_NAME_ONLY_SKILLS - computed!r}."
+            f"BUILTIN_NAME_ONLY_SKILLS is out of sync with settings.base.json. "
+            f"In settings.base.json (no SKILL.md) but not in allowlist: {computed - BUILTIN_NAME_ONLY_SKILLS!r}. "
+            f"In allowlist but not in settings.base.json or has a SKILL.md now: {BUILTIN_NAME_ONLY_SKILLS - computed!r}."
         )
 
 

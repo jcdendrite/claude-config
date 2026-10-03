@@ -30,12 +30,12 @@ static shape checks:
   either directory's _lib.sh uses GNU grep's `\\s` extension, which a
   POSIX-strict grep reads as a literal `s`.
 - Every hook entry object inside `hooks.<Event>[].hooks[]` in
-  claude/.claude/settings.json carries non-empty `type` and `command`
+  claude/.claude/settings.base.json carries non-empty `type` and `command`
   fields — catches an entry left with only a `timeout` key and no `type`
   or `command`, the shape a scripted edit produces when it writes to the
   wrong object.
 - record-session-end.sh's SessionEnd registration in
-  claude/.claude/settings.json carries an integer `timeout` between 10 and
+  claude/.claude/settings.base.json carries an integer `timeout` between 10 and
   60 — catches a deleted or corrupted `timeout` field silently
   reintroducing the "Hook cancelled" regression it exists to fix.
 
@@ -220,14 +220,24 @@ _REPO_LOCAL_SETTINGS_PATH = _REPO_ROOT / ".claude" / "settings.json"
 _ATTRIBUTION_SETTINGS_PATHS = (_SETTINGS_PATH, _REPO_LOCAL_SETTINGS_PATH)
 
 
-def _tree_settings_paths() -> list[Path]:
-    """Return the `settings*.json` files directly under `claude/.claude/` and `.claude/`.
+# The render's output and the gitignored overlay sit beside the tracked
+# settings.base.json locally but never in a CI checkout, so discovery skips them.
+_GENERATED_SETTINGS_NAMES = frozenset({"settings.json", "settings.overlay.json"})
 
-    Reads the working tree. Excludes `*.local.json`.
+
+def _tree_settings_paths() -> list[Path]:
+    """Return the tracked `settings*.json` files directly under `claude/.claude/` and `.claude/`.
+
+    Reads the working tree. Excludes `*.local.json` and, under `claude/.claude/`,
+    the generated names, so a local run and CI collect the same files.
     A settings file in a subdirectory or under another name is not found.
     """
     candidates = [
-        *(_REPO_ROOT / "claude" / ".claude").glob("settings*.json"),
+        *(
+            path
+            for path in (_REPO_ROOT / "claude" / ".claude").glob("settings*.json")
+            if path.name not in _GENERATED_SETTINGS_NAMES
+        ),
         *(_REPO_ROOT / ".claude").glob("settings*.json"),
     ]
     return sorted(path for path in candidates if not path.name.endswith(".local.json"))
@@ -494,7 +504,7 @@ def test_architect_consult_deny_message_points_at_a_live_skill_section() -> None
 @pytest.mark.parametrize("hook", GATE_HOOKS, ids=[h.name for h in GATE_HOOKS])
 def test_gate_hook_registered_in_pretooluse_matcher(hook: Path) -> None:
     """Every hook-class: gate hook must be wired into a PreToolUse matcher
-    group in its owning config file — claude/.claude/settings.json for a
+    group in its owning config file — claude/.claude/settings.base.json for a
     main-hooks-dir hook, that plugin's own hooks/hooks.json for a
     plugin-dir hook.
 
@@ -606,6 +616,59 @@ def test_settings_file_edit_ask_rule_stays_declared_in_stow_source_settings() ->
         f"'{_SETTINGS_FILE_ASK_RULE}' missing from permissions.ask in "
         f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)} — settings-file edits would no longer ask "
         f"through the harness's own rule matching"
+    )
+
+
+# The sudo, credential-read, and package-install deny rules, written out here
+# independently of settings.base.json so deleting one from base fails this test.
+# EnterPlanMode and ScheduleWakeup have their own pins.
+_HARD_FLOOR_DENY_RULES = (
+    "Bash(sudo *)",
+    "Bash(sudo)",
+    "Read(**/.env)",
+    "Read(**/.env.local)",
+    "Read(**/.env.local.*)",
+    "Read(**/.env.production)",
+    "Read(**/.env.production.*)",
+    "Read(**/.env.development)",
+    "Read(**/.env.development.*)",
+    "Read(**/.env.staging)",
+    "Read(**/.env.staging.*)",
+    "Read(**/.env.test)",
+    "Read(**/.env.test.*)",
+    "Read(**/credentials.json)",
+    "Read(**/.credentials.json)",
+    "Bash(brew install *)",
+    "Bash(brew tap *)",
+    "Bash(brew reinstall *)",
+    "Bash(gem install *)",
+    "Bash(cargo install *)",
+    "Bash(go install *)",
+    "Bash(gh extension install *)",
+    "Bash(mas install *)",
+    "Bash(pipx install *)",
+    "Bash(apt-get install *)",
+    "Bash(apt install *)",
+    "Bash(yum install *)",
+    "Bash(dnf install *)",
+    "Bash(apk add *)",
+    "Bash(zypper install *)",
+)
+
+
+def test_hard_floor_deny_rules_stay_declared_in_stow_source_settings() -> None:
+    """The sudo, credential-read, and package-install deny rules are declared.
+
+    This proves the *declared* config state, not that the harness enforces it.
+    The expected list is independent of settings.base.json, because the render
+    test that compares a render to base itself passes after a deletion from base.
+    """
+    settings = json.loads(_SETTINGS_PATH.read_text())
+    deny_rules = settings.get("permissions", {}).get("deny", [])
+    missing = [rule for rule in _HARD_FLOOR_DENY_RULES if rule not in deny_rules]
+    assert not missing, (
+        f"hard-floor deny rules missing from permissions.deny in "
+        f"{_SETTINGS_PATH.relative_to(_REPO_ROOT)}: {missing}"
     )
 
 

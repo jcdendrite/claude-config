@@ -1,12 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
-# The two dotted env paths Claude Code may write into the live file that a
-# rule-2 overlay env object would otherwise silently drop. Kept in sync with
-# guard-settings-session-keys.sh's GUARDED_KEYS_JSON dotted entries via
-# --print-guarded-keys -- see test_render_settings.py.
-# Rule 4 outcome: fail-safe-default-applied.
-# It assumes /effort and /config write env.CLAUDE_CODE_EFFORT_LEVEL and
+# The two dotted env paths Claude Code may write into the live file that an
+# overlay env object, which never carries forward, would otherwise silently
+# drop. Kept in sync with guard-settings-session-keys.sh's GUARDED_KEYS_JSON
+# dotted entries via --print-guarded-keys -- see test_render_settings.py.
+# The script assumes /effort and /config write env.CLAUDE_CODE_EFFORT_LEVEL and
 # env.ANTHROPIC_MODEL directly into the live settings.json.
 # That assumption is unverified against a live Claude Code session, so the
 # script re-applies both paths defensively regardless.
@@ -21,6 +20,15 @@ RULE4_DOTTED_PATHS_JSON='["env.CLAUDE_CODE_EFFORT_LEVEL", "env.ANTHROPIC_MODEL"]
 # RULE4_DOTTED_PATHS_JSON.
 BASE_OWNED_KEYS_JSON='["permissions", "hooks", "statusLine", "skillOverrides"]'
 
+# An overlay env key must be one of these exact names: the telemetry variables
+# listed in docs/security-hardening.md, plus the two Claude Code writes into the
+# live settings.json (see RULE4_DOTTED_PATHS_JSON).
+# A name pattern would also admit variables that run commands, redirect
+# requests, or carry credentials.
+# Declared ahead of the direct-invocation modes below for the same reason as
+# RULE4_DOTTED_PATHS_JSON.
+OVERLAY_ENV_ALLOWED_NAMES_JSON='["ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_ENABLE_TELEMETRY", "DISABLE_BUG_COMMAND", "DISABLE_ERROR_REPORTING", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_TELEMETRY"]'
+
 # Direct-invocation modes for tests: each prints one constant as JSON and exits
 # before any render logic runs, mirroring guard-settings-session-keys.sh's own
 # --print-guarded-keys mode.
@@ -30,6 +38,10 @@ if [[ "${1:-}" == "--print-rule4-dotted-paths" ]]; then
 fi
 if [[ "${1:-}" == "--print-base-owned-keys" ]]; then
   printf '%s\n' "$BASE_OWNED_KEYS_JSON"
+  exit 0
+fi
+if [[ "${1:-}" == "--print-env-allowed-names" ]]; then
+  printf '%s\n' "$OVERLAY_ENV_ALLOWED_NAMES_JSON"
   exit 0
 fi
 
@@ -74,22 +86,13 @@ OVERLAY_ALLOWED_KEYS_JSON='["autoMode", "env", "skillListingBudgetFraction"]'
 # Overlay top-level validation set: the above, plus `permissions`, which is
 # conditionally admissible (only when its own keys are exactly {defaultMode}).
 OVERLAY_TOP_LEVEL_ALLOWED_JSON='["autoMode", "env", "permissions", "skillListingBudgetFraction"]'
-# An overlay env key's name must fall in a vendor-recognized namespace.
-# Loader and shell-hijack variable names (dyld, node, git, a shell) are chosen
-# by the reading program, not the config writer, so the namespace excludes them.
-# The namespace does not stop an in-namespace variable such as
-# ANTHROPIC_BASE_URL from redirecting requests.
-# Anyone who can write the overlay file can set such a variable directly anyway.
-# \A and \z anchor the whole string, where jq's `$` also matches before a
-# trailing newline.
-ENV_NAME_REGEX='\A(CLAUDE_CODE|ANTHROPIC|DISABLE)_[A-Z0-9_]+\z'
-# An overlay env key ending in one of these suffixes is refused. Its value would
-# land in the overlay and the rendered settings.json, which sit outside every
-# credential read gate.
-CREDENTIAL_ENV_NAME_REGEX='_(API_KEY|AUTH_TOKEN|TOKEN|SECRET|KEY)\z'
 # defaultMode enum: default and plan are accepted.
 # bypassPermissions and acceptEdits are refused outright.
-# auto and dontAsk stay refused pending verification against a live session.
+# auto is refused until the shipped ask-review-permissions.sh's reason text is
+# verified under it (the "Untested" list in docs/security-hardening.md).
+# dontAsk is refused because it is untested (the "Untested" list in
+# docs/security-hardening.md). The docs say it denies whatever would otherwise
+# prompt.
 ACCEPTED_DEFAULT_MODES_JSON='["default", "plan"]'
 
 if [[ ! -f "$base_file" ]]; then
@@ -97,7 +100,32 @@ if [[ ! -f "$base_file" ]]; then
   exit 1
 fi
 
-if ! jq -e 'type == "object"' -- "$base_file" >/dev/null 2>&1; then
+# Succeeds when $1 holds a JSON object and fails when it does not. Exits when
+# jq itself could not run (status 126 or 127), since that says nothing about
+# the file.
+require_json_object() {
+  local file="$1"
+  local jq_status=0
+  jq -e 'type == "object"' -- "$file" >/dev/null 2>&1 || jq_status=$?
+  case "$jq_status" in
+    0) return 0 ;;
+    126 | 127)
+      echo "render-settings.sh: jq could not run (exit $jq_status; missing, not executable, or a broken install) -- install or repair jq, then re-render; $file was not examined" >&2
+      exit 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Every overlay refusal exits before any write, so the prior settings.json keeps
+# its deny rules and hooks while base changes wait on the overlay.
+# $1 names the problem and the optional $2 names the way out.
+refuse_overlay() {
+  echo "render-settings.sh: $1 -- refusing to render${2:+; $2}; an existing settings.json keeps its previous deny rules and hooks, and base changes are not delivered until the overlay is fixed" >&2
+  exit 1
+}
+
+if ! require_json_object "$base_file"; then
   echo "render-settings.sh: $base_file is not valid JSON or not a JSON object -- refusing to render" >&2
   exit 1
 fi
@@ -105,8 +133,7 @@ fi
 overlay_json='{}'
 if [[ -e "$overlay_file" ]]; then
   if [[ ! -r "$overlay_file" ]]; then
-    echo "render-settings.sh: $overlay_file exists but is not readable -- refusing to render" >&2
-    exit 1
+    refuse_overlay "$overlay_file exists but is not readable"
   fi
 
   # Tighten the overlay to mode 600 so other local accounts can't read it.
@@ -114,66 +141,56 @@ if [[ -e "$overlay_file" ]]; then
   # chmod flag, which BSD chmod would do where GNU chmod permutes arguments.
   chmod 600 "$overlay_file" 2>/dev/null || echo "render-settings.sh: warning: could not chmod 600 $overlay_file" >&2
 
-  if ! jq -e 'type == "object"' -- "$overlay_file" >/dev/null 2>&1; then
-    echo "render-settings.sh: $overlay_file is not valid JSON or not a JSON object -- refusing to render" >&2
-    exit 1
+  if ! require_json_object "$overlay_file"; then
+    refuse_overlay "$overlay_file is not valid JSON or not a JSON object"
   fi
 
   # Overlay keys outside the closed set are rejected, not merged.
   if ! jq -e --argjson allowed "$OVERLAY_TOP_LEVEL_ALLOWED_JSON" '(keys - $allowed) == []' -- "$overlay_file" >/dev/null 2>&1; then
     bad_keys="$(jq -r --argjson allowed "$OVERLAY_TOP_LEVEL_ALLOWED_JSON" '(keys - $allowed) | join(", ")' -- "$overlay_file")"
-    echo "render-settings.sh: $overlay_file has top-level keys outside {autoMode, env, permissions, skillListingBudgetFraction}: $bad_keys -- refusing to render" >&2
-    exit 1
+    refuse_overlay "$overlay_file has top-level keys outside {autoMode, env, permissions, skillListingBudgetFraction}: $bad_keys" \
+      "set another key such as model or enabledPlugins with /config or by editing $target, which carries it forward"
   fi
 
   # permissions is conditionally admissible: only {defaultMode}, nothing else.
   if jq -e 'has("permissions")' -- "$overlay_file" >/dev/null 2>&1; then
     if ! jq -e '.permissions | type == "object"' -- "$overlay_file" >/dev/null 2>&1; then
-      echo "render-settings.sh: $overlay_file has a non-object permissions value -- refusing to render" >&2
-      exit 1
+      refuse_overlay "$overlay_file has a non-object permissions value"
     fi
     if ! jq -e '(.permissions | keys) == ["defaultMode"]' -- "$overlay_file" >/dev/null 2>&1; then
       extra_keys="$(jq -r '(.permissions | keys) - ["defaultMode"] | join(", ")' -- "$overlay_file")"
       if [[ -n "$extra_keys" ]]; then
-        echo "render-settings.sh: $overlay_file has permissions keys outside {defaultMode}: $extra_keys -- refusing to render" >&2
+        refuse_overlay "$overlay_file has permissions keys outside {defaultMode}: $extra_keys"
       else
-        echo "render-settings.sh: $overlay_file has a permissions object but does not set defaultMode -- refusing to render" >&2
+        refuse_overlay "$overlay_file has a permissions object but does not set defaultMode"
       fi
-      exit 1
     fi
     # The type check comes first because jq's index() with an array operand
     # searches for a subarray, so ["plan"] would otherwise match "plan".
     if ! jq -e '.permissions.defaultMode | type == "string"' -- "$overlay_file" >/dev/null 2>&1; then
-      echo "render-settings.sh: $overlay_file has a non-string permissions.defaultMode -- refusing to render" >&2
-      exit 1
+      refuse_overlay "$overlay_file has a non-string permissions.defaultMode"
     fi
     if ! jq -e --argjson accepted "$ACCEPTED_DEFAULT_MODES_JSON" '.permissions.defaultMode as $m | ($accepted | index($m)) != null' -- "$overlay_file" >/dev/null 2>&1; then
       bad_mode="$(jq -r '.permissions.defaultMode' -- "$overlay_file")"
-      echo "render-settings.sh: $overlay_file sets permissions.defaultMode=\"$bad_mode\", which is not accepted -- use per-session \`claude --permission-mode $bad_mode\` or project-scope .claude/settings.local.json instead" >&2
-      exit 1
+      refuse_overlay "$overlay_file sets permissions.defaultMode=\"$bad_mode\", which is not accepted" \
+        "use per-session \`claude --permission-mode $bad_mode\` or project-scope .claude/settings.local.json instead"
     fi
   fi
 
-  # env values must be strings in a vendor-recognized namespace.
+  # env keys must be on the exact-name allowlist and their values strings.
   if jq -e 'has("env")' -- "$overlay_file" >/dev/null 2>&1; then
     if ! jq -e '.env | type == "object"' -- "$overlay_file" >/dev/null 2>&1; then
-      echo "render-settings.sh: $overlay_file has a non-object env value -- refusing to render" >&2
-      exit 1
+      refuse_overlay "$overlay_file has a non-object env value"
     fi
-    if ! jq -e --arg re "$ENV_NAME_REGEX" '[.env | keys[] | select(test($re) | not)] == []' -- "$overlay_file" >/dev/null 2>&1; then
-      bad_names="$(jq -r --arg re "$ENV_NAME_REGEX" '[.env | keys[] | select(test($re) | not)] | join(", ")' -- "$overlay_file")"
-      echo "render-settings.sh: $overlay_file has env key(s) outside the accepted CLAUDE_CODE_/ANTHROPIC_/DISABLE_ namespace: $bad_names -- refusing to render" >&2
-      exit 1
-    fi
-    if ! jq -e --arg re "$CREDENTIAL_ENV_NAME_REGEX" '[.env | keys[] | select(test($re))] == []' -- "$overlay_file" >/dev/null 2>&1; then
-      credential_names="$(jq -r --arg re "$CREDENTIAL_ENV_NAME_REGEX" '[.env | keys[] | select(test($re))] | join(", ")' -- "$overlay_file")"
-      echo "render-settings.sh: $overlay_file has credential-named env key(s): $credential_names -- refusing to render; configure credentials through apiKeyHelper or a shell-profile export instead" >&2
-      exit 1
+    if ! jq -e --argjson allowed "$OVERLAY_ENV_ALLOWED_NAMES_JSON" '[.env | keys[] | select(. as $name | ($allowed | index($name)) == null)] == []' -- "$overlay_file" >/dev/null 2>&1; then
+      bad_names="$(jq -r --argjson allowed "$OVERLAY_ENV_ALLOWED_NAMES_JSON" '[.env | keys[] | select(. as $name | ($allowed | index($name)) == null)] | join(", ")' -- "$overlay_file")"
+      allowed_names="$(jq -r 'join(", ")' <<<"$OVERLAY_ENV_ALLOWED_NAMES_JSON")"
+      refuse_overlay "$overlay_file has env key(s) outside the allowed set {$allowed_names}: $bad_names" \
+        "export any other variable from your shell profile before launching claude; for a credential, prefer apiKeyHelper, because the credential read gates cover no shell profile or settings file, and an exported credential is readable by any Bash call (printenv, env)"
     fi
     if ! jq -e '[.env[] | type == "string"] | all' -- "$overlay_file" >/dev/null 2>&1; then
       bad_values="$(jq -r '[.env | to_entries[] | select(.value | type != "string") | .key] | join(", ")' -- "$overlay_file")"
-      echo "render-settings.sh: $overlay_file has non-string env value(s) for: $bad_values -- refusing to render" >&2
-      exit 1
+      refuse_overlay "$overlay_file has non-string env value(s) for: $bad_values"
     fi
   fi
 
@@ -363,7 +380,9 @@ if ! tmp_target="$(mktemp "$target.XXXXXX" 2>&1)"; then
   echo "render-settings.sh: could not create a temp file next to $target -- $tmp_target -- refusing to render" >&2
   exit 1
 fi
-trap 'rm -f "$tmp_target"' EXIT
+# A SIGKILL escalation from the caller's timeout skips this trap and leaves the
+# gitignored temp file behind; the leak is one file per killed render.
+trap 'rm -f -- "$tmp_target"' EXIT
 printf '%s\n' "$merged_json" > "$tmp_target"
 
 # Re-parses the temp file's own written content, not the $merged_json shell

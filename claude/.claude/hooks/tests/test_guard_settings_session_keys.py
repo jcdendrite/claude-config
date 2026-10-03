@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -1709,6 +1710,98 @@ class TestEveryGuardedKeyDenies:
         )
 
 
+class TestHookFailurePosture:
+    """PATH stubs that make one external command misbehave while every other
+    call reaches the real binary, so each test reaches a single branch of the
+    hook's fail posture."""
+
+    def _stub_bin_dir(self, tmp_path):
+        stub_dir = tmp_path / "_failure_stub_bin"
+        stub_dir.mkdir()
+        return stub_dir
+
+    def _write_stub(self, stub_dir, tool, body):
+        """Executable `tool` shim whose fall-through branch execs the real
+        binary resolved now, so the shim never recurses into itself."""
+        real_path = shutil.which(tool)
+        if not real_path:
+            pytest.skip(f"{tool} not found in PATH")
+        shim = stub_dir / tool
+        shim.write_text(f"#!/bin/sh\n{body}\nexec {real_path} \"$@\"\n")
+        shim.chmod(0o755)
+
+    def _run_hook_with_stub_first_on_path(self, repo, stub_dir):
+        env = dict(os.environ)
+        env["PATH"] = f"{stub_dir}{os.pathsep}{env['PATH']}"
+        return subprocess.run(
+            [str(GUARD_SETTINGS_SESSION_KEYS_HOOK)],
+            input=json.dumps(bash_input("git commit -m 'update settings'")),
+            capture_output=True,
+            text=True,
+            cwd=repo,
+            env=env,
+            check=False,
+            timeout=60,
+        )
+
+    def test_a_staged_name_list_past_the_pipe_buffer_still_denies_a_guarded_key(
+        self, settings_repo, tmp_path
+    ):
+        """The settings path is the first name of a staged list far larger
+        than a 64 KiB pipe buffer. Matching that list through a pipe lets grep
+        exit on the first match while the producer is still writing, so the
+        producer dies of SIGPIPE and pipefail reports the pipeline as failed,
+        which a negated test reads as "not staged" and so allows the commit.
+        A shim `git` makes the producer's write size deterministic; real git's
+        own write pattern does not reliably trigger the SIGPIPE. The shim also
+        records that it served the call, so a hook whose git argv no longer
+        matches fails the test instead of passing against a short real list."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        stub_dir = self._stub_bin_dir(tmp_path)
+        names_over_pipe_buffer_bytes = 300_000
+        served_sentinel = stub_dir / "staged_names_call_served"
+        self._write_stub(
+            stub_dir,
+            "git",
+            'case " $* " in\n'
+            '  *" diff --cached --name-only "*)\n'
+            f"    : > '{served_sentinel}'\n"
+            "    printf '%s\\n' claude/.claude/settings.base.json\n"
+            "    yes filler-name | head -c " + str(names_over_pipe_buffer_bytes) + "\n"
+            "    exit $? ;;\n"
+            "esac",
+        )
+
+        result = self._run_hook_with_stub_first_on_path(repo, stub_dir)
+
+        assert served_sentinel.exists(), "the hook's staged-names git call no longer matches the shim"
+        assert result.returncode == 0
+        decision = json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"]
+        assert decision == "deny"
+
+    def test_a_failing_changed_keys_jq_call_allows_and_warns_on_stderr(
+        self, settings_repo, tmp_path
+    ):
+        """The changed-keys jq call is the one failure that allows with a
+        warning. The shim fails only the call that binds --argjson guarded, so
+        the tool-input parse still succeeds and the hook reaches that branch."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        stub_dir = self._stub_bin_dir(tmp_path)
+        self._write_stub(
+            stub_dir,
+            "jq",
+            'case " $* " in *" --argjson guarded "*) exit 3 ;; esac',
+        )
+
+        result = self._run_hook_with_stub_first_on_path(repo, stub_dir)
+
+        assert result.returncode == 0
+        assert result.stdout == ""
+        assert "the settings-key guard did not evaluate this commit" in result.stderr
+
+
 class TestPrintGuardedKeysMode:
     """--print-guarded-keys: a direct-invocation escape hatch giving
     tests and render-settings.sh's own rule-4 drift check a real artifact to
@@ -1734,7 +1827,7 @@ class TestBaseKeyPlacementDisjointness:
     test_render_settings.py's TestBaseOverlayDisjointness for the sibling
     check against the overlay's allowed key set."""
 
-    def test_base_top_level_keys_disjoint_from_guarded_keys(self):
+    def test_base_sets_none_of_the_guarded_key_paths(self):
         """Regression guard: a future contributor re-adding `model`
         (or any other app-written key) to settings.base.json would
         reintroduce the revert-on-every-render bug this carry-forward
@@ -1746,10 +1839,32 @@ class TestBaseKeyPlacementDisjointness:
             check=False,
         )
         assert result.returncode == 0, result.stderr
-        guarded_keys = set(json.loads(result.stdout))
-        base_keys = set(json.loads(SETTINGS_BASE_JSON.read_text()).keys())
-        overlap = base_keys & guarded_keys
+        guarded_keys = json.loads(result.stdout)
+        base_settings = json.loads(SETTINGS_BASE_JSON.read_text())
+        overlap = {key for key in guarded_keys if self._path_present(base_settings, key)}
         assert overlap == set(), f"settings.base.json sets guarded key(s): {overlap}"
+
+    @staticmethod
+    def _path_present(settings: dict, dotted_key: str) -> bool:
+        """Whether a dot-separated guarded key (e.g. env.ANTHROPIC_MODEL) is
+        set in `settings`, so a dotted entry is checked by path and not only
+        by its top-level segment."""
+        current: object = settings
+        for segment in dotted_key.split("."):
+            if not isinstance(current, dict) or segment not in current:
+                return False
+            current = current[segment]
+        return True
+
+    def test_path_present_finds_top_level_and_nested_keys_and_rejects_absent_ones(self):
+        settings = {"model": "opus", "env": {"ANTHROPIC_MODEL": "x"}, "tui": None}
+
+        assert self._path_present(settings, "model")
+        assert self._path_present(settings, "env.ANTHROPIC_MODEL")
+        assert self._path_present(settings, "tui")
+        assert not self._path_present(settings, "env.CLAUDE_CODE_EFFORT_LEVEL")
+        assert not self._path_present(settings, "model.nested")
+        assert not self._path_present(settings, "theme")
 
     def test_agent_push_notif_enabled_absent_from_base(self):
         """agentPushNotifEnabled falls through to general carry-forward

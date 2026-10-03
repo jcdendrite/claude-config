@@ -2,7 +2,7 @@
 
 *2026-09-17.*
 
-**Partly superseded by [`settings.base.json` ships no `model`, `theme`, `tui`, or `agentPushNotifEnabled`](settings-base-ships-no-session-ui-keys.md) (2026-10-02):** `claude/.claude/settings.json` is now generated from `claude/.claude/settings.base.json`. At user scope, the "tracked stow-source file" recourse below now means editing `settings.base.json` in the checkout, and removing `syncClaudeAiSkills` from base also requires deleting it from `~/.claude/settings.json`, because the prior render's value carries forward. Setting a different value in base takes effect on its own. An edit to `syncClaudeAiSkills` in the live `~/.claude/settings.json` is reverted by the next render while base defines it.
+**Partly superseded by [`settings.base.json` ships no `model`, `theme`, `tui`, or `agentPushNotifEnabled`](settings-base-ships-no-session-ui-keys.md) (2026-10-02):** `claude/.claude/settings.json` is generated from `claude/.claude/settings.base.json`. At user scope, the "tracked stow-source file" recourse below means editing `settings.base.json` in the checkout. That document's "Opt-outs of base-shipped settings" covers removing `syncClaudeAiSkills` from base and editing it in the live file.
 
 `claude/.claude/settings.json` now sets `syncClaudeAiSkills: false`. This repo manages skills canonically here, in `claude-skills/`, and the engineer manually copies them to claude.ai — the claude.ai→Claude Code sync direction only injects duplicates of skills this repo already holds. Sync is on by default for every account once logged in via `/login`, so leaving the key unset would keep re-introducing that duplication on every stowed account.
 

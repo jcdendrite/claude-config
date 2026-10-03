@@ -20,6 +20,18 @@ from helpers import SCRIPTS_DIR, symlink_hooks_lib_chain
 _INSTALL_SH = Path(__file__).resolve().parents[4] / "install.sh"
 _STOW = shutil.which("stow")
 
+
+@pytest.fixture
+def require_stow() -> None:
+    """Skip locally when stow is absent, but fail under CI, where
+    .github/workflows/tests.yml installs it: a silent skip there would drop the
+    only test that runs real stow over the stale pre-rename symlink."""
+    if _STOW is None:
+        if os.environ.get("CI"):
+            pytest.fail("stow missing in CI -- .github/workflows/tests.yml must install it")
+        pytest.skip("stow binary not on PATH")
+
+
 _STOW_START = "# INSTALL_TEST_FIXTURE: stow-adopt-ignore — start\n"
 _STOW_END = "# INSTALL_TEST_FIXTURE: stow-adopt-ignore — end"
 
@@ -182,7 +194,7 @@ def _run_stow_and_render(pkg_root: Path, home: Path) -> subprocess.CompletedProc
     )
 
 
-@pytest.mark.skipif(_STOW is None, reason="stow binary not on PATH")
+@pytest.mark.usefixtures("require_stow")
 class TestPreMigrationSymlinkedSettingsUpgrade:
     def test_dangling_pre_rename_symlink_is_replaced_by_a_fresh_render(
         self, tmp_path: Path
@@ -258,6 +270,33 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         assert "stopped before" in result.stderr
         assert "Fix the error above, then re-run ./install.sh" in result.stderr
 
+    def test_failure_without_a_settings_json_says_no_deny_rules_or_hooks_are_active(
+        self, tmp_path: Path
+    ) -> None:
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+
+        assert result.returncode == 1
+        assert "no deny rules or hooks are active until the render succeeds" in result.stderr
+
+    def test_failure_over_an_existing_settings_json_does_not_claim_the_floor_is_missing(
+        self, tmp_path: Path
+    ) -> None:
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "settings.json").write_text(
+            json.dumps({"permissions": {"deny": ["Bash(sudo *)"]}})
+        )
+
+        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+
+        assert result.returncode == 1
+        assert "no deny rules or hooks are active" not in result.stderr
+
     @pytest.mark.parametrize("cap_kill_status", [124, 137, 143])
     def test_cap_kill_status_is_reported_as_the_cap_firing_without_pointing_at_an_absent_error(
         self, tmp_path: Path, cap_kill_status: int
@@ -279,6 +318,23 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         assert f"did not finish within its 5s cap (exit {cap_kill_status})" in result.stderr
         assert "Fix the error above" not in result.stderr
         assert "Re-run ./install.sh" in result.stderr
+
+    @pytest.mark.parametrize("cap_kill_status", [124, 137, 143])
+    def test_cap_kill_without_a_settings_json_says_no_deny_rules_or_hooks_are_active(
+        self, tmp_path: Path, cap_kill_status: int
+    ) -> None:
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        stub = repo_dir / "claude" / ".claude" / "scripts" / "render-settings.sh"
+        stub.unlink()
+        stub.write_text(f"#!/bin/bash\nexit {cap_kill_status}\n")
+        stub.chmod(0o755)
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+
+        assert result.returncode == cap_kill_status
+        assert "no deny rules or hooks are active until the render succeeds" in result.stderr
 
     def test_success_prints_the_rendered_path(self, tmp_path: Path) -> None:
         repo_dir = _make_render_repo(tmp_path / "repo")
@@ -482,7 +538,7 @@ class TestFirstRenderAfterTheSplitResetsTheNoLongerShippedKeys:
         assert json.loads(rendered_path.read_text())["model"] == "opus"
 
 
-@pytest.mark.skipif(_STOW is None, reason="stow binary not on PATH")
+@pytest.mark.usefixtures("require_stow")
 class TestAbortsOnRenderFailure:
     def test_render_failure_aborts_the_sequence_non_zero(self, tmp_path: Path) -> None:
         """install.sh's render-settings-invoke block is a bare, unguarded
@@ -582,32 +638,11 @@ class TestAbortsOnRenderFailure:
 
 
 class TestRcInvocationPrecedesRenderCall:
-    """The rc-invocation function's call site must sit immediately before
-    render-settings-invoke -- adjacency, not merely "somewhere above" -- so
-    a failed first render still gets the repairing rc block installed. The
+    """A failed first render must still leave the repairing rc block installed,
+    so the rc-invocation function runs before render-settings-invoke. The
     relevant INSTALL_TEST_FIXTURE markers wrap only the function
-    *definitions*; the call site itself is found by text search, not by
-    reusing a definition fixture's own marker."""
-
-    def test_call_site_sits_immediately_before_the_render_invoke_marker(self) -> None:
-        install_text = _INSTALL_SH.read_text()
-        call_needle = "\nensure_settings_render\n"
-        call_index = install_text.index(call_needle)
-        marker_index = install_text.index(_RENDER_START)
-
-        assert call_index < marker_index, (
-            "ensure_settings_render's call site must sit before the "
-            "render-settings-invoke start marker"
-        )
-
-        between = install_text[call_index + len(call_needle) : marker_index]
-        non_comment_lines = [
-            line for line in between.splitlines() if line.strip() and not line.strip().startswith("#")
-        ]
-        assert not non_comment_lines, (
-            "no statement other than the call itself may sit between "
-            f"ensure_settings_render and render-settings-invoke; found {non_comment_lines!r}"
-        )
+    *definitions*; the span test below runs them in file order, including the
+    bare call site between them."""
 
     def test_rc_block_is_installed_even_when_the_render_fails(self, tmp_path: Path) -> None:
         """Runs the real rc-block-helpers, settings-render-rc, and

@@ -25,8 +25,8 @@
 # acceptable against the threat model (concurrent-session races), not an
 # adversarial-relocation scenario.
 # Under stow directory-fold, $HOME/.claude/ is a symlink to the package's
-# .claude/ directory; stow-managed files (e.g., ~/.claude/settings.json →
-# repo's claude/.claude/settings.json) also satisfy the raw-string prefix
+# .claude/ directory; stow-managed files (e.g., ~/.claude/settings.base.json →
+# repo's claude/.claude/settings.base.json) also satisfy the raw-string prefix
 # match and are exempt. realpath cannot be used to detect this: it would
 # resolve $HOME/.claude/plans/new.md to the repo root path, which does not
 # match the home prefix, re-introducing the original bug. This is

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -27,6 +28,18 @@ _REPO_ROOT = Path(__file__).resolve().parents[4]
 # admissible `permissions` -- see TestBaseOverlayDisjointness, which mirrors
 # TestBaseKeyPlacementDisjointness in test_guard_settings_session_keys.py.
 OVERLAY_ALLOWED_TOP_LEVEL_KEYS = {"autoMode", "env", "skillListingBudgetFraction"}
+
+# The overlay's exact-name env allowlist, written out independently of
+# render-settings.sh so a widening of the script's list fails these tests.
+ENV_ALLOWED_NAMES = {
+    "ANTHROPIC_MODEL",
+    "CLAUDE_CODE_EFFORT_LEVEL",
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "DISABLE_BUG_COMMAND",
+    "DISABLE_ERROR_REPORTING",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+    "DISABLE_TELEMETRY",
+}
 
 
 def _write_json(path: Path, content: dict | list) -> None:
@@ -71,6 +84,20 @@ def _rule4_dotted_paths_from_render_settings() -> list[str]:
     """
     result = subprocess.run(
         [str(_SCRIPT), "--print-rule4-dotted-paths"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _env_allowed_names_from_render_settings() -> list[str]:
+    """render-settings.sh's own OVERLAY_ENV_ALLOWED_NAMES_JSON, via its print
+    interface, for the same drift check as the rule-4 paths above."""
+    result = subprocess.run(
+        [str(_SCRIPT), "--print-env-allowed-names"],
         capture_output=True,
         text=True,
         check=False,
@@ -182,6 +209,86 @@ class TestMissingBase:
         assert not (config_dir / "settings.json").exists()
 
 
+class TestJqCannotRun:
+    """A jq that cannot run says nothing about the input, so the render must
+    not blame the file: it names jq, and a genuinely malformed input still
+    gets the not-valid-JSON message."""
+
+    @staticmethod
+    def _make_configs(tmp_path: Path) -> Path:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        return config_dir
+
+    @staticmethod
+    def _write_jq_shim(bin_dir: Path, failing_operand_suffix: str, exit_status: int) -> None:
+        """A jq that exits `exit_status` for any call naming a file ending in
+        `failing_operand_suffix` and otherwise runs the real jq."""
+        real_jq = shutil.which("jq")
+        assert real_jq is not None, "jq must be installed to run this test"
+        bin_dir.mkdir()
+        shim = bin_dir / "jq"
+        shim.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do\n'
+            f'  case "$arg" in *{failing_operand_suffix}) exit {exit_status} ;; esac\n'
+            "done\n"
+            f'exec {shlex.quote(real_jq)} "$@"\n'
+        )
+        shim.chmod(0o755)
+
+    def test_absent_jq_is_reported_as_jq_not_running_rather_than_invalid_json(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = self._make_configs(tmp_path)
+        empty_bin = tmp_path / "empty-bin"
+        empty_bin.mkdir()
+
+        result = _run_script(config_dir=config_dir, extra_env={"PATH": str(empty_bin)})
+
+        assert result.returncode != 0
+        assert "jq could not run" in result.stderr
+        assert "not valid JSON" not in result.stderr
+        assert not (config_dir / "settings.json").exists()
+
+    @pytest.mark.parametrize("jq_exit_status", [126, 127])
+    @pytest.mark.parametrize(
+        ("failing_operand_suffix", "unexamined_file"),
+        [("settings.base.json", "settings.base.json"), ("settings.overlay.json", "settings.overlay.json")],
+        ids=["base-check", "overlay-check"],
+    )
+    def test_jq_exiting_126_or_127_names_jq_for_the_base_and_the_overlay_check(
+        self,
+        tmp_path: Path,
+        jq_exit_status: int,
+        failing_operand_suffix: str,
+        unexamined_file: str,
+    ) -> None:
+        config_dir = self._make_configs(tmp_path)
+        _write_json(config_dir / "settings.overlay.json", {"autoMode": {"environment": ["$defaults"]}})
+        bin_dir = tmp_path / "jq-shim-bin"
+        self._write_jq_shim(bin_dir, failing_operand_suffix, jq_exit_status)
+
+        result = _run_script(config_dir=config_dir, extra_env={"PATH": f"{bin_dir}:{os.environ['PATH']}"})
+
+        assert result.returncode != 0
+        assert f"jq could not run (exit {jq_exit_status}" in result.stderr
+        assert f"{unexamined_file} was not examined" in result.stderr
+        assert "not valid JSON" not in result.stderr
+        assert not (config_dir / "settings.json").exists()
+
+    def test_malformed_base_is_still_reported_as_invalid_json(self, tmp_path: Path) -> None:
+        config_dir = self._make_configs(tmp_path)
+        (config_dir / "settings.base.json").write_text("{not valid json")
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "not valid JSON" in result.stderr
+        assert "jq could not run" not in result.stderr
+
+
 class TestOverlayValidation:
     def test_overlay_valid_json_but_not_object_is_rejected(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
@@ -259,7 +366,7 @@ class TestOverlayValidation:
 
 
 class TestOverlayAllowlist:
-    """Closed top-level allowlist plus the env namespace-rule guard."""
+    """Closed top-level allowlist plus the exact-name env allowlist."""
 
     @pytest.mark.parametrize(
         "bad_name",
@@ -272,9 +379,12 @@ class TestOverlayAllowlist:
             "DYLD_LIBRARY_PATH",
             "PYTHONPATH",
             "GIT_SSH_COMMAND",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_CUSTOM_HEADERS",
+            "CLAUDE_CODE_SHELL_PREFIX",
         ],
     )
-    def test_env_name_outside_namespace_is_rejected(self, tmp_path: Path, bad_name: str) -> None:
+    def test_env_name_outside_allowlist_is_rejected(self, tmp_path: Path, bad_name: str) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
@@ -284,6 +394,7 @@ class TestOverlayAllowlist:
 
         assert result.returncode != 0
         assert bad_name in result.stderr
+        assert "outside the allowed set" in result.stderr
         assert not (config_dir / "settings.json").exists()
 
     @pytest.mark.parametrize(
@@ -293,23 +404,24 @@ class TestOverlayAllowlist:
             "CLAUDE_CODE_",
             "DISABLE_",
             "ANTHROPIC",
-            "ANTHROPICFOO",
-            "anthropic_foo",
-            "Anthropic_Foo",
-            "X_ANTHROPIC_FOO",
-            "XANTHROPIC_FOO",
-            "ANTHROPIC_FOO-BAR",
-            "ANTHROPIC_FOO\n",
-            "\nANTHROPIC_FOO",
+            "anthropic_model",
+            "Anthropic_Model",
+            "ANTHROPIC_MODELS",
+            "ANTHROPIC_MODEL-X",
+            "X_ANTHROPIC_MODEL",
+            "DISABLE_TELEMETR",
+            "DISABLE_TELEMETRY_X",
+            "DISABLE_TELEMETRY ",
+            "ANTHROPIC_MODEL\n",
+            "\nANTHROPIC_MODEL",
         ],
     )
-    def test_env_name_near_miss_of_namespace_is_rejected(
+    def test_env_name_near_miss_of_an_allowed_name_is_rejected(
         self, tmp_path: Path, near_miss_name: str
     ) -> None:
-        """Literal near-misses of the namespace pattern, so a dropped anchor,
-        a loosened quantifier, or a case-insensitive match each fail one of
-        these. The trailing-newline name pins that the match is anchored to
-        the whole string, not to a line."""
+        """Literal near-misses of the allowed names, so a prefix match, a
+        case-insensitive match, or a line-anchored match each fail one of
+        these."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
@@ -318,34 +430,84 @@ class TestOverlayAllowlist:
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode != 0
-        assert "outside the accepted" in result.stderr
+        assert "outside the allowed set" in result.stderr
         assert not (config_dir / "settings.json").exists()
 
     @pytest.mark.parametrize(
-        "good_name",
-        [
-            "ANTHROPIC_BASE_URL",
-            "ANTHROPIC_A",
-            "CLAUDE_CODE_ENABLE_TELEMETRY",
-            "DISABLE_TELEMETRY",
-            "ANTHROPIC_KEYS",
-            "ANTHROPIC_MONKEY",
-            "CLAUDE_CODE_TOKEN_BUDGET",
-        ],
+        "allowed_name",
+        sorted(ENV_ALLOWED_NAMES),
     )
-    def test_env_name_matching_namespace_with_string_value_is_accepted(
-        self, tmp_path: Path, good_name: str
+    def test_each_allowed_env_name_with_a_string_value_is_accepted(
+        self, tmp_path: Path, allowed_name: str
     ) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        _write_json(config_dir / "settings.overlay.json", {"env": {good_name: "some-value"}})
+        _write_json(config_dir / "settings.overlay.json", {"env": {allowed_name: "some-value"}})
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode == 0, result.stderr
         rendered = json.loads((config_dir / "settings.json").read_text())
-        assert rendered["env"][good_name] == "some-value"
+        assert rendered["env"][allowed_name] == "some-value"
+
+    def test_env_refusal_names_the_allowed_set_and_the_shell_profile_alternative(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"HTTPS_PROXY": "http://proxy.example"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        for allowed_name in ENV_ALLOWED_NAMES:
+            assert allowed_name in result.stderr
+        assert "shell profile" in result.stderr
+
+    def test_the_allowed_set_the_script_enforces_equals_the_pinned_set(self) -> None:
+        """An eighth name added to the script fails here even when no deny
+        fixture names it."""
+        script_names = _env_allowed_names_from_render_settings()
+
+        assert len(script_names) == len(set(script_names)), f"duplicate allowed names: {script_names}"
+        assert set(script_names) == ENV_ALLOWED_NAMES
+
+    def test_env_mixing_an_allowed_name_with_a_disallowed_one_is_rejected_and_keeps_prior_render(
+        self, tmp_path: Path
+    ) -> None:
+        """A guard that accepted when any key was allowed would render this."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        prior_render = '{"prior": "render"}\n'
+        (config_dir / "settings.json").write_text(prior_render)
+        _write_json(
+            config_dir / "settings.overlay.json",
+            {"env": {"DISABLE_TELEMETRY": "1", "NODE_OPTIONS": "x"}},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        # NODE_OPTIONS sorts after the allowed name, so a check that looked
+        # only at the first key would accept this overlay. The refusal names
+        # it alone, not the allowed name beside it.
+        assert "}: NODE_OPTIONS -- refusing" in result.stderr
+        assert (config_dir / "settings.json").read_text() == prior_render
+
+    def test_empty_env_object_is_accepted(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"env": {}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads((config_dir / "settings.json").read_text())["env"] == {}
+        assert "dropped" not in result.stderr
 
     @pytest.mark.parametrize(
         "credential_name",
@@ -358,12 +520,11 @@ class TestOverlayAllowlist:
             "ANTHROPIC__KEY",
         ],
     )
-    def test_credential_named_env_key_is_refused_without_echoing_its_value(
+    def test_refused_credential_shaped_env_key_never_echoes_its_value_and_keeps_prior_render(
         self, tmp_path: Path, credential_name: str
     ) -> None:
-        """The overlay and the rendered settings.json sit outside every
-        credential read gate, so a credential-named key is refused, the
-        diagnostic names the key, never the value, and a prior render stays
+        """A credential-shaped name is refused as an unlisted name, the
+        diagnostic names the key and never the value, and a prior render stays
         byte-identical."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
@@ -375,8 +536,9 @@ class TestOverlayAllowlist:
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode != 0
-        assert f"credential-named env key(s): {credential_name}" in result.stderr
-        assert "apiKeyHelper" in result.stderr
+        assert "outside the allowed set" in result.stderr
+        assert credential_name in result.stderr
+        assert "shell profile" in result.stderr
         assert "sk-ant-example" not in result.stderr
         assert (config_dir / "settings.json").read_text() == prior_content
 
@@ -404,16 +566,16 @@ class TestOverlayAllowlist:
         assert "non-object env value" in result.stderr
         assert "jq: error" not in result.stderr
 
-    def test_namespace_matching_env_name_with_non_string_value_is_rejected(self, tmp_path: Path) -> None:
+    def test_allowed_env_name_with_non_string_value_is_rejected(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_BASE_URL": 123}})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"DISABLE_TELEMETRY": 123}})
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode != 0
-        assert "ANTHROPIC_BASE_URL" in result.stderr
+        assert "DISABLE_TELEMETRY" in result.stderr
 
     def test_non_object_permissions_value_is_rejected_with_diagnostic_not_jq_error(
         self, tmp_path: Path
@@ -709,24 +871,92 @@ class TestDefaultModeNestedException:
         assert rendered["permissions"]["deny"] == ["Bash(sudo *)"]
 
 
+# One entry per overlay refusal arm: (overlay content or raw text, stderr
+# fragment naming the refusal). Every arm must leave a prior render untouched.
+_OVERLAY_REFUSAL_FIXTURES = {
+    "malformed-json": ("{not valid json", "not valid JSON"),
+    "non-object-overlay": ([1, 2], "not a JSON object"),
+    "key-outside-closed-set": ({"notAllowed": "x"}, "notAllowed"),
+    "permissions-non-object": ({"permissions": "not-an-object"}, "non-object permissions value"),
+    "permissions-null": ({"permissions": None}, "non-object permissions value"),
+    "permissions-empty-object": ({"permissions": {}}, "does not set defaultMode"),
+    "permissions-extra-key-only": ({"permissions": {"deny": []}}, "outside {defaultMode}: deny"),
+    "permissions-extra-key-beside-mode": (
+        {"permissions": {"defaultMode": "plan", "deny": []}},
+        "outside {defaultMode}: deny",
+    ),
+    "default-mode-non-string": ({"permissions": {"defaultMode": ["plan"]}}, "non-string permissions.defaultMode"),
+    "default-mode-bypass": ({"permissions": {"defaultMode": "bypassPermissions"}}, "not accepted"),
+    "default-mode-accept-edits": ({"permissions": {"defaultMode": "acceptEdits"}}, "not accepted"),
+    "default-mode-auto": ({"permissions": {"defaultMode": "auto"}}, "not accepted"),
+    "default-mode-dont-ask": ({"permissions": {"defaultMode": "dontAsk"}}, "not accepted"),
+    "env-non-object": ({"env": "not-an-object"}, "non-object env value"),
+    "env-null": ({"env": None}, "non-object env value"),
+    "env-name-outside-allowlist": ({"env": {"BASH_ENV": "x"}}, "outside the allowed set"),
+    "env-credential-named": ({"env": {"ANTHROPIC_API_KEY": "sk-ant-example"}}, "outside the allowed set"),
+    "env-non-string-value": ({"env": {"DISABLE_TELEMETRY": 1}}, "non-string env value(s) for: DISABLE_TELEMETRY"),
+}
+
+
 class TestRefusalPreservesPriorRender:
     """An overlay validation failure must not touch the pre-existing
-    $target -- the property the whole plan exists to protect."""
+    $target -- the property the whole plan exists to protect. A write placed
+    after a late validation, or a check added after the merge, fails the arm
+    it precedes."""
 
-    def test_overlay_validation_failure_leaves_prior_target_byte_identical(self, tmp_path: Path) -> None:
+    _PRIOR_RENDER = {"permissions": {"deny": ["Bash(sudo *)"]}, "hooks": {"PreToolUse": []}}
+
+    @pytest.mark.parametrize(
+        ("overlay_content", "refusal_fragment"),
+        list(_OVERLAY_REFUSAL_FIXTURES.values()),
+        ids=list(_OVERLAY_REFUSAL_FIXTURES),
+    )
+    def test_each_overlay_refusal_leaves_the_prior_render_byte_identical(
+        self, tmp_path: Path, overlay_content: object, refusal_fragment: str
+    ) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
-        _write_json(config_dir / "settings.base.json", {"permissions": {"deny": ["Bash(sudo *)"]}})
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
         target = config_dir / "settings.json"
-        prior_content = json.dumps(
-            {"permissions": {"deny": ["Bash(sudo *)"]}, "hooks": {"PreToolUse": []}}
-        )
+        prior_content = json.dumps(self._PRIOR_RENDER)
         target.write_text(prior_content)
-        _write_json(config_dir / "settings.overlay.json", {"notAllowed": "x"})
+        overlay = config_dir / "settings.overlay.json"
+        if isinstance(overlay_content, str):
+            overlay.write_text(overlay_content)
+        else:
+            _write_json(overlay, overlay_content)
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode != 0
+        assert refusal_fragment in result.stderr
+        assert "an existing settings.json keeps its previous deny rules and hooks" in result.stderr
+        assert "base changes are not delivered until the overlay is fixed" in result.stderr
+        assert target.read_text() == prior_content
+        assert sorted(entry.name for entry in config_dir.iterdir()) == [
+            "settings.base.json",
+            "settings.json",
+            "settings.overlay.json",
+        ], "a refusal must not leave a temp file behind"
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_overlay_leaves_the_prior_render_byte_identical(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        target = config_dir / "settings.json"
+        prior_content = json.dumps(self._PRIOR_RENDER)
+        target.write_text(prior_content)
+        overlay = config_dir / "settings.overlay.json"
+        _write_json(overlay, {"autoMode": {"environment": ["$defaults"]}})
+        overlay.chmod(0o000)
+        try:
+            result = _run_script(config_dir=config_dir)
+        finally:
+            overlay.chmod(0o644)
+
+        assert result.returncode != 0
+        assert "not readable" in result.stderr
         assert target.read_text() == prior_content
 
 
@@ -773,7 +1003,7 @@ class TestOverlayChmodHardening:
         assert result.returncode != 0
         assert (overlay.stat().st_mode & 0o777) == 0o600
 
-    def test_overlay_is_chmod_600_when_env_namespace_violation_is_rejected(self, tmp_path: Path) -> None:
+    def test_overlay_is_chmod_600_when_env_name_outside_allowlist_is_rejected(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
@@ -1064,7 +1294,10 @@ class TestIdempotency:
         overlay means settings.json must match one racer's full output.
         With payloads this small a plain redirect would also look atomic per
         racer, so the failure this smoke detects is a fixed temp name that
-        collides between the racers and fails the loser's mv."""
+        collides between the racers and fails the loser's mv.
+        The two processes are not forced to overlap, so the smoke catches
+        that regression probabilistically, and a pass is not proof of
+        atomicity."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         base = {"otherKey": "base-value"}
@@ -1736,12 +1969,12 @@ class TestStderrDisclosure:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
-        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_BASE_URL": "https://x"}})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"DISABLE_TELEMETRY": "https://x"}})
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode == 0, result.stderr
-        assert "env.ANTHROPIC_BASE_URL" in result.stderr
+        assert "env.DISABLE_TELEMETRY" in result.stderr
 
     def test_category_c_names_overlay_set_default_mode(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
@@ -1761,14 +1994,14 @@ class TestStderrDisclosure:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
-        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_BASE_URL": "https://x"}})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"DISABLE_TELEMETRY": "https://x"}})
         _write_json(config_dir / "settings.json", {"theme": "dark", "otherKey": "v"})
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode == 0, result.stderr
         assert "carried forward top-level keys: theme" in result.stderr
-        assert "env.ANTHROPIC_BASE_URL" in result.stderr
+        assert "env.DISABLE_TELEMETRY" in result.stderr
 
     def test_env_value_never_appears_in_disclosure_only_the_dotted_path_does(
         self, tmp_path: Path
@@ -1778,13 +2011,13 @@ class TestStderrDisclosure:
         _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
         _write_json(
             config_dir / "settings.overlay.json",
-            {"env": {"ANTHROPIC_BASE_URL": "https://secret-marker.example"}},
+            {"env": {"DISABLE_TELEMETRY": "https://secret-marker.example"}},
         )
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode == 0, result.stderr
-        assert "env.ANTHROPIC_BASE_URL" in result.stderr
+        assert "env.DISABLE_TELEMETRY" in result.stderr
         assert "secret-marker.example" not in result.stderr
 
     def test_changed_overlay_env_value_names_the_key_but_not_either_value(self, tmp_path: Path) -> None:
@@ -1795,17 +2028,17 @@ class TestStderrDisclosure:
         _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
         _write_json(
             config_dir / "settings.overlay.json",
-            {"env": {"ANTHROPIC_BASE_URL": "https://new-marker.example"}},
+            {"env": {"DISABLE_TELEMETRY": "https://new-marker.example"}},
         )
         _write_json(
             config_dir / "settings.json",
-            {"otherKey": "v", "env": {"ANTHROPIC_BASE_URL": "https://old-marker.example"}},
+            {"otherKey": "v", "env": {"DISABLE_TELEMETRY": "https://old-marker.example"}},
         )
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode == 0, result.stderr
-        assert "overlay env keys applied or changed: env.ANTHROPIC_BASE_URL" in result.stderr
+        assert "overlay env keys applied or changed: env.DISABLE_TELEMETRY" in result.stderr
         assert "new-marker.example" not in result.stderr
         assert "old-marker.example" not in result.stderr
 
@@ -1815,10 +2048,10 @@ class TestStderrDisclosure:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "new"})
-        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_BASE_URL": "https://same.example"}})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"DISABLE_TELEMETRY": "https://same.example"}})
         _write_json(
             config_dir / "settings.json",
-            {"otherKey": "old", "env": {"ANTHROPIC_BASE_URL": "https://same.example"}},
+            {"otherKey": "old", "env": {"DISABLE_TELEMETRY": "https://same.example"}},
         )
 
         result = _run_script(config_dir=config_dir)
@@ -1835,7 +2068,7 @@ class TestStderrDisclosure:
         _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
         _write_json(
             config_dir / "settings.json",
-            {"otherKey": "v", "env": {"ANTHROPIC_BASE_URL": "https://dropped-marker.example"}},
+            {"otherKey": "v", "env": {"DISABLE_TELEMETRY": "https://dropped-marker.example"}},
         )
 
         result = _run_script(config_dir=config_dir)
@@ -1924,7 +2157,7 @@ class TestStderrDisclosure:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
-        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_BASE_URL": "https://x"}})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"DISABLE_ERROR_REPORTING": "1"}})
         _write_json(
             config_dir / "settings.json",
             {"otherKey": "v", "env": {"DISABLE_TELEMETRY": "1"}},
@@ -1934,16 +2167,16 @@ class TestStderrDisclosure:
 
         assert result.returncode == 0, result.stderr
         assert "dropped env keys: env.DISABLE_TELEMETRY" in result.stderr
-        assert "overlay env keys applied or changed: env.ANTHROPIC_BASE_URL" in result.stderr
+        assert "overlay env keys applied or changed: env.DISABLE_ERROR_REPORTING" in result.stderr
 
     def test_env_keys_the_render_keeps_are_not_named_as_dropped(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "new"})
-        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_BASE_URL": "https://same.example"}})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"DISABLE_TELEMETRY": "https://same.example"}})
         _write_json(
             config_dir / "settings.json",
-            {"otherKey": "old", "env": {"ANTHROPIC_BASE_URL": "https://same.example"}},
+            {"otherKey": "old", "env": {"DISABLE_TELEMETRY": "https://same.example"}},
         )
 
         result = _run_script(config_dir=config_dir)

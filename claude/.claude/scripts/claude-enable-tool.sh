@@ -6,7 +6,7 @@
 #   claude-enable-tool.sh workflow "draft a plan"  # Workflow enabled, prompt passes through
 #
 # CLI scope is the only scope that outranks the User-scope default a stow
-# consumer inherits from claude/.claude/settings.json — docs/design-decisions.md.
+# consumer inherits from claude/.claude/settings.base.json — docs/design-decisions.md.
 # A caller-supplied --settings would have to be merged with this script's own
 # JSON by hand, so it is refused rather than silently overridden or combined.
 set -euo pipefail

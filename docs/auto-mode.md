@@ -75,10 +75,10 @@ key account, an older Claude Code version, or another provider —
 `permissions.defaultMode` in `<config-dir>/settings.overlay.json`
 (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`; see
 "What to put in `settings.overlay.json`" below) is the documented way to make
-auto mode the default for your own sessions. This repo's render does not yet
-accept `"auto"`, so the overlay cannot make auto mode your default. Until it
-does, start auto mode per session with `claude --permission-mode auto` (see
-"Activating" above) or `claude-auto`.
+auto mode the default for your own sessions. This repo's render refuses
+`"auto"`, so the overlay cannot make auto mode your default. Start auto mode
+per session with `claude --permission-mode auto` (see "Activating" above) or
+`claude-auto`.
 
 The render accepts only `default` and `plan` for `defaultMode`:
 
@@ -93,8 +93,11 @@ The render accepts only `default` and `plan` for `defaultMode`:
 `defaultMode` sets the *mode*, not the *model* — the session-model requirement
 above still applies regardless of how auto mode is activated.
 
-`"auto"` stays refused pending verification of auto mode's classifier layer.
-`docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected" records the live-session observations and the untested list.
+The render refuses `"auto"` until the shipped `ask-review-permissions.sh`'s
+reason text is verified under `--permission-mode auto`. A throwaway hook's
+`ask` prompted a human there, but the shipped hook's reason text was not
+tested. It also refuses `"dontAsk"`, which no live session has exercised.
+`docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected" records the `acceptEdits`, `bypassPermissions`, and `auto` results.
 `bypassPermissions` and `acceptEdits` are refused outright for
 `permissions.defaultMode` in the overlay — use per-session `claude
 --permission-mode <mode>` or project-scope `.claude/settings.local.json` for
@@ -162,42 +165,50 @@ The overlay's top-level keys are a closed set: `autoMode`, `env`,
 `skillListingBudgetFraction`, and a `permissions` object carrying only
 `defaultMode` (see "Activating" above). Any other top-level key, or a
 `permissions` object carrying any other key, is refused outright rather than
-silently dropped. An `env` key's name must fall in a vendor-recognized
-configuration namespace (`CLAUDE_CODE_`, `ANTHROPIC_`, or `DISABLE_`) with a
-string value — see [`docs/security-hardening.md`](security-hardening.md) for
-the telemetry vars this covers. The same namespace also accepts
-`ANTHROPIC_BASE_URL` (endpoint redirection), so a pasted-in overlay snippet
-setting it is not rejected by this check.
+silently dropped. Set another key such as `model` or `enabledPlugins` with
+`/config` or by editing `<config-dir>/settings.json`, where it carries forward.
 
-An `env` key whose name ends in `_API_KEY`, `_AUTH_TOKEN`, `_TOKEN`,
-`_SECRET`, or `_KEY` is refused. The overlay and the rendered `settings.json`
-sit outside every credential read gate, so a credential value written there
-is readable by any session. Configure credentials through `apiKeyHelper` or an
-export in your shell profile instead.
-The check is a name-shape heuristic. It misses names such as `PASSWORD`,
-`PASSPHRASE`, and `HEADERS`, and it does not inspect values, so a credential in
-URL userinfo passes it. Treat it as a guard against pasting the common shapes,
-not as proof that the overlay holds no credential.
+An `env` key must be one of seven exact names, each with a string value:
+`ANTHROPIC_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL`, and the five telemetry variables
+listed under "Telemetry and external traffic" in
+[`docs/security-hardening.md`](security-hardening.md). The render refuses any
+other name and its message names the allowed set. A name pattern would also
+admit variables that run commands, redirect requests, or carry credentials.
+Export any other variable from your shell profile before launching `claude`.
+For a credential, prefer `apiKeyHelper` over any file, because the credential
+read gates cover no shell profile, overlay, or rendered `settings.json`. A
+credential exported into the shell environment is readable by any Bash call
+(`printenv`, `env`, `/proc/self/environ`), so prefer a helper that reads from a
+secret store. The check reads names and never inspects values.
 
-A render keeps `permissions`, `hooks`, `statusLine`, and `skillOverrides`
-from `settings.base.json` alone. It takes `autoMode`, `env`,
-`skillListingBudgetFraction`, and `permissions.defaultMode` from the overlay
-alone, so deleting one from the overlay clears it on the next render. Every
-top-level key that neither `settings.base.json` nor the overlay defines carries
-forward from the live `settings.json` unchanged, so a Claude Code write such as
-`/config` or `/theme` survives. A top-level key that `settings.base.json`
-defines, today `attribution`, `disableArtifact`, `disableWorkflows`, and
-`syncClaudeAiSkills`, takes base's value, so a live edit to it is reverted and
-the stderr disclosure does not name the revert. An edit under `hooks`,
-`statusLine`, or `skillOverrides` is reverted without a message too, because
-the disclosure does not look inside those keys. An in-app edit to `autoMode`,
-including `claude auto-mode reset`, is reverted on the next render whether or
-not the overlay carries `autoMode`. A render that changes the file names on
-stderr each key it carried forward and each top-level key, `permissions` entry,
-and `env` key it dropped. It names top-level keys and `env` keys by key only,
-never by value. A dropped `permissions` entry prints its rule text, which is
-what lets you recover a dropped rule. That stderr line is the only record of a
-drop: the render keeps no backup of the prior `settings.json`.
+What a render does with each key:
+
+- `permissions`, `hooks`, `statusLine`, and `skillOverrides` come from
+  `settings.base.json` alone.
+- `autoMode`, `env`, `skillListingBudgetFraction`, and
+  `permissions.defaultMode` come from the overlay alone, so deleting one from
+  the overlay clears it on the next render.
+- Every other top-level key that neither file defines carries forward from the
+  live `settings.json` unchanged, so a Claude Code write such as `/config` or
+  `/theme` survives.
+- A top-level key that `settings.base.json` defines, today `attribution`,
+  `disableArtifact`, `disableWorkflows`, and `syncClaudeAiSkills`, takes
+  base's value, so a live edit to it is reverted without a message.
+- An edit under `hooks`, `statusLine`, or `skillOverrides` is reverted without
+  a message, because the disclosure does not look inside those keys. Whether
+  `/statusline` writes `statusLine` at user scope is unverified. If it does,
+  the next render reverts that write too.
+- An in-app edit to `autoMode`, including `claude auto-mode reset`, is
+  reverted on the next render whether or not the overlay carries `autoMode`.
+- A render that changes the file names on stderr each key it carried forward
+  and each top-level key, `permissions` entry, and `env` key it dropped.
+  It also names each overlay `env` key it applied or changed, and the
+  `permissions.defaultMode` value when the overlay sets one.
+- Top-level keys and `env` keys are named by key only, never by value. A
+  dropped `permissions` entry prints its rule text, which lets you recover a
+  dropped rule.
+- The render keeps no backup of the prior `settings.json`, so that stderr line
+  is the only record of a drop.
 
 Removing `env.CLAUDE_CODE_EFFORT_LEVEL` or `env.ANTHROPIC_MODEL` from the
 overlay does not remove either from the rendered `settings.json`:

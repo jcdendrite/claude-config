@@ -335,6 +335,110 @@ class TestEnsureSettingsRenderTimeoutGuard:
         )
 
 
+class TestEnsureSettingsRenderWithoutTimeoutBinary:
+    """Neither timeout(1) nor gtimeout(1) on PATH: the render still runs, and
+    a healthy shell start prints nothing, since a note repeated in every new
+    shell would drown the render-failure hint on the same stderr channel."""
+
+    # Everything ensure-settings-render.sh, _lib.sh's source-time code, and
+    # render-settings.sh invoke by name, minus timeout and gtimeout.
+    _TOOLS = ("bash", "cat", "chmod", "dirname", "jq", "mktemp", "mv", "rm")
+
+    def _path_without_timeout(self, tmp_path: Path) -> str:
+        bin_dir = tmp_path / "bin-no-timeout"
+        bin_dir.mkdir()
+        for tool in self._TOOLS:
+            tool_path = shutil.which(tool)
+            assert tool_path is not None, f"{tool} must be installed to run this test"
+            (bin_dir / tool).symlink_to(tool_path)
+        return str(bin_dir)
+
+    def test_render_runs_uncapped_and_adds_no_stderr_line(self, tmp_path: Path) -> None:
+        base_content = {"otherKey": "base-value"}
+        home = _make_home_with_base(tmp_path, base_content)
+        env = {**os.environ, "HOME": str(home), "PATH": self._path_without_timeout(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+
+        result = subprocess.run(
+            [str(_ENSURE_SCRIPT)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=15,
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stderr == ""
+        assert json.loads((home / ".claude" / "settings.json").read_text()) == base_content
+
+    def test_failing_render_still_warns_and_exits_zero(self, tmp_path: Path) -> None:
+        """The uncapped branch has its own `|| render_status=$?`; dropping it
+        would leave the status 0 and lose the failure hint silently."""
+        home = tmp_path / "home"
+        scripts_dir = home / ".claude" / "scripts"
+        scripts_dir.mkdir(parents=True)
+        stub = scripts_dir / "render-settings.sh"
+        stub.write_text("#!/bin/bash\nexit 1\n")
+        stub.chmod(0o755)
+        env = {**os.environ, "HOME": str(home), "PATH": self._path_without_timeout(tmp_path)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+
+        result = subprocess.run(
+            [str(_ENSURE_SCRIPT)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=15,
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert f"render of {home}/.claude/settings.json failed -- see the error above" in result.stderr
+        assert "5s cap" not in result.stderr
+
+
+class TestEnsureSettingsRenderWithGtimeoutOnly:
+    """gtimeout(1) on PATH with no timeout(1), as under Homebrew coreutils on
+    macOS: the render must still run capped, not take the uncapped branch."""
+
+    def test_hung_render_is_bounded_by_gtimeout(self, tmp_path: Path) -> None:
+        real_timeout = shutil.which("timeout") or shutil.which("gtimeout")
+        if real_timeout is None:
+            pytest.skip("neither timeout(1) nor gtimeout(1) available")
+        bin_dir = tmp_path / "bin-gtimeout-only"
+        bin_dir.mkdir()
+        for tool in (*TestEnsureSettingsRenderWithoutTimeoutBinary._TOOLS, "sleep"):
+            tool_path = shutil.which(tool)
+            assert tool_path is not None, f"{tool} must be installed to run this test"
+            (bin_dir / tool).symlink_to(tool_path)
+        # Shrinks the 5s production cap so the test waits about a second; the
+        # shim itself is named gtimeout, so a probe that ignores gtimeout
+        # never reaches it.
+        gtimeout_shim = bin_dir / "gtimeout"
+        gtimeout_shim.write_text(f'#!/bin/bash\nexec {shlex.quote(real_timeout)} -k 0.5 1 "${{@:4}}"\n')
+        gtimeout_shim.chmod(0o755)
+        home = tmp_path / "home"
+        scripts_dir = home / ".claude" / "scripts"
+        scripts_dir.mkdir(parents=True)
+        stub = scripts_dir / "render-settings.sh"
+        stub.write_text(f"#!/bin/bash\nsleep {TIMEOUT_SHIM_SLEEP_SECONDS}\n")
+        stub.chmod(0o755)
+        env = {**os.environ, "HOME": str(home), "PATH": str(bin_dir)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+
+        result = subprocess.run(
+            [str(_ENSURE_SCRIPT)], capture_output=True, text=True, check=False, env=env, timeout=30
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "did not finish within its 5s cap (exit 124)" in result.stderr, (
+            "a render killed through gtimeout must hit the cap hint -- an "
+            "uncapped render would instead succeed silently after sleeping "
+            "the full duration"
+        )
+
+
 class TestEnsureSettingsRenderRepeatRuns:
     """Every run renders; render-settings.sh itself skips the write when the
     result is unchanged, so ensure-settings-render.sh keeps no cache."""
@@ -615,6 +719,78 @@ class TestEnsureSettingsRenderFailureStatus:
         assert f"render of {home}/.claude/settings.json failed -- see the error above" in result.stderr
         assert "5s cap" not in result.stderr
 
+    # One per printf arm in ensure-settings-render.sh's failure hint.
+    _HINT_ARMS = ("default-profile-without-manifest", "default-profile-with-manifest", "non-default-profile")
+
+    def _run_failing_render(
+        self, tmp_path: Path, arm: str, status: int, settings_state: str
+    ) -> subprocess.CompletedProcess:
+        """Run the script against a render stub that exits `status`, in the
+        profile `arm` selects, with settings.json in `settings_state`:
+        existing (a prior render carrying a deny rule), absent, or dangling."""
+        home = self._make_home_with_stub_render(tmp_path, status)
+        if arm == "non-default-profile":
+            profile_dir = tmp_path / "profile"
+            profile_dir.mkdir()
+            (profile_dir / "settings.base.json").write_text("{}")
+        else:
+            profile_dir = home / ".claude"
+        if arm == "default-profile-with-manifest":
+            (home / ".claude-config-source").write_text(f"{tmp_path / 'checkout'}\n")
+        settings_path = profile_dir / "settings.json"
+        if settings_state == "existing":
+            settings_path.write_text(json.dumps({"permissions": {"deny": ["Bash(sudo *)"]}}))
+        elif settings_state == "dangling":
+            settings_path.symlink_to(tmp_path / "nonexistent-target")
+        env = {**os.environ, "HOME": str(home)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        if arm == "non-default-profile":
+            env["CLAUDE_CONFIG_DIR"] = str(profile_dir)
+        return subprocess.run(
+            [str(_ENSURE_SCRIPT)], capture_output=True, text=True, check=False, env=env, timeout=15
+        )
+
+    @staticmethod
+    def _arm_recovery_command(tmp_path: Path, arm: str) -> str:
+        """The recovery command only `arm`'s printf emits, so a case that
+        asserts it has reached the arm its parameter names."""
+        return {
+            "default-profile-without-manifest": "re-run install.sh from your claude-config checkout.",
+            "default-profile-with-manifest": f"cd {tmp_path / 'checkout'} && ./install.sh",
+            "non-default-profile": f"CLAUDE_CONFIG_DIR={tmp_path / 'profile'} ~/.claude/scripts/render-settings.sh",
+        }[arm]
+
+    @pytest.mark.parametrize("status", [1, 124])
+    @pytest.mark.parametrize("arm", _HINT_ARMS)
+    def test_failure_hint_over_an_existing_settings_json_says_its_rules_are_kept_and_base_changes_wait(
+        self, tmp_path: Path, arm: str, status: int
+    ) -> None:
+        result = self._run_failing_render(tmp_path, arm, status, "existing")
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "an existing settings.json keeps its previous deny rules and hooks" in result.stderr
+        assert "base changes are not delivered until the render succeeds" in result.stderr
+        assert "no deny rules or hooks are active" not in result.stderr
+        assert self._arm_recovery_command(tmp_path, arm) in result.stderr
+
+    @pytest.mark.parametrize("settings_state", ["absent", "dangling"])
+    @pytest.mark.parametrize("arm", _HINT_ARMS)
+    def test_failure_hint_with_no_usable_settings_json_says_no_deny_rules_or_hooks_are_active(
+        self, tmp_path: Path, arm: str, settings_state: str
+    ) -> None:
+        """A missing or dangling settings.json holds no deny rules, so the
+        hint must not reassure about previous ones (install.sh's notice uses
+        the same -f condition)."""
+        result = self._run_failing_render(tmp_path, arm, 1, settings_state)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert (
+            "settings.json is missing or dangling, so no deny rules or hooks are active until the render succeeds"
+            in result.stderr
+        )
+        assert "previous deny rules" not in result.stderr
+        assert self._arm_recovery_command(tmp_path, arm) in result.stderr
+
 
 class TestRcBlockExecution:
     """The block install.sh writes into an rc file must work when a new shell
@@ -640,7 +816,12 @@ class TestRcBlockExecution:
         self, tmp_path: Path, shell_name: str
     ) -> None:
         """install.sh appends the identical block to both rc files, so each
-        shell's startup file is sourced by its own shell."""
+        shell's startup file is sourced by its own shell.
+
+        The zsh case skips when zsh is absent, and tests.yml does not install
+        it, so CI executes the rc block under bash only unless the runner
+        image ships zsh. The stub-zsh test above proves that .zshrc receives
+        the text, not that zsh runs it."""
         shell_path = shutil.which(shell_name)
         if shell_path is None:
             pytest.skip(f"{shell_name} not installed")

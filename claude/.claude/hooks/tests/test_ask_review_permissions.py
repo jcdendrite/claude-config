@@ -66,6 +66,22 @@ class TestAskReviewPermissions:
         assert run_hook(REVIEW_PERMS_HOOK, tool_input) == "ask"
 
     @pytest.mark.parametrize(
+        "settings_name",
+        ["settings.base.json", "settings.overlay.json"],
+    )
+    @pytest.mark.parametrize(
+        "build_input",
+        [edit_input, write_input, multiedit_input],
+        ids=["edit", "write", "multiedit"],
+    )
+    def test_base_and_overlay_settings_edits_ask(self, build_input, settings_name):
+        """settings.base.json carries the permission floor and the hook
+        registrations, and settings.overlay.json feeds the render, so an edit
+        to either asks. A regex narrowed to `settings(\\.local)?\\.json` would
+        drop both silently."""
+        assert run_hook(REVIEW_PERMS_HOOK, build_input(f"/some/project/.claude/{settings_name}")) == "ask"
+
+    @pytest.mark.parametrize(
         "path",
         [
             "/some/project/package.json",
@@ -249,14 +265,15 @@ class TestAskReviewPermissions:
 
     @pytest.mark.parametrize(
         "filename",
-        ["SETTINGS.json", "settings.local.json"],
-        ids=["case-variant", "settings-local"],
+        ["SETTINGS.json", "settings.local.json", "settings.base.json", "settings.overlay.json"],
+        ids=["case-variant", "settings-local", "settings-base", "settings-overlay"],
     )
     def test_config_dir_root_settings_variants_ask(self, tmp_path, filename):
         """The config-dir-root arm (gap (c)) covers the same filename variants
-        as the `.claude/settings*.json` arm: a case variant and
-        settings.local.json, not just the bare lowercase settings.json
-        already covered by test_settings_file_at_config_dir_root_with_no_claude_segment_asks."""
+        as the `.claude/settings*.json` arm: a case variant, settings.local.json,
+        and the base and overlay files a non-default profile keeps at its root,
+        not just the bare lowercase settings.json already covered by
+        test_settings_file_at_config_dir_root_with_no_claude_segment_asks."""
         config_dir = tmp_path / "claude-accounts" / "work"
         file_path = config_dir / filename
         assert (

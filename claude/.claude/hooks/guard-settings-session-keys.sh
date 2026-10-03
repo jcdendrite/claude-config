@@ -3,11 +3,14 @@
 # tier-threat-model: cooperative
 # PreToolUse hook: block git commit when claude/.claude/settings.base.json
 # has machine-local or session-scoped keys staged relative to the repo's
-# default branch — see GUARDED_KEYS_JSON below for the guarded set.
+# default branch, so one machine's own state is less likely to ship as the
+# config every user receives — see GUARDED_KEYS_JSON below for the guarded set
+# and why.
 #
-# Purpose: blocks committing machine-local or session-scoped state as the
-# shipped config for every user — see GUARDED_KEYS_JSON below for why each
-# key is guarded.
+# Fail posture: an unsourceable _lib.sh or a tool-input parse failure denies.
+# A missing or cap-killed jq fails that parse, so it denies every Bash call.
+# The only allow that warns on stderr is a failure of the later changed-keys
+# jq call. The other allows on a failure are silent, and Known gaps lists them.
 #
 # Defense-in-depth: the hook is dispatched on every Bash tool call, and the
 # internal commit-shape check and staged-file check below are the sole
@@ -22,16 +25,29 @@
 # `docs/design-decisions/guard-settings-session-keysshs-default-branch.md`.
 #
 # Coverage boundary: this gate reads the index as it stands before the Bash
-# call runs. deny-invisible-commit-content.sh, registered in the same chain, is
-# the backstop for the all-flag, a commit pathspec, and a chained
-# `git add && git commit`, none of which this gate can see.
-# A commit concluded by `git merge` or `git pull` is never seen here. Only CI catches that shape, through
-# test_base_top_level_keys_disjoint_from_guarded_keys in
-# test_guard_settings_session_keys.py.
+# call runs. Known gaps:
+# - An all-flag commit, a commit pathspec, and a chained `git add && git commit`
+#   are invisible to it. deny-invisible-commit-content.sh, registered in the
+#   same chain, is the backstop.
+# - A `cd` embedded in the command is not followed.
+# - A commit concluded by `git merge` or `git pull` is never seen. Only CI
+#   catches that shape, through test_base_sets_none_of_the_guarded_key_paths
+#   in test_guard_settings_session_keys.py.
+# - A failed or cap-killed `git rev-parse --is-inside-work-tree` reads as "not
+#   in a repo" and allows silently.
+# - A failed or cap-killed `git diff --cached --name-only` reads as "not
+#   staged" and allows silently.
+# - A failed or cap-killed `git show :<path>` leaves the staged content empty,
+#   which parses as {}. The commit then allows silently unless the default
+#   branch's file carries a guarded key.
+# - _lib_command_concludes_commit returning status 2 (could not determine the
+#   command's shape) allows silently, the same as status 1 (no match).
 #
 # Exit codes:
 #   0      — allow (no opinion)
 #   0+JSON — deny (a guarded key changed in staged settings.base.json)
+#   2      — deny with the reason on stderr (_lib.sh unsourceable, or a deny
+#            reason jq cannot encode)
 
 set -uo pipefail
 
@@ -63,11 +79,9 @@ GUARDED_KEYS_JSON='[
 
 # Direct-invocation mode for tests, including the drift check against
 # render-settings.sh's dotted-path carry-forward rule: prints GUARDED_KEYS_JSON
-# as JSON and exits, bypassing the hook's stdin tool-input protocol entirely.
-# It must run before _lib.sh is sourced and before any stdin is read.
-# A CLI invocation here supplies no piped tool-input JSON, and
-# _lib_parse_tool_input_or_deny is fail-closed on that, so placing this check
-# any later would make the mode unreachable.
+# as JSON and exits.
+# It runs before _lib.sh is sourced because a CLI call has no stdin JSON and
+# _lib_parse_tool_input_or_deny is fail-closed.
 if [ "${1:-}" = "--print-guarded-keys" ]; then
   printf '%s\n' "$GUARDED_KEYS_JSON"
   exit 0
@@ -111,7 +125,7 @@ fi
 # (armed on `git rebase --continue`); see:
 # `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "Why `git rebase --continue` is not gated by the marker gates"
 # Deliberately unchecked, matching this hook's own fail-open posture on the
-# jq-absent path below: status 2 (could not determine) falls through the same
+# changed-keys jq failure path below: status 2 (could not determine) falls through the same
 # "not gated, allow" path as status 1 (no match), rather than gaining a
 # dedicated deny fork.
 _lib_command_concludes_commit "$COMMAND" || exit 0
@@ -131,7 +145,11 @@ SETTINGS_REPO_PATH="claude/.claude/settings.base.json"
 # Check whether settings.base.json is staged at all.
 # -c diff.relative=false keeps the names repo-root-relative whatever the
 # payload's cwd and the user's diff.relative say.
-if ! _lib_capped git -C "$CWD" -c diff.relative=false diff --cached --name-only 2>/dev/null | grep -qF "$SETTINGS_REPO_PATH"; then
+# The names go through a variable, not a pipe: under pipefail a grep that exits
+# on its first match can SIGPIPE git and fail the pipeline, which `!` would read
+# as "not staged".
+STAGED_NAMES=$(_lib_capped git -C "$CWD" -c diff.relative=false diff --cached --name-only 2>/dev/null)
+if ! grep -qF "$SETTINGS_REPO_PATH" <<<"$STAGED_NAMES"; then
   exit 0
 fi
 
@@ -159,19 +177,11 @@ fi
 # - Content that does not parse degrades to {}, so keys the other side does
 #   have still register as changed. Only a jq that cannot run at all yields no
 #   names, and that path warns below rather than passing silently.
-# - jq's `//` in $staged_env_raw/$main_env_raw treats a literal `false` env
-#   value the same as absent/null, collapsing it to `null` before the
-#   $staged_env_objlike/$main_env_objlike type-check ever sees "boolean".
-#   A real differing value on the other side still denies via the
-#   key-diffing branch below. Only the degenerate false-vs-absent pairing
-#   (both sides meaning "no env") collapses to no change, which is correct.
-# - `env` is guarded as a whole namespace, not just the two dotted paths in
-#   GUARDED_KEYS_JSON.
-# - Any added, removed, or changed key under .env denies, mirroring
-#   render-settings.sh's namespace (not enumerated-list) treatment of overlay
-#   env keys.
-# - A credential-shaped key (e.g. env.ANTHROPIC_AUTH_TOKEN) is caught by this
-#   even though it has no dedicated GUARDED_KEYS_JSON entry.
+# - jq's `//` collapses a literal false env value to null, so a false-vs-absent
+#   pair counts as no change.
+# - `env` is guarded as a whole namespace, not only the two dotted paths in
+#   GUARDED_KEYS_JSON: any added, removed, or changed key under it denies,
+#   including a credential-shaped one such as env.ANTHROPIC_AUTH_TOKEN.
 # shellcheck disable=SC2016 # single-quoted on purpose: $guarded/$staged/$main are jq --arg bindings, not shell variables; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but the _lib_jq wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
 if ! CHANGED_KEYS=$(_lib_jq -rn \
   --argjson guarded "$GUARDED_KEYS_JSON" \
@@ -214,7 +224,7 @@ if ! CHANGED_KEYS=$(_lib_jq -rn \
   # Allow, matching this gate's fail-open posture, but say so — a silent
   # allow here is indistinguishable from a clean one, and leaves the engineer
   # believing a guard ran that did not.
-  printf '%s\n' "guard-settings-session-keys: jq could not run (missing or timed out) — the settings-key guard did not evaluate this commit." >&2
+  printf '%s\n' "guard-settings-session-keys: jq failed or timed out while comparing the staged settings keys — the settings-key guard did not evaluate this commit." >&2
   exit 0
 fi
 

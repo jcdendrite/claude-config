@@ -621,6 +621,9 @@ if [ "$render_status" -ne 0 ]; then
     echo "[install] error: render-settings.sh failed (exit $render_status) -- $HOME/.claude/settings.json was not rendered" >&2
     retry_advice="Fix the error above, then re-run ./install.sh"
   fi
+  if [ ! -f "$HOME/.claude/settings.json" ]; then
+    echo "[install] no deny rules or hooks are active until the render succeeds, so do not start a Claude Code session first" >&2
+  fi
   echo "[install] stopped before the legacy config migration, machine-level opt-ins, marketplace and project-plugin registration, and ~/.local/bin PATH wiring. $retry_advice" >&2
   exit "$render_status"
 fi
