@@ -76,7 +76,7 @@ If design-wrong-shape, replace the surface and re-run Step 4. If correlated-revi
 
 ## Item ownership
 
-Routes each checklist item to the reviewer subagent(s) that file findings on it. Bold shorthands match titles above; IDs are the dispatcher's primary key. **Primary owner** files findings; **co-owners** are spawned where the item touches their turf. When in doubt, this table wins over inline mentions.
+Routes each checklist item to the reviewer subagent(s) that file findings on it. Bold shorthands match titles above; IDs are the dispatcher's primary key. **Primary owner** files findings; **co-owners** are spawned where the item touches their turf. When in doubt, this table wins over inline mentions. The dispatcher fires reviewers per touched domain. Each agent self-scopes against the plan and returns early ("No X concerns") when out of lane.
 
 | Item | Primary owner | Co-owners |
 |------|---------------|-----------|
