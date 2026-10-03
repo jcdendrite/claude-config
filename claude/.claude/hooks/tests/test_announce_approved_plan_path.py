@@ -25,7 +25,7 @@ from .conftest import _seed_session
 
 ANNOUNCE_HOOK = HOOKS_DIR / "announce-approved-plan-path.sh"
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
-_SETTINGS_PATH = HOOKS_DIR.parent / "settings.json"
+_SETTINGS_PATH = HOOKS_DIR.parent / "settings.base.json"
 _PLAN_REVIEW_SKILL = SKILLS_DIR / "plan-review" / "SKILL.md"
 
 # Paired literal: PLAN_REVIEW_COVERED_PATH_PREFIX in marker.sh.

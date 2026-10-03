@@ -17,7 +17,7 @@ from helpers import HOOKS_DIR, REPO_ROOT, _build_subprocess_env, build_path_with
 
 HOOK = HOOKS_DIR / "nudge-answer-provenance.sh"
 CLAUDE_MD = REPO_ROOT / "claude" / ".claude" / "CLAUDE.md"
-SETTINGS_PATH = REPO_ROOT / "claude" / ".claude" / "settings.json"
+SETTINGS_PATH = REPO_ROOT / "claude" / ".claude" / "settings.base.json"
 
 DRIFT_PHRASE = "Attribute to the engineer only what they said"
 DRIFT_BULLET_LEAD = re.compile(r"^- \*\*" + re.escape(DRIFT_PHRASE), re.MULTILINE)

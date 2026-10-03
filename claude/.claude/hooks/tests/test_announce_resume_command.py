@@ -20,12 +20,12 @@ from helpers import (
 )
 
 ANNOUNCE_HOOK = HOOKS_DIR / "announce-resume-command.sh"
-_SETTINGS_PATH = HOOKS_DIR.parent / "settings.json"
+_SETTINGS_PATH = HOOKS_DIR.parent / "settings.base.json"
 
 
 def _registered_post_tool_use_event_name() -> str:
     """The hookEventName this hook's emission must claim, derived from
-    settings.json rather than hardcoded — mirrors
+    settings.base.json rather than hardcoded — mirrors
     test_consume_durable_continuity_file_on_read.py's helper of the same
     name, since a divergence here silently drops
     hookSpecificOutput.additionalContext the same way."""
