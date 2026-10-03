@@ -3709,18 +3709,103 @@ def test_tooling_measurement_citation_resolves_to_real_heading(
     [
         "CLAUDE.md",
         "plugins/claude-hook-review/skills/claude-hook-review/SKILL.md",
+        ".claude/skills/code-review-claude-config/SKILL.md",
+        ".claude/skills/plan-review-claude-config/SKILL.md",
     ],
 )
 def test_threat_model_tiers_citation_resolves_to_real_heading(relative_path: str) -> None:
-    """CLAUDE.md's '## Hook threat model' section and claude-hook-review's
-    SKILL.md tier-header paragraph both cite `docs/hooks.md` § "Threat-model
-    tiers" — resolves to a real heading there.
+    """CLAUDE.md's '## Hook threat model' section, claude-hook-review's SKILL.md
+    tier-header paragraph, and the claude-config code-review and plan-review
+    layers each cite `docs/hooks.md` § "Threat-model tiers" — resolves to a
+    real heading there.
+
+    The layer and plugin entries pin that the citation is still present, since
+    the repo-wide citation scan only checks that existing citations resolve.
+    CLAUDE.md is outside that scan, so this test checks resolution for it.
     """
     _assert_citation_resolves_to_heading(
         REPO_ROOT / relative_path,
         "docs/hooks.md",
         "Threat-model tiers",
         repo_root=REPO_ROOT,
+    )
+
+
+# Tier-disposition clauses that keep the review layers fail-closed.
+# The docs/hooks.md entry pins the regression conditions in their single home.
+# The layer entries pin that a regression is an enforcement-invariant finding,
+# and that a finding the tier section does not explicitly waive or route stays
+# under the base rules.
+# A tripwire for a wording trim that silently drops one of them.
+_TIER_DISPOSITION_SECTIONS = [
+    pytest.param(
+        ".claude/skills/code-review-claude-config/SKILL.md",
+        "## Finding disposition addition",
+        [
+            "is an enforcement-invariant finding",
+            "is not an enforcement-invariant finding",
+            "does not explicitly waive or route stays under the base rules.",
+            "at every tier",
+            "No recording",
+            '`code-review/SKILL.md` § "Step — Record review completion"',
+        ],
+        id="code-review-layer",
+    ),
+    pytest.param(
+        ".claude/skills/plan-review-claude-config/SKILL.md",
+        "## Gate threat-model tiers (Domain: Security; Output format)",
+        [
+            "is an enforcement-invariant finding",
+            "is not an enforcement-invariant finding",
+            "does not explicitly waive or route stays under the base rules.",
+            "at every tier",
+            "No recording",
+            "cover every regression",
+        ],
+        id="plan-review-layer",
+    ),
+    pytest.param(
+        "docs/hooks.md",
+        "## Threat-model tiers",
+        [
+            "When any of these holds, treat the finding as a regression: "
+            "- The comparison against the merge-base is unclear. "
+            "- The gate has no merge-base counterpart. "
+            "- A fail-open path the change adds or alters has no deny test. "
+            "- The change edits the gate's tier line, its tracking pointer, or this section. "
+            "A `CLAUDE.md` or SKILL.md that applies this rule points here rather than "
+            "restating it; this section is its only home.",
+        ],
+        id="hooks-doc-regression-rule",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "section_heading", "required_phrases"),
+    _TIER_DISPOSITION_SECTIONS,
+)
+def test_gate_tier_disposition_sections_keep_invariant_clauses(
+    relative_path: str,
+    section_heading: str,
+    required_phrases: list[str],
+) -> None:
+    """Each entry's section, whitespace-normalized, still carries its clauses.
+
+    Scoped to the section so the same words elsewhere in the file cannot
+    satisfy it. Whitespace-normalized so a re-wrap does not break it. Pins
+    that the text is present, not that a reviewer follows it.
+    """
+    section_file_path = REPO_ROOT / relative_path
+    lines = section_file_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, section_heading, section_file_path)
+    section_text = " ".join("".join(lines[start_idx:end_idx]).split())
+
+    missing_phrases = [phrase for phrase in required_phrases if phrase not in section_text]
+    assert not missing_phrases, (
+        f"{section_file_path}'s {section_heading!r} section no longer carries "
+        f"{missing_phrases}; each keeps the tier-disposition rule fail-closed. "
+        "Restore the clause, or update this pin and say why in the commit message."
     )
 
 

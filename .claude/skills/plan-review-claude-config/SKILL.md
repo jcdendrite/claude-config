@@ -15,3 +15,12 @@ raise the threat model — a local CLI run by many people is still not
 externally reachable. The redaction obligation is unchanged either way; see
 root `CLAUDE.md`'s "Plans in this repo affect all stow users" bullet for what
 a plan file itself may and may not contain.
+
+## Gate threat-model tiers (Domain: Security; Output format)
+
+Before dispositioning a finding against a `hook-class: gate` hook, read `docs/hooks.md` § "Threat-model tiers". That section decides whether the finding is a defect in the gate and, when it is not, where the gap is recorded. Non-gate hooks and shared library code get no disposition change from this section.
+
+- A regression, as that section defines it, is an enforcement-invariant finding under the fix-or-ask rule at every tier, including a shape the plan newly admits. No recording step changes that.
+- Any other finding that section waives or routes is not an enforcement-invariant finding under the fix-or-ask rule. It still appears in the output. It blocks the verdict only while the plan names no step making the recording that section requires. When the plan names one, the verdict lists that step; when it names none, the verdict lists the required step as a blocker.
+- For a gate, S1's bypass-vector enumeration and S2's defense in depth cover every regression and otherwise only the shapes its tier treats as defects.
+- A finding that section does not explicitly waive or route stays under the base rules.
