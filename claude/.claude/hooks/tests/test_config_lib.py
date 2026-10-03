@@ -33,24 +33,49 @@ _CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
 _INSTALL_SH = REPO_ROOT / "install.sh"
 
 
+def _installed_utf8_locale_names() -> list[str]:
+    """Every UTF-8 locale name `locale -a` reports as installed, in its order.
+    Empty when `locale` is missing or fails, as on a minimal container image."""
+    try:
+        result = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return []
+    return [name for name in result.stdout.split() if "utf8" in name.lower() or "utf-8" in name.lower()]
+
+
 def _first_available_non_c_utf8_locale() -> str | None:
     """Returns the first non-C/POSIX UTF-8 locale name `locale -a` reports
     as installed, or None if none is -- a minimal container image may ship
     only the C/POSIX locale. Used to skip (not silently no-op) the
     ambient-locale guard test below on a machine that can't exercise it."""
-    try:
-        result = subprocess.run(["locale", "-a"], capture_output=True, text=True, check=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return None
-    for name in result.stdout.splitlines():
-        if name.strip().lower() in ("c", "posix"):
-            continue
-        if "utf8" in name.lower() or "utf-8" in name.lower():
-            return name.strip()
+    for name in _installed_utf8_locale_names():
+        if name.lower() not in ("c", "posix"):
+            return name
     return None
 
 
 _NON_C_UTF8_LOCALE = _first_available_non_c_utf8_locale()
+
+
+def _locale_that_widens_ascii_ranges() -> str:
+    """An installed UTF-8 locale under which an unpinned `[A-Za-z]` bracket
+    range accepts a non-ASCII letter, the exposure `LC_ALL=C` removes. `C.UTF-8`
+    does not widen, so a test that takes its locale from `_utf8_locale()` cannot
+    tell the pinned form from the unpinned one. Fails on CI and skips locally
+    when no installed locale widens, so a runner that has one cannot lose the
+    discrimination unnoticed. Also imported by test_lib.py and
+    scripts/tests/test_review_ledger_lib.py."""
+    for name in _installed_utf8_locale_names():
+        probe = subprocess.run(
+            ["bash", "-c", '[[ "$1" =~ ^[A-Za-z]+$ ]]', "bash", "\u00e9"],
+            env={**os.environ, "LC_ALL": name}, capture_output=True, check=False,
+        )
+        if probe.returncode == 0:
+            return name
+    message = "no installed locale makes a bracket range accept a non-ASCII letter"
+    if os.environ.get("CI"):
+        pytest.fail(f"{message}; CI must provide one")
+    pytest.skip(message)
 
 
 def _run(script: str) -> subprocess.CompletedProcess:

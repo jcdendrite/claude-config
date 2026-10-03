@@ -10,6 +10,7 @@ per-test session id, not a fixed injected value; import it directly with
 from __future__ import annotations
 
 import functools
+import hashlib
 import os
 import shlex
 import shutil
@@ -17,7 +18,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import scaled_shim_sleep, symlink_hooks_lib_chain, write_scaled_timeout_shim
+from helpers import (
+    git_toplevel,
+    scaled_shim_sleep,
+    symlink_hooks_lib_chain,
+    write_scaled_timeout_shim,
+)
 
 # Shim sleep duration for the git/gh-timeout regression tests below: long
 # enough that a broken (uncapped) call site never returns before the
@@ -75,6 +81,51 @@ def _dead_pid() -> int:
     proc = subprocess.Popen(["true"])
     proc.wait()
     return proc.pid
+
+
+_DEFAULT_BRANCH_CANDIDATES = ("main", "master", "develop")
+
+
+def _git_stdout(repo: Path, *args: str) -> str:
+    """Stripped stdout of `git *args` in `repo`, or "" when git exits nonzero."""
+    result = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _review_ledger_path(home: Path, repo: Path, session_id: str) -> Path:
+    """The file review-ledger.sh appends to for `repo`'s current HEAD, from
+    the documented key rules alone (not _lib_review_ledger_path, so a test
+    using this doesn't check that function against itself).
+
+    Branch scope, `<sha256(toplevel)>.<sha256(branch)>.jsonl`, applies on a
+    named branch other than the default. Session scope,
+    `<sha256(toplevel)>.<session_id>.jsonl`, applies on a detached HEAD and
+    on the default branch. The default branch is origin/HEAD's target when
+    it resolves, else the first candidate with an origin ref, else any
+    branch named like a candidate.
+    """
+    repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+    ledger_dir = home / ".claude" / "review-narrative-ledger"
+    branch = _git_stdout(repo, "symbolic-ref", "-q", "--short", "HEAD")
+    if not branch:
+        return ledger_dir / f"{repo_hash}.{session_id}.jsonl"
+    origin_head = _git_stdout(repo, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    default_branch = None
+    if origin_head and _git_stdout(repo, "rev-parse", "--verify", "--quiet", origin_head):
+        default_branch = origin_head.removeprefix("refs/remotes/origin/")
+    else:
+        default_branch = next(
+            (
+                candidate for candidate in _DEFAULT_BRANCH_CANDIDATES
+                if _git_stdout(repo, "rev-parse", "--verify", "--quiet", f"origin/{candidate}")
+            ),
+            None,
+        )
+    on_default_branch = branch == default_branch if default_branch else branch in _DEFAULT_BRANCH_CANDIDATES
+    if on_default_branch:
+        return ledger_dir / f"{repo_hash}.{session_id}.jsonl"
+    branch_hash = hashlib.sha256(branch.encode()).hexdigest()
+    return ledger_dir / f"{repo_hash}.{branch_hash}.jsonl"
 
 
 @pytest.fixture
@@ -393,7 +444,9 @@ def git_repo(tmp_path):
     """Fresh git repo with one committed file and one staged change."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    # Named explicitly: review-ledger scope depends on the branch name, so it
+    # must not follow the machine's init.defaultBranch.
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
     (repo / "file.txt").write_text("first\n")

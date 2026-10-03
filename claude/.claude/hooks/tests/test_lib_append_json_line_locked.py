@@ -29,8 +29,23 @@ from .test_lib_append_line_locked import (
     _LOCK_HOLD_SECONDS,
     _RETRY_BUDGET_SECONDS,
 )
+from .test_review_ledger_script import (
+    REVIEW_LEDGER_SCRIPT,
+    _iter_lib_append_json_line_locked_call_sites,
+)
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
+
+
+def _shipped_review_ledger_dedup_filter() -> str:
+    """The DEDUP_KEY_JQ_FILTER literal review-ledger.sh passes, read from its
+    call site so this file holds no hand copy that could drift."""
+    filter_args = [
+        filter_arg for sh_file, filter_arg in _iter_lib_append_json_line_locked_call_sites()
+        if sh_file == REVIEW_LEDGER_SCRIPT
+    ]
+    assert len(filter_args) == 1, f"expected one review-ledger.sh call site, got {filter_args}"
+    return filter_args[0].strip("'")
 
 
 def _append_json_line_locked(
@@ -184,18 +199,29 @@ class TestLibAppendJsonLineLocked:
             "a dedup-key value carrying an unbalanced quote and brace must still dedup"
         )
 
-    def test_shipped_static_literal_still_works(self, tmp_path):
+    def test_shipped_static_literal_passes_the_shape_guard_and_dedups(self, tmp_path):
         """The exact literal review-ledger.sh ships -- a multi-field
-        object-projection -- must still pass the runtime allowlist check
-        unchanged."""
+        object-projection -- must pass the runtime shape guard and reach jq:
+        neither fail-open note appears, and a repeat carrying only a
+        different event_time dedups against the first row."""
         target = tmp_path / "state.jsonl"
         lock_file = tmp_path / "state.jsonl.lock"
-        shipped_filter = "{round, finding, disposition, rationale, source, authoring_agent, authoring_effort}"
+        shipped_filter = _shipped_review_ledger_dedup_filter()
+        first_row = {
+            "round": 1, "finding": "f", "disposition": "ADDRESS", "rationale": "r", "source": "n/a",
+            "authoring_agent": "", "authoring_effort": "", "session_id": "s", "event_time": "2026-01-01T00:00:00Z",
+        }
+        first_line = json.dumps(first_row)
+        _append_json_line_locked(target, lock_file, first_line, shipped_filter)
+
         result = _append_json_line_locked(
-            target, lock_file, '{"round":1,"disposition":"ADDRESS"}', shipped_filter,
+            target, lock_file, json.dumps({**first_row, "event_time": "2026-01-02T00:00:00Z"}), shipped_filter,
         )
+
         assert result.returncode == 0, result.stderr
-        assert target.read_text().splitlines() == ['{"round":1,"disposition":"ADDRESS"}']
+        assert "is not a brace-delimited" not in result.stderr
+        assert "dedup check failed" not in result.stderr
+        assert target.read_text().splitlines() == [first_line]
 
     @pytest.mark.parametrize("unsafe_filter", ['{round, "$(whoami)"}', "{round, `id`}"])
     def test_filter_with_dollar_or_backtick_fails_open_without_reaching_jq(self, tmp_path, unsafe_filter):

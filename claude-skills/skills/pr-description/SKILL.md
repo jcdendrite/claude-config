@@ -82,7 +82,7 @@ not something you can resolve. If none match, proceed without a layer.
 
 ## Cost section
 
-Machine-managed, delimited by `<!-- pr-cost:start -->` / `<!-- pr-cost:end -->` — regenerated fresh every sync, never reinserted verbatim (contrast `## Deferred review findings` below).
+Machine-managed, delimited by `<!-- pr-cost:start -->` / `<!-- pr-cost:end -->` — regenerated fresh every sync, never reinserted verbatim (contrast the review-findings block below).
 
 When the script below exits 0, its block is pre-cleared for publication (the account's `pr-cost-disclosure` sentinel is the standing approval), so embed it without asking for per-PR approval — see `docs/private-project-redaction.md` § "Publishing a tooling measurement".
 
@@ -121,15 +121,15 @@ The `Scope:` caption also prints the local branch name. See `docs/transcript-ana
 
 ## Prose tightening pass
 
-Gate: run `~/.claude/scripts/config-get.sh pr_description_tighten_prose`. On exit 0, dispatch `tighten-prose` by name against the drafted body file, leaving the cost block (`<!-- pr-cost:start -->` / `<!-- pr-cost:end -->`), the `## Deferred review findings` block, and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Exit 1 (disabled), exit 2 (unknown key), and exit 3 (config dir unresolvable) all skip the pass, failing toward off like every other config-dir-only key's resolution-failure behavior (see `docs/config-file.md`). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
+Gate: run `~/.claude/scripts/config-get.sh pr_description_tighten_prose`. On exit 0, dispatch `tighten-prose` by name against the drafted body file, leaving the cost block (`<!-- pr-cost:start -->` / `<!-- pr-cost:end -->`), the block delimited by `<!-- code-review:deferred:start -->` / `<!-- code-review:deferred:end -->`, and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Exit 1 (disabled), exit 2 (unknown key), and exit 3 (config dir unresolvable) all skip the pass, failing toward off like every other config-dir-only key's resolution-failure behavior (see `docs/config-file.md`). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
 
 ## Checks
 
 Run every check below in both modes — against the draft in author mode,
 against the fetched body in sync mode.
 
-**Machine-managed blocks come out first.** A `## Deferred review findings`
-section delimited by `<!-- code-review:deferred:start -->` /
+**Machine-managed blocks come out first.** The review-findings block
+delimited by `<!-- code-review:deferred:start -->` /
 `<!-- code-review:deferred:end -->` is located mechanically by later
 `/code-review` runs and must survive byte-identical, delimiters included.
 Lift the delimited span out before the coherence pass and reinsert it

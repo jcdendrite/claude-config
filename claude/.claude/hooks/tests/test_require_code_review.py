@@ -13,6 +13,7 @@ import pytest
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
     HOOKS_DIR,
+    SCRIPTS_DIR,
     SKILLS_DIR,
     bare_remote_with_default_branch,
     bash_input,
@@ -37,7 +38,7 @@ from helpers import (
     write_marker,
 )
 
-from .conftest import _seed_session
+from .conftest import _review_ledger_path, _seed_session
 
 CODE_REVIEW_HOOK = HOOKS_DIR / "require-code-review.sh"
 CODE_REVIEW_SKILL = SKILLS_DIR / "code-review" / "SKILL.md"
@@ -753,14 +754,36 @@ class TestRequireCodeReviewComplianceLog:
     def _log_path(self, isolated_home: Path) -> Path:
         return isolated_home / ".claude" / f".{self.COMPLIANCE_LOG}"
 
-    def _ledger_file_path(self, isolated_home: Path, repo: Path, session_id: str) -> Path:
-        repo_hash = hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
-        return (
-            isolated_home
-            / ".claude"
-            / "review-narrative-ledger"
-            / f"{repo_hash}.{session_id}.jsonl"
+    def _write_ledger_rows(self, isolated_home: Path, repo: Path, session_id: str, *rows: dict) -> None:
+        """Write `rows` to the ledger file review-ledger.sh would append to for
+        `repo`'s current HEAD, in jq -c's compact form (no space after `:` or `,`)."""
+        ledger = _review_ledger_path(isolated_home, repo, session_id)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows))
+
+    def _write_ledger_file(self, isolated_home: Path, file_name: str, *rows: dict) -> None:
+        """Write `rows` to `file_name` in the ledger directory, in jq -c's compact form."""
+        ledger = isolated_home / ".claude" / "review-narrative-ledger" / file_name
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows))
+
+    def _repo_hash(self, repo: Path) -> str:
+        return hashlib.sha256(git_toplevel(repo).encode()).hexdigest()
+
+    def _ledger_state_after_commit(
+        self, isolated_home: Path, repo: Path, session_id: str = DEFAULT_TEST_SESSION_ID
+    ) -> str:
+        """Run the gate as `session_id` on a reviewed commit and return the logged ledger= value.
+        The marker is written under the default session id, since the gate matches markers across
+        every session suffix."""
+        write_marker(isolated_home, repo, staged_diff_hash(repo), session_id=DEFAULT_TEST_SESSION_ID)
+        run_hook(
+            CODE_REVIEW_HOOK,
+            bash_input("git commit -m foo", session_id=session_id),
+            cwd=repo,
         )
+        line = self._log_path(isolated_home).read_text().splitlines()[0]
+        return next(field for field in line.split() if field.startswith("ledger=")).removeprefix("ledger=")
 
     def test_log_line_appended_on_match(self, isolated_home, git_repo):
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=DEFAULT_TEST_SESSION_ID)
@@ -792,10 +815,14 @@ class TestRequireCodeReviewComplianceLog:
         assert "ledger=absent" in lines[0]
 
     def test_log_line_reports_ledger_present(self, isolated_home, git_repo):
+        """Legacy case: a session-scoped file whose rows carry no session_id."""
         write_marker(isolated_home, git_repo, staged_diff_hash(git_repo), session_id=DEFAULT_TEST_SESSION_ID)
-        ledger = self._ledger_file_path(isolated_home, git_repo, DEFAULT_TEST_SESSION_ID)
-        ledger.parent.mkdir(parents=True)
-        ledger.write_text('{"finding":"f","disposition":"ADDRESS","rationale":"r","source":"n/a"}\n')
+        self._write_ledger_rows(
+            isolated_home,
+            git_repo,
+            DEFAULT_TEST_SESSION_ID,
+            {"finding": "f", "disposition": "ADDRESS", "rationale": "r", "source": "n/a"},
+        )
 
         run_hook(
             CODE_REVIEW_HOOK,
@@ -805,6 +832,130 @@ class TestRequireCodeReviewComplianceLog:
 
         lines = self._log_path(isolated_home).read_text().splitlines()
         assert "ledger=present" in lines[0]
+
+    def test_log_line_reports_present_for_own_row_in_branch_file(self, isolated_home, git_repo):
+        subprocess.run(["git", "checkout", "-q", "-b", "feature/own-row"], cwd=git_repo, check=True)
+        self._write_ledger_rows(
+            isolated_home,
+            git_repo,
+            DEFAULT_TEST_SESSION_ID,
+            {"finding": "f", "disposition": "ADDRESS", "session_id": "sess-other"},
+            {"finding": "g", "disposition": "ADDRESS", "session_id": DEFAULT_TEST_SESSION_ID},
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "present"
+
+    def test_log_line_reports_absent_when_branch_file_holds_only_other_sessions_rows(
+        self, isolated_home, git_repo
+    ):
+        subprocess.run(["git", "checkout", "-q", "-b", "feature/other-rows"], cwd=git_repo, check=True)
+        self._write_ledger_rows(
+            isolated_home,
+            git_repo,
+            DEFAULT_TEST_SESSION_ID,
+            {"finding": "f", "disposition": "ADDRESS", "session_id": "sess-other"},
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "absent"
+
+    def test_log_line_reports_absent_when_session_id_only_appears_inside_another_rows_finding(
+        self, isolated_home, git_repo
+    ):
+        """A finding quoting this session's `"session_id":"<id>"` text is
+        escaped by jq (`\\"`), so it must not count as this session's row."""
+        subprocess.run(["git", "checkout", "-q", "-b", "feature/quoted-id"], cwd=git_repo, check=True)
+        self._write_ledger_rows(
+            isolated_home,
+            git_repo,
+            DEFAULT_TEST_SESSION_ID,
+            {
+                "finding": f'row has "session_id":"{DEFAULT_TEST_SESSION_ID}" in its text',
+                "disposition": "ADDRESS",
+                "session_id": "sess-other",
+            },
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "absent"
+
+    def test_log_line_reports_present_for_row_appended_by_review_ledger_script(self, isolated_home, git_repo):
+        """Writer-to-reader round trip: a row the real `review-ledger.sh append`
+        wrote into the branch's file is found by the gate's fixed-string match."""
+        subprocess.run(["git", "checkout", "-q", "-b", "feature/round-trip"], cwd=git_repo, check=True)
+        _seed_session(isolated_home, DEFAULT_TEST_SESSION_ID)
+        env = {**os.environ, "HOME": str(isolated_home)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        subprocess.run(
+            [
+                "bash", str(SCRIPTS_DIR / "review-ledger.sh"), "append", "code-review",
+                "--finding", "f", "--disposition", "ADDRESS", "--rationale", "r", "--round", "1",
+            ],
+            cwd=git_repo,
+            env=env,
+            check=True,
+            capture_output=True,
+        )
+        session_file = (
+            isolated_home / ".claude" / "review-narrative-ledger"
+            / f"{self._repo_hash(git_repo)}.{DEFAULT_TEST_SESSION_ID}.jsonl"
+        )
+        assert not session_file.exists(), "the row must sit in the branch's file so the row match is what is exercised"
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "present"
+
+    def test_log_line_reports_absent_when_only_another_repos_file_names_the_session(
+        self, isolated_home, git_repo
+    ):
+        other_repo_hash = "0" * 64
+        self._write_ledger_file(
+            isolated_home,
+            f"{other_repo_hash}.some-branch-hash.jsonl",
+            {"finding": "f", "disposition": "ADDRESS", "session_id": DEFAULT_TEST_SESSION_ID},
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "absent"
+
+    @pytest.mark.parametrize(
+        "file_key",
+        ["another-branch-hash", "sess-other"],
+        ids=["another-branch-file", "another-session-file"],
+    )
+    def test_log_line_reports_present_when_a_non_current_file_under_this_repo_names_the_session(
+        self, isolated_home, git_repo, file_key
+    ):
+        """The scan covers every file under this repo-hash, so the gate needs no git call to resolve the branch."""
+        self._write_ledger_file(
+            isolated_home,
+            f"{self._repo_hash(git_repo)}.{file_key}.jsonl",
+            {"finding": "f", "disposition": "ADDRESS", "session_id": DEFAULT_TEST_SESSION_ID},
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "present"
+
+    @pytest.mark.parametrize(
+        "session_id",
+        ["", "a.b", "../escape", 'has"quote'],
+        ids=["empty", "dot", "path-escape", "quote"],
+    )
+    def test_log_line_reports_absent_for_invalid_session_id_even_when_a_row_names_it(
+        self, isolated_home, git_repo, session_id
+    ):
+        self._write_ledger_file(
+            isolated_home,
+            f"{self._repo_hash(git_repo)}.some-branch-hash.jsonl",
+            {"finding": "f", "disposition": "ADDRESS", "session_id": session_id},
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo, session_id=session_id) == "absent"
+
+    def test_log_line_reports_absent_when_only_a_longer_session_id_has_rows(self, isolated_home, git_repo):
+        """`x` must not match `x-2`: the match pattern closes the id's quote."""
+        self._write_ledger_file(
+            isolated_home,
+            f"{self._repo_hash(git_repo)}.some-branch-hash.jsonl",
+            {"finding": "f", "disposition": "ADDRESS", "session_id": f"{DEFAULT_TEST_SESSION_ID}-2"},
+        )
+
+        assert self._ledger_state_after_commit(isolated_home, git_repo) == "absent"
 
     def test_log_line_has_iso8601_timestamp(self, isolated_home, git_repo):
         run_hook(

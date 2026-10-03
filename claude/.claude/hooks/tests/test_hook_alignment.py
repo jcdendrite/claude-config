@@ -999,10 +999,6 @@ _BARE_JQ_EXEMPT_HOOKS: dict[str, str] = {
 # at this hook stays unconverted rather than routed through
 # _lib_command_invokes_tool_subcmd / _lib_fragment_invokes_git.
 _INLINE_COMMAND_MATCHER_EXEMPT_HOOKS: dict[str, str] = {
-    "enforce-marker-script-shape.sh": (
-        "raw-text arm OR-combined with _lib_command_invokes_tool_subcmd per "
-        "that hook's own dual-detection design"
-    ),
     "require-ready-for-review.sh": (
         "whole-fragment scan retained so a bash -c/eval wrapper stays "
         "covered, matching the git arm above. Cost: a flag interposed "
