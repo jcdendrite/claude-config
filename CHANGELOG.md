@@ -18,6 +18,12 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - A chained `git add <file> && git <merge|rebase|cherry-pick|revert> --continue` in one Bash call now denies, via `deny-invisible-commit-content.sh`. Run the staging and the `--continue` as two separate Bash calls.
   - `claude/.claude/settings.json` no longer carries `"if": "Bash(git commit *)"` on `require-code-review.sh`, `guard-settings-session-keys.sh`, `check-skill-length.sh`, and `check-claude-md-length.sh`, so those four hooks are dispatched on every Bash call like the plugin hook.
   - **Migration:** run `claude plugin install skill-management@claude-config --scope project` in each consuming repo to refresh the plugin, then `/reload-plugins` (or restart Claude Code).
+- **`/plan-review` approval now shows the approved plan's absolute path, and `/plan-it` no longer opens a draft PR at plan time.** See `docs/design-decisions/plans-shared-by-path-not-early-pr.md`.
+  - `marker.sh write plan-review` prints the path of each active plan file it covered, and the new PostToolUse `Bash` hook `announce-approved-plan-path.sh` shows those paths as a `systemMessage`.
+  - Some approvals get no path from the hook. The hook header's Known gaps in `claude/.claude/hooks/announce-approved-plan-path.sh` lists them.
+  - `/plan-it` shares the plan file's own absolute path instead of a PR opened at plan time.
+  - **Re-run `stow` (or `./install.sh`) after pulling.** A `git pull` alone is only sufficient when `~/.claude/hooks` is a single tree-folded symlink; if it exists as a real directory, stow linked each hook individually, so pulling leaves the new hook file unlinked while the `settings.json` registration already names it.
+  - Expect a hook error on Bash calls until you re-stow (not verified against the harness).
 - **`comment-discipline-reviewer` narrows its scope for plan files under `.claude/plans/`.** A plan the diff creates is checked for Multi-fact comment structure only. A hunk against a plan that existed before the diff is not reviewed. A label a plan defines is still flagged as PR-defined terminology in any other file.
 - **`ask-review-permissions.sh` closes two gaps in settings-file matching.** See `docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md`'s Known gaps list. Pinned by `test_ask_review_permissions.py`. See GH-1094.
   - Now asks on a settings file at a config-dir root with no `.claude/` segment (gap (c)).
