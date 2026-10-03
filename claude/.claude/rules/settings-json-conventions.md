@@ -2,6 +2,8 @@
 paths:
   - "**/settings.json"
   - "**/settings.local.json"
+  - "**/settings.base.json"
+  - "**/settings.overlay.json"
 ---
 
 ## Settings.json conventions

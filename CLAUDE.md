@@ -53,7 +53,7 @@ section for the hook, the opt-in mechanism, and why. `git worktree add
 .claude/worktrees/<branch> -b <branch>` (or an agent with `isolation:
 worktree`) satisfies it.
 
-`claude/` is stowed into `$HOME`. Changes under `claude/.claude/**` go live on `git pull` — no re-install needed. Exception: `settings.json` is generated from `settings.base.json`; see README.md's Migration notes section for the render/self-heal mechanism.
+`claude/` is stowed into `$HOME`. Changes under `claude/.claude/**` go live on `git pull` — no re-install needed. Exception: `settings.json` is generated from `settings.base.json`; see `docs/scripts.md`'s `render-settings.sh` and `ensure-settings-render.sh` entries for the render and self-heal mechanism.
 
 **Footgun: never recommend `>>` writes through stow-symlinked files pointing
 at a git-tracked target.**

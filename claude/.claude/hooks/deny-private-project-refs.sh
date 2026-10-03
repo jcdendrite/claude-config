@@ -394,7 +394,7 @@ fi
 #                                 a vendor brand, not a technical constant,
 #                                 so it accepts the same unbounded-digit
 #                                 tradeoff as GH/BUG rather than a fixed set)
-#   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF, UTC
+#   Technical constants that      SHA, MD, HTTP, HTTPS, TLS, SSL, UTF
 #   happen to match [A-Z]{2,}-\d+:
 #   Open-source license IDs:      AGPL, BSD — same unbounded-digit tradeoff
 #                                 as GH/BUG/GPT above rather than a fixed set.
@@ -402,7 +402,7 @@ fi
 #                                 and docs; see repo CLAUDE.md
 #                                 "Redact private-project-identifying
 #                                 content" for the rationale.
-OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|UTC|AGPL|BSD|PROJ|TICKET)-'
+OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|AGPL|BSD|PROJ|TICKET)-'
 
 # Extract paths passed to any gh-pr or gh-issue body-source flag. Covers:
 #   --body-file <path>    --body-file=<path>

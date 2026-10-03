@@ -1,13 +1,15 @@
 """Tests for install.sh's stow + render-settings.sh invocation sequence: pins
 that render-settings.sh runs after the stow, with CLAUDE_CONFIG_DIR resolved
-to $HOME/.claude regardless of the invoking shell's own value, and that a
+to $HOME/.claude regardless of the invoking shell's own value, that a
 pre-migration symlinked settings.json is safely replaced rather than written
-through.
+through, and that a render failure aborts install.sh with a diagnostic after
+the recovery tooling it must not skip.
 """
 from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -29,6 +31,13 @@ _HARDENING_END = "# INSTALL_TEST_FIXTURE: continuity-hardening — end"
 
 _RC_HELPERS_START = "# INSTALL_TEST_FIXTURE: rc-block-helpers — start\n"
 _RC_HELPERS_END = "# INSTALL_TEST_FIXTURE: rc-block-helpers — end"
+
+_MANIFEST_START = "# INSTALL_TEST_FIXTURE: repo-relocation-manifest — start\n"
+
+# The four keys settings.base.json no longer ships; a pre-migration
+# settings.json carried each as a repo-chosen default.
+_KEYS_NO_LONGER_SHIPPED = ("model", "theme", "tui", "agentPushNotifEnabled")
+_REAL_SETTINGS_BASE = Path(__file__).resolve().parents[2] / "settings.base.json"
 
 
 def _extract_block(start_marker: str, end_marker: str) -> str:
@@ -102,6 +111,46 @@ def _make_package(pkg_root: Path, base_content: dict) -> None:
         cwd=pkg_root,
         check=True,
         timeout=10,
+    )
+
+
+def _make_render_repo(repo_dir: Path) -> Path:
+    """A $REPO_DIR holding only what the render-settings-invoke block and the
+    blocks around it source: render-settings.sh, _capped-for-lib.sh, the
+    hooks/_lib.sh chain that _capped-for-lib.sh needs, and a stub
+    relocate-claude-config.sh. settings.base.json is not here: the render
+    reads it from $HOME/.claude, where stow places it (see _make_home)."""
+    claude_dir = repo_dir / "claude" / ".claude"
+    scripts_dir = claude_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
+    (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
+    (scripts_dir / "relocate-claude-config.sh").write_text("#!/bin/bash\nexit 0\n")
+    symlink_hooks_lib_chain(claude_dir / "hooks")
+    return repo_dir
+
+
+def _make_home(home: Path, base_content: dict | None = None) -> Path:
+    """An isolated $HOME/.claude, holding settings.base.json as stow would
+    link it when base_content is given."""
+    (home / ".claude").mkdir(parents=True)
+    if base_content is not None:
+        (home / ".claude" / "settings.base.json").write_text(json.dumps(base_content))
+    return home
+
+
+def _run_blocks(script_body: str, home: Path, repo_dir: Path, extra_env: dict | None = None) -> subprocess.CompletedProcess:
+    env = {**os.environ, "HOME": str(home), "REPO_DIR": str(repo_dir)}
+    env.pop("CLAUDE_CONFIG_DIR", None)
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        ["bash", "-c", "set -e\n" + script_body, "run_blocks"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=30,
     )
 
 
@@ -179,32 +228,258 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
     def test_render_invoke_block_exits_non_zero_when_base_is_missing(
         self, tmp_path: Path
     ) -> None:
-        repo_dir = tmp_path / "repo"
-        scripts_dir = repo_dir / "claude" / ".claude" / "scripts"
-        scripts_dir.mkdir(parents=True)
-        (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
-        (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
+        repo_dir = _make_render_repo(tmp_path / "repo")
         # No settings.base.json written -- render-settings.sh's own
         # missing-base check fails the render.
-
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
 
-        script = "set -e\n" + _extract_block(_RENDER_START, _RENDER_END)
-        result = subprocess.run(
-            ["bash", "-c", script, "run_render_invoke"],
-            capture_output=True,
-            text=True,
-            check=False,
-            env={**os.environ, "HOME": str(home), "REPO_DIR": str(repo_dir)},
-            timeout=30,
-        )
+        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
 
         assert result.returncode != 0, (
             "a failed render-settings.sh must abort the extracted "
             f"render-settings-invoke block; got exit 0, stderr={result.stderr!r}"
         )
+        assert "settings.base.json not found" in result.stderr, (
+            "the abort must come from the render's own diagnostic, not from a "
+            f"missing library; stderr={result.stderr!r}"
+        )
         assert not (home / ".claude" / "settings.json").exists()
+
+    def test_failure_names_the_step_the_exit_status_and_what_was_skipped(self, tmp_path: Path) -> None:
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+
+        assert result.returncode == 1
+        assert "[install] error: render-settings.sh failed (exit 1)" in result.stderr
+        assert "stopped before" in result.stderr
+        assert "Fix the error above, then re-run ./install.sh" in result.stderr
+
+    @pytest.mark.parametrize("cap_kill_status", [124, 137, 143])
+    def test_cap_kill_status_is_reported_as_the_cap_firing_without_pointing_at_an_absent_error(
+        self, tmp_path: Path, cap_kill_status: int
+    ) -> None:
+        """A render killed by the timeout wrapper exits 124, 137, or 143 with
+        no output of its own, so install.sh must say what happened and must
+        not send the user to an error above that was never printed."""
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        stub = repo_dir / "claude" / ".claude" / "scripts" / "render-settings.sh"
+        stub.unlink()
+        stub.write_text(f"#!/bin/bash\nexit {cap_kill_status}\n")
+        stub.chmod(0o755)
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+
+        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+
+        assert result.returncode == cap_kill_status
+        assert f"did not finish within its 5s cap (exit {cap_kill_status})" in result.stderr
+        assert "Fix the error above" not in result.stderr
+        assert "Re-run ./install.sh" in result.stderr
+
+    def test_success_prints_the_rendered_path(self, tmp_path: Path) -> None:
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = _make_home(tmp_path / "home", {"otherKey": "base-value"})
+
+        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert f"[install] rendered {home}/.claude/settings.json" in result.stdout
+        assert "warning" not in result.stderr
+
+    def test_diverged_config_dir_holding_a_base_file_warns_that_only_the_default_profile_was_rendered(
+        self, tmp_path: Path
+    ) -> None:
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = _make_home(tmp_path / "home", {"otherKey": "base-value"})
+        other_profile = tmp_path / "other-profile"
+        other_profile.mkdir()
+        (other_profile / "settings.base.json").write_text("{}")
+
+        result = _run_blocks(
+            _extract_block(_RENDER_START, _RENDER_END),
+            home,
+            repo_dir,
+            extra_env={"CLAUDE_CONFIG_DIR": str(other_profile)},
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert (home / ".claude" / "settings.json").exists()
+        assert not (other_profile / "settings.json").exists()
+        assert f"CLAUDE_CONFIG_DIR={other_profile} ~/.claude/scripts/render-settings.sh" in result.stderr
+
+    def test_diverged_config_dir_warning_quotes_a_profile_path_with_a_space(
+        self, tmp_path: Path
+    ) -> None:
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = _make_home(tmp_path / "home", {"otherKey": "base-value"})
+        other_profile = tmp_path / "other profile"
+        other_profile.mkdir()
+        (other_profile / "settings.base.json").write_text("{}")
+
+        result = _run_blocks(
+            _extract_block(_RENDER_START, _RENDER_END),
+            home,
+            repo_dir,
+            extra_env={"CLAUDE_CONFIG_DIR": str(other_profile)},
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        suggested_command = result.stderr.rsplit("run: ", 1)[1]
+        assert shlex.split(suggested_command) == [
+            f"CLAUDE_CONFIG_DIR={other_profile}",
+            "~/.claude/scripts/render-settings.sh",
+        ]
+
+    def test_diverged_config_dir_without_a_base_file_does_not_warn(self, tmp_path: Path) -> None:
+        """The suggested render command would fail for a profile that holds no
+        settings.base.json, and ensure-settings-render.sh stays silent for
+        the same profile."""
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = _make_home(tmp_path / "home", {"otherKey": "base-value"})
+        other_profile = tmp_path / "other-profile"
+        other_profile.mkdir()
+
+        result = _run_blocks(
+            _extract_block(_RENDER_START, _RENDER_END),
+            home,
+            repo_dir,
+            extra_env={"CLAUDE_CONFIG_DIR": str(other_profile)},
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "warning" not in result.stderr
+
+    def test_config_dir_spelling_the_default_profile_differently_does_not_warn(
+        self, tmp_path: Path
+    ) -> None:
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = _make_home(tmp_path / "home", {"otherKey": "base-value"})
+        (tmp_path / "alias-of-default").symlink_to(home / ".claude")
+
+        result = _run_blocks(
+            _extract_block(_RENDER_START, _RENDER_END),
+            home,
+            repo_dir,
+            extra_env={"CLAUDE_CONFIG_DIR": str(tmp_path / "alias-of-default")},
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "warning" not in result.stderr
+
+
+class TestRecoveryToolingPrecedesRenderAbort:
+    """The relocation manifest and wrapper are the tooling a broken install
+    needs, so a render abort must not skip them."""
+
+    def test_manifest_and_relocate_wrapper_exist_after_a_render_abort(self, tmp_path: Path) -> None:
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".local" / "bin").mkdir(parents=True)
+
+        result = _run_blocks(_extract_span(_MANIFEST_START, _RENDER_END), home, repo_dir)
+
+        assert result.returncode != 0, "the render step must still abort"
+        assert (home / ".claude-config-source").read_text().strip() == str(repo_dir)
+        assert os.access(home / ".local" / "bin" / "relocate-claude-config", os.X_OK)
+
+
+class TestRelocateWrapperCopyFailureDoesNotBlockTheRender:
+    """The wrapper is recovery tooling, not the security floor: a failed copy
+    warns, and the render that delivers permissions.deny still runs."""
+
+    def test_uncreatable_wrapper_destination_warns_and_the_render_still_runs(
+        self, tmp_path: Path
+    ) -> None:
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = _make_home(tmp_path / "home", {"otherKey": "base-value"})
+        # No $HOME/.local/bin, so `install` cannot create the destination.
+        assert not (home / ".local").exists()
+
+        result = _run_blocks(_extract_span(_MANIFEST_START, _RENDER_END), home, repo_dir)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "warning: could not install relocate-claude-config" in result.stderr
+        assert json.loads((home / ".claude" / "settings.json").read_text()) == {"otherKey": "base-value"}
+
+
+class TestStraySettingsJsonIsLeftInPlace:
+    """A regular claude/.claude/settings.json in the checkout is gitignored
+    and left where it is; install.sh never moves or deletes it."""
+
+    def test_stray_file_the_dangling_symlink_resolves_to_is_carried_into_the_render_and_left_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """The symlink at ~/.claude/settings.json resolves to the stray, so the
+        render reads it: its app-written keys carry forward, and the keys the
+        render drops are named. The stray itself keeps its exact bytes."""
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = _make_home(tmp_path / "home", {"otherKey": "base-value"})
+        stray = repo_dir / "claude" / ".claude" / "settings.json"
+        stray_text = json.dumps({"theme": "dark", "env": {"KEEP_ME": "1"}})
+        stray.write_text(stray_text)
+        (home / ".claude" / "settings.json").symlink_to(stray)
+
+        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        rendered = home / ".claude" / "settings.json"
+        assert not rendered.is_symlink()
+        assert json.loads(rendered.read_text()) == {"otherKey": "base-value", "theme": "dark"}
+        assert "carried forward top-level keys: theme" in result.stderr
+        assert "dropped top-level keys: env" in result.stderr
+        assert stray.read_text() == stray_text
+
+
+class TestFirstRenderAfterTheSplitResetsTheNoLongerShippedKeys:
+    """An existing consumer's keys that base stopped shipping reset on the
+    first render, because the tracked file that held them is gone. This pins
+    that outcome as a decision rather than an accident (see
+    docs/design-decisions/settings-base-ships-no-session-ui-keys.md)."""
+
+    def test_real_base_does_not_define_the_no_longer_shipped_keys(self) -> None:
+        base_keys = set(json.loads(_REAL_SETTINGS_BASE.read_text()))
+        assert not base_keys & set(_KEYS_NO_LONGER_SHIPPED)
+
+    def test_dangling_pre_migration_symlink_renders_without_the_old_shipped_values(
+        self, tmp_path: Path
+    ) -> None:
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = _make_home(tmp_path / "home")
+        shutil.copy(_REAL_SETTINGS_BASE, home / ".claude" / "settings.base.json")
+        # The pre-migration symlink targets the tracked file the pull removed.
+        (home / ".claude" / "settings.json").symlink_to(repo_dir / "claude" / ".claude" / "settings.json")
+
+        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "dropped" not in result.stderr
+        rendered = json.loads((home / ".claude" / "settings.json").read_text())
+        assert not set(rendered) & set(_KEYS_NO_LONGER_SHIPPED)
+        real_base = json.loads(_REAL_SETTINGS_BASE.read_text())
+        assert rendered == real_base
+
+    def test_value_chosen_after_the_first_render_persists_across_later_renders(
+        self, tmp_path: Path
+    ) -> None:
+        repo_dir = _make_render_repo(tmp_path / "repo")
+        home = _make_home(tmp_path / "home")
+        shutil.copy(_REAL_SETTINGS_BASE, home / ".claude" / "settings.base.json")
+        first = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+        assert first.returncode == 0, f"stderr={first.stderr!r}"
+        rendered_path = home / ".claude" / "settings.json"
+        rendered = json.loads(rendered_path.read_text())
+        rendered["model"] = "opus"
+        rendered_path.write_text(json.dumps(rendered))
+
+        second = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+
+        assert second.returncode == 0, f"stderr={second.stderr!r}"
+        assert json.loads(rendered_path.read_text())["model"] == "opus"
 
 
 @pytest.mark.skipif(_STOW is None, reason="stow binary not on PATH")
@@ -225,10 +500,16 @@ class TestAbortsOnRenderFailure:
         (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
         (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
         _write_stow_packages_stub(scripts_dir)
+        symlink_hooks_lib_chain(pkg_root / "claude" / ".claude" / "hooks")
         # No settings.base.json written -- render-settings.sh's own
         # missing-base check fails the render.
         subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True, timeout=10)
-        subprocess.run(["git", "add", "claude/.claude/scripts"], cwd=pkg_root, check=True, timeout=10)
+        subprocess.run(
+            ["git", "add", "claude/.claude/scripts", "claude/.claude/hooks"],
+            cwd=pkg_root,
+            check=True,
+            timeout=10,
+        )
 
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
@@ -238,6 +519,10 @@ class TestAbortsOnRenderFailure:
         assert result.returncode != 0, (
             "a failed render-settings.sh must abort the extracted install.sh "
             f"sequence; got exit 0, stderr={result.stderr!r}"
+        )
+        assert "settings.base.json not found" in result.stderr, (
+            "the abort must come from the render's own diagnostic, not from a "
+            f"missing library; stderr={result.stderr!r}"
         )
         assert not (home / ".claude" / "settings.json").exists()
 
@@ -256,10 +541,16 @@ class TestAbortsOnRenderFailure:
         (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
         (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
         _write_stow_packages_stub(scripts_dir)
+        symlink_hooks_lib_chain(pkg_root / "claude" / ".claude" / "hooks")
         # No settings.base.json written -- render-settings.sh's own
         # missing-base check fails the render, after hardening has run.
         subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True, timeout=10)
-        subprocess.run(["git", "add", "claude/.claude/scripts"], cwd=pkg_root, check=True, timeout=10)
+        subprocess.run(
+            ["git", "add", "claude/.claude/scripts", "claude/.claude/hooks"],
+            cwd=pkg_root,
+            check=True,
+            timeout=10,
+        )
 
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
@@ -285,6 +576,7 @@ class TestAbortsOnRenderFailure:
         )
 
         assert result.returncode != 0, "the render step must still abort"
+        assert "settings.base.json not found" in result.stderr
         assert oct((home / ".claude").stat().st_mode)[-3:] == "700"
         assert oct(claude_json.stat().st_mode)[-3:] == "600"
 
@@ -327,25 +619,14 @@ class TestRcInvocationPrecedesRenderCall:
         mechanism."""
         home = tmp_path / "home"
         home.mkdir()
-        repo_dir = tmp_path / "repo"
-        scripts_dir = repo_dir / "claude" / ".claude" / "scripts"
-        scripts_dir.mkdir(parents=True)
-        (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
-        (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
         # No settings.base.json -- render-settings.sh's own missing-base
         # check fails the render.
+        repo_dir = _make_render_repo(tmp_path / "repo")
 
-        script = "set -e\n" + _extract_span(_RC_HELPERS_START, _RENDER_END)
-        result = subprocess.run(
-            ["bash", "-c", script, "run_rc_block_then_render"],
-            capture_output=True,
-            text=True,
-            check=False,
-            env={**os.environ, "HOME": str(home), "REPO_DIR": str(repo_dir)},
-            timeout=30,
-        )
+        result = _run_blocks(_extract_span(_RC_HELPERS_START, _RENDER_END), home, repo_dir)
 
         assert result.returncode != 0, "the render step must still abort"
+        assert "settings.base.json not found" in result.stderr
         bashrc = (home / ".bashrc").read_text()
         assert "ensure-settings-render.sh" in bashrc, (
             f"the rc block must be installed despite the render failure; stderr={result.stderr!r}"

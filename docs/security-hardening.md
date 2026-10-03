@@ -576,11 +576,12 @@ evolves. Set the chosen values under `env` in
 namespace are accepted — see
 [`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson) for
 that namespace rule — or enforce the values via managed settings, below.
-Hand-editing `env` values directly in the generated, gitignored
-`~/.claude/settings.json` doesn't block `git pull`, but is silently
-overwritten automatically on the very next new shell, since
-`ensure-settings-render.sh` re-renders it on every shell startup — see the
-"Migration notes" section under [Requirements](../README.md#requirements).
+A credential-named `env` key is refused; configure credentials through
+`apiKeyHelper` or a shell-profile export instead.
+`ensure-settings-render.sh` re-renders on every new shell, which overwrites
+an `env` value hand-edited into the generated `~/.claude/settings.json`; see
+its entry in [`docs/scripts.md`](scripts.md). `env.CLAUDE_CODE_EFFORT_LEVEL`
+and `env.ANTHROPIC_MODEL` are the exceptions, which a render keeps.
 
 **`permissions.allow` review.** Audit the allow rules in every
 `settings.json` / `settings.local.json` in scope. Each rule widens what
@@ -617,15 +618,16 @@ Deploy this file via the organization's existing device-management tooling.
 It is the right place to enforce telemetry env vars, `permissions.deny`
 rules, and MCP restrictions org-wide. An organization can also enforce this
 repo's `settings.base.json` hook *registrations* directly via
-`managed-settings.json`'s own `hooks` key. The hooks themselves still arm
-per-machine via the user-local config files (`pii-patterns.md`,
-`private-projects.md`, and similar) — managed settings can force a hook to
-run, but not supply the per-machine data that arms it. Because
-`managed-settings.json` lives outside `settings.base.json`/
-`settings.overlay.json` entirely, it also survives a failed or missing
-`render-settings.sh` run. See
-[`docs/auto-mode.md`](auto-mode.md#hard-floor-deny-rules) for what a broken
-render costs the render-derived `permissions.deny`/hooks by comparison.
+`managed-settings.json`'s own `hooks` key.
+The hooks themselves still arm per-machine via the user-local config files
+(`pii-patterns.md`, `private-projects.md`, and similar).
+Managed settings can force a hook to run, but not supply the per-machine data
+that arms it.
+`managed-settings.json` lives outside `settings.base.json` and
+`settings.overlay.json`, so it survives a failed or missing
+`render-settings.sh` run.
+[`docs/auto-mode.md`](auto-mode.md#hard-floor-deny-rules) states what a broken
+render costs the render-derived `permissions.deny` and hooks.
 Verify the current paths against the [settings
 docs](https://code.claude.com/docs/en/settings) before deploying; the legacy
 Windows path under `C:\ProgramData\` is no longer supported.
@@ -635,15 +637,28 @@ Windows path under `C:\ProgramData\` is no longer supported.
 These hooks reduce *accidental* exposure. They do not make a machine safe
 to hold PII/PHI or live credentials:
 
-- Every non-default `CLAUDE_CONFIG_DIR` profile gets zero
-  `permissions.deny`/hook enforcement after the `settings.base.json` split
-  unless rendered manually, with no diagnostic. Render it by hand until a
-  per-profile install path ships:
-  `CLAUDE_CONFIG_DIR=<profile-dir> <path-to-claude-config-checkout>/claude/.claude/scripts/render-settings.sh`.
+- A non-default `CLAUDE_CONFIG_DIR` profile without a `settings.base.json`
+  gets zero `permissions.deny`/hook enforcement and no diagnostic until it
+  is rendered manually.
+  `install.sh` renders `~/.claude` only, and a new shell renders only a
+  profile that already holds a `settings.base.json`.
+  Two diagnostics exist: `install.sh` warns when its own `CLAUDE_CONFIG_DIR`
+  names another profile that holds a `settings.base.json`, and
+  `ensure-settings-render.sh` prints a hint when that profile's render fails.
+  A profile without a `settings.base.json`, or one that holds the file but
+  that no new shell inherits and `install.sh` is not run under, gets no
+  diagnostic.
+  Render a profile by hand until a per-profile install path ships, and again
+  after each pull that changes `settings.base.json`:
+  `CLAUDE_CONFIG_DIR=<profile-dir> ~/.claude/scripts/render-settings.sh`.
   This requires `claude/.claude/` to already be stowed or symlinked into
   `<profile-dir>` by some other means, since `install.sh` never places
   `settings.base.json` there itself. Without that precondition met, the
   command exits early with a "settings.base.json not found" error.
+- Every new bash and zsh shell runs `ensure-settings-render.sh` from this
+  repo's checkout through the stow symlink, so a commit pulled into the
+  checkout executes at the next shell start, with no Claude Code session or
+  `install.sh` run involved.
 - The data-file read hook only intercepts the `Read` tool. `Bash`-based
   reads (`cat`, `head`, `grep`), subagent reads, and content pasted into a
   prompt do not cross that boundary. `deny-credential-bash-reads.sh`

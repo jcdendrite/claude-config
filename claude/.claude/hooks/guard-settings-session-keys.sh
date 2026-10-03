@@ -13,6 +13,15 @@
 # whether settings.base.json is actually staged — do not rely solely on the
 # settings.base.json `if` condition in settings.base.json.
 #
+# Coverage boundary: this gate reads the index as it stands before the Bash
+# call runs. deny-invisible-commit-content.sh, registered in the same chain, is
+# the backstop for the all-flag, a commit pathspec, and a chained
+# `git add && git commit`, none of which this gate can see.
+# A commit concluded by `git merge`, `git pull`, or `git <verb> --continue` is
+# never seen here. Only CI catches that shape, through
+# test_base_top_level_keys_disjoint_from_guarded_keys in
+# test_guard_settings_session_keys.py.
+#
 # Exit codes:
 #   0      — allow (no opinion)
 #   0+JSON — deny (a guarded key changed in staged settings.base.json)
@@ -24,10 +33,11 @@ set -uo pipefail
 # via path traversal, not a literal top-level match — see guarded_value below.
 # The two env.* entries below are exact paths kept for
 # --print-guarded-keys's dotted-subset cross-check against
-# render-settings.sh's RULE4_DOTTED_PATHS_JSON. They also let a type-mismatch
-# deny name the changed leaf (e.g. "env env.CLAUDE_CODE_EFFORT_LEVEL")
-# instead of the blunter "env" alone. See the CHANGED_KEYS jq body below for
-# how `env` itself is guarded as a namespace, not just these two paths.
+# render-settings.sh's RULE4_DOTTED_PATHS_JSON.
+# They also let a type-mismatch deny name the changed leaf (e.g.
+# "env env.CLAUDE_CODE_EFFORT_LEVEL") instead of the blunter "env" alone.
+# See the CHANGED_KEYS jq body below for how `env` itself is guarded as a
+# namespace, not just these two paths.
 # Defined here, ahead of the direct-invocation mode below, so that mode
 # never depends on code that runs later in the script.
 GUARDED_KEYS_JSON='[
@@ -37,7 +47,6 @@ GUARDED_KEYS_JSON='[
   "skipWorkflowUsageWarning",
   "modelSettings",
   "fastMode",
-  "disableBypassPermissionsMode",
   "theme",
   "tui",
   "agentPushNotifEnabled",
@@ -45,12 +54,13 @@ GUARDED_KEYS_JSON='[
   "env.ANTHROPIC_MODEL"
 ]'
 
-# Direct-invocation mode for tests and render-settings.sh's own drift check
-# (its dotted-path carry-forward rule): prints GUARDED_KEYS_JSON as JSON and exits, bypassing the
-# hook's stdin tool-input protocol entirely. Must run before _lib.sh is
-# sourced and before any stdin is read — a CLI invocation here supplies no
-# piped tool-input JSON, and _lib_parse_tool_input_or_deny is fail-closed on
-# that, so placing this check any later would make the mode unreachable.
+# Direct-invocation mode for tests, including the drift check against
+# render-settings.sh's dotted-path carry-forward rule: prints GUARDED_KEYS_JSON
+# as JSON and exits, bypassing the hook's stdin tool-input protocol entirely.
+# It must run before _lib.sh is sourced and before any stdin is read.
+# A CLI invocation here supplies no piped tool-input JSON, and
+# _lib_parse_tool_input_or_deny is fail-closed on that, so placing this check
+# any later would make the mode unreachable.
 if [ "${1:-}" = "--print-guarded-keys" ]; then
   printf '%s\n' "$GUARDED_KEYS_JSON"
   exit 0
@@ -110,14 +120,16 @@ fi
 SETTINGS_REPO_PATH="claude/.claude/settings.base.json"
 
 # Check whether settings.base.json is staged at all.
-if ! _lib_capped git -C "$CWD" diff --cached --name-only 2>/dev/null | grep -qF "$SETTINGS_REPO_PATH"; then
+# -c diff.relative=false keeps the names repo-root-relative whatever the
+# payload's cwd and the user's diff.relative say.
+if ! _lib_capped git -C "$CWD" -c diff.relative=false diff --cached --name-only 2>/dev/null | grep -qF "$SETTINGS_REPO_PATH"; then
   exit 0
 fi
 
 # Diffs the staged version against origin/<default branch>; an unresolvable
 # branch or missing file diffs against an empty baseline instead. Against
-# that empty baseline, a staged guarded key denies same as always; a staged
-# file with none of the guarded keys still allows.
+# that empty baseline, a staged guarded key denies and a staged file with none
+# of the guarded keys allows.
 # Latency tradeoff: see docs/design-decisions.md's entry for
 # _lib_default_branch_or_guess (#54).
 if ! DEFAULT_BRANCH=$(_lib_default_branch_or_guess "$CWD"); then DEFAULT_BRANCH=""; fi
@@ -145,11 +157,12 @@ fi
 #   key-diffing branch below. Only the degenerate false-vs-absent pairing
 #   (both sides meaning "no env") collapses to no change, which is correct.
 # - `env` is guarded as a whole namespace, not just the two dotted paths in
-#   GUARDED_KEYS_JSON. Any added, removed, or changed key under .env denies,
-#   mirroring render-settings.sh's own namespace (not enumerated-list)
-#   treatment of overlay env keys. A credential-shaped key (e.g.
-#   env.ANTHROPIC_AUTH_TOKEN) is caught by this even though it has no
-#   dedicated GUARDED_KEYS_JSON entry.
+#   GUARDED_KEYS_JSON.
+# - Any added, removed, or changed key under .env denies, mirroring
+#   render-settings.sh's namespace (not enumerated-list) treatment of overlay
+#   env keys.
+# - A credential-shaped key (e.g. env.ANTHROPIC_AUTH_TOKEN) is caught by this
+#   even though it has no dedicated GUARDED_KEYS_JSON entry.
 # shellcheck disable=SC2016 # single-quoted on purpose: $guarded/$staged/$main are jq --arg bindings, not shell variables; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but the _lib_jq wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
 if ! CHANGED_KEYS=$(_lib_jq -rn \
   --argjson guarded "$GUARDED_KEYS_JSON" \

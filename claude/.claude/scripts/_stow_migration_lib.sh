@@ -493,12 +493,12 @@ stow_untracked_package_entries() {
     # callers, which un-adopt via a bare `mv` with no such backup.
     # settings.json and settings.overlay.json are render-settings.sh's own
     # generated output, not stow --adopt leftovers.
-    # Reported here, they would be un-adopted by this function's callers via
-    # a bare `mv`, permanently resurrecting the write-through bug this
-    # migration exists to close.
-    # install.sh seeds their own --ignore args directly instead (the same
-    # split plans/handoffs/briefs already use), since they need no backup
-    # migration of their own.
+    # Reported here, a stray package-side copy that the ~/.claude/<name>
+    # symlink resolves to would be un-adopted by this function's callers via
+    # a bare `mv` of the package-side file onto ~/.claude/<name>. That moves
+    # the stray out of the checkout, where install.sh leaves it in place.
+    # install.sh seeds their own --ignore args directly instead, the same
+    # split plans/handoffs/briefs use.
     case "$name" in
       plans | handoffs | briefs | settings.json | settings.overlay.json) continue ;;
     esac

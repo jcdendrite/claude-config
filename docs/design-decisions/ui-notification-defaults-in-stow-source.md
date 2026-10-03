@@ -2,6 +2,8 @@
 
 *2026-09-02. Formerly `docs/design-decisions.md` §43.*
 
+**Partly superseded by [settings.base.json ships no `model`, `theme`, `tui`, or `agentPushNotifEnabled`](settings-base-ships-no-session-ui-keys.md) (2026-10-02):** the committed-defaults decision below no longer holds, since the settings file is now generated and base no longer carries those keys. The settings-scope findings and the guard reasoning still hold. The "Two entries this file cannot host" paragraph below is also superseded: each profile now has its own rendered `settings.json`, so a per-profile `enabledPlugins` carries forward.
+
 Stow installs `claude/.claude/settings.json` as every consumer's user-scope
 `~/.claude/settings.json`. Claude Code's settings precedence has five
 levels: managed policy, command line, project-local

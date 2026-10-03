@@ -5,20 +5,31 @@ set -euo pipefail
 # rule-2 overlay env object would otherwise silently drop. Kept in sync with
 # guard-settings-session-keys.sh's GUARDED_KEYS_JSON dotted entries via
 # --print-guarded-keys -- see test_render_settings.py.
-# Rule 4 assumes /effort and /config write env.CLAUDE_CODE_EFFORT_LEVEL and
-# env.ANTHROPIC_MODEL directly into the live settings.json; this assumption
-# is unverified against a live Claude Code session, so the script re-applies
-# both paths defensively regardless, pending that verification.
+# Rule 4 outcome: fail-safe-default-applied.
+# It assumes /effort and /config write env.CLAUDE_CODE_EFFORT_LEVEL and
+# env.ANTHROPIC_MODEL directly into the live settings.json.
+# That assumption is unverified against a live Claude Code session, so the
+# script re-applies both paths defensively regardless.
 # Defined here, ahead of the direct-invocation mode below, so that mode
 # never depends on code that runs later in the script.
 RULE4_DOTTED_PATHS_JSON='["env.CLAUDE_CODE_EFFORT_LEVEL", "env.ANTHROPIC_MODEL"]'
 
-# Direct-invocation mode for tests and guard-settings-session-keys.sh's own
-# drift check: prints RULE4_DOTTED_PATHS_JSON as JSON and exits, before any
-# render logic runs -- mirrors guard-settings-session-keys.sh's own
+# Base-owned top-level keys: base always wins and the prior file never
+# contributes them. Only keys settings.base.json itself defines belong here,
+# since a base-owned key that base does not define is deleted on every render.
+# Declared ahead of the direct-invocation modes below for the same reason as
+# RULE4_DOTTED_PATHS_JSON.
+BASE_OWNED_KEYS_JSON='["permissions", "hooks", "statusLine", "skillOverrides"]'
+
+# Direct-invocation modes for tests: each prints one constant as JSON and exits
+# before any render logic runs, mirroring guard-settings-session-keys.sh's own
 # --print-guarded-keys mode.
 if [[ "${1:-}" == "--print-rule4-dotted-paths" ]]; then
   printf '%s\n' "$RULE4_DOTTED_PATHS_JSON"
+  exit 0
+fi
+if [[ "${1:-}" == "--print-base-owned-keys" ]]; then
+  printf '%s\n' "$BASE_OWNED_KEYS_JSON"
   exit 0
 fi
 
@@ -39,7 +50,9 @@ fi
 # forward, so base and overlay stay authoritative for every key they set.
 #
 # Replaces settings.json via mktemp+mv (never cp/redirect) so a symlinked
-# target is replaced, not written through.
+# target is replaced, not written through. Exits without writing when the
+# merged result equals the prior settings.json and that file is a regular,
+# non-symlink file.
 #
 # Usage: render-settings.sh [overlay-path]
 
@@ -48,31 +61,32 @@ base_file="$config_dir/settings.base.json"
 overlay_file="${1:-$config_dir/settings.overlay.json}"
 target="$config_dir/settings.json"
 
-# A caller-supplied $1 overlay path could begin with a literal "-"; the
-# chmod call below no longer has a "--" end-of-options marker to protect it
-# (see the BSD chmod comment further down), so normalize here instead. The
-# default path never starts with "-".
+# A caller-supplied $1 overlay path could begin with a literal "-". The chmod
+# call below is made without "--" (BSD chmod), so a leading "-" is normalized
+# here. The default path never starts with "-".
 case "$overlay_file" in
   -*) overlay_file="./$overlay_file" ;;
 esac
 
-# Base-owned top-level keys: base always wins, never carried forward, no
-# nested exceptions beyond permissions.defaultMode (see below).
-BASE_OWNED_KEYS_JSON='["permissions", "hooks", "statusLine", "enabledPlugins", "extraKnownMarketplaces", "skillOverrides"]'
 # Overlay-allowed top-level keys: never carried forward, so deleting one
 # from the overlay actually takes effect on the next render.
 OVERLAY_ALLOWED_KEYS_JSON='["autoMode", "env", "skillListingBudgetFraction"]'
 # Overlay top-level validation set: the above, plus `permissions`, which is
 # conditionally admissible (only when its own keys are exactly {defaultMode}).
 OVERLAY_TOP_LEVEL_ALLOWED_JSON='["autoMode", "env", "permissions", "skillListingBudgetFraction"]'
-# An overlay env key's name must fall in a vendor-recognized configuration
-# namespace -- a dangerous variable name outside this namespace is chosen by
-# the reading program (dyld, node, git, a shell), never by the config-writer,
-# so this regex blocks vendor-unrecognized loader/shell-hijack-shaped names.
-# It does not and cannot prevent an in-namespace variable (e.g.
-# ANTHROPIC_BASE_URL) from redirecting a request, since whoever can write the
-# overlay file already has the write access needed to set it directly.
-ENV_NAME_REGEX='^(CLAUDE_CODE|ANTHROPIC|DISABLE)_[A-Z0-9_]+$'
+# An overlay env key's name must fall in a vendor-recognized namespace.
+# Loader and shell-hijack variable names (dyld, node, git, a shell) are chosen
+# by the reading program, not the config writer, so the namespace excludes them.
+# The namespace does not stop an in-namespace variable such as
+# ANTHROPIC_BASE_URL from redirecting requests.
+# Anyone who can write the overlay file can set such a variable directly anyway.
+# \A and \z anchor the whole string, where jq's `$` also matches before a
+# trailing newline.
+ENV_NAME_REGEX='\A(CLAUDE_CODE|ANTHROPIC|DISABLE)_[A-Z0-9_]+\z'
+# An overlay env key ending in one of these suffixes is refused. Its value would
+# land in the overlay and the rendered settings.json, which sit outside every
+# credential read gate.
+CREDENTIAL_ENV_NAME_REGEX='_(API_KEY|AUTH_TOKEN|TOKEN|SECRET|KEY)\z'
 # defaultMode enum: default and plan are accepted.
 # bypassPermissions and acceptEdits are refused outright.
 # auto and dontAsk stay refused pending verification against a live session.
@@ -95,14 +109,9 @@ if [[ -e "$overlay_file" ]]; then
     exit 1
   fi
 
-  # settings.overlay.json is the sanctioned home for per-account autoMode
-  # trust declarations (docs/auto-mode.md); tighten its mode so other local
-  # accounts can't read it even if directory-level hardening hasn't run yet.
-  # The leading-dash-to-./ normalization above already guarantees
-  # $overlay_file never starts with a literal "-", so chmod can't misparse
-  # it as a flag on any platform. GNU chmod's default argument permutation,
-  # unlike BSD/macOS's non-permuting scanner, is the platform difference a
-  # "-"-prefixed path would otherwise expose.
+  # Tighten the overlay to mode 600 so other local accounts can't read it.
+  # The "./" normalization above keeps a leading "-" from being parsed as a
+  # chmod flag, which BSD chmod would do where GNU chmod permutes arguments.
   chmod 600 "$overlay_file" 2>/dev/null || echo "render-settings.sh: warning: could not chmod 600 $overlay_file" >&2
 
   if ! jq -e 'type == "object"' -- "$overlay_file" >/dev/null 2>&1; then
@@ -132,6 +141,12 @@ if [[ -e "$overlay_file" ]]; then
       fi
       exit 1
     fi
+    # The type check comes first because jq's index() with an array operand
+    # searches for a subarray, so ["plan"] would otherwise match "plan".
+    if ! jq -e '.permissions.defaultMode | type == "string"' -- "$overlay_file" >/dev/null 2>&1; then
+      echo "render-settings.sh: $overlay_file has a non-string permissions.defaultMode -- refusing to render" >&2
+      exit 1
+    fi
     if ! jq -e --argjson accepted "$ACCEPTED_DEFAULT_MODES_JSON" '.permissions.defaultMode as $m | ($accepted | index($m)) != null' -- "$overlay_file" >/dev/null 2>&1; then
       bad_mode="$(jq -r '.permissions.defaultMode' -- "$overlay_file")"
       echo "render-settings.sh: $overlay_file sets permissions.defaultMode=\"$bad_mode\", which is not accepted -- use per-session \`claude --permission-mode $bad_mode\` or project-scope .claude/settings.local.json instead" >&2
@@ -150,6 +165,11 @@ if [[ -e "$overlay_file" ]]; then
       echo "render-settings.sh: $overlay_file has env key(s) outside the accepted CLAUDE_CODE_/ANTHROPIC_/DISABLE_ namespace: $bad_names -- refusing to render" >&2
       exit 1
     fi
+    if ! jq -e --arg re "$CREDENTIAL_ENV_NAME_REGEX" '[.env | keys[] | select(test($re))] == []' -- "$overlay_file" >/dev/null 2>&1; then
+      credential_names="$(jq -r --arg re "$CREDENTIAL_ENV_NAME_REGEX" '[.env | keys[] | select(test($re))] | join(", ")' -- "$overlay_file")"
+      echo "render-settings.sh: $overlay_file has credential-named env key(s): $credential_names -- refusing to render; configure credentials through apiKeyHelper or a shell-profile export instead" >&2
+      exit 1
+    fi
     if ! jq -e '[.env[] | type == "string"] | all' -- "$overlay_file" >/dev/null 2>&1; then
       bad_values="$(jq -r '[.env | to_entries[] | select(.value | type != "string") | .key] | join(", ")' -- "$overlay_file")"
       echo "render-settings.sh: $overlay_file has non-string env value(s) for: $bad_values -- refusing to render" >&2
@@ -163,11 +183,16 @@ fi
 base_json="$(jq -c '.' -- "$base_file")"
 
 # $target here is this script's own prior output, not user-supplied input to
-# validate: a missing or unparseable prior file means nothing to carry
-# forward, not a render failure.
+# validate: a missing, empty, unparseable, or non-object prior file means
+# nothing to carry forward, not a render failure.
 prev_json='{}'
+prior_is_object=false
 if [[ -f "$target" ]]; then
-  prev_json="$(jq -c '.' -- "$target" 2>/dev/null || echo '{}')"
+  if prior_candidate="$(jq -c -s 'if length == 1 and (.[0] | type) == "object" then .[0] else empty end' -- "$target" 2>/dev/null)" \
+     && [[ -n "$prior_candidate" ]]; then
+    prev_json="$prior_candidate"
+    prior_is_object=true
+  fi
 fi
 
 # Rule 1: base-owned keys always win.
@@ -226,7 +251,25 @@ if ! render_output="$(jq -n \
          if path_present(.; $p) then .
          elif path_present($prev; $p) then path_set(.; $p; path_get($prev; $p))
          else . end)) as $final
+    | ([$prevKeys[] | select(. as $k
+          | ($prev[$k] != null)
+          and (($final | has($k)) | not)
+          and (($k == "env" and $prev[$k] == {}) | not))] | sort) as $droppedKeys
+    | (if ($prev.permissions | type) == "object" then $prev.permissions else {} end) as $prevPermissions
+    | (if ($final.permissions | type) == "object" then $final.permissions else {} end) as $finalPermissions
+    | (if ($final.permissions | type) == "object"
+       then [$prevPermissions | to_entries[] | .key as $field
+        | if (.value | type) == "array"
+          then (.value - (if ($finalPermissions[$field] | type) == "array" then $finalPermissions[$field] else [] end))[]
+               | "permissions." + $field + "[" + tojson + "]"
+          elif ($finalPermissions | has($field)) then empty
+          else "permissions." + $field
+          end]
+       else [] end) as $droppedPermissionEntries
     | (if ($prev.env | type) == "object" then $prev.env else {} end) as $prevEnv
+    | (if ($final.env | type) == "object"
+       then [$prevEnv | keys[] | select(. as $k | ($prevEnv[$k] != null) and (($final.env | has($k)) | not))]
+       else [] end) as $droppedEnvKeys
     | (if ($overlay | has("env")) then
          [$overlay.env | keys[] as $k | select(
             ($prevEnv | has($k) | not) or ($prevEnv[$k] != $overlay.env[$k])
@@ -236,6 +279,9 @@ if ! render_output="$(jq -n \
         result: $final,
         changed: ($final != $prev),
         carried: ($rule3Contribution | keys | sort),
+        droppedKeys: $droppedKeys,
+        droppedPermissionEntries: $droppedPermissionEntries,
+        droppedEnvKeys: ($droppedEnvKeys | sort),
         envChanged: ($envChangedKeys | sort),
         defaultModeSet: (($overlay | has("permissions")) and ($overlay.permissions | has("defaultMode"))),
         defaultModeValue: ($overlay.permissions.defaultMode // null)
@@ -247,17 +293,39 @@ fi
 
 merged_json="$(jq -c '.result' <<<"$render_output")"
 
-# Change-triggered disclosure: names which top-level keys carried forward,
-# which overlay env keys were newly applied or changed, and an overlay-set
-# permissions.defaultMode -- but only when this render's output differs from
-# the prior one, and only key names for env, never values, since an
-# overlay-accepted env key can be a credential.
-if [[ "$(jq -r '.changed' <<<"$render_output")" == "true" ]]; then
+# Disclosure on stderr, emitted only when this render's output differs from the
+# prior one. It names:
+# - the top-level keys that carried forward
+# - the prior top-level keys, permissions entries, and env keys the render
+#   dropped; a wholly dropped env or permissions object is named once, as a
+#   top-level key, and an empty env object counts as nothing dropped
+# - the overlay env keys newly applied or changed
+# - an overlay-set permissions.defaultMode
+# It lists env keys by name only, never by value, since an env value can be a
+# credential. Dropped permissions entries print their rule text, which is what
+# lets a user recover a dropped rule.
+render_changed="$(jq -r '.changed' <<<"$render_output")"
+if [[ "$render_changed" == "true" ]]; then
   segments=()
 
   carried_list="$(jq -r '.carried | join(", ")' <<<"$render_output")"
   if [[ -n "$carried_list" ]]; then
     segments+=("carried forward top-level keys: $carried_list")
+  fi
+
+  dropped_keys_list="$(jq -r '.droppedKeys | join(", ")' <<<"$render_output")"
+  if [[ -n "$dropped_keys_list" ]]; then
+    segments+=("dropped top-level keys: $dropped_keys_list")
+  fi
+
+  dropped_permissions_list="$(jq -r '.droppedPermissionEntries | join(", ")' <<<"$render_output")"
+  if [[ -n "$dropped_permissions_list" ]]; then
+    segments+=("dropped permissions entries: $dropped_permissions_list")
+  fi
+
+  dropped_env_list="$(jq -r '.droppedEnvKeys | map("env." + .) | join(", ")' <<<"$render_output")"
+  if [[ -n "$dropped_env_list" ]]; then
+    segments+=("dropped env keys: $dropped_env_list")
   fi
 
   env_changed_list="$(jq -r '.envChanged | map("env." + .) | join(", ")' <<<"$render_output")"
@@ -275,6 +343,12 @@ if [[ "$(jq -r '.changed' <<<"$render_output")" == "true" ]]; then
     disclosure="${disclosure%; }"
     echo "render-settings.sh: this render changed settings.json -- $disclosure" >&2
   fi
+fi
+
+# Skipping an identical render keeps the file's inode and mtime stable and
+# leaves no window in which an app write to $target could be replaced.
+if [[ "$render_changed" == "false" && "$prior_is_object" == "true" && -f "$target" && ! -L "$target" ]]; then
+  exit 0
 fi
 
 # mktemp in $target's own directory so the final mv is a same-filesystem

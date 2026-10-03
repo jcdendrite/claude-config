@@ -1,8 +1,9 @@
 #!/bin/bash
-# Mutates $HOME (stow symlinks) and this repo's tracked settings (marketplace
-# registration) -- never `source`/`.` this file; to exercise one block in
-# isolation, extract it via its INSTALL_TEST_FIXTURE markers instead (see
-# claude/.claude/hooks/tests/test_install_sh_python_floor.py for the pattern).
+# Mutates $HOME (stow symlinks, the rendered ~/.claude/settings.json,
+# marketplace registration) -- never `source`/`.` this file; to exercise one
+# block in isolation, extract it via its INSTALL_TEST_FIXTURE markers instead
+# (see claude/.claude/hooks/tests/test_install_sh_python_floor.py for the
+# pattern).
 set -e
 
 echo "=== claude-config Setup ==="
@@ -286,34 +287,27 @@ fi
 # repeating that line here, which confuses shellcheck's forward-reference
 # analysis for the calls above.
 #
-# Removes a stray settings.json left by the write-through migration hazard
-# described in README.md's "Migration notes" section; settings.base.json is
-# the only tracked file post-rename, so nothing else can recreate it here.
-if [ -e "$REPO_DIR/claude/.claude/settings.json" ] && [ ! -L "$REPO_DIR/claude/.claude/settings.json" ]; then
-  rm -f -- "$REPO_DIR/claude/.claude/settings.json"
-  echo "[install] removed a stray $REPO_DIR/claude/.claude/settings.json left behind by a pre-migration write-through -- settings.base.json is the tracked file now" >&2
-fi
-#
 # --ignore values are anchored Perl regexes matched against each item's path
 # relative to the package root (claude/), not its basename — '^plans$' never
 # matches '.claude/plans' and silently fails to protect it once '.claude'
-# itself is unfolded (forced real by the mkdir -p above). No --adopt here any
-# more: without it, stow refuses the whole invocation outright if a tracked
-# package path collides with a real, non-symlink file at the target, so these
-# --ignore args exist only to keep a not-yet-migrated (or declined-deletion)
-# entry from aborting stow for every other package entry too. A git failure
-# here degrades to an empty --ignore list rather than skipping the stow call
-# outright: at worst stow then refuses (a loud, safe failure), never a
-# silent one.
+# itself is unfolded (forced real by the mkdir -p above). There is no --adopt:
+# without it, stow refuses the whole invocation outright if a tracked package
+# path collides with a real, non-symlink file at the target, so these --ignore
+# args keep one such entry from aborting stow for every other package entry
+# too. A git failure here degrades to an empty --ignore list rather than
+# skipping the stow call outright: at worst stow then refuses (a loud, safe
+# failure), never a silent one.
 #
-# plans/handoffs/briefs/settings.json/settings.overlay.json seeded
+# plans/handoffs/briefs/settings.json/settings.overlay.json are seeded
 # explicitly, not derived from stow_untracked_package_entries: that function
-# deliberately never reports these five (the first three have their own
-# dedicated migration path above; the last two are render-settings.sh's own
-# generated output; all five must stay off the generic un-adopt loop's
-# reach), but a declined-deletion or not-yet-migrated package-side leftover
-# for one of them still needs the same --ignore protection every other entry
-# gets here, or stow would walk into it and adopt it file-by-file.
+# deliberately never reports these five. The first three have their own
+# dedicated migration path above. The last two are render-settings.sh's own
+# generated output. All five must stay off the generic un-adopt loop's reach,
+# but a package-side leftover for one of them still needs the same --ignore
+# protection every other entry gets here, or stow would walk into it and
+# adopt it file-by-file. A stray claude/.claude/settings.json is gitignored and
+# left in place; the render below reads it only when ~/.claude/settings.json is
+# a symlink resolving to it.
 stow_ignore_args=(--ignore='^\.claude/plans$' --ignore='^\.claude/handoffs$' --ignore='^\.claude/briefs$' --ignore='^\.claude/settings\.json$' --ignore='^\.claude/settings\.overlay\.json$')
 if untracked_entries_file="$(mktemp)" && stow_untracked_package_entries "$REPO_DIR" > "$untracked_entries_file"; then
   while IFS= read -r -d '' name; do
@@ -406,8 +400,7 @@ fi
 # hardening never blocks the render step below.
 #
 # Runs before the render step so hardening still applies even when render
-# aborts (a hard, unguarded failure). Hardening is unrelated to settings
-# rendering.
+# aborts (a hard, unguarded failure).
 #
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on
@@ -422,6 +415,24 @@ if [ -f "$HOME/.claude.json" ]; then
   chmod 600 "$HOME/.claude.json" || echo "[install] warning: could not chmod 600 ~/.claude.json" >&2
 fi
 # INSTALL_TEST_FIXTURE: continuity-hardening — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them under an isolated $HOME. Keep both markers on
+# their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: repo-relocation-manifest — start
+# Record this checkout's location so relocate-claude-config can find it
+# later without depending on a live ~/.claude symlink (which its own repair
+# mode may need to work around). Single-line, idempotent overwrite.
+printf '%s\n' "$REPO_DIR" > "$HOME/.claude-config-source"
+
+# Real file copy (not stow) — relocate-claude-config's whole purpose is to
+# keep working when the exact symlink chain it repairs has already failed,
+# so it cannot itself be a stow-managed symlink into this checkout.
+# Warns instead of aborting: this wrapper is recovery tooling, and a failed copy
+# must not stop the render that delivers permissions.deny.
+install -m 755 -- "$REPO_DIR/claude/.claude/scripts/relocate-claude-config.sh" "$HOME/.local/bin/relocate-claude-config" \
+  || echo "[install] warning: could not install relocate-claude-config into $HOME/.local/bin -- re-run ./install.sh after fixing that directory" >&2
+# INSTALL_TEST_FIXTURE: repo-relocation-manifest — end
 
 # Sourced from its own known repo-relative path, not ~/.claude/hooks/...,
 # which doesn't exist yet at this point in a fresh install (this repo isn't
@@ -596,25 +607,31 @@ ensure_settings_render
 # via _capped-for-lib.sh -- see that file for the probe order, -k escalation,
 # and D-state/no-binary caveats. Bounds only a CPU-bound hang or a child that
 # honors SIGTERM: a genuine render failure, including a timeout kill, still
-# exits non-zero and aborts under set -e.
+# exits non-zero and aborts.
 . "$REPO_DIR/claude/.claude/scripts/_capped-for-lib.sh"
-_capped_for 5 env CLAUDE_CONFIG_DIR="$HOME/.claude" "$REPO_DIR/claude/.claude/scripts/render-settings.sh"
+render_status=0
+_capped_for 5 env CLAUDE_CONFIG_DIR="$HOME/.claude" "$REPO_DIR/claude/.claude/scripts/render-settings.sh" || render_status=$?
+if [ "$render_status" -ne 0 ]; then
+  # A cap-kill leaves no error output from the render, so the retry advice
+  # must not point at one.
+  if _lib_status_consistent_with_cap_kill "$render_status"; then
+    echo "[install] error: render-settings.sh most likely did not finish within its 5s cap (exit $render_status) -- $HOME/.claude/settings.json was not rendered" >&2
+    retry_advice="Re-run ./install.sh"
+  else
+    echo "[install] error: render-settings.sh failed (exit $render_status) -- $HOME/.claude/settings.json was not rendered" >&2
+    retry_advice="Fix the error above, then re-run ./install.sh"
+  fi
+  echo "[install] stopped before the legacy config migration, machine-level opt-ins, marketplace and project-plugin registration, and ~/.local/bin PATH wiring. $retry_advice" >&2
+  exit "$render_status"
+fi
+echo "[install] rendered $HOME/.claude/settings.json"
+# The call above renders only ~/.claude. -ef compares the files themselves, so
+# a CLAUDE_CONFIG_DIR that spells ~/.claude differently stays quiet. A profile
+# without settings.base.json has nothing to render, so it stays quiet too.
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ ! "$CLAUDE_CONFIG_DIR" -ef "$HOME/.claude" ] && [ -f "$CLAUDE_CONFIG_DIR/settings.base.json" ]; then
+  printf '[install] warning: CLAUDE_CONFIG_DIR=%s holds a settings.base.json, but install.sh rendered only %s/.claude -- that profile gets no permissions.deny or hooks until a new shell that inherits it renders it (ensure-settings-render.sh) or you run: CLAUDE_CONFIG_DIR=%q ~/.claude/scripts/render-settings.sh\n' "$CLAUDE_CONFIG_DIR" "$HOME" "$CLAUDE_CONFIG_DIR" >&2
+fi
 # INSTALL_TEST_FIXTURE: render-settings-invoke — end
-
-# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
-# markers below and runs them under an isolated $HOME. Keep both markers on
-# their own line, wrapping the whole block.
-# INSTALL_TEST_FIXTURE: repo-relocation-manifest — start
-# Record this checkout's location so relocate-claude-config can find it
-# later without depending on a live ~/.claude symlink (which its own repair
-# mode may need to work around). Single-line, idempotent overwrite.
-printf '%s\n' "$REPO_DIR" > "$HOME/.claude-config-source"
-
-# Real file copy (not stow) — relocate-claude-config's whole purpose is to
-# keep working when the exact symlink chain it repairs has already failed,
-# so it cannot itself be a stow-managed symlink into this checkout.
-install -m 755 -- "$REPO_DIR/claude/.claude/scripts/relocate-claude-config.sh" "$HOME/.local/bin/relocate-claude-config"
-# INSTALL_TEST_FIXTURE: repo-relocation-manifest — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on
@@ -1089,7 +1106,7 @@ if ! command -v timeout >/dev/null 2>&1 && ! command -v gtimeout >/dev/null 2>&1
   # shellcheck disable=SC2016 # single-quoted for literal display text — the
   # backtick-quoted tokens are markdown-style formatting, not command
   # substitution; there is no shell expansion intended in either message.
-  printf '[install] warning: GNU coreutils `timeout` not in PATH; guard hooks will run jq and git checks (e.g. the agent-reviews/ ignore-state check) without timeout protection, and every new shell will also run the settings.json render check (ensure-settings-render.sh, now wired into ~/.bashrc and ~/.zshrc) uncapped -- not just inside a Claude Code session.\n' >&2
+  printf '[install] warning: GNU coreutils `timeout` not in PATH; guard hooks will run jq and git checks (e.g. the agent-reviews/ ignore-state check) without timeout protection, and every new shell will also run the settings.json render check (ensure-settings-render.sh, wired into ~/.bashrc and ~/.zshrc) uncapped -- not just inside a Claude Code session.\n' >&2
   # shellcheck disable=SC2016 # single-quoted for literal display text — the
   # backtick-quoted tokens are markdown-style formatting, not command
   # substitution; there is no shell expansion intended in this message.

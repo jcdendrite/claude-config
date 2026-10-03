@@ -23,10 +23,9 @@ repo adds on top, see the [README](../README.md#auto-mode).
   5, Opus 4.7+, or Fable 5 qualify. Auto mode also anchors the session to one
   model for its entire lifetime — there's no plan-mode-to-execution switch the
   way `opusplan` provides, so `opusplan` itself isn't a valid session model for
-  it. This repo ships no repo-chosen default `model` (see "Activating" below);
-  the `claude-auto` wrapper described below falls back to Sonnet, which auto
-  mode accepts on every provider, and is useful for starting auto mode on a
-  different model in one step or if you've set `opusplan` as your own
+  it. The `claude-auto` wrapper described below falls back to Sonnet, which
+  auto mode accepts on every provider. It is useful for starting auto mode on
+  a different model in one step or if you've set `opusplan` as your own
   default.
 - **Claude Code:** a recent release — check `claude --version` against the
   [permission modes reference](https://code.claude.com/docs/en/permission-modes).
@@ -72,47 +71,46 @@ auto` also works directly once your default is already a single eligible
 model.
 
 Where auto mode isn't the built-in default — Enterprise, a Claude Console API
-key account, an older Claude Code version, or another provider — make it the
-default for your own sessions by setting `permissions.defaultMode` in
-`<config-dir>/settings.overlay.json` (`<config-dir>` means `$CLAUDE_CONFIG_DIR`
-when set, else `~/.claude`; see "What to put in `settings.overlay.json`"
-below) rather than hand-editing the generated `~/.claude/settings.json`:
+key account, an older Claude Code version, or another provider —
+`permissions.defaultMode` in `<config-dir>/settings.overlay.json`
+(`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`; see
+"What to put in `settings.overlay.json`" below) is the documented way to make
+auto mode the default for your own sessions. This repo's render does not yet
+accept `"auto"`, so the overlay cannot make auto mode your default. Until it
+does, start auto mode per session with `claude --permission-mode auto` (see
+"Activating" above) or `claude-auto`.
+
+The render accepts only `default` and `plan` for `defaultMode`:
 
 ```json
 {
   "permissions": {
-    "defaultMode": "default"
+    "defaultMode": "plan"
   }
 }
 ```
 
 `defaultMode` sets the *mode*, not the *model* — the session-model requirement
-above still applies regardless of how auto mode is activated. This repo's
-render currently accepts `default` and `plan` for `defaultMode` — `"auto"`,
-this cohort's actual documented activation target, is not currently accepted,
-pending verification of auto mode's classifier layer. Live-session testing
-found an `ask` rule's prompt rendering inconsistent, and at least one
-ordinary, unhooked file edited silently after "Allowed by auto mode
-classifier." `bypassPermissions` for the rule, MultiEdit, and Bash-mediated
-writes remain untested (`docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected" records the full observations and untested list).
-Until `auto` is accepted, start auto mode for this cohort with per-session
-`claude --permission-mode auto` instead (see "Activating" above).
+above still applies regardless of how auto mode is activated.
+
+`"auto"` stays refused pending verification of auto mode's classifier layer.
+`docs/security-hardening.md` § "WebFetch domain allowlisting — considered and rejected" records the live-session observations and the untested list.
 `bypassPermissions` and `acceptEdits` are refused outright for
 `permissions.defaultMode` in the overlay — use per-session `claude
 --permission-mode <mode>` or project-scope `.claude/settings.local.json` for
 those.
 
-A hand-set `permissions.defaultMode` in `~/.claude/settings.json` is silently
-replaced by base's value (none) on the first render, with no warning. If
-your prior value was `default` or `plan`, move it into
-`settings.overlay.json` before that first render to keep it. If your prior
-value was `bypassPermissions` or `acceptEdits`, there is no direct overlay
-equivalent — use the session-scoped `claude --permission-mode <mode>` or
-project-scoped `.claude/settings.local.json` alternative from above instead.
-
-A brand-new install ships with no repo-chosen default `model` in
-`settings.base.json`, relying on Claude Code's own built-in default until
-your first `/config`.
+A hand-set `permissions.defaultMode` in `~/.claude/settings.json` is dropped
+by the first render. That render names it on stderr only when it can read a
+prior `settings.json`; a dangling symlink leaves nothing to read, so it names
+nothing. If your prior value was
+`default` or `plan`, move it into `settings.overlay.json` before that first
+render to keep it. If your prior value was `bypassPermissions` or
+`acceptEdits`, there is no direct overlay equivalent — use the
+session-scoped `claude --permission-mode <mode>` or project-scoped
+`.claude/settings.local.json` alternative from above instead. If your prior
+value was `auto`, the overlay refuses it and has no home for it either — start
+those sessions with `claude-auto` or `claude --permission-mode auto`.
 
 ## Hard-floor deny rules
 
@@ -142,8 +140,9 @@ These rules apply in all permission modes, not only auto mode.
 
 Both the deny list and the hook registrations above live in the same
 `settings.base.json`, and `render-settings.sh` merges them into
-`settings.json` together. A missing or failed render therefore loses both
-protections at once, not just one.
+`settings.json` together. A missing render, or a failed first render, therefore
+loses both protections at once. A failed later render leaves the previous
+`settings.json` in place.
 
 ## What to put in `settings.overlay.json`
 
@@ -153,9 +152,11 @@ it in `<config-dir>/settings.local.json` (`<config-dir>` means
 `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) is silently ignored. Add it
 to `<config-dir>/settings.overlay.json` (gitignored) instead:
 `render-settings.sh` merges this repo's tracked `settings.base.json` with
-your overlay into the `settings.json` the classifier actually reads. Re-run
-`render-settings.sh` (or re-run `install.sh`) after editing the overlay —
-the classifier reads only the rendered file, never the overlay directly.
+your overlay into the `settings.json` the classifier actually reads. After
+editing the overlay, open a new shell or run
+`~/.claude/scripts/render-settings.sh` (prefix it with
+`CLAUDE_CONFIG_DIR=<config-dir>` for a non-default profile) — the classifier
+reads only the rendered file, never the overlay directly.
 
 The overlay's top-level keys are a closed set: `autoMode`, `env`,
 `skillListingBudgetFraction`, and a `permissions` object carrying only
@@ -165,15 +166,44 @@ silently dropped. An `env` key's name must fall in a vendor-recognized
 configuration namespace (`CLAUDE_CODE_`, `ANTHROPIC_`, or `DISABLE_`) with a
 string value — see [`docs/security-hardening.md`](security-hardening.md) for
 the telemetry vars this covers. The same namespace also accepts
-`ANTHROPIC_BASE_URL` (endpoint redirection) and `ANTHROPIC_AUTH_TOKEN`
-(a credential value), so a pasted-in overlay snippet setting either is not
-rejected by this check.
+`ANTHROPIC_BASE_URL` (endpoint redirection), so a pasted-in overlay snippet
+setting it is not rejected by this check.
+
+An `env` key whose name ends in `_API_KEY`, `_AUTH_TOKEN`, `_TOKEN`,
+`_SECRET`, or `_KEY` is refused. The overlay and the rendered `settings.json`
+sit outside every credential read gate, so a credential value written there
+is readable by any session. Configure credentials through `apiKeyHelper` or an
+export in your shell profile instead.
+The check is a name-shape heuristic. It misses names such as `PASSWORD`,
+`PASSPHRASE`, and `HEADERS`, and it does not inspect values, so a credential in
+URL userinfo passes it. Treat it as a guard against pasting the common shapes,
+not as proof that the overlay holds no credential.
+
+A render keeps `permissions`, `hooks`, `statusLine`, and `skillOverrides`
+from `settings.base.json` alone. It takes `autoMode`, `env`,
+`skillListingBudgetFraction`, and `permissions.defaultMode` from the overlay
+alone, so deleting one from the overlay clears it on the next render. Every
+top-level key that neither `settings.base.json` nor the overlay defines carries
+forward from the live `settings.json` unchanged, so a Claude Code write such as
+`/config` or `/theme` survives. A top-level key that `settings.base.json`
+defines, today `attribution`, `disableArtifact`, `disableWorkflows`, and
+`syncClaudeAiSkills`, takes base's value, so a live edit to it is reverted and
+the stderr disclosure does not name the revert. An edit under `hooks`,
+`statusLine`, or `skillOverrides` is reverted without a message too, because
+the disclosure does not look inside those keys. An in-app edit to `autoMode`,
+including `claude auto-mode reset`, is reverted on the next render whether or
+not the overlay carries `autoMode`. A render that changes the file names on
+stderr each key it carried forward and each top-level key, `permissions` entry,
+and `env` key it dropped. It names top-level keys and `env` keys by key only,
+never by value. A dropped `permissions` entry prints its rule text, which is
+what lets you recover a dropped rule. That stderr line is the only record of a
+drop: the render keeps no backup of the prior `settings.json`.
 
 Removing `env.CLAUDE_CODE_EFFORT_LEVEL` or `env.ANTHROPIC_MODEL` from the
 overlay does not remove either from the rendered `settings.json`:
-`render-settings.sh` unconditionally re-applies whichever of the two paths
-the prior render already carried, since `/effort`/`/config` write them
-directly into the live file. Edit or delete the value directly in
+`render-settings.sh` re-applies whichever of the two paths the prior render
+already carried, unless the overlay or base sets that path, since
+`/effort`/`/config` write them directly into the live file. Edit or delete the value directly in
 `~/.claude/settings.json` (or re-run `/effort`) and re-render to actually
 clear it.
 

@@ -2,15 +2,17 @@
 
 Each test builds its own scratch $CLAUDE_CONFIG_DIR under tmp_path and
 invokes the real script via subprocess. Most tests need no shim, since the
-script's main external dependency is jq; TestChmodPortability's CI-portable
-regression case is the one exception, prepending a fake chmod that fails on
-a dash-prefixed argument to PATH.
+script's main external dependency is jq. The two TestChmodPortability shim
+cases are the exception: each prepends a fake chmod that rejects a literal
+`--` argument to PATH. The shim cannot detect a dash-leading operand reaching
+chmod unnormalized, which only a real BSD chmod would reject.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -19,6 +21,7 @@ import pytest
 _SCRIPT = Path(__file__).resolve().parents[1] / "render-settings.sh"
 _SETTINGS_BASE_JSON = Path(__file__).resolve().parents[2] / "settings.base.json"
 _GUARD_HOOK = Path(__file__).resolve().parents[2] / "hooks" / "guard-settings-session-keys.sh"
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 
 # The overlay's closed top-level allowlist, excluding the conditionally
 # admissible `permissions` -- see TestBaseOverlayDisjointness, which mirrors
@@ -284,12 +287,50 @@ class TestOverlayAllowlist:
         assert not (config_dir / "settings.json").exists()
 
     @pytest.mark.parametrize(
+        "near_miss_name",
+        [
+            "ANTHROPIC_",
+            "CLAUDE_CODE_",
+            "DISABLE_",
+            "ANTHROPIC",
+            "ANTHROPICFOO",
+            "anthropic_foo",
+            "Anthropic_Foo",
+            "X_ANTHROPIC_FOO",
+            "XANTHROPIC_FOO",
+            "ANTHROPIC_FOO-BAR",
+            "ANTHROPIC_FOO\n",
+            "\nANTHROPIC_FOO",
+        ],
+    )
+    def test_env_name_near_miss_of_namespace_is_rejected(
+        self, tmp_path: Path, near_miss_name: str
+    ) -> None:
+        """Literal near-misses of the namespace pattern, so a dropped anchor,
+        a loosened quantifier, or a case-insensitive match each fail one of
+        these. The trailing-newline name pins that the match is anchored to
+        the whole string, not to a line."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"env": {near_miss_name: "x"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "outside the accepted" in result.stderr
+        assert not (config_dir / "settings.json").exists()
+
+    @pytest.mark.parametrize(
         "good_name",
         [
             "ANTHROPIC_BASE_URL",
-            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_A",
             "CLAUDE_CODE_ENABLE_TELEMETRY",
             "DISABLE_TELEMETRY",
+            "ANTHROPIC_KEYS",
+            "ANTHROPIC_MONKEY",
+            "CLAUDE_CODE_TOKEN_BUDGET",
         ],
     )
     def test_env_name_matching_namespace_with_string_value_is_accepted(
@@ -305,6 +346,39 @@ class TestOverlayAllowlist:
         assert result.returncode == 0, result.stderr
         rendered = json.loads((config_dir / "settings.json").read_text())
         assert rendered["env"][good_name] == "some-value"
+
+    @pytest.mark.parametrize(
+        "credential_name",
+        [
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_CLIENT_SECRET",
+            "CLAUDE_CODE_SOME_KEY",
+            "ANTHROPIC__KEY",
+        ],
+    )
+    def test_credential_named_env_key_is_refused_without_echoing_its_value(
+        self, tmp_path: Path, credential_name: str
+    ) -> None:
+        """The overlay and the rendered settings.json sit outside every
+        credential read gate, so a credential-named key is refused, the
+        diagnostic names the key, never the value, and a prior render stays
+        byte-identical."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        prior_content = json.dumps({"otherKey": "stale-value"})
+        (config_dir / "settings.json").write_text(prior_content)
+        _write_json(config_dir / "settings.overlay.json", {"env": {credential_name: "sk-ant-example"}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert f"credential-named env key(s): {credential_name}" in result.stderr
+        assert "apiKeyHelper" in result.stderr
+        assert "sk-ant-example" not in result.stderr
+        assert (config_dir / "settings.json").read_text() == prior_content
 
     def test_non_object_env_value_is_rejected_with_diagnostic_not_jq_error(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
@@ -526,6 +600,24 @@ class TestDefaultModeNestedException:
         assert "--permission-mode" in result.stderr
         assert not (config_dir / "settings.json").exists()
 
+    @pytest.mark.parametrize("refused_mode", ["bypassPermissions", "acceptEdits", "auto", "dontAsk"])
+    def test_refusal_points_at_project_scope_settings_local_json_not_the_tracked_file(
+        self, tmp_path: Path, refused_mode: str
+    ) -> None:
+        """The pointer must name the gitignored per-project file: the tracked
+        .claude/settings.json would steer a consumer toward a committed,
+        team-wide default mode."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"permissions": {"defaultMode": refused_mode}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "project-scope .claude/settings.local.json" in result.stderr
+        assert ".claude/settings.json" not in result.stderr
+
     def test_accept_edits_is_refused(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
@@ -546,7 +638,8 @@ class TestDefaultModeNestedException:
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode != 0
-        assert "auto" in result.stderr
+        assert 'sets permissions.defaultMode="auto"' in result.stderr
+        assert not (config_dir / "settings.json").exists()
 
     def test_dont_ask_is_refused_pending_verification(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
@@ -569,6 +662,39 @@ class TestDefaultModeNestedException:
 
         assert result.returncode != 0
         assert "not-a-real-mode" in result.stderr
+
+    @pytest.mark.parametrize(
+        "non_string_mode",
+        [
+            ["plan"],
+            ["default"],
+            ["default", "plan"],
+            [],
+            1,
+            True,
+            None,
+            {"mode": "plan"},
+        ],
+        ids=["array-plan", "array-default", "array-both", "empty-array", "number", "bool", "null", "object"],
+    )
+    def test_non_string_default_mode_is_refused_and_leaves_prior_render_untouched(
+        self, tmp_path: Path, non_string_mode: object
+    ) -> None:
+        """jq's index() matches a subarray, so an array holding an accepted
+        value would pass a bare membership check. Every non-string type must
+        be refused before that check, with the prior render byte-identical."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        prior_content = json.dumps({"otherKey": "stale-value"})
+        (config_dir / "settings.json").write_text(prior_content)
+        _write_json(config_dir / "settings.overlay.json", {"permissions": {"defaultMode": non_string_mode}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "non-string permissions.defaultMode" in result.stderr
+        assert (config_dir / "settings.json").read_text() == prior_content
 
     def test_default_mode_does_not_reopen_deny(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
@@ -806,11 +932,13 @@ class TestWritePathFailures:
         the next render. mktemp fails the same way as the no-prior-file case
         above, but here there's a valid file at risk of being clobbered --
         this pins that the failed render leaves it byte-identical rather
-        than truncating or partially overwriting it."""
+        than truncating or partially overwriting it. The prior file differs
+        from the render's output, since an identical render exits before
+        any write and so never reaches mktemp."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        prior_content = json.dumps({"otherKey": "base-value", "theme": "dark"})
+        prior_content = json.dumps({"otherKey": "stale-value", "theme": "dark"})
         (config_dir / "settings.json").write_text(prior_content)
         config_dir.chmod(0o500)
         try:
@@ -863,6 +991,66 @@ class TestIdempotency:
 
         assert first_hash == second_hash
 
+    def test_unchanged_render_does_not_rewrite_a_regular_settings_json(self, tmp_path: Path) -> None:
+        """An identical render exits before the temp-file replace, so the
+        file keeps its inode and mtime and an app write cannot be lost to a
+        no-op rewrite."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        target = config_dir / "settings.json"
+        first = _run_script(config_dir=config_dir)
+        assert first.returncode == 0, first.stderr
+        os.utime(target, ns=(1_000_000_000, 1_000_000_000))
+        inode_before = target.stat().st_ino
+
+        second = _run_script(config_dir=config_dir)
+
+        assert second.returncode == 0, second.stderr
+        assert target.stat().st_ino == inode_before
+        assert target.stat().st_mtime_ns == 1_000_000_000
+
+    def test_semantically_equal_prior_file_is_left_byte_identical(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        pretty_prior = json.dumps({"otherKey": "base-value"}, indent=4)
+        (config_dir / "settings.json").write_text(pretty_prior)
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert (config_dir / "settings.json").read_text() == pretty_prior
+
+    def test_changed_render_replaces_the_file(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "new-value"})
+        (config_dir / "settings.json").write_text(json.dumps({"otherKey": "old-value"}))
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads((config_dir / "settings.json").read_text()) == {"otherKey": "new-value"}
+
+    def test_unchanged_render_still_replaces_a_symlink_with_a_regular_file(self, tmp_path: Path) -> None:
+        """The skip applies only to a regular file: a symlink whose target
+        already holds the rendered content is still replaced, so a later
+        write cannot go through it."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        real_file = tmp_path / "real-settings.json"
+        _write_json(real_file, {"otherKey": "base-value"})
+        target = config_dir / "settings.json"
+        target.symlink_to(real_file)
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert not target.is_symlink()
+        assert json.loads(target.read_text()) == {"otherKey": "base-value"}
+
     def test_concurrent_renders_of_different_overlays_yield_one_racers_full_output(
         self, tmp_path: Path
     ) -> None:
@@ -873,9 +1061,10 @@ class TestIdempotency:
         race (both racers given the same inputs) can't distinguish an atomic
         replace from a non-atomic one, since either racer's output would be
         indistinguishable from the other's; giving each racer a different
-        overlay means only a truly atomic mktemp+mv can leave settings.json
-        matching one racer's full output rather than an interleaved or
-        truncated mix of both."""
+        overlay means settings.json must match one racer's full output.
+        With payloads this small a plain redirect would also look atomic per
+        racer, so the failure this smoke detects is a fixed temp name that
+        collides between the racers and fails the loser's mv."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         base = {"otherKey": "base-value"}
@@ -900,7 +1089,13 @@ class TestIdempotency:
             )
             for overlay in (overlay_a, overlay_b)
         ]
-        results = [proc.communicate(timeout=30) for proc in procs]
+        try:
+            results = [proc.communicate(timeout=30) for proc in procs]
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.communicate()
 
         for proc, (_, stderr) in zip(procs, results, strict=True):
             assert proc.returncode == 0, stderr
@@ -1029,6 +1224,41 @@ class TestThemeTuiPreservation:
         assert result.returncode == 0, result.stderr
         rendered = json.loads((config_dir / "settings.json").read_text())
         assert rendered == {"otherKey": "base-value"}
+
+    @pytest.mark.parametrize(
+        "unusable_prior_text",
+        ["", "   \n\t\n", "null", "[]", '"x"', "42", "true", '{"a": 1} {"b": 2}'],
+        ids=["zero-byte", "whitespace-only", "null", "array", "string", "number", "bool", "two-values"],
+    )
+    def test_empty_or_non_object_prior_target_renders_as_no_prior_state(
+        self, tmp_path: Path, unusable_prior_text: str
+    ) -> None:
+        """A zero-byte file (a truncated write) or a non-object JSON value
+        carries nothing forward, and must not block the render that would
+        repair it."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        (config_dir / "settings.json").write_text(unusable_prior_text)
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads((config_dir / "settings.json").read_text()) == {"otherKey": "base-value"}
+
+    def test_empty_base_render_still_repairs_a_non_object_prior_target(self, tmp_path: Path) -> None:
+        """With an empty-object base, the render's output equals the
+        fallback no-prior-state value, so only the prior-is-an-object check
+        keeps the skip-write from leaving a garbage file in place."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {})
+        (config_dir / "settings.json").write_text("[]")
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads((config_dir / "settings.json").read_text()) == {}
 
     def test_dangling_symlink_prior_target_is_tolerated_and_replaced_with_a_regular_file(
         self, tmp_path: Path
@@ -1166,6 +1396,20 @@ class TestShallowCarryForward:
         assert result.returncode == 0, result.stderr
         rendered = json.loads((config_dir / "settings.json").read_text())
         assert rendered["model"] == "opus"
+
+    @pytest.mark.parametrize("plugin_key", ["enabledPlugins", "extraKnownMarketplaces"])
+    def test_plugin_keys_base_does_not_define_carry_forward(self, tmp_path: Path, plugin_key: str) -> None:
+        """register-marketplace.sh reads both keys from the rendered file, so
+        they must survive a render rather than be treated as base-owned."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(config_dir / "settings.json", {plugin_key: {"example": True}, "otherKey": "v"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads((config_dir / "settings.json").read_text())[plugin_key] == {"example": True}
 
     def test_theme_and_tui_still_preserved_under_the_widened_rule(self, tmp_path: Path) -> None:
         """Rule 3: widening carry-forward from a hardcoded theme/tui pair to
@@ -1317,6 +1561,126 @@ class TestBaseOverlayDisjointness:
         assert overlap == set(), f"settings.base.json sets overlay-allowed key(s): {overlap}"
 
 
+# The real base's top-level keys that are deliberately not base-owned: if base
+# drops one, the live file's value carries forward instead of being removed.
+# A new base key must be added here or to render-settings.sh's base-owned set,
+# so the choice is made on purpose.
+BASE_KEYS_DELIBERATELY_NOT_BASE_OWNED = {
+    "attribution",
+    "disableArtifact",
+    "disableWorkflows",
+    "syncClaudeAiSkills",
+}
+
+
+def _base_owned_keys_from_render_settings() -> list[str]:
+    result = subprocess.run(
+        [str(_SCRIPT), "--print-base-owned-keys"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+class TestBaseOwnedKeysBinding:
+    """render-settings.sh's base-owned key set, bound to the real base file."""
+
+    def test_base_owned_keys_not_defined_by_the_real_base_are_exactly_the_expected_set(self) -> None:
+        """A base-owned key that base does not define is deleted on every
+        render, so none may be listed: the expected set is empty."""
+        base_keys = set(json.loads(_SETTINGS_BASE_JSON.read_text()))
+        undefined_but_owned = set(_base_owned_keys_from_render_settings()) - base_keys
+        assert undefined_but_owned == set()
+
+    def test_every_real_base_key_is_base_owned_or_deliberately_carried_forward(self) -> None:
+        base_keys = set(json.loads(_SETTINGS_BASE_JSON.read_text()))
+        base_owned = set(_base_owned_keys_from_render_settings())
+        assert base_keys - base_owned == BASE_KEYS_DELIBERATELY_NOT_BASE_OWNED
+
+    def test_real_base_renders_to_itself_with_no_overlay_and_no_prior_file(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        shutil.copy(_SETTINGS_BASE_JSON, config_dir / "settings.base.json")
+        real_base = json.loads(_SETTINGS_BASE_JSON.read_text())
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads((config_dir / "settings.json").read_text()) == real_base
+
+    def test_real_base_floor_survives_a_prior_file_that_tampered_with_it(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        shutil.copy(_SETTINGS_BASE_JSON, config_dir / "settings.base.json")
+        real_base = json.loads(_SETTINGS_BASE_JSON.read_text())
+        _write_json(
+            config_dir / "settings.json",
+            {"permissions": {"deny": []}, "hooks": {}, "statusLine": {"type": "none"}, "theme": "dark"},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        for floor_key in ("permissions", "hooks", "statusLine", "skillOverrides"):
+            assert rendered[floor_key] == real_base[floor_key], floor_key
+        assert rendered["theme"] == "dark"
+
+    def test_base_owned_key_absent_from_base_is_dropped_and_named_not_carried(self, tmp_path: Path) -> None:
+        """A base-owned key never comes from the prior file, even when base
+        no longer defines it, and the drop is announced."""
+        for base_owned_key in _base_owned_keys_from_render_settings():
+            config_dir = tmp_path / f"cfg-{base_owned_key}"
+            config_dir.mkdir()
+            _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+            _write_json(config_dir / "settings.json", {"otherKey": "v", base_owned_key: "stale"})
+
+            result = _run_script(config_dir=config_dir)
+
+            assert result.returncode == 0, result.stderr
+            assert base_owned_key not in json.loads((config_dir / "settings.json").read_text())
+            assert f"dropped top-level keys: {base_owned_key}" in result.stderr
+
+
+class TestGeneratedFilesAreGitignored:
+    """The rendered settings.json and the overlay (which can hold env values)
+    sit inside the stow package directory when a session writes through a
+    dangling symlink, so neither may be stageable from there."""
+
+    @pytest.mark.parametrize(
+        "ignored_path",
+        [
+            "claude/.claude/settings.json",
+            "claude/.claude/settings.json.AbC123",
+            "claude/.claude/settings.overlay.json",
+        ],
+    )
+    def test_generated_file_in_the_package_directory_is_ignored(self, ignored_path: str) -> None:
+        result = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "check-ignore", "-q", ignored_path],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        assert result.returncode == 0, f"{ignored_path} is not gitignored: {result.stderr}"
+
+    def test_tracked_base_file_is_not_ignored(self) -> None:
+        # --no-index: without it, check-ignore never reports a tracked path, so
+        # this case could not fail whatever .gitignore says.
+        result = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "check-ignore", "-q", "--no-index", "claude/.claude/settings.base.json"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        assert result.returncode == 1
+
+
 class TestEnabledKeyDeletion:
     """enabled has no consumer anymore and no special-cased handling --
     an overlay carrying it is refused the same as any other unrecognized
@@ -1331,13 +1695,15 @@ class TestEnabledKeyDeletion:
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode != 0
-        assert "enabled" in result.stderr
+        assert "skillListingBudgetFraction}: enabled -- refusing to render" in result.stderr
         assert not (config_dir / "settings.json").exists()
 
 
 class TestStderrDisclosure:
-    """The stderr-disclosure contract: change-triggered, name-only,
-    never-value."""
+    """The stderr-disclosure contract: change-triggered, and no env value ever
+    printed. Env keys and top-level keys are named by key only; dropped
+    permissions entries print their rule text, which is what lets a user
+    recover a dropped rule."""
 
     def test_no_change_produces_no_disclosure_line(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
@@ -1412,14 +1778,334 @@ class TestStderrDisclosure:
         _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
         _write_json(
             config_dir / "settings.overlay.json",
-            {"env": {"ANTHROPIC_AUTH_TOKEN": "sk-secret-marker-token"}},
+            {"env": {"ANTHROPIC_BASE_URL": "https://secret-marker.example"}},
         )
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode == 0, result.stderr
-        assert "env.ANTHROPIC_AUTH_TOKEN" in result.stderr
-        assert "sk-secret-marker-token" not in result.stderr
+        assert "env.ANTHROPIC_BASE_URL" in result.stderr
+        assert "secret-marker.example" not in result.stderr
+
+    def test_changed_overlay_env_value_names_the_key_but_not_either_value(self, tmp_path: Path) -> None:
+        """The redirect shape: a key already in the prior render whose value
+        the overlay now changes."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(
+            config_dir / "settings.overlay.json",
+            {"env": {"ANTHROPIC_BASE_URL": "https://new-marker.example"}},
+        )
+        _write_json(
+            config_dir / "settings.json",
+            {"otherKey": "v", "env": {"ANTHROPIC_BASE_URL": "https://old-marker.example"}},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "overlay env keys applied or changed: env.ANTHROPIC_BASE_URL" in result.stderr
+        assert "new-marker.example" not in result.stderr
+        assert "old-marker.example" not in result.stderr
+
+    def test_unchanged_overlay_env_value_is_not_named_when_another_key_changes(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "new"})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_BASE_URL": "https://same.example"}})
+        _write_json(
+            config_dir / "settings.json",
+            {"otherKey": "old", "env": {"ANTHROPIC_BASE_URL": "https://same.example"}},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads((config_dir / "settings.json").read_text())["otherKey"] == "new"
+        assert "env." not in result.stderr
+
+    def test_dropped_top_level_key_is_named_without_its_value(self, tmp_path: Path) -> None:
+        """Rule 2: the overlay no longer carries env, so the prior render's
+        env is dropped. The drop is named by key, never by value."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(
+            config_dir / "settings.json",
+            {"otherKey": "v", "env": {"ANTHROPIC_BASE_URL": "https://dropped-marker.example"}},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "dropped top-level keys: env" in result.stderr
+        assert "dropped-marker.example" not in result.stderr
+
+    def test_dropped_permissions_entries_are_named(self, tmp_path: Path) -> None:
+        """Rule 1 replaces permissions wholesale, so a user-added entry in the
+        live file is dropped, including a tightening deny entry, and the drop
+        is announced."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(
+            config_dir / "settings.base.json",
+            {"permissions": {"deny": ["Bash(sudo *)"], "allow": ["Read"]}},
+        )
+        _write_json(
+            config_dir / "settings.json",
+            {
+                "permissions": {
+                    "deny": ["Bash(sudo *)", "Bash(user-added-deny)"],
+                    "allow": ["Read", "Bash(user-added-allow)"],
+                    "defaultMode": "acceptEdits",
+                }
+            },
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert 'permissions.deny["Bash(user-added-deny)"]' in result.stderr
+        assert 'permissions.allow["Bash(user-added-allow)"]' in result.stderr
+        assert "permissions.defaultMode" in result.stderr
+        assert "acceptEdits" not in result.stderr
+        assert 'permissions.deny["Bash(sudo *)"]' not in result.stderr
+
+    def test_dropped_permissions_array_entries_are_named_when_base_has_no_such_field(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"permissions": {"deny": ["a"]}})
+        _write_json(config_dir / "settings.json", {"permissions": {"deny": ["a"], "ask": ["Edit"]}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert 'permissions.ask["Edit"]' in result.stderr
+
+    def test_dropped_env_key_under_a_retained_env_object_is_named_without_its_value(
+        self, tmp_path: Path
+    ) -> None:
+        """Rule 4 re-applies env.ANTHROPIC_MODEL, so `env` stays in the result
+        and the top-level drop disclosure never fires. The prior env keys the
+        render removes from that retained object are still named, by key
+        only."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(
+            config_dir / "settings.json",
+            {
+                "otherKey": "v",
+                "env": {
+                    "ANTHROPIC_MODEL": "kept-marker",
+                    "HTTPS_PROXY": "https://dropped-proxy-marker.example",
+                },
+            },
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads((config_dir / "settings.json").read_text())["env"] == {
+            "ANTHROPIC_MODEL": "kept-marker"
+        }
+        assert "dropped env keys: env.HTTPS_PROXY" in result.stderr
+        assert "env.ANTHROPIC_MODEL" not in result.stderr
+        assert "dropped-proxy-marker.example" not in result.stderr
+
+    def test_dropped_env_key_is_named_next_to_a_newly_applied_overlay_env_key(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_BASE_URL": "https://x"}})
+        _write_json(
+            config_dir / "settings.json",
+            {"otherKey": "v", "env": {"DISABLE_TELEMETRY": "1"}},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "dropped env keys: env.DISABLE_TELEMETRY" in result.stderr
+        assert "overlay env keys applied or changed: env.ANTHROPIC_BASE_URL" in result.stderr
+
+    def test_env_keys_the_render_keeps_are_not_named_as_dropped(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "new"})
+        _write_json(config_dir / "settings.overlay.json", {"env": {"ANTHROPIC_BASE_URL": "https://same.example"}})
+        _write_json(
+            config_dir / "settings.json",
+            {"otherKey": "old", "env": {"ANTHROPIC_BASE_URL": "https://same.example"}},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "dropped env keys" not in result.stderr
+
+    def test_a_wholly_dropped_env_object_is_named_once_as_a_top_level_key(
+        self, tmp_path: Path
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(
+            config_dir / "settings.json",
+            {"otherKey": "v", "env": {"DISABLE_TELEMETRY": "1"}},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "dropped top-level keys: env" in result.stderr
+        assert "dropped env keys" not in result.stderr
+
+    def test_a_wholly_dropped_permissions_object_is_named_once_as_a_top_level_key(
+        self, tmp_path: Path
+    ) -> None:
+        """Base ships no permissions, so the prior object is dropped whole.
+        It is named once as the top-level key, never again per entry."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(
+            config_dir / "settings.json",
+            {"otherKey": "v", "permissions": {"allow": ["Bash(user-added-allow)"], "defaultMode": "plan"}},
+        )
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "dropped top-level keys: permissions" in result.stderr
+        assert "dropped permissions entries" not in result.stderr
+        assert "user-added-allow" not in result.stderr
+
+    def test_an_empty_prior_env_object_is_not_reported_as_dropped(self, tmp_path: Path) -> None:
+        """An empty env object holds nothing to lose, so reporting it would
+        dilute the drop lines that matter."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(config_dir / "settings.json", {"otherKey": "v", "env": {}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "env" not in json.loads((config_dir / "settings.json").read_text())
+        assert "dropped" not in result.stderr
+
+    @pytest.mark.parametrize(
+        "dropped_rule",
+        [
+            'Bash(grep -E "x\\|y" *)',
+            "Bash(echo h\u00e9llo)",
+            {"tool": "obj", "args": ["a", "b"]},
+        ],
+        ids=["quote-and-backslash", "non-ascii", "object-entry"],
+    )
+    def test_dropped_permissions_rule_text_round_trips_through_json(
+        self, tmp_path: Path, dropped_rule: object
+    ) -> None:
+        """The printed rule text is what lets a user recover the rule, so the
+        bracketed text must parse back to exactly the dropped value."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"permissions": {"allow": []}})
+        _write_json(config_dir / "settings.json", {"permissions": {"allow": [dropped_rule]}})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        disclosure_line = result.stderr.strip().splitlines()[-1]
+        bracketed = disclosure_line.split("dropped permissions entries: permissions.allow[", 1)[1]
+        assert json.loads(bracketed.removesuffix("]")) == dropped_rule
+
+    @pytest.mark.parametrize(
+        ("floor_key", "user_edited_value"),
+        [
+            ("hooks", {"PreToolUse": [], "PostToolUse": [{"matcher": "Bash", "hooks": []}]}),
+            ("statusLine", {"type": "command", "command": "user-statusline"}),
+            ("skillOverrides", {"base-skill": "off", "user-skill": "name-only"}),
+        ],
+    )
+    def test_user_edit_under_a_base_owned_nested_key_is_reverted_without_a_message(
+        self, tmp_path: Path, floor_key: str, user_edited_value: object
+    ) -> None:
+        """The disclosure does not look inside hooks, statusLine, or
+        skillOverrides: base's value replaces the whole prior value and
+        stderr stays silent. docs/auto-mode.md and docs/scripts.md state this."""
+        base = {
+            "hooks": {"PreToolUse": []},
+            "statusLine": {"type": "command", "command": "base-statusline"},
+            "skillOverrides": {"base-skill": "off"},
+        }
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", base)
+        _write_json(config_dir / "settings.json", {**base, floor_key: user_edited_value})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads((config_dir / "settings.json").read_text()) == base
+        assert result.stderr == ""
+
+    @pytest.mark.parametrize("base_defined_key", sorted(BASE_KEYS_DELIBERATELY_NOT_BASE_OWNED))
+    def test_live_edit_to_a_base_defined_key_is_reverted_without_a_message(
+        self, tmp_path: Path, base_defined_key: str
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        shutil.copy(_SETTINGS_BASE_JSON, config_dir / "settings.base.json")
+        real_base = json.loads(_SETTINGS_BASE_JSON.read_text())
+        _write_json(config_dir / "settings.json", {base_defined_key: "user-edited-marker"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered[base_defined_key] == real_base[base_defined_key]
+        assert "dropped" not in result.stderr
+        assert "carried forward" not in result.stderr
+        assert "user-edited-marker" not in result.stderr
+
+    @pytest.mark.parametrize("prior_state", ["absent", "dangling-symlink"])
+    def test_first_render_with_no_readable_prior_file_names_nothing(
+        self, tmp_path: Path, prior_state: str
+    ) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        shutil.copy(_SETTINGS_BASE_JSON, config_dir / "settings.base.json")
+        if prior_state == "dangling-symlink":
+            (config_dir / "settings.json").symlink_to(config_dir / "no-such-file.json")
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stderr == ""
+        assert not (config_dir / "settings.json").is_symlink()
+
+    def test_steady_state_carry_of_an_already_carried_key_is_silent(self, tmp_path: Path) -> None:
+        """Pins that a key carried on a previous render and unchanged since
+        produces no disclosure and no write, since the output equals the
+        prior file."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "v"})
+        _write_json(config_dir / "settings.json", {"otherKey": "v", "apiKeyHelper": "helper"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stderr == ""
 
     def test_carried_forward_key_value_never_appears_in_disclosure_only_the_name_does(
         self, tmp_path: Path

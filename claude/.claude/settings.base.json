@@ -240,7 +240,7 @@
             "type": "command",
             "command": "~/.claude/hooks/guard-settings-session-keys.sh",
             "if": "Bash(git commit *)",
-            "statusMessage": "Checking settings.json session keys..."
+            "statusMessage": "Checking settings.base.json session keys..."
           },
           {
             "type": "command",

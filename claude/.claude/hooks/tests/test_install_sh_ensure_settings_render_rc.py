@@ -1,7 +1,7 @@
 """Tests for the settings.json render check: install.sh's rc-line wiring
 (ensure_settings_render) and ensure-settings-render.sh itself, which
-repairs $HOME/.claude/settings.json on every new shell rather than only
-warning that a render is needed.
+repairs the resolved profile's settings.json on every new shell rather than
+only warning that a render is needed.
 
 The rc-file-mutation safety net (backup/undo/symlink-companion resolution)
 lives in the shared _ensure_rc_block helper and is already exercised
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -21,8 +22,8 @@ import pytest
 from helpers import (
     SCRIPTS_DIR,
     assert_cap_engaged,
-    build_path_without,
     scaled_shim_sleep,
+    symlink_hooks_lib_chain,
     write_scaled_timeout_shim,
 )
 
@@ -31,23 +32,6 @@ from .conftest import TIMEOUT_SHIM_SLEEP_SECONDS
 _INSTALL_SH = Path(__file__).resolve().parents[4] / "install.sh"
 _ENSURE_SCRIPT = SCRIPTS_DIR / "ensure-settings-render.sh"
 _BASH = shutil.which("bash") or "/bin/bash"
-
-
-def _path_without_sha256_tools(farm_dir: Path) -> str:
-    """Farm-built PATH with neither sha256sum nor gsha256sum resolvable.
-
-    build_path_without only excludes one binary at a time, so this removes
-    the second (gsha256sum) from the farm it already builds without the
-    first, rather than duplicating its symlink-farm construction.
-    """
-    restricted_path = build_path_without("sha256sum", farm_dir)
-    gsha256sum_symlink = farm_dir / "gsha256sum"
-    if gsha256sum_symlink.is_symlink() or gsha256sum_symlink.exists():
-        gsha256sum_symlink.unlink()
-    assert shutil.which("gsha256sum", path=restricted_path) is None, (
-        f"gsha256sum: still resolvable on {restricted_path!r} -- farm construction bug"
-    )
-    return restricted_path
 
 
 _RC_HELPERS_START = "# INSTALL_TEST_FIXTURE: rc-block-helpers — start\n"
@@ -78,7 +62,9 @@ def _extract_block(start_marker: str, end_marker: str, required_substring: str) 
     return block
 
 
-def _run_settings_render_rc_block(test_home: Path) -> subprocess.CompletedProcess:
+def _run_settings_render_rc_block(
+    test_home: Path, path_prefix: Path | None = None
+) -> subprocess.CompletedProcess:
     """Run ensure_settings_render with $HOME pointed at an isolated dir.
 
     Concatenates the rc-block-helpers block (which defines the shared
@@ -91,6 +77,8 @@ def _run_settings_render_rc_block(test_home: Path) -> subprocess.CompletedProces
     render_rc_block = _extract_block(_FIXTURE_START, _FIXTURE_END, "ensure_settings_render")
     env = dict(os.environ)
     env["HOME"] = str(test_home)
+    if path_prefix is not None:
+        env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
     script = "set -e\n" + rc_helpers_block + "\n" + render_rc_block + "\nensure_settings_render\n"
     return subprocess.run(
         [_BASH, "-c", script],
@@ -113,6 +101,25 @@ class TestInstallShSettingsRenderRc:
         bashrc = (test_home / ".bashrc").read_text()
         assert "ensure-settings-render.sh" in bashrc
         assert "BEGIN claude-config: ensure settings.json render" in bashrc
+
+    def test_zshrc_receives_the_same_block_as_bashrc(self, tmp_path: Path) -> None:
+        """The executed zsh case skips when zsh is not installed, so this
+        check keeps the .zshrc write asserted everywhere. install.sh writes an
+        rc file only for a shell found on PATH, so a stub zsh stands in."""
+        test_home = tmp_path / "home"
+        test_home.mkdir()
+        stub_bin = tmp_path / "stub-bin"
+        stub_bin.mkdir()
+        stub_zsh = stub_bin / "zsh"
+        stub_zsh.write_text("#!/bin/sh\nexit 0\n")
+        stub_zsh.chmod(0o755)
+
+        result = _run_settings_render_rc_block(test_home, path_prefix=stub_bin)
+
+        assert result.returncode == 0, f"block must exit 0; stderr={result.stderr!r}"
+        zshrc = (test_home / ".zshrc").read_text()
+        assert "BEGIN claude-config: ensure settings.json render" in zshrc
+        assert zshrc == (test_home / ".bashrc").read_text()
 
     def test_second_run_is_a_byte_for_byte_no_op(self, tmp_path: Path) -> None:
         test_home = tmp_path / "home"
@@ -259,7 +266,7 @@ class TestEnsureSettingsRenderScript:
         result = _run_ensure_script(home)
 
         assert result.returncode == 0, f"must always exit 0; stderr={result.stderr!r}"
-        assert "settings.json render failed" in result.stderr
+        assert f"render of {home}/.claude/settings.json failed" in result.stderr
         assert not (home / ".claude" / "settings.json").exists()
 
     def test_failure_names_the_real_repo_path_when_manifest_present(self, tmp_path: Path) -> None:
@@ -321,21 +328,21 @@ class TestEnsureSettingsRenderTimeoutGuard:
             result = _run_ensure_script(home, extra_path_dir=bin_dir)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert "settings.json render failed" in result.stderr, (
-            "a render killed by the timeout must exit non-zero, triggering "
-            "the failure hint -- an uncapped render would instead succeed "
-            "silently after sleeping the full duration"
+        assert "did not finish within its 5s cap" in result.stderr, (
+            "a render killed by the timeout must exit with a cap-kill status, "
+            "triggering the cap hint -- an uncapped render would instead "
+            "succeed silently after sleeping the full duration"
         )
 
 
-class TestEnsureSettingsRenderStalenessCache:
-    """A second render with unchanged inputs skips the expensive render
-    pipeline; a changed input still triggers a full render."""
+class TestEnsureSettingsRenderRepeatRuns:
+    """Every run renders; render-settings.sh itself skips the write when the
+    result is unchanged, so ensure-settings-render.sh keeps no cache."""
 
     def _make_home_with_counting_stub(self, tmp_path: Path, base_content: dict) -> tuple[Path, Path]:
         """Home whose render-settings.sh wrapper counts invocations (one
         line per call to invocations.log) before delegating to the real
-        script, so a skipped render is directly observable."""
+        script."""
         home = tmp_path / "home"
         scripts_dir = home / ".claude" / "scripts"
         scripts_dir.mkdir(parents=True)
@@ -351,118 +358,81 @@ class TestEnsureSettingsRenderStalenessCache:
         (home / ".claude" / "settings.base.json").write_text(json.dumps(base_content))
         return home, invocations
 
-    def test_unchanged_inputs_skip_the_render(self, tmp_path: Path) -> None:
+    def test_unchanged_inputs_render_again_without_rewriting_settings_json(self, tmp_path: Path) -> None:
         home, invocations = self._make_home_with_counting_stub(tmp_path, {"otherKey": "v"})
+        rendered_path = home / ".claude" / "settings.json"
 
         first = _run_ensure_script(home)
         assert first.returncode == 0, f"stderr={first.stderr!r}"
-        assert invocations.read_text().count("invoked\n") == 1
+        os.utime(rendered_path, ns=(1_000_000_000, 1_000_000_000))
 
         second = _run_ensure_script(home)
+
         assert second.returncode == 0, f"stderr={second.stderr!r}"
-        assert invocations.read_text().count("invoked\n") == 1, (
-            "a second run with unchanged inputs must skip the render entirely"
+        assert invocations.read_text().count("invoked\n") == 2
+        assert rendered_path.stat().st_mtime_ns == 1_000_000_000, (
+            "an unchanged render must leave settings.json untouched"
         )
 
-    def test_changed_base_file_still_triggers_a_full_render(self, tmp_path: Path) -> None:
-        home, invocations = self._make_home_with_counting_stub(tmp_path, {"otherKey": "v"})
+    def test_no_cache_file_is_written(self, tmp_path: Path) -> None:
+        home, _ = self._make_home_with_counting_stub(tmp_path, {"otherKey": "v"})
 
         _run_ensure_script(home)
-        assert invocations.read_text().count("invoked\n") == 1
 
+        assert sorted(path.name for path in (home / ".claude").iterdir() if path.name.startswith(".")) == []
+
+    def test_changed_base_file_is_rendered(self, tmp_path: Path) -> None:
+        home, _ = self._make_home_with_counting_stub(tmp_path, {"otherKey": "v"})
+
+        _run_ensure_script(home)
         (home / ".claude" / "settings.base.json").write_text(json.dumps({"otherKey": "changed"}))
         result = _run_ensure_script(home)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert invocations.read_text().count("invoked\n") == 2
         rendered = json.loads((home / ".claude" / "settings.json").read_text())
         assert rendered == {"otherKey": "changed"}
 
-    def test_changed_overlay_file_still_triggers_a_full_render(self, tmp_path: Path) -> None:
-        """Mirrors test_changed_base_file_still_triggers_a_full_render for
-        settings.overlay.json -- base and overlay are hashed by two
-        independent `if [ -f ... ]` blocks in the script, so covering base
-        alone is not a proxy for the overlay path."""
-        home, invocations = self._make_home_with_counting_stub(tmp_path, {"otherKey": "v"})
+    def test_changed_overlay_file_is_rendered(self, tmp_path: Path) -> None:
+        home, _ = self._make_home_with_counting_stub(tmp_path, {"otherKey": "v"})
         overlay_file = home / ".claude" / "settings.overlay.json"
         overlay_file.write_text(json.dumps({"skillListingBudgetFraction": 0.2}))
 
         _run_ensure_script(home)
-        assert invocations.read_text().count("invoked\n") == 1
-
         overlay_file.write_text(json.dumps({"skillListingBudgetFraction": 0.4}))
         result = _run_ensure_script(home)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert invocations.read_text().count("invoked\n") == 2
         rendered = json.loads((home / ".claude" / "settings.json").read_text())
         assert rendered["skillListingBudgetFraction"] == 0.4
 
-    def test_neither_hash_tool_present_renders_on_every_invocation(
-        self, tmp_path: Path
-    ) -> None:
-        """Mirrors TestEnsureSettingsRenderTimeoutGuard's coverage of the
-        timeout/gtimeout-absent fallback: with neither sha256sum nor
-        gsha256sum on PATH, the staleness optimization must disable itself
-        entirely rather than risk a wrong cache match, so every invocation
-        renders."""
-        home, invocations = self._make_home_with_counting_stub(tmp_path, {"otherKey": "v"})
-        farm_dir = tmp_path / "path-without-hash-tools"
-        farm_dir.mkdir()
-        env = {**os.environ, "HOME": str(home), "PATH": _path_without_sha256_tools(farm_dir)}
-        env.pop("CLAUDE_CONFIG_DIR", None)
-
-        first = subprocess.run(
-            [str(_ENSURE_SCRIPT)], capture_output=True, text=True, check=False, env=env, timeout=15
-        )
-        assert first.returncode == 0, f"stderr={first.stderr!r}"
-        assert invocations.read_text().count("invoked\n") == 1
-
-        second = subprocess.run(
-            [str(_ENSURE_SCRIPT)], capture_output=True, text=True, check=False, env=env, timeout=15
-        )
-
-        assert second.returncode == 0, f"stderr={second.stderr!r}"
-        assert invocations.read_text().count("invoked\n") == 2, (
-            "with neither hash tool on PATH, the cache must stay disabled "
-            "and render on every invocation"
-        )
-
-    def test_corrupted_target_still_renders_despite_unchanged_base_and_overlay(
-        self, tmp_path: Path
-    ) -> None:
-        """A settings.json truncated to invalid JSON in place, with base and
-        overlay both unchanged since the last successful render, must still
-        trigger a render -- the cache key folds in $target's own hash so a
-        target corrupted after caching can't match the stale cache entry."""
-        home, invocations = self._make_home_with_counting_stub(tmp_path, {"otherKey": "v"})
-
+    def test_corrupted_target_is_repaired(self, tmp_path: Path) -> None:
+        home, _ = self._make_home_with_counting_stub(tmp_path, {"otherKey": "v"})
         _run_ensure_script(home)
-        assert invocations.read_text().count("invoked\n") == 1
-
         rendered_path = home / ".claude" / "settings.json"
         rendered_path.write_text("{not valid json")
 
         result = _run_ensure_script(home)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert invocations.read_text().count("invoked\n") == 2, (
-            "a corrupted target must not be skipped as though it still "
-            "matched the last successful render"
-        )
         assert json.loads(rendered_path.read_text()) == {"otherKey": "v"}
 
-    def test_write_through_symlink_still_renders_despite_unchanged_inputs(
-        self, tmp_path: Path
-    ) -> None:
-        """The staleness cache must never suppress the write-through repair
-        this script exists for -- a live session recreating settings.json as
-        a symlink still needs a render even when base/overlay didn't change."""
-        home, invocations = self._make_home_with_counting_stub(tmp_path, {"otherKey": "v"})
-
+    def test_zero_byte_target_is_repaired_without_a_failure_hint(self, tmp_path: Path) -> None:
+        """A settings.json truncated to zero bytes is the corruption shape the
+        repair most needs to handle."""
+        home, _ = self._make_home_with_counting_stub(tmp_path, {"otherKey": "v"})
         _run_ensure_script(home)
-        assert invocations.read_text().count("invoked\n") == 1
+        rendered_path = home / ".claude" / "settings.json"
+        rendered_path.write_text("")
 
+        result = _run_ensure_script(home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "render of" not in result.stderr
+        assert json.loads(rendered_path.read_text()) == {"otherKey": "v"}
+
+    def test_write_through_symlink_is_replaced_with_a_regular_file(self, tmp_path: Path) -> None:
+        home, _ = self._make_home_with_counting_stub(tmp_path, {"otherKey": "v"})
+        _run_ensure_script(home)
         stub_target = tmp_path / "stub-settings.json"
         stub_target.write_text(json.dumps({"theme": "dark"}))
         rendered_path = home / ".claude" / "settings.json"
@@ -472,9 +442,222 @@ class TestEnsureSettingsRenderStalenessCache:
         result = _run_ensure_script(home)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
-        assert invocations.read_text().count("invoked\n") == 2, (
-            "a symlinked settings.json must still trigger a render even "
-            "when the staleness cache sees unchanged inputs"
-        )
         assert not rendered_path.is_symlink()
-        assert "render failed" not in result.stderr
+        assert "render of" not in result.stderr
+
+    def test_failing_render_warns_on_every_run(self, tmp_path: Path) -> None:
+        """A failed render must not suppress the next shell's warning."""
+        home = tmp_path / "home"
+        scripts_dir = home / ".claude" / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
+        # No settings.base.json, so every render fails.
+
+        first = _run_ensure_script(home)
+        second = _run_ensure_script(home)
+
+        assert "render of" in first.stderr
+        assert "render of" in second.stderr
+
+
+class TestEnsureSettingsRenderProfileResolution:
+    """The script follows an inherited CLAUDE_CONFIG_DIR and stays silent for
+    a profile this repo never stowed into."""
+
+    def _run_with_config_dir(self, home: Path, config_dir: Path | str) -> subprocess.CompletedProcess:
+        env = {**os.environ, "HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir)}
+        return subprocess.run(
+            [str(_ENSURE_SCRIPT)], capture_output=True, text=True, check=False, env=env, timeout=15
+        )
+
+    def _make_home_with_render_script(self, tmp_path: Path) -> Path:
+        home = tmp_path / "home"
+        scripts_dir = home / ".claude" / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
+        return home
+
+    def test_profile_with_a_base_file_is_rendered_in_place(self, tmp_path: Path) -> None:
+        home = self._make_home_with_render_script(tmp_path)
+        profile_dir = tmp_path / "profile"
+        profile_dir.mkdir()
+        (profile_dir / "settings.base.json").write_text(json.dumps({"otherKey": "profile-value"}))
+
+        result = self._run_with_config_dir(home, profile_dir)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert json.loads((profile_dir / "settings.json").read_text()) == {"otherKey": "profile-value"}
+        assert not (home / ".claude" / "settings.json").exists()
+
+    def test_profile_without_a_base_file_is_left_alone_and_silent(self, tmp_path: Path) -> None:
+        home = self._make_home_with_render_script(tmp_path)
+        profile_dir = tmp_path / "profile"
+        profile_dir.mkdir()
+
+        result = self._run_with_config_dir(home, profile_dir)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stderr == ""
+        assert not (profile_dir / "settings.json").exists()
+
+    def test_default_profile_spelled_through_config_dir_still_reports_a_missing_base(
+        self, tmp_path: Path
+    ) -> None:
+        home = self._make_home_with_render_script(tmp_path)
+
+        result = self._run_with_config_dir(home, home / ".claude")
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert f"render of {home}/.claude/settings.json failed" in result.stderr
+
+    def test_failed_profile_render_hint_names_the_profile_and_a_working_command(
+        self, tmp_path: Path
+    ) -> None:
+        home = self._make_home_with_render_script(tmp_path)
+        profile_dir = tmp_path / "profile"
+        profile_dir.mkdir()
+        (profile_dir / "settings.base.json").write_text("{not valid json")
+
+        result = self._run_with_config_dir(home, profile_dir)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert f"render of {profile_dir}/settings.json failed" in result.stderr
+        assert f"CLAUDE_CONFIG_DIR={profile_dir} ~/.claude/scripts/render-settings.sh" in result.stderr
+        assert "./install.sh" not in result.stderr
+
+    def test_failed_profile_render_hint_quotes_a_profile_path_with_a_space(
+        self, tmp_path: Path
+    ) -> None:
+        home = self._make_home_with_render_script(tmp_path)
+        profile_dir = tmp_path / "my profile"
+        profile_dir.mkdir()
+        (profile_dir / "settings.base.json").write_text("{not valid json")
+
+        result = self._run_with_config_dir(home, profile_dir)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        suggested_command = result.stderr.rsplit("run: ", 1)[1]
+        assert shlex.split(suggested_command) == [
+            f"CLAUDE_CONFIG_DIR={profile_dir}",
+            "~/.claude/scripts/render-settings.sh",
+        ]
+
+    @pytest.mark.parametrize("spelling", ["trailing-slash", "symlink-alias"])
+    def test_default_profile_spelled_differently_still_reports_a_missing_base(
+        self, tmp_path: Path, spelling: str
+    ) -> None:
+        """The profile gate compares files, not strings: a spelling of the
+        default profile is the default profile, whose missing base is the
+        dangling pre-migration state the hint exists to report."""
+        home = self._make_home_with_render_script(tmp_path)
+        default_profile = home / ".claude"
+        config_dir: Path | str
+        if spelling == "trailing-slash":
+            # A str, not a Path: pathlib drops the trailing slash.
+            config_dir = f"{default_profile}/"
+        else:
+            config_dir = tmp_path / "alias-of-default"
+            config_dir.symlink_to(default_profile)
+
+        result = self._run_with_config_dir(home, config_dir)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert "settings.json failed" in result.stderr
+        assert "re-run install.sh from your claude-config checkout" in result.stderr
+
+    def test_default_profile_spelled_with_a_trailing_slash_is_rendered_in_place(
+        self, tmp_path: Path
+    ) -> None:
+        home = self._make_home_with_render_script(tmp_path)
+        (home / ".claude" / "settings.base.json").write_text(json.dumps({"otherKey": "base-value"}))
+
+        result = self._run_with_config_dir(home, f"{home / '.claude'}/")
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert json.loads((home / ".claude" / "settings.json").read_text()) == {"otherKey": "base-value"}
+
+
+class TestEnsureSettingsRenderFailureStatus:
+    """The failure hint says what happened: a cap-kill status names the cap
+    (the render printed nothing), any other status points at the render's own
+    error."""
+
+    def _make_home_with_stub_render(self, tmp_path: Path, exit_status: int) -> Path:
+        home = tmp_path / "home"
+        scripts_dir = home / ".claude" / "scripts"
+        scripts_dir.mkdir(parents=True)
+        stub = scripts_dir / "render-settings.sh"
+        stub.write_text(f"#!/bin/bash\nexit {exit_status}\n")
+        stub.chmod(0o755)
+        return home
+
+    @pytest.mark.parametrize("cap_kill_status", [124, 137, 143])
+    def test_cap_kill_status_names_the_cap_and_does_not_point_at_an_absent_error(
+        self, tmp_path: Path, cap_kill_status: int
+    ) -> None:
+        home = self._make_home_with_stub_render(tmp_path, cap_kill_status)
+
+        result = _run_ensure_script(home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert f"did not finish within its 5s cap (exit {cap_kill_status})" in result.stderr
+        assert "see the error above" not in result.stderr
+
+    @pytest.mark.parametrize("ordinary_failure_status", [1, 2, 125])
+    def test_ordinary_failure_status_points_at_the_renders_own_error(
+        self, tmp_path: Path, ordinary_failure_status: int
+    ) -> None:
+        home = self._make_home_with_stub_render(tmp_path, ordinary_failure_status)
+
+        result = _run_ensure_script(home)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert f"render of {home}/.claude/settings.json failed -- see the error above" in result.stderr
+        assert "5s cap" not in result.stderr
+
+
+class TestRcBlockExecution:
+    """The block install.sh writes into an rc file must work when a new shell
+    sources it, not only contain the script's name."""
+
+    def _make_stowed_home(self, tmp_path: Path) -> Path:
+        """An isolated $HOME shaped like a stowed install: scripts and the
+        hooks/_lib.sh chain symlinked in, plus a settings.base.json."""
+        home = tmp_path / "home"
+        claude_dir = home / ".claude"
+        scripts_dir = claude_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        for script_name in ("ensure-settings-render.sh", "render-settings.sh", "_capped-for-lib.sh"):
+            (scripts_dir / script_name).symlink_to(SCRIPTS_DIR / script_name)
+        hooks_dir = claude_dir / "hooks"
+        hooks_dir.mkdir()
+        symlink_hooks_lib_chain(hooks_dir)
+        (claude_dir / "settings.base.json").write_text(json.dumps({"otherKey": "base-value"}))
+        return home
+
+    @pytest.mark.parametrize("shell_name", ["bash", "zsh"])
+    def test_sourcing_the_written_rc_file_renders_settings_json(
+        self, tmp_path: Path, shell_name: str
+    ) -> None:
+        """install.sh appends the identical block to both rc files, so each
+        shell's startup file is sourced by its own shell."""
+        shell_path = shutil.which(shell_name)
+        if shell_path is None:
+            pytest.skip(f"{shell_name} not installed")
+        home = self._make_stowed_home(tmp_path)
+        written = _run_settings_render_rc_block(home)
+        assert written.returncode == 0, f"stderr={written.stderr!r}"
+        env = {**os.environ, "HOME": str(home)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+
+        result = subprocess.run(
+            [shell_path, "-c", f'. "$HOME/.{shell_name}rc"'],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=30,
+        )
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert json.loads((home / ".claude" / "settings.json").read_text()) == {"otherKey": "base-value"}

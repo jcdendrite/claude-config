@@ -518,8 +518,8 @@ class TestGuardSettingsSessionKeys:
             cwd=repo,
         )
         assert reason is not None
-        assert "settings.base.json" in reason
-        assert "model" in reason or "effortLevel" in reason
+        assert "git restore --staged claude/.claude/settings.base.json" in reason
+        assert names_changed_keys(reason) == {"model"}
 
     def test_deny_message_names_only_the_changed_keys(self, settings_repo):
         """The message names which guarded keys actually differ, not the whole set."""
@@ -1542,20 +1542,131 @@ class TestGuardSettingsSessionKeys:
             == "deny"
         )
 
-    def test_disable_bypass_permissions_mode_change_denies_commit(self, settings_repo):
-        """disableBypassPermissionsMode, Claude-Code-written, must block -- backfilled key."""
+
+# The guarded set, pinned independently of the hook's own list: a key deleted
+# from GUARDED_KEYS_JSON must fail this suite, not shrink the matrix below.
+EXPECTED_GUARDED_KEYS = (
+    "model",
+    "effortLevel",
+    "skipAutoPermissionPrompt",
+    "skipWorkflowUsageWarning",
+    "modelSettings",
+    "fastMode",
+    "theme",
+    "tui",
+    "agentPushNotifEnabled",
+    "env.CLAUDE_CODE_EFFORT_LEVEL",
+    "env.ANTHROPIC_MODEL",
+)
+
+
+def _guarded_keys_from_hook() -> list[str]:
+    """The hook's own GUARDED_KEYS_JSON, via its --print-guarded-keys mode."""
+    result = subprocess.run(
+        [str(GUARD_SETTINGS_SESSION_KEYS_HOOK), "--print-guarded-keys"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+    return json.loads(result.stdout)
+
+
+def _settings_json_with(base: dict, dotted_key: str, value: object) -> str:
+    """`base` with `dotted_key` set to `value`; a dotted key becomes nested objects."""
+    content = json.loads(json.dumps(base))
+    *parents, leaf = dotted_key.split(".")
+    node = content
+    for parent in parents:
+        node = node.setdefault(parent, {})
+    node[leaf] = value
+    return json.dumps(content) + "\n"
+
+
+class TestEveryGuardedKeyDenies:
+    """One deny and one allow case for every key in EXPECTED_GUARDED_KEYS."""
+
+    BASELINE = {"model": "sonnet", "effortLevel": "normal"}
+
+    def test_the_hooks_guarded_set_is_exactly_the_expected_set(self):
+        hook_keys = _guarded_keys_from_hook()
+
+        assert len(hook_keys) == len(set(hook_keys)), f"duplicate guarded keys: {hook_keys}"
+        assert set(hook_keys) == set(EXPECTED_GUARDED_KEYS)
+
+    @pytest.mark.parametrize("guarded_key", EXPECTED_GUARDED_KEYS)
+    def test_changing_the_guarded_key_denies_and_names_it(self, settings_repo, guarded_key):
         repo, settings_file = settings_repo
+        stage_settings(
+            repo, settings_file, _settings_json_with(self.BASELINE, guarded_key, "changed-by-test")
+        )
+
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'touch a guarded key'"),
+            cwd=repo,
+        )
+
+        assert names_changed_keys(reason) == {guarded_key}
+
+    @pytest.mark.parametrize("guarded_key", EXPECTED_GUARDED_KEYS)
+    def test_leaving_the_guarded_key_unchanged_allows(self, settings_repo, guarded_key):
+        """The key is on the default branch and byte-identical in the staged
+        file while an unrelated key changes."""
+        repo, settings_file = settings_repo
+        with_guarded_key = _settings_json_with(self.BASELINE, guarded_key, "same-on-both-sides")
+        stage_settings(repo, settings_file, with_guarded_key)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "baseline carrying the guarded key"],
+            cwd=repo, check=True, capture_output=True,
+        )
+        _advance_origin_main_to_head(repo)
         stage_settings(
             repo,
             settings_file,
-            '{"model": "sonnet", "effortLevel": "normal",'
-            ' "disableBypassPermissionsMode": true}\n',
+            _settings_json_with(json.loads(with_guarded_key), "unrelatedTestKey", "added"),
         )
+
         assert (
             run_hook(
                 GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'add disableBypassPermissionsMode'"),
+                bash_input("git commit -m 'unrelated change'"),
                 cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_removing_a_guarded_key_the_default_branch_carries_denies(self, settings_repo):
+        """The removed leg: the key is on the default branch and absent from
+        the staged file, which is the shape of moving a key out of base."""
+        repo, settings_file = settings_repo
+        settings_file.write_text('{"model": "sonnet", "effortLevel": "normal", "theme": "dark"}\n')
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "baseline with theme"], cwd=repo, check=True)
+        _advance_origin_main_to_head(repo)
+        stage_settings(repo, settings_file, json.dumps(self.BASELINE) + "\n")
+
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'drop theme'"),
+            cwd=repo,
+        )
+
+        assert names_changed_keys(reason) == {"theme"}
+
+    def test_diff_relative_config_does_not_hide_a_staged_settings_file(self, settings_repo):
+        """With diff.relative=true and a payload cwd below the repo root,
+        `git diff --cached --name-only` would print root-relative names as
+        cwd-relative ones, so the staged-file check would miss the file."""
+        repo, settings_file = settings_repo
+        subprocess.run(["git", "config", "diff.relative", "true"], cwd=repo, check=True)
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'update settings'"),
+                cwd=repo / "claude" / ".claude",
             )
             == "deny"
         )
