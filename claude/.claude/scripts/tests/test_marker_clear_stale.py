@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -397,6 +398,122 @@ class TestReviewPrSuffixScopingIsDirNameGated:
         evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (0, 1)
         assert entry.exists()
+
+
+class TestReviewPrActiveDirEntryWithAnUnknownSuffixIsLeftAlone:
+    def test_entry_with_no_review_pr_suffix_is_neither_read_as_a_pid_nor_evicted(self, tmp_path):
+        """Without the skip, the generic branch would read this entry's content
+        as a PID, evict it, and echo that content in the eviction line."""
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        entry = active_dir / "session.unknown-artifact"
+        entry.write_text("content that is not a PID\n")
+
+        evicted, kept, lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        assert (evicted, kept, lines) == (0, 0, [])
+        assert entry.exists()
+
+
+class TestFailedRemovalIsNotCountedAsAnEviction:
+    """os.remove is replaced rather than a directory made read-only, so the
+    failure is injected the same way whether or not the suite runs as root."""
+
+    @staticmethod
+    def _fail_removal_of(monkeypatch, failing_path: Path) -> None:
+        real_remove = os.remove
+
+        def remove_that_fails_for_one_path(path, *args, **kwargs):
+            if Path(path) == failing_path:
+                raise PermissionError(1, "Operation not permitted", str(path))
+            real_remove(path, *args, **kwargs)
+
+        monkeypatch.setattr(_clear_stale.os, "remove", remove_that_fails_for_one_path)
+
+    def test_generic_branch_entry_whose_removal_fails_gets_a_failed_line_and_no_eviction(
+        self, tmp_path, monkeypatch
+    ):
+        active_dir = tmp_path / ".foo-active.d"
+        active_dir.mkdir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        stuck_entry = active_dir / "stuck-session"
+        stuck_entry.write_text(f"{proc.pid}\n")
+        removable_entry = active_dir / "removable-session"
+        removable_entry.write_text(f"{proc.pid}\n")
+
+        with monkeypatch.context() as patch:
+            self._fail_removal_of(patch, stuck_entry)
+            evicted, kept, lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+
+        assert (evicted, kept) == (1, 0)
+        assert stuck_entry.exists()
+        assert not removable_entry.exists()
+        assert [line for line in lines if line.startswith("  evict: ")] == [
+            f"  evict: .foo-active.d/removable-session (PID {proc.pid} dead)"
+        ]
+        assert [line for line in lines if line.startswith("  failed: ")] == [
+            f"  failed: .foo-active.d/stuck-session (PID {proc.pid} dead; removal failed: Operation not permitted)"
+        ]
+
+    def test_review_pr_branch_entry_whose_removal_fails_gets_a_failed_line_and_no_eviction(
+        self, tmp_path, monkeypatch
+    ):
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        stuck_entry = active_dir / "orphan-session.body"
+        stuck_entry.write_text("findings\n")
+
+        with monkeypatch.context() as patch:
+            self._fail_removal_of(patch, stuck_entry)
+            evicted, kept, lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+
+        assert (evicted, kept) == (0, 0)
+        assert stuck_entry.exists()
+        assert lines == [
+            "  failed: .review-pr-active.d/orphan-session.body "
+            "(owning PID empty dead; removal failed: Operation not permitted)"
+        ]
+
+
+class TestReviewPrArtifactSuffixEnumerationsAgree:
+    """Three enumerations of review-pr's session artifact suffixes live apart:
+    review-pr-finish.sh's removal list, marker-clear-stale.py's
+    REVIEW_PR_SUFFIXES, and every other script's calls to
+    _lib_review_pr_artifact_path. A suffix missing from one is never removed or
+    never swept."""
+
+    _ARTIFACT_PATH_NAME = "_lib_review_pr_artifact_path"
+    _ARTIFACT_PATH_CALL = re.compile(
+        _ARTIFACT_PATH_NAME + r'\s+"?\$\{?CONFIG_DIR\}?"?\s+"[^"]+"\s+"?([A-Za-z0-9_.]+)"?'
+    )
+
+    @classmethod
+    def _suffixes_named_in(cls, script_paths: list[Path]) -> set[str]:
+        """Suffixes of every non-comment call site. Fails when a call site is
+        in a shape the pattern cannot parse, so it never drops out silently."""
+        suffixes: set[str] = set()
+        for script_path in script_paths:
+            code = "\n".join(
+                line for line in script_path.read_text().splitlines() if not line.lstrip().startswith("#")
+            )
+            call_sites = code.count(cls._ARTIFACT_PATH_NAME) - code.count(f"{cls._ARTIFACT_PATH_NAME}()")
+            parsed_suffixes = cls._ARTIFACT_PATH_CALL.findall(code)
+            assert len(parsed_suffixes) == call_sites, (
+                f"{script_path.name} has {call_sites} {cls._ARTIFACT_PATH_NAME} call sites "
+                f"but {len(parsed_suffixes)} parsed; widen _ARTIFACT_PATH_CALL"
+            )
+            suffixes.update(parsed_suffixes)
+        return suffixes
+
+    def test_finish_removal_list_clear_stale_suffixes_and_writers_name_the_same_suffixes(self):
+        finish_script = SCRIPTS_DIR / "review-pr-finish.sh"
+        other_scripts = [path for path in sorted(SCRIPTS_DIR.glob("*.sh")) if path != finish_script]
+
+        finish_suffixes = self._suffixes_named_in([finish_script])
+        clear_stale_suffixes = {suffix.removeprefix(".") for suffix in _clear_stale.REVIEW_PR_SUFFIXES}
+        script_suffixes = self._suffixes_named_in(other_scripts)
+
+        assert finish_suffixes == clear_stale_suffixes == script_suffixes
 
 
 def _run_cli(config_dir: Path, dry_run: str) -> subprocess.CompletedProcess:

@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# Audit-then-checkout for /review-pr Step 2. This script re-derives the PR's
-# own repo identity, file list, and headRefOid itself from `gh`/git, never
-# trusting Step 1's own read or a value passed in as an argument -- the same
-# self-verifying pattern review-pr-post.sh already uses for the post step. A
-# PreToolUse hook can only confirm that *some* audit ran, not that its input
-# went untampered: the same prompt injection this audit guards against could
-# just as easily instruct the agent to "audit an empty list" before such a
-# hook's own check, or to invoke this very script against a different,
-# attacker-controlled repo than the one actually being checked out. So
-# nothing upstream -- including a compromised Step 1 read, or the $1
-# argument's own repo identity -- can hand this script a doctored file
-# list or a mismatched repo.
+# Audit-then-checkout for /review-pr Step 2.
+# This script re-derives the PR's repo identity, file list, and headRefOid itself
+# from `gh`/git, never trusting Step 1's read or a value passed in as an argument.
+# review-pr-post.sh self-verifies the same way for the post step.
+# A PreToolUse hook can only confirm that some audit ran, not what it read.
+# The threat is an injected instruction to audit an empty file list, or to run
+# this script against an attacker-controlled decoy repo.
+# So no upstream value -- a compromised Step 1 read, or $1's repo identity -- can
+# hand this script a doctored file list or a mismatched repo.
 set -euo pipefail
 
 # Distinct from the exit 2 every operational failure uses, so a caller can

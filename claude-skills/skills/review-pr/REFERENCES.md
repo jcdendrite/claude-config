@@ -154,6 +154,12 @@ The downstream read path rejects that symlink. `_lib_sha256_no_follow` (`claude/
 
 The same followed write can also overwrite or create an arbitrary file the Claude Code process has write access to. That risk is wider than the posting-side risk the read-path check mitigates. It rests on the same local-compromise prerequisite as the read-side gap.
 
+Step 5 in `checkout` mode has the same gap for the PR diff. It writes the diff with a plain shell redirect to a `.diff` path the agent derives by replacing `.body` in `review-pr-findings-path.sh`'s output.
+
+- The redirect follows a pre-planted symlink at that path, as the body write does.
+- No read-side backstop exists. No script reads `.diff`, and `/code-review` reads it with the agent's `Read`, which follows symlinks.
+- A mis-edited path leaves the diff at a path `review-pr-finish.sh` never removes, because it removes only the fixed `<session>.diff` path.
+
 ## Known gaps and operator choices
 
 - **Ignore `.claude/worktrees/` in the target repo.** `review-pr-checkout.sh`

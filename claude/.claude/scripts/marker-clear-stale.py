@@ -9,14 +9,15 @@ _lib.sh's _lib_write_no_follow and _lib_cat_no_follow apply per-file elsewhere.
 Usage: marker-clear-stale.py CONFIG_DIR DRY_RUN
 
 DRY_RUN is "1" or "0". Prints one line per evicted entry in both modes, and
-one line per kept entry in dry-run mode only, followed by a summary line.
+one line per kept entry in dry-run mode only. A real run also prints one
+"failed:" line per entry whose removal raised OSError, which counts as neither
+evicted nor kept. A summary line follows.
 
 Exit status: 0 after a completed sweep, 2 on a wrong argument count, and 1 when
 an unhandled exception escapes (an active directory that cannot be listed).
 """
 from __future__ import annotations
 
-import contextlib
 import glob
 import os
 import re
@@ -34,6 +35,8 @@ import time
 # and posting it can idle past the 60-minute window below while a review is
 # still in flight. All four suffixes use the same two checks rather than a
 # per-suffix rule.
+# An entry in that directory with none of these suffixes is skipped untouched,
+# never read as a PID.
 REVIEW_PR_SUFFIXES = (".body", ".provenance", ".diff", ".context.json")
 
 
@@ -111,6 +114,19 @@ def live_session_ids(sessions_dir: str) -> set[str]:
     return session_ids
 
 
+def remove_entry(entry: str, display_name: str, reason: str, lines: list[str]) -> bool:
+    """Removes entry and appends its "evict:" line, returning True. When the
+    removal raises OSError, appends a "failed:" line instead and returns False,
+    so the caller counts an eviction only for a file that is gone."""
+    try:
+        os.remove(entry)
+    except OSError as error:
+        lines.append(f"  failed: {display_name} ({reason}; removal failed: {error.strerror or error})")
+        return False
+    lines.append(f"  evict: {display_name} ({reason})")
+    return True
+
+
 def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
     """Returns (evicted, kept, dry-run-only display lines)."""
     evicted = 0
@@ -138,11 +154,14 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
             if entry_name.endswith(".planmode-path"):
                 continue
 
+            in_review_pr_dir = dir_name == ".review-pr-active.d"
             review_pr_suffix = (
                 next((s for s in REVIEW_PR_SUFFIXES if entry_name.endswith(s)), None)
-                if dir_name == ".review-pr-active.d"
+                if in_review_pr_dir
                 else None
             )
+            if in_review_pr_dir and review_pr_suffix is None:
+                continue
             if review_pr_suffix is not None:
                 owner_session_id = entry_name[: -len(review_pr_suffix)]
                 provenance_content = read_no_follow(os.path.join(active_dir, owner_session_id + ".provenance"))
@@ -187,14 +206,13 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
                         )
                         lines.append(f"  keep: {dir_name}/{entry_name} ({keep_reason})")
                 else:
-                    evicted += 1
                     display_pid = owner_pid or "empty"
+                    reason = f"owning PID {display_pid} dead"
                     if dry_run:
-                        lines.append(f"  evict (dry-run): {dir_name}/{entry_name} (owning PID {display_pid} dead)")
-                    else:
-                        with contextlib.suppress(OSError):
-                            os.remove(entry)
-                        lines.append(f"  evict: {dir_name}/{entry_name} (owning PID {display_pid} dead)")
+                        evicted += 1
+                        lines.append(f"  evict (dry-run): {dir_name}/{entry_name} ({reason})")
+                    elif remove_entry(entry, f"{dir_name}/{entry_name}", reason, lines):
+                        evicted += 1
                 continue
 
             # Same two-part staleness definition _lib_active_bypass_marker_live
@@ -213,14 +231,12 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
                 if dry_run:
                     lines.append(f"  keep: {dir_name}/{entry_name} (PID {stored_pid} alive)")
             else:
-                evicted += 1
                 reason = f"idle timeout, PID {stored_pid} alive" if alive else f"PID {stored_pid or 'empty'} dead"
                 if dry_run:
+                    evicted += 1
                     lines.append(f"  evict (dry-run): {dir_name}/{entry_name} ({reason})")
-                else:
-                    with contextlib.suppress(OSError):
-                        os.remove(entry)
-                    lines.append(f"  evict: {dir_name}/{entry_name} ({reason})")
+                elif remove_entry(entry, f"{dir_name}/{entry_name}", reason, lines):
+                    evicted += 1
 
     return evicted, kept, lines
 

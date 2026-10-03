@@ -7,16 +7,20 @@ important property: `gh` is never even invoked.
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
+import re
 import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
 from helpers import (
+    REPO_ROOT,
     SCRIPTS_DIR,
+    SKILLS_DIR,
     head_sha,
     review_pr_completion_marker_path,
     write_review_pr_completion_marker,
@@ -875,3 +879,134 @@ class TestTargetArgument:
         )
         assert result.returncode == 0, result.stderr
         assert len(_read_pr_review_calls(call_log)) == 1
+
+
+SETTINGS_PATH = REPO_ROOT / "claude" / ".claude" / "settings.json"
+PROJECT_SETTINGS_PATH = REPO_ROOT / ".claude" / "settings.json"
+SKILL_MD_PATH = SKILLS_DIR / "review-pr" / "SKILL.md"
+# review-pr scripts whose every run must stop at the permission prompt: the
+# prompt is the human's approval boundary for fetches, checkouts, and posts.
+PROMPT_GATED_SCRIPT_NAMES = (
+    "review-pr-post.sh",
+    "review-pr-acquire.sh",
+    "review-pr-checkout.sh",
+    "review-pr-diff.sh",
+)
+# review-pr scripts SKILL.md invokes with no arguments, which settings.json
+# allowlists by exact match.
+ZERO_ARGUMENT_ALLOWED_SCRIPT_NAMES = ("review-pr-findings-path.sh", "review-pr-finish.sh")
+# Commands that run another command, so an allow entry headed by one can reach
+# any gated script.
+SHELL_WRAPPER_HEADS = frozenset(
+    {"bash", "sh", "zsh", "dash", "env", "xargs", "exec", "eval", "sudo", "command", "nohup", "time", "timeout"}
+)
+_WILDCARD_CHARACTERS = "*?["
+# Settings files whose allow list the gated scripts must stay out of; the
+# project file is checked only when the repo carries one.
+CHECKED_SETTINGS_PATHS = [path for path in (SETTINGS_PATH, PROJECT_SETTINGS_PATH) if path.exists()]
+
+
+def _allow_entry_matches_script_invocation(allow_entry: str, script_name: str) -> bool:
+    """True when an allow entry would permit `script_name` in at least one
+    argument form. Structural rules catch a bare `Bash`, a pattern headed by a
+    wildcard or a shell wrapper, and any pattern naming the script. A glob
+    match against representative invocations also catches directory-wide
+    wildcards such as `~/.claude/scripts/*`, with `*` as a glob and a trailing
+    `:*` as a prefix wildcard."""
+    if allow_entry == "Bash":
+        return True
+    if not (allow_entry.startswith("Bash(") and allow_entry.endswith(")")):
+        return False
+    pattern = allow_entry[len("Bash("):-1].strip()
+    if not pattern or pattern[0] in _WILDCARD_CHARACTERS:
+        return True
+    command_head = re.split(r"[\s:]", pattern)[0].rsplit("/", 1)[-1]
+    if command_head in SHELL_WRAPPER_HEADS or script_name in pattern:
+        return True
+    if pattern.endswith(":*"):
+        pattern = pattern[:-2] + "*"
+    script_paths = (f"~/.claude/scripts/{script_name}", f"/srv/user/.claude/scripts/{script_name}")
+    invocations = [script_name, f"{script_name} {PR_IDENTITY}"]
+    for script_path in script_paths:
+        invocations += [
+            script_path,
+            f"{script_path} {PR_IDENTITY}",
+            f"{script_path} comment {PR_IDENTITY}",
+            f"{script_path} request-changes {PR_IDENTITY}",
+        ]
+    return any(fnmatch.fnmatchcase(invocation, pattern) for invocation in invocations)
+
+
+class TestAllowEntryMatcher:
+    """The matcher behind the settings assertions below must catch every
+    wildcard, wrapper, and absolute-path shape and leave exact zero-argument
+    entries alone, or those assertions pass vacuously."""
+
+    @pytest.mark.parametrize(
+        "allow_entry",
+        [
+            "Bash(~/.claude/scripts/review-pr-post.sh)",
+            "Bash(~/.claude/scripts/review-pr-post.sh comment foo/bar#42)",
+            "Bash(~/.claude/scripts/review-pr-post.sh:*)",
+            "Bash(~/.claude/scripts/review-pr-*)",
+            "Bash(~/.claude/scripts/*)",
+            "Bash(*)",
+            "Bash(review-pr-post.sh *)",
+            "Bash",
+            "Bash(bash *)",
+            "Bash(/srv/*/.claude/scripts/review-pr-post.sh *)",
+            "Bash(/srv/*/.claude/scripts/*)",
+        ],
+    )
+    def test_matches_an_entry_that_would_allow_the_post_script(self, allow_entry):
+        assert _allow_entry_matches_script_invocation(allow_entry, "review-pr-post.sh")
+
+    @pytest.mark.parametrize(
+        "allow_entry",
+        [
+            "Bash(~/.claude/scripts/review-pr-finish.sh)",
+            "Bash(~/.claude/scripts/review-pr-findings-path.sh)",
+            "Bash(~/.claude/scripts/marker.sh status)",
+            "Bash(shellcheck claude/.claude/scripts/marker.sh)",
+            "Read(~/.claude/scripts/*)",
+        ],
+    )
+    def test_does_not_match_an_unrelated_or_exact_zero_argument_entry(self, allow_entry):
+        assert not _allow_entry_matches_script_invocation(allow_entry, "review-pr-post.sh")
+
+
+class TestSettingsAllowlistKeepsReviewPrFetchAndPostBehindThePrompt:
+    """Reads the shipped settings.json and the repo-root project settings.json
+    when present. It does not cover settings.local.json or any other settings
+    scope, and it ignores ask/deny precedence, so a green result proves only
+    that no checked allow entry reaches a gated script."""
+
+    @staticmethod
+    def _allow_entries(settings_path: Path = SETTINGS_PATH) -> list[str]:
+        return json.loads(settings_path.read_text())["permissions"]["allow"]
+
+    @pytest.mark.parametrize(
+        "settings_path", CHECKED_SETTINGS_PATHS, ids=lambda path: "shipped" if path == SETTINGS_PATH else "project"
+    )
+    @pytest.mark.parametrize("script_name", PROMPT_GATED_SCRIPT_NAMES)
+    def test_no_allow_entry_matches_a_prompt_gated_script_in_any_argument_form(self, settings_path, script_name):
+        matching_entries = [
+            entry
+            for entry in self._allow_entries(settings_path)
+            if _allow_entry_matches_script_invocation(entry, script_name)
+        ]
+        assert matching_entries == []
+
+    @pytest.mark.parametrize("script_name", ZERO_ARGUMENT_ALLOWED_SCRIPT_NAMES)
+    def test_zero_argument_allow_entry_matches_every_literal_skill_md_invocation(self, script_name):
+        script_path = f"~/.claude/scripts/{script_name}"
+        skill_md_invocations = {
+            line.strip()
+            for line in SKILL_MD_PATH.read_text().splitlines()
+            if line.strip().split(" ")[0] == script_path
+        }
+        allowed_commands = {
+            entry[len("Bash("):-1] for entry in self._allow_entries() if entry.startswith("Bash(") and entry.endswith(")")
+        }
+        assert skill_md_invocations == {script_path}
+        assert script_path in allowed_commands
