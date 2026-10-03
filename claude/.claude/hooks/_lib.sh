@@ -1683,11 +1683,6 @@ _lib_command_concludes_commit_shape() {
 # for that verb's `--continue` form. See
 # _lib_command_concludes_marker_gated_commit below for the narrower sibling
 # used by the two gates whose recourse is a review.
-# Called from the five mechanical gates: guard-settings-session-keys.sh,
-# check-skill-length.sh, check-claude-md-length.sh, deny-pii-in-commits.sh,
-# and deny-private-project-refs.sh -- and from deny-invisible-commit-content.sh's
-# fast-reject, since that gate's chained-mutation check is what keeps those
-# five gates' own empty-diff carve-out sound for the same shapes.
 _lib_command_concludes_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_ALL"
@@ -1705,7 +1700,6 @@ _lib_command_concludes_commit() {
 # above stay armed on `git rebase --continue` -- this predicate narrows
 # review-marker enforcement specifically, not rebase's overall gate
 # coverage.
-# Called from require-code-review.sh.
 _lib_command_concludes_marker_gated_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_MARKER_GATED"
