@@ -64,6 +64,12 @@ def _classify(path: str) -> str | None:
             "CLAUDE.md (claude/.claude/rules/claude-md-conventions.md's precedence list)"
         )
 
+    if segments[-1] == "agents.md":
+        return (
+            "AGENTS.md may load as standing instructions through a CLAUDE.md @AGENTS.md import, "
+            "which resolves relative to the importing file"
+        )
+
     if segments[-1] == "skill.md" and (
         lower.startswith(".claude/skills/") or "/.claude/skills/" in lower
     ):
@@ -80,6 +86,9 @@ def _classify(path: str) -> str | None:
 
     if lower.startswith(".claude/agents/") or "/.claude/agents/" in lower:
         return ".claude/agents/** defines subagent behavior the harness may dispatch"
+
+    if lower.startswith(".claude/rules/") or "/.claude/rules/" in lower:
+        return ".claude/rules/** may load as standing instructions, unconditionally when it has no paths: key"
 
     if segments[-1] == ".mcp.json":
         return ".mcp.json registers an MCP server the harness may launch"

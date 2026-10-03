@@ -96,6 +96,8 @@ class TestAuditExecutionSurfacePureFunction:
             ".claude/settingſ.local.json",
             ".claude/hookſ/x.sh",
             ".claude/agentſ/x.md",
+            "agentſ.md",
+            ".claude/ruleſ/x.md",
         ],
         ids=[
             "gitattributes",
@@ -108,6 +110,8 @@ class TestAuditExecutionSurfacePureFunction:
             "settings_local_json",
             "claude_hooks",
             "claude_agents",
+            "agents_md",
+            "claude_rules",
         ],
     )
     def test_casefold_only_variant_still_matches(self, path):
@@ -140,6 +144,54 @@ class TestAuditExecutionSurfacePureFunction:
     def test_claude_agents_directory_matches(self):
         result = audit_execution_surface([".claude/agents/rogue-reviewer.md"])
         assert result["stop"] is True
+
+    @pytest.mark.parametrize(
+        "path",
+        ["AGENTS.md", "packages/api/AGENTS.md"],
+        ids=["root", "nested"],
+    )
+    def test_agents_md_matches(self, path):
+        """AGENTS.md loads through a CLAUDE.md `@AGENTS.md` import, which
+        resolves relative to the importing file, so the name matches at any depth."""
+        result = audit_execution_surface([path])
+        assert result["stop"] is True
+        assert "AGENTS.md" in result["matches"][0]["reason"]
+
+    @pytest.mark.parametrize(
+        "path",
+        [".claude/rules/x.md", "packages/api/.claude/rules/x.md", ".claude/rules/frontend/x.md"],
+        ids=["root", "nested", "subdir"],
+    )
+    def test_claude_rules_directory_matches(self, path):
+        result = audit_execution_surface([path])
+        assert result["stop"] is True
+        assert ".claude/rules/**" in result["matches"][0]["reason"]
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "docs/rules/x.md",
+            "src/agents.py",
+            "docs/agents/x.md",
+            ".claude/plans/x.md",
+            "packages/api/.claude/plans/x.md",
+            ".claude/rulesets/x.md",
+        ],
+        ids=[
+            "docs_rules",
+            "agents_py",
+            "docs_agents",
+            "claude_plans",
+            "nested_claude_plans",
+            "claude_rulesets",
+        ],
+    )
+    def test_lookalike_paths_outside_a_flagged_surface_do_not_match(self, path):
+        """Paths that resemble a flagged surface but sit outside it: not under
+        `.claude/`, not named AGENTS.md, or in a `.claude/` sibling directory
+        the harness does not load as instructions."""
+        result = audit_execution_surface([path])
+        assert result == {"stop": False, "matches": []}
 
     def test_claude_local_md_matches(self):
         """CLAUDE.local.md concatenates into the same standing-instructions

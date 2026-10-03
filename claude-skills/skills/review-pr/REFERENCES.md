@@ -63,10 +63,12 @@ loading a project directory:
 | `.githooks/**`, `.husky/**` | conventional `core.hooksPath` target directory names; a repo commonly points `core.hooksPath` at one of these via setup instructions or a tool (Husky), and git runs a hook-named file there (such as `post-checkout`) when its event fires. `core.hooksPath` itself is local git config, not something a PR's file list carries directly — this is a heuristic over common target-directory names, not an exhaustive read of the actual configured value. `review-pr-checkout.sh` also runs its PR-ref `git fetch` and its `git worktree add` with `-c core.hooksPath=/dev/null`, so no hook runs during that checkout whatever the configured path. |
 | `CLAUDE.md` (any path segment) | loaded as standing instructions by the reviewing harness when it works inside the checked-out tree |
 | `CLAUDE.local.md` (any path segment) | concatenated into the same standing-instructions load as CLAUDE.md (`claude/.claude/rules/claude-md-conventions.md`'s precedence list) |
+| `AGENTS.md` (any path segment) | may load as standing instructions through a CLAUDE.md `@AGENTS.md` import, which resolves relative to the importing file; the predicate flags the name at any depth rather than modelling which CLAUDE.md imports it |
 | `.claude/settings.json`, `.claude/settings.local.json` | configures hooks and permissions the harness applies |
 | `.claude/hooks/**` | runs on every matching tool call the harness makes |
 | `.claude/agents/**` | defines subagent behavior the harness may dispatch |
 | `.claude/skills/**/SKILL.md` | loaded as skill instructions by the harness's project-level skill discovery |
+| `.claude/rules/**` | may load as standing instructions, unconditionally when a rule has no `paths:` key (`docs/rules-references.md`); flagged under the content-blind over-flagging policy, not a confirmed load from a nested review worktree |
 | `.mcp.json` | registers an MCP server the harness may launch |
 | `.gitmodules` | can point a submodule fetch/checkout at attacker-controlled content |
 
@@ -74,6 +76,10 @@ Out of scope, named explicitly rather than left implicit: the operator's
 own editor/IDE auto-run configs (`.vscode/tasks.json` with
 `runOn: folderOpen`, `.idea/` run configs) are outside the reviewing
 harness's control surface, so this audit does not cover them.
+
+Known audit gap: a file reached only through some other `@path` import from
+an unchanged CLAUDE.md is not matched, because the predicate reads paths,
+not import targets.
 
 The predicate is content-blind and folds case on every match; the
 script's module docstring owns both rationales.
