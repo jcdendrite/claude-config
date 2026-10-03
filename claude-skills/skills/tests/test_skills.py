@@ -3741,33 +3741,33 @@ _TIER_DISPOSITION_SECTIONS = [
     pytest.param(
         ".claude/skills/code-review-claude-config/SKILL.md",
         "## Finding disposition addition",
-        (
+        [
             "is an enforcement-invariant finding",
             "is not an enforcement-invariant finding",
-            "does not explicitly waive or route",
+            "does not explicitly waive or route stays under the base rules.",
             "at every tier",
             "No recording",
             '`code-review/SKILL.md` § "Step — Record review completion"',
-        ),
+        ],
         id="code-review-layer",
     ),
     pytest.param(
         ".claude/skills/plan-review-claude-config/SKILL.md",
         "## Gate threat-model tiers (Domain: Security; Output format)",
-        (
+        [
             "is an enforcement-invariant finding",
             "is not an enforcement-invariant finding",
-            "does not explicitly waive or route",
+            "does not explicitly waive or route stays under the base rules.",
             "at every tier",
             "No recording",
-            "Subject to the first bullet",
-        ),
+            "cover every regression",
+        ],
         id="plan-review-layer",
     ),
     pytest.param(
         "docs/hooks.md",
         "## Threat-model tiers",
-        (
+        [
             "When any of these holds, treat the finding as a regression: "
             "- The comparison against the merge-base is unclear. "
             "- The gate has no merge-base counterpart. "
@@ -3775,7 +3775,7 @@ _TIER_DISPOSITION_SECTIONS = [
             "- The change edits the gate's tier line, its tracking pointer, or this section. "
             "A `CLAUDE.md` or SKILL.md that applies this rule points here rather than "
             "restating it; this section is its only home.",
-        ),
+        ],
         id="hooks-doc-regression-rule",
     ),
 ]
@@ -3788,7 +3788,7 @@ _TIER_DISPOSITION_SECTIONS = [
 def test_gate_tier_disposition_sections_keep_invariant_clauses(
     relative_path: str,
     section_heading: str,
-    required_phrases: tuple[str, ...],
+    required_phrases: list[str],
 ) -> None:
     """Each entry's section, whitespace-normalized, still carries its clauses.
 
