@@ -444,18 +444,22 @@ by-module import discipline of every module in its `PRODUCTION_MODULES` tuple, a
 permanent check rather than a one-time migration-time script.
 
 The subagent command family splits at command seams rather than one file per module:
-`tests/test_transcript_subagents.py` covers `cmd_subagents`, plus the declared-roots multi-root class
-for both `cmd_subagents` and `cmd_subagent_mix`; `tests/test_transcript_subagent_mix.py` covers
-`cmd_subagent_mix`'s spawn table, model-mix columns, declared-pin path safety, `--since`, and
-multi-root disclosure; `tests/test_transcript_subagent_mix_dollars.py` covers the `Actual $` and
-`Counterfactual $` columns and `_dispatch_usage_summary`'s dedup-before-pricing; and
-`tests/test_transcript_cost_counts.py` covers `cmd_cost_counts`'s refusals, rendering, disclosure
-allowlist, and the agent-type charset pin. The first three share `tests/_subagent_helpers.py`, a plain
-module, not a test file itself; `tests/test_transcript_analysis.py` imports it too. All four consumers
-import it relatively, as `from ._subagent_helpers import ...` — see
-`.claude/rules/test-tree-packaging.md` for why. It holds only helpers used by more than one file,
-or by `tests/test_transcript_analysis.py` as well: `_sum_column_across_rows`, `_subagent_mix_args`,
-and `_subagents_args`. Each file keeps its other family-only helpers local to itself.
+
+- `tests/test_transcript_subagents.py` covers `cmd_subagents`, plus the declared-roots multi-root class
+  for both `cmd_subagents` and `cmd_subagent_mix`
+- `tests/test_transcript_subagent_mix.py` covers `cmd_subagent_mix`'s spawn table, model-mix columns,
+  declared-pin path safety, `--since`, and multi-root disclosure
+- `tests/test_transcript_subagent_mix_dollars.py` covers the `Actual $` and `Counterfactual $` columns
+  and `_dispatch_usage_summary`'s dedup-before-pricing
+- `tests/test_transcript_cost_counts.py` covers `cmd_cost_counts`'s refusals, rendering, disclosure
+  allowlist, and the agent-type charset pin
+
+The first three share `tests/_subagent_helpers.py`, a plain module, not a test file itself.
+`tests/test_transcript_analysis.py` imports it too. All four consumers import it relatively, as
+`from ._subagent_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for why. It holds
+only helpers used by more than one file, or by `tests/test_transcript_analysis.py` as well:
+`_sum_column_across_rows`, `_subagent_mix_args`, and `_subagents_args`. Each file keeps its other
+family-only helpers local to itself.
 `TestFormatDriftCanary` stays in `tests/test_transcript_analysis.py` rather than moving with the
 family: it spans subagents, skill-pair, and cache-efficiency. `TestSubagentFormatContract` stays
 there too: it pins `corpus.py`'s on-disk subagent-file contract and reads no name from the family.
