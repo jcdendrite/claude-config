@@ -18,9 +18,9 @@ a plan file itself may and may not contain.
 
 ## Gate threat-model tiers (Domain: Security; Output format)
 
-For a finding against a `hook-class: gate` hook, `docs/hooks.md` § "Threat-model tiers" decides whether the finding is a defect in the gate and, when it is not, where the gap is recorded. Non-gate hooks and shared library code get no disposition change from this section.
+Before dispositioning a finding against a `hook-class: gate` hook, read `docs/hooks.md` § "Threat-model tiers". That section decides whether the finding is a defect in the gate and, when it is not, where the gap is recorded. Non-gate hooks and shared library code get no disposition change from this section.
 
-- A regression, as that section defines it, stays under the base rules at every tier, including a shape the plan newly admits. No recording step changes that. Judge it from the gate's behavior at the merge-base, never from the plan's wording. When that comparison is unclear, the gate has no merge-base counterpart, or the plan edits the gate's tier line, its tracking pointer, or `docs/hooks.md` § "Threat-model tiers", treat the finding as a regression.
+- A regression, as that section defines it, stays under the base rules at every tier, including a shape the plan newly admits. No recording step changes that.
 - Any other finding that section waives or routes is not an enforcement-invariant finding under the fix-or-ask rule. It still appears in the output. It blocks the verdict only while the plan names no step making the recording that section requires. When the plan names one, the verdict is Approve with changes and lists that step; when it names none, the verdict names the step required.
 - Subject to the first bullet, S1's bypass-vector enumeration and S2's defense in depth, for a gate, cover only the shapes its tier treats as defects.
 - A finding that section does not explicitly waive or route stays under the base rules.

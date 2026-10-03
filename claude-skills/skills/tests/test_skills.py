@@ -3719,11 +3719,9 @@ def test_threat_model_tiers_citation_resolves_to_real_heading(relative_path: str
     layers each cite `docs/hooks.md` § "Threat-model tiers" — resolves to a
     real heading there.
 
-    Presence is the unique value for the two layers and the plugin entry:
-    `.claude/skills/` and `plugins/` sit inside the repo-wide citation scan, so
-    test_skill_citations_resolve_to_real_headings already checks that any
-    citation they carry resolves, but not that the citation is still there.
-    Resolution is the unique value for CLAUDE.md, which that scan does not read.
+    The layer and plugin entries pin that the citation is still present, since
+    the repo-wide citation scan only checks that existing citations resolve.
+    CLAUDE.md is outside that scan, so this test checks resolution for it.
     """
     _assert_citation_resolves_to_heading(
         REPO_ROOT / relative_path,
@@ -3733,20 +3731,20 @@ def test_threat_model_tiers_citation_resolves_to_real_heading(relative_path: str
     )
 
 
-# Each claude-config review layer's tier-disposition section, with the clauses
-# that keep it fail-closed: a finding the tier section does not explicitly
-# waive or route stays under the base rules, and a regression stays there at
-# every tier. A tripwire for a wording trim that silently drops one of them.
+# Tier-disposition clauses that keep the review layers fail-closed.
+# The docs/hooks.md entry pins the regression conditions in their single home.
+# The layer entries pin that a finding the tier section does not explicitly
+# waive or route stays under the base rules, and that a regression does too.
+# A tripwire for a wording trim that silently drops one of them.
 _TIER_DISPOSITION_SECTIONS = [
     pytest.param(
         ".claude/skills/code-review-claude-config/SKILL.md",
         "## Finding disposition addition",
         (
             "is not an enforcement-invariant finding",
-            "explicitly waive or route",
+            "does not explicitly waive or route",
             "at every tier",
             "changes that",
-            "treat the finding as a regression",
             '`code-review/SKILL.md` § "Step — Record review completion"',
         ),
         id="code-review-layer",
@@ -3756,13 +3754,24 @@ _TIER_DISPOSITION_SECTIONS = [
         "## Gate threat-model tiers (Domain: Security; Output format)",
         (
             "is not an enforcement-invariant finding",
-            "explicitly waive or route",
+            "does not explicitly waive or route",
             "at every tier",
             "changes that",
-            "treat the finding as a regression",
             "Subject to the first bullet",
         ),
         id="plan-review-layer",
+    ),
+    pytest.param(
+        "docs/hooks.md",
+        "## Threat-model tiers",
+        (
+            "When any of these holds, treat the finding as a regression",
+            "no merge-base counterpart",
+            "A fail-open path has no deny test",
+            "its tracking pointer, or this section",
+            "this section is its only home",
+        ),
+        id="hooks-doc-regression-rule",
     ),
 ]
 
@@ -3776,8 +3785,10 @@ def test_gate_tier_disposition_sections_keep_invariant_clauses(
     section_heading: str,
     required_phrases: tuple[str, ...],
 ) -> None:
-    """Each layer's tier-disposition section, whitespace-normalized, still
-    carries the clauses that keep it fail-closed.
+    """Each entry's section, whitespace-normalized, still carries its clauses.
+
+    The docs/hooks.md entry pins the regression conditions in their single
+    home. The layer entries pin the fail-closed disposition clauses.
 
     Scoped to the section so the same words elsewhere in the file cannot
     satisfy it. Whitespace-normalized so a re-wrap does not break it. Pins
