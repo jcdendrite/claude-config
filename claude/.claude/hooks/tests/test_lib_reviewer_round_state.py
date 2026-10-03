@@ -25,7 +25,7 @@ from helpers import (
     staged_diff_hash_at_base,
 )
 
-from .conftest import _review_ledger_path
+from .conftest import _DEFAULT_BRANCH_CANDIDATES, _review_ledger_path
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
 
@@ -760,6 +760,7 @@ class TestLibReviewLedgerPath:
         ).stdout.split()
         decoy_names = ["trunk", "dev", "development", "release", "production", "stable", "next", "default"]
         assert names, "the resolver's default-branch name list is empty"
+        assert tuple(names) == _DEFAULT_BRANCH_CANDIDATES, "conftest's oracle list differs from the resolver's"
         assert not set(names) & set(decoy_names)
         for index, name in enumerate(names + decoy_names):
             repo = tmp_path / f"probe-{index}"

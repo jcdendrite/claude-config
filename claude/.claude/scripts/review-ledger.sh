@@ -13,7 +13,7 @@ set -u
 # The script runs with `set -u` only, so an unchecked failed `.` would continue.
 # shellcheck source=_review-ledger-lib.sh
 . "$(dirname "$0")/_review-ledger-lib.sh" || {
-  printf 'review-ledger.sh: could not load _review-ledger-lib.sh beside this script. Run ./install.sh from the claude-config checkout to link it.\n' >&2
+  printf 'review-ledger.sh: could not load _review-ledger-lib.sh beside this script. Run ./install.sh from the claude-config checkout to link it, or re-run whichever installer stows the packages that claude/.claude/scripts/stow-packages.sh lists (./install.sh stows into the home directory only).\n' >&2
   exit 2
 }
 
@@ -132,7 +132,9 @@ Subcommands:
              `changed: <path>` or `unchanged` (no file written). Exits 2 on a
              rejected --out, and 1 with no file on empty input, an unreadable
              --pr-json file, a failed ledger read, an unpaired or repeated
-             delimiter in the body, or a stale <path> that cannot be deleted.
+             delimiter in the body, a --pr-json object with no `body` key, an
+             open code fence that would hide an appended block, or a stale
+             <path> that cannot be deleted.
   clear-stale [--dry-run]
              Remove ledger (.jsonl) and orphaned lock (.lock) files older
              than the resolved sweep window (Claude Code's cleanupPeriodDays

@@ -2325,6 +2325,8 @@ class TestGateReleaseRawDetectorOnQuotedAndLargeCommands:
 
 LEDGER = "~/.claude/scripts/review-ledger.sh"
 LEDGER_APPEND_ARGS = 'append code-review --finding "F1 sample" --disposition ADDRESS --round 1'
+# An `ADDRESS` row with `--ref` retires an earlier decision and records no engineer words.
+LEDGER_APPEND_ADDRESS_REF_ARGS = LEDGER_APPEND_ARGS + " --ref abc123"
 LEDGER_APPEND_CARRY_ARGS = (
     'append code-review --finding "F1 sample" --disposition SETTLED --decided-by carry --ref abc123'
 )
@@ -2522,8 +2524,8 @@ class TestReviewLedgerAppendAuthority:
     @pytest.mark.parametrize("agent_type", NON_ROSTER_AGENT_TYPES)
     @pytest.mark.parametrize(
         "append_args",
-        [LEDGER_APPEND_ARGS, LEDGER_APPEND_CARRY_ARGS],
-        ids=["address-row", "carry-row"],
+        [LEDGER_APPEND_ARGS, LEDGER_APPEND_CARRY_ARGS, LEDGER_APPEND_ADDRESS_REF_ARGS],
+        ids=["address-row", "carry-row", "address-ref-row"],
     )
     def test_append_without_engineer_quote_allowed_for_non_roster_agents(
         self, agent_type, append_args
@@ -2598,6 +2600,9 @@ class TestReviewLedgerAppendAuthority:
             # A case-varied script name runs on a case-insensitive volume, but
             # neither text detector folds case.
             f"~/.claude/scripts/Review-Ledger.SH {LEDGER_APPEND_ARGS}",
+            # A symlink to the script under another name runs identically,
+            # because the script finds its libraries by dirname.
+            f"~/.claude/scripts/rl {LEDGER_APPEND_ENGINEER_ARGS}",
         ],
         ids=[
             "variable-script-name",
@@ -2607,6 +2612,7 @@ class TestReviewLedgerAppendAuthority:
             "xargs-supplied-op",
             "globbed-script-name",
             "case-varied-script-name",
+            "renamed-script-link",
         ],
     )
     def test_shell_indirection_allowed_residual(self, command):

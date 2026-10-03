@@ -112,6 +112,13 @@ A long-parked branch therefore loses its recorded rows and its round count.
 Liveness never consults `site_hash`, so `render` lists such a decision until a non-carry row names it.
 The `/code-review` prose mitigates this by requiring `--ref <id>` on an `ADDRESS` or a fresh `DEFER` at a live decision's site, but a block deleted and never re-raised still renders.
 
+**A subagent can retire an engineer decision.**
+`ADDRESS --ref` retires an engineer decision, an enforcement-invariant one included, and the script cannot identify its caller.
+The hook bars a subagent only from rows carrying `--engineer-quote`, so its `ADDRESS --ref` lands.
+The next `render` drops the decision's row from the PR block, and only `show` still lists the `ADDRESS` row.
+A `gh pr edit` from the same agent deletes the published row as directly, so gating this row would not protect it.
+A retired decision never carries, and an invariant-class repeat of its finding is still never `DEFER`-eligible.
+
 **A `DEFER` carry is the one unattended carry class.**
 It applies with no engineer stop, and its guards are the unchanged hashed text and the orchestrator re-running the closed list.
 The prose has the orchestrator range a `DEFER` as the whole block, and a one-line range left unwidened is the accepted exposure.
@@ -191,7 +198,7 @@ Evidence that rows duplicated between the two stores drift apart in practice wou
 It groups S's rows into round blocks and maps the k-th transcript round-open to the k-th block, by rank and not by `round` value.
 A value join cannot work, because a later session on a branch starts at a round number past the earlier sessions' maximum.
 
-S is excluded from the headline when it has a round-keyed row and either the block count differs from the round-open count or the block round values are not strictly increasing.
+`docs/transcript-analysis.md` "Round-number-sequence check" states when S is excluded from the headline.
 Two files claiming one round repeat a round value, so the cross-worktree race guard still holds.
 A session that reviews on two branches and whose round values fall (round 5 on one branch, then round 1 on another) is excluded.
 That exclusion is deliberate, and a test pins it.

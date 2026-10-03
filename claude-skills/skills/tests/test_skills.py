@@ -6042,7 +6042,7 @@ class TestReviewLedgerPublishAndInjectionControls:
         body = " ".join(_GLOBAL_CLAUDE_MD.read_text().split())
 
         assert "`~/.claude/scripts/review-ledger.sh render` for this branch's live decisions" in body
-        assert "`review-ledger.sh show | tail -n 15` lists the newest rows" in body
+        assert "`~/.claude/scripts/review-ledger.sh show | tail -n 15` lists the newest rows" in body
 
     def test_digest_path_reviewers_read_is_the_path_render_writes(self) -> None:
         section_text = _heading_section_text(_skill_file("code-review"), "## Ripple effect triage")

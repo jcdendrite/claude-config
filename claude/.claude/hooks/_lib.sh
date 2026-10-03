@@ -2268,13 +2268,15 @@ _lib_permission_prompt_tracking_active() {
 # (letters, digits, underscore, hyphen) has ample room without ever needing
 # '.' or '/'. Empty input is rejected — callers must not fall through to an
 # unvalidated empty SESSION_ID.
-# The body is a subshell that sets LC_ALL=C, so a locale whose collation puts
-# non-ASCII letters inside the bracket ranges does not widen the allow-list.
+# The class spells out each allowed character instead of using ranges, so a
+# locale whose collation puts non-ASCII letters inside a range does not widen
+# the allow-list, and the check forks no subshell.
 # author_outcome.py's _SESSION_ID_PATTERN is the ASCII-only mirror of it.
-_lib_valid_session_id_component() (
-  LC_ALL=C
-  [[ "${1-}" =~ ^[A-Za-z0-9_-]+$ ]]
-)
+_lib_valid_session_id_component() {
+  case "${1-}" in
+    '' | *[!-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) return 1 ;;
+  esac
+}
 
 # _lib_active_bypass_marker_live MARKER_DIR_NAME SESSION_ID
 # - Returns 0 iff $HOME/.claude/MARKER_DIR_NAME/SESSION_ID holds a live PID

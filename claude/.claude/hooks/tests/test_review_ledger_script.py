@@ -1463,7 +1463,7 @@ class TestReviewLedgerSettledAndDeferAppend:
             assert f"is {final_row_bytes} bytes" in result.stderr
             assert not _ledger_path(isolated_home, git_repo).exists()
 
-    def test_a_script_copied_without_its_lib_exits_2_naming_install(self, isolated_home, git_repo, tmp_path):
+    def test_a_script_copied_without_its_lib_exits_2_naming_both_remedies(self, isolated_home, git_repo, tmp_path):
         scripts_copy = tmp_path / "copy" / "scripts"
         scripts_copy.mkdir(parents=True)
         shutil.copy(REVIEW_LEDGER_SCRIPT, scripts_copy / "review-ledger.sh")
@@ -1479,6 +1479,7 @@ class TestReviewLedgerSettledAndDeferAppend:
 
         assert result.returncode == 2
         assert "./install.sh" in result.stderr
+        assert "claude/.claude/scripts/stow-packages.sh" in result.stderr
         assert not _ledger_path(isolated_home, git_repo).exists()
 
 
@@ -2584,9 +2585,9 @@ class TestReviewLedgerCreationMode:
     def test_a_preexisting_0644_ledger_file_keeps_its_mode_when_a_quote_row_is_appended(
         self, isolated_home, git_repo
     ):
-        """An earlier version created ledger files with the default umask. A
-        quote row appended to one lands at that mode, which docs/scripts.md
-        states, so the file's own mode is all that protects the quote."""
+        """A ledger file created with a wider mode keeps that mode, so a quote
+        row appended to it lands at that mode, as docs/scripts.md states. The
+        file's own mode is all that protects the quote."""
         _git(git_repo, "checkout", "-q", "-b", "feature")
         _seed_session(isolated_home, SID)
         ledger = _ledger_path(isolated_home, git_repo)

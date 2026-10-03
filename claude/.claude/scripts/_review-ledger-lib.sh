@@ -658,7 +658,8 @@ _review_ledger_carry_line() {
 # Inputs: ledger rows on stdin (JSON lines), $body (raw PR body), $digest
 # (true renders the block alone), $block_start and $block_end (the block delimiters).
 # Exit 3 with a message on stderr when the body's delimiters are unpaired or
-# repeated. The cell-escape rules are the ones docs/scripts.md describes.
+# repeated, or when a new block must be appended to a body that ends inside an
+# open code fence. The cell-escape rules are the ones docs/scripts.md describes.
 # shellcheck disable=SC2016 # single-quoted on purpose: $rows, $body, $block_start and the rest are jq's own variables, and double-quoting would expand them in the shell before jq sees them.
 _REVIEW_LEDGER_JQ_RENDER='
 def esc_plain: clean | gsub("\\\\"; "\\\\") | gsub("\\|"; "\\|") | gsub("<!--"; "&lt;!--");
@@ -714,12 +715,12 @@ def last_cell:
        ($carries[] | select((.ref | s) == ($decision.id | s)) | {tag: $tag, line: carry_row}))
   ]) as $generated
 | ($body | split("\n")) as $lines
-| (reduce range(0; $lines | length) as $i ({fence: null, starts: [], ends: []};
+| (reduce range(0; $lines | length) as $i ({fence: null, fence_line: null, starts: [], ends: []};
     ($lines[$i] | rtrimstr("\r")) as $line
     | .fence as $open_fence
     | if $open_fence == null then
         ($line | fence_open) as $opened
-        | if $opened != null then .fence = $opened
+        | if $opened != null then .fence = $opened | .fence_line = $i + 1
           elif $line == $block_start then .starts += [$i]
           elif $line == $block_end then .ends += [$i]
           else . end
@@ -768,6 +769,8 @@ def last_cell:
   elif $blocks == "one" then
     ($lines[0 : $scan.starts[0]] + $block_lines + $lines[$scan.ends[0] + 1 :]) | join("\n")
   elif ($block_lines | length) == 0 then $body
+  elif $scan.fence != null then
+    ("render: the PR body ends inside a code fence opened at line " + ($scan.fence_line | tostring) + " and never closed, so an appended block would be hidden and each render would append another; close the fence in the PR body by hand\n" | halt_error(3))
   else
     $body
     + (if $body == "" or ($body | endswith("\n\n")) then ""
@@ -895,6 +898,9 @@ _review_ledger_remove_out() {
 # Returns 1 with no OUT file on zero bytes of input, a failed ledger read, an
 # unpaired delimiter, two blocks, or an OUT that cannot be deleted. Where OUT
 # may point is _review_ledger_check_out's rule, not this function's.
+# It also returns 1 on a PR_JSON object with no `body` key.
+# It also returns 1 when a block must be appended to a body that ends inside an
+# open code fence.
 _review_ledger_render() {
   local ledger_file="$1" pr_json="$2" out="$3"
   local work status=0
@@ -942,7 +948,7 @@ _review_ledger_render_in() {
     fi
     printf '%s' "$input" | _lib_jq -n -j 'input
       | if type == "object" and (.body | type) == "string" then .body
-        elif type == "object" and .body == null then ""
+        elif type == "object" and has("body") and .body == null then ""
         else error("not a PR body object") end' > "$work/body" || {
       _review_ledger_reject "render: --pr-json input is not the JSON of 'gh pr view --json body'. No file written."
       return 1

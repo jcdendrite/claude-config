@@ -1601,8 +1601,9 @@ def _valid_session_id_component(session_id: str) -> bool:
 
 def test_valid_session_id_component_rejects_a_non_ascii_letter_under_a_widening_locale() -> None:
     """Under a locale whose collation puts accented letters inside `[A-Za-z]`,
-    an unpinned regex accepts `sess<e-acute>`. The predicate pins `LC_ALL=C`, so
-    a revert of that pin fails here on any runner that has such a locale."""
+    a bracket range accepts `sess<e-acute>`. The predicate spells its allowed
+    characters out, so a revert to a range fails here on any runner that has
+    such a locale."""
     result = subprocess.run(
         ["bash", "-c", f'. {_LIB_SH}; _lib_valid_session_id_component "$1"', "bash", "sess\u00e9"],
         env={**os.environ, "LC_ALL": _locale_that_widens_ascii_ranges()},

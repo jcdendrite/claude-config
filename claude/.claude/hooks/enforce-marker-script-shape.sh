@@ -98,11 +98,15 @@
 #     appends lands in the file `_lib_review_ledger_path` resolves. That
 #     covers a subagent whose payload omits the field, a nested top-level
 #     session shelled out of a Bash tool call
-#     (`claude -p ...`), and a fork, whose payload is unverified. Unconfirmed
-#     whether the nested session is reachable from a subagent's execution
-#     context; if it is, every agent-identity-keyed hook shares it
-#     (deny-reviewer-tree-mutation.sh has the same dependency), so the fix
-#     belongs at the permission layer for the whole class rather than here.
+#     (`claude -p ...`), and a fork, whose payload is unverified. No
+#     `permissions` entry or hook in settings.json gates a `claude`
+#     invocation, so a nested `claude -p` is reachable wherever Bash runs
+#     unprompted. Its payload carries no `agent_id`, so both ledger denies
+#     fail open there. Every agent-identity-keyed hook shares this
+#     (deny-reviewer-tree-mutation.sh has the same dependency). A
+#     `permissions` deny or ask entry for `Bash(claude -p *)` and
+#     `Bash(claude --print *)` is the whole-class control, so the fix
+#     belongs at the permission layer rather than here.
 #   - MARKER_WRITE_COMMAND_UNQUOTED's sed/tr strip and
 #     _bash_marker_redirect_candidates's own _lib_split_fragments call both
 #     check their exit status and fail closed, matching
@@ -157,6 +161,9 @@
 #     - A case-varied script name (`Review-Ledger.sh`), which runs on a
 #       case-insensitive volume, is not matched by either Bash text arm.
 #       marker.sh's Stage 1 shares this.
+#     - A copy or link of `review-ledger.sh` under another name skips both text
+#       predicates. The script finds its libraries by `dirname`, so a symlink
+#       such as `rl` in `~/.claude/scripts` runs identically.
 #     - The Bash write scan runs only when the command carries the literal
 #       `.claude` or `review-narrative-ledger`. Only a leading `~`, `$HOME` or
 #       `$CLAUDE_CONFIG_DIR` is expanded in a write target; any other variable,
@@ -204,6 +211,11 @@
 #       `general-purpose` is the delegated review orchestrator and logs rows
 #       the way the dispatcher would, and plan-architect holds no Bash tool,
 #       so only a dispatcher can log its decision.
+#     - An `ADDRESS --ref` row from a non-roster agent stays allowed, even one
+#       that retires an engineer decision, an enforcement-invariant one
+#       included. The next `render` then drops that decision's PR-body row.
+#       The row records no engineer words. The same agent's `gh pr edit` can
+#       delete the published row directly.
 #
 # WARNING: Do NOT remove the internal marker.sh check below.
 # The "if" field in settings.json is unreliable — it has been observed
@@ -301,8 +313,7 @@ LEDGER_COMMAND_TEXT_NOTE="This matched on command text. The Grep and Read tools 
 # Shape test only: no agent-type read, no deny decision — callers decide what
 # a match or a resolution failure means. On a match it sets
 # MARKER_SHAPE_MATCH_KIND to `marker` or `ledger`, so a caller can word its
-# denial for the state that matched. The name stays `_marker_shape_match` for
-# its existing callers.
+# denial for the state that matched.
 #
 # Shape-anchored, not $HOME-prefixed: stow-fold makes the same marker also
 # reachable at <repo>/claude/.claude/<kind>-markers/, which has no $HOME
@@ -788,6 +799,17 @@ _script_op_scan() {
 # capped calls (`realpath`, `grealpath` where installed, the fallback loop's
 # `test -e`), so one call is bounded by three times that figure, and the
 # per-fire bound multiplies it by the `_lib_realpath_m` calls above.
+# A stall ends the fallback loop with `return 1`, so the loop adds at most one
+# stalled call. That makes one `_lib_realpath_m` call 14 s on Linux, and 21 s
+# where `grealpath` is installed.
+# The Write/Edit/MultiEdit arm makes two such calls when CLAUDE_CONFIG_DIR is
+# set (28 s, or 42 s with `grealpath`), and one when it is unset.
+# The Bash arm at its full MARKER_WRITE_REALPATH_BUDGET of 10 candidates makes
+# two calls per candidate with CLAUDE_CONFIG_DIR set (280 s, or 420 s with
+# `grealpath`).
+# settings.json sets no `timeout` on this hook. A total above the harness
+# timeout fails open, because a timed-out command hook does not block the tool
+# call (see `_lib_capped_for`'s Bound list in _lib.sh).
 # The ledger Bash arm costs none on the common path (no subagent, or no
 # `review-ledger.sh` in the command), since both of its predicates gate their
 # detectors behind pure-bash `case` matches. The Write/Edit/MultiEdit arm

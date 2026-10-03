@@ -807,6 +807,7 @@ class TestCheckRef:
         rejection = _check_ref(ledger, ref=_CARRY_ID)
 
         assert rejection.returncode == 1
+        assert "names an orchestrator carry, not a decision" in rejection.stderr
         assert "its decision is" not in rejection.stderr
         assert "reopens" not in rejection.stderr
 
@@ -1615,6 +1616,7 @@ class TestRenderBlock:
 
         result = _render(ledger)
 
+        assert result.returncode == 0, result.stderr
         assert result.stdout == ""
 
     def test_id_less_rows_from_older_schemas_do_not_render(self, ledger):
@@ -1624,7 +1626,10 @@ class TestRenderBlock:
         }
         _write_ledger(ledger, [legacy_v3, legacy_v2])
 
-        assert _render(ledger).stdout == ""
+        result = _render(ledger)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
 
     def test_block_carries_the_delimiters_the_legend_and_the_invariant_heading(self, ledger):
         _write_ledger(ledger, [
@@ -1710,7 +1715,7 @@ class TestRenderBlock:
         assert len(_split_gfm_cells(row)) == 6, row
 
     @pytest.mark.parametrize("backslash_count", [0, 1, 2])
-    def test_a_quote_with_backslashes_before_a_pipe_renders_one_more_backslash_before_it(self, ledger, backslash_count):
+    def test_backslashes_before_a_pipe_display_as_the_quote_despite_one_extra_source_backslash(self, ledger, backslash_count):
         """GitHub drops one backslash from each `\\|` in a cell (see _split_gfm_cells), so the
         code span carries one more backslash than the quote to display the quote's own."""
         quote = "a" + "\\" * backslash_count + "|b"
@@ -1909,6 +1914,9 @@ class TestRenderOutputFile:
             pytest.param("", "empty", id="zero bytes on stdin"),
             pytest.param("not json", "not the JSON", id="input that is not JSON"),
             pytest.param('["not","an","object"]', "not the JSON", id="input that is not an object"),
+            pytest.param("{}", "not the JSON", id="an object with no body key"),
+            pytest.param('{"number": 7}', "not the JSON", id="an object that names another field but no body"),
+            pytest.param(_pr_json("Summary\n\n```bash\necho hi\n"), "never closed", id="a code fence left open"),
             pytest.param(_pr_json(_DELIM_START + "\nonly an opener\n"), "unpaired", id="an unpaired delimiter"),
             pytest.param(_pr_json(_DELIM_END + "\n" + _DELIM_START + "\n"), "unpaired", id="delimiters in the wrong order"),
             pytest.param(
@@ -1954,6 +1962,54 @@ class TestRenderOutputFile:
 
         assert result.returncode == 0, result.stderr
         assert result.stdout.startswith(_DELIM_START) and result.stdout.endswith(_DELIM_END + "\n")
+
+    def test_an_unclosed_code_fence_is_rejected_with_the_line_that_opened_it(self, ledger):
+        _write_ledger(ledger, [_defer(_DECISION_ID)])
+
+        result = _render_body(ledger, "Summary\n\n```bash\necho hi\n")
+
+        assert result.returncode == 1
+        assert "opened at line 3" in result.stderr
+        assert result.stdout == ""
+
+    def test_an_unclosed_code_fence_passes_through_unchanged_when_no_decision_is_live_and_no_block_exists(self, ledger, tmp_path):
+        _write_ledger(ledger, [_address(_DECISION_ID)])
+        body = "Summary\n\n```bash\necho hi\n"
+        out = tmp_path / "body.md"
+
+        result = _render_body(ledger, body)
+        reported = _render(ledger, pr_json="-", out=out, stdin=_pr_json(body))
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == body
+        assert reported.returncode == 0, reported.stderr
+        assert reported.stdout == "unchanged\n"
+        assert not out.exists()
+
+    def test_a_block_above_an_unclosed_code_fence_is_replaced_and_the_result_is_a_fixed_point(self, ledger):
+        _write_ledger(ledger, [_defer(_DECISION_ID, finding="replacement")])
+        open_fence = "```bash\necho hi\n"
+        body = f"Intro\n{_DELIM_START}\nold\n{_DELIM_END}\n\n{open_fence}"
+
+        first = _render_body(ledger, body)
+        second = _render_body(ledger, first.stdout)
+
+        assert first.returncode == 0, first.stderr
+        assert first.stdout.startswith(f"Intro\n{_DELIM_START}\n## Deferred")
+        assert "replacement" in first.stdout and "old" not in first.stdout
+        assert first.stdout.endswith(f"{_DELIM_END}\n\n{open_fence}")
+        assert second.returncode == 0, second.stderr
+        assert second.stdout == first.stdout
+
+    def test_a_block_hidden_inside_an_unclosed_code_fence_is_rejected_when_a_decision_is_live(self, ledger):
+        _write_ledger(ledger, [_defer(_DECISION_ID)])
+        body = f"Summary\n\n```\n{_DELIM_START}\nquoted\n{_DELIM_END}\n"
+
+        result = _render_body(ledger, body)
+
+        assert result.returncode == 1
+        assert "opened at line 3" in result.stderr
+        assert result.stdout == ""
 
     def test_a_null_body_is_treated_as_empty(self, ledger):
         _write_ledger(ledger, [_defer(_DECISION_ID)])
