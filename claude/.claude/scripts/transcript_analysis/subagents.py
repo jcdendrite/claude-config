@@ -74,15 +74,14 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     resolved_roots = [root.resolve() for root in roots] if multi_root else []
     # Resolved-path-sorted, not _root_index_for_path's raw scan-order position
     # — the same physical root must read as the same account-N here as in
-    # every other multi-root diagnostic in this file (_build_redact_map,
-    # cost's per-row key), regardless of which profile is currently active.
+    # every other multi-root diagnostic (redaction._build_redact_map, cost's
+    # per-row key), regardless of which profile is currently active.
     redact_ordinals: dict[Path, int] = scope._redaction_ordinals(roots) if multi_root else {}
     branch_redact_map: dict[tuple[int, str], str] = {}
 
     # Keyed on (root_index_or_None, raw gitBranch) — root_index is always None
-    # under single-root scope (the common case, unchanged from before
-    # --config-dir existed); a real index under multi-root keeps two
-    # accounts' identically-named branch from merging into one row. This
+    # under single-root scope (the common case); a real index under multi-root
+    # keeps two accounts' identically-named branch from merging into one row. This
     # index is scan-order, purely for in-run grouping — the printed label
     # (_branch_label, below) translates it through redact_ordinals before
     # ever reaching output.

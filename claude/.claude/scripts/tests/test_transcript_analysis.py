@@ -250,8 +250,9 @@ class TestConfigDirFlag:
         """Regression coverage for the other branch of main()'s hasattr
         check: a subcommand that DOES register its own --config-dir (e.g.
         "cost") must still get the "use that instead" recommendation --
-        cost-counts's own no-flag test above only pins the branch that
-        omits it."""
+        test_transcript_cost_counts.py's
+        test_top_level_config_dir_message_omits_flag_recommendation only pins
+        the branch that omits it."""
         other_account = tmp_path / "other-account"
         (other_account / "projects").mkdir(parents=True)
         monkeypatch.setattr(

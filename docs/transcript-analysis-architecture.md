@@ -27,6 +27,8 @@ The still-unmigrated context-composition code separately reads `read_scope.py`'s
 (`reviewer_yield._is_reviewer_subagent_type`), and `review_rounds.py`, for its `/slash`-invocation
 skill-name matching (`review_rounds._round_skill_name`, `review_rounds._SLASH_COMMAND_RE`) — the
 package's first two imports from one command-group module into another.
+`subagent_mix.py` likewise imports `review_rounds.py`, for `REVIEW_SKILLS` and
+`compute_review_round_counts`.
 `build_parser()` likewise wires up `pr_cost.py`'s `cmd_pr_cost` (with its two
 `--asof-window-days`/`--plan-file-glob` default constants) and `pr_cost_export.py`'s
 `cmd_pr_cost_export` from the shim.
@@ -80,8 +82,7 @@ before it reaches a table row. No cycle: `render.py` stays a leaf with no depend
 call `render._sanitize_table_cell` on their single-root labels, and `cmd_subagents` also calls it
 on its `tool_name` column. Every `gitBranch`/`subagent_type`/`tool_name` value these two
 subcommands print is therefore control-character-sanitized unconditionally, regardless of the
-`--this-repo`/multi-root
-disclosure gating described above. The model-mix table's `Declared` column is a deliberate
+`--this-repo`/multi-root disclosure gating described above. The model-mix table's `Declared` column is a deliberate
 exception: it's read from a local agent-definition file's own `model:` frontmatter, not from
 transcript content, and is left unsanitized on the theory that a local file's trust boundary
 differs from a remote model/subagent/MCP-tool-result's.
@@ -450,8 +451,9 @@ multi-root disclosure; `tests/test_transcript_subagent_mix_dollars.py` covers th
 `Counterfactual $` columns and `_dispatch_usage_summary`'s dedup-before-pricing; and
 `tests/test_transcript_cost_counts.py` covers `cmd_cost_counts`'s refusals, rendering, disclosure
 allowlist, and the agent-type charset pin. The first three share `tests/_subagent_helpers.py`, a plain
-module, not a test file itself; `tests/test_transcript_analysis.py` imports it too. Its own consumers import it as `from ._subagent_helpers import ...` —
-see `.claude/rules/test-tree-packaging.md` for why. It holds only helpers used by more than one file,
+module, not a test file itself; `tests/test_transcript_analysis.py` imports it too. All four consumers
+import it relatively, as `from ._subagent_helpers import ...` — see
+`.claude/rules/test-tree-packaging.md` for why. It holds only helpers used by more than one file,
 or by `tests/test_transcript_analysis.py` as well: `_sum_column_across_rows`, `_subagent_mix_args`,
 and `_subagents_args`. Each file keeps its other family-only helpers local to itself.
 `TestFormatDriftCanary` stays in `tests/test_transcript_analysis.py` rather than moving with the

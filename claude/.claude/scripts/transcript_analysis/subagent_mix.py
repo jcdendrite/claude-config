@@ -111,8 +111,8 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
 
     # Read once, matching cost's own "never read the clock inside the
     # per-record loop" rationale -- kept as a plain wall-clock read here
-    # (rather than cost's separate entry/report split) since no existing or
-    # new test in this file asserts on stale-pricing output for subagent-mix.
+    # (rather than cost's separate entry/report split) since no
+    # test asserts on stale-pricing output for subagent-mix.
     today = datetime.now(UTC).date()
     total_unpriced_turns = 0
     total_unpriced_tokens = 0
@@ -124,8 +124,8 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     resolved_roots = [root.resolve() for root in roots] if multi_root else []
     # Resolved-path-sorted, not _root_index_for_path's raw scan-order position
     # — the same physical root must read as the same account-N here as in
-    # every other multi-root diagnostic in this file (_build_redact_map,
-    # cost's per-row key), regardless of which profile is currently active.
+    # every other multi-root diagnostic (redaction._build_redact_map, cost's
+    # per-row key), regardless of which profile is currently active.
     redact_ordinals: dict[Path, int] = scope._redaction_ordinals(roots) if multi_root else {}
     branch_redact_map: dict[tuple[int, str], str] = {}
     # subagent_type redact map is separate from branch_redact_map so the two
@@ -519,7 +519,7 @@ def cmd_cost_counts(args: argparse.Namespace) -> None:
     roots = [scope.config_dir() / "projects"]
 
     session_iter, _scope_label = scope._resolve_project_scope(args, "cost-counts", roots=roots)
-    # Fully materialized (unlike every other cmd_* here, which streams one session at a
+    # Fully materialized (unlike cmd_subagent_mix, which streams one session at a
     # time): cost-counts is --this-repo-only, bounding this to one account's one-repo
     # session history, small enough to hold in memory at once.
     sessions = list(session_iter)
