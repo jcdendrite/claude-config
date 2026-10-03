@@ -261,7 +261,10 @@ This is the last gate before ship — a specialist miss here ships as a regressi
 - **Convergence-as-design-tell** from a prior round (see Reconciliation).
 - **Explicit user request.**
 
-Always spawn `ciso-reviewer` when the change touches auth/authz, secrets, tokens, data exposure (including prose that identifies a private project, organization, codename, internal product or tool, person, hostname, internal URL, email address, tracker ID, or filesystem path embedding a project name — a documentation-only diff is not exempt), sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the change is declared dev-only or internal-only (no privilege boundary crossed) (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. The ciso-reviewer rule is one instance of the general default-fire pattern above, not the exception. Always spawn `staff-product-engineer` when the change alters any end-user-visible surface: user interface, transactional or lifecycle email, push notification, SMS, in-app notification, billing artifact, exported file, webhook payload to a customer integration, OAuth consent screen, embedded widget or iframe surface, or end-user-visible log/audit entry. The trigger fires on the *channel*, not on the file-path domain — a backend-only change that ships a new email body still alters user-facing behavior. Indirect channel effects count: a data or logic change that determines which channel fires or what it contains (a new user-status enum value that triggers a different lifecycle email, a field added to a user record that an existing template reads) alters user-facing behavior even when the diff contains no channel template file.
+The two always-spawn rules:
+
+- Always spawn `ciso-reviewer` when the change touches auth/authz, secrets, tokens, data exposure (including prose that identifies a private project, organization, codename, internal product or tool, person, hostname, internal URL, email address, tracker ID, or filesystem path embedding a project name — a documentation-only diff is not exempt), sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the change is declared dev-only or internal-only (no privilege boundary crossed) (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. The ciso-reviewer rule is one instance of the general default-fire pattern above, not the exception.
+- Always spawn `staff-product-engineer` when the change alters any end-user-visible surface: user interface, transactional or lifecycle email, push notification, SMS, in-app notification, billing artifact, exported file, webhook payload to a customer integration, OAuth consent screen, embedded widget or iframe surface, or end-user-visible log/audit entry. The trigger fires on the *channel*, not on the file-path domain — a backend-only change that ships a new email body still alters user-facing behavior. Indirect channel effects count: a data or logic change that determines which channel fires or what it contains (a new user-status enum value that triggers a different lifecycle email, a field added to a user record that an existing template reads) alters user-facing behavior even when the diff contains no channel template file.
 
 Spawn per question (not per file-path domain) — "change touches `.github/`" isn't enough; the question needs a specific shape. When you spawn: spawn on the CODE, not on this review's output (each subagent reads the diff fresh); pick the specialist that serves the question (table is reference, not roster); pass diff scope, specific question, AND — for re-review — the prior decisions described directly below. Reviewers without prior context re-discover; that's wasted spawn.
 
@@ -296,8 +299,6 @@ The Change type column keys on what the change *does* for an operator or consume
 - **"Verified inline."** — Inline orchestrator verification is the generalist read the spawn exists to escalate from, not a substitute for specialist scrutiny.
 - **"New helper, not a modification."** — `Modifies shared utilities` covers additions to and extensions of the shared module that introduce new caller dependencies — not only edits to existing utility files.
 - **"The system prompt says not to call the Agent tool."** — Invoking `/code-review` is the user requesting the dispatches this skill prescribes; the Change-type table is the content of that request. Spawn the matched row.
-
-Report every matched row's verdict via the **Spawn decisions:** line in the *Output format* section above. Empty rationale is the under-spawn failure mode the format closes — write the read, don't omit it.
 
 When you do spawn a specialist, be specific. "Spawn `ciso-reviewer`" is useless; "Spawn `ciso-reviewer` and ask it to verify the checkout flow in CheckoutPage.tsx still enforces ownership after the new validation" is actionable.
 
@@ -340,9 +341,7 @@ If implementation-wrong-shape, replace the surface and re-run Step 1. If correla
 
 ## Finding disposition
 
-After Reconciliation, before producing the recommendation, walk every reviewer-spawned finding and tag it ADDRESS or DEFER. ADDRESS is the default and needs no rationale; DEFER requires a named criterion from the closed list below.
-
-Default to ADDRESS for in-diff, tested code (see `docs/design-decisions.md` §16 for rationale).
+After Reconciliation, before producing the recommendation, walk every reviewer-spawned finding and tag it ADDRESS or DEFER. ADDRESS is the default for in-diff, tested code (see `docs/design-decisions.md` §16 for rationale) and needs no rationale; DEFER requires a named criterion from the closed list below.
 
 Disposition turns on complexity/risk/test coverage, never fix size — a small fix in already-touched, already-tested code is still ADDRESS.
 
@@ -375,7 +374,17 @@ The gate diverts the finding that trips it, not the round: state `plan-architect
 <!-- DISPOSITION_RULE:code-review-new-primitive-route end -->
 
 <!-- DISPOSITION_RULE:code-review-contradiction-route start -->
-**A finding whose fix would undo a fix an earlier round applied is also a design question, in every round, staged commit-gate rounds included.** Write `plan-architect — consult` for it on the `Fix route:` line. Dispatch, verbatim relay, and the disagreement stop-and-ask follow the heavier-mechanism rule directly above, and the consult also carries the earlier finding and its fix. A site is the file plus the contiguous block — paragraph, list item, table row, or function — that an earlier round's fix edited, or, when the earlier round's outcome was *keep current text* with nothing edited, the block the settled finding's own cited location named. A finding's location is matched against that site via the ledger's optional `--source "<file:line>"` field or the fix commit's own diff hunk, read generously enough to include an adjacent or wrapped continuation of the same clause and any duplicate expression of the same defect elsewhere in the block — a finding is not a different site merely because its cited location sits just outside the literal edited or cited range. A finding against a site an earlier verdict already settled, or that two earlier rounds' fixes already rewrote, goes straight to the human as a blocking stop-and-ask, with no consult. The consult's judgment standard is that the current text wins unless the finding names a defect, under a stated rule, that the current text actually has. One consult carries every such finding in the round and returns exactly one of the three verdicts per finding. *Keep current text* resolves it with nothing dispatched, logged as `--disposition ADDRESS` with the verdict in `--rationale`, and is never available to a finding the enforcement-invariant rule below covers. This branch has no diff-hunk fallback, so `--source "<file:line>"` naming the site is required in that ledger call — the only anchor a session resumed after compaction can match a repeat finding against. *Apply this round's fix* is an ordinary ADDRESS row on the `code-writer` route. *Cannot choose* is a blocking stop-and-ask to the human. A finding with no explicit per-finding verdict from the consult (failed dispatch, empty, hedged, or partial coverage) is likewise a blocking stop-and-ask, never *keep current text*.<!-- DISPOSITION_RULE:code-review-contradiction-route end -->
+**A finding whose fix would undo a fix an earlier round applied is also a design question, in every round, staged commit-gate rounds included.** Write `plan-architect — consult` for it on the `Fix route:` line. Dispatch, verbatim relay, and the disagreement stop-and-ask follow the heavier-mechanism rule directly above, and the consult also carries the earlier finding and its fix.
+
+A site is the file plus the contiguous block — paragraph, list item, table row, or function — that an earlier round's fix edited, or, when the earlier round's outcome was *keep current text* with nothing edited, the block the settled finding's own cited location named. A finding's location is matched against that site via the ledger's optional `--source "<file:line>"` field or the fix commit's own diff hunk, read generously enough to include an adjacent or wrapped continuation of the same clause and any duplicate expression of the same defect elsewhere in the block — a finding is not a different site merely because its cited location sits just outside the literal edited or cited range. A finding against a site an earlier verdict already settled, or that two earlier rounds' fixes already rewrote, goes straight to the human as a blocking stop-and-ask, with no consult.
+
+The consult's judgment standard is that the current text wins unless the finding names a defect, under a stated rule, that the current text actually has. One consult carries every such finding in the round and returns exactly one of the three verdicts per finding:
+
+- *Keep current text* resolves it with nothing dispatched, logged as `--disposition ADDRESS` with the verdict in `--rationale`, and is never available to a finding the enforcement-invariant rule below covers. This branch has no diff-hunk fallback, so `--source "<file:line>"` naming the site is required in that ledger call — the only anchor a session resumed after compaction can match a repeat finding against.
+- *Apply this round's fix* is an ordinary ADDRESS row on the `code-writer` route.
+- *Cannot choose* is a blocking stop-and-ask to the human.
+
+A finding with no explicit per-finding verdict from the consult (failed dispatch, empty, hedged, or partial coverage) is likewise a blocking stop-and-ask, never *keep current text*.<!-- DISPOSITION_RULE:code-review-contradiction-route end -->
 
 **DEFER criteria (closed list).** A finding may be tagged DEFER only when it matches one of:
 
@@ -417,9 +426,7 @@ When the disposition step produces ≥1 DEFER finding, persist the DEFER rows (a
 
 Row format: `Finding | Source | DEFER criterion | Rationale` (four columns, same shape as the disposition table filtered to non-ADDRESS rows).
 
-**If a PR is already open** (`gh pr view --json number,body` succeeds): update the PR description idempotently with `gh pr edit --body`. Delimit the section with HTML comment markers so it can be mechanically replaced on re-runs:
-
-Delimiters: `<!-- code-review:deferred:start -->` (opening) and `<!-- code-review:deferred:end -->` (closing).
+**If a PR is already open** (`gh pr view --json number,body` succeeds): update the PR description idempotently with `gh pr edit --body`. Delimit the section with HTML comment markers so it can be mechanically replaced on re-runs: `<!-- code-review:deferred:start -->` (opening) and `<!-- code-review:deferred:end -->` (closing).
 
 Append the delimited block if absent; replace the existing delimited block if present (idempotent across repeated `/code-review` runs as fix commits collapse DEFERs into ADDRESSes or introduce new ones). Preserve all PR description content outside the delimiters.
 
@@ -430,8 +437,6 @@ Append the delimited block if absent; replace the existing delimited block if pr
 ## Item ownership
 
 Routes each checklist item to the reviewer subagent(s) that file findings on it. Bold shorthands match titles above; numbers are the dispatcher's primary key. **Primary owner** files findings; **co-owners** are spawned where the item touches their turf. When in doubt, this table wins over inline mentions.
-
-The dispatcher fires reviewers per file-path domain detection. Each agent self-scopes against the diff and returns early ("No X concerns") when out of lane.
 
 | Item | Primary owner | Co-owners |
 |------|---------------|-----------|
@@ -489,15 +494,10 @@ This writes the hash of the currently staged diff into `<config-dir>/code-review
 
 Run the command standalone, or chained only as `marker.sh write code-review && git commit …`. If it fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since `git commit` will be blocked by the gate.
 
-**Authoring the commit message.** A single-line message goes inline with `-m`. For a multi-line message, create the file with `mktemp "${TMPDIR:-/tmp}/commit-msg.XXXXXX"`, populate it with the **`Write` tool**, then pass that path to `git commit -F <path>` as literal text — a `$VAR` is opaque to the gates, which resolve the argument statically and fail closed on it.
-
-Never author the message any of these ways:
+**Authoring the commit message.** A single-line message goes inline with `-m`. For a multi-line message, create the file with `mktemp "${TMPDIR:-/tmp}/commit-msg.XXXXXX"`, populate it with the **`Write` tool**, then pass that path to `git commit -F <path>` as literal text — a `$VAR` is opaque to the PII gate and the redaction gate, which resolve the argument statically and fail closed on it. `-F` names a regular on-disk file, never `-`, `/dev/stdin` or `/dev/fd/*`, in any spelling. Keep the file out of `$HOME` and out of any UUID-shaped or 32-plus-hex-character path — e.g. not the session scratchpad. The redaction gate scans the commit command string itself. Its home-rooted-path and long-hex-identifier detectors both match on the `-F` argument. Never author the message either of these ways:
 
 - **A shell heredoc.** An unquoted `<<EOF` parses embedded backticks and `$(...)` as shell substitution before either gate ever sees the content — use the `Write` tool instead.
-- **`-F` pointed at `-`, `/dev/stdin`, `/dev/fd/*`, or any other pseudo-file.** Both the PII gate and the redaction gate read the `-F` file before git runs; neither can read the stdin of a process that hasn't started, so a pseudo-file source is denied outright rather than scanned.
 - **`-m "$(cat …)"` command substitution.** The gates scan only the literal command string, so the real message would reach the commit unscanned.
-
-Keep the file out of `$HOME` and out of any UUID-shaped or 32-plus-hex-character path — e.g. not the session scratchpad. The redaction gate scans the commit command string itself. Its home-rooted-path and long-hex-identifier detectors both match on the `-F` argument.
 
 **Do NOT write the marker if:**
 

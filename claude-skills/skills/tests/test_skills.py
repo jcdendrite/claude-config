@@ -5572,6 +5572,8 @@ _CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR = "DISPOSITION_RULE:code-review-contradi
 # no-explicit-verdict blocking stop. It is pinned whole so removing or
 # weakening any sentence fails a test. The whole region is compared by exact
 # equality, so any added, removed, or reworded text inside the anchors fails.
+# Whitespace is collapsed before comparing, so the "- " tokens below are the
+# live text's bullet markers flattened onto one line.
 _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "**A finding whose fix would undo a fix an earlier round applied is also "
     "a design question, in every round, staged commit-gate rounds included.** "
@@ -5594,15 +5596,15 @@ _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "consult. The consult's judgment standard is that the current text wins "
     "unless the finding names a defect, under a stated rule, that the "
     "current text actually has. One consult carries every such finding in "
-    "the round and returns exactly one of the three verdicts per finding. "
-    "*Keep current text* resolves it with nothing dispatched, logged as "
+    "the round and returns exactly one of the three verdicts per finding: "
+    "- *Keep current text* resolves it with nothing dispatched, logged as "
     "`--disposition ADDRESS` with the verdict in `--rationale`, and is never "
     "available to a finding the enforcement-invariant rule below covers. "
     "This branch has no diff-hunk fallback, so `--source \"<file:line>\"` "
     "naming the site is required in that ledger call — the only anchor a "
     "session resumed after compaction can match a repeat finding against. "
-    "*Apply this round's fix* is an ordinary ADDRESS row on the "
-    "`code-writer` route. *Cannot choose* is a blocking stop-and-ask to the "
+    "- *Apply this round's fix* is an ordinary ADDRESS row on the "
+    "`code-writer` route. - *Cannot choose* is a blocking stop-and-ask to the "
     "human. A finding with no explicit per-finding verdict from the consult "
     "(failed dispatch, empty, hedged, or partial coverage) is likewise a "
     "blocking stop-and-ask, never *keep current text*."
