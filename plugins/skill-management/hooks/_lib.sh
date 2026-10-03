@@ -693,9 +693,8 @@ _lib_git_argv_from_subcmd() {
     fi
     if $skip_next; then skip_next=false; continue; fi
     case "$word" in
-      # The git 2.43 global flags that take a separate-word value, per
-      # git(1)'s OPTIONS. A later git version adding another needs this list
-      # updated by hand.
+      # The git 2.43 global flags that take a separate-word value. A later git
+      # version adding another needs this list updated by hand.
       -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env|--attr-source)
         skip_next=true ;;
       -*) ;;
