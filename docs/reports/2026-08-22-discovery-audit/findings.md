@@ -4,6 +4,61 @@
 **Audit baseline:** `6291b343` (`main` HEAD at plan time). Every `file:line` below refers to that commit. Code drifts as the backlog lands — before treating a citation as wrong, confirm you're reading the baseline commit, not a later one.
 **Repo state at baseline:** 571 tracked files, ~196,500 lines, 44 hook scripts (42 shell + 2 Python) backed by 73 dedicated test files, 27 global skills + 7 plugin skills, 12 agents, 25 scripts (24 in `claude/.claude/scripts/` + 1 in root `scripts/`), 5 plugins, 23 eval files, 206 committed plan files. 89 commits and 258 changed files since the prior report's `eb5eae2` baseline.
 
+## Status — updated 2026-09-28
+
+The findings below are a record of the repo at `6291b343` and are **not** revised as fixes land; `docs/reports/README.md` states why. This section is the one exception: a reader needs to know which findings are closed, tracked, or superseded before acting on any of them.
+
+A 2026-09-28 re-check against `origin/main` at `c42d143f` (newer than this report's `6291b343` baseline) confirms the statuses below.
+
+- **Fixed (17).**
+  - Traced to a landing commit:
+    - S1: #790.
+    - S3, C7, D2: #863. C7's fix lives in `_lib_default_branch_or_guess` (`guard-settings-session-keys.sh:88`).
+    - S13: `bb24a0cc` (#1064).
+    - C6, D12: `25e18978` (#820).
+  - Current `file:line` evidence:
+    - S11: `CLAUDE.md:107-112` defers to `docs/hooks.md`'s `block-gh-pr-merge.sh` entry, which discloses the `gh api .../pulls/N/merge` gap.
+    - S19: `claude/.claude/rules/github-actions-workflows.md:5-6` matches `**/action.yml` and `**/action.yaml`.
+    - S20: `CLAUDE.md:173-174` ends the Provenance subsection with "If in doubt, don't."
+    - C2: `docs/transcript-analysis.md:1319` documents the `spend-over-threshold` subcommand, and the doc has no `handoff-ratio` entry.
+    - C5: `deny-escaped-backticks-in-pr-body.sh:67` scans via `_lib_command_invokes_tool_subcmd`, which handles a `gh` invocation with a flag hoisted before the subcommand.
+    - C9: `session-marker-dashboard.sh:96` routes its ledger-summary git call through `_lib_capped`.
+    - C13: `README.md:98` states that `install.sh` checks the Python version and exits early if it isn't met.
+    - C22: `docs/scripts.md:54`'s "20 valid invocation shapes" matches `settings.json`'s 20 `marker.sh` allow entries.
+    - D16: `docs/hooks.md:261` links to `docs/precompact-hook-behavior.md`.
+    - C24: `docs/rules-references.md` has 6 rule sections (`:7,20,35,209,256,292`), so its generic "References — rules" title is accurate.
+- **Closed without a fix (10).**
+  - S26–S30, I3, SC8: reviewed sound at the baseline, per this report's N/A sections.
+  - I5: informational only.
+  - C25: cosmetic, with no behavioral effect.
+  - SC6: growth is gated by `check-claude-md-length.sh`'s byte limit, and the offload path was declined in `docs/design-decisions/declined-sessionstart-additionalcontext-injection.md`.
+- **Tracked by pre-existing issues.**
+  - S2's four `show-toplevel` sites: #1137.
+  - D10's bare-`&` portion: #1063.
+  - C16: #537.
+- **Tracked by issues filed 2026-09-28.**
+  - #1174: S14, SC1, D8
+  - #1156: S2 (every site except #1137's four), S23, C19, D3, D9
+  - #1157: S4, S5, S6, S7, S15, I1, SC5
+  - #1158: C1
+  - #1159: S8, S9, S10, S18, S24
+  - #1160: S12, C4, SC7, D5
+  - #1161: S16, S17, SC4
+  - #1162: D10, inline-alias portion only.
+  - #1163: I2, I4, C17, C26, D1
+  - #1164: S21
+  - #1165: C3, C11, C12, C23, D4
+  - #1166: C14, D6
+  - #1167: C18, D7, D14
+  - #1168: S25
+  - #1169: SC2
+  - #1170: C10
+  - #1171: S22, C8, D11, D13, D15
+  - #1172: C20, C21, SC3
+  - #1173: C15
+- S2 and D10 are the only IDs split across two issues. S2: four sites to #1137, the rest to #1156. D10: bare-`&` portion to #1063, inline-alias portion to #1162.
+- `.claude/plans/discovery-audit-remediation-plan.md` does not track these findings. Its phase text is reference design. Each tracking issue above cites the phase it draws from.
+
 ## Relationship to the prior report
 
 `docs/reports/2026-08-10-repo-quality-audit/findings.md` (baseline `eb5eae2`) ran a six-domain structural-quality audit with four specialist reviewers checking the *plan* for correctness — it never applied a formal severity-rated taxonomy, and had no dedicated security-category pass. This report is the first to apply an external audit-methodology playbook's S/I/C/SC/D taxonomy and severity rubric to this repo, so its findings start fresh at S1/I1/C1/SC1/D1 rather than continuing the prior report's plain 1–8 numbering. The prior report's 8 findings (27 reconciled sub-units) are re-verified against the current baseline below, under "Baseline reconciliation," using that playbook's re-audit status vocabulary — their content is not restated or renumbered into this taxonomy.

@@ -468,6 +468,15 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/announce-approved-plan-path.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Agent|Task",
         "hooks": [
           {
