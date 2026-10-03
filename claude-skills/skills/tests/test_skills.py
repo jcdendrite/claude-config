@@ -3733,18 +3733,20 @@ def test_threat_model_tiers_citation_resolves_to_real_heading(relative_path: str
 
 # Tier-disposition clauses that keep the review layers fail-closed.
 # The docs/hooks.md entry pins the regression conditions in their single home.
-# The layer entries pin that a finding the tier section does not explicitly
-# waive or route stays under the base rules, and that a regression does too.
+# The layer entries pin that a regression is an enforcement-invariant finding,
+# and that a finding the tier section does not explicitly waive or route stays
+# under the base rules.
 # A tripwire for a wording trim that silently drops one of them.
 _TIER_DISPOSITION_SECTIONS = [
     pytest.param(
         ".claude/skills/code-review-claude-config/SKILL.md",
         "## Finding disposition addition",
         (
+            "is an enforcement-invariant finding",
             "is not an enforcement-invariant finding",
             "does not explicitly waive or route",
             "at every tier",
-            "changes that",
+            "No recording",
             '`code-review/SKILL.md` § "Step — Record review completion"',
         ),
         id="code-review-layer",
@@ -3753,10 +3755,11 @@ _TIER_DISPOSITION_SECTIONS = [
         ".claude/skills/plan-review-claude-config/SKILL.md",
         "## Gate threat-model tiers (Domain: Security; Output format)",
         (
+            "is an enforcement-invariant finding",
             "is not an enforcement-invariant finding",
             "does not explicitly waive or route",
             "at every tier",
-            "changes that",
+            "No recording",
             "Subject to the first bullet",
         ),
         id="plan-review-layer",
@@ -3766,6 +3769,7 @@ _TIER_DISPOSITION_SECTIONS = [
         "## Threat-model tiers",
         (
             "When any of these holds, treat the finding as a regression",
+            "The comparison against the merge-base is unclear",
             "no merge-base counterpart",
             "A fail-open path has no deny test",
             "its tracking pointer, or this section",
@@ -3787,21 +3791,18 @@ def test_gate_tier_disposition_sections_keep_invariant_clauses(
 ) -> None:
     """Each entry's section, whitespace-normalized, still carries its clauses.
 
-    The docs/hooks.md entry pins the regression conditions in their single
-    home. The layer entries pin the fail-closed disposition clauses.
-
     Scoped to the section so the same words elsewhere in the file cannot
     satisfy it. Whitespace-normalized so a re-wrap does not break it. Pins
     that the text is present, not that a reviewer follows it.
     """
-    layer_path = REPO_ROOT / relative_path
-    lines = layer_path.read_text().splitlines(keepends=True)
-    start_idx, end_idx = _section_between(lines, section_heading, layer_path)
+    section_file_path = REPO_ROOT / relative_path
+    lines = section_file_path.read_text().splitlines(keepends=True)
+    start_idx, end_idx = _section_between(lines, section_heading, section_file_path)
     section_text = " ".join("".join(lines[start_idx:end_idx]).split())
 
     missing_phrases = [phrase for phrase in required_phrases if phrase not in section_text]
     assert not missing_phrases, (
-        f"{layer_path}'s {section_heading!r} section no longer carries "
+        f"{section_file_path}'s {section_heading!r} section no longer carries "
         f"{missing_phrases}; each keeps the tier-disposition rule fail-closed. "
         "Restore the clause, or update this pin and say why in the commit message."
     )
