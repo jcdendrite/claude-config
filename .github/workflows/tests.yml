@@ -148,6 +148,11 @@ jobs:
         if: steps.detect.outputs.changed == 'true'
         run: nproc
 
+      # _locale_that_widens_ascii_ranges (test_config_lib.py) fails CI when no installed UTF-8 locale lets a bracket range accept a non-ASCII letter.
+      - name: Generate a UTF-8 locale
+        if: steps.detect.outputs.changed == 'true'
+        run: sudo locale-gen en_US.UTF-8
+
       - name: Run tests (parallel)
         # This step's `if:` must keep matching "Install stow and direnv" above and "Run tests (timing, serial)" below — see that step's own comment.
         if: steps.detect.outputs.changed == 'true'

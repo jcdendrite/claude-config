@@ -1416,8 +1416,8 @@ class TestSelectPytestTargets:
     def test_hooks_tests_module_imported_by_scripts_tests_selects_its_importers(self):
         """test_config_lib.py is a HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS
         member, so this change
-        also selects SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's two test
-        files by module path -- invisible to path-constant scanning. Both
+        also selects SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's test
+        files by module path -- invisible to path-constant scanning. They
         sit under SCRIPTS_TESTS_DIR, which nothing else here selects, so
         they survive as their own file targets alongside the other rules
         this HOOKS_TESTS_DIR path already matches."""
@@ -1438,12 +1438,14 @@ class TestSelectPytestTargets:
         ],
     )
     def test_remaining_hooks_tests_modules_select_scripts_tests_importers(self, changed_path):
-        """The three HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS members
-        other than test_config_lib.py, which has its own dedicated test,
-        test_hooks_tests_module_imported_by_scripts_tests_selects_its_importers.
+        """The package-marker and conftest
+        HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS members. Each test-module
+        member has a dedicated test:
+        test_hooks_tests_module_imported_by_scripts_tests_selects_its_importers
+        and test_review_ledger_script_test_change_selects_review_ledger_lib_test.
         Without this coverage, a member dropped from the row or retyped to a
         different existing file would change what these paths select with no
-        dedicated test noticing. All three parametrized paths resolve to the same target set,
+        dedicated test noticing. All parametrized paths resolve to the same target set,
         contributed by five rows:
         - DOMAIN_RULES' HOOKS_DIR entry adds HOOKS_TESTS_DIR
         - CROSS_DOMAIN_EXCEPTIONS' _is_hooks_or_skills_change row adds the transcript-analysis pair
@@ -1451,13 +1453,29 @@ class TestSelectPytestTargets:
         - CROSS_DOMAIN_EXCEPTIONS' _is_test_tree_packaging_change row adds only CLAUDE_TESTS_DIR
           (hooks/__init__.py matches that predicate through its __init__.py leg alone)
         - CROSS_DOMAIN_EXCEPTIONS' HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS row adds
-          SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's two files
+          SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's files
         """
         result = _mod.select_pytest_targets([changed_path])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.HOOKS_TESTS_DIR, _mod.CLAUDE_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
             _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+            *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
+        }
+
+    def test_review_ledger_script_test_change_selects_review_ledger_lib_test(self):
+        """test_review_ledger_lib.py imports from
+        hooks.tests.test_review_ledger_script, so a change to that module must
+        select it. The lib test is spelled as a literal rather than derived
+        from SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES, so dropping the
+        hooks test from HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS or the
+        lib test from SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES fails here."""
+        result = _mod.select_pytest_targets(["claude/.claude/hooks/tests/test_review_ledger_script.py"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.HOOKS_TESTS_DIR, _mod.CLAUDE_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+            _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH, _mod.SELECT_TESTS_TEST_PATH,
+            "claude/.claude/scripts/tests/test_review_ledger_lib.py",
             *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
         }
 
@@ -2460,7 +2478,7 @@ class TestMainComposition:
                 # selected here, so it survives that filter, contributed by
                 # _is_test_tree_packaging_change's __init__.py leg. This path is also a
                 # HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS member, so
-                # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's two files also
+                # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES's files also
                 # survive: they sit under SCRIPTS_TESTS_DIR, which nothing
                 # else here selects.
                 sorted([

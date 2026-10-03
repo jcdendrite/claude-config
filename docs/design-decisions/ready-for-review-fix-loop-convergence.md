@@ -2,6 +2,8 @@
 
 *2026-09-17.*
 
+**Partially superseded by [branch-scoped-review-ledger.md](branch-scoped-review-ledger.md) (2026-09-30):** the ledger's rejection for the disposition record no longer holds for its session keying or for a keep verdict's missing slot, because the ledger is branch-keyed and logs a keep as `SETTLED` with a range-form `--source`. The `agent-reviews/` record stays, canonical only for the Cap's pass accounting. Everything else here stands, except that a `SETTLED` or `DEFER` ledger row can no longer omit `--source`: `review-ledger.sh` now rejects it, so the "prose-only" claim below no longer holds for those two dispositions.
+
 `/ready-for-review` (RFR) step 3 runs a mandatory, fully-unnarrowed `/code-review` over the cumulative PR-vs-base diff after every fix, per the Overview's loop rule: a fix produced by step 2, 3, or 4 returns the gate to step 2, and step 3 then re-reviews the fixed cumulative diff in full because its cache marker misses on the changed bytes. The byte-exact cumulative guarantee stays intact: a fix commit's staged-diff review alone does not suffice to re-push. Step 4 is the one step that does not re-run on its own output, so a skill-procedural-fidelity finding's own fix does not trigger a second step-4 pass. Nothing in this decision narrows the cumulative pass itself; the four changes below only shorten how many times it has to run before it comes back clean.
 
 ## Why RFR's prose is the only enforcement during a run
