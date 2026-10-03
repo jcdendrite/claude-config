@@ -1682,7 +1682,7 @@ _lib_command_concludes_commit_shape() {
 # narrowing this predicate to skip a verb would silently disarm those gates
 # for that verb's `--continue` form. See
 # _lib_command_concludes_marker_gated_commit below for the narrower sibling
-# used by the two gates whose recourse is a review.
+# used by gates whose recourse is a review.
 _lib_command_concludes_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_ALL"
@@ -1694,10 +1694,9 @@ _lib_command_concludes_commit() {
 # anchor in the ordinary case (see _lib_gate_diff_base), so gating a review
 # marker on it would mean demanding a full review at every conflicted step
 # of a rebase against content that, for the most part, already passed
-# review at its own original commit time. The two gates that consume this
-# narrower predicate still deny an ordinary `git commit` made mid-rebase
-# without `--continue`, while the gates that consume the broad predicate
-# above stay armed on `git rebase --continue` -- this predicate narrows
+# review at its own original commit time. An ordinary `git commit` made
+# mid-rebase without `--continue` still matches here, and the broad predicate
+# above still matches `git rebase --continue` -- this predicate narrows
 # review-marker enforcement specifically, not rebase's overall gate
 # coverage.
 _lib_command_concludes_marker_gated_commit() {
@@ -1708,8 +1707,7 @@ _lib_command_concludes_marker_gated_commit() {
 # _lib_fragment_concludes_commit FRAGMENT SUBCMD
 # Plain-boolean fragment-level sibling of _lib_fragment_concludes_commit_shape,
 # fixed to $_LIB_CONTINUE_VERBS_ALL; for callers that already hold each
-# fragment's _lib_extract_git_subcmd result (deny-invisible-commit-content.sh).
-# No marker-gated variant exists because no fragment-level caller needs one.
+# fragment's _lib_extract_git_subcmd result.
 _lib_fragment_concludes_commit() {
   _lib_fragment_concludes_commit_shape "$1" "$2" "$_LIB_CONTINUE_VERBS_ALL"
 }

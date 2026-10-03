@@ -97,9 +97,9 @@
 # gate. The "if" field is a hint only.
 #
 # Commands that start directly with the marker.sh path (~/ or absolute) must
-# match one of the 22 single-command shapes, the marker.sh write chain to git
-# commit, or a chain of two-or-more valid marker.sh shapes joined by `&&`
-# (any op/target combination) — equivalent to running each op separately,
+# match one of the 22 single-command shapes, the marker.sh write chain to a
+# commit-concluding git command, or a chain of two-or-more valid marker.sh
+# shapes joined by `&&` (any op/target combination) — equivalent to running each op separately,
 # since every marker operation is independently allowlisted or harmless. No
 # redirects (except trailing `2>/dev/null`), no extra args. Wrapped forms
 # (env-var prefix, bash wrapper, relative path, subshell) are not gated here —
