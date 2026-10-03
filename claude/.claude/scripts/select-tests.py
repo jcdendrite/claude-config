@@ -151,6 +151,10 @@ MARKER_CLEAR_STALE_PY = "claude/.claude/scripts/marker-clear-stale.py"
 # so declared here by hand.
 REVIEW_PR_AUDIT_SCRIPT = "claude-skills/skills/review-pr/audit-execution-surface.py"
 
+# SCRIPTS_TESTS_DIR's test_review_pr_post.py reads this exact file by path, to
+# compare its literal script invocations against the settings allow entries.
+REVIEW_PR_SKILL_MD = "claude-skills/skills/review-pr/SKILL.md"
+
 # The cross-domain import declarations below (CONFIG_MODULE through
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES) are enumerated by hand from a
 # grep of static `import`/`from` statements, not derived by a test, so the
@@ -329,7 +333,8 @@ ROOT_RULES_DIR = ".claude/rules"
 ROOT_SKILLS_DIR = ".claude/skills"
 
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) reads this exact file's
-# claudeMdExcludes entry by path.
+# claudeMdExcludes entry by path. test_review_pr_post.py (SCRIPTS_TESTS_DIR)
+# also reads it, for its permissions.allow entries.
 ROOT_SETTINGS_JSON = ".claude/settings.json"
 
 # test_statusline_command.py (CLAUDE_TESTS_DIR) reads this file by path.
@@ -617,7 +622,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
 # MARKER_CLEAR_STALE_PY: see its own comment above for citation.
-# REVIEW_PR_AUDIT_SCRIPT: see its own comment above for citation.
+# REVIEW_PR_AUDIT_SCRIPT and REVIEW_PR_SKILL_MD: see each constant's own
+# comment above for its citation.
 # _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py and
 # test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
 # recursively glob claude/.claude/ for *.sh files, picking up
@@ -714,6 +720,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == MARKER_CLEAR_STALE_PY, (HOOKS_TESTS_DIR,)),
     (lambda p: p == REVIEW_PR_AUDIT_SCRIPT, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p == REVIEW_PR_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB)),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
@@ -727,7 +734,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == ROOT_CLAUDE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: _is_under(p, ROOT_SKILLS_DIR), (SKILLS_TESTS_DIR,)),
-    (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: p == STATUSLINE_COMMAND_SH, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, CLAUDE_TESTS_DIR)),
     (lambda p: p == CONFIG_KEYS_PSV, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (_is_py_source_under_claude_or_plugins, (TICKET_REFERENCE_DISCIPLINE_TEST_PATH,)),

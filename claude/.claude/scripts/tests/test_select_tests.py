@@ -1188,12 +1188,23 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
-    def test_root_settings_json_change_selects_hooks_tests(self):
+    def test_root_settings_json_change_selects_hooks_and_scripts_tests(self):
         """test_claude_md_excludes.py (HOOKS_TESTS_DIR) reads the repo-root
-        .claude/settings.json's claudeMdExcludes entry by path."""
+        .claude/settings.json's claudeMdExcludes entry by path, and
+        test_review_pr_post.py (SCRIPTS_TESTS_DIR) reads its permissions.allow
+        entries."""
         result = _mod.select_pytest_targets([_mod.ROOT_SETTINGS_JSON])
         assert result.is_full_suite is False
-        assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR}
+
+    def test_review_pr_skill_md_change_also_selects_scripts_tests(self):
+        """test_review_pr_post.py (SCRIPTS_TESTS_DIR) reads review-pr/SKILL.md
+        by path. Without this cross-domain exception, a SKILL.md change
+        selects only REVIEW_PR_SKILL_TESTS_DIR and SKILLS_TESTS_DIR, so that
+        coverage goes unrun."""
+        result = _mod.select_pytest_targets([_mod.REVIEW_PR_SKILL_MD])
+        assert result.is_full_suite is False
+        assert {_mod.REVIEW_PR_SKILL_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR} <= set(result.target_paths)
 
     def test_skills_test_tree_change_selects_skills_tests(self):
         """`_is_under(p, SKILLS_TESTS_DIR)` mirrors the hooks and scripts
@@ -1881,6 +1892,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.HANDOFF_SKILL_MD,
     _mod.MARKER_CLEAR_STALE_PY,
     _mod.REVIEW_PR_AUDIT_SCRIPT,
+    _mod.REVIEW_PR_SKILL_MD,
     *sorted(_mod.SKILL_FILES_READ_BY_HOOK_TESTS),
     _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,
