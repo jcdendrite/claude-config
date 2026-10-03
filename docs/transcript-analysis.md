@@ -174,10 +174,14 @@ Text inside a `<task-notification>` envelope is excluded from matching, because 
 
 **Sample output.**
 ```
-Branch                                    Span(min) Active(min)  Idle(min)  Sessions  GapMin
+Branch                                    Span(min) Active(min)  Idle(min)    Bursts  GapMin
 -----------------------------------------------------------------------------------------------
 GH-333/audit-routing-samples-subcommand        1553         112       1442         5      30
 ```
+
+**What `Bursts` counts.** It is `len(idle_gaps) + 1` — the number of contiguous activity bursts separated by an idle gap longer than `--gap-minutes`:
+- One burst can span several session files (a continuation with no idle gap between consecutive files' timestamps).
+- One session file can itself span several bursts (a long idle pause mid-session).
 
 **When to reach for it.** Estimate how many hours were actually spent on a branch, stripping calendar time. Use `Active(min)`, not `Span(min)` — the span is wall-clock dominated by idle gaps.
 
@@ -216,6 +220,8 @@ GH-333/audit-routing-samples-subcommand  main       Read                        
 ```
 
 Byte totals are aggregate-only: no tool-result content, file paths, session IDs, or cwd are ever printed. There is no per-byte dollar model — this is an un-dollar-weighted signal for where verbose tool output accumulates, not a cost figure.
+
+**Turn counts here and in `cost` use different denominators.** `subagents` counts every dedup-surviving assistant record, while `cost` additionally requires a `usage` block, so `subagents`'s total can legitimately exceed `cost`'s for the same scope without either being a bug.
 
 **When to reach for it.** Understand how much work was delegated versus inline. Compare against `subagent-mix` for a breakdown of what *kind* of subagents were spawned.
 
