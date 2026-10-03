@@ -135,7 +135,11 @@ Every file below is edited in one `code-writer` dispatch, with `helpers.py` firs
   - Add `from helpers import init_git_repo`.
   - Reword the retained `--initial-branch` comment so it explains the `"main"` default without naming a flag the code no longer spells.
 - `claude/.claude/scripts/tests/test_author_outcome.py`: delete the `_make_git_repo` method (`:714`). At `:746` and `:774`, use `repo = init_git_repo_with_commit(tmp_path / "repo")`. Add `from helpers import init_git_repo_with_commit`; the file does not import `helpers` today.
-- `claude/.claude/tests/test_git_repo_builders.py` (new): a unit contract check for the builder pair, with three tests:
+- `claude/.claude/scripts/tests/test_select_tests.py`: reword the comment at `:2131` that cites `_init_repo`'s `--initial-branch=main`, so it no longer names a flag the helper does not spell. Comment-only.
+- `claude/.claude/tests/test_git_repo_builders.py` (new): a unit contract check for the builder pair, with six tests:
+  - `init_git_repo(path)` sets non-empty local `user.email` and `user.name`.
+  - Each builder called with no branch keeps the host default (env-only `init.defaultBranch`), parametrized over both builders.
+  - `init_git_repo_with_commit(path, branch="probe")` lands on `probe`.
   - `init_git_repo(path, branch="probe")` leaves HEAD unborn (`git rev-parse --verify HEAD` fails) and `git symbolic-ref --short HEAD` prints `probe`.
   - `init_git_repo_with_commit(path)` leaves HEAD resolvable, with `f.txt` tracked and holding `"x\n"`.
   - `init_git_repo_with_commit(path, file_name="a/b.txt", content="y\n")` tracks the nested seed with that content.
@@ -162,7 +166,7 @@ Reuse: helpers.py's existing `_run_git` (`:812`) is not used inside the builder.
 
 ## Verification
 
-1. Before the first edit, record the collected-test count with `.venv/bin/pytest --collect-only -q -n0 claude/.claude/hooks/tests claude/.claude/scripts/tests claude/.claude/tests`. After the last edit, the count must be exactly 3 higher, from the new contract tests. This catches a test lost to a broken import. `--collect-only` does not run fixture bodies, so a broken fixture first surfaces in step 7.
+1. Before the first edit, record the collected-test count with `.venv/bin/pytest --collect-only -q -n0 claude/.claude/hooks/tests claude/.claude/scripts/tests claude/.claude/tests`. After the last edit, the count must be exactly 7 higher, from the new contract tests (six test functions, one parametrized over both builders). This catches a test lost to a broken import. `--collect-only` does not run fixture bodies, so a broken fixture first surfaces in step 7.
 2. Sum `git grep -c '"git", "init"' -- claude/.claude` across files. The total is 144 at the merge-base and must be 124 after: 21 sites removed and 1 added in the builder. The new contract test calls the builders and spells no `"git", "init"`.
 3. `git grep -n -E 'def (_init_repo|_init_repo_on_branch|_init_opted_in_repo|_init_repo_with_commit|_make_git_repo)\b' -- claude/.claude` must list exactly six definitions: the five hooks delegations and `scripts/tests/conftest.py`'s `_init_repo`. This checks names only. Step 4 checks the bodies.
 4. Per-site equivalence review: walk the diff site by site against row 4 and the Critical files list. For each of the 21 sites, confirm that the branch argument, commit-or-not, `file_name` and `content` match the pre-migration helper. The suite cannot detect drift in these, because no consumer reads them (row 15).

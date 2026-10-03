@@ -24,6 +24,7 @@ from helpers import (
     HOOKS_DIR,
     TRAVERSAL_SESSION_ID,
     build_path_without,
+    init_git_repo_with_commit,
     plant_traversal_canary,
     run_hook_stop,
     stop_input,
@@ -63,13 +64,7 @@ def armed_home(isolated_home):
 
 
 def _init_repo(repo: Path) -> None:
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "f").write_text("a\n")
-    subprocess.run(["git", "add", "f"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
+    init_git_repo_with_commit(repo, branch="main", file_name="f", content="a\n")
 
 
 @pytest.fixture

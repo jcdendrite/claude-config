@@ -12,6 +12,7 @@ from helpers import (
     HOOKS_DIR,
     assert_cap_engaged,
     build_path_without,
+    init_git_repo,
     scaled_shim_sleep,
     write_scaled_timeout_shim,
 )
@@ -140,13 +141,6 @@ def _find_case_insensitive_collation_locale() -> str | None:
     return None
 
 
-def _init_repo(repo: Path) -> None:
-    repo.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-
-
 class TestMarkerLibRepoHash:
     def test_known_path_matches_python_sha256(self):
         path = "/some/known/path"
@@ -248,7 +242,7 @@ class TestLibRepoRoot:
 
     def test_matches_git_rev_parse_show_toplevel(self, tmp_path):
         repo = tmp_path / "repo-root-repo"
-        _init_repo(repo)
+        init_git_repo(repo)
         expected = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
             capture_output=True,
@@ -322,7 +316,7 @@ class TestLibActivePlanFiles:
         test_require_plan_review.py, which pins the same fail-closed
         direction for a sibling git call."""
         repo = tmp_path / "enum-failure-repo"
-        _init_repo(repo)
+        init_git_repo(repo)
         # A HEAD commit routes _lib_active_plan_files through its `git diff`
         # branch rather than its no-HEAD `git ls-files` fallback, so the stub
         # below exercises the `ls-files --others` (untracked-plans) call in
@@ -365,7 +359,7 @@ class TestLibActivePlanFiles:
         convention as test_git_enumeration_failure_fails_closed above, pinned
         for the sort step rather than the git enumeration it follows."""
         repo = tmp_path / "sort-failure-repo"
-        _init_repo(repo)
+        init_git_repo(repo)
         (repo / "README.md").write_text("seed\n")
         subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True)
@@ -397,18 +391,18 @@ class TestLibActivePlanHash:
 
     def test_empty_when_no_plans_dir(self, tmp_path):
         repo = tmp_path / "no-plans"
-        _init_repo(repo)
+        init_git_repo(repo)
         assert _active_plan_hash(repo) == ""
 
     def test_empty_when_plans_dir_empty(self, tmp_path):
         repo = tmp_path / "empty-plans"
-        _init_repo(repo)
+        init_git_repo(repo)
         (repo / ".claude" / "plans").mkdir(parents=True)
         assert _active_plan_hash(repo) == ""
 
     def test_empty_when_all_plans_committed_clean(self, tmp_path):
         repo = tmp_path / "clean-plans"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "p.md").write_text("# plan\n")
@@ -421,7 +415,7 @@ class TestLibActivePlanHash:
         empty one: two distinct non-empty bases must both yield empty stdout,
         so the result cannot depend on which base was supplied."""
         repo = tmp_path / "clean-plans-with-base"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "p.md").write_text("# plan\n")
@@ -440,7 +434,7 @@ class TestLibActivePlanHash:
 
     def test_nonempty_when_plan_active(self, tmp_path):
         repo = tmp_path / "active-plan"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "p.md").write_text("# plan\n")
@@ -455,7 +449,7 @@ class TestLibActivePlanHash:
         different tmp_path repos would also vary the absolute path prefix
         embedded in the hash, confounding the assertion."""
         repo = tmp_path / "order-repo"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "aaa.md").write_text("first\n")
@@ -472,7 +466,7 @@ class TestLibActivePlanHash:
 
     def test_content_edit_changes_hash(self, tmp_path):
         repo = tmp_path / "edit-plan"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         plan = plans_dir / "p.md"
@@ -484,7 +478,7 @@ class TestLibActivePlanHash:
 
     def test_active_set_change_changes_hash(self, tmp_path):
         repo = tmp_path / "add-plan"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "a.md").write_text("plan a\n")
@@ -499,7 +493,7 @@ class TestLibActivePlanHash:
         identically -- guards against unquoted word-splitting in the file
         enumeration loop."""
         repo = tmp_path / "spacey-plan"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "my plan draft.md").write_text("# spacey plan\n")
@@ -515,7 +509,7 @@ class TestLibActivePlanHash:
         forever instead of disarming, and with no file left for the user to
         repair."""
         repo = tmp_path / "deleted-plan"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         plan = plans_dir / "p.md"
@@ -550,7 +544,7 @@ class TestLibActivePlanHash:
         status carries the distinction; stdout carries the offending path so
         the caller's deny message can point the user at it."""
         repo = tmp_path / "unreadable-plan"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         plan = plans_dir / "p.md"
@@ -593,7 +587,7 @@ class TestLibActivePlanHash:
             pytest.skip("no non-C collation locale installed to contrast against")
 
         repo = tmp_path / "locale-repo"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "B.md").write_text("upper\n")
@@ -609,7 +603,7 @@ class TestLibActivePlanHash:
         reproduce it identically -- guards against a byte-width assumption
         in the file enumeration or hashing path."""
         repo = tmp_path / "unicode-plan"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "plan-été-日本.md").write_text("# unicode plan\n")
@@ -630,7 +624,7 @@ class TestLibCodeReviewMarkerValueSentinelIsIntentionalDivergence:
 
     def test_code_review_value_binds_to_base_where_plan_hash_disarms(self, tmp_path):
         repo = tmp_path / "sentinel-divergence"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "p.md").write_text("# plan\n")
@@ -769,7 +763,7 @@ class TestLibIsRepoPlanFile:
 
     def test_agrees_with_active_plan_hash_on_covered_file_set(self, tmp_path):
         repo = tmp_path / "drift-repo"
-        _init_repo(repo)
+        init_git_repo(repo)
         plans_dir = repo / ".claude" / "plans"
         (plans_dir / "sub").mkdir(parents=True)
         candidates = {

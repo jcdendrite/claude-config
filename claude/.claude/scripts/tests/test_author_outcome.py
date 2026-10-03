@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from helpers import init_git_repo_with_commit
 from transcript_analysis import author_outcome as ao
 from transcript_analysis import corpus
 
@@ -924,19 +925,6 @@ class TestReviewLedgerSubprocessIntegration:
 
     SESSION_ID = "subprocess-integration-session"
 
-    def _make_git_repo(self, tmp_path: Path) -> Path:
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        # Named explicitly: a session-keyed file only lands on the default
-        # branch, so the branch must not depend on init.defaultBranch.
-        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-        (repo / "file.txt").write_text("first\n")
-        subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-        return repo
-
     def _run_append(self, args: list[str], *, cwd: Path, home: Path) -> subprocess.CompletedProcess:
         env = {**os.environ, "HOME": str(home)}
         env.pop("CLAUDE_CONFIG_DIR", None)
@@ -958,7 +946,7 @@ class TestReviewLedgerSubprocessIntegration:
     def test_real_address_append_classifies_as_failure(self, tmp_path):
         home = tmp_path / "home"
         home.mkdir()
-        repo = self._make_git_repo(tmp_path)
+        repo = init_git_repo_with_commit(tmp_path / "repo")
         _seed_session(home, self.SESSION_ID)
 
         result = self._run_append(
@@ -990,7 +978,7 @@ class TestReviewLedgerSubprocessIntegration:
         what attributes it."""
         home = tmp_path / "home"
         home.mkdir()
-        repo = self._make_git_repo(tmp_path)
+        repo = init_git_repo_with_commit(tmp_path / "repo", branch="main")
         subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True)
         _seed_session(home, self.SESSION_ID)
 
@@ -1009,7 +997,7 @@ class TestReviewLedgerSubprocessIntegration:
     def test_real_clean_append_classifies_as_pass(self, tmp_path):
         home = tmp_path / "home"
         home.mkdir()
-        repo = self._make_git_repo(tmp_path)
+        repo = init_git_repo_with_commit(tmp_path / "repo")
         _seed_session(home, self.SESSION_ID)
 
         result = self._run_append(["--disposition", "CLEAN", "--round", "1"], cwd=repo, home=home)
@@ -1031,7 +1019,7 @@ class TestReviewLedgerSubprocessIntegration:
         settled-PASS data-quality key, the carry by its own disposition."""
         home = tmp_path / "home"
         home.mkdir()
-        repo = self._make_git_repo(tmp_path)
+        repo = init_git_repo_with_commit(tmp_path / "repo", branch="main")
         _seed_session(home, self.SESSION_ID)
         settled = self._run_append(
             ["--finding", "Missing error handling in foo()", "--disposition", "SETTLED",
