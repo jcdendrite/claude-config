@@ -15,7 +15,9 @@ test_transcript_cache_rebuild_switch_delta.py,
 test_transcript_cache_rebuild_ttl_rules.py,
 test_transcript_cache_rebuild_ttl_accumulation.py,
 test_transcript_cache_rebuild_ttl_footing.py, test_transcript_audit_routing.py,
-test_transcript_audit_routing_shape.py, test_transcript_audit_routing_samples.py, and
+test_transcript_audit_routing_shape.py, test_transcript_audit_routing_samples.py,
+test_transcript_subagents.py, test_transcript_subagent_mix.py,
+test_transcript_subagent_mix_dollars.py, test_transcript_cost_counts.py, and
 tests/_cache_rebuild_helpers.py (see the extraction rationale on
 _write_jsonl below).
 
@@ -702,6 +704,24 @@ def _priced(
     if inference_geo is not None:
         usage["inference_geo"] = inference_geo
     rec["message"]["usage"] = usage
+    return rec
+
+
+def _priced_sidechain_asst(
+    model: str, *, input_tokens: int = 0, output_tokens: int = 0, cache_read_tokens: int = 0,
+    ts: str | None = None, branch: str = "main",
+) -> dict:
+    """Build a sidechain assistant record with explicit, flat-priced usage
+    fields, for subagent-mix's Actual $/Counterfactual $ dollar-column tests
+    -- a sidechain counterpart to TestCost's own _priced (cache-write-split
+    fidelity is irrelevant to these tests' hand-computed input-token math)."""
+    rec = _asst(model, branch=branch, sidechain=True, ts=ts, content=[])
+    rec["message"]["usage"] = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read_tokens,
+        "cache_creation_input_tokens": 0,
+    }
     return rec
 
 

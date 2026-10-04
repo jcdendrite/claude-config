@@ -1,10 +1,10 @@
-"""Pins cost_ledger.py and workstream_cost.py to the by-module-attribute import
+"""Pins each module in PRODUCTION_MODULES to the by-module-attribute import
 discipline scope.py's own top-of-file comment documents, and pins every
-`_mod.<module>.<name>` read in their test files to a name that module actually
-binds. Committed as a permanent test rather than run once by hand, so a later
-edit that reintroduces a stale reference still fails CI. Scope stays these two
-modules and their test files; no earlier package module carries an equivalent
-check yet.
+`_mod.<module>.<name>` read in the test files in TEST_FILES to a name that
+module actually binds. Committed as a permanent test rather than run once by
+hand, so a later edit that reintroduces a stale reference still fails CI.
+Scope stays those modules and test files; no earlier package module carries an
+equivalent check yet.
 """
 from __future__ import annotations
 
@@ -17,11 +17,15 @@ SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
 PACKAGE_DIR = SCRIPTS_DIR / "transcript_analysis"
 TESTS_DIR = SCRIPTS_DIR / "tests"
 
-PRODUCTION_MODULES = ("cost_ledger.py", "workstream_cost.py")
+PRODUCTION_MODULES = ("cost_ledger.py", "workstream_cost.py", "subagents.py", "subagent_mix.py")
 TEST_FILES = (
     "test_transcript_cost_ledger.py",
     "test_transcript_cost_ledger_record_gates.py",
     "test_transcript_workstream_cost.py",
+    "test_transcript_subagents.py",
+    "test_transcript_subagent_mix.py",
+    "test_transcript_subagent_mix_dollars.py",
+    "test_transcript_cost_counts.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --
@@ -66,8 +70,8 @@ def _top_level_names(module_path: Path) -> set[str]:
 
 
 def test_production_modules_import_package_siblings_by_module_only():
-    """Neither cost_ledger.py nor workstream_cost.py has a
-    `from transcript_analysis.<m> import ...` line -- both read a sibling
+    """No module in PRODUCTION_MODULES has a
+    `from transcript_analysis.<m> import ...` line -- each reads a sibling
     package module's names by attribute (e.g. `cost.compute_cost_trend_data`,
     not a bare `compute_cost_trend_data` bound at import time), per scope.py's
     own top-of-file comment."""
@@ -85,11 +89,11 @@ def test_production_modules_import_package_siblings_by_module_only():
 
 
 def test_production_modules_reference_only_real_sibling_attributes():
-    """Every `<module>.<name>` attribute cost_ledger.py or workstream_cost.py
-    reads on an imported sibling package module names something that module
+    """Every `<module>.<name>` attribute a module in PRODUCTION_MODULES reads
+    on an imported sibling package module names something that module
     actually binds at top level, and is never the Store side of an
-    assignment -- neither module has a reason to reassign a sibling's own
-    state."""
+    assignment -- no module in PRODUCTION_MODULES rebinds a sibling module's
+    attribute (`mod.x = ...`, `mod.x += ...`)."""
     package_names = _package_module_names()
     for filename in PRODUCTION_MODULES:
         module_path = PACKAGE_DIR / filename
@@ -109,7 +113,7 @@ def test_production_modules_reference_only_real_sibling_attributes():
                 continue
             assert not isinstance(node.ctx, ast.Store), (
                 f"{filename} assigns through {node.value.id}.{node.attr} -- "
-                f"neither module should mutate a sibling module's own state"
+                f"no module in PRODUCTION_MODULES should rebind a sibling module's attribute"
             )
             assert node.attr in sibling_names[node.value.id], (
                 f"{filename} reads {node.value.id}.{node.attr}, which {node.value.id}.py does not bind "
