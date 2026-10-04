@@ -192,6 +192,7 @@ HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: frozenset[str] = frozenset({
     "claude/.claude/hooks/tests/__init__.py",
     "claude/.claude/hooks/tests/conftest.py",
     "claude/.claude/hooks/tests/test_config_lib.py",
+    "claude/.claude/hooks/tests/test_review_ledger_script.py",
 })
 
 # HOOKS_TESTS_DIR test files that import CONFIG_MODULE by name.
@@ -228,6 +229,7 @@ SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER: frozenset[str] = frozenset({
 SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_author_outcome.py",
     "claude/.claude/scripts/tests/test_config_parser_parity.py",
+    "claude/.claude/scripts/tests/test_review_ledger_lib.py",
 })
 
 CODE_REVIEW_SKILL_MD = "claude-skills/skills/code-review/SKILL.md"

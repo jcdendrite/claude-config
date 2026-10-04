@@ -552,12 +552,17 @@ def _ledger_row(
     authoring_agent: str = "",
     authoring_effort: str = "",
     schema_version: int = 2,
-    event_time: str = "2026-08-01T10:00:00Z",
+    event_time: object = "2026-08-01T10:00:00Z",
+    session_id: str | None = None,
 ) -> dict:
-    """One review-narrative-ledger row, review-ledger.sh's own schema v2
-    shape. round=None omits the `round` key entirely rather than setting it
-    null, modeling a pre-schema-v2 legacy row. review-ledger.sh itself
-    never writes a null round."""
+    """One review-narrative-ledger row, review-ledger.sh's own row shape.
+    round=None omits the `round` key entirely rather than setting it null,
+    modeling a pre-schema-v2 legacy row. review-ledger.sh itself never
+    writes a null round. session_id=None omits the `session_id` key, the
+    shape of a row written before rows carried one (schema v2). Pass
+    schema_version=3 alongside a session_id for a row that carries one.
+    review-ledger.sh's _LEDGER_SCHEMA_VERSION is the writer's own version, and
+    the readers read no version field."""
     row = {
         "schema_version": schema_version,
         "finding": finding,
@@ -570,25 +575,42 @@ def _ledger_row(
     }
     if round is not None:
         row["round"] = round
+    if session_id is not None:
+        row["session_id"] = session_id
     return row
+
+
+def _write_named_ledger_file(
+    config_dir_root: Path, repo_hash: str, name_slot: str, rows: list[dict],
+) -> Path:
+    ledger_dir = config_dir_root / "review-narrative-ledger"
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    path = ledger_dir / f"{repo_hash}.{name_slot}.jsonl"
+    _write_jsonl(path, rows)
+    return path
 
 
 def _write_ledger_file(
     config_dir_root: Path, session_id: str, rows: list[dict], *, repo_hash: str = "0" * 64,
 ) -> Path:
-    """Write one review-narrative-ledger file for a synthetic session.
-
-    author_outcome.py's own ledger read path locates it by session-id glob
-    under <config_dir_root>/review-narrative-ledger/, mirroring
-    review-ledger.sh's own $LEDGER_DIR/$REPO_HASH.$SESSION_ID.jsonl naming
-    -- the repo-hash prefix is irrelevant to that glob, so a fixed
-    placeholder is fine here.
+    """Write one session-keyed review-narrative-ledger file for a synthetic
+    session, mirroring review-ledger.sh's own
+    $LEDGER_DIR/$REPO_HASH.$SESSION_ID.jsonl naming under
+    <config_dir_root>/review-narrative-ledger/. author_outcome.py attributes
+    a row without a `session_id` to the session in this filename, so a
+    legacy-shaped row needs no session_id here. The repo-hash prefix is
+    irrelevant to that attribution, so a fixed placeholder is fine.
     """
-    ledger_dir = config_dir_root / "review-narrative-ledger"
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-    path = ledger_dir / f"{repo_hash}.{session_id}.jsonl"
-    _write_jsonl(path, rows)
-    return path
+    return _write_named_ledger_file(config_dir_root, repo_hash, session_id, rows)
+
+
+def _write_branch_ledger_file(
+    config_dir_root: Path, branch_hash: str, rows: list[dict], *, repo_hash: str = "0" * 64,
+) -> Path:
+    """Write one branch-keyed review-narrative-ledger file,
+    $LEDGER_DIR/$REPO_HASH.$BRANCH_HASH.jsonl. Its rows must carry their own
+    `session_id`: nothing in the filename says which session wrote them."""
+    return _write_named_ledger_file(config_dir_root, repo_hash, branch_hash, rows)
 
 
 def _opus(

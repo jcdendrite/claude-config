@@ -20,9 +20,11 @@
 # such as `git -c key=val commit` and `git -C <path> commit` slip past the
 # early dispatch unscanned. The hook identifies the commit with _lib's
 # word-walking subcommand extractor (which sees through global
-# `-c`/`-C`/`--git-dir` flags and `&&`/`;`/`|` command chains), and exits
-# immediately — before any git or scan work — whenever the command is not a
-# commit at all.
+# `-c`/`-C`/`--git-dir` flags and `&&`/`;`/`|` command chains), and also
+# recognizes `git <merge|rebase|cherry-pick|revert> --continue` via
+# _lib_command_concludes_commit — each of those four conveys new content the
+# same way a literal `git commit` does. Exits immediately — before any git
+# or scan work — whenever the command concludes neither.
 #
 # Robust against `git commit --no-verify`: a Claude Code PreToolUse hook
 # intercepts the Bash tool call itself. --no-verify disables only git's
@@ -101,7 +103,8 @@
 #  - The editor-flow commit (`git commit` / `git commit --amend` with no
 #    -m/-F) populates the message after the hook fires — nothing to scan
 #    at hook time. Same gap as deny-private-project-refs.sh.
-#  - A chained `git add ... && git commit` staging content after this hook's
+#  - A chained `git add ... && git commit` (or `&& git <merge|rebase|
+#    cherry-pick|revert> --continue`) staging content after this hook's
 #    staged-diff scan is denied by deny-invisible-commit-content.sh, so that
 #    shape does not reach this hook's PII/credential scan. That coverage is
 #    bounded by deny-invisible-commit-content.sh's own Known gaps list.
@@ -299,6 +302,29 @@ while IFS= read -r git_fragment; do
     HEAD_SCAN_NEEDED=1
   fi
 done <<< "$GIT_FRAGMENTS"
+
+# The fragment loop above only recognizes a `git commit` that
+# _lib_split_fragments isolates as its own fragment. A `git
+# <merge|rebase|cherry-pick|revert> --continue` concludes a commit too, with
+# no separate `git commit` call for the loop to see, and so does a `git
+# commit` behind a bare `&` (GH-1063), which the splitter leaves glued to
+# the preceding text. Both are checked here, once, via the broad predicate,
+# which stays armed on `git rebase --continue`; see:
+# `docs/design-decisions/rebase-continue-marker-gate-carveout.md` § "Why `git rebase --continue` is not gated by the marker gates"
+# No worktree-target rescan for the `--continue` forms: none of those four
+# verbs accepts `-a`/`--`/a bare pathspec.
+# The fallback also sets no rescan for a `git commit` behind a bare `&`, so
+# content that `-a` or a pathspec autostages there stays unscanned.
+if [ "$GIT_COMMIT_FOUND" -ne 1 ]; then
+  _lib_command_concludes_commit "$COMMAND"
+  CONCLUDES_COMMIT_STATUS=$?
+  if [ "$CONCLUDES_COMMIT_STATUS" -eq 0 ]; then
+    GIT_COMMIT_FOUND=1
+  elif [ "$CONCLUDES_COMMIT_STATUS" -ne 1 ]; then
+    emit_deny "Commit — could not determine whether this command concludes a git commit (status ${CONCLUDES_COMMIT_STATUS}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned git commit."
+    exit 0
+  fi
+fi
 
 if [ "$GIT_COMMIT_FOUND" -ne 1 ]; then
   exit 0

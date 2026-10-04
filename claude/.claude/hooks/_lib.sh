@@ -259,6 +259,65 @@ _lib_realpath_m() {
   done
 }
 
+# _lib_normalize_path_lexically PATH
+# Sets _LIB_NORMALIZED_PATH (global) to PATH with empty and `.` segments dropped and each `..` popping the segment before it. Touches no filesystem and runs no exec'd command, so a symlink in PATH is not resolved.
+# Verified on bash 5.2 and with BASH_COMPAT=32, not on a real bash 3.2 binary.
+# `realpath -s -m` is not used because it costs the subprocess that callers bound with a realpath budget.
+# Always returns 0. An empty PATH yields an empty result, not `.`.
+# An absolute PATH collapses any run of leading slashes to one, as Linux does, and a `..` at the root is dropped. A relative PATH keeps a leading `..` run, and one that pops to nothing yields `.`.
+# A trailing slash on PATH is kept (a `.` or `..` last segment does not count as one), because a caller's directory-destination classification depends on it.
+_LIB_NORMALIZED_PATH=""
+_lib_normalize_path_lexically() {
+  local path="$1" segment saved_opts=$-
+  local is_absolute=false keeps_trailing_slash=false
+  local -a kept=()
+  local kept_count=0
+  local IFS=/
+  case "$path" in
+    '')
+      _LIB_NORMALIZED_PATH=""
+      return 0
+      ;;
+    /*) is_absolute=true ;;
+  esac
+  case "$path" in
+    */) keeps_trailing_slash=true ;;
+  esac
+  # An IFS of `/` splits on slashes only, so a newline or space inside a segment survives. Globbing is off so a `*` segment stays literal.
+  set -f
+  for segment in $path; do
+    case "$segment" in
+      '' | .) ;;
+      ..)
+        if [ "$kept_count" -gt 0 ] && [ "${kept[kept_count - 1]}" != ".." ]; then
+          kept_count=$((kept_count - 1))
+        elif ! $is_absolute; then
+          kept[kept_count]=..
+          kept_count=$((kept_count + 1))
+        fi
+        ;;
+      *)
+        kept[kept_count]="$segment"
+        kept_count=$((kept_count + 1))
+        ;;
+    esac
+  done
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  local joined=""
+  if [ "$kept_count" -gt 0 ]; then
+    joined="${kept[*]:0:kept_count}"
+  fi
+  if $is_absolute; then
+    joined="/$joined"
+  elif [ -z "$joined" ]; then
+    joined="."
+  fi
+  if $keeps_trailing_slash && [ "${joined: -1}" != "/" ]; then
+    joined="$joined/"
+  fi
+  _LIB_NORMALIZED_PATH="$joined"
+}
+
 # Succeeds only when $1 is non-empty and every byte is in [A-Za-z0-9._/@+-].
 # Matched in bash rather than grep, because BSD grep's -z still anchors ^/$ at each embedded newline.
 # The body is a subshell that sets LC_ALL=C, since bash without `globasciiranges` (bash < 5, including macOS /bin/bash 3.2) orders bracket ranges by locale collation elsewhere.
@@ -409,16 +468,18 @@ _lib_emit_allow_with_context() {
 }
 
 # Reads stdin into INPUT (global), extracts TOOL_NAME, COMMAND, CWD,
-# SESSION_ID, FILE_PATH, and AGENT_TYPE (globals) via a single _lib_jq call
-# using ASCII Unit Separator (0x1f) as delimiter. The single call surfaces a
-# structural-type error when .tool_input is non-object (jq non-zero exit).
+# SESSION_ID, FILE_PATH, AGENT_TYPE, and AGENT_ID (globals) via a single
+# _lib_jq call using ASCII Unit Separator (0x1f) as delimiter. The single call
+# surfaces a structural-type error when .tool_input is non-object (jq non-zero
+# exit).
 #
-# Four deny paths protect against silent-allow:
+# These deny paths protect against silent-allow:
 #   (a) jq non-zero exit (parse failure, cap kill per _lib_capped_for's header above, missing jq binary)
 #   (b) empty INPUT (stdin EOF, closed pipe, harness misbehavior)
 #   (c) empty TOOL_NAME (valid JSON but PreToolUse contract not honored, e.g. "{}")
 #   (d) a 0x1f byte inside any extracted value, which would otherwise shift
 #       every field after it into the wrong global
+#   (e) an embedded newline in TOOL_NAME (the PreToolUse contract violated)
 # Per Anthropic PreToolUse contract, every legitimate event has a non-empty
 # .tool_name; absence indicates the call did not originate from a real tool
 # invocation. Without (b)/(c), downstream gates that early-exit on
@@ -438,28 +499,31 @@ _lib_parse_tool_input_or_deny() {
     emit_deny "$deny_msg"
     exit 0
   fi
-  # Single jq call extracts all six fields delimited by ASCII Unit Separator
+  # Single jq call extracts every field, delimited by ASCII Unit Separator
   # (0x1f) rather than newlines, preventing a value containing an embedded
   # newline from corrupting a later field via line splitting. Unit Separator
   # cannot appear in a valid Claude Code tool name, shell command, cwd,
-  # session id, path, or agent type.
+  # session id, path, agent type, or agent id.
   # The .tool_input.command extraction additionally surfaces a structural-type
   # error when .tool_input is non-object (e.g. "Cannot index string with string
   # 'command'"), returning non-zero.
-  # .cwd, .session_id, and .agent_type silently stringify via jq's \(...)
-  # interpolation rather than erroring when the field holds a non-string
-  # JSON value (a number, object, or array).
-  # For AGENT_TYPE this is safe because both of its consumers
-  # (_lib_is_review_only_agent, _lib_is_no_gate_release_agent) are
-  # exact-match denylists, so a garbled value just fails to match and
-  # falls through to the existing safe default.
+  # .cwd, .session_id, .agent_type, and .agent_id silently stringify via jq's
+  # \(...) interpolation rather than erroring when the field holds a
+  # non-string JSON value (a number, object, or array).
+  # jq's `//` also replaces JSON `false`, so a `false` .agent_id or .agent_type
+  # reads as absent. An empty string reads empty. Any other value is non-empty.
+  # AGENT_ID, not AGENT_TYPE, is the subagent discriminator. The known-gaps list
+  # in enforce-marker-script-shape.sh quotes the hooks reference for why.
+  # Consumers of AGENT_TYPE either test it for emptiness or match it exactly
+  # against a roster. A garbled AGENT_TYPE is non-empty and matches no roster
+  # name.
   local jq_out
-  # WARNING: the format string below contains five literal 0x1f (ASCII Unit
-  # Separator) bytes, one between each of the six interpolated fields. They
-  # are invisible in editors and diff views — do not remove them. test_lib.py's
-  # six-field characterization test will fail immediately if a delimiter is
-  # missing, catching accidental deletion.
-  jq_out=$(printf '%s\n' "$INPUT" | _lib_jq -r '"\(.tool_name // "")\(.tool_input.command // "")\(.cwd // "")\(.session_id // "")\(.tool_input.file_path // "")\(.agent_type // "")"' 2>/dev/null)
+  # WARNING: the format string below holds one literal 0x1f (ASCII Unit
+  # Separator) byte between each pair of adjacent interpolated fields. They
+  # are invisible in editors and diff views, so do not remove them. A missing
+  # one leaves _lib_parse_overflow empty, so the field-shift deny below fires
+  # on every call and test_lib.py's OK-path tests fail at once.
+  jq_out=$(printf '%s\n' "$INPUT" | _lib_jq -r '"\(.tool_name // "")\(.tool_input.command // "")\(.cwd // "")\(.session_id // "")\(.tool_input.file_path // "")\(.agent_type // "")\(.agent_id // "")"' 2>/dev/null)
   local jq_exit=$?
   if [ "$jq_exit" -ne 0 ]; then
     emit_deny "$deny_msg"
@@ -472,14 +536,14 @@ _lib_parse_tool_input_or_deny() {
   # includes bash 3.2. `read -r -d ''` returns non-zero at EOF without ever
   # finding that delimiter, on every invocation including this one's own
   # success path, hence the trailing `|| true`.
-  # The appended sixth 0x1f plus the trailing _lib_parse_overflow variable is
-  # a field-shift detector, not a per-field guard. A 0x1f byte inside any one
-  # of the six values raises the split's field count above six regardless of
-  # which field carries it. A well-formed payload therefore leaves
-  # _lib_parse_overflow holding exactly the herestring's own trailing
-  # newline and nothing else.
-  # shellcheck disable=SC2034 # set for hook scripts that source this file and reference $COMMAND/$CWD/$SESSION_ID/$FILE_PATH/$AGENT_TYPE
-  IFS=$'\x1f' read -r -d '' TOOL_NAME COMMAND CWD SESSION_ID FILE_PATH AGENT_TYPE _lib_parse_overflow <<< "$jq_out"$'\x1f' || true
+  # The extra 0x1f appended to the herestring, plus the trailing
+  # _lib_parse_overflow variable, is a field-shift detector, not a per-field
+  # guard. A 0x1f byte inside any extracted value adds a split field, whichever
+  # value carries it, and pushes content into _lib_parse_overflow. A
+  # well-formed payload therefore leaves _lib_parse_overflow holding exactly
+  # the herestring's own trailing newline and nothing else.
+  # shellcheck disable=SC2034 # set for hook scripts that source this file and reference $COMMAND/$CWD/$SESSION_ID/$FILE_PATH/$AGENT_TYPE/$AGENT_ID
+  IFS=$'\x1f' read -r -d '' TOOL_NAME COMMAND CWD SESSION_ID FILE_PATH AGENT_TYPE AGENT_ID _lib_parse_overflow <<< "$jq_out"$'\x1f' || true
   # This deny carries its own message rather than $deny_msg, so a deliberate
   # field-shift attempt classifies as a behavioral denial instead of being
   # filed under the shared parse-failure (infra) reason.
@@ -810,7 +874,9 @@ _LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS=30
 # extended-regex bracket expression. Shared by _lib_valid_session_id_component
 # and _lib_review_pr_worktree_name_is_review_shaped, so the ids the creator
 # accepts are exactly the ids the review-shape check recognizes.
-_LIB_SESSION_ID_COMPONENT_CHAR_REGEX='[A-Za-z0-9_-]'
+# Spells out each allowed character instead of using ranges, so a locale whose
+# collation puts non-ASCII letters inside a range does not widen the class.
+_LIB_SESSION_ID_COMPONENT_CHAR_REGEX='[-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]'
 
 # Leading part of every review worktree directory name, whatever the session.
 _LIB_REVIEW_PR_WORKTREE_NAME_ROOT="review-pr-"
@@ -1152,6 +1218,9 @@ _lib_active_plan_hash() {
 # use: _lib_cumulative_diff_hash's own post-hash step below, and marker.sh's
 # `write cumulative-review` arm, which hashes a recorded subject through this
 # same function rather than a second, possibly-drifting copy of the recipe.
+# review-ledger.sh's site hash (_review_ledger_site_hash in
+# scripts/_review-ledger-lib.sh) is a third consumer: it hashes a line range of
+# a working-tree file through this function and keeps the first 12 hex digits.
 # TEXT may be empty -- sha256 of an empty string is still a valid digest, so
 # this function doesn't treat empty input as failure. Refusing an empty
 # subject is marker.sh's precondition, not this helper's.
@@ -1701,11 +1770,9 @@ _lib_git_argv_from_subcmd() {
     fi
     if $skip_next; then skip_next=false; continue; fi
     case "$word" in
-      # Every git 2.43 global flag taking a separate-word value, per `git
-      # help --all`'s global-options list.
-      # A future git version adding another one needs this list updated by
-      # hand.
-      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)
+      # The git 2.43 global flags that take a separate-word value. A later git
+      # version adding another needs this list updated by hand.
+      -C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env|--attr-source)
         skip_next=true ;;
       -*) ;;
       *) printf '%s\n' "$word"; past_subcmd=true ;;
@@ -1799,7 +1866,11 @@ _lib_commit_fragment_has_worktree_target() {
 # fail closed on non-zero, rather than proceeding with a silently empty
 # fragment list — see deny-invisible-commit-content.sh's SPLIT_EXIT
 # computation for the pattern.
+# The two-stage sed pipeline reports a first-stage failure only under
+# `set -o pipefail`, so a sourcing caller must have it set.
+# Spends 2 sed calls per invocation.
 _lib_split_fragments() {
+  # sed_split_stage_shim (conftest.py) keys on the first-stage script starting `s/;/`.
   printf '%s' "$1" \
     | sed -E 's/;/\n/g; s/&&/\n/g; s/\|\|/\n/g; s/\|/\n/g; s/\$\(/\n/g; s/`/\n/g' \
     | sed -E 's/^[[:space:]]*\(//; s/\)[[:space:]]*$//'
@@ -1895,18 +1966,16 @@ _lib_fragment_has_token() {
 # SUBCMD`, 1 if no fragment does, 2 if a fork this needed (the quote-strip
 # or the fragment-split) failed and the answer could not be determined.
 # Composes _lib_strip_shell_quotes, _lib_split_fragments,
-# _lib_fragment_invokes_git, and _lib_extract_git_subcmd, so the eight gate
-# hooks share one fragment-aware matcher instead of each hand-copying a raw
-# regex over unstripped $COMMAND (which a quote-split defeats, e.g. `"git"
-# commit`).
+# _lib_fragment_invokes_git, and _lib_extract_git_subcmd, so a caller gets
+# one fragment-aware matcher instead of a raw regex over unstripped $COMMAND
+# (which a quote-split defeats, e.g. `"git" commit`).
 #
 # Call-site contract (load-bearing): never picks a fail posture itself —
 # every caller must check for status 2 and decide allow-or-deny for its own
 # gate, the same discipline _lib_split_fragments's own call-site contract
-# already requires. Six checked-fail-closed hooks deny on status 2; the two
-# correctly-fail-open hooks (guard-settings-session-keys.sh,
-# require-stow-reminder.sh) treat anything other than 0 as "no match" and
-# stay silent about the distinction, matching their own documented posture.
+# already requires. The commit gates call _lib_command_concludes_commit or
+# _lib_command_concludes_marker_gated_commit instead; this helper is the
+# tri-state contract those predicates follow.
 _lib_command_invokes_git_subcmd() {
   [ "$#" -eq 2 ] || return 2
   local command="$1" subcmd="$2"
@@ -1931,48 +2000,107 @@ _lib_command_invokes_git_subcmd() {
 _LIB_CONTINUE_VERBS_ALL="merge rebase cherry-pick revert"
 _LIB_CONTINUE_VERBS_MARKER_GATED="merge cherry-pick revert"
 
+# _lib_fragment_concludes_commit_shape FRAGMENT SUBCMD VERBS
+# Private. True iff FRAGMENT alone is `git commit` (SUBCMD = commit), or
+# `git <verb> --continue` for a verb in the whitespace-separated VERBS list
+# (SUBCMD = that verb and `--continue` is one of the verb's own arguments,
+# not merely present somewhere else in FRAGMENT). Matches any unambiguous
+# prefix of `--continue` (`--c` through `--continu`), since git's option
+# parser accepts the same abbreviations (gitcli(7), "ENHANCED OPTION
+# PARSER"). This also matches a few prefixes git itself would reject as
+# ambiguous against another long option on the same verb -- a false
+# positive here only denies a command git would have rejected anyway, never
+# a bypass.
+# Caller contract: FRAGMENT must already have passed
+# _lib_fragment_invokes_git, and SUBCMD must be that same fragment's
+# _lib_extract_git_subcmd result -- this function performs neither check
+# nor extraction itself.
+# Plain boolean, not tri-state: _lib_extract_git_subcmd_args runs no sed or tr
+# (_lib_git_argv_from_subcmd is a pure bash word-walk), so no sed/tr failure
+# needs signalling here. The `< <(...)` read below forks a subshell whose
+# failure is not detected, so it reads as no match.
+_lib_fragment_concludes_commit_shape() {
+  local fragment="$1" subcmd="$2" verbs="$3"
+  [ "$subcmd" = commit ] && return 0
+  local verb is_continue_verb=false
+  for verb in $verbs; do
+    if [ "$subcmd" = "$verb" ]; then
+      is_continue_verb=true
+      break
+    fi
+  done
+  $is_continue_verb || return 1
+  local arg
+  while IFS= read -r arg; do
+    case "$arg" in
+      --continue | --c | --co | --con | --cont | --conti | --contin | --continu)
+        return 0
+        ;;
+    esac
+  done < <(_lib_extract_git_subcmd_args "$fragment")
+  return 1
+}
+
 # _lib_command_concludes_commit_shape COMMAND VERBS
-# Private. True iff any fragment of COMMAND is `git commit` (in any form
-# _lib_command_invokes_git_subcmd already recognizes), or `git <verb>
-# --continue` for a verb in the whitespace-separated VERBS list. A clean
-# merge, rebase, or cherry-pick creates its commit inside the initiating
-# command with no separate `git commit` call, so this is the only PreToolUse
-# shape a conflict-resolution commit takes.
-# `--continue` must be one of the matched verb's own arguments, not merely
-# present somewhere else in COMMAND -- `_lib_extract_git_subcmd_args` is
-# checked per matching fragment rather than grepping the whole command
-# string, so `git rebase origin/main && echo --continue` does not match.
+# Private. True iff any fragment of COMMAND concludes a commit per
+# _lib_fragment_concludes_commit_shape above, for the verb set VERBS. A
+# conflict-stopped operation is concluded by its `--continue` invocation,
+# which creates the commit with no separate `git commit` call, so VERBS
+# decides which verbs' `--continue` forms match alongside a literal
+# `git commit`.
 # Tri-state via exit status, same 0/1/2 contract as
-# _lib_command_invokes_git_subcmd, which this delegates the `commit` check
-# to directly.
+# _lib_command_invokes_git_subcmd. Status 2 also covers a failed here-string
+# redirect in the fragment walk below.
 _lib_command_concludes_commit_shape() {
   [ "$#" -eq 2 ] || return 2
   local command="$1" verbs="$2"
   local command_unquoted fragments fragment
   command_unquoted=$(_lib_strip_shell_quotes "$command") || return 2
   fragments=$(_lib_split_fragments "$command_unquoted") || return 2
-  local subcmd verb is_continue_verb arg
-  while IFS= read -r fragment; do
-    [ -z "$fragment" ] && continue
-    _lib_fragment_invokes_git "$fragment" || continue
-    subcmd=$(_lib_extract_git_subcmd "$fragment")
-    if [ "$subcmd" = commit ]; then
-      return 0
+  local subcmd pass piece saved_ifs saved_opts ifs_was_set candidates=$fragments newline=$'\n' walked
+  # _lib_split_fragments leaves a bare `&` unsplit (GH-1063), so pass 2 walks each `&`-separated piece.
+  # Pass 2 only adds candidates, so it can only gain matches, and it is skipped when no `&` is present.
+  # It splits only the fragments containing `&`.
+  # Each piece gets the leading-`(` / trailing-`)` strip _lib_split_fragments gives a fragment, so `x & (git commit)` matches.
+  # A piece without the substring `git` cannot invoke it, so it is dropped before that strip.
+  for pass in 1 2; do
+    if [ "$pass" -eq 2 ]; then
+      [[ "$fragments" == *'&'* ]] || break
+      candidates=""
+      # Word-splitting on newlines is faster than a `read` loop over a large string.
+      # IFS is restored exactly, unset-ness included.
+      ifs_was_set=${IFS+set}
+      saved_ifs=${IFS-}
+      saved_opts=$-
+      set -f
+      IFS=$newline
+      for fragment in $fragments; do
+        [[ "$fragment" == *'&'* ]] || continue
+        for piece in ${fragment//&/$newline}; do
+          [[ "$piece" == *git* ]] || continue
+          piece=${piece#"${piece%%[![:space:]]*}"}
+          piece=${piece#\(}
+          piece=${piece%"${piece##*[![:space:]]}"}
+          piece=${piece%\)}
+          candidates+="$piece$newline"
+        done
+      done
+      if [ -n "$ifs_was_set" ]; then IFS=$saved_ifs; else unset IFS; fi
+      if [[ "$saved_opts" != *f* ]]; then set +f; fi
     fi
-    is_continue_verb=false
-    for verb in $verbs; do
-      if [ "$subcmd" = "$verb" ]; then
-        is_continue_verb=true
-        break
-      fi
-    done
-    $is_continue_verb || continue
-    while IFS= read -r arg; do
-      if [ "$arg" = --continue ]; then
+    walked=false
+    while IFS= read -r fragment; do
+      walked=true
+      [ -z "$fragment" ] && continue
+      _lib_fragment_invokes_git "$fragment" || continue
+      subcmd=$(_lib_extract_git_subcmd "$fragment")
+      if _lib_fragment_concludes_commit_shape "$fragment" "$subcmd" "$verbs"; then
         return 0
       fi
-    done < <(_lib_extract_git_subcmd_args "$fragment")
-  done <<< "$fragments"
+    done <<< "$candidates"
+    # A here-string always supplies at least one line (bash appends a newline, even for empty input), so an unentered loop means its redirect failed.
+    $walked || return 2
+  done
   return 1
 }
 
@@ -1983,11 +2111,9 @@ _lib_command_concludes_commit_shape() {
 # shared by every gate whose recourse on a bad commit is mechanical (unstage
 # a value, shorten a file, remove a session key) rather than a review, so
 # narrowing this predicate to skip a verb would silently disarm those gates
-# for that verb's `--continue` form once wired in. See
-# _lib_command_concludes_marker_gated_commit
-# below for the narrower sibling used by the two gates whose recourse is a
-# review.
-# Not yet called from any hook in this codebase.
+# for that verb's `--continue` form. See
+# _lib_command_concludes_marker_gated_commit below for the narrower sibling
+# used by gates whose recourse is a review.
 _lib_command_concludes_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_ALL"
@@ -1999,17 +2125,22 @@ _lib_command_concludes_commit() {
 # anchor in the ordinary case (see _lib_gate_diff_base), so gating a review
 # marker on it would mean demanding a full review at every conflicted step
 # of a rebase against content that, for the most part, already passed
-# review at its own original commit time. Once wired in, the two gates
-# intended to consume this narrower predicate would still deny an ordinary
-# `git commit` made mid-rebase without `--continue`, while the five gates
-# intended to consume the broad predicate above would stay armed on
-# `git rebase --continue` -- this predicate is designed to narrow
+# review at its own original commit time. An ordinary `git commit` made
+# mid-rebase without `--continue` still matches here, and the broad predicate
+# above still matches `git rebase --continue` -- this predicate narrows
 # review-marker enforcement specifically, not rebase's overall gate
 # coverage.
-# Not yet called from any hook in this codebase.
 _lib_command_concludes_marker_gated_commit() {
   [ "$#" -eq 1 ] || return 2
   _lib_command_concludes_commit_shape "$1" "$_LIB_CONTINUE_VERBS_MARKER_GATED"
+}
+
+# _lib_fragment_concludes_commit FRAGMENT SUBCMD
+# Plain-boolean fragment-level sibling of _lib_fragment_concludes_commit_shape,
+# fixed to $_LIB_CONTINUE_VERBS_ALL; for callers that already hold each
+# fragment's _lib_extract_git_subcmd result.
+_lib_fragment_concludes_commit() {
+  _lib_fragment_concludes_commit_shape "$1" "$2" "$_LIB_CONTINUE_VERBS_ALL"
 }
 
 # Print a tool fragment's subcommand-word sequence, one word per line, after
@@ -2184,9 +2315,9 @@ _lib_length_ratchet_exceeded() {
 # AND longer than the previously committed version — reducing an
 # already-over-limit file commit by commit is allowed; new bloat is not.
 #
-# Runs only when a Bash command invokes `git commit`, gated behind both
-# callers' `if: git commit *` matcher in settings.json — commit-time-cold,
-# not per-tool-call like most _lib.sh helpers.
+# Runs only when a Bash command concludes a commit, per the caller's
+# _lib_command_concludes_commit check — commit-time-cold, not per-tool-call
+# like most _lib.sh helpers.
 # REPO_ROOT is resolved by the caller from the payload's cwd, the same shape
 # require-code-review.sh uses, and threaded through every git call below --
 # an ambient-cwd call here would let a session whose shell drifted to a
@@ -2210,9 +2341,11 @@ _lib_length_ratchet_exceeded() {
 # Also relies on the caller having already:
 # - populated $COMMAND and $TOOL_NAME via _lib_parse_tool_input_or_deny
 # - exited for a non-Bash TOOL_NAME
-# - confirmed this is a git-commit-shaped command (_lib_command_invokes_git_subcmd
-#   "$COMMAND" commit, failing closed on an undetermined match), before ever
-#   resolving REPO_ROOT or calling this
+# - confirmed this command concludes a commit, via the broad predicate
+#   `_lib_command_concludes_commit "$COMMAND"` (armed on `git rebase
+#   --continue` too, since this gate's recourse is mechanical), failing
+#   closed on an undetermined match, before ever resolving REPO_ROOT or
+#   calling this
 #
 # The commit-shape check must run before any git subprocess spawns, so it lives in
 # the caller, ahead of REPO_ROOT resolution, not in here.
@@ -2321,12 +2454,21 @@ _lib_staged_length_gate() {
 }
 
 # Decide whether a command chains `marker.sh write <skill>` before its first
-# `git commit`. PreToolUse hooks fire once per Bash tool call before the chain
-# runs, so an on-disk marker check denies naturally-typed forms like
-# `marker.sh write code-review && git commit`. When the same Bash call will
-# write the marker before invoking commit, the in-chain marker.sh invocation
-# is the same evidence the on-disk marker would later provide — marker.sh is
-# the only sanctioned writer in either case.
+# commit-concluding command (`git commit`, or `git <merge|rebase|cherry-pick|
+# revert> --continue`). PreToolUse hooks fire once per Bash tool call before
+# the chain runs, so an on-disk marker check denies naturally-typed forms
+# like `marker.sh write code-review && git commit`. When the same Bash call
+# will write the marker before concluding the commit, the in-chain marker.sh
+# invocation is the same evidence the on-disk marker would later provide —
+# marker.sh is the only sanctioned writer in either case.
+#
+# The tail matches the full `--continue` union, deliberately including
+# `rebase --continue`, even though require-code-review.sh's own narrow
+# predicate never checks for this marker on that command shape. This
+# matcher is about chain *shape*, not about which gate the chained command
+# reaches. Denying `marker.sh write code-review && git rebase --continue`
+# would be a confusing footgun for an agent chaining defensively out
+# of habit.
 #
 # **Anchored at command start, not fragment start.** A fragment-walking
 # approach (split on `&&` / `;` / `|`, then scan each fragment) would treat
@@ -2336,9 +2478,10 @@ _lib_staged_length_gate() {
 # wedge the gate open without ever actually invoking marker.sh. The strict
 # command-start anchor here mirrors enforce-marker-script-shape.sh's
 # VALID_CHAINED_COMMIT_PATTERN: only the literal shape
-# `marker.sh write <skill>{,&& marker.sh write <skill2>...} && git commit`
-# is honored. Wrapper commands, env-var prefixes, `bash -c`, heredoc bodies,
-# and pipes all fail the anchor.
+# `marker.sh write <skill>{,&& marker.sh write <skill2>...} && git (commit|
+# (merge|rebase|cherry-pick|revert) --continue)` is honored. Wrapper
+# commands, env-var prefixes, `bash -c`, heredoc bodies, and pipes all fail
+# the anchor.
 #
 # Usage: _lib_chains_marker_write_before_commit "$COMMAND" code-review
 # Returns 0 (true) if the command matches the sanctioned chained shape AND
@@ -2347,17 +2490,22 @@ _lib_chains_marker_write_before_commit() {
   local command="$1" skill="$2"
   # Step 1: command matches the sanctioned chained shape (mirrors
   # enforce-marker-script-shape.sh's VALID_CHAINED_COMMIT_PATTERN). One or
-  # more marker.sh write fragments joined by `&&`, then git commit. Anchored
-  # so wrapper commands cannot trick the gate.
-  if ! printf '%s' "$command" | grep -qE \
-    "^[[:space:]]*((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+commit([[:space:]].*)?$"; then
-    return 1
-  fi
-  # Step 2: target skill is among the chained writes. A chain like
-  # `marker.sh write skill-review && git commit` must not authorize a
+  # more marker.sh write fragments joined by `&&`, then a commit-concluding command. Anchored
+  # so wrapper commands cannot trick the gate. `=~` anchors `^`/`$` to the
+  # whole string and lets `.` cross a newline, so the chain must begin the
+  # whole command and only the commit's tail may span further lines.
+  # The commit's `.*` argument tail is looser than enforce-marker-script-shape.sh's
+  # single-line `[^&|;<>]*` tail, so that hook is the stricter layer.
+  # Group 1 captures the chain, the writes before the `git` token.
+  local chained_shape_re='^[[:space:]]*(((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+)git[[:space:]]+(commit([[:space:]].*)?|(merge|rebase|cherry-pick|revert)[[:space:]]+--continue([[:space:]].*)?)$'
+  [[ "$command" =~ $chained_shape_re ]] || return 1
+  local chain_writes=${BASH_REMATCH[1]}
+  # Step 2: target skill is among the chained writes, searched in the chain
+  # only so a write named in the commit's arguments cannot satisfy it. A chain
+  # like `marker.sh write skill-review && git commit` must not authorize a
   # code-review-gated commit.
-  printf '%s' "$command" | grep -qE \
-    "(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+${skill}([[:space:]]|$)"
+  local target_write_re="(~|/[A-Za-z0-9_./-]+)/\\.claude/scripts/marker\\.sh[[:space:]]+write[[:space:]]+${skill}([[:space:]]|&)"
+  [[ "$chain_writes" =~ $target_write_re ]]
 }
 
 # Shared parenthetical explaining worktree_required's config-dir-or-home
@@ -2484,9 +2632,12 @@ _lib_permission_prompt_tracking_active() {
 # (letters, digits, underscore, hyphen) has ample room without ever needing
 # '.' or '/'. Empty input is rejected — callers must not fall through to an
 # unvalidated empty SESSION_ID.
+# The allowed characters are _LIB_SESSION_ID_COMPONENT_CHAR_REGEX; see it for
+# why they are spelled out. The `[[ =~ ]]` match overwrites BASH_REMATCH in the
+# caller and assumes `nocasematch` is off (no caller sets it). It forks no subshell.
+# author_outcome.py's _SESSION_ID_PATTERN is the ASCII-only mirror of it.
 _lib_valid_session_id_component() {
-  local session_id="$1"
-  [[ "$session_id" =~ ^${_LIB_SESSION_ID_COMPONENT_CHAR_REGEX}+$ ]]
+  [[ "${1-}" =~ ^${_LIB_SESSION_ID_COMPONENT_CHAR_REGEX}+$ ]]
 }
 
 # _lib_active_bypass_marker_live MARKER_DIR_NAME SESSION_ID
@@ -3151,6 +3302,7 @@ _lib_config_lines() {
 # output back through it — a second pass can further collapse an
 # already-stripped `\` sequence (e.g. `a\\b` strips to `a\b` on the first
 # pass, `ab` on a second).
+# Spends 1 sed call per invocation.
 _lib_strip_shell_quotes() {
   local stripped stripped_exit unquoted unquoted_exit
   stripped=$(printf '%s' "$1" | sed -E -e "s/\\\$'/'/g" -e 's/\$"/"/g' -e 's/\\(.)/\1/g')
@@ -3850,6 +4002,15 @@ _lib_reviewer_round_state_key() {
   local branch
   branch=$(_lib_capped git -C "$repo_root" symbolic-ref -q --short HEAD 2>/dev/null)
   [ -n "$branch" ] || return 1
+  _lib_reviewer_round_state_key_for_branch "$repo_root" "$branch"
+}
+
+# _lib_reviewer_round_state_key_for_branch REPO_ROOT BRANCH
+# The one home for the "<repo-hash>.<branch-hash>" formula, for a caller that
+# has already read BRANCH from HEAD. Returns 1 with no stdout when either
+# hash did not compute.
+_lib_reviewer_round_state_key_for_branch() {
+  local repo_root="$1" branch="$2"
   local repo_hash branch_hash
   repo_hash=$(_marker_lib_repo_hash "$repo_root")
   branch_hash=$(_lib_hash_diff_text "$branch")
@@ -3992,6 +4153,9 @@ _LIB_APPEND_LOCK_RETRIES=5
 # than at review-ledger.sh's, since a PostToolUse hook is more exposed to
 # being killed mid-lock by the harness's own hook timeout than a
 # skill-invoked CLI script is.
+# Known limit: dead-holder eviction is non-atomic, so two processes can both
+# evict and both acquire, and an EXIT trap can then remove a lock its process
+# does not own. The outcome is a duplicate row.
 _lib_acquire_append_lock() {
   # Deliberately not `local`: the EXIT trap below evaluates this lazily at
   # script-exit time, after this function has already returned, and any
@@ -4066,14 +4230,16 @@ _lib_append_line_locked() {
 # projects through DEDUP_KEY_JQ_FILTER instead of taking
 # _lib_append_line_locked's whole-line match.
 # The dedup check below re-reads and re-parses the whole FILE on every call
-# (O(file size) per append). FILE is scoped per session -- review-ledger.sh
-# builds it as $REPO_HASH.$SESSION_ID.jsonl -- so this scan's cost grows
-# with every finding appended across all of that session's review rounds.
+# (O(file size) per append). FILE is scoped per branch or, on a detached
+# HEAD or the default branch, per session -- review-ledger.sh resolves it
+# through _lib_review_ledger_path -- so this scan's cost grows with every
+# finding appended across all of that branch's (or session's) review rounds.
+# Sessions on the same branch append to one FILE, so cross-session appends
+# contend for its lock.
 # review-ledger.sh's per-append call to _sweep_stale_ledger_files (with the
 # fixed _LEDGER_SWEEP_FLOOR_DAYS floor) bounds the ledger directory's overall
-# footprint by evicting whole stale files. It never touches this file while
-# the session that owns it is still live, so it puts no cap on FILE's own
-# growth.
+# footprint by evicting whole stale files. It never touches a file that is
+# still being appended to, so it puts no cap on FILE's own growth.
 _lib_append_json_line_locked() {
   local file="$1" line="$3" dedup_filter="$4"
   # Requires a brace-delimited, comma-separated identifier list -- rejects
@@ -4131,6 +4297,9 @@ _lib_append_json_line_locked() {
       printf '_lib_append_json_line_locked: dedup check failed (jq missing, timed out, or malformed filter) -- proceeding with unconditional append\n' >&2
     fi
   fi
+  # Known limit: when FILE ends in an unterminated line (only a torn write
+  # leaves one), this row joins that line and is unreadable, yet the call
+  # still returns 0.
   printf '%s\n' "$line" >> "$file"
 }
 
@@ -4191,6 +4360,80 @@ _ledger_sweep_window_days() {
     printf '%s' "$_LEDGER_SWEEP_FLOOR_DAYS"
   else
     printf '%s' "$cleanup_period_days"
+  fi
+}
+
+# Branch names _lib_review_ledger_path treats as the default when no default
+# branch resolves. Mirrors _lib_default_branch_or_guess's candidate list; a
+# copy of that function lives in the skill-management plugin's own _lib.sh
+# and must stay text-identical, so the list cannot be shared by reference.
+_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES=(main master develop)
+
+# _lib_review_ledger_session_path CONFIG_DIR REPO_ROOT SESSION_ID
+# Prints <config-dir>/review-narrative-ledger/<repo-hash>.<session-id>.jsonl,
+# the one home for the session-scoped ledger path. Returns 1 with no stdout
+# when REPO_ROOT is empty, its hash did not compute, or SESSION_ID is not a
+# valid path component (an id holding '/' or '..' would escape the ledger
+# directory).
+_lib_review_ledger_session_path() {
+  local config_dir="$1" repo_root="$2" session_id="$3"
+  local repo_hash
+  [ -n "$repo_root" ] || return 1
+  _lib_valid_session_id_component "$session_id" || return 1
+  repo_hash=$(_marker_lib_repo_hash "$repo_root") || return 1
+  [ -n "$repo_hash" ] || return 1
+  printf '%s/review-narrative-ledger/%s.%s.jsonl' "$config_dir" "$repo_hash" "$session_id"
+}
+
+# _lib_review_ledger_path CONFIG_DIR REPO_ROOT SESSION_ID
+# Prints "<scope> <path>" for the review-ledger file this worktree appends to.
+# The path comes last so a CONFIG_DIR containing a space still parses:
+# scope is ${out%% *}, path is ${out#* }.
+# - scope "branch": <repo-hash>.<branch-hash>.jsonl, the same per-branch key
+#   _lib_reviewer_round_state_key gives the round-3 gate.
+# - scope "session": _lib_review_ledger_session_path's file. It is used on a
+#   detached HEAD (mid-rebase included) and on the default branch, so a
+#   local-only main does not grow one unbounded file.
+# Default-branch detection is _lib_default_branch_or_guess. When no default
+# resolves, a branch named like one of _LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES
+# counts as the default.
+# A branch named like one of those names is still branch-keyed when origin/HEAD
+# names a different branch.
+# HEAD is read once. `symbolic-ref -q` exits 1 on a detached HEAD and any
+# status above 1 when git itself failed or timed out, so a git failure does not
+# silently downgrade a branch's rows into the session file.
+# Exit 1, empty stdout: REPO_ROOT is empty, a hash did not compute, git could
+# not read HEAD, or (session scope only) SESSION_ID is not a valid path
+# component.
+# Exit 1 means the location is unknown, whether the cause is transient or
+# permanent. The caller picks fail-open or fail-closed. A hook must not render
+# exit 1 as "no ledger".
+_lib_review_ledger_path() {
+  local config_dir="$1" repo_root="$2" session_id="$3"
+  local branch branch_key default_branch candidate session_path
+  local head_status=0 session_scoped=0
+  [ -n "$repo_root" ] || return 1
+  branch=$(_lib_capped git -C "$repo_root" symbolic-ref -q --short HEAD 2>/dev/null) || head_status=$?
+  [ "$head_status" -le 1 ] || return 1
+  if [ -z "$branch" ]; then
+    session_scoped=1
+  elif default_branch=$(_lib_default_branch_or_guess "$repo_root"); then
+    if [ "$branch" = "$default_branch" ]; then
+      session_scoped=1
+    fi
+  else
+    for candidate in "${_LIB_REVIEW_LEDGER_DEFAULT_BRANCH_NAMES[@]}"; do
+      if [ "$branch" = "$candidate" ]; then
+        session_scoped=1
+      fi
+    done
+  fi
+  if [ "$session_scoped" -eq 1 ]; then
+    session_path=$(_lib_review_ledger_session_path "$config_dir" "$repo_root" "$session_id") || return 1
+    printf 'session %s' "$session_path"
+  else
+    branch_key=$(_lib_reviewer_round_state_key_for_branch "$repo_root" "$branch") || return 1
+    printf 'branch %s/review-narrative-ledger/%s.jsonl' "$config_dir" "$branch_key"
   fi
 }
 

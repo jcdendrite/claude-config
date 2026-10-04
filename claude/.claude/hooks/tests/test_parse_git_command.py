@@ -210,6 +210,23 @@ class TestGlobalFlags:
     def test_dash_dash_git_dir_consumes_value(self):
         assert parse("git --git-dir /tmp/.git log") == [rec("GIT", "log", "", "NONE", "START", "0")]
 
+    def test_attr_source_separate_word_consumes_value(self):
+        """`--attr-source <tree-ish>` takes its value as the next word; the
+        tree-ish must not be read as the subcommand."""
+        assert parse("git --attr-source HEAD commit -m x") == [
+            rec("GIT", "commit", "", "NONE", "START", "0")
+        ]
+
+    def test_attr_source_before_dash_C_still_recognizes_C_target(self):
+        assert parse("git --attr-source HEAD -C /some/path commit") == [
+            rec("GIT", "commit", "/some/path", "LITERAL", "START", "0")
+        ]
+
+    def test_attr_source_single_word_form_skipped(self):
+        assert parse("git --attr-source=HEAD commit -m x") == [
+            rec("GIT", "commit", "", "NONE", "START", "0")
+        ]
+
     def test_no_pager_flag_stripped(self):
         assert parse("git --no-pager log") == [rec("GIT", "log", "", "NONE", "START", "0")]
 
