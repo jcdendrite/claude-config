@@ -1,4 +1,4 @@
-"""Pure helpers and path constants shared across hook, skill, and script test files.
+"""Pure helpers and path constants shared across the repo's test trees.
 
 No pytest decorators here — this is a plain Python module. Import
 explicitly from each test file that needs these symbols.
@@ -991,9 +991,8 @@ def build_conflicted_merge_via_origin_with_upstream_skill_edit(
     _build_conflicted_merge_via_origin_with_upstream_plan_edit in
     test_marker_script.py for the plan-review marker kind, generalized to a
     shared helper since the skill-review gate's tests need the same shape.
-    Neither bare_remote_with_default_branch nor push_conflicting_edit_to_origin
-    creates parent directories, so this builder does its own mkdir -p for the
-    nested skill path."""
+    This builder does its own mkdir -p for the nested skill path, because
+    push_conflicting_edit_to_origin does not create parent directories."""
     bare, clone = bare_remote_with_default_branch(tmp_path)
     skill_rel_path = f"claude-skills/skills/{skill_name}/SKILL.md"
     if not upstream_adds_skill:

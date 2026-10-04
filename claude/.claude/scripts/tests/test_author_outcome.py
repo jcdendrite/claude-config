@@ -978,7 +978,7 @@ class TestReviewLedgerSubprocessIntegration:
         what attributes it."""
         home = tmp_path / "home"
         home.mkdir()
-        repo = init_git_repo_with_commit(tmp_path / "repo", branch="main", file_name="file.txt", content="first\n")
+        repo = init_git_repo_with_commit(tmp_path / "repo", branch="main")
         subprocess.run(["git", "checkout", "-q", "-b", "feature"], cwd=repo, check=True)
         _seed_session(home, self.SESSION_ID)
 
@@ -1019,6 +1019,7 @@ class TestReviewLedgerSubprocessIntegration:
         settled-PASS data-quality key, the carry by its own disposition."""
         home = tmp_path / "home"
         home.mkdir()
+        # The seed must be file.txt: the --source/--cited-line args cite file.txt:1, whose text is the content below.
         repo = init_git_repo_with_commit(tmp_path / "repo", branch="main", file_name="file.txt", content="first\n")
         _seed_session(home, self.SESSION_ID)
         settled = self._run_append(

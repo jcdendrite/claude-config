@@ -36,6 +36,7 @@ def test_init_git_repo_sets_a_local_commit_identity(tmp_path: Path) -> None:
 def test_builder_without_a_branch_keeps_the_host_default(
     builder, tmp_path: Path, monkeypatch
 ) -> None:
+    # Env-only config keeps the probe default out of the machine's git config. Needs git >= 2.31, which added GIT_CONFIG_COUNT.
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "init.defaultBranch")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "host-default-probe")
