@@ -23,8 +23,11 @@ import textwrap
 import pytest
 from helpers import (
     HOOKS_DIR,
+    assert_brought_in_file_hidden_from_gate_base,
     assert_cap_engaged,
     bash_input,
+    build_conflicted_merge_with_clean_addition,
+    build_conflicted_rebase,
     build_path_without,
     read_input,
     run_hook,
@@ -1586,9 +1589,125 @@ class TestDenyPiiInCommits:
             cwd=git_repo,
         ) == "deny"
 
+    def test_ampersand_chained_add_then_commit_detected(self, isolated_home, git_repo, pii_patterns):
+        """`git add . & git commit` -- _lib_split_fragments leaves the bare
+        `&` unsplit (GH-1063), so the commit is reached through the shared
+        predicate's `&` pass, and the already-staged SSN is scanned."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", f"x\nSSN {SSN}\n")
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input("git add . & git commit -m wip"),
+            cwd=git_repo,
+        ) == "deny"
+
+    def test_commit_all_behind_ampersand_leaves_worktree_only_content_unscanned_known_gap(
+        self, isolated_home, git_repo, pii_patterns
+    ):
+        """Accepted known gap (GH-1063): a `git commit -a` behind a bare `&`
+        is recognized as a commit but sets no worktree rescan, so a
+        credential that `-a` autostages stays unscanned. The unglued form
+        below is the control that denies the same worktree-only content."""
+        pii_patterns("# no user patterns\n")
+        _modify_unstaged(git_repo, "file.txt", f"first\nsecond\nSSN {SSN}\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -a -m wip"), cwd=git_repo) == "deny"
+        assert run_hook(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input("git status & git commit -a -m wip"),
+            cwd=git_repo,
+        ) == "allow"
+
     # ------------------------------------------------------------------ #
     # Fail-closed on malformed JSON                                       #
     # ------------------------------------------------------------------ #
+
+    # ------------------------------------------------------------------ #
+    # `--continue` commit-shape detection (the broad predicate)           #
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge --continue",
+            "git rebase --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git -c core.editor=true commit -m wip",
+            "GIT_EDITOR=true git merge --continue",
+        ],
+    )
+    def test_continue_and_concluding_forms_reach_the_scan(self, isolated_home, git_repo, command):
+        """Every commit-concluding shape reaches the always-on
+        credential-value scan, including `git rebase --continue` -- this
+        scanner's recourse is mechanical, so unlike require-code-review.sh
+        it stays armed on the one shape the rebase carve-out excludes from
+        the marker gates."""
+        _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git merge origin/main",
+            "git rebase --abort",
+            "git rebase --skip",
+            "git commit-tree abc123",
+        ],
+    )
+    def test_non_concluding_forms_do_not_reach_the_scan(self, isolated_home, git_repo, command):
+        _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo) == "allow"
+
+    def test_concludes_commit_status_2_denies(self, isolated_home, git_repo, sed_call_counting_shim):
+        """Status-2 (undetermined) fault injection on
+        _lib_command_concludes_commit, the predicate this hook calls when
+        its own fragment loop finds no literal `git commit`. This hook is
+        fail-closed, so an undetermined match must still deny rather than
+        silently reaching an unscanned allow. See sed_call_counting_shim's
+        docstring for why the failing sed call is not deterministic."""
+        extra_env = sed_call_counting_shim(3)
+        reason = run_hook_reason(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input("git merge --continue"),
+            cwd=git_repo,
+            extra_env=extra_env,
+        )
+        assert reason is not None
+        assert "could not determine" in reason
+
+    def test_continue_at_unresolved_conflict_checkpoint_is_a_clean_passthrough(
+        self, isolated_home, git_repo
+    ):
+        """At the pre-`git add` checkpoint (a genuine unresolved conflict),
+        `git diff --cached` reports only an "Unmerged path" marker for the
+        conflicted file, never its real content. This is a git primitive
+        fact, pinned separately by
+        test_git_diff_cached_against_unresolved_conflict_git_primitive_fact
+        in test_lib.py. This hook's scan sees the same marker text, not the
+        conflicted file's actual content, so it allows here. Git's own "you
+        have not concluded your merge" error is what actually stops the
+        commit, not this scanner."""
+        build_conflicted_rebase(git_repo, file_name="f")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git rebase --continue"), cwd=git_repo) == "allow"
+
+    def test_credential_only_in_already_merged_content_still_denies(self, isolated_home, tmp_path):
+        """Scanner non-narrowing, the deny half. A credential-value token
+        present only in a file MERGE_HEAD brought in unchanged, not in the
+        novel conflict resolution, must still deny. MERGE_HEAD is reachable
+        from origin's default branch, so the novel-content base the
+        review-marker gates diff against omits that file; the precondition
+        asserts this. A scanner that took the base would miss the token."""
+        repo = build_conflicted_merge_with_clean_addition(
+            tmp_path, conflict_file="f", clean_file="brought-in.txt",
+            clean_content=f"token {GHP_TOKEN}\n",
+        )
+        (repo / "f").write_text("resolved\n")
+        subprocess.run(["git", "add", "f"], cwd=repo, check=True)
+        assert_brought_in_file_hidden_from_gate_base(repo, "brought-in.txt")
+
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input("git merge --continue"), cwd=repo)
+        # The reason names the matched label, so a fail-closed deny cannot satisfy the case.
+        assert reason is not None and "Credential value" in reason, reason
 
     def test_malformed_json_denied(self):
         result = subprocess.run(

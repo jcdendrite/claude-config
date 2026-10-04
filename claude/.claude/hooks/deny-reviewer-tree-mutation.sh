@@ -22,12 +22,13 @@
 # agent's cwd is never a legitimate git-write or in-place-format target.
 #
 # Fast common-path exit: the hook reads .agent_type before any tool-specific
-# work and returns immediately for every non-review-only caller (the main
-# session, code-writer, general-purpose, or any agent not in the closed
-# set) — this keeps it off the latency budget for the overwhelmingly common
-# call. `.agent_type` is a documented PreToolUse field
-# (code.claude.com/docs/en/hooks) already consumed by
-# nudge-error-mode-analysis.sh / nudge-handoff-near-context-cap.sh.
+# work and returns immediately for every non-review-only caller (a main
+# session started without a review-only `--agent`, code-writer,
+# general-purpose, or any agent not in the closed set) — this keeps it off the
+# latency budget for the overwhelmingly common call. `.agent_type` names a
+# subagent's type, or the `--agent` name of a main session started with one.
+# It is a documented PreToolUse field (code.claude.com/docs/en/hooks) already
+# consumed by nudge-error-mode-analysis.sh / nudge-handoff-near-context-cap.sh.
 #
 # Grounding — the in-place-edit family splits into two tiers:
 #
@@ -164,9 +165,10 @@ _lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to eval
 # jq failure before returning), so AGENT_TYPE is never empty here as a
 # silent read failure — only as a genuinely absent field.
 
-# Fast common-path exit, BEFORE any tool-specific work: the main session,
-# code-writer, general-purpose, and every agent outside the closed
-# review-only set pass through unconditionally regardless of tool or command.
+# Fast common-path exit, BEFORE any tool-specific work: a main session started
+# without a review-only `--agent`, code-writer, general-purpose, and every
+# agent outside the closed review-only set pass through unconditionally
+# regardless of tool or command.
 _lib_is_review_only_agent "$AGENT_TYPE" || exit 0
 
 SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. Treat a hook denial as final. Use Read, Grep, or Glob for a read the hook misjudges. Do not retry any other denied action through a script, another command form, or another tool. Confirm a claim by reading and tracing the code before running anything. Scratch work belongs only in a fresh directory you created under /tmp, holding only files you create there. Spell a /tmp path out literally, because this hook matches write targets as written. Never overwrite or replace an existing path, even one you created; write a new file under a new name instead. A write through a symlink or hard link changes the linked file, wherever it lives, so a /tmp path can still change a file outside /tmp. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."

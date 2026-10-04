@@ -66,13 +66,10 @@ import re
 import shlex
 import sys
 
-# Global flags that consume the next word. Deliberately duplicates (not
-# shares) `_lib.sh`'s `_lib_extract_git_subcmd` flag-skip list — this
-# parser and that bash function serve two independently-evolving purposes
-# (cwd-aware write judgment here; commit-message/PR-readiness fragment
-# parsing there) that happen to need the same small, stable domain fact.
-# See require-worktree-for-git-writes.sh's "Scope boundary" header section
-# for the named two-parsers-coexist exception this is part of.
+# Global flags that consume the next word. Mirrors the value-taking global-flag
+# list in `_lib.sh`'s `_lib_git_argv_from_subcmd`; keep the two in step.
+# Deliberately duplicated, not shared — see require-worktree-for-git-writes.sh's
+# "Scope boundary" header section for the named two-parsers-coexist exception.
 GIT_FLAGS_WITH_ARG = {
     "-C",
     "-c",
@@ -81,6 +78,7 @@ GIT_FLAGS_WITH_ARG = {
     "--namespace",
     "--super-prefix",
     "--config-env",
+    "--attr-source",
 }
 
 FIELD_SEP = "\x1f"  # ASCII Unit Separator — see module docstring.

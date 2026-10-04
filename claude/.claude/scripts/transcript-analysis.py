@@ -7711,7 +7711,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "For each --agent-typed dispatch (default code-writer), what share of its own diffs"
             " drew a must-fix (ADDRESS) finding on downstream code-review. Reads the transcript for"
-            " round/dispatch structure and each session's own review-narrative-ledger file for"
+            " round/dispatch structure and the review-narrative-ledger rows each session wrote for"
             " disposition. Corpus-wide, no gh calls."
         ),
     )
