@@ -136,11 +136,31 @@ left implicit:
   (exit 2) when the paginated file list's length differs from
   `changed_files`. No script checks the completeness of the `gh pr diff`
   text. The 300-file precheck and the truncation caveat apply to this path
-  only: in `checkout` mode, Step 5 takes a local three-dot `git diff`.
+  only: in `checkout` mode, `review-pr-checkout.sh` writes a local three-dot `git diff`.
 - **The diff text is not verbatim.** `review-pr-diff.sh` does not pass
   `--allow-escape-sequences`, so `gh pr diff` neutralizes terminal escape
   sequences in the diff it captures (`gh pr diff --help`), and a changed
-  line holding one reads differently here than in the repository.
+  line holding one reads differently here than in the repository. The
+  checkout-mode `.diff` is the opposite: it keeps the raw terminal-escape
+  bytes of the PR's file content and has no byte cap, whereas diff-only mode
+  neutralizes escapes and is bounded by the 300-file precheck.
+  The checkout-mode `.diff` is also not byte-identical to git's output,
+  because `review-pr-checkout.sh` holds the diff in a shell variable. That
+  drops any NUL byte and normalizes the trailing newline.
+- **The checkout-mode diff follows some local git config.**
+  `review-pr-checkout.sh` pins submodule visibility, path prefixes, and
+  context size on the command line, so `diff.ignoreSubmodules`,
+  `diff.noprefix`, `diff.mnemonicPrefix`, and `diff.context` do not change
+  the artifact. It also unsets `GIT_DIFF_OPTS`, which would otherwise
+  override the context size. Rename and copy detection (`diff.renames`), the diff
+  algorithm, file ordering, and the submodule display format still follow
+  the operator's git configuration.
+  Per gitattributes(5), the main tree's attributes
+  (`.gitattributes`, `.git/info/attributes`, and `core.attributesFile`)
+  also decide rendering, because the script runs the diff there even when
+  invoked from a review worktree. A path they mark `-diff` or `binary`
+  appears as "Binary files ... differ"; SKILL.md Step 5 says what the
+  reviewer does with such a path.
 
 ## Why the findings-body declaration uses the Write tool, not Bash (Step 7)
 
@@ -154,11 +174,7 @@ The downstream read path rejects that symlink. `_lib_sha256_no_follow` (`claude/
 
 The same followed write can also overwrite or create an arbitrary file the Claude Code process has write access to. That risk is wider than the posting-side risk the read-path check mitigates. It rests on the same local-compromise prerequisite as the read-side gap.
 
-Step 5 in `checkout` mode has the same gap for the PR diff. It writes the diff with a plain shell redirect to a `.diff` path the agent derives by replacing `.body` in `review-pr-findings-path.sh`'s output.
-
-- The redirect follows a pre-planted symlink at that path, as the body write does.
-- No read-side backstop exists. No script reads `.diff`, and `/code-review` reads it with the agent's `Read`, which follows symlinks.
-- A mis-edited path leaves the diff at a path `review-pr-finish.sh` never removes, because it removes only the fixed `<session>.diff` path.
+Both diff writers, `review-pr-checkout.sh` and `review-pr-diff.sh`, write the `.diff` file through `_lib_write_no_follow`, which refuses a symlink at that path. No script reads `.diff` back: `/code-review` reads it with the agent's `Read`, which follows symlinks, so a symlink planted after the write has no read-side backstop.
 
 ## Known gaps and operator choices
 
@@ -170,15 +186,23 @@ Step 5 in `checkout` mode has the same gap for the PR diff. It writes the diff w
   worktree is created `--detach`, with no branch, and
   `cleanup-idle-open-pr-worktrees.sh` classifies worktrees by local branch
   name, so a worktree whose session never ran `review-pr-finish.sh` stays
-  until someone removes it. A manual sweep, run from inside the repository,
-  is
-  `find <main tree>/.claude/worktrees -maxdepth 1 -name 'review-pr-*' -mtime +N -exec git worktree remove --force --force {} \;`.
+  until someone removes it. To remove one, run `git worktree list`, choose
+  an abandoned `review-pr-*` entry, and run `git worktree remove <path>`
+  without `--force`, which refuses a locked worktree and one with modified
+  tracked files or untracked files.
+  `claude/.claude/scripts/worktree-removal-status.sh` reports whether an
+  unforced remove would succeed and whether a live process works inside the
+  worktree.
   No script automates this; widening `cleanup-idle-open-pr-worktrees.sh` to
-  match by directory-name pattern would.
-  While a review worktree remains, `marker.sh` refuses to write any other
-  skill's marker from the main tree under worktree enforcement, and skips
-  that refusal only for `write review-pr`. Running `review-pr-finish.sh` or
-  removing the worktree clears the refusal.
+  match review worktrees would.
+  A leftover review worktree does not trigger `marker.sh`'s main-tree
+  refusal or `nudge-worktree-anchor.sh`.
+  `_lib_first_live_linked_worktree` (`claude/.claude/hooks/_lib.sh`) defines
+  which worktrees that covers.
+- **The standing override's no-marker clause is prose only.** Nothing
+  mechanical stops a completion-marker write for a skill other than
+  `review-pr` while a review-pr session is in flight, because the main-tree
+  refusal skips review worktrees.
 - **A signal-killed run can leave temporary directories behind.**
   `review-pr-acquire.sh` registers one `EXIT` trap that removes its
   `mktemp -d` assembly directory, and that trap is not proven to run when
@@ -197,7 +221,7 @@ Step 5 in `checkout` mode has the same gap for the PR diff. It writes the diff w
   repository.** `review-pr-checkout.sh` fetches the PR's head into
   `refs/review-pr/pr-<number>`, which keeps that commit and its objects
   reachable until the ref is deleted with
-  `git update-ref -d refs/review-pr/pr-<number>`. Step 5's
+  `git update-ref -d refs/review-pr/pr-<number>`. `review-pr-checkout.sh`'s
   `git fetch origin <baseRefOid>` adds the base commit's objects to the
   shared object store. `review-pr-finish.sh` does not remove them, and an
   ordinary `git gc` expires them once unreachable (default prune expiry is

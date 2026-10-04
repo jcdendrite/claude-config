@@ -32,8 +32,9 @@ audit, and the checkout need rather than trusting them as arguments. In order:
    review-pr-diff.sh as the path to use instead.
 3. Fetches the PR's own full, paginated file list (one JSON string per file
    name, so a name holding a newline decodes intact) and its current
-   headRefOid directly from `gh`. Aborts on a listing whose length differs
-   from the PR's own `changed_files` count.
+   headRefOid and baseRefOid directly from `gh`. Aborts on a baseRefOid that
+   is not a full hex object name, and on a listing whose length differs from
+   the PR's own `changed_files` count.
 4. Re-fetches headRefOid to catch a force-push landing while the file list was
    being paginated.
 5. Pipes the file list to audit-execution-surface.py. A stop verdict exits 3
@@ -45,21 +46,40 @@ audit, and the checkout need rather than trusting them as arguments. In order:
    equals the headRefOid fetched earlier in the same run. A mismatch means a
    force-push landed between audit and checkout, and aborts with no worktree
    left behind.
-7. Creates a new worktree under the main tree's .claude/worktrees/, named for
+7. Fetches the baseRefOid commit, since step 6 fetched only the PR's own ref,
+   and writes the three-dot diff from baseRefOid to the verified headRefOid to
+   $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff, the path review-pr-diff.sh
+   uses for its own diff. Aborts with no worktree created, and no diff file
+   written, when the base fetch fails, the diff cannot be computed, or the diff
+   is empty although the PR reports changed files. A failed diff write also
+   aborts with no worktree created, but may leave an incomplete diff file.
+8. Creates a new worktree under the main tree's .claude/worktrees/, named for
    this session and the PR number plus a random suffix. A second run against
    the same PR gets its own worktree; review-pr-finish.sh removes every
    worktree of the session.
-8. Rewrites this session's provenance file with mode "checkout" (PR identity,
+9. Rewrites this session's provenance file with mode "checkout" (PR identity,
    the verified headRefOid, this session's Claude PID, the mode), never
    trusting review-pr-acquire.sh's mode "acquired" write.
 
-Prints the worktree's absolute path on stdout as the sole output of a
-successful run.
+Prints two lines on stdout on a successful run: the worktree's absolute path,
+then the diff file's absolute path. Only an exit-0 run prints the diff path on
+stdout, and the caller reads the diff from that output alone. review-pr-finish.sh
+removes the diff file a failed run leaves behind.
+
+Worst-case wall time: the per-step caps sum to 250 seconds on the success path
+(10 for the two local git reads, 60 for the four gh calls, 40 for eight jq
+calls, 30 for the PR-ref fetch, 10 for two more local git reads, 30 for the
+base fetch, 30 for the diff, 5 for the diff write, 30 for worktree add, 5 for
+the provenance write) and 305 on the worst failure path (a failed worktree add
+followed by its two capped cleanups). Each cap kill adds up to 2 seconds of
+SIGKILL grace. The session lookup's capped ps calls add up to 10 seconds per
+process-ancestor hop, and the audit script runs uncapped. The caps apply only
+when `timeout` or `gtimeout` is on PATH; otherwise every step is uncapped.
 
 Exit status: 0 on success, 3 when checkout is positively refused and
 review-pr-diff.sh is the path to use instead (the PR's trust class, a
 cross-repository head, or an audit stop verdict), 2 on every other refusal or
-failure, including a check that could not be completed.
+failure the script itself detects, including a check that could not be completed.
 EOF
 }
 
@@ -74,6 +94,16 @@ PR_IDENTITY="$1"
 . "$(dirname "$0")/../hooks/_lib.sh"
 # shellcheck source=_review-pr-lib.sh
 . "$(dirname "$0")/_review-pr-lib.sh"
+
+# Git trace output would reach the diff file and the failure messages that relay git's output.
+# Config-sourced trace2.* targets are not unset here.
+while IFS= read -r TRACE_VARIABLE_NAME; do
+  case "$TRACE_VARIABLE_NAME" in
+    GIT_TRACE* | GIT_CURL_VERBOSE*) unset "$TRACE_VARIABLE_NAME" ;;
+  esac
+done < <(compgen -e)
+# GIT_DIFF_OPTS=-u<N> overrides --unified, so it would change the diff's context size.
+unset GIT_DIFF_OPTS
 
 # See _lib_parse_pr_identity (_lib.sh) for the split and validation.
 if ! PR_IDENTITY_FIELDS=$(_lib_parse_pr_identity "$PR_IDENTITY"); then
@@ -176,9 +206,18 @@ fi
 # 10s: a network GET carrying no payload, the same budget review-pr-post.sh
 # uses for its own gh pr view identity re-fetch.
 GH_PR_VIEW_TIMEOUT_SECONDS=10
-HEAD_REF_OID=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID=""
-if [[ -z "$HEAD_REF_OID" ]]; then
+PR_VIEW_JSON=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid,baseRefOid 2>/dev/null) || PR_VIEW_JSON=""
+if ! HEAD_REF_OID=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.headRefOid // empty' 2>/dev/null) \
+  || [[ -z "$HEAD_REF_OID" ]]; then
   echo "review-pr-checkout.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's current headRefOid. Abort before any fetch of the PR's ref." >&2
+  exit 2
+fi
+# baseRefOid goes into a `git fetch` and a `git diff` argument below, so only a
+# full SHA-1 or SHA-256 hex object name passes: anything else could read as an
+# option or a ref name.
+if ! BASE_REF_OID=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefOid // empty' 2>/dev/null) \
+  || [[ ! "$BASE_REF_OID" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's baseRefOid is missing or is not a full hex object name. Abort before any fetch of the PR's ref." >&2
   exit 2
 fi
 
@@ -295,9 +334,12 @@ fi
 
 # _lib_main_repo_root, not $REPO_ROOT: the worktree is created under the main
 # tree regardless of which tree this script itself stands in, and
-# review-pr-finish.sh discovers it from the same root. Every other use of
-# $REPO_ROOT in this script (fetch, rev-parse, remote get-url) is unaffected:
-# those correctly hit the shared object/ref/config store from either tree.
+# review-pr-finish.sh discovers it from the same root. The base fetch and the
+# diff also run there, because git diff reads .gitattributes from the tree it
+# runs in and a prior review worktree holds PR-supplied attributes. Every other
+# use of $REPO_ROOT in this script (fetch, rev-parse, remote get-url) is
+# unaffected: those correctly hit the shared object/ref/config store from
+# either tree.
 MAIN_REPO_ROOT=$(_lib_main_repo_root) || {
   echo "review-pr-checkout.sh: could not resolve this repository's main tree root. Abort with no worktree created." >&2
   exit 2
@@ -313,6 +355,78 @@ if ! _lib_valid_session_id_component "$SESSION_ID"; then
   echo "review-pr-checkout.sh: resolved session id '$SESSION_ID' is not a valid path component -- cannot name the worktree or record provenance. Abort before creating a worktree." >&2
   exit 2
 fi
+
+# The diff goes to a file because the harness truncates a large Bash result, so
+# a large PR would reach the review cut short. The figure is in
+# `claude-skills/skills/subagent-delegation/REFERENCES.md` § "Heavy command output — harness truncation and check-suite sizes"
+# The path is the fixed per-session path review-pr-diff.sh also writes, so
+# review-pr-finish.sh removes it.
+# The base fetch is needed because the PR-ref fetch above brought only the PR's
+# own commits, so the base commit may be absent locally.
+# The diff compares two fetched commits, so it runs before the worktree exists
+# and a failure leaves none behind.
+if BASE_FETCH_OUTPUT=$(_lib_capped_for "$GH_FETCH_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "$BASE_REF_OID" 2>&1); then
+  BASE_FETCH_STATUS=0
+else
+  BASE_FETCH_STATUS=$?
+fi
+if [[ "$BASE_FETCH_STATUS" -ne 0 ]]; then
+  if _lib_status_consistent_with_cap_kill "$BASE_FETCH_STATUS"; then
+    echo "review-pr-checkout.sh: could not fetch baseRefOid $BASE_REF_OID for PR $OWNER_REPO#$PR_NUMBER from origin: git fetch exited $BASE_FETCH_STATUS, consistent with the ${GH_FETCH_TIMEOUT_SECONDS}s cap firing: $BASE_FETCH_OUTPUT. Abort with no worktree created." >&2
+  else
+    echo "review-pr-checkout.sh: could not fetch baseRefOid $BASE_REF_OID for PR $OWNER_REPO#$PR_NUMBER from origin: $BASE_FETCH_OUTPUT. Abort with no worktree created." >&2
+  fi
+  exit 2
+fi
+# A hang backstop for a stalled git or filesystem, not a latency budget,
+# following _LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS. 30s is a chosen
+# ceiling, not a measured figure, and larger than _lib_capped's 5s default
+# because the diff's cost grows with the PR's size.
+# A cap kill exits 2, which review-pr's SKILL.md Step 2 treats as final: this
+# path has no fallback, so the message tells the caller to report and stop.
+GIT_DIFF_TIMEOUT_SECONDS=30
+# --no-ext-diff and --no-textconv keep a configured diff driver from running.
+# --ignore-submodules=none overrides diff.ignoreSubmodules and .gitmodules, so
+# a submodule pointer change is never dropped from the diff. --src-prefix,
+# --dst-prefix and --unified override diff.noprefix, diff.mnemonicPrefix and
+# diff.context. Rename detection, algorithm, ordering and submodule display
+# format still follow the operator's git config.
+GIT_DIFF_ARGS=(diff --no-ext-diff --no-textconv --no-color --ignore-submodules=none --src-prefix=a/ --dst-prefix=b/ --unified=3)
+if DIFF_TEXT=$(_lib_capped_for "$GIT_DIFF_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" "${GIT_DIFF_ARGS[@]}" "$BASE_REF_OID...$FETCHED_SHA" -- 2>/dev/null); then
+  DIFF_STATUS=0
+else
+  DIFF_STATUS=$?
+fi
+if [[ "$DIFF_STATUS" -ne 0 ]]; then
+  if _lib_status_consistent_with_cap_kill "$DIFF_STATUS"; then
+    echo "review-pr-checkout.sh: git diff $BASE_REF_OID...$FETCHED_SHA exited $DIFF_STATUS, consistent with the ${GIT_DIFF_TIMEOUT_SECONDS}s cap firing. Nothing was written and no worktree was created. This path has no fallback for a diff over the cap: report this to the user and stop." >&2
+  else
+    # The first run discards stderr so a warning cannot mix into the diff
+    # text. A rerun with stdout discarded recovers git's own diagnostic, and
+    # is skipped for a cap kill because it would wait out the cap again.
+    DIFF_FAILURE_DETAIL=$(_lib_capped_for "$GIT_DIFF_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" "${GIT_DIFF_ARGS[@]}" "$BASE_REF_OID...$FETCHED_SHA" -- 2>&1 >/dev/null) || true
+    echo "review-pr-checkout.sh: could not compute the diff $BASE_REF_OID...$FETCHED_SHA for PR $OWNER_REPO#$PR_NUMBER: ${DIFF_FAILURE_DETAIL:-git printed no diagnostic}. Abort with no worktree created." >&2
+  fi
+  exit 2
+fi
+# A three-dot diff is empty when the head is the base or already contained in
+# it, so an empty diff for a PR that reports changed files means the base here
+# is not the one the PR's file list was computed against.
+if [[ -z "$DIFF_TEXT" && "$CHANGED_FILES_COUNT" -gt 0 ]]; then
+  echo "review-pr-checkout.sh: git diff $BASE_REF_OID...$FETCHED_SHA is empty but PR $OWNER_REPO#$PR_NUMBER reports $CHANGED_FILES_COUNT changed files -- the head may already be contained in the base. Abort with no worktree created and no diff file written." >&2
+  exit 2
+fi
+ACTIVE_DIR="$CONFIG_DIR/.review-pr-active.d"
+if ! mkdir -p -- "$ACTIVE_DIR"; then
+  echo "review-pr-checkout.sh: could not create the active directory $ACTIVE_DIR -- cannot record this diff. Abort with no worktree created." >&2
+  exit 2
+fi
+DIFF_FILE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" diff)
+if ! printf '%s\n' "$DIFF_TEXT" | _lib_write_no_follow "$DIFF_FILE"; then
+  echo "review-pr-checkout.sh: could not write diff file $DIFF_FILE (the file may be incomplete). Abort with no worktree created." >&2
+  exit 2
+fi
+# Only an exit-0 run prints the diff path, so the caller reads the diff from that output alone, and review-pr-finish.sh removes a failed run's file.
 
 # Every invocation gets its own mktemp directory, so no two runs share a path.
 # review-pr-finish.sh finds the directory again by
@@ -347,14 +461,10 @@ fi
 
 # Provenance write, mode "checkout" (see the usage text).
 PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
-if ! mkdir -p -- "$(dirname "$PROVENANCE")"; then
-  echo "review-pr-checkout.sh: could not create the provenance directory $(dirname "$PROVENANCE") -- cannot record this checkout. The worktree at $WORKTREE_DIR was created; run ~/.claude/scripts/review-pr-finish.sh to clean it up. Abort." >&2
-  exit 2
-fi
 if ! _lib_write_review_pr_provenance "$PROVENANCE" \
   "pr_identity=$PR_IDENTITY" "head_ref_oid=$HEAD_REF_OID" "pid=$CLAUDE_PID" "mode=checkout"; then
   echo "review-pr-checkout.sh: could not write provenance file $PROVENANCE -- cannot record this checkout. The worktree at $WORKTREE_DIR was created; run ~/.claude/scripts/review-pr-finish.sh to clean it up. Abort." >&2
   exit 2
 fi
 
-printf '%s\n' "$WORKTREE_DIR"
+printf '%s\n%s\n' "$WORKTREE_DIR" "$DIFF_FILE"

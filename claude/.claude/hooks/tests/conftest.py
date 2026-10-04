@@ -116,6 +116,27 @@ def _worktree_lock_reason(worktree: Path) -> str | None:
     return None
 
 
+# A name review-pr-checkout.sh's worktree template could expand to.
+REVIEW_WORKTREE_NAME = "review-pr-sess-1-42-abc123"
+
+
+def _add_worktree_under_worktrees_dir(
+    repo: Path, name: str, branch: str | None = None, worktrees_root: Path | None = None
+) -> Path:
+    """A worktree at <worktrees_root or repo>/.claude/worktrees/<name>: detached
+    by default, as review-pr-checkout.sh creates one, or on a new branch."""
+    worktree = (worktrees_root or repo) / ".claude" / "worktrees" / name
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    mode_args = ["-b", branch] if branch else ["--detach"]
+    subprocess.run(
+        ["git", "worktree", "add", *mode_args, str(worktree)],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    return worktree
+
+
 def _write_conditional_sleep_shim(
     bin_dir: Path,
     binary_name: str,

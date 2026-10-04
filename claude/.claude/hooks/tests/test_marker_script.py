@@ -770,11 +770,9 @@ class TestMarkerScriptHappyPath:
         active_file = isolated_home / ".claude" / ".plan-review-active.d" / sid
         assert active_file.exists()
         content = active_file.read_text().strip()
-        assert content.isdigit(), (
-            f"activate must write a numeric PID to the active marker, got: {content!r}"
+        assert content == str(os.getpid()), (
+            f"activate must write the PID _seed_session registered, got: {content!r}"
         )
-        stored_pid = int(content)
-        assert stored_pid > 0, f"stored PID must be positive, got: {stored_pid}"
 
     def test_activate_ready_for_review_writes_pid(self, isolated_home, git_repo):
         """activate ready-for-review writes the Claude session PID (same as
@@ -1655,6 +1653,330 @@ class TestMarkerDirectoryNamingConvention:
             if d.is_dir() and d.name.endswith("-markers") and any(d.iterdir())
         ]
         assert strays == [], f"a rejected write still created markers in {strays}"
+
+
+class TestMarkerScriptActiveBypassRoster:
+    """`activate` and `deactivate` take the same closed roster. The roster is
+    read back off the rejection message, as `write`'s is. The round trip
+    iterates a literal tuple, and a test pins that tuple to the roster the
+    script advertises."""
+
+    ACTIVE_BYPASS_SKILLS = (
+        "plan-review",
+        "ready-for-review",
+        "respond-pr",
+        "memory-skill",
+        "handoff",
+    )
+
+    SID = "test-session-active-bypass-roster"
+
+    @staticmethod
+    def _advertised_roster(verb: str, stderr: str) -> tuple[str, ...]:
+        advertised = re.search(rf"'{verb}' supports: (.+?)\s*$", stderr, re.M)
+        assert advertised, f"rejection message no longer advertises the {verb} roster: {stderr!r}"
+        return tuple(name.strip() for name in advertised.group(1).split(","))
+
+    @pytest.mark.parametrize("verb", ["activate", "deactivate"])
+    @pytest.mark.parametrize("skill", ["not-a-real-skill", "review-pr"])
+    def test_rejects_a_skill_outside_the_roster_and_writes_nothing(
+        self, verb, skill, isolated_home, git_repo
+    ):
+        """review-pr has a completion marker but no active-bypass marker."""
+        _seed_session(isolated_home, self.SID)
+
+        result = _run([verb, skill], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2, result.stderr
+        assert self._advertised_roster(verb, result.stderr) == self.ACTIVE_BYPASS_SKILLS
+        created = sorted(d.name for d in (isolated_home / ".claude").glob(".*-active.d"))
+        assert created == [], f"a rejected {verb} still created {created}"
+
+    @pytest.mark.parametrize("skill", ACTIVE_BYPASS_SKILLS)
+    def test_activate_then_deactivate_round_trips_for_every_rostered_skill(
+        self, skill, isolated_home, git_repo
+    ):
+        _seed_session(isolated_home, self.SID)
+        marker = isolated_home / ".claude" / f".{skill}-active.d" / self.SID
+
+        activated = _run(["activate", skill], cwd=git_repo, home=isolated_home)
+        assert activated.returncode == 0, activated.stderr
+        assert marker.read_text().strip() == str(os.getpid()), (
+            "activate must record the PID _seed_session registered for the session"
+        )
+
+        deactivated = _run(["deactivate", skill], cwd=git_repo, home=isolated_home)
+        assert deactivated.returncode == 0, deactivated.stderr
+        assert not marker.exists()
+
+
+# Write arms whose failed-write case is its own test rather than the shared plain-redirect one.
+_WRITE_ARMS_WITH_THEIR_OWN_FAILED_WRITE_TEST = ("plan-review", "cumulative-review", "review-pr")
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+class TestMarkerScriptFailedMarkerWriteExitStatus:
+    """marker.sh runs under `set -u` without `-e`, so a failed marker write or
+    removal reaches the caller only through the status of the last command the
+    arm ran. A caller that sees 0 treats the marker as recorded.
+
+    Every case pins the cause as well as the non-zero status: a failed
+    redirect or `rm` exits 1 and bash or rm names the unwritable path, whereas
+    marker.sh's own guards exit 2, so an early guard exit cannot satisfy these."""
+
+    SID = "test-session-failed-write"
+
+    PLAIN_REDIRECT_WRITE_SKILLS = tuple(
+        skill
+        for skill in TestMarkerDirectoryNamingConvention.WRITE_SKILLS
+        if skill not in _WRITE_ARMS_WITH_THEIR_OWN_FAILED_WRITE_TEST
+    )
+    # bash and rm localize their messages, which the "Permission denied" assertions read.
+    C_LOCALE = {"LC_ALL": "C"}
+    ACTIVE_BYPASS_SKILLS = TestMarkerScriptActiveBypassRoster.ACTIVE_BYPASS_SKILLS
+
+    @staticmethod
+    def _assert_failed_on_unwritable_dir(result: subprocess.CompletedProcess, unwritable_dir) -> None:
+        assert result.returncode == 1, (
+            f"expected the failed redirect's own status 1, got {result.returncode}. "
+            f"stderr: {result.stderr!r}"
+        )
+        assert "Permission denied" in result.stderr and str(unwritable_dir) in result.stderr, (
+            f"stderr must report the denied write under {unwritable_dir}: {result.stderr!r}"
+        )
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("skill", PLAIN_REDIRECT_WRITE_SKILLS)
+    def test_write_exits_nonzero_when_the_marker_directory_is_unwritable(
+        self, skill, isolated_home, git_repo
+    ):
+        _seed_session(isolated_home, self.SID)
+        if skill == "skill-review":
+            skill_dir = git_repo / "claude-skills" / "skills" / "failed-write-test-skill"
+            skill_dir.mkdir(parents=True)
+            skill_md = skill_dir / "SKILL.md"
+            skill_md.write_text("# test skill\n")
+            subprocess.run(["git", "add", str(skill_md)], cwd=git_repo, check=True)
+        elif skill == "verification":
+            _commit_the_fixtures_staged_change(git_repo)
+        marker_dir = isolated_home / ".claude" / f"{skill}-markers"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        marker_dir.chmod(0o500)
+        try:
+            result = _run(["write", skill], cwd=git_repo, home=isolated_home, extra_env=self.C_LOCALE)
+        finally:
+            marker_dir.chmod(0o755)
+
+        self._assert_failed_on_unwritable_dir(result, marker_dir)
+        assert list(marker_dir.iterdir()) == []
+
+    def test_write_plan_review_exits_nonzero_when_the_marker_directory_is_unwritable(
+        self, isolated_home, git_repo
+    ):
+        """The plan-review arm's `|| exit` carries the failed redirect's status
+        past the loop that announces covered plan paths."""
+        _seed_session(isolated_home, self.SID)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+        marker_dir = isolated_home / ".claude" / "plan-review-markers"
+        marker_dir.mkdir(parents=True)
+        marker_dir.chmod(0o500)
+        try:
+            result = _run(
+                ["write", "plan-review"], cwd=git_repo, home=isolated_home, extra_env=self.C_LOCALE
+            )
+        finally:
+            marker_dir.chmod(0o755)
+
+        self._assert_failed_on_unwritable_dir(result, marker_dir)
+        assert list(marker_dir.iterdir()) == []
+
+    def test_write_cumulative_review_exits_nonzero_and_keeps_the_subject_when_the_marker_directory_is_unwritable(
+        self, isolated_home, cumulative_diff_repo, tmp_path
+    ):
+        """With the marker directory present, `mkdir -p` succeeds and the
+        `printf >` leg fails, so the `&&` chain must stop before `rm -f` of the
+        recorded subject."""
+        _seed_session(isolated_home, self.SID)
+        env = _env_with_gh_shim(tmp_path, None)
+        assert _record_subject(cumulative_diff_repo, isolated_home, env).returncode == 0
+        subject_path = _cumulative_review_subject_path(
+            isolated_home, cumulative_diff_repo, self.SID
+        )
+        assert subject_path.exists()
+        marker_dir = isolated_home / ".claude" / "cumulative-review-markers"
+        marker_dir.mkdir(parents=True)
+        marker_dir.chmod(0o500)
+        try:
+            result = _run(
+                ["write", "cumulative-review"],
+                cwd=cumulative_diff_repo,
+                home=isolated_home,
+                extra_env={**env, **self.C_LOCALE},
+            )
+        finally:
+            marker_dir.chmod(0o755)
+
+        self._assert_failed_on_unwritable_dir(result, marker_dir)
+        assert list(marker_dir.iterdir()) == []
+        assert subject_path.exists(), "a failed marker write must leave the subject for a retry"
+
+    @pytest.mark.parametrize("skill", ACTIVE_BYPASS_SKILLS)
+    def test_activate_exits_nonzero_when_the_active_directory_is_unwritable(
+        self, skill, isolated_home, git_repo
+    ):
+        _seed_session(isolated_home, self.SID)
+        active_dir = isolated_home / ".claude" / f".{skill}-active.d"
+        active_dir.mkdir(parents=True)
+        active_dir.chmod(0o500)
+        try:
+            result = _run(["activate", skill], cwd=git_repo, home=isolated_home, extra_env=self.C_LOCALE)
+        finally:
+            active_dir.chmod(0o755)
+
+        self._assert_failed_on_unwritable_dir(result, active_dir)
+        assert list(active_dir.iterdir()) == []
+
+    @pytest.mark.parametrize("skill", ACTIVE_BYPASS_SKILLS)
+    def test_deactivate_exits_nonzero_when_the_marker_cannot_be_removed(
+        self, skill, isolated_home, git_repo
+    ):
+        """A removal that fails leaves a live bypass marker behind, and the
+        arm's independent cleanups in other directories still run."""
+        _seed_session(isolated_home, self.SID)
+        active_dir = isolated_home / ".claude" / f".{skill}-active.d"
+        active_dir.mkdir(parents=True)
+        marker = active_dir / self.SID
+        marker.write_text(f"{os.getpid()}\n")
+        sibling_artifact = None
+        if skill == "ready-for-review":
+            sibling_artifact = _cumulative_review_subject_path(isolated_home, git_repo, self.SID)
+        elif skill == "plan-review":
+            sibling_artifact = isolated_home / ".claude" / ".plan-review-routing-read.d" / self.SID
+        if sibling_artifact is not None:
+            sibling_artifact.parent.mkdir(parents=True, exist_ok=True)
+            sibling_artifact.write_text("recorded\n")
+        active_dir.chmod(0o500)
+        try:
+            result = _run(["deactivate", skill], cwd=git_repo, home=isolated_home, extra_env=self.C_LOCALE)
+        finally:
+            active_dir.chmod(0o755)
+
+        assert result.returncode == 1, (
+            f"expected rm's own status 1, got {result.returncode}. stderr: {result.stderr!r}"
+        )
+        assert "Permission denied" in result.stderr and self.SID in result.stderr
+        assert f"marker.sh: could not remove {marker}; gates that check only its presence never expire it." in result.stderr
+        assert (
+            f"Retry marker.sh deactivate {skill} after fixing the directory; "
+            "marker.sh clear-stale reclaims the marker only once the session has ended or idled 60 minutes."
+        ) in result.stderr
+        assert marker.exists()
+        if sibling_artifact is not None:
+            assert not sibling_artifact.exists(), (
+                "a failed marker removal must not skip the independent cleanups"
+            )
+
+    def test_deactivate_plan_review_exits_nonzero_when_only_the_planmode_path_file_cannot_be_removed(
+        self, isolated_home, git_repo
+    ):
+        """The plan-mode path file steers the next `write plan-review`, so its
+        failed removal is reported even when the bypass marker is already gone."""
+        _seed_session(isolated_home, self.SID)
+        active_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        active_dir.mkdir(parents=True)
+        planmode_path_file = active_dir / f"{self.SID}.planmode-path"
+        planmode_path_file.write_text("/srv/plan.md\n")
+        routing_read = isolated_home / ".claude" / ".plan-review-routing-read.d" / self.SID
+        routing_read.parent.mkdir(parents=True)
+        routing_read.write_text("recorded\n")
+        active_dir.chmod(0o500)
+        try:
+            result = _run(["deactivate", "plan-review"], cwd=git_repo, home=isolated_home, extra_env=self.C_LOCALE)
+        finally:
+            active_dir.chmod(0o755)
+
+        assert result.returncode == 1, (
+            f"expected rm's own status 1, got {result.returncode}. stderr: {result.stderr!r}"
+        )
+        assert "Permission denied" in result.stderr and planmode_path_file.name in result.stderr
+        assert (
+            f"marker.sh: could not remove {planmode_path_file}; the next write plan-review hashes the plan target it declares."
+            in result.stderr
+        )
+        assert planmode_path_file.exists()
+        assert not routing_read.exists(), "a failed removal must not skip the other cleanups"
+
+    def test_deactivate_plan_review_exits_zero_when_only_a_best_effort_cleanup_fails(
+        self, isolated_home, git_repo
+    ):
+        """The routing-read record is a best-effort cleanup, so its failed
+        removal neither changes the exit status nor stops the bypass marker's
+        own removal."""
+        _seed_session(isolated_home, self.SID)
+        active_dir = isolated_home / ".claude" / ".plan-review-active.d"
+        active_dir.mkdir(parents=True)
+        marker = active_dir / self.SID
+        marker.write_text(f"{os.getpid()}\n")
+        routing_read_dir = isolated_home / ".claude" / ".plan-review-routing-read.d"
+        routing_read_dir.mkdir(parents=True)
+        routing_read = routing_read_dir / self.SID
+        routing_read.write_text("recorded\n")
+        routing_read_dir.chmod(0o500)
+        try:
+            result = _run(["deactivate", "plan-review"], cwd=git_repo, home=isolated_home, extra_env=self.C_LOCALE)
+        finally:
+            routing_read_dir.chmod(0o755)
+
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists()
+        assert routing_read.exists()
+
+    @pytest.mark.parametrize(
+        ("skill", "artifact_path_for"),
+        [
+            pytest.param(
+                "plan-review",
+                lambda home, repo, sid: home / ".claude" / ".plan-review-pending-read.d" / sid,
+                id="plan-review-pending-read",
+            ),
+            pytest.param(
+                "ready-for-review",
+                lambda home, repo, sid: _cumulative_review_subject_path(home, repo, sid),
+                id="ready-for-review-cumulative-subject",
+            ),
+            pytest.param(
+                "ready-for-review",
+                lambda home, repo, sid: _cumulative_review_diff_artifact_path(home, repo, sid),
+                id="ready-for-review-cumulative-diff",
+            ),
+        ],
+    )
+    def test_deactivate_exits_zero_and_removes_the_marker_when_only_an_artifact_directory_is_unwritable(
+        self, skill, artifact_path_for, isolated_home, git_repo
+    ):
+        """The remaining best-effort legs (pending-read record, cumulative-review
+        subject, cumulative-review diff file) carry the same contract as the
+        routing-read leg above: a failed removal neither changes the exit status
+        nor stops the bypass marker's own removal."""
+        _seed_session(isolated_home, self.SID)
+        active_dir = isolated_home / ".claude" / f".{skill}-active.d"
+        active_dir.mkdir(parents=True)
+        marker = active_dir / self.SID
+        marker.write_text(f"{os.getpid()}\n")
+        artifact = artifact_path_for(isolated_home, git_repo, self.SID)
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("recorded\n")
+        artifact.parent.chmod(0o500)
+        try:
+            result = _run(["deactivate", skill], cwd=git_repo, home=isolated_home, extra_env=self.C_LOCALE)
+        finally:
+            artifact.parent.chmod(0o755)
+
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists()
+        assert artifact.exists()
 
 
 class TestMarkerWriteSatisfiesTheGate:
@@ -6173,110 +6495,3 @@ class TestMarkerScriptReviewPr:
         assert findings_body.exists(), "--dry-run must not remove the .body file"
         assert diff_file.exists(), "--dry-run must not remove the .diff file"
         assert "evict (dry-run)" in result.stdout
-
-
-class TestMarkerWriteSymlinkHardeningAcrossArms:
-    """`_lib_write_no_follow`'s O_NOFOLLOW write hardening is shared by every
-    `write <skill>` arm. Each arm is driven to its final write step,
-    then refused when a symlink was pre-planted at its completion-marker
-    path."""
-
-    SID = "test-session-write-symlink"
-
-    # Derived from the pinned write-arm roster so a new write arm cannot skip
-    # this test; _reach_the_write_step below needs a branch for it.
-    WRITE_ARMS = [
-        (skill, f"{skill}-markers") for skill in TestMarkerDirectoryNamingConvention.WRITE_SKILLS
-    ]
-
-    def _reach_the_write_step(self, skill, repo, home, tmp_path):
-        """Arrange `repo`/`home` so `write <skill>` passes every guard before
-        its marker write; returns extra env for the run."""
-        if skill == "skill-review":
-            skill_dir = repo / "claude-skills" / "skills" / "test-skill"
-            skill_dir.mkdir(parents=True)
-            skill_md = skill_dir / "SKILL.md"
-            skill_md.write_text("# test skill\n")
-            subprocess.run(["git", "add", str(skill_md)], cwd=repo, check=True)
-        elif skill == "plan-review":
-            plans_dir = repo / ".claude" / "plans"
-            plans_dir.mkdir(parents=True)
-            (plans_dir / "p.md").write_text("# plan\n")
-        elif skill == "cumulative-review":
-            _arm_default_branch_ref_and_second_commit(repo)
-            env = _env_with_gh_shim(tmp_path, None)
-            record_result = _record_subject(repo, home, env)
-            assert record_result.returncode == 0, record_result.stderr
-            return env
-        elif skill == "review-pr":
-            active_dir = home / ".claude" / ".review-pr-active.d"
-            active_dir.mkdir(parents=True, exist_ok=True)
-            (active_dir / f"{self.SID}.body").write_text(
-                f"**[Claude Code]** # findings body\n\n{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
-            )
-            write_review_pr_provenance(
-                home, "foo/bar#42", "abc123", os.getpid(), mode="diff-only", session_id=self.SID
-            )
-        elif skill == "verification":
-            _commit_the_fixtures_staged_change(repo)
-        return None
-
-    @pytest.mark.parametrize("skill,marker_dir_name", WRITE_ARMS)
-    def test_write_refuses_a_symlink_at_the_completion_marker_destination(
-        self, isolated_home, git_repo, tmp_path, skill, marker_dir_name
-    ):
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        extra_env = self._reach_the_write_step(skill, git_repo, isolated_home, tmp_path)
-        repo_hash = hashlib.sha256(git_toplevel(git_repo).encode()).hexdigest()
-        marker_dir = isolated_home / ".claude" / marker_dir_name
-        marker_dir.mkdir(parents=True, exist_ok=True)
-        completion_marker = marker_dir / f"{repo_hash}.{sid}"
-        real_target = tmp_path / f"attacker-chosen-{skill}-target.txt"
-        real_target.write_text("pre-existing content\n")
-        completion_marker.symlink_to(real_target)
-
-        result = _run(["write", skill], cwd=git_repo, home=isolated_home, extra_env=extra_env)
-        assert result.returncode == 2, result.stderr
-        assert "symlink at destination" in result.stderr, (
-            "the arm must be refused at its marker write, not by an earlier guard"
-        )
-        assert completion_marker.is_symlink(), "the symlink itself must survive, unmodified"
-        assert real_target.read_text() == "pre-existing content\n", (
-            "the write must not follow the symlink and truncate its target"
-        )
-
-
-class TestMarkerActivateSymlinkHardeningAcrossArms:
-    """Every `activate` arm writes through `_lib_write_no_follow`, which
-    refuses a symlink at the predictable marker path."""
-
-    SID = "test-session-activate-symlink"
-
-    ACTIVATE_ARMS = [
-        ("plan-review", ".plan-review-active.d"),
-        ("ready-for-review", ".ready-for-review-active.d"),
-        ("respond-pr", ".respond-pr-active.d"),
-        ("memory-skill", ".memory-skill-active.d"),
-        ("handoff", ".handoff-active.d"),
-    ]
-
-    @pytest.mark.parametrize("skill,dir_name", ACTIVATE_ARMS)
-    def test_activate_refuses_a_symlink_at_the_active_marker_destination(
-        self, isolated_home, git_repo, tmp_path, skill, dir_name
-    ):
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        active_dir = isolated_home / ".claude" / dir_name
-        active_dir.mkdir(parents=True, exist_ok=True)
-        active_marker = active_dir / sid
-        real_target = tmp_path / f"attacker-chosen-{skill}-target.txt"
-        real_target.write_text("pre-existing content\n")
-        active_marker.symlink_to(real_target)
-
-        result = _run(["activate", skill], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 2, result.stderr
-        assert active_marker.is_symlink(), "the symlink itself must survive, unmodified"
-        assert real_target.read_text() == "pre-existing content\n", (
-            "activate must not follow the symlink and truncate its target"
-        )

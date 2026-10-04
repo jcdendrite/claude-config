@@ -493,11 +493,14 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
 
-    def test_skill_md_change_selects_skills_tests_and_transcript_analysis(self):
+    def test_skill_md_change_selects_skills_tests_transcript_analysis_and_doc_counts(self):
+        """test_doc_counts.py reads every name-only skill's SKILL.md frontmatter
+        (_name_only_skills_carrying_trigger_blocks), so any SKILL.md edit selects it."""
         result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/SKILL.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+            _mod.DOC_COUNTS_TEST_PATH,
         }
 
     def test_skill_auxiliary_md_change_selects_skills_tests(self):
@@ -817,7 +820,7 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
-            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR,
+            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.DOC_COUNTS_TEST_PATH,
         }
 
     def test_marker_clear_stale_py_change_also_selects_hooks_tests(self):
@@ -1915,6 +1918,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
     _mod.SELECT_TESTS_TEST_PATH,
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+    _mod.DOC_COUNTS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
     *_mod.HOOKS_TESTS_IMPORTING_CONFIG,

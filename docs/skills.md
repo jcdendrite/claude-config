@@ -38,22 +38,21 @@ Unlike the ten workflow-utility name-only skills (brief, handoff, read-docx-comm
 - **Debugging playbook** (`root-cause-analysis`) — invoke-only, no TRIGGER blocks, consulted by name during investigation planning.
 - **Dispatcher-reached reviewer** (`agent-review`) — carries TRIGGER blocks (graceful-degradation insurance on pre-v2.1.129 clients) but is always reached by name from `/code-review`, never by description auto-trigger.
 - **Periodic-audit workflow** (`memory-store-audit`) — carries TRIGGER blocks so its `DO NOT TRIGGER` clause can name `ai-instruction-and-memory-files` explicitly and keep the two skills' surfaces distinct at a glance.
-- **User-invocable pipeline** (`review-pr`) — fits none of the other categories: it is invoked directly by the operator via `/review-pr`, not dispatched from another skill, and keeps the same TRIGGER text as graceful-degradation insurance on pre-v2.1.129 clients.
+- **User-invocable pipeline** (`review-pr`) — fits none of the other categories: it is invoked directly by the operator via `/review-pr`, not dispatched from another skill, and carries no TRIGGER blocks.
 - **Plugin-scoped** (`skill-review`, plugin `skill-management`) — exempt from `skillOverrides` entirely; see note below the table.
 
 Each skill lives in `claude-skills/skills/<skill-name>/SKILL.md`. A skill directory may also contain co-located auxiliary files — see architecture notes below for the two distinct roles they play. Skills that primarily apply to this repo's own workflow (editing SKILL.md files, authoring hooks) live as project-scoped plugins instead — see [Project-scoped plugins](#project-scoped-plugins) below.
 
 ## Skills available by name (no description budget cost)
 
-Eighteen skills in this repo use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older Claude Code versions (pre-v2.1.129) the override is silently ignored and these skills fall back to `on` (description loaded). Ten skills carry no TRIGGER blocks: nine of the ten workflow utilities — all but `transcript-analysis` — and one debugging playbook.
+Eighteen skills in this repo use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older Claude Code versions (pre-v2.1.129) the override is silently ignored and these skills fall back to `on` (description loaded). Eleven skills carry no TRIGGER blocks: nine of the ten workflow utilities — all but `transcript-analysis` — one debugging playbook, and one user-invocable pipeline skill.
 
-The other eight carry TRIGGER blocks and may fire via description match on older versions:
+The other seven carry TRIGGER blocks and may fire via description match on older versions:
 
 - `transcript-analysis`
 - the four knowledge-domain skills
 - one dispatcher-reached reviewer skill
 - one periodic-audit workflow skill
-- one user-invocable pipeline skill
 
 | Skill | Role |
 |---|---|

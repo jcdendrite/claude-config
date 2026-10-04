@@ -52,7 +52,11 @@ from helpers import (
     write_scaled_timeout_shim,
 )
 
-from .conftest import _worktree_lock_reason
+from .conftest import (
+    REVIEW_WORKTREE_NAME,
+    _add_worktree_under_worktrees_dir,
+    _worktree_lock_reason,
+)
 from .test_config_lib import _isolated_hooks_dir_missing_key_row
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
@@ -2356,12 +2360,15 @@ def test_every_hook_that_paths_a_session_id_validates_it() -> None:
 # --- _lib_first_live_linked_worktree --------------------------------------
 
 
-def _first_live_linked_worktree(repo_root: Path) -> subprocess.CompletedProcess:
+def _first_live_linked_worktree(
+    repo_root: Path, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", "-c", f'. {_LIB_SH}; _lib_first_live_linked_worktree "$1"', "bash", str(repo_root)],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
 
 
@@ -2417,6 +2424,262 @@ def test_first_live_linked_worktree_returns_not_found_with_no_worktree_at_all(
 
     assert result.returncode != 0
     assert result.stdout == ""
+
+
+def _add_review_worktree(repo: Path, name: str) -> Path:
+    return _add_worktree_under_worktrees_dir(repo, name)
+
+
+def test_first_live_linked_worktree_skips_a_review_worktree(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _add_review_worktree(repo, REVIEW_WORKTREE_NAME)
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def _env_with_git_shim_printing_worktree_list(tmp_path: Path, porcelain_text: str) -> dict[str, str]:
+    """An environment whose `git worktree list --porcelain` prints
+    `porcelain_text` verbatim, so a test controls record order and the missing
+    trailing blank line that real git always emits."""
+    porcelain_file = tmp_path / "porcelain.txt"
+    porcelain_file.write_text(porcelain_text)
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    git_shim = shim_dir / "git"
+    git_shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'case " $* " in\n'
+        "  *' worktree list --porcelain '*)\n"
+        f"    cat {shlex.quote(str(porcelain_file))}\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "esac\n"
+        'echo "unexpected git call: $*" >&2\n'
+        "exit 1\n"
+    )
+    git_shim.chmod(0o755)
+    return {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
+@pytest.mark.parametrize("review_entry_first", [True, False], ids=["review-first", "branch-first"])
+def test_first_live_linked_worktree_returns_the_branch_worktree_in_either_listing_order(
+    tmp_path: Path, review_entry_first: bool
+) -> None:
+    """`git worktree list` does not promise an order, so a skipped review entry
+    must not end the scan whichever side of the branch worktree it lands on.
+    A `git` shim prints the porcelain text in a fixed order over real
+    directories. The last record has no trailing blank line, which pins the
+    end-of-input flush."""
+    repo = tmp_path / "repo"
+    worktrees_dir = repo / ".claude" / "worktrees"
+    review_worktree = worktrees_dir / REVIEW_WORKTREE_NAME
+    branch_worktree = worktrees_dir / "feature"
+    review_worktree.mkdir(parents=True)
+    branch_worktree.mkdir()
+    main_record = f"worktree {repo}\nbranch refs/heads/main\n"
+    review_record = f"worktree {review_worktree}\ndetached\n"
+    branch_record = f"worktree {branch_worktree}\nbranch refs/heads/feature\n"
+    linked_records = [review_record, branch_record] if review_entry_first else [branch_record, review_record]
+
+    result = _first_live_linked_worktree(
+        repo, env=_env_with_git_shim_printing_worktree_list(tmp_path, "\n".join([main_record, *linked_records]))
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+    assert result.stderr == ""
+
+
+def test_first_live_linked_worktree_returns_the_whole_path_of_a_worktree_whose_directories_contain_a_space(
+    tmp_path: Path,
+) -> None:
+    """The porcelain record is one line, `worktree <path>`, so a path with a
+    space must come back whole rather than cut at the first space."""
+    repo = tmp_path / "my repo"
+    branch_worktree = repo / ".claude" / "worktrees" / "my feature"
+    branch_worktree.mkdir(parents=True)
+    main_record = f"worktree {repo}\nbranch refs/heads/main\n"
+    branch_record = f"worktree {branch_worktree}\nbranch refs/heads/feature\n"
+
+    result = _first_live_linked_worktree(
+        repo, env=_env_with_git_shim_printing_worktree_list(tmp_path, "\n".join([main_record, branch_record]))
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_skips_a_review_record_under_a_repo_path_containing_a_space_but_keeps_the_branch_record(
+    tmp_path: Path,
+) -> None:
+    """The review-shape comparison matches the entry's path against
+    `<repo>/.claude/worktrees`, so a space in the repo path must not defeat the
+    skip. The review record alone is not-found; a branch record after it is
+    returned whole."""
+    repo = tmp_path / "my repo"
+    worktrees_dir = repo / ".claude" / "worktrees"
+    review_worktree = worktrees_dir / REVIEW_WORKTREE_NAME
+    branch_worktree = worktrees_dir / "feature"
+    review_worktree.mkdir(parents=True)
+    branch_worktree.mkdir()
+    main_record = f"worktree {repo}\nbranch refs/heads/main\n"
+    review_record = f"worktree {review_worktree}\ndetached\n"
+    branch_record = f"worktree {branch_worktree}\nbranch refs/heads/feature\n"
+
+    # The shim helper owns a fixed layout under its directory, so each listing gets its own.
+    review_alone_dir, review_then_branch_dir = tmp_path / "review-alone", tmp_path / "review-then-branch"
+    review_alone_dir.mkdir()
+    review_then_branch_dir.mkdir()
+    review_alone = _first_live_linked_worktree(
+        repo,
+        env=_env_with_git_shim_printing_worktree_list(review_alone_dir, "\n".join([main_record, review_record])),
+    )
+    review_then_branch = _first_live_linked_worktree(
+        repo,
+        env=_env_with_git_shim_printing_worktree_list(
+            review_then_branch_dir, "\n".join([main_record, review_record, branch_record])
+        ),
+    )
+
+    assert review_alone.returncode != 0
+    assert review_alone.stdout == ""
+    assert review_then_branch.returncode == 0
+    assert review_then_branch.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_does_not_carry_a_detached_record_over_to_the_next_record(
+    tmp_path: Path,
+) -> None:
+    """A detached main checkout, common in CI, must not mark the record after
+    it detached: a review-shaped worktree on a branch still counts."""
+    repo = tmp_path / "repo"
+    review_named_branch_worktree = repo / ".claude" / "worktrees" / REVIEW_WORKTREE_NAME
+    review_named_branch_worktree.mkdir(parents=True)
+    detached_main_record = f"worktree {repo}\ndetached\n"
+    branch_record = f"worktree {review_named_branch_worktree}\nbranch refs/heads/feature\n"
+
+    result = _first_live_linked_worktree(
+        repo, env=_env_with_git_shim_printing_worktree_list(tmp_path, "\n".join([detached_main_record, branch_record]))
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == str(review_named_branch_worktree)
+
+
+def test_first_live_linked_worktree_counts_a_review_named_directory_outside_the_worktrees_dir(
+    tmp_path: Path,
+) -> None:
+    """Only a directory directly under .claude/worktrees is a review worktree,
+    so a detached worktree elsewhere that merely shares the name stays live."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    lookalike = tmp_path / REVIEW_WORKTREE_NAME
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(lookalike)],
+        cwd=repo, check=True, capture_output=True,
+    )
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(lookalike)
+
+
+def test_first_live_linked_worktree_returns_a_branch_worktree_directly_under_the_worktrees_dir(
+    tmp_path: Path,
+) -> None:
+    """The repo's own layout is .claude/worktrees/<branch>; that worktree is
+    the one a main-tree session should be told to enter."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    branch_worktree = _add_worktree_under_worktrees_dir(repo, "feature", branch="feature")
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_skips_a_review_sibling_but_returns_the_branch_worktree(
+    tmp_path: Path,
+) -> None:
+    """Real git porcelain output; the listing order is not pinned here (the
+    shim test above pins both orders)."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _add_review_worktree(repo, REVIEW_WORKTREE_NAME)
+    branch_worktree = _add_worktree_under_worktrees_dir(repo, "feature", branch="feature")
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_counts_a_user_named_review_prefixed_detached_worktree(
+    tmp_path: Path,
+) -> None:
+    """A name that only starts with review-pr- is not the shape
+    review-pr-checkout.sh creates, so it stays live even when detached."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    user_worktree = _add_review_worktree(repo, "review-pr-hardening")
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(user_worktree)
+
+
+def test_first_live_linked_worktree_counts_a_review_named_directory_nested_one_level_deeper(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    nested = _add_review_worktree(repo, f"nested/{REVIEW_WORKTREE_NAME}")
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(nested)
+
+
+def test_first_live_linked_worktree_counts_a_review_shaped_worktree_that_is_on_a_branch(
+    tmp_path: Path,
+) -> None:
+    """Review checkouts are always detached, so a branch worktree with the
+    review-shaped name is someone's real work tree."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    branch_worktree = _add_worktree_under_worktrees_dir(
+        repo, REVIEW_WORKTREE_NAME, branch="review-branch"
+    )
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_counts_a_review_shaped_worktree_under_another_trees_worktrees_dir(
+    tmp_path: Path,
+) -> None:
+    """Only the repo's own .claude/worktrees directory qualifies, not any
+    directory with that tail."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    elsewhere = _add_worktree_under_worktrees_dir(
+        repo, REVIEW_WORKTREE_NAME, worktrees_root=tmp_path / "other-tree"
+    )
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(elsewhere)
 
 
 # --- _lib_default_branch_from_origin_head / _lib_default_branch_or_guess --
@@ -6253,7 +6516,7 @@ class TestLibSha256NoFollow:
 
 class TestLibWriteNoFollow:
     """Direct unit coverage for _lib_write_no_follow -- otherwise only
-    exercised indirectly through marker.sh's `write`/`activate` arms and
+    exercised indirectly through marker.sh's `write review-pr` arm and
     the review-pr scripts' own provenance/context/diff artifact writes."""
 
     def test_writes_stdin_to_a_fresh_path(self, tmp_path: Path) -> None:
@@ -6493,6 +6756,12 @@ def _porcelain_record(path: str, *extra_lines: str) -> str:
 # about 4%.
 _TEMPLATE_CONTRACT_DRAWS = 20
 
+# Every character class _lib_valid_session_id_component allows (upper, lower,
+# digit, underscore, hyphen), with a hyphen at the end so the template's
+# `-<number>-` joint follows a hyphen.
+_WIDEST_VALID_SESSION_ID = "Az09_-Zz_09-"
+_TEMPLATE_CONTRACT_SESSION_IDS = ["sess-1", _WIDEST_VALID_SESSION_ID]
+
 
 class TestLibReviewPrSelectSessionWorktrees:
     """Direct unit coverage for _lib_review_pr_select_session_worktrees --
@@ -6604,7 +6873,10 @@ class TestLibReviewPrSelectSessionWorktrees:
         assert result.returncode == 0, result.stderr
         assert result.stdout == ""
 
-    def test_every_directory_the_checkout_template_creates_is_selected(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("session_id", _TEMPLATE_CONTRACT_SESSION_IDS)
+    def test_every_directory_the_checkout_template_creates_is_selected(
+        self, tmp_path: Path, session_id: str
+    ) -> None:
         """Creator/discoverer contract: a real `mktemp -d` expansion of
         _lib_review_pr_worktree_template must match the selector's tail
         shape, so changing one side alone cannot orphan review worktrees."""
@@ -6612,6 +6884,7 @@ class TestLibReviewPrSelectSessionWorktrees:
         (main_root / ".claude" / "worktrees").mkdir(parents=True)
         script = textwrap.dedent(f"""\
             . {shlex.quote(str(_LIB_SH))}
+            _lib_valid_session_id_component "$2" || exit 9
             draws=0
             for attempt in {{1..{_TEMPLATE_CONTRACT_DRAWS}}}; do
               created=$(mktemp -d "$(_lib_review_pr_worktree_template "$1" "$2" "$3")") || exit 10
@@ -6625,7 +6898,7 @@ class TestLibReviewPrSelectSessionWorktrees:
             printf '%s' "$draws"
         """)
         result = subprocess.run(
-            ["bash", "-c", script, "contract", str(main_root), self.SESSION, "42"],
+            ["bash", "-c", script, "contract", str(main_root), session_id, "42"],
             capture_output=True, text=True, check=False,
         )
         assert result.returncode == 0, result.stderr
@@ -6638,6 +6911,77 @@ class TestLibReviewPrSelectSessionWorktrees:
         )
         assert result.returncode != 0
         assert result.stdout == ""
+
+
+class TestLibReviewPrWorktreeNameIsReviewShaped:
+    """_lib_review_pr_worktree_name_is_review_shaped decides which worktree
+    directory names _lib_first_live_linked_worktree may skip, so it must accept
+    every name the checkout template creates and nothing looser."""
+
+    @staticmethod
+    def _is_review_shaped(name: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_review_pr_worktree_name_is_review_shaped "$1"', "bash", name],
+            capture_output=True, text=True, check=False,
+        )
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "review-pr-sess-1-42-abc123",
+            "review-pr-0b5e0f6a-0a0d-4a39-9d7e-1f2f3a4b5c6d-7-aB3dE9",
+            "review-pr-sess_1-1234-ABCDEF",
+        ],
+    )
+    def test_accepts_a_name_the_checkout_template_can_create(self, name: str) -> None:
+        assert self._is_review_shaped(name).returncode == 0
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "review-pr-hardening",
+            "review-pr-sess-1-42",
+            "review-pr-sess-1-42-abc12",
+            "review-pr-sess-1-42-abc1234",
+            "review-pr-sess-1-x-abc123",
+            "review-pr--42-abc123",
+            "review-pr-sess-1-42-abc12!",
+            "xreview-pr-sess-1-42-abc123",
+            "review-pr-sess-1-42-abc123-extra",
+            "feature",
+            "",
+        ],
+    )
+    def test_rejects_a_name_the_checkout_template_never_creates(self, name: str) -> None:
+        assert self._is_review_shaped(name).returncode != 0
+
+    @pytest.mark.parametrize("session_id", _TEMPLATE_CONTRACT_SESSION_IDS)
+    def test_accepts_every_directory_the_checkout_template_creates(
+        self, tmp_path: Path, session_id: str
+    ) -> None:
+        """Creator/skip contract: a real `mktemp -d` expansion of
+        _lib_review_pr_worktree_template satisfies the predicate, for the
+        widest session id _lib_valid_session_id_component accepts as well as
+        a typical one."""
+        main_root = tmp_path / "main"
+        (main_root / ".claude" / "worktrees").mkdir(parents=True)
+        script = textwrap.dedent(f"""\
+            . {shlex.quote(str(_LIB_SH))}
+            _lib_valid_session_id_component "$2" || exit 9
+            draws=0
+            for attempt in {{1..{_TEMPLATE_CONTRACT_DRAWS}}}; do
+              created=$(mktemp -d "$(_lib_review_pr_worktree_template "$1" "$2" "$3")") || exit 10
+              _lib_review_pr_worktree_name_is_review_shaped "${{created##*/}}" || {{ printf '%s\\n' "$created" >&2; exit 12; }}
+              draws=$((draws + 1))
+            done
+            printf '%s' "$draws"
+        """)
+        result = subprocess.run(
+            ["bash", "-c", script, "contract", str(main_root), session_id, "42"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == str(_TEMPLATE_CONTRACT_DRAWS), "the loop must run every draw, not vacuously"
 
 
 # --- _lib_config_lines -------------------------------------------------

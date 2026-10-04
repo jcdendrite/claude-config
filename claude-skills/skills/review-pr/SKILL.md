@@ -1,6 +1,6 @@
 ---
 name: review-pr
-description: "Review a PR you did not author: audit for passive-execution risk before checkout, run /plan-review (only if a plan is linked) and /code-review, both under a no-fix/no-marker override, then post only on explicit approval. TRIGGER when: asked to review, give feedback on, or check a PR that isn't the current branch's own open PR. DO NOT TRIGGER when: reviewing your own uncommitted work (use /code-review) or responding to comments on your own open PR (use /respond-pr)."
+description: "Review a PR you did not author: audit for passive-execution risk before checkout, run /plan-review (only if a plan is linked) and /code-review, both under a no-fix/no-marker override, then post only on explicit approval."
 argument-hint: "[PR number or URL]"
 ---
 
@@ -30,7 +30,7 @@ Branch on the printed document's `authorAssociation` and cross-repo signal, but 
 ```
 ~/.claude/scripts/review-pr-checkout.sh <owner>/<repo>#<number>
 ```
-Re-derives its own file list and `headRefOid`. It refuses unconditionally on any author association outside `MEMBER`/`OWNER`/`COLLABORATOR`/`CONTRIBUTOR` (so `FIRST_TIME_CONTRIBUTOR`, `NONE`, and any value not listed) and on a cross-repo head, naming `review-pr-diff.sh` as the alternative; never skip this reasoning on the strength of author standing. It audits the file list before ever fetching the PR's ref, checks out into a linked worktree, and rewrites provenance with mode `checkout`. Each run gets its own new worktree, including a second run against the same PR, and `review-pr-finish.sh` removes every worktree of the session. The target repo should list `.claude/worktrees/` in a `.gitignore` (see `REFERENCES.md`).
+Re-derives its own file list and `headRefOid`. It refuses unconditionally on any author association outside `MEMBER`/`OWNER`/`COLLABORATOR`/`CONTRIBUTOR` (so `FIRST_TIME_CONTRIBUTOR`, `NONE`, and any value not listed) and on a cross-repo head, naming `review-pr-diff.sh` as the alternative; never skip this reasoning on the strength of author standing. It audits the file list before ever fetching the PR's ref, checks out into a linked worktree, and rewrites provenance with mode `checkout`. Each run gets its own new worktree, including a second run against the same PR, and `review-pr-finish.sh` removes every worktree of the session. It prints the worktree path, then the path of a file holding the PR's three-dot diff against its base. The target repo should list `.claude/worktrees/` in a `.gitignore` (see `REFERENCES.md`). Run it with Bash `timeout: 600000` (the tool's documented maximum; its default is 120000): this script alone creates a worktree, so a mid-run kill can leave a registered one behind, and the "Worst-case wall time" in its usage text exceeds the default.
 
 Read its exit status: exit 3 → switch to the diff-only path below; any other non-zero exit → report stderr and stop, do not switch paths.
 
@@ -38,7 +38,7 @@ Read its exit status: exit 3 → switch to the diff-only path below; any other n
 ```
 ~/.claude/scripts/review-pr-diff.sh <owner>/<repo>#<number>
 ```
-No checkout, no worktree: self-derives the same file list and `headRefOid`, writes `gh pr diff`'s own output to a file, and rewrites provenance with mode `diff-only`. An execution-surface hit is reported on stderr as a mandatory finding, not a stop — carry it into step 5 as blocking. This is the reduced-coverage path; step 6 does not apply to it.
+No checkout, no worktree: self-derives the same file list and `headRefOid`, writes `gh pr diff`'s own output to a file, prints that file's path, and rewrites provenance with mode `diff-only`. An execution-surface hit is reported on stderr as a mandatory finding, not a stop — carry it into step 5 as blocking. This is the reduced-coverage path; step 6 does not apply to it.
 
 Any non-zero exit here is final: report stderr and stop; use no other acquisition route (a PR over 300 changed files is refused here too).
 
@@ -54,7 +54,7 @@ Apply `/code-review` Step 1's implementation-fitness gate against the PR's state
 
 ## Step 5 — Line-level pass
 
-**In `checkout` mode**, run `git -C <step-2 worktree path> -c core.hooksPath=/dev/null fetch origin <baseRefOid>`, then `git -C <step-2 worktree path> diff --no-ext-diff --no-textconv --no-color <baseRefOid>...HEAD > <diff file>`, and invoke `/code-review` over `<diff file>`. `<step-2 worktree path>` is the path step 2's checkout script printed, and `<baseRefOid>` comes from step 1's document. `<diff file>` is the path `review-pr-findings-path.sh` (step 7) prints with its `.body` suffix replaced by `.diff`, so `review-pr-finish.sh` removes it. The redirect matters because the harness replaces a Bash result over about 30 KB with a 2 KB head, and a diff handed over as stdout would reach the review cut short. The fetch is needed because step 2 fetched only the PR's own ref, so the base commit may be absent. If either command fails, stop and report it; there is no fallback. **In `diff-only` mode**, invoke `/code-review` over the diff `gh pr diff` produced in step 2. That is GitHub's own server-side merge-base diff (unverified), not a local `git diff`, since there is no worktree to diff locally. Either way, the standing override above applies, and `/code-review`'s Step 0.1 short-circuit does not: it compares this tree's staged diff, not the PR's.
+Invoke `/code-review` over the diff file step 2's script printed, under the standing override above. It is a file because a diff passed through Bash stdout reaches the review cut short on a large PR. In `checkout` mode it is a local three-dot diff; in `diff-only` mode it is GitHub's own server-side merge-base diff (unverified), since there is no worktree to diff locally. `/code-review`'s Step 0.1 short-circuit does not apply: it compares this tree's staged diff, not the PR's. In `checkout` mode, a path the diff file renders as "Binary files ... differ" carries no reviewed content: read that path from the step-2 worktree or report it as unreviewed.
 
 **In `diff-only` mode**, the diff file is the *only* route to this PR's file contents — never `Read` a file by path, never assume local file state exists. Any `AUDIT_FINDING` `review-pr-diff.sh` reported on stderr in step 2 is a mandatory blocking finding here, not optional.
 

@@ -806,23 +806,46 @@ _lib_review_pr_provenance_field() {
 # SIGKILLed git cannot clean up after itself.
 _LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS=30
 
+# One character of a session id that is safe as a path component, as an
+# extended-regex bracket expression. Shared by _lib_valid_session_id_component
+# and _lib_review_pr_worktree_name_is_review_shaped, so the ids the creator
+# accepts are exactly the ids the review-shape check recognizes.
+_LIB_SESSION_ID_COMPONENT_CHAR_REGEX='[A-Za-z0-9_-]'
+
+# Leading part of every review worktree directory name, whatever the session.
+_LIB_REVIEW_PR_WORKTREE_NAME_ROOT="review-pr-"
+
+# Trailing part of every review worktree directory name: the PR number, then
+# the six alphanumerics `mktemp -d` substitutes for the template's XXXXXX.
+# Extended regex, shared by _lib_review_pr_select_session_worktrees and
+# _lib_review_pr_worktree_name_is_review_shaped.
+_LIB_REVIEW_PR_WORKTREE_NAME_TAIL_REGEX='[0-9]+-[A-Za-z0-9]{6}'
+
 # _lib_review_pr_worktree_name_prefix SESSION_ID
 # Prints review-pr-<session-id>-, the leading part of every worktree
 # directory name review-pr-checkout.sh creates for that session. Shared by
 # the template below and the discovery helper after it, so creation and
 # cleanup cannot derive the naming convention differently from each other.
 _lib_review_pr_worktree_name_prefix() {
-  printf 'review-pr-%s-' "$1"
+  printf '%s%s-' "$_LIB_REVIEW_PR_WORKTREE_NAME_ROOT" "$1"
 }
 
 # _lib_review_pr_worktree_template MAIN_REPO_ROOT SESSION_ID PR_NUMBER
 # Prints the `mktemp -d` template for one review-pr checkout:
 # $MAIN_REPO_ROOT/.claude/worktrees/review-pr-<session-id>-<number>-XXXXXX.
 # The six-character random suffix makes every invocation's path unique, and
-# _lib_review_pr_select_session_worktrees below expects exactly that shape.
+# _LIB_REVIEW_PR_WORKTREE_NAME_TAIL_REGEX describes exactly that shape.
 _lib_review_pr_worktree_template() {
   local main_repo_root="$1" session_id="$2" pr_number="$3"
   printf '%s/.claude/worktrees/%s%s-XXXXXX' "$main_repo_root" "$(_lib_review_pr_worktree_name_prefix "$session_id")" "$pr_number"
+}
+
+# _lib_review_pr_worktree_name_is_review_shaped NAME
+# Returns 0 iff NAME is a directory name review-pr-checkout.sh could have
+# created for some session:
+# review-pr-<session-id characters>-<digits>-<six alphanumerics>.
+_lib_review_pr_worktree_name_is_review_shaped() {
+  [[ "$1" =~ ^${_LIB_REVIEW_PR_WORKTREE_NAME_ROOT}${_LIB_SESSION_ID_COMPONENT_CHAR_REGEX}+-${_LIB_REVIEW_PR_WORKTREE_NAME_TAIL_REGEX}$ ]]
 }
 
 # _lib_review_pr_select_session_worktrees PORCELAIN MAIN_REPO_ROOT SESSION_ID
@@ -854,7 +877,7 @@ _lib_review_pr_select_session_worktrees() {
     name="${path#"$worktrees_dir"/}"
     [[ "$name" != */* && "$name" == "$name_prefix"* ]] || continue
     remainder="${name#"$name_prefix"}"
-    [[ "$remainder" =~ ^[0-9]+-[A-Za-z0-9]{6}$ ]] || continue
+    [[ "$remainder" =~ ^${_LIB_REVIEW_PR_WORKTREE_NAME_TAIL_REGEX}$ ]] || continue
     printf '%s\n' "$path"
   done <<< "$porcelain"
 }
@@ -918,7 +941,7 @@ with os.fdopen(fd, "rb") as f:
 # symlink at the final path component atomically with the write, so a
 # pre-planted symlink at a predictable session-scoped destination is never
 # followed and truncated the way a plain `>` redirect would follow it.
-# Shared by marker.sh's `write <skill>` and `activate` arms and the review-pr scripts that
+# Shared by marker.sh's `write review-pr` arm and the review-pr scripts that
 # write session-scoped provenance/context/diff artifacts at an identically
 # predictable, session-ID-keyed path.
 _lib_write_no_follow() {
@@ -2463,7 +2486,7 @@ _lib_permission_prompt_tracking_active() {
 # unvalidated empty SESSION_ID.
 _lib_valid_session_id_component() {
   local session_id="$1"
-  [[ "$session_id" =~ ^[A-Za-z0-9_-]+$ ]]
+  [[ "$session_id" =~ ^${_LIB_SESSION_ID_COMPONENT_CHAR_REGEX}+$ ]]
 }
 
 # _lib_active_bypass_marker_live MARKER_DIR_NAME SESSION_ID
@@ -2568,27 +2591,54 @@ _lib_active_bypass_marker_live_and_touch() {
 # _lib_first_live_linked_worktree REPO_ROOT
 # Prints the path of the first linked worktree of REPO_ROOT whose directory is
 # present on disk and returns 0; prints nothing and returns 1 when there is
-# none. `git worktree list` still reports entries whose directory was deleted
-# but not pruned, so each candidate is tested rather than trusting the entry
-# count. Callers use this to distinguish "session is in the main tree while the
+# none.
+# A review worktree never counts, since a session has no reason to enter it.
+# A review worktree is one that sits directly under REPO_ROOT/.claude/worktrees,
+# has a name _lib_review_pr_worktree_name_is_review_shaped accepts, and is
+# detached, as review-pr-checkout.sh creates it for a PR the session does not
+# own. A branch worktree, a nested directory, and a user-named directory all
+# still count, so a wrong-tree session is never silenced by a name alone.
+# The skip identifies a review worktree by that shape, not by a record written
+# at creation. A worktree it hides wrongly only lets the marker writer record a
+# marker keyed to the main tree's repo hash.
+# The skip assumes no gate keys a marker to the main tree's hash on a review
+# checkout's behalf. `docs/hooks.md` § "Marker keying and gate-release authority"
+# lists the readers that assumption rests on. If that keying changes, identify
+# a review checkout by a record written when it is created.
+# `git worktree list` still reports entries whose directory was deleted but not
+# pruned, so each candidate is tested rather than trusting the entry count.
+# Callers use this to distinguish "session is in the main tree while the
 # work belongs in a worktree" from "this repo has no worktree at all" — the
 # latter is the ordinary state just before `git worktree add`, and carries no
 # wrong-tree risk because there is no second tree to confuse the first with.
 # Parses newline-delimited output, so a worktree path containing a literal
 # newline (pathological, and unhandled here) would be split across two lines
 # and matched incorrectly; git's own docs recommend `-z` for that case.
+# The awk step prefixes each path with `d` when its porcelain record carries a
+# `detached` line and `-` otherwise.
 _lib_first_live_linked_worktree() {
-  local repo_root="$1" worktree_path
+  local repo_root="$1" entry worktree_path
   [ -n "$repo_root" ] || return 1
-  while IFS= read -r worktree_path; do
+  while IFS= read -r entry; do
+    worktree_path="${entry:1}"
     [ -n "$worktree_path" ] || continue
     [ "$worktree_path" = "$repo_root" ] && continue
+    if [ "${entry:0:1}" = "d" ] \
+      && [ "${worktree_path%/*}" = "$repo_root/.claude/worktrees" ] \
+      && _lib_review_pr_worktree_name_is_review_shaped "${worktree_path##*/}"; then
+      continue
+    fi
     if [ -d "$worktree_path" ]; then
       printf '%s' "$worktree_path"
       return 0
     fi
   done < <(_lib_capped git -C "$repo_root" worktree list --porcelain 2>/dev/null \
-    | awk '/^worktree /{print substr($0, 10)}')
+    | awk '
+      function flush(flag) { if (path != "") { flag = detached ? "d" : "-"; print flag path }; path = ""; detached = 0 }
+      /^worktree / { flush(); path = substr($0, 10); next }
+      /^detached$/ { detached = 1; next }
+      /^$/ { flush() }
+      END { flush() }')
   return 1
 }
 

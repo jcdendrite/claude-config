@@ -181,7 +181,7 @@ flowchart LR
 | `nudge-handoff-near-context-cap.sh` | — (PostToolBatch + Stop, advisory) | Injects a one-shot reminder near the context cap; see [`docs/handoff-nudge.md`](docs/handoff-nudge.md) |
 | `nudge-error-mode-analysis.sh` | — (UserPromptSubmit, advisory, opt-in) | Injects a one-shot suggestion to run `/error-mode-analysis`; see [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) |
 | `nudge-memory-store-audit.sh` | — (SessionStart, advisory) | Nudges an audit of the machine's auto-memory stores once their total size passes a count-scaled threshold; see [docs/memory-audit-nudge.md](docs/memory-audit-nudge.md) |
-| `nudge-worktree-anchor.sh` | — (UserPromptSubmit, advisory) | Reports when the session is working from the main tree of a worktree-enforcing repo while a linked worktree exists |
+| `nudge-worktree-anchor.sh` | — (UserPromptSubmit, advisory) | Reports when the session is working from the main tree of a worktree-enforcing repo while a linked worktree other than a `review-pr` checkout exists |
 | `check-branch-divergence.sh` | — (SessionStart, advisory) | Surfaces feature-branch divergence from `origin/<default>`; see [`docs/hooks.md`](docs/hooks.md) |
 | `set-session-title-from-branch.sh` | — (SessionStart, advisory) | Sets the terminal tab title to `<repo>/<branch>` on feature branches; see [`docs/hooks.md`](docs/hooks.md) |
 | `track-permission-prompts.sh` | — (Notification, `informational`, opt-in) | Appends a redacted permission-prompt event to a local log; see [Permission-prompt tracking](#permission-prompt-tracking) |

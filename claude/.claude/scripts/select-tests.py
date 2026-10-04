@@ -155,6 +155,11 @@ REVIEW_PR_AUDIT_SCRIPT = "claude-skills/skills/review-pr/audit-execution-surface
 # compare its literal script invocations against the settings allow entries.
 REVIEW_PR_SKILL_MD = "claude-skills/skills/review-pr/SKILL.md"
 
+# test_doc_counts.py reads the SKILL.md frontmatter of every name-only skill
+# in settings.json. The path is built in a function body, so
+# TestCrossDomainReadCompleteness cannot see it.
+DOC_COUNTS_TEST_PATH = "claude/.claude/hooks/tests/test_doc_counts.py"
+
 # The cross-domain import declarations below (CONFIG_MODULE through
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES) are enumerated by hand from a
 # grep of static `import`/`from` statements, not derived by a test, so the
@@ -192,7 +197,7 @@ HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: frozenset[str] = frozenset({
 # HOOKS_TESTS_DIR test files that import CONFIG_MODULE by name.
 HOOKS_TESTS_IMPORTING_CONFIG: frozenset[str] = frozenset({
     "claude/.claude/hooks/tests/test_config_lib.py",
-    "claude/.claude/hooks/tests/test_doc_counts.py",
+    DOC_COUNTS_TEST_PATH,
     "claude/.claude/hooks/tests/test_install_sh_machine_level_opt_ins.py",
     "claude/.claude/hooks/tests/test_install_sh_sentinel_inventory.py",
 })
@@ -624,6 +629,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # MARKER_CLEAR_STALE_PY: see its own comment above for citation.
 # REVIEW_PR_AUDIT_SCRIPT and REVIEW_PR_SKILL_MD: see each constant's own
 # comment above for its citation.
+# DOC_COUNTS_TEST_PATH: see its own comment above for citation.
 # _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py and
 # test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
 # recursively glob claude/.claude/ for *.sh files, picking up
@@ -718,6 +724,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == CODE_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
+    (_is_skill_md_change, (DOC_COUNTS_TEST_PATH,)),
     (lambda p: p == MARKER_CLEAR_STALE_PY, (HOOKS_TESTS_DIR,)),
     (lambda p: p == REVIEW_PR_AUDIT_SCRIPT, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == REVIEW_PR_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
