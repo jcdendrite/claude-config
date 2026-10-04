@@ -1212,7 +1212,7 @@ Unpriced turns inside round windows: 0
 **Withholding floors.** A breach of either floor degrades every printed share to `(95% CI not computed — too few branches in scope)`, not one share, because a single blank would itself reveal which share breached:
 
 - Count floor: fewer than four branches in scope, or fewer than two contributing accounts, withholds the block. The root-count refusal below does not guarantee two accounts actually contributed a branch.
-- Dominance-precision floor: for each printed share, the dominant account's weight in that share's denominator is compared with the share's 95% CI. When the CI contains every value that account's own share could take, with the other accounts' combined share anywhere in 0-100%, the figure is functionally a single-account disclosure at the CI's stated precision. An exact 0% or 100% share always trips this floor, at any weight. Its CI collapses to that single point, and so does the set of values the dominant account's own share could take. A corpus with no reviewer dispatches (0% on "reviewer dispatches only") is therefore withheld whole.
+- Dominance-precision floor: for each printed share, the dominant account's weight in that share's denominator is compared with the share's 95% CI. When the CI contains every value that account's own share could take, with the other accounts' combined share anywhere in 0-100%, the figure is functionally a single-account disclosure at the CI's stated precision. An exact 0% or 100% share always trips this floor, at any weight. Its CI collapses to that single point, and so does the set of values the dominant account's own share could take. A corpus with no subagent dispatch inside any round window (0% on "subagent dispatches only") is therefore withheld whole.
   The floor weighs each account's share of the denominator the printed share divides by. It does not weigh how much of the share's own numerator one account supplies. A printed per-skill share can therefore still be drawn mostly from one account, for example when that skill ran in only one account.
 
 **Small-pool residual (not a floor or a refusal).** A branch unit is one branch in one account with at least one review round in scope. The only pool-size floor is four branch units and two accounts, so a block that clears it can still describe a small pool.
@@ -1223,7 +1223,7 @@ Unpriced turns inside round windows: 0
 - The three "Rounds by skill" shares can also reveal the round count itself. A three-way split printed at one decimal stops identifying the total somewhere past roughly 100-200 rounds. Below that, the smallest total consistent with the printed triple is usually the exact count.
 - A small-pool claim is a bounded range on a private-corpus count, which `docs/private-project-redaction.md` bars from any artifact.
 - The block does not print pool size, so the proposer reads it from a non-pooled `review-round-cost` run over the same scope. That footer is per account: each account with rounds in scope prints its own block, prefixed with an account label and starting "Totals: N branches, M rounds", and an account with no rounds prints none. Pool size is the sum across the printed blocks.
-- Treat the pool as small below about 100 rounds (the round-count path) or about 8 branch units (the CI-spread path).
+- Treat the pool as small below about 200 rounds (the round-count path) or about 8 branch units (the CI-spread path).
 - Both thresholds are rough and not measured on a corpus.
 - When in doubt, call the pool small.
 
@@ -1294,7 +1294,7 @@ coverage is lower when few branches are in scope.
   Share of branch spend
     inside round windows          40.0% (95% CI 35.0-45.0%)
     outside every round window    60.0% (95% CI 55.0-65.0%)
-    reviewer dispatches only      22.0% (95% CI 17.0-27.0%)
+    subagent dispatches only      22.0% (95% CI 17.0-27.0%)
   Round-window spend by skill
     code-review                   50.0% (95% CI 45.0-55.0%)
     plan-review                   30.0% (95% CI 25.0-35.0%)

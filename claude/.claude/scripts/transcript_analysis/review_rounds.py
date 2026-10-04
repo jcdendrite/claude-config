@@ -1036,7 +1036,7 @@ def _render_pooled_block(
     print("  Share of branch spend")
     print(f"    {'inside round windows':<30}{fmt('spend_inside')}")
     print(f"    {'outside every round window':<30}{fmt('spend_outside')}")
-    print(f"    {'reviewer dispatches only':<30}{fmt('spend_reviewer_only')}")
+    print(f"    {'subagent dispatches only':<30}{fmt('spend_reviewer_only')}")
     print("  Round-window spend by skill")
     for skill in REVIEW_SKILLS:
         print(f"    {skill:<30}{fmt(f'skill_spend:{skill}')}")

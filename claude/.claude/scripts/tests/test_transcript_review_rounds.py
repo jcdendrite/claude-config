@@ -2392,7 +2392,7 @@ class TestCmdReviewRoundCostPooled:
         ]
 
         expected_labels = (
-            "inside round windows", "outside every round window", "reviewer dispatches only",
+            "inside round windows", "outside every round window", "subagent dispatches only",
             "code-review", "plan-review", "ready-for-review",
             "code-review", "plan-review", "ready-for-review",
         )
@@ -2486,7 +2486,7 @@ class TestCmdReviewRoundCostPooled:
         expected_sequence = [
             ("Share of branch spend", "inside round windows", "spend_inside"),
             ("Share of branch spend", "outside every round window", "spend_outside"),
-            ("Share of branch spend", "reviewer dispatches only", "spend_reviewer_only"),
+            ("Share of branch spend", "subagent dispatches only", "spend_reviewer_only"),
             *(("Round-window spend by skill", skill, f"skill_spend:{skill}") for skill in review_rounds.REVIEW_SKILLS),
             *(("Rounds by skill", skill, f"skill_rounds:{skill}") for skill in review_rounds.REVIEW_SKILLS),
             ("Rounds affected by a data-quality gap", "dangling dispatch", "gap_dangling"),
@@ -2601,7 +2601,7 @@ class TestCmdReviewRoundCostPooled:
         self, tmp_path, monkeypatch, capsys,
     ):
         """Neither the floor nor the bootstrap is stubbed. The two-root
-        fixture has no reviewer dispatches, so "reviewer dispatches only" is
+        fixture has no subagent dispatches, so "subagent dispatches only" is
         an exact 0% share. Plain --pooled must then withhold all nine
         published lines, not just that one, with no numeric percent anywhere
         below the caption. The same corpus under --show-withheld prints
@@ -3959,7 +3959,7 @@ class TestCmdReviewRoundCostPooled:
 
         zero_denominator_wording = "(95% CI not computed — no priced branch spend)"
         dollar_keyed_labels = [
-            "inside round windows", "outside every round window", "reviewer dispatches only",
+            "inside round windows", "outside every round window", "subagent dispatches only",
             *review_rounds.REVIEW_SKILLS,
         ]
         assert [line for line in out.splitlines() if zero_denominator_wording in line] == [
