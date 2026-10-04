@@ -405,7 +405,7 @@ fi
 # Allowlist: prefixes that are NEVER private-project tracker IDs.
 # Extend by prefix (no digits). Organized by category so it's obvious
 # what belongs here.
-#   OSS specs / standards bodies: CVE, CWE, RFC, PEP, ISO, IETF, W3C,
+#   OSS specs / standards bodies: CVE, CWE, RFC, PEP, ISO, IETF, IEEE, W3C,
 #                                 NIST, ECMA, ANSI, OSC
 #   Public-project trackers:      GH (GitHub shorthand), BUG (bugzilla),
 #                                 JEP / JDK (OpenJDK), LLVM, GCC, GPT
@@ -421,7 +421,7 @@ fi
 #                                 and docs; see repo CLAUDE.md
 #                                 "Redact private-project-identifying
 #                                 content" for the rationale.
-OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|AGPL|BSD|PROJ|TICKET)-'
+OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|IEEE|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|AGPL|BSD|PROJ|TICKET)-'
 
 # Extract paths passed to any gh-pr or gh-issue body-source flag. Covers:
 #   --body-file <path>    --body-file=<path>
