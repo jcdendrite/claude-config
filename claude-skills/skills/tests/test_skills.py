@@ -3820,12 +3820,12 @@ def test_owner_authorized_figure_citation_resolves_to_real_heading() -> None:
 
 
 def test_review_round_cost_citation_resolves_to_real_heading() -> None:
-    """docs/private-project-redaction.md's pointer for
-    `review-round-cost --pooled` (it prints a publication pointer and
-    refusals and checks no authorization) cites `docs/transcript-analysis.md`
-    § "review-round-cost" as the canonical home for that mode's refusal
-    list, withholding floors, and sample output — resolves to a
-    real heading there.
+    """docs/private-project-redaction.md points to
+    `docs/transcript-analysis.md` § "review-round-cost" for
+    `review-round-cost --pooled`'s refusal list, withholding floors, and
+    sample output.
+
+    This test checks that the heading exists there.
 
     The redaction doc defers to that section instead of restating the
     contract, so a heading rename there would otherwise orphan the pointer

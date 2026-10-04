@@ -21,7 +21,8 @@ So is any of:
   it exists only to keep a wider corpus's raw absolutes out of the
   agent's own context, never to publish from
 - `review-round-cost --pooled --show-withheld` output in any artifact — it
-  shows whoever runs it a figure the dominance-precision floor withholds
+  shows whoever runs it a figure the dominance-precision floor
+  (`docs/transcript-analysis.md` § "review-round-cost") withholds
   from a plain `--pooled` run, and is barred outright with no
   owner-authorization path
 - a figure citing no command, or citing one that cannot refuse a wider

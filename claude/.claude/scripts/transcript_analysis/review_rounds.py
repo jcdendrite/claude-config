@@ -27,6 +27,7 @@ import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Sequence
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -500,6 +501,23 @@ _POOLED_CAPTION = (
     "coverage is lower when few branches are in scope."
 )
 
+# In-band pricing-trust lines, printed only when their condition holds. The
+# stale-rate line fires on the whole rate table, not on the models in scope, so
+# it depends only on the date and the code. They differ from cost.py's STALE
+# PRICING and PRICING INTEGRITY banners on purpose: digit-free, $-free, no model
+# IDs, no per-model scoping, and no publish or cite step.
+_POOLED_STALE_RATE_LINE = (
+    "STALE PRICING — today is past the re-verify-by date for the model rates, so\n"
+    "every dollar figure below may be wrong. The Rounds by skill lines do not\n"
+    "depend on the rates.\n"
+    f"Re-check the rates at {pricing._PRICING_SOURCE_URL}."
+)
+_POOLED_FORMAT_DRIFT_LINE = (
+    "PRICING INTEGRITY — the transcript format may have drifted, so every\n"
+    "figure below may be wrong. Rerun without --pooled to read the drift\n"
+    "diagnostic on stderr."
+)
+
 # Percentile bootstrap resampled over branches. The 2,000-resample count
 # matches this repo's own prior use of the same technique in
 # docs/cost-levers-considered.md's "Opus-anchored plan boundary" section.
@@ -864,6 +882,13 @@ def _pooled_resolved_scope_header(scope_label: str) -> str:
     return f"REVIEW ROUND COST SOURCES ({scope_label}; pooled)"
 
 
+def _pooled_rate_table_past_reverify_by(today: date) -> bool:
+    """True once `today` is past the earliest re-verify-by date in the whole
+    rate table, so the result depends only on the date and the code.
+    """
+    return today > min(pricing._MODEL_RATE_EXPIRES.values())
+
+
 def _render_pooled_block(
     args: argparse.Namespace,
     roots: Sequence[Path],
@@ -872,6 +897,7 @@ def _render_pooled_block(
     branch_totals: dict[tuple[int | None, str], float],
     *,
     scan_gaps: Counter[str],
+    today: date,
 ) -> None:
     """--pooled's entire render path: shares and 95% confidence intervals
     only, never a dollar amount, a directly printed raw count, or a
@@ -891,9 +917,23 @@ def _render_pooled_block(
     scan_gaps fills only as the session iterator is consumed, so this
     function's refusal call is the only point the scan-gap clause can fire.
 
-    The printed line set is fixed regardless of the data: nine share lines
-    under plain --pooled, plus the two data-quality-gap lines under
-    --show-withheld (see _POOLED_GAP_STAT_KEYS).
+    The printed line set is fixed by the flags, apart from the two pricing-trust
+    lines: nine share lines under plain --pooled, plus the two
+    data-quality-gap lines under --show-withheld (see _POOLED_GAP_STAT_KEYS).
+    `today` is the UTC date the caller read once, so the stale-rate line
+    depends only on that date and the code.
+
+    The drift line is the one deliberate data-dependent exception. Its trigger
+    is a contiguous multi-record requestId run whose records disagree on an
+    invariant input/cache usage class, merged by dedup_turns_by_request_id. A
+    disagreeing non-contiguous group is rejected before the canary and never
+    sets it. Every main transcript and every spawn's dispatched-subagent
+    transcript the scan reads or prices counts, whether or not a round window
+    contains it, so the bit is scan-wide. Only the usage-drift canary can set
+    it on this command, because the subagent-format canary has no caller on
+    this path. _pooled_filtered_stderr_call's withheld notice fires on drift
+    and also on any unrecognized line, so it is a superset of the drift
+    condition. Any further data-dependent bit needs its own review.
     """
     refusal = _pooled_scope_refusal(args, roots=roots or [], scan_gaps=scan_gaps)
     if refusal is not None:
@@ -966,6 +1006,11 @@ def _render_pooled_block(
     def fmt(key: str) -> str:
         return _fmt_share_with_ci(*intervals[key])
 
+    # Both trust predicates resolve before the first print, so the render never
+    # prints a partial block when one raises.
+    rate_table_past_reverify_by = _pooled_rate_table_past_reverify_by(today)
+    format_drift_detected = pricing._format_drift_detected()
+
     print(_pooled_resolved_scope_header(scope_label))
     print()
     print(_POOLED_SHOW_WITHHELD_BANNER if show_withheld else _POOLED_PUBLICATION_POINTER)
@@ -974,6 +1019,12 @@ def _render_pooled_block(
     print()
     print(_POOLED_CAPTION)
     print()
+    if rate_table_past_reverify_by:
+        print(_POOLED_STALE_RATE_LINE)
+        print()
+    if format_drift_detected:
+        print(_POOLED_FORMAT_DRIFT_LINE)
+        print()
     print("  Share of branch spend")
     print(f"    {'inside round windows':<30}{fmt('spend_inside')}")
     print(f"    {'outside every round window':<30}{fmt('spend_outside')}")
@@ -1186,7 +1237,10 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
         branch_totals = data["branch_totals"]
 
         if pooled:
-            _render_pooled_block(args, roots, scope_label, rounds, branch_totals, scan_gaps=scan_gaps)
+            _render_pooled_block(
+                args, roots, scope_label, rounds, branch_totals,
+                scan_gaps=scan_gaps, today=datetime.now(UTC).date(),
+            )
             return
     except Exception:
         # sys.exit from a deliberate refusal (_pooled_scope_refusal and friends) raises

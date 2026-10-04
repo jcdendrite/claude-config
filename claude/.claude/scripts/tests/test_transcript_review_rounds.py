@@ -5,7 +5,9 @@ import os
 import re
 import subprocess
 import sys
+import types
 from collections import Counter
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -21,6 +23,10 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_dispatch,
 )
+
+# Earlier than every re-verify-by date in pricing._MODEL_RATE_EXPIRES, so a render that
+# receives it never prints the stale-rate line whatever the live clock reads.
+_PRE_EXPIRY_TODAY = date(2000, 1, 1)
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
@@ -1386,6 +1392,12 @@ class TestBootstrapShareIntervals:
         lo, hi = review_rounds._resample_percentile(sample)
         assert (lo, hi) == (0.0, 8.0)
 
+    def test_resample_percentile_lo_index_rounds_rather_than_truncates(self):
+        """B=31 gives lo_idx = round(0.75) = 1 where truncation gives 0,
+        and hi_idx = round(29.25) = 29."""
+        sample = [float(i) for i in range(31)]
+        assert review_rounds._resample_percentile(sample) == (1.0, 29.0)
+
     def test_resample_percentile_at_the_half_index_rounding_boundary(self):
         """B=61 lands the high-index computation exactly on the .5 tie
         (0.975*60=58.5), a case that genuinely discriminates Python's
@@ -1696,18 +1708,23 @@ class TestSingleAccountWithinStatedPrecision:
 
     # The sweep is dense because the algebraically equivalent form `(p - (1 - w) * 100) / w` misses
     # 100.0 by one ulp at some weights (for example 0.68), which three friendly weights never hit.
-    @pytest.mark.parametrize("w_max", [k / 1000 for k in range(1, 1001)])
-    @pytest.mark.parametrize("exact_share", [0.0, 100.0])
-    def test_exact_zero_or_hundred_percent_share_breaches_at_any_weight(self, w_max, exact_share):
+    # One test collects every miss, so a regression reads as one failure naming the weights.
+    def test_exact_zero_or_hundred_percent_share_breaches_at_any_weight(self):
         """An exact 0% or 100% share carries the degenerate CI [p, p], and
         the exact consistent-value interval collapses onto the same point,
         so containment holds however small the dominant account's weight.
         This is the intended floor behavior, not a false positive: such a
         share pins every account to that value.
         """
-        assert review_rounds._single_account_within_stated_precision(
-            w_max, exact_share, exact_share, exact_share,
-        ) is True
+        missed_pairs = [
+            (w_max, exact_share)
+            for w_max in (k / 1000 for k in range(1, 1001))
+            for exact_share in (0.0, 100.0)
+            if not review_rounds._single_account_within_stated_precision(
+                w_max, exact_share, exact_share, exact_share,
+            )
+        ]
+        assert missed_pairs == []
 
     # Each of 0.1, 0.3, 1.1, 2.6 and 100 * 2 / 7 is a p where `100.0 - (100.0 - p) / 1.0` lands
     # one ulp below p; 12.5 and 50.0 are exactly representable and pass under either form.
@@ -1730,6 +1747,503 @@ class TestSingleAccountWithinStatedPrecision:
         fail-closed return against a future caller that loses that guarantee.
         """
         assert review_rounds._single_account_within_stated_precision(w_max, 50.0, 44.0, 56.0) is True
+
+
+class TestPooledPricingTrustLines:
+    """The stale-rate and format-drift lines _render_pooled_block prints above
+    the shares. Direct calls pass `today` and patch the rate table and drift
+    flag, so no test reads the live date. The CLI tests that assert placement
+    or a refusal force the lines on with a rate table that is past due for any
+    live clock; tests that drive the real scan force nothing."""
+
+    _FIRST_SHARE_HEADER = "  Share of branch spend"
+    _LONG_PAST = date(2000, 1, 1)
+    _EARLIEST_REVERIFY_BY = date(2030, 1, 10)
+    _LATEST_REVERIFY_BY = date(2030, 3, 1)
+    # Strictly after _force_both_lines_on_for_any_live_clock's expiry, so the stale condition holds.
+    _PAST_DUE_TODAY = _LONG_PAST + timedelta(days=1)
+    _TRUST_LINES = {
+        "stale-rate": review_rounds._POOLED_STALE_RATE_LINE,
+        "format-drift": review_rounds._POOLED_FORMAT_DRIFT_LINE,
+    }
+
+    @pytest.fixture()
+    def two_model_rate_table(self, monkeypatch):
+        """Two re-verify-by dates, so the earliest one is the staleness boundary."""
+        monkeypatch.setattr(pricing, "_MODEL_RATE_EXPIRES", {
+            "model-early": self._EARLIEST_REVERIFY_BY, "model-late": self._LATEST_REVERIFY_BY,
+        })
+
+    @staticmethod
+    def _varied_pool() -> tuple[list[dict], dict]:
+        """120 branches across two accounts, each with its own inside-round,
+        reviewer-dispatch, and skill mix, so the dominance floor does not
+        withhold the published shares."""
+        rounds = []
+        branch_totals = {}
+        for i in range(120):
+            branch_key = (i % 2, f"feat-{i}")
+            main_dollars = 0.10 + 0.01 * (i % 7)
+            agent_dollars = 0.02 * (i % 5)
+            rounds.append({
+                "branch_key": branch_key, "skill": review_rounds.REVIEW_SKILLS[i % 3],
+                "main_dollars": main_dollars, "agent_dollars": agent_dollars,
+                "unpriced_turns": 1 if i % 13 == 0 else 0, "dangling": 1 if i % 9 == 0 else 0,
+            })
+            branch_totals[branch_key] = main_dollars + agent_dollars + 0.05 + 0.03 * (i % 11)
+        return rounds, branch_totals
+
+    def _render_varied_pool(self, roots, capsys, *, show_withheld: bool, today: date) -> str:
+        rounds, branch_totals = self._varied_pool()
+        args = _review_round_cost_args(pooled=True, show_withheld=show_withheld)
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=today)
+        return capsys.readouterr().out
+
+    def _force_both_lines_on_for_any_live_clock(self, monkeypatch) -> None:
+        monkeypatch.setattr(pricing, "_MODEL_RATE_EXPIRES", {"model-early": self._LONG_PAST})
+        monkeypatch.setattr(pricing, "_usage_drift_warned", True)
+
+    @pytest.mark.parametrize("trust_line", _TRUST_LINES.values(), ids=_TRUST_LINES.keys())
+    def test_trust_line_text_carries_no_digit_dollar_sign_path_or_model(self, trust_line):
+        """The lines are constants, so this pins the redaction argument for
+        them: nothing corpus-derived can reach the published stream through
+        their text. The pricing source URL is the only URL either may carry.
+        Every model ID in the rate table contains a digit, so the digit check
+        also bars a model ID."""
+        text_without_source_url = trust_line.replace(pricing._PRICING_SOURCE_URL, "")
+        assert not any(char.isdigit() for char in trust_line)
+        assert "$" not in trust_line
+        assert "/" not in text_without_source_url
+        assert "~" not in text_without_source_url
+
+    def test_every_rate_table_model_id_contains_a_digit(self):
+        """Pins the premise that lets the trust-line digit check also bar a
+        model ID: a digit-free model ID in the table would void it."""
+        model_ids = list(pricing._MODEL_BASE_INPUT_RATES)
+        digit_free_model_ids = [model_id for model_id in model_ids if not any(char.isdigit() for char in model_id)]
+        assert model_ids, "an empty rate table would make the digit check below pass vacuously"
+        assert digit_free_model_ids == []
+
+    def test_rate_table_past_reverify_by_compares_against_the_earliest_date(self, two_model_rate_table):
+        assert review_rounds._pooled_rate_table_past_reverify_by(date(2030, 1, 9)) is False
+        assert review_rounds._pooled_rate_table_past_reverify_by(self._EARLIEST_REVERIFY_BY) is False
+        assert review_rounds._pooled_rate_table_past_reverify_by(date(2030, 1, 11)) is True
+        # Past the earliest date but before the latest: one stale model is enough.
+        assert review_rounds._pooled_rate_table_past_reverify_by(date(2030, 2, 1)) is True
+
+    def test_stale_rate_line_prints_the_day_after_the_earliest_reverify_by_date_and_not_on_it(
+        self, tmp_path, monkeypatch, capsys, two_model_rate_table,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        on_the_date = self._render_varied_pool(
+            roots, capsys, show_withheld=False, today=self._EARLIEST_REVERIFY_BY,
+        )
+        day_after = self._render_varied_pool(
+            roots, capsys, show_withheld=False, today=self._EARLIEST_REVERIFY_BY + timedelta(days=1),
+        )
+
+        assert review_rounds._POOLED_STALE_RATE_LINE not in on_the_date
+        assert review_rounds._POOLED_STALE_RATE_LINE in day_after
+
+    @pytest.mark.parametrize("show_withheld", [False, True])
+    def test_stale_rate_line_prints_before_the_first_share_and_leaves_the_figures_unchanged(
+        self, tmp_path, monkeypatch, capsys, two_model_rate_table, show_withheld,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        current_out = self._render_varied_pool(
+            roots, capsys, show_withheld=show_withheld, today=self._EARLIEST_REVERIFY_BY,
+        )
+        stale_out = self._render_varied_pool(
+            roots, capsys, show_withheld=show_withheld, today=self._EARLIEST_REVERIFY_BY + timedelta(days=1),
+        )
+
+        # Every share is numeric, so the comparison below is not 0 against 0.
+        printed_stat_keys = review_rounds._POOLED_STAT_KEYS if show_withheld else review_rounds._POOLED_PUBLISHED_STAT_KEYS
+        assert _count_numeric_share_lines(current_out) == len(printed_stat_keys)
+        assert stale_out.index(review_rounds._POOLED_STALE_RATE_LINE) < stale_out.index(self._FIRST_SHARE_HEADER)
+        assert review_rounds._POOLED_FORMAT_DRIFT_LINE not in stale_out
+        assert stale_out.replace(review_rounds._POOLED_STALE_RATE_LINE + "\n\n", "", 1) == current_out
+
+    @pytest.mark.parametrize("show_withheld", [False, True])
+    def test_format_drift_line_prints_before_the_first_share_when_a_drift_canary_fired(
+        self, tmp_path, monkeypatch, capsys, two_model_rate_table, show_withheld,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        current_out = self._render_varied_pool(
+            roots, capsys, show_withheld=show_withheld, today=self._EARLIEST_REVERIFY_BY,
+        )
+        monkeypatch.setattr(pricing, "_usage_drift_warned", True)
+        drift_out = self._render_varied_pool(
+            roots, capsys, show_withheld=show_withheld, today=self._EARLIEST_REVERIFY_BY,
+        )
+
+        assert drift_out.index(review_rounds._POOLED_FORMAT_DRIFT_LINE) < drift_out.index(self._FIRST_SHARE_HEADER)
+        assert review_rounds._POOLED_STALE_RATE_LINE not in drift_out
+        assert drift_out.replace(review_rounds._POOLED_FORMAT_DRIFT_LINE + "\n\n", "", 1) == current_out
+
+    def test_format_drift_line_prints_once_above_the_first_share_when_only_the_subagent_format_canary_fired(
+        self, tmp_path, monkeypatch, capsys, two_model_rate_table,
+    ):
+        """The render reads the OR of both canaries, not the usage canary
+        alone. The autouse fixture in conftest.py resets both flags, so the
+        usage flag is False here."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        monkeypatch.setattr(pricing, "_subagent_format_drift_detected", True)
+        assert pricing._usage_drift_warned is False
+        out = self._render_varied_pool(roots, capsys, show_withheld=False, today=self._EARLIEST_REVERIFY_BY)
+
+        assert out.count(review_rounds._POOLED_FORMAT_DRIFT_LINE) == 1
+        assert out.index(review_rounds._POOLED_FORMAT_DRIFT_LINE) < out.index(self._FIRST_SHARE_HEADER)
+
+    def test_format_drift_line_prints_exactly_once_when_both_drift_canaries_fired(
+        self, tmp_path, monkeypatch, capsys, two_model_rate_table,
+    ):
+        """The render reads one OR of the canaries, so setting both must not
+        print the line once per canary."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        current_out = self._render_varied_pool(
+            roots, capsys, show_withheld=False, today=self._EARLIEST_REVERIFY_BY,
+        )
+        monkeypatch.setattr(pricing, "_usage_drift_warned", True)
+        monkeypatch.setattr(pricing, "_subagent_format_drift_detected", True)
+        both_canaries_out = self._render_varied_pool(
+            roots, capsys, show_withheld=False, today=self._EARLIEST_REVERIFY_BY,
+        )
+
+        assert both_canaries_out.count(review_rounds._POOLED_FORMAT_DRIFT_LINE) == 1
+        assert both_canaries_out.index(review_rounds._POOLED_FORMAT_DRIFT_LINE) < both_canaries_out.index(
+            self._FIRST_SHARE_HEADER
+        )
+        assert both_canaries_out.replace(review_rounds._POOLED_FORMAT_DRIFT_LINE + "\n\n", "", 1) == current_out
+
+    def test_both_lines_print_once_above_the_shares_when_rates_are_past_due_and_a_drift_canary_fired(
+        self, tmp_path, monkeypatch, capsys, two_model_rate_table,
+    ):
+        """Neither line suppresses the other: on the day both conditions hold,
+        the reader still gets the stronger "every figure" warning."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        current_out = self._render_varied_pool(
+            roots, capsys, show_withheld=False, today=self._EARLIEST_REVERIFY_BY,
+        )
+        monkeypatch.setattr(pricing, "_usage_drift_warned", True)
+        both_out = self._render_varied_pool(
+            roots, capsys, show_withheld=False, today=self._EARLIEST_REVERIFY_BY + timedelta(days=1),
+        )
+
+        first_share_header_at = both_out.index(self._FIRST_SHARE_HEADER)
+        for trust_line in self._TRUST_LINES.values():
+            assert both_out.count(trust_line) == 1
+            assert both_out.index(trust_line) < first_share_header_at
+        without_trust_lines = both_out.replace(review_rounds._POOLED_STALE_RATE_LINE + "\n\n", "", 1)
+        without_trust_lines = without_trust_lines.replace(review_rounds._POOLED_FORMAT_DRIFT_LINE + "\n\n", "", 1)
+        assert without_trust_lines == current_out
+
+    def test_neither_pricing_trust_line_prints_when_rates_are_current_and_no_drift_fired(
+        self, tmp_path, monkeypatch, capsys, two_model_rate_table,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        out = self._render_varied_pool(roots, capsys, show_withheld=False, today=self._EARLIEST_REVERIFY_BY)
+
+        for trust_line in self._TRUST_LINES.values():
+            assert trust_line not in out
+
+    @pytest.mark.parametrize("show_withheld", [False, True])
+    def test_lines_between_the_caption_and_the_first_section_are_exactly_the_trust_lines_through_the_cli(
+        self, tmp_path, monkeypatch, capsys, show_withheld,
+    ):
+        """Real cmd_review_round_cost path over a fixture with recognizable
+        model, branch, and root names: nothing but the two constants prints
+        there. The ordered-list equality is the only guard of the stale-then-drift
+        order, so keep it ordered."""
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        self._force_both_lines_on_for_any_live_clock(monkeypatch)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=show_withheld))
+        out = capsys.readouterr().out
+
+        _, sep, after_caption = out.partition(review_rounds._POOLED_CAPTION)
+        assert sep, "_POOLED_CAPTION not found verbatim in the printed block"
+        before_first_section = after_caption.partition(self._FIRST_SHARE_HEADER)[0]
+        printed_lines = [line for line in before_first_section.splitlines() if line.strip()]
+        assert printed_lines == (
+            review_rounds._POOLED_STALE_RATE_LINE.splitlines() + review_rounds._POOLED_FORMAT_DRIFT_LINE.splitlines()
+        )
+
+    def test_the_single_resolved_root_refusal_prints_neither_line(self, fake_projects, monkeypatch, capsys):
+        """Regression guard: a refusal in cmd_review_round_cost moved after a
+        trust-line print. The render's own refusal call is covered by the
+        direct-render test below, which this CLI-boundary refusal never reaches."""
+        self._force_both_lines_on_for_any_live_clock(monkeypatch)
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+
+        assert exc.value.code == 2
+        out = capsys.readouterr().out
+        for trust_line in self._TRUST_LINES.values():
+            assert trust_line not in out
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_the_scan_gap_refusal_through_the_cli_prints_neither_line(self, tmp_path, monkeypatch, capsys):
+        """The scan-gap clause can fire only inside the render, after the scan
+        has consumed the session iterator. Both trust conditions are forced on,
+        so a trust-line print placed before the render call would reach stdout
+        ahead of this refusal."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        self._force_both_lines_on_for_any_live_clock(monkeypatch)
+        sealed_jsonl = roots[1] / "-home-user-repo-b" / "sess-b1.jsonl"
+        os.chmod(sealed_jsonl, 0o000)
+        try:
+            with pytest.raises(SystemExit) as exc:
+                _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        finally:
+            os.chmod(sealed_jsonl, 0o644)
+
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert review_rounds._POOLED_SCAN_GAP_REFUSAL in err
+
+    @pytest.mark.parametrize(
+        ("arg_overrides", "root_count", "scan_gaps"),
+        [
+            pytest.param({"branches": "feat-a2"}, 2, Counter(), id="scope-narrowing"),
+            pytest.param({}, 1, Counter(), id="single-root"),
+            pytest.param({}, 2, Counter({scope._SCAN_GAP_PROJECT_DIR: 1}), id="nonempty-scan-gap"),
+        ],
+    )
+    def test_a_refusal_through_a_direct_render_prints_neither_line(
+        self, tmp_path, monkeypatch, capsys, arg_overrides, root_count, scan_gaps,
+    ):
+        """Every refusal the render's own call enforces, with both trust
+        conditions on: `today` strictly after the forced expiry and the drift
+        bit set. The CLI-boundary refusal test above never reaches that call."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        self._force_both_lines_on_for_any_live_clock(monkeypatch)
+        with pytest.raises(SystemExit) as exc:
+            review_rounds._render_pooled_block(
+                _review_round_cost_args(pooled=True, **arg_overrides), roots[:root_count], "*", [], {},
+                scan_gaps=scan_gaps, today=self._PAST_DUE_TODAY,
+            )
+
+        assert exc.value.code == 2
+        out = capsys.readouterr().out
+        for trust_line in self._TRUST_LINES.values():
+            assert trust_line not in out
+
+    def test_an_empty_rate_table_raises_before_the_render_prints_anything(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """_pooled_rate_table_past_reverify_by takes min() of the table's
+        dates, so an empty table raises. Both trust predicates resolve before
+        the first print, so a piped consumer never sees a header and caption
+        with no figures."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        monkeypatch.setattr(pricing, "_MODEL_RATE_EXPIRES", {})
+        rounds, branch_totals = self._varied_pool()
+        with pytest.raises(ValueError):
+            review_rounds._render_pooled_block(
+                _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals,
+                scan_gaps=Counter(), today=self._EARLIEST_REVERIFY_BY,
+            )
+
+        assert capsys.readouterr().out == ""
+
+    def test_a_raising_format_drift_predicate_propagates_before_the_render_prints_anything(
+        self, tmp_path, monkeypatch, capsys, two_model_rate_table,
+    ):
+        """The stale-rate predicate succeeds here, so only the drift predicate
+        read, placed after any print, would leave a partial block on stdout."""
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+
+        def raising_format_drift_detected():
+            raise RuntimeError("format-drift predicate failed")
+
+        monkeypatch.setattr(pricing, "_format_drift_detected", raising_format_drift_detected)
+        rounds, branch_totals = self._varied_pool()
+        with pytest.raises(RuntimeError, match="format-drift predicate failed"):
+            review_rounds._render_pooled_block(
+                _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals,
+                scan_gaps=Counter(), today=self._EARLIEST_REVERIFY_BY,
+            )
+
+        assert capsys.readouterr().out == ""
+
+    def test_a_disagreeing_non_contiguous_request_id_group_never_sets_the_format_drift_bit(
+        self, capsys,
+    ):
+        """_render_pooled_block's docstring bounds the one data-dependent
+        drift bit: a disagreeing non-contiguous group is rejected before the
+        canary reads it. A disagreeing contiguous group, built from the same
+        usage pair, does set the bit, so the first assertion cannot pass
+        vacuously. The autouse fixture in conftest.py resets both flags."""
+        drifting_request_id = "req-non-contiguous-placeholder"
+
+        def two_records_whose_input_tokens_disagree() -> list[dict]:
+            return [
+                _priced("claude-sonnet-5", input=1_000, request_id=drifting_request_id),
+                _priced("claude-sonnet-5", input=2_000, request_id=drifting_request_id),
+            ]
+
+        non_contiguous_records = two_records_whose_input_tokens_disagree()
+        non_contiguous_records.insert(1, _user_msg("interleaved user record"))
+        pricing.dedup_turns_by_request_id(non_contiguous_records)
+        non_contiguous_err = capsys.readouterr().err
+
+        assert pricing._format_drift_detected() is False
+        assert "WARNING" not in non_contiguous_err
+
+        pricing.dedup_turns_by_request_id(two_records_whose_input_tokens_disagree())
+
+        assert pricing._format_drift_detected() is True
+        assert "WARNING" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        ("faked_today", "stale_line_prints"),
+        [
+            pytest.param(_EARLIEST_REVERIFY_BY, False, id="on-the-reverify-by-date"),
+            pytest.param(_EARLIEST_REVERIFY_BY + timedelta(days=1), True, id="the-day-after"),
+        ],
+    )
+    def test_the_command_reads_the_clock_once_in_utc_and_passes_that_date_to_the_stale_check(
+        self, tmp_path, monkeypatch, capsys, faked_today, stale_line_prints,
+    ):
+        """The faked `datetime.now` records its `tz` argument instead of
+        asserting inside it, because the command's own except clause turns an
+        exception raised there into exit 2. `tz` defaults to None so a
+        local-clock `datetime.now()` call fails the recorded-argument
+        assertion rather than raising inside the fake. A `tz=None` read also
+        lands on the previous calendar date, so it flips the stale-line
+        decision in the day-after case without the recorded-argument
+        assertion."""
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        monkeypatch.setattr(pricing, "_MODEL_RATE_EXPIRES", {"model-early": self._EARLIEST_REVERIFY_BY})
+        now_tz_arguments = []
+
+        def faked_now(tz=None):
+            now_tz_arguments.append(tz)
+            clock_date = faked_today if tz is not None else faked_today - timedelta(days=1)
+            return datetime(clock_date.year, clock_date.month, clock_date.day, 12, tzinfo=tz)
+
+        monkeypatch.setattr(review_rounds, "datetime", types.SimpleNamespace(now=faked_now))
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        out = capsys.readouterr().out
+
+        assert now_tz_arguments == [UTC]
+        assert (review_rounds._POOLED_STALE_RATE_LINE in out) is stale_line_prints
+
+    def test_both_lines_print_above_the_not_computed_figures_when_the_pool_is_too_small_for_a_bootstrap(
+        self, tmp_path, monkeypatch, capsys, two_model_rate_table,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        rounds = [
+            {"branch_key": (0, "feat-a"), "skill": "code-review",
+             "main_dollars": 0.20, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+            {"branch_key": (1, "feat-b"), "skill": "plan-review",
+             "main_dollars": 0.60, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0},
+        ]
+        branch_totals = {(0, "feat-a"): 0.40, (1, "feat-b"): 1.00}
+        args = _review_round_cost_args(pooled=True)
+
+        review_rounds._render_pooled_block(
+            args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=self._EARLIEST_REVERIFY_BY,
+        )
+        current_out = capsys.readouterr().out
+        monkeypatch.setattr(pricing, "_usage_drift_warned", True)
+        review_rounds._render_pooled_block(
+            args, roots, "*", rounds, branch_totals, scan_gaps=Counter(),
+            today=self._EARLIEST_REVERIFY_BY + timedelta(days=1),
+        )
+        both_out = capsys.readouterr().out
+
+        assert "(95% CI not computed — too few branches in scope)" in current_out
+        first_share_header_at = both_out.index(self._FIRST_SHARE_HEADER)
+        for trust_line in self._TRUST_LINES.values():
+            assert both_out.count(trust_line) == 1
+            assert both_out.index(trust_line) < first_share_header_at
+        without_trust_lines = both_out.replace(review_rounds._POOLED_STALE_RATE_LINE + "\n\n", "", 1)
+        without_trust_lines = without_trust_lines.replace(review_rounds._POOLED_FORMAT_DRIFT_LINE + "\n\n", "", 1)
+        assert without_trust_lines == current_out
+
+    def test_a_main_thread_spawn_with_no_subagent_file_prints_neither_the_drift_line_nor_the_withheld_notice(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The subagent-format canary has no caller on this command, so a spawn
+        whose dispatched transcript is missing is not drift here. No trust
+        condition is forced: the real scan decides whether either line prints."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        _write_jsonl(roots[0] / "-home-user-repo-a" / "sess-spawn.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=1_000, branch="feat-spawn", ts="2026-08-01T11:00:00.000Z",
+                content=[_agent_use("spawn-without-a-subagent-file", "staff-sdet")],
+            ),
+        ])
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        out, err = capsys.readouterr()
+
+        assert review_rounds._POOLED_FORMAT_DRIFT_LINE not in out
+        assert review_rounds._POOLED_STDERR_WITHHELD_NOTICE not in err
+
+    def test_a_drifting_request_id_run_prints_the_drift_line_and_one_withheld_notice_through_the_command(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The real usage-drift canary, fired by the scan itself. The run sits
+        on a branch with no review round, because the drift bit is scan-wide
+        rather than a property of the pooled branches."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        drifting_request_id = "req-drift-placeholder"
+        _write_jsonl(roots[0] / "-home-user-repo-a" / "sess-drift.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=1_000, branch="feat-drift", ts="2026-08-01T11:00:00.000Z",
+                request_id=drifting_request_id,
+            ),
+            _priced(
+                "claude-sonnet-5", input=2_000, branch="feat-drift", ts="2026-08-01T11:00:00.000Z",
+                request_id=drifting_request_id,
+            ),
+        ])
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        out, err = capsys.readouterr()
+
+        assert out.index(review_rounds._POOLED_FORMAT_DRIFT_LINE) < out.index(self._FIRST_SHARE_HEADER)
+        assert err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
+        assert drifting_request_id not in out
+        assert drifting_request_id not in err
+
+    def test_a_drifting_request_id_run_in_a_dispatched_transcript_outside_any_round_window_prints_the_drift_line(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The drift bit also counts a dispatched-subagent transcript the scan
+        prices (_price_dispatch dedups it), even when the spawning turn sits on
+        a branch with no review round and no main transcript drifts."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        project_dir = roots[0] / "-home-user-repo-a"
+        spawn_session_id = "sess-spawn-drift"
+        _write_jsonl(project_dir / f"{spawn_session_id}.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=1_000, branch="feat-spawn", ts="2026-08-01T11:00:00.000Z",
+                content=[_agent_use("spawn-with-drift", "staff-sdet")],
+            ),
+        ])
+        drifting_request_id = "req-dispatched-drift-placeholder"
+        _write_subagent_dispatch(
+            project_dir, spawn_session_id, "agent-drift", "spawn-with-drift",
+            [
+                _priced(
+                    "claude-sonnet-5", input=1_000, branch="feat-spawn", ts="2026-08-01T11:00:10.000Z",
+                    request_id=drifting_request_id,
+                ),
+                _priced(
+                    "claude-sonnet-5", input=2_000, branch="feat-spawn", ts="2026-08-01T11:00:10.000Z",
+                    request_id=drifting_request_id,
+                ),
+            ],
+        )
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        out, err = capsys.readouterr()
+
+        assert out.index(review_rounds._POOLED_FORMAT_DRIFT_LINE) < out.index(self._FIRST_SHARE_HEADER)
+        assert err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
+        assert drifting_request_id not in out
+        assert drifting_request_id not in err
 
 
 class TestPooledDominanceBreachKeySet:
@@ -1799,8 +2313,13 @@ class TestCmdReviewRoundCostPooled:
         reviewer-only. The floor's exact-interval formula correctly flags
         both of those degenerate shares as breaches, which is irrelevant to
         what this test checks.
+
+        Forces every re-verify-by date into the past, so the stale-rate line
+        prints for any live clock. Its lines lead the non-figure lines, so the
+        section-header assertion below covers them.
         """
         monkeypatch.setattr(review_rounds, "_pooled_dominance_breach", lambda _intervals, _totals: False)
+        monkeypatch.setattr(pricing, "_MODEL_RATE_EXPIRES", {"model-long-past": date(2000, 1, 1)})
         _pooled_two_root_fixture(tmp_path, monkeypatch)
         _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
         block = capsys.readouterr().out
@@ -1814,6 +2333,7 @@ class TestCmdReviewRoundCostPooled:
         figure_lines = [line for line in lines if line.startswith("    ")]
 
         assert section_headers == [
+            *(line.strip() for line in review_rounds._POOLED_STALE_RATE_LINE.splitlines()),
             "Share of branch spend", "Round-window spend by skill", "Rounds by skill",
         ]
 
@@ -1904,7 +2424,7 @@ class TestCmdReviewRoundCostPooled:
         assert len({point for point, _, _ in intervals.values()}) == len(intervals)
         monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: intervals)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         block = capsys.readouterr().out
         _, sep, after_caption = block.partition(review_rounds._POOLED_CAPTION)
         assert sep, "_POOLED_CAPTION not found verbatim in the printed block"
@@ -1947,10 +2467,13 @@ class TestCmdReviewRoundCostPooled:
             assert formatted_value in block, f"formatted value for {key!r} missing from the rendered block"
 
     def test_data_quality_gap_lines_print_only_under_show_withheld(self, tmp_path, monkeypatch, capsys):
-        """The printed line set is fixed by the flag alone. Plain --pooled
-        prints nine share lines and no data-quality-gap section, and
-        --show-withheld adds the section's two lines, whatever the data.
-        Stubs the bootstrap so both runs render numeric figures.
+        """Apart from the two conditional pricing-trust lines, the printed line
+        set is fixed by the flag alone. Plain --pooled prints nine share lines
+        and no data-quality-gap section, and --show-withheld adds the
+        section's two lines, whatever the data. The drift line is the one
+        deliberate data-dependent exception; _render_pooled_block's docstring
+        states its bound. Stubs the bootstrap so both runs render numeric
+        figures.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
         rounds = [
@@ -1963,14 +2486,14 @@ class TestCmdReviewRoundCostPooled:
         monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
 
         review_rounds._render_pooled_block(
-            _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals, scan_gaps=Counter(),
+            _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY,
         )
         # The publication pointer names the gap shares, so strip it before
         # asserting the gap section's own wording is absent.
         plain_out = capsys.readouterr().out.replace(review_rounds._POOLED_PUBLICATION_POINTER, "")
         review_rounds._render_pooled_block(
             _review_round_cost_args(pooled=True, show_withheld=True), roots, "*", rounds, branch_totals,
-            scan_gaps=Counter(),
+            scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY,
         )
         show_withheld_out = capsys.readouterr().out
 
@@ -2006,7 +2529,7 @@ class TestCmdReviewRoundCostPooled:
             branch_totals[branch_key] = main_dollars + agent_dollars + 0.05 + 0.03 * (i % 11)
 
         review_rounds._render_pooled_block(
-            _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals, scan_gaps=Counter(),
+            _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY,
         )
         out = capsys.readouterr().out
 
@@ -2430,7 +2953,7 @@ class TestCmdReviewRoundCostPooled:
         roots = _two_declared_roots(tmp_path, monkeypatch)
         args = _review_round_cost_args(pooled=True, branches="feat")
         with pytest.raises(SystemExit) as exc:
-            review_rounds._render_pooled_block(args, roots, "*", [], {}, scan_gaps=Counter())
+            review_rounds._render_pooled_block(args, roots, "*", [], {}, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         assert exc.value.code == 2
 
     def test_render_pooled_block_called_directly_with_none_roots_still_refuses(self):
@@ -2441,7 +2964,7 @@ class TestCmdReviewRoundCostPooled:
         skip it the way the pre-scan sentinel does."""
         args = _review_round_cost_args(pooled=True)
         with pytest.raises(SystemExit) as exc:
-            review_rounds._render_pooled_block(args, None, "*", [], {}, scan_gaps=Counter())
+            review_rounds._render_pooled_block(args, None, "*", [], {}, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         assert exc.value.code == 2
 
     def test_render_pooled_block_called_directly_with_empty_roots_still_refuses(self):
@@ -2449,7 +2972,7 @@ class TestCmdReviewRoundCostPooled:
         empty (not None) roots list."""
         args = _review_round_cost_args(pooled=True)
         with pytest.raises(SystemExit) as exc:
-            review_rounds._render_pooled_block(args, [], "*", [], {}, scan_gaps=Counter())
+            review_rounds._render_pooled_block(args, [], "*", [], {}, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         assert exc.value.code == 2
 
     def test_render_pooled_block_called_directly_with_single_root_still_refuses(self):
@@ -2460,7 +2983,9 @@ class TestCmdReviewRoundCostPooled:
         fabricated path stands in for a real declared root."""
         args = _review_round_cost_args(pooled=True)
         with pytest.raises(SystemExit) as exc:
-            review_rounds._render_pooled_block(args, [Path("/fake/root")], "*", [], {}, scan_gaps=Counter())
+            review_rounds._render_pooled_block(
+                args, [Path("/fake/root")], "*", [], {}, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY,
+            )
         assert exc.value.code == 2
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
@@ -2519,7 +3044,7 @@ class TestCmdReviewRoundCostPooled:
         args = _review_round_cost_args(pooled=True)
         with pytest.raises(SystemExit) as exc:
             review_rounds._render_pooled_block(
-                args, roots, "*", [], {}, scan_gaps=Counter({scope._SCAN_GAP_PROJECT_DIR: 1}),
+                args, roots, "*", [], {}, scan_gaps=Counter({scope._SCAN_GAP_PROJECT_DIR: 1}), today=_PRE_EXPIRY_TODAY,
             )
         assert exc.value.code == 2
 
@@ -2929,11 +3454,11 @@ class TestCmdReviewRoundCostPooled:
         }
         args = _review_round_cost_args(pooled=True, show_withheld=True)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         forward_out = capsys.readouterr().out
 
         review_rounds._render_pooled_block(
-            args, roots, "*", list(reversed(rounds)), branch_totals, scan_gaps=Counter(),
+            args, roots, "*", list(reversed(rounds)), branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY,
         )
         reversed_out = capsys.readouterr().out
 
@@ -2975,11 +3500,61 @@ class TestCmdReviewRoundCostPooled:
         swapped_branch_totals = {_swap_root_idx(key): dollars for key, dollars in branch_totals.items()}
         args = _review_round_cost_args(pooled=True, show_withheld=True)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         forward_out = capsys.readouterr().out
 
         review_rounds._render_pooled_block(
-            args, list(reversed(roots)), "*", swapped_rounds, swapped_branch_totals, scan_gaps=Counter(),
+            args, list(reversed(roots)), "*", swapped_rounds, swapped_branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY,
+        )
+        swapped_out = capsys.readouterr().out
+
+        assert forward_out == swapped_out
+        assert _count_numeric_share_lines(forward_out) == len(review_rounds._POOLED_STAT_KEYS)
+
+    def test_bootstrap_ci_bounds_are_invariant_to_root_scan_order_for_same_named_branches(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Every branch name exists under both accounts, so the root ordinal is
+        the only tie-break between two branch units of one name. The swapped
+        leg flips the rounds list along with the roots, as a scan under the
+        other active profile does, because it reads the other account's whole
+        block of rounds first. The two accounts carry different dollars per
+        branch name, so a tie broken by rounds order changes the printed CI.
+
+        Runs with --show-withheld so the block prints numeric CI lines
+        instead of the withheld wording, which would be identical whatever
+        the branch order.
+        """
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        skills = ["code-review", "plan-review", "ready-for-review"]
+        branch_names = [f"feat-{i:02d}" for i in range(6)]
+        rounds = []
+        branch_totals = {}
+        for root_idx in (0, 1):
+            for i, branch_name in enumerate(branch_names):
+                branch_key = (root_idx, branch_name)
+                round_dollars = 0.10 + 0.07 * i + 0.31 * root_idx * (i + 1) ** 2
+                rounds.append({
+                    "branch_key": branch_key, "skill": skills[(i + root_idx) % 3],
+                    "main_dollars": round_dollars, "agent_dollars": 0.0, "unpriced_turns": 0, "dangling": 0,
+                })
+                branch_totals[branch_key] = round_dollars + 0.05 * (i + 1)
+
+        def _swap_root_idx(branch_key: tuple[int, str]) -> tuple[int, str]:
+            root_idx, branch = branch_key
+            return (1 - root_idx, branch)
+
+        swapped_rounds = [
+            {**entry, "branch_key": _swap_root_idx(entry["branch_key"])} for entry in reversed(rounds)
+        ]
+        swapped_branch_totals = {_swap_root_idx(key): dollars for key, dollars in branch_totals.items()}
+        args = _review_round_cost_args(pooled=True, show_withheld=True)
+
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
+        forward_out = capsys.readouterr().out
+
+        review_rounds._render_pooled_block(
+            args, list(reversed(roots)), "*", swapped_rounds, swapped_branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY,
         )
         swapped_out = capsys.readouterr().out
 
@@ -3114,7 +3689,7 @@ class TestCmdReviewRoundCostPooled:
         }
         args = _review_round_cost_args(pooled=True)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         out = capsys.readouterr().out
 
         # Sums both of feat-a's code-review rounds ($0.20 + $0.60 = $0.80,
@@ -3194,7 +3769,7 @@ class TestCmdReviewRoundCostPooled:
         }
 
         review_rounds._render_pooled_block(
-            _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals, scan_gaps=Counter(),
+            _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY,
         )
         capsys.readouterr()
 
@@ -3297,7 +3872,7 @@ class TestCmdReviewRoundCostPooled:
         branch_totals = dict.fromkeys(branch_keys, 0.0)
 
         review_rounds._render_pooled_block(
-            _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals, scan_gaps=Counter(),
+            _review_round_cost_args(pooled=True), roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY,
         )
         out = capsys.readouterr().out
 
@@ -3337,13 +3912,13 @@ class TestCmdReviewRoundCostPooled:
         branch_totals = {branch_key: dollars * 2 for branch_key, dollars in round_dollars_by_branch.items()}
         args = _review_round_cost_args(pooled=True, show_withheld=True)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         out_without_idle_branch = capsys.readouterr().out
         # Priced spend but no round: its $50.00 dwarfs the pool's own spend,
         # so admitting it would move the inside- and outside-round-window spend shares.
         branch_totals_with_idle_branch = {**branch_totals, (0, "feat-idle"): 50.0}
         review_rounds._render_pooled_block(
-            args, roots, "*", rounds, branch_totals_with_idle_branch, scan_gaps=Counter(),
+            args, roots, "*", rounds, branch_totals_with_idle_branch, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY,
         )
         out_with_idle_branch = capsys.readouterr().out
 
@@ -3381,7 +3956,7 @@ class TestCmdReviewRoundCostPooled:
         branch_totals = dict(round_dollars_by_branch)
         args = _review_round_cost_args(pooled=True, show_withheld=show_withheld)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         out = capsys.readouterr().out
         too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
         assert too_few_lines
@@ -3416,7 +3991,7 @@ class TestCmdReviewRoundCostPooled:
         }
         args = _review_round_cost_args(pooled=True, show_withheld=show_withheld)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         out = capsys.readouterr().out
         too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
         assert too_few_lines
@@ -3459,7 +4034,7 @@ class TestCmdReviewRoundCostPooled:
         stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (90.0, 85.0, 95.0))
         monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         out = capsys.readouterr().out
         too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
         assert too_few_lines
@@ -3495,7 +4070,7 @@ class TestCmdReviewRoundCostPooled:
         stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (50.0, 30.0, 70.0))
         monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         out = capsys.readouterr().out
         assert "too few branches" not in out
         assert "50.0% (95% CI 30.0-70.0%)" in out
@@ -3536,7 +4111,7 @@ class TestCmdReviewRoundCostPooled:
         monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
         monkeypatch.setattr(review_rounds, "_pooled_dominance_breach", lambda _intervals, _totals: False)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         out = capsys.readouterr().out
         assert "too few branches" not in out
         assert "90.0% (95% CI 85.0-95.0%)" in out
@@ -3575,7 +4150,7 @@ class TestCmdReviewRoundCostPooled:
         stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (90.0, 85.0, 95.0))
         monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         out = capsys.readouterr().out
         too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
         assert too_few_lines
@@ -3635,7 +4210,7 @@ class TestCmdReviewRoundCostPooled:
         stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (90.0, 85.0, 95.0))
         monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         out = capsys.readouterr().out
         too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
         assert too_few_lines
@@ -3680,7 +4255,7 @@ class TestCmdReviewRoundCostPooled:
         stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (90.0, 85.0, 95.0))
         monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         out = capsys.readouterr().out
         too_few_lines = [line for line in out.splitlines() if "too few branches" in line]
         assert too_few_lines
@@ -3886,6 +4461,61 @@ class TestCmdReviewRoundCostPooled:
         assert "<placeholder-request-id>" not in err
         assert err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
 
+    @pytest.mark.parametrize(
+        "unrecognized_lines",
+        [
+            pytest.param(
+                ["<placeholder-diagnostic-one>", "<placeholder-diagnostic-two>"], id="two-distinct-lines",
+            ),
+            pytest.param(
+                ["<placeholder-diagnostic-one>", "<placeholder-diagnostic-one>"], id="two-identical-lines",
+            ),
+        ],
+    )
+    def test_pooled_stderr_filter_emits_one_withheld_notice_for_several_unrecognized_lines(
+        self, capsys, unrecognized_lines,
+    ):
+        """The withheld notice is one fixed line however many unrecognized
+        lines the wrapped call prints, so stderr never carries a count of
+        them."""
+        def emit_unrecognized_lines():
+            for line in unrecognized_lines:
+                print(line, file=sys.stderr)
+
+        review_rounds._pooled_filtered_stderr_call(emit_unrecognized_lines)
+        err = capsys.readouterr().err
+        assert "<placeholder-diagnostic" not in err
+        assert err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
+
+    def test_pooled_stderr_filter_emits_one_withheld_notice_amid_dropped_and_replaced_lines(
+        self, monkeypatch, capsys,
+    ):
+        """Recognized lines do not change how many withheld notices print: a
+        dropped pricing NOTICE line prints nothing, a replaced declared-root
+        line prints its own notice once, and two unrecognized lines on either
+        side of them print one withheld notice between them. The NOTICE line
+        is what the real producer emits.
+        """
+        monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())
+        pricing._log_non_contiguous_merge_decision("<placeholder-request-id>", 2, merged=True)
+        pricing_notice_line = capsys.readouterr().err.strip()
+        declared_root_line = "declared_transcript_roots: declared root 3 unreadable"
+
+        def emit_mixed_lines():
+            print("<placeholder-diagnostic-one>", file=sys.stderr)
+            print(pricing_notice_line, file=sys.stderr)
+            print(declared_root_line, file=sys.stderr)
+            print("<placeholder-diagnostic-two>", file=sys.stderr)
+            print(declared_root_line, file=sys.stderr)
+
+        review_rounds._pooled_filtered_stderr_call(emit_mixed_lines)
+        err = capsys.readouterr().err
+        assert "<placeholder" not in err
+        assert "declared root 3" not in err
+        assert err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
+        assert err.count(review_rounds._DECLARED_ROOT_SKIPPED_NOTICE) == 1
+        assert len(err.splitlines()) == 2
+
     def test_withheld_diagnostic_reaches_stderr_on_a_non_pooled_rerun(self, tmp_path, monkeypatch, capsys):
         """A diagnostic --pooled withholds still reaches an operator who
         reruns without --pooled. One monkeypatch on
@@ -3945,7 +4575,7 @@ class TestPooledShowWithheld:
         stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (90.0, 85.0, 95.0))
         monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         out, err = capsys.readouterr()
         assert out.count(review_rounds._POOLED_SHOW_WITHHELD_BANNER) == 1
         assert err.count(review_rounds._POOLED_SHOW_WITHHELD_BANNER) == 1
@@ -3981,7 +4611,7 @@ class TestPooledShowWithheld:
         stub_intervals = dict.fromkeys(review_rounds._POOLED_STAT_KEYS, (50.0, 30.0, 70.0))
         monkeypatch.setattr(review_rounds, "_bootstrap_share_intervals", lambda _per_branch: stub_intervals)
 
-        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter())
+        review_rounds._render_pooled_block(args, roots, "*", rounds, branch_totals, scan_gaps=Counter(), today=_PRE_EXPIRY_TODAY)
         out, err = capsys.readouterr()
         assert out.count(review_rounds._POOLED_SHOW_WITHHELD_BANNER) == 1
         assert err.count(review_rounds._POOLED_SHOW_WITHHELD_BANNER) == 1
