@@ -21,6 +21,8 @@ from pathlib import Path
 
 from helpers import REPO_ROOT
 
+from .conftest import _table_cols
+
 SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
 
 
@@ -690,3 +692,68 @@ def test_transcript_analysis_workstream_cost_subprocess_finds_seeded_session(tmp
 
     assert result.returncode == 0, result.stderr
     assert "WORKSTREAM COST SOURCES (" in result.stdout
+
+
+def test_transcript_analysis_subagents_help_exits_zero():
+    result = _run("transcript-analysis.py", "subagents", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--since" in result.stdout
+
+
+def test_transcript_analysis_subagents_subprocess_finds_seeded_sidechain(tmp_path):
+    """Proves `from transcript_analysis.subagents import cmd_subagents` resolves
+    under a real subprocess -- no in-process `_mod.cmd_subagents(...)` test can
+    see a broken re-export in the real shim entrypoint. "sidechain" appearing in
+    stdout proves the paired subagent file was read, not only the main session."""
+    config_dir = _seed_reviewer_dispatch_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "subagents", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "sidechain" in result.stdout
+
+
+def test_transcript_analysis_subagent_mix_help_exits_zero():
+    result = _run("transcript-analysis.py", "subagent-mix", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--reprice-as" in result.stdout
+
+
+def test_transcript_analysis_subagent_mix_subprocess_finds_seeded_dispatch(tmp_path):
+    """Proves `from transcript_analysis.subagent_mix import cmd_subagent_mix`
+    resolves under a real subprocess -- no in-process `_mod.cmd_subagent_mix(...)`
+    test can see a broken re-export in the real shim entrypoint. The per-agent-type
+    row's Runs and Observed cells prove the paired subagent file was read: the
+    main-thread spawn table alone carries only the spawn count."""
+    config_dir = _seed_reviewer_dispatch_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "subagent-mix", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "staff-backend-engineer(1)" in result.stdout
+    agent_type_cols = _table_cols(
+        result.stdout, header_contains="AgentType", row_contains="staff-backend-engineer", row_startswith=True
+    )
+    assert agent_type_cols.get("Runs") == "1", agent_type_cols
+    assert agent_type_cols.get("Observed") == "sonnet(1)", agent_type_cols
+
+
+def test_transcript_analysis_cost_counts_help_exits_zero():
+    result = _run("transcript-analysis.py", "cost-counts", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--branches" in result.stdout
+
+
+def test_transcript_analysis_cost_counts_subprocess_refuses_without_branches(tmp_path):
+    """Proves `from transcript_analysis.subagent_mix import cmd_cost_counts`
+    resolves under a real subprocess -- no in-process `_mod.cmd_cost_counts(...)`
+    test can see a broken re-export in the real shim entrypoint. The refusal path
+    is the bootstrap proof: cost-counts' success path needs `--this-repo`, which
+    resolves project slugs from `git worktree list` in the working directory, so
+    a seeded success run would depend on the checkout this suite happens to run in."""
+    config_dir = _seed_reviewer_dispatch_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "cost-counts", "--this-repo", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 2
+    assert "--branches is required" in result.stderr
