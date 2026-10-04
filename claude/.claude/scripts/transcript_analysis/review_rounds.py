@@ -31,6 +31,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import NamedTuple
 
+from _config_dir import declared_roots_file_is_overridden
 from transcript_analysis import corpus, pricing, redaction, render, scope
 
 # The three review-loop skills a round opens on; the shim's cmd_judgment_pair
@@ -517,6 +518,13 @@ _POOLED_FORMAT_DRIFT_LINE = (
     "figure below may be wrong. Rerun without --pooled to read the drift\n"
     "diagnostic on stderr."
 )
+# Printed when the roots set is a synthetic-corpus override, whose provenance is
+# unverified. Not a pricing-trust line: it prints above the caption, in both modes.
+# Digit-free, $-free, path-free, and no publish or cite step.
+_POOLED_OVERRIDDEN_ROOTS_LINE = (
+    "OVERRIDDEN ROOTS — this corpus came from an overridden roots set, so its\n"
+    "provenance is unverified and this block is not publishable."
+)
 
 # Percentile bootstrap resampled over branches. The 2,000-resample count
 # matches this repo's own prior use of the same technique in
@@ -553,6 +561,7 @@ _POOLED_SCAN_GAP_REFUSAL = (
 # Defense-in-depth backstop for cmd_review_round_cost's pooled scan-and-render sequence,
 # printed only when an exception the scan-gap accounting above doesn't anticipate escapes it.
 # Never interpolates the caught exception's str(), which may embed a raw filesystem path.
+# The caller prints the exception's class name on the line after this message.
 _POOLED_SCAN_ABORTED_MESSAGE = (
     "review-round-cost --pooled produced no valid pooled figure: an unexpected error interrupted"
     " the corpus scan or the pooled render. Rerun without --pooled to read the diagnostics; if"
@@ -917,23 +926,18 @@ def _render_pooled_block(
     scan_gaps fills only as the session iterator is consumed, so this
     function's refusal call is the only point the scan-gap clause can fire.
 
-    The printed line set is fixed by the flags, apart from the two pricing-trust
-    lines: nine share lines under plain --pooled, plus the two
+    The printed line set is fixed by the flags, apart from up to three
+    conditional lines (the stale-rate, format-drift, and overridden-roots
+    lines): nine share lines under plain --pooled, plus the two
     data-quality-gap lines under --show-withheld (see _POOLED_GAP_STAT_KEYS).
     `today` is the UTC date the caller read once, so the stale-rate line
-    depends only on that date and the code.
+    depends only on that date and the code. The overridden-roots line depends
+    only on the environment.
 
-    The drift line is the one deliberate data-dependent exception. Its trigger
-    is a contiguous multi-record requestId run whose records disagree on an
-    invariant input/cache usage class, merged by dedup_turns_by_request_id. A
-    disagreeing non-contiguous group is rejected before the canary and never
-    sets it. Every main transcript and every spawn's dispatched-subagent
-    transcript the scan reads or prices counts, whether or not a round window
-    contains it, so the bit is scan-wide. Only the usage-drift canary can set
-    it on this command, because the subagent-format canary has no caller on
-    this path. _pooled_filtered_stderr_call's withheld notice fires on drift
-    and also on any unrecognized line, so it is a superset of the drift
-    condition. Any further data-dependent bit needs its own review.
+    The drift line is the one deliberate data-dependent exception: it prints
+    when a requestId run in the scanned transcripts disagrees on an invariant
+    usage class. See docs/transcript-analysis.md § "review-round-cost" for
+    the exact trigger. Any further data-dependent bit needs its own review.
     """
     refusal = _pooled_scope_refusal(args, roots=roots or [], scan_gaps=scan_gaps)
     if refusal is not None:
@@ -1006,10 +1010,11 @@ def _render_pooled_block(
     def fmt(key: str) -> str:
         return _fmt_share_with_ci(*intervals[key])
 
-    # Both trust predicates resolve before the first print, so the render never
-    # prints a partial block when one raises.
+    # Every conditional-line predicate resolves before the first print, so the
+    # render never prints a partial block when one raises.
     rate_table_past_reverify_by = _pooled_rate_table_past_reverify_by(today)
     format_drift_detected = pricing._format_drift_detected()
+    roots_set_overridden = declared_roots_file_is_overridden()
 
     print(_pooled_resolved_scope_header(scope_label))
     print()
@@ -1017,6 +1022,9 @@ def _render_pooled_block(
     if show_withheld:
         print(_POOLED_SHOW_WITHHELD_BANNER, file=sys.stderr)
     print()
+    if roots_set_overridden:
+        print(_POOLED_OVERRIDDEN_ROOTS_LINE)
+        print()
     print(_POOLED_CAPTION)
     print()
     if rate_table_past_reverify_by:
@@ -1082,7 +1090,7 @@ _POOLED_STDERR_DIAGNOSTIC_RES: tuple[tuple[re.Pattern[str], str | None], ...] = 
 # content.
 _POOLED_STDERR_WITHHELD_NOTICE = (
     "review-round-cost --pooled: one or more diagnostics were withheld; rerun"
-    " without --pooled to read them before citing any figure."
+    " without --pooled to read them."
 )
 
 
@@ -1242,13 +1250,15 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
                 scan_gaps=scan_gaps, today=datetime.now(UTC).date(),
             )
             return
-    except Exception:
+    except Exception as exc:
         # sys.exit from a deliberate refusal (_pooled_scope_refusal and friends) raises
         # BaseException, so this except Exception clause never catches it.
         # A non-pooled run re-raises whatever exception does land here, unchanged.
         if not pooled:
             raise
         print(_POOLED_SCAN_ABORTED_MESSAGE, file=sys.stderr)
+        # The class name alone, never the message, which may embed a raw filesystem path.
+        print(f"Exception class: {type(exc).__name__}", file=sys.stderr)
         sys.exit(2)
 
     if not rounds:

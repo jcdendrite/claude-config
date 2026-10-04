@@ -20,11 +20,9 @@ So is any of:
 - `--share-only` output in any artifact, regardless of dimensionality —
   it exists only to keep a wider corpus's raw absolutes out of the
   agent's own context, never to publish from
-- `review-round-cost --pooled --show-withheld` output in any artifact — it
-  shows whoever runs it a figure the dominance-precision floor
-  (`docs/transcript-analysis.md` § "review-round-cost") withholds
-  from a plain `--pooled` run, and is barred outright with no
-  owner-authorization path
+- `review-round-cost --pooled --show-withheld` output in any artifact — it is
+  barred outright with no owner-authorization path; see
+  `docs/transcript-analysis.md` § "review-round-cost"
 - a figure citing no command, or citing one that cannot refuse a wider
   corpus, unless the artifact cites the owner's timestamped
   authorization naming the exact figure and the command that produced
@@ -40,6 +38,14 @@ So is any of:
   `cost-counts`'s hardcoded single root)
 - a diff that weakens a scope refusal a publication instrument depends
   on
+- a diff that weakens `review-round-cost --pooled`'s withholding floors (the
+  count floor and the dominance-precision floor), its fail-closed stderr
+  default (an unrecognized diagnostic stays withheld behind one fixed
+  notice), its fixed set of conditional lines (a new data-dependent
+  line, or a conditional line carrying a digit, a dollar amount, or a path),
+  or the block's printed-content invariant (no dollar amount, raw count, or
+  per-account, per-project, or per-branch split on any line, conditional or
+  not)
 
 Give a rounded or generalized figure more scrutiny, not less. The six
 always-on structural detectors already catch raw pastes, so what reaches

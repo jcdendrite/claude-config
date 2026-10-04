@@ -3840,6 +3840,82 @@ def test_review_round_cost_citation_resolves_to_real_heading() -> None:
     )
 
 
+_SHOW_WITHHELD_BARRED_LIST_FILES = (
+    ".claude/skills/code-review-claude-config/SKILL.md",
+    "docs/private-project-redaction.md",
+)
+_LIST_ITEM_START_RE = re.compile(r"^\s*[-*]\s")
+
+
+def _list_items(markdown_text: str) -> list[str]:
+    """Each markdown list item with its hard-wrapped continuation lines joined.
+
+    A continuation line is a non-blank line indented under the item. A blank
+    line or the next list item ends the item.
+    """
+    items: list[str] = []
+    current_item_lines: list[str] | None = None
+    for line in markdown_text.splitlines():
+        if _LIST_ITEM_START_RE.match(line):
+            if current_item_lines is not None:
+                items.append(" ".join(current_item_lines))
+            current_item_lines = [line.strip()]
+        elif current_item_lines is not None and line.strip() and line[0].isspace():
+            current_item_lines.append(line.strip())
+        else:
+            if current_item_lines is not None:
+                items.append(" ".join(current_item_lines))
+            current_item_lines = None
+    if current_item_lines is not None:
+        items.append(" ".join(current_item_lines))
+    return items
+
+
+def test_list_items_ends_each_item_at_the_next_item_a_blank_line_or_a_dedent() -> None:
+    """`_list_items` bounds each item, so a word checked inside one item cannot
+    be satisfied by a neighbouring item or by prose after the list.
+
+    The text has two adjacent items, one item ended by a blank line, and one
+    item ended by an unindented line.
+    """
+    markdown_text = (
+        "- first item\n"
+        "  wrapped continuation\n"
+        "- second item\n"
+        "\n"
+        "  indented text after a blank line\n"
+        "- third item\n"
+        "unindented prose after the list\n"
+    )
+
+    assert _list_items(markdown_text) == [
+        "- first item wrapped continuation",
+        "- second item",
+        "- third item",
+    ]
+
+
+@pytest.mark.parametrize("relative_path", _SHOW_WITHHELD_BARRED_LIST_FILES)
+def test_show_withheld_output_stays_in_a_barred_list_item(relative_path: str) -> None:
+    """Each barred-output list still has one item that names `--show-withheld`
+    and says the output is barred.
+
+    Pins the presence of the bar, not its wording or its authorization
+    language. The word "barred" is checked inside that one item only, since
+    each file uses it elsewhere, and deleting the item must fail this test.
+    """
+    items_naming_flag = [
+        item for item in _list_items((REPO_ROOT / relative_path).read_text()) if "--show-withheld" in item
+    ]
+    assert len(items_naming_flag) == 1, (
+        f"{relative_path}: expected exactly one list item naming --show-withheld, "
+        f"found {len(items_naming_flag)}"
+    )
+    assert re.search(r"\bbarred\b", items_naming_flag[0]), (
+        f"{relative_path}: the list item naming --show-withheld no longer says the output is barred"
+    )
+
+
 _CASE_STUDY_POOLED_FIGURE_MARKERS_RE = re.compile(
     r"pooled across|machine-wide|cross-machine|multi-account", re.IGNORECASE
 )

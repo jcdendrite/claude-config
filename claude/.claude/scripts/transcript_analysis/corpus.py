@@ -32,8 +32,17 @@ def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, tuple[Path, str |
     files present but unusable. A file is unusable when it is:
     - unreadable or not valid UTF-8,
     - not valid JSON,
-    - valid JSON without a string-typed toolUseId,
-    - valid JSON whose "model" key is present but not a string.
+    - a valid JSON object without a string-typed toolUseId (an empty string
+      counts as missing),
+    - a valid JSON object whose "model" key is present but not a string.
+
+    A null or absent "model" is accepted and indexed as None.
+
+    A file whose top-level JSON value is not an object (e.g. a list or a
+    string) is not counted: it raises AttributeError at the first key lookup
+    and aborts the scan, as do a pathological integer literal and deep
+    nesting. Whether a shared reader should abort or skip on those shapes is
+    a deferred decode-policy decision.
 
     This is distinct from a dispatch with no meta.json at all, which is the
     caller's own, separately-documented exclusion path.
@@ -61,8 +70,8 @@ def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, tuple[Path, str |
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         # A file that raises any other exception (e.g. a pathological integer
-        # literal or deep nesting) aborts the scan rather than counting as an
-        # error, which is fail-closed by design.
+        # literal, deep nesting, or a non-object top-level value failing the
+        # key lookup below) aborts the scan rather than counting as an error.
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             meta_read_errors += 1
             continue
@@ -96,7 +105,8 @@ def _parse_jsonl_records(jsonl: Path) -> list[dict] | None:
                     records.append(json.loads(raw.decode("utf-8")))
                 # A line that raises any other exception (e.g. a pathological
                 # integer literal or deep nesting) aborts the scan rather than
-                # being skipped, which is fail-closed by design.
+                # being skipped. A non-object top-level value is kept as a
+                # record, and a consumer that looks up a key on it aborts the scan.
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
     except OSError:

@@ -1803,7 +1803,10 @@ class TestPooledPricingTrustLines:
         monkeypatch.setattr(pricing, "_MODEL_RATE_EXPIRES", {"model-early": self._LONG_PAST})
         monkeypatch.setattr(pricing, "_usage_drift_warned", True)
 
-    @pytest.mark.parametrize("trust_line", _TRUST_LINES.values(), ids=_TRUST_LINES.keys())
+    # Every conditional line's text must be free of corpus-derived content.
+    _CONDITIONAL_LINES = {**_TRUST_LINES, "overridden-roots": review_rounds._POOLED_OVERRIDDEN_ROOTS_LINE}
+
+    @pytest.mark.parametrize("trust_line", _CONDITIONAL_LINES.values(), ids=_CONDITIONAL_LINES.keys())
     def test_trust_line_text_carries_no_digit_dollar_sign_path_or_model(self, trust_line):
         """The lines are constants, so this pins the redaction argument for
         them: nothing corpus-derived can reach the published stream through
@@ -2070,11 +2073,12 @@ class TestPooledPricingTrustLines:
     def test_a_disagreeing_non_contiguous_request_id_group_never_sets_the_format_drift_bit(
         self, capsys,
     ):
-        """_render_pooled_block's docstring bounds the one data-dependent
-        drift bit: a disagreeing non-contiguous group is rejected before the
-        canary reads it. A disagreeing contiguous group, built from the same
-        usage pair, does set the bit, so the first assertion cannot pass
-        vacuously. The autouse fixture in conftest.py resets both flags."""
+        """docs/transcript-analysis.md § "review-round-cost" bounds the one
+        data-dependent drift bit: a disagreeing non-contiguous group is
+        rejected before the canary reads it. A disagreeing contiguous group,
+        built from the same usage pair, does set the bit, so the first
+        assertion cannot pass vacuously. The autouse fixture in conftest.py
+        resets both flags."""
         drifting_request_id = "req-non-contiguous-placeholder"
 
         def two_records_whose_input_tokens_disagree() -> list[dict]:
@@ -2244,6 +2248,56 @@ class TestPooledPricingTrustLines:
         assert err.count(review_rounds._POOLED_STDERR_WITHHELD_NOTICE) == 1
         assert drifting_request_id not in out
         assert drifting_request_id not in err
+
+
+class TestPooledOverriddenRootsLine:
+    """The overridden-roots line _render_pooled_block prints after the
+    publication pointer (or the --show-withheld banner) and above the caption.
+    The conftest autouse fixture sets TRANSCRIPT_CONFIG_DIRS_FILE, so the
+    predicate is true unless a test patches it."""
+
+    @pytest.mark.parametrize("show_withheld", [False, True])
+    def test_prints_by_default_between_the_pointer_or_banner_and_the_caption(
+        self, tmp_path, monkeypatch, capsys, show_withheld,
+    ):
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=show_withheld))
+        out = capsys.readouterr().out
+
+        lead_in = review_rounds._POOLED_SHOW_WITHHELD_BANNER if show_withheld else review_rounds._POOLED_PUBLICATION_POINTER
+        assert out.count(review_rounds._POOLED_OVERRIDDEN_ROOTS_LINE) == 1
+        header_line, region_after_header = out[: out.index(review_rounds._POOLED_CAPTION)].split("\n", 1)
+        assert header_line.startswith("REVIEW ROUND COST SOURCES")
+        assert region_after_header == f"\n{lead_in}\n\n{review_rounds._POOLED_OVERRIDDEN_ROOTS_LINE}\n\n"
+
+    @pytest.mark.parametrize("show_withheld", [False, True])
+    def test_is_absent_when_the_roots_set_is_not_overridden(
+        self, tmp_path, monkeypatch, capsys, show_withheld,
+    ):
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        monkeypatch.setattr(review_rounds, "declared_roots_file_is_overridden", lambda: False)
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=show_withheld))
+        out = capsys.readouterr().out
+
+        assert review_rounds._POOLED_CAPTION in out
+        assert review_rounds._POOLED_OVERRIDDEN_ROOTS_LINE not in out
+
+    def test_a_raising_predicate_exits_before_the_render_prints_anything(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The roots predicate resolves before the first print, so a failure
+        there never leaves a header or pointer on stdout without figures."""
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+
+        def raising_overridden_roots_predicate():
+            raise RuntimeError("overridden-roots predicate failed")
+
+        monkeypatch.setattr(review_rounds, "declared_roots_file_is_overridden", raising_overridden_roots_predicate)
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+
+        assert exc.value.code == 2
+        assert capsys.readouterr().out == ""
 
 
 class TestPooledDominanceBreachKeySet:
@@ -2467,13 +2521,14 @@ class TestCmdReviewRoundCostPooled:
             assert formatted_value in block, f"formatted value for {key!r} missing from the rendered block"
 
     def test_data_quality_gap_lines_print_only_under_show_withheld(self, tmp_path, monkeypatch, capsys):
-        """Apart from the two conditional pricing-trust lines, the printed line
-        set is fixed by the flag alone. Plain --pooled prints nine share lines
-        and no data-quality-gap section, and --show-withheld adds the
-        section's two lines, whatever the data. The drift line is the one
-        deliberate data-dependent exception; _render_pooled_block's docstring
-        states its bound. Stubs the bootstrap so both runs render numeric
-        figures.
+        """Apart from the three conditional lines (the two pricing-trust lines
+        and the overridden-roots line), the printed line set is fixed by the
+        flag alone. Plain --pooled prints nine share lines and no
+        data-quality-gap section, and --show-withheld adds the section's two
+        lines, whatever the data. The drift line is the one deliberate
+        data-dependent exception; docs/transcript-analysis.md §
+        "review-round-cost" states its bound. Stubs the bootstrap so both
+        runs render numeric figures.
         """
         roots = _two_declared_roots(tmp_path, monkeypatch)
         rounds = [
@@ -3302,6 +3357,32 @@ class TestCmdReviewRoundCostPooled:
         assert "Traceback" not in err
         assert marker not in out
         assert marker not in err
+
+    def test_pooled_backstop_prints_the_exception_class_name_but_not_its_path_bearing_message(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """The abort message is followed by the exception's class name, the
+        only discriminator the backstop reveals. The exception's own message,
+        here a filesystem path, is never printed."""
+
+        class SyntheticScanFailure(Exception):
+            pass
+
+        _pooled_two_root_fixture(tmp_path, monkeypatch)
+        path_bearing_message = "/synthetic/private-project-3f9a2b/session.jsonl"
+
+        def _raise(*_args, **_kwargs):
+            raise SyntheticScanFailure(path_bearing_message)
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_costs", _raise)
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True))
+        assert exc.value.code == 2
+        out, err = capsys.readouterr()
+        assert review_rounds._POOLED_SCAN_ABORTED_MESSAGE in err
+        assert "SyntheticScanFailure" in err
+        assert path_bearing_message not in out
+        assert path_bearing_message not in err
 
     def test_pooled_backstop_covers_resolve_scan_roots_failure(
         self, tmp_path, monkeypatch, capsys,
