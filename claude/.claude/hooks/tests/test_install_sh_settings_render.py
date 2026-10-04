@@ -1,7 +1,7 @@
 """Tests for install.sh's stow + render-settings.sh invocation sequence: pins
 that render-settings.sh runs after the stow, with CLAUDE_CONFIG_DIR resolved
 to $HOME/.claude regardless of the invoking shell's own value, that a
-pre-migration symlinked settings.json is safely replaced rather than written
+dangling-symlink settings.json is safely replaced rather than written
 through, and that a render failure aborts install.sh with a diagnostic after
 the recovery tooling it must not skip.
 """
@@ -25,7 +25,7 @@ _STOW = shutil.which("stow")
 def require_stow() -> None:
     """Skip locally when stow is absent, but fail under CI, where
     .github/workflows/tests.yml installs it: a silent skip there would drop the
-    only test that runs real stow over the stale pre-rename symlink."""
+    only test that runs real stow over the stale dangling symlink."""
     if _STOW is None:
         if os.environ.get("CI"):
             pytest.fail("stow missing in CI -- .github/workflows/tests.yml must install it")
@@ -46,9 +46,6 @@ _RC_HELPERS_END = "# INSTALL_TEST_FIXTURE: rc-block-helpers — end"
 
 _MANIFEST_START = "# INSTALL_TEST_FIXTURE: repo-relocation-manifest — start\n"
 
-# The four keys settings.base.json no longer ships; a pre-migration
-# settings.json carried each as a repo-chosen default.
-_KEYS_NO_LONGER_SHIPPED = ("model", "theme", "tui", "agentPushNotifEnabled")
 _REAL_SETTINGS_BASE = Path(__file__).resolve().parents[2] / "settings.base.json"
 
 
@@ -195,17 +192,15 @@ def _run_stow_and_render(pkg_root: Path, home: Path) -> subprocess.CompletedProc
 
 
 @pytest.mark.usefixtures("require_stow")
-class TestPreMigrationSymlinkedSettingsUpgrade:
-    def test_dangling_pre_rename_symlink_is_replaced_by_a_fresh_render(
+class TestDanglingSymlinkedSettingsUpgrade:
+    def test_dangling_symlink_is_replaced_by_a_fresh_render(
         self, tmp_path: Path
     ) -> None:
-        """The exact state every existing stowed machine is in right after
-        pulling the settings.json -> settings.base.json rename:
-        `$HOME/.claude/settings.json` is a real symlink into the old,
-        now-renamed `claude/.claude/settings.json` path. The stow + render
-        sequence must leave settings.json as a plain, regenerated file
+        """`$HOME/.claude/settings.json` is a symlink into a
+        `claude/.claude/settings.json` path that does not exist. The stow +
+        render sequence must leave settings.json as a plain, regenerated file
         matching a fresh render of settings.base.json, and must not write
-        anything through the stale symlink's original target."""
+        anything through the dangling symlink's target."""
         pkg_root = tmp_path / "pkg"
         pkg_root.mkdir()
         base_content = {"otherKey": "base-value"}
@@ -491,23 +486,19 @@ class TestStraySettingsJsonIsLeftInPlace:
         assert stray.read_text() == stray_text
 
 
-class TestFirstRenderAfterTheSplitResetsTheNoLongerShippedKeys:
-    """An existing consumer's keys that base stopped shipping reset on the
-    first render, because the tracked file that held them is gone. This pins
-    that outcome as a decision rather than an accident (see
+class TestFirstRenderFromADanglingSymlinkedSettingsJson:
+    """A dangling-symlink settings.json has no content to carry forward, so
+    the first render is exactly base. This pins that outcome as a decision
+    rather than an accident (see
     docs/design-decisions/settings-base-ships-no-session-ui-keys.md)."""
 
-    def test_real_base_does_not_define_the_no_longer_shipped_keys(self) -> None:
-        base_keys = set(json.loads(_REAL_SETTINGS_BASE.read_text()))
-        assert not base_keys & set(_KEYS_NO_LONGER_SHIPPED)
-
-    def test_dangling_pre_migration_symlink_renders_without_the_old_shipped_values(
+    def test_dangling_symlink_renders_exactly_the_real_base_with_nothing_dropped(
         self, tmp_path: Path
     ) -> None:
         repo_dir = _make_render_repo(tmp_path / "repo")
         home = _make_home(tmp_path / "home")
         shutil.copy(_REAL_SETTINGS_BASE, home / ".claude" / "settings.base.json")
-        # The pre-migration symlink targets the tracked file the pull removed.
+        # The symlink targets a tracked-file path that does not exist.
         (home / ".claude" / "settings.json").symlink_to(repo_dir / "claude" / ".claude" / "settings.json")
 
         result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
@@ -515,7 +506,6 @@ class TestFirstRenderAfterTheSplitResetsTheNoLongerShippedKeys:
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert "dropped" not in result.stderr
         rendered = json.loads((home / ".claude" / "settings.json").read_text())
-        assert not set(rendered) & set(_KEYS_NO_LONGER_SHIPPED)
         real_base = json.loads(_REAL_SETTINGS_BASE.read_text())
         assert rendered == real_base
 

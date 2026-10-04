@@ -2,6 +2,8 @@
 
 *2026-09-04. Formerly `docs/design-decisions.md` §54.*
 
+**Superseded in part by the header comment of [`guard-settings-session-keys.sh`](../../claude/.claude/hooks/guard-settings-session-keys.sh) (2026-10-02):** the hook's header states the current guarded file path, fail posture, and git calls, which supersede the body below, and an unresolvable default branch no longer must deny but diffs against an empty baseline and decides on content.
+
 `guard-settings-session-keys.sh` diffs staged `claude/.claude/settings.json` against the repo's resolved default branch, so an unresolvable default branch must deny rather than silently comparing nothing. This is the one fail-closed exception to the hook's otherwise fail-open posture. Resolving that branch via the shared `_lib_default_branch_or_guess` (`_lib.sh`) adds up to 5 more `_lib_capped` git calls on the settings.json-staged path:
 - one for the symbolic-ref probe
 - one more to verify a resolved-but-dangling target before falling through to the candidate probe (added when `_lib_default_branch_from_origin_head` gained that verification)

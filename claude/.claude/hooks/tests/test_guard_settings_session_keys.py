@@ -22,6 +22,10 @@ from helpers import (
 GUARD_SETTINGS_SESSION_KEYS_HOOK = HOOKS_DIR / "guard-settings-session-keys.sh"
 SETTINGS_BASE_JSON = CLAUDE_DIR / "settings.base.json"
 
+# The stderr warning the hook prints when it allows because it could not finish
+# comparing the staged file.
+_NOT_EVALUATED_WARNING = "did not evaluate this commit"
+
 # The deny reason is prose; the key list is the only structured part, so
 # pull that segment out and compare as a set. Asserting on the raw sentence
 # would fail on a reworded message or a reordered GUARDED_KEYS_JSON without
@@ -40,6 +44,29 @@ def names_changed_keys(reason: str | None, branch_label: str = "main") -> set[st
     match = segment.search(reason)
     assert match is not None, f"deny reason did not name the changed keys: {reason}"
     return set(match.group(1).split())
+
+
+def _assert_evaluated_allow(repo, command: str, extra_env: dict | None = None) -> None:
+    """Assert the hook allowed `command` after comparing the staged file.
+
+    A silent allow is also what a hook that failed to run the comparison
+    produces, so the stderr warning for that failure must be absent too.
+    """
+    env = dict(os.environ)
+    if extra_env is not None:
+        env.update(extra_env)
+    result = subprocess.run(
+        [str(GUARD_SETTINGS_SESSION_KEYS_HOOK)],
+        input=json.dumps(bash_input(command)),
+        capture_output=True,
+        text=True,
+        cwd=repo,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert _NOT_EVALUATED_WARNING not in result.stderr
 
 
 @pytest.fixture
@@ -229,18 +256,6 @@ def settings_repo_dangling_symref_candidate_probe_file_absent(tmp_path):
 
 
 class TestGuardSettingsSessionKeys:
-    def test_model_change_denies_commit(self, settings_repo):
-        repo, settings_file = settings_repo
-        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'update settings'"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
     def test_denies_against_origin_main_not_local_main_when_diverged(self, settings_repo):
         """Regression test: gitrevisions(7) resolves a bare `main` against
         refs/heads/main before refs/remotes/origin/main, so an unqualified
@@ -274,98 +289,6 @@ class TestGuardSettingsSessionKeys:
         # origin/main's committed "normal" -- model matches on both sides.
         assert names_changed_keys(reason) == {"effortLevel"}
 
-    def test_effort_level_change_denies_commit(self, settings_repo):
-        repo, settings_file = settings_repo
-        stage_settings(repo, settings_file, '{"model": "sonnet", "effortLevel": "high"}\n')
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'update settings'"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
-    def test_both_changed_denies_commit(self, settings_repo):
-        repo, settings_file = settings_repo
-        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "high"}\n')
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'routing change'"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
-    def test_skip_auto_permission_prompt_change_denies_commit(self, settings_repo):
-        """skipAutoPermissionPrompt, written automatically by Claude Code, must block."""
-        repo, settings_file = settings_repo
-        stage_settings(
-            repo,
-            settings_file,
-            '{"model": "sonnet", "effortLevel": "normal", "skipAutoPermissionPrompt": true}\n',
-        )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'update settings'"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
-    def test_skip_workflow_usage_warning_change_denies_commit(self, settings_repo):
-        """skipWorkflowUsageWarning, a Claude-Code-persisted dismissal, must block."""
-        repo, settings_file = settings_repo
-        stage_settings(
-            repo,
-            settings_file,
-            '{"model": "sonnet", "effortLevel": "normal", "skipWorkflowUsageWarning": true}\n',
-        )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'update settings'"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
-    def test_theme_change_denies_commit(self, settings_repo):
-        """theme is one machine's UI preference — committing ships it to every user."""
-        repo, settings_file = settings_repo
-        stage_settings(
-            repo,
-            settings_file,
-            '{"model": "sonnet", "effortLevel": "normal", "theme": "dark"}\n',
-        )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'add theme'"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
-    def test_tui_change_denies_commit(self, settings_repo):
-        """tui is one machine's UI preference — committing ships it to every user."""
-        repo, settings_file = settings_repo
-        stage_settings(
-            repo,
-            settings_file,
-            '{"model": "sonnet", "effortLevel": "normal", "tui": "fullscreen"}\n',
-        )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'add tui mode'"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
     def test_unrelated_settings_change_allows(self, settings_repo):
         """Changing a key outside the guarded set must not block.
 
@@ -379,14 +302,7 @@ class TestGuardSettingsSessionKeys:
             '{"model": "sonnet", "effortLevel": "normal",'
             ' "unrelatedTestKey": "value"}\n',
         )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'add unrelated key'"),
-                cwd=repo,
-            )
-            == "allow"
-        )
+        _assert_evaluated_allow(repo, "git commit -m 'add unrelated key'")
 
     def test_guarded_key_added_where_main_lacks_it_denies(self, settings_repo):
         """A guarded key absent from main and present in staged must block.
@@ -557,21 +473,6 @@ class TestGuardSettingsSessionKeys:
         assert "git restore --staged claude/.claude/settings.base.json" in reason
         assert names_changed_keys(reason) == {"model"}
 
-    def test_deny_message_names_only_the_changed_keys(self, settings_repo):
-        """The message names which guarded keys actually differ, not the whole set."""
-        repo, settings_file = settings_repo
-        stage_settings(
-            repo,
-            settings_file,
-            '{"model": "sonnet", "effortLevel": "normal", "theme": "dark"}\n',
-        )
-        reason = run_hook_reason(
-            GUARD_SETTINGS_SESSION_KEYS_HOOK,
-            bash_input("git commit -m 'add theme'"),
-            cwd=repo,
-        )
-        assert names_changed_keys(reason) == {"theme"}
-
     def test_deny_message_names_multiple_changed_keys(self, settings_repo):
         """Every guarded key that differs is named, and no key that does not."""
         repo, settings_file = settings_repo
@@ -586,24 +487,6 @@ class TestGuardSettingsSessionKeys:
             cwd=repo,
         )
         assert names_changed_keys(reason) == {"model", "tui"}
-
-    def test_deny_message_names_nested_key_by_its_dotted_path(self, settings_repo):
-        """Nested mirror of test_deny_message_names_only_the_changed_keys:
-        the message names the guarded key by its full dotted path, not just
-        the leaf or the `env` parent."""
-        repo, settings_file = settings_repo
-        stage_settings(
-            repo,
-            settings_file,
-            '{"model": "sonnet", "effortLevel": "normal",'
-            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}}\n',
-        )
-        reason = run_hook_reason(
-            GUARD_SETTINGS_SESSION_KEYS_HOOK,
-            bash_input("git commit -m 'nested effort level'"),
-            cwd=repo,
-        )
-        assert names_changed_keys(reason) == {"env.CLAUDE_CODE_EFFORT_LEVEL"}
 
     def test_deny_message_names_both_nested_keys(self, settings_repo):
         """Nested mirror of test_deny_message_names_multiple_changed_keys."""
@@ -640,14 +523,7 @@ class TestGuardSettingsSessionKeys:
         stage_settings(
             repo, settings_file, '{"model": "sonnet", "tui": {"b": 2, "a": 1}}\n'
         )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'reorder object keys'"),
-                cwd=repo,
-            )
-            == "allow"
-        )
+        _assert_evaluated_allow(repo, "git commit -m 'reorder object keys'")
 
     def test_malformed_staged_settings_denies(self, settings_repo):
         """Unparseable staged content degrades to {}, so main's keys read as changed.
@@ -849,14 +725,7 @@ class TestGuardSettingsSessionKeys:
         fallback denies on content, not unconditionally."""
         repo, settings_file = settings_repo_unresolvable_default_branch
         stage_settings(repo, settings_file, '{"unrelatedTestKey": "value"}\n')
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'add unrelated key'"),
-                cwd=repo,
-            )
-            == "allow"
-        )
+        _assert_evaluated_allow(repo, "git commit -m 'add unrelated key'")
 
     def test_dangling_symref_falls_through_to_live_main_guess_and_denies(
         self, settings_repo_dangling_default_branch_symref_live_main
@@ -918,14 +787,7 @@ class TestGuardSettingsSessionKeys:
             settings_file,
             '{"model": "sonnet", "effortLevel": "normal", "unrelatedTestKey": "value"}\n',
         )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'add unrelated key'"),
-                cwd=repo,
-            )
-            == "allow"
-        )
+        _assert_evaluated_allow(repo, "git commit -m 'add unrelated key'")
 
     def _stub_bin_without_timeout(self, tmp_path):
         """Stub PATH with only the binaries this hook's code path invokes
@@ -979,14 +841,8 @@ class TestGuardSettingsSessionKeys:
             ' "unrelatedTestKey": "value"}\n',
         )
         stub_bin = self._stub_bin_without_timeout(tmp_path)
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'add unrelated key'"),
-                cwd=repo,
-                extra_env={"PATH": str(stub_bin)},
-            )
-            == "allow"
+        _assert_evaluated_allow(
+            repo, "git commit -m 'add unrelated key'", extra_env={"PATH": str(stub_bin)}
         )
 
     def test_sed_absent_from_path_still_allows(self, settings_repo, tmp_path):
@@ -1048,25 +904,6 @@ class TestGuardSettingsSessionKeys:
             == "allow"
         ), "hook evaluated payload .cwd only; an embedded cd diverted the real commit undetected"
 
-    def test_nested_effort_level_added_where_env_absent_denies(self, settings_repo):
-        """The realistic shape: a fresh `env` block written by `/effort`,
-        with no `env` key on main at all."""
-        repo, settings_file = settings_repo
-        stage_settings(
-            repo,
-            settings_file,
-            '{"model": "sonnet", "effortLevel": "normal",'
-            ' "env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}}\n',
-        )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'nested effort level'"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
     def test_nested_effort_level_changed_denies(self, settings_repo):
         repo, settings_file = settings_repo
         stage_settings(
@@ -1090,23 +927,6 @@ class TestGuardSettingsSessionKeys:
             run_hook(
                 GUARD_SETTINGS_SESSION_KEYS_HOOK,
                 bash_input("git commit -m 'change nested effort level'"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
-    def test_nested_anthropic_model_added_denies(self, settings_repo):
-        repo, settings_file = settings_repo
-        stage_settings(
-            repo,
-            settings_file,
-            '{"model": "sonnet", "effortLevel": "normal",'
-            ' "env": {"ANTHROPIC_MODEL": "opus"}}\n',
-        )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'nested model override'"),
                 cwd=repo,
             )
             == "deny"
@@ -1346,14 +1166,7 @@ class TestGuardSettingsSessionKeys:
             repo, settings_file,
             '{"model": "sonnet", "effortLevel": "normal", "env": false}\n',
         )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'stage env as false'"),
-                cwd=repo,
-            )
-            == "allow"
-        )
+        _assert_evaluated_allow(repo, "git commit -m 'stage env as false'")
 
     def test_env_absent_against_main_env_false_allows(self, settings_repo):
         """Mirror of the above with sides swapped: main's `env` is `false`
@@ -1373,14 +1186,7 @@ class TestGuardSettingsSessionKeys:
             repo, settings_file,
             '{"model": "sonnet", "effortLevel": "normal"}\n',
         )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'drop env key'"),
-                cwd=repo,
-            )
-            == "allow"
-        )
+        _assert_evaluated_allow(repo, "git commit -m 'drop env key'")
 
     def test_env_absent_in_staged_against_non_object_main_env_denies(self, settings_repo):
         """Mirror of the above with sides swapped: main's `env` is corrupted
@@ -1516,7 +1322,7 @@ class TestGuardSettingsSessionKeys:
         )
 
     def test_unchanged_env_object_allows(self, settings_repo):
-        """Allow-path companion to the two denies above: the namespace-wide
+        """Allow-path companion to the denies above: the namespace-wide
         env guard must not spuriously deny when the staged env object is
         byte-for-byte the same as main's."""
         repo, settings_file = settings_repo
@@ -1536,49 +1342,7 @@ class TestGuardSettingsSessionKeys:
             '{"model": "sonnet", "effortLevel": "normal",'
             ' "env": {"SOME_OTHER_VAR": "value"}, "unrelatedTestKey": "value"}\n',
         )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'unrelated change alongside unchanged env'"),
-                cwd=repo,
-            )
-            == "allow"
-        )
-
-    def test_model_settings_change_denies_commit(self, settings_repo):
-        """modelSettings, written by /effort, must block -- backfilled key."""
-        repo, settings_file = settings_repo
-        stage_settings(
-            repo,
-            settings_file,
-            '{"model": "sonnet", "effortLevel": "normal",'
-            ' "modelSettings": {"effort": "high"}}\n',
-        )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'add modelSettings'"),
-                cwd=repo,
-            )
-            == "deny"
-        )
-
-    def test_fast_mode_change_denies_commit(self, settings_repo):
-        """fastMode, written by /fast, must block -- backfilled key."""
-        repo, settings_file = settings_repo
-        stage_settings(
-            repo,
-            settings_file,
-            '{"model": "sonnet", "effortLevel": "normal", "fastMode": true}\n',
-        )
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'add fastMode'"),
-                cwd=repo,
-            )
-            == "deny"
-        )
+        _assert_evaluated_allow(repo, "git commit -m 'unrelated change alongside unchanged env'")
 
 
 # The guarded set, pinned independently of the hook's own list: a key deleted
@@ -1665,14 +1429,7 @@ class TestEveryGuardedKeyDenies:
             _settings_json_with(json.loads(with_guarded_key), "unrelatedTestKey", "added"),
         )
 
-        assert (
-            run_hook(
-                GUARD_SETTINGS_SESSION_KEYS_HOOK,
-                bash_input("git commit -m 'unrelated change'"),
-                cwd=repo,
-            )
-            == "allow"
-        )
+        _assert_evaluated_allow(repo, "git commit -m 'unrelated change'")
 
     def test_removing_a_guarded_key_the_default_branch_carries_denies(self, settings_repo):
         """The removed leg: the key is on the default branch and absent from
@@ -1799,7 +1556,7 @@ class TestHookFailurePosture:
 
         assert result.returncode == 0
         assert result.stdout == ""
-        assert "the settings-key guard did not evaluate this commit" in result.stderr
+        assert _NOT_EVALUATED_WARNING in result.stderr
 
 
 class TestPrintGuardedKeysMode:
@@ -1865,10 +1622,3 @@ class TestBaseKeyPlacementDisjointness:
         assert not self._path_present(settings, "env.CLAUDE_CODE_EFFORT_LEVEL")
         assert not self._path_present(settings, "model.nested")
         assert not self._path_present(settings, "theme")
-
-    def test_agent_push_notif_enabled_absent_from_base(self):
-        """agentPushNotifEnabled falls through to general carry-forward
-        (rule 3), the same as theme/tui -- it is not a base key or an
-        overlay-allowed key."""
-        base_keys = set(json.loads(SETTINGS_BASE_JSON.read_text()).keys())
-        assert "agentPushNotifEnabled" not in base_keys

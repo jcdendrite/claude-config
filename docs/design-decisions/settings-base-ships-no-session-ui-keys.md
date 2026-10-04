@@ -12,6 +12,6 @@ The four keys therefore stay out of base. They are per-user preferences that Cla
 
 **The `model` default.** Dropping `model` also drops the `model: sonnet` default that [`cost-levers-considered.md`](../cost-levers-considered.md) records landing on 2026-08-14 as a coherence fix. A consumer whose Claude Code default is Opus restores Sonnet by exporting `ANTHROPIC_MODEL=sonnet`.
 
-**Alternative rejected: a default-if-absent tier in the render.** It would restore the shipped values on the first render while still letting a consumer's choice win afterwards. It adds a fifth rule to a merge that already has four: base-owned keys win, overlay-allowed keys never carry forward, other keys carry forward, and two dotted `env` paths are re-applied.
+**Alternative rejected: a default-if-absent tier in the render.** It would restore the shipped values on the first render while still letting a consumer's choice win afterwards. It adds a fifth rule to the four in `render-settings.sh`'s merge comment.
 
 The settings-scope findings and the session-keys-guard reasoning in [ui-notification-defaults-in-stow-source.md](ui-notification-defaults-in-stow-source.md) still hold.

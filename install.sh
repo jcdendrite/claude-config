@@ -300,12 +300,12 @@ fi
 #
 # plans/handoffs/briefs/settings.json/settings.overlay.json are seeded
 # explicitly, not derived from stow_untracked_package_entries: that function
-# deliberately never reports these five. The first three have their own
-# dedicated migration path above. The last two are render-settings.sh's own
-# generated output. All five must stay off the generic un-adopt loop's reach,
-# but a package-side leftover for one of them still needs the same --ignore
-# protection every other entry gets here, or stow would walk into it and
-# adopt it file-by-file. A stray claude/.claude/settings.json is gitignored and
+# deliberately never reports these. plans, handoffs, and briefs have their own
+# dedicated migration path above. settings.json and settings.overlay.json are
+# render-settings.sh's own generated output. All of them must stay off the
+# generic un-adopt loop's reach, but a package-side leftover for one of them
+# still needs the same --ignore protection every other entry gets here, or
+# stow would walk into it and adopt it file-by-file. A stray claude/.claude/settings.json is gitignored and
 # left in place; the render below reads it only when ~/.claude/settings.json is
 # a symlink resolving to it.
 stow_ignore_args=(--ignore='^\.claude/plans$' --ignore='^\.claude/handoffs$' --ignore='^\.claude/briefs$' --ignore='^\.claude/settings\.json$' --ignore='^\.claude/settings\.overlay\.json$')
@@ -565,8 +565,8 @@ _ensure_rc_block() {
 # Reuses _ensure_rc_block (defined in the rc-block-helpers block above) so
 # this rc-file mutation gets the same backup/syntax-check/undo safety net as
 # the ~/.local/bin PATH export. Runs render-settings.sh itself (via
-# ensure-settings-render.sh) rather than only warning that a render is
-# needed -- see ensure-settings-render.sh's own header comment.
+# ensure-settings-render.sh) -- see ensure-settings-render.sh's own header
+# comment.
 ensure_settings_render() {
   # shellcheck disable=SC2016 # single-quoted deliberately — $HOME must stay
   # unexpanded here so it resolves at each new shell's own startup, not once
@@ -591,7 +591,8 @@ ensure_settings_render
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them after a real stow, to pin invocation order and
-# CLAUDE_CONFIG_DIR resolution against a pre-migration $HOME. Keep both
+# CLAUDE_CONFIG_DIR resolution against a $HOME whose settings.json is a
+# dangling symlink. Keep both
 # markers on their own line, wrapping the whole block.
 # INSTALL_TEST_FIXTURE: render-settings-invoke — start
 # Render $HOME/.claude/settings.json from the just-stowed settings.base.json

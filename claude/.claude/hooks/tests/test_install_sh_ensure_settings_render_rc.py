@@ -1,13 +1,10 @@
 """Tests for the settings.json render check: install.sh's rc-line wiring
 (ensure_settings_render) and ensure-settings-render.sh itself, which
-repairs the resolved profile's settings.json on every new shell rather than
-only warning that a render is needed.
+repairs the resolved profile's settings.json on every new shell.
 
-The rc-file-mutation safety net (backup/undo/symlink-companion resolution)
-lives in the shared _ensure_rc_block helper and is already exercised
-exhaustively by the 18 tests in test_install_sh_local_bin_path.py against
-that same helper -- these tests cover only what's new here: the rc line
-content/idempotency, and ensure-settings-render.sh's own repair behavior.
+The shared _ensure_rc_block helper is exercised in
+test_install_sh_local_bin_path.py. These tests cover only the rc line's
+content and idempotency, plus ensure-settings-render.sh's repair behavior.
 """
 from __future__ import annotations
 
@@ -200,7 +197,7 @@ def _run_ensure_script(
 
 
 class TestEnsureSettingsRenderScript:
-    """Three broken states must each end with a real, base-carrying
+    """Each broken settings.json state must end with a real, base-carrying
     settings.json, and an unrenderable base must warn and leave no partial
     file.
     """
@@ -233,7 +230,7 @@ class TestEnsureSettingsRenderScript:
         assert json.loads(rendered.read_text()) == base_content
 
     def test_symlink_resolving_to_session_written_stub_is_replaced(self, tmp_path: Path) -> None:
-        """A write-through shape: a pre-rename settings.json symlink that
+        """A write-through shape: a settings.json symlink that
         still resolves, but only to a stub a live session wrote through it
         (e.g. a /theme change), carrying none of base's own keys.
         """
@@ -652,7 +649,7 @@ class TestEnsureSettingsRenderProfileResolution:
     ) -> None:
         """The profile gate compares files, not strings: a spelling of the
         default profile is the default profile, whose missing base is the
-        dangling pre-migration state the hint exists to report."""
+        dangling-symlink state the hint exists to report."""
         home = self._make_home_with_render_script(tmp_path)
         default_profile = home / ".claude"
         config_dir: Path | str

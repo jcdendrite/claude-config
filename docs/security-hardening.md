@@ -573,15 +573,15 @@ Verify exact names against the docs before relying on them — the set
 evolves. Set the chosen values under `env` in
 `<config-dir>/settings.overlay.json` (gitignored), not the tracked
 `settings.base.json`. `render-settings.sh` merges the overlay into the live
-`settings.json`. The overlay accepts only the five variables above plus
+`settings.json`. The overlay accepts only the variables above plus
 `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` — see
 [`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson) for
 the allowlist — or enforce the values via managed settings, below.
-Export any other variable from a shell profile. For a credential, prefer
-`apiKeyHelper` over any file, because the credential read gates cover no
-shell profile, overlay, or rendered `settings.json`. A credential exported
-into the shell environment is readable by any Bash call (`printenv`, `env`,
-`/proc/self/environ`), so prefer a helper that reads from a secret store.
+Export any other variable from a shell profile. For a credential, prefer a
+credential helper that reads from a secret store over any file, because the
+credential read gates cover no shell profile, overlay, or rendered
+`settings.json`. A credential exported into the shell environment is readable
+by any Bash call (`printenv`, `env`, `/proc/self/environ`).
 `ensure-settings-render.sh` re-renders on every new shell, which overwrites
 an `env` value hand-edited into the generated `~/.claude/settings.json`; see
 its entry in [`docs/scripts.md`](scripts.md). `env.CLAUDE_CODE_EFFORT_LEVEL`
@@ -646,19 +646,14 @@ to hold PII/PHI or live credentials:
   is rendered manually.
   `install.sh` renders `~/.claude` only, and a new shell renders only a
   profile that already holds a `settings.base.json`.
-  Two diagnostics exist: `install.sh` warns when its own `CLAUDE_CONFIG_DIR`
-  names another profile that holds a `settings.base.json`, and
-  `ensure-settings-render.sh` prints a hint when that profile's render fails.
+  `install.sh` warns when its own `CLAUDE_CONFIG_DIR` names another profile
+  that holds a `settings.base.json`, and `ensure-settings-render.sh` prints a
+  hint when that profile's render fails.
   A profile without a `settings.base.json`, or one that holds the file but
   that no new shell inherits and `install.sh` is not run under, gets no
   diagnostic.
-  Render a profile by hand until a per-profile install path ships, and again
-  after each pull that changes `settings.base.json`:
-  `CLAUDE_CONFIG_DIR=<profile-dir> ~/.claude/scripts/render-settings.sh`.
-  This requires `claude/.claude/` to already be stowed or symlinked into
-  `<profile-dir>` by some other means, since `install.sh` never places
-  `settings.base.json` there itself. Without that precondition met, the
-  command exits early with a "settings.base.json not found" error.
+  `docs/scripts.md`'s `render-settings.sh` entry covers rendering a profile
+  by hand.
 - Every new bash and zsh shell runs `ensure-settings-render.sh` from this
   repo's checkout through the stow symlink, so a commit pulled into the
   checkout executes at the next shell start, with no Claude Code session or

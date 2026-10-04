@@ -1,14 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-# The two dotted env paths Claude Code may write into the live file that an
+# The dotted env paths Claude Code may write into the live file that an
 # overlay env object, which never carries forward, would otherwise silently
 # drop. Kept in sync with guard-settings-session-keys.sh's GUARDED_KEYS_JSON
 # dotted entries via --print-guarded-keys -- see test_render_settings.py.
 # The script assumes /effort and /config write env.CLAUDE_CODE_EFFORT_LEVEL and
 # env.ANTHROPIC_MODEL directly into the live settings.json.
 # That assumption is unverified against a live Claude Code session, so the
-# script re-applies both paths defensively regardless.
+# script re-applies those paths defensively regardless.
 # Defined here, ahead of the direct-invocation mode below, so that mode
 # never depends on code that runs later in the script.
 RULE4_DOTTED_PATHS_JSON='["env.CLAUDE_CODE_EFFORT_LEVEL", "env.ANTHROPIC_MODEL"]'
@@ -21,7 +21,7 @@ RULE4_DOTTED_PATHS_JSON='["env.CLAUDE_CODE_EFFORT_LEVEL", "env.ANTHROPIC_MODEL"]
 BASE_OWNED_KEYS_JSON='["permissions", "hooks", "statusLine", "skillOverrides"]'
 
 # An overlay env key must be one of these exact names: the telemetry variables
-# listed in docs/security-hardening.md, plus the two Claude Code writes into the
+# listed in docs/security-hardening.md, plus the variables Claude Code writes into the
 # live settings.json (see RULE4_DOTTED_PATHS_JSON).
 # A name pattern would also admit variables that run commands, redirect
 # requests, or carry credentials.
@@ -83,9 +83,6 @@ esac
 # Overlay-allowed top-level keys: never carried forward, so deleting one
 # from the overlay actually takes effect on the next render.
 OVERLAY_ALLOWED_KEYS_JSON='["autoMode", "env", "skillListingBudgetFraction"]'
-# Overlay top-level validation set: the above, plus `permissions`, which is
-# conditionally admissible (only when its own keys are exactly {defaultMode}).
-OVERLAY_TOP_LEVEL_ALLOWED_JSON='["autoMode", "env", "permissions", "skillListingBudgetFraction"]'
 # defaultMode enum: default and plan are accepted.
 # bypassPermissions and acceptEdits are refused outright.
 # auto is refused until the shipped ask-review-permissions.sh's reason text is
@@ -146,9 +143,11 @@ if [[ -e "$overlay_file" ]]; then
   fi
 
   # Overlay keys outside the closed set are rejected, not merged.
-  if ! jq -e --argjson allowed "$OVERLAY_TOP_LEVEL_ALLOWED_JSON" '(keys - $allowed) == []' -- "$overlay_file" >/dev/null 2>&1; then
-    bad_keys="$(jq -r --argjson allowed "$OVERLAY_TOP_LEVEL_ALLOWED_JSON" '(keys - $allowed) | join(", ")' -- "$overlay_file")"
-    refuse_overlay "$overlay_file has top-level keys outside {autoMode, env, permissions, skillListingBudgetFraction}: $bad_keys" \
+  # `permissions` is conditionally admissible, so it joins the set here.
+  if ! jq -e --argjson allowed "$OVERLAY_ALLOWED_KEYS_JSON" '(keys - $allowed - ["permissions"]) == []' -- "$overlay_file" >/dev/null 2>&1; then
+    bad_keys="$(jq -r --argjson allowed "$OVERLAY_ALLOWED_KEYS_JSON" '(keys - $allowed - ["permissions"]) | join(", ")' -- "$overlay_file")"
+    allowed_keys="$(jq -r '. + ["permissions"] | sort | join(", ")' <<<"$OVERLAY_ALLOWED_KEYS_JSON")"
+    refuse_overlay "$overlay_file has top-level keys outside {$allowed_keys}: $bad_keys" \
       "set another key such as model or enabledPlugins with /config or by editing $target, which carries it forward"
   fi
 
@@ -186,7 +185,7 @@ if [[ -e "$overlay_file" ]]; then
       bad_names="$(jq -r --argjson allowed "$OVERLAY_ENV_ALLOWED_NAMES_JSON" '[.env | keys[] | select(. as $name | ($allowed | index($name)) == null)] | join(", ")' -- "$overlay_file")"
       allowed_names="$(jq -r 'join(", ")' <<<"$OVERLAY_ENV_ALLOWED_NAMES_JSON")"
       refuse_overlay "$overlay_file has env key(s) outside the allowed set {$allowed_names}: $bad_names" \
-        "export any other variable from your shell profile before launching claude; for a credential, prefer apiKeyHelper, because the credential read gates cover no shell profile or settings file, and an exported credential is readable by any Bash call (printenv, env)"
+        "export any other variable from your shell profile; for a credential, prefer a secret-store-backed credential helper (docs/security-hardening.md)"
     fi
     if ! jq -e '[.env[] | type == "string"] | all' -- "$overlay_file" >/dev/null 2>&1; then
       bad_values="$(jq -r '[.env | to_entries[] | select(.value | type != "string") | .key] | join(", ")' -- "$overlay_file")"
@@ -217,7 +216,7 @@ fi
 #   deleting one from the overlay takes effect.
 # Rule 3: every other top-level key absent from the merged result carries
 #   forward from the prior render.
-# Rule 4: the two dotted env paths Claude Code may write directly are
+# Rule 4: the dotted env paths Claude Code may write directly are
 #   re-applied afterward wherever base/overlay didn't already set them.
 # A prior-file value of literal null is treated as absent for rule 3's
 # carry-forward. All merging is shallow (jq `+`, never `*`) -- a deep merge
@@ -252,7 +251,7 @@ if ! render_output="$(jq -n \
     # Rule 1 (base always wins) holds on the resurrection side via
     # $rule3Keys below; this strips any base-owned key out of the overlay
     # side too, so rule 1 also holds on the override side even if a future
-    # change loosens $OVERLAY_TOP_LEVEL_ALLOWED_JSON without updating this
+    # change loosens OVERLAY_ALLOWED_KEYS_JSON without updating this
     # merge -- the earlier allowlist gate is not the only enforcement layer.
     ($overlay | del(.permissions) | with_entries(select(.key as $k | ($baseOwned | index($k)) == null))) as $overlayNonPerm
     | ($base + $overlayNonPerm) as $m12
@@ -292,6 +291,7 @@ if ! render_output="$(jq -n \
             ($prevEnv | has($k) | not) or ($prevEnv[$k] != $overlay.env[$k])
          ) | $k]
        else [] end) as $envChangedKeys
+    | ([$overlayNonPerm | keys[] | select(. != "env") | select(. as $k | $prev[$k] != $overlay[$k])] | sort) as $overlayKeysChanged
     | {
         result: $final,
         changed: ($final != $prev),
@@ -300,6 +300,7 @@ if ! render_output="$(jq -n \
         droppedPermissionEntries: $droppedPermissionEntries,
         droppedEnvKeys: ($droppedEnvKeys | sort),
         envChanged: ($envChangedKeys | sort),
+        overlayKeysChanged: $overlayKeysChanged,
         defaultModeSet: (($overlay | has("permissions")) and ($overlay.permissions | has("defaultMode"))),
         defaultModeValue: ($overlay.permissions.defaultMode // null)
       }
@@ -317,6 +318,7 @@ merged_json="$(jq -c '.result' <<<"$render_output")"
 #   dropped; a wholly dropped env or permissions object is named once, as a
 #   top-level key, and an empty env object counts as nothing dropped
 # - the overlay env keys newly applied or changed
+# - the other overlay keys newly applied or changed, by name only
 # - an overlay-set permissions.defaultMode
 # It lists env keys by name only, never by value, since an env value can be a
 # credential. Dropped permissions entries print their rule text, which is what
@@ -348,6 +350,11 @@ if [[ "$render_changed" == "true" ]]; then
   env_changed_list="$(jq -r '.envChanged | map("env." + .) | join(", ")' <<<"$render_output")"
   if [[ -n "$env_changed_list" ]]; then
     segments+=("overlay env keys applied or changed: $env_changed_list")
+  fi
+
+  overlay_keys_changed_list="$(jq -r '.overlayKeysChanged | join(", ")' <<<"$render_output")"
+  if [[ -n "$overlay_keys_changed_list" ]]; then
+    segments+=("overlay keys applied or changed: $overlay_keys_changed_list")
   fi
 
   if [[ "$(jq -r '.defaultModeSet' <<<"$render_output")" == "true" ]]; then

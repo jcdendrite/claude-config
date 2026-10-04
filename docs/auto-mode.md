@@ -103,17 +103,9 @@ tested. It also refuses `"dontAsk"`, which no live session has exercised.
 --permission-mode <mode>` or project-scope `.claude/settings.local.json` for
 those.
 
-A hand-set `permissions.defaultMode` in `~/.claude/settings.json` is dropped
-by the first render. That render names it on stderr only when it can read a
-prior `settings.json`; a dangling symlink leaves nothing to read, so it names
-nothing. If your prior value was
-`default` or `plan`, move it into `settings.overlay.json` before that first
-render to keep it. If your prior value was `bypassPermissions` or
-`acceptEdits`, there is no direct overlay equivalent — use the
-session-scoped `claude --permission-mode <mode>` or project-scoped
-`.claude/settings.local.json` alternative from above instead. If your prior
-value was `auto`, the overlay refuses it and has no home for it either — start
-those sessions with `claude-auto` or `claude --permission-mode auto`.
+A `permissions.defaultMode` in the live `settings.json` is not carried forward.
+Set `default` or `plan` in the overlay, and use the alternatives above for any
+other mode.
 
 ## Hard-floor deny rules
 
@@ -168,18 +160,13 @@ The overlay's top-level keys are a closed set: `autoMode`, `env`,
 silently dropped. Set another key such as `model` or `enabledPlugins` with
 `/config` or by editing `<config-dir>/settings.json`, where it carries forward.
 
-An `env` key must be one of seven exact names, each with a string value:
-`ANTHROPIC_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL`, and the five telemetry variables
-listed under "Telemetry and external traffic" in
+An `env` key must be one of the exact names the render allows, each with a
+string value: `ANTHROPIC_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL`, and the telemetry
+variables listed under "Telemetry and external traffic" in
 [`docs/security-hardening.md`](security-hardening.md). The render refuses any
-other name and its message names the allowed set. A name pattern would also
-admit variables that run commands, redirect requests, or carry credentials.
-Export any other variable from your shell profile before launching `claude`.
-For a credential, prefer `apiKeyHelper` over any file, because the credential
-read gates cover no shell profile, overlay, or rendered `settings.json`. A
-credential exported into the shell environment is readable by any Bash call
-(`printenv`, `env`, `/proc/self/environ`), so prefer a helper that reads from a
-secret store. The check reads names and never inspects values.
+other name and its message names the allowed set. Export any other variable
+from your shell profile before launching `claude`.
+For a credential, see `docs/security-hardening.md` § "Audit checklist".
 
 What a render does with each key:
 
@@ -202,8 +189,9 @@ What a render does with each key:
   reverted on the next render whether or not the overlay carries `autoMode`.
 - A render that changes the file names on stderr each key it carried forward
   and each top-level key, `permissions` entry, and `env` key it dropped.
-  It also names each overlay `env` key it applied or changed, and the
-  `permissions.defaultMode` value when the overlay sets one.
+  It also names each overlay `env` key and each other overlay key it applied
+  or changed, and the `permissions.defaultMode` value when the overlay sets
+  one.
 - Top-level keys and `env` keys are named by key only, never by value. A
   dropped `permissions` entry prints its rule text, which lets you recover a
   dropped rule.
@@ -212,7 +200,7 @@ What a render does with each key:
 
 Removing `env.CLAUDE_CODE_EFFORT_LEVEL` or `env.ANTHROPIC_MODEL` from the
 overlay does not remove either from the rendered `settings.json`:
-`render-settings.sh` re-applies whichever of the two paths the prior render
+`render-settings.sh` re-applies whichever of those paths the prior render
 already carried, unless the overlay or base sets that path, since
 `/effort`/`/config` write them directly into the live file. Edit or delete the value directly in
 `~/.claude/settings.json` (or re-run `/effort`) and re-render to actually

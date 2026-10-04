@@ -3,9 +3,8 @@
 # tier-threat-model: cooperative
 # PreToolUse hook: block git commit when claude/.claude/settings.base.json
 # has machine-local or session-scoped keys staged relative to the repo's
-# default branch, so one machine's own state is less likely to ship as the
-# config every user receives — see GUARDED_KEYS_JSON below for the guarded set
-# and why.
+# default branch.
+# GUARDED_KEYS_JSON below holds the guarded set.
 #
 # Fail posture: an unsourceable _lib.sh or a tool-input parse failure denies.
 # A missing or cap-killed jq fails that parse, so it denies every Bash call.
@@ -54,13 +53,13 @@ set -uo pipefail
 # The keys holding one machine's own state, which must never ship as the
 # config every stow user receives. A dotted key (e.g. "env.FOO") is guarded
 # via path traversal, not a literal top-level match — see guarded_value below.
-# The two env.* entries below are exact paths kept for
-# --print-guarded-keys's dotted-subset cross-check against
-# render-settings.sh's RULE4_DOTTED_PATHS_JSON.
-# They also let a type-mismatch deny name the changed leaf (e.g.
-# "env env.CLAUDE_CODE_EFFORT_LEVEL") instead of the blunter "env" alone.
-# See the CHANGED_KEYS jq body below for how `env` itself is guarded as a
-# namespace, not just these two paths.
+# The env.* entries below are exact paths:
+# - --print-guarded-keys uses them for the dotted-subset cross-check against
+#   render-settings.sh's RULE4_DOTTED_PATHS_JSON.
+# - A type-mismatch deny uses them to name the changed leaf (e.g.
+#   "env env.CLAUDE_CODE_EFFORT_LEVEL") instead of the blunter "env" alone.
+# - The CHANGED_KEYS jq body below guards `env` itself as a namespace, not
+#   just these paths.
 # Defined here, ahead of the direct-invocation mode below, so that mode
 # never depends on code that runs later in the script.
 GUARDED_KEYS_JSON='[
@@ -179,7 +178,7 @@ fi
 #   names, and that path warns below rather than passing silently.
 # - jq's `//` collapses a literal false env value to null, so a false-vs-absent
 #   pair counts as no change.
-# - `env` is guarded as a whole namespace, not only the two dotted paths in
+# - `env` is guarded as a whole namespace, not only the dotted paths in
 #   GUARDED_KEYS_JSON: any added, removed, or changed key under it denies,
 #   including a credential-shaped one such as env.ANTHROPIC_AUTH_TOKEN.
 # shellcheck disable=SC2016 # single-quoted on purpose: $guarded/$staged/$main are jq --arg bindings, not shell variables; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but the _lib_jq wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
