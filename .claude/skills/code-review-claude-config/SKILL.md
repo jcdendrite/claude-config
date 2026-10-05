@@ -51,3 +51,14 @@ Give a rounded or generalized figure more scrutiny, not less. The six
 always-on structural detectors already catch raw pastes, so what reaches
 this item is disproportionately content already generalized enough to
 clear them.
+
+## Finding disposition addition
+
+Before dispositioning a finding against a `hook-class: gate` hook, read `docs/hooks.md` § "Threat-model tiers". That section decides whether the finding is a defect in the gate and, when it is not, where the gap is recorded. Non-gate hooks and shared library code get no disposition change from this section.
+
+- Ask first whether the finding is a per-vector gap or a genuinely-lax failure. A per-vector gap needs a shape a cooperative agent would never emit, against a gate whose tier line omits `untrusted-input`. A genuinely-lax failure is the gate's rule failing on a shape a cooperative agent does emit. That section's `cooperative` bullet and its mis-parse paragraph draw the line. A genuinely-lax failure stays under the base rules unless it is already in that section's closed existing-debt set.
+- A regression, as that section defines it, is an enforcement-invariant finding under the enforcement-invariant rule at every tier. No recording, in this diff or an earlier one, changes that.
+- A finding against a gate whose tier line lists `untrusted-input` stays under the base rules, as does one against a gate that another gate's header names as its backstop against evasion.
+- Any other finding that section waives or routes is not an enforcement-invariant finding under the enforcement-invariant rule. Tag it DEFER under criterion 3 (`gold-plating-beyond-declared-user-surface`): the gate's tier line, read with that section's regression-only rule, is its declared threat model. `--source` names the gate's header block. `--rationale` names the gate's tier and the shape.
+- Before the next `/ready-for-review`, add every shape this PR DEFERred against a gate to one line in that gate's header Known-gaps section. Create the section when the header has none. Extend that line rather than adding another. That line is the recording that section requires; the PR body's rendered DEFER row is the in-PR record.
+- A finding that section does not explicitly waive or route stays under the base rules.
