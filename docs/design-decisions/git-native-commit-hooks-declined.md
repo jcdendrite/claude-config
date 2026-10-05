@@ -52,7 +52,7 @@ Smaller slices retire little, because the shared predicates stay for every gate 
 
 ## Which hooks git fires
 
-Observed on git 2.43.0 on 2026-10-03 in scratch repositories created with `git init -b main`. Each table probe set `core.hooksPath` through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0`, and `GIT_CONFIG_VALUE_0`. The last two control probes unset that pair. Every probe ran with `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, and `GIT_EDITOR=true` so the committer's own git config could not skew results. The probe script is not committed.
+Observed on git 2.43.0 on 2026-10-03 in scratch repositories created with `git init -b main`. Each table probe set `core.hooksPath` through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0`, and `GIT_CONFIG_VALUE_0`. Two control probes unset that pair instead. One set a repo-local `core.hooksPath`, and the repo-local hooks ran. The other left `core.hooksPath` unset in the repository, and no hooks fired. Every probe ran with `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, and `GIT_EDITOR=true` so the committer's own git config could not skew results. The probe script is not committed.
 
 The probe instrumented nine hooks as logging stubs that exit 0: `pre-commit`, `pre-merge-commit`, `prepare-commit-msg`, `commit-msg`, `post-commit`, `applypatch-msg`, `pre-applypatch`, `post-applypatch`, and `post-rewrite`. Every other githooks(5) event was uninstrumented. In the table, "none" means none of those nine.
 

@@ -69,8 +69,7 @@ Evidence inputs:
     - `pre-commit install` refuses when `core.hooksPath` is set (from memory, unprobed).
     - `git lfs install` may write into the dispatcher dir. Under the stow tree, that writes through symlinks into tracked files.
     - Husky's local setting is shadowed for the whole session.
-
-    A `*.sh` dispatcher in `claude/.claude/hooks/` would be swept in as a hook by `_all_hook_files()` in `test_hook_alignment.py`, which globs `*.sh` non-recursively there. Extensionless git stubs and subdirectories do not match that glob. A recursive `**/*.sh` glob over the hooks directory in `test_config_lib.py` would still sweep a `.sh` file in a subdirectory. Other sweeps were not checked.
+  - **Dispatcher placement.** A `*.sh` dispatcher in `claude/.claude/hooks/` would be swept in as a hook by `_all_hook_files()` in `test_hook_alignment.py`, which globs `*.sh` non-recursively there. Extensionless git stubs and subdirectories do not match that glob. A recursive `**/*.sh` glob over the hooks directory in `test_config_lib.py` would still sweep a `.sh` file in a subdirectory. Other sweeps were not checked.
   - **Dispatcher posture and latency.** The design needs these things it doesn't yet specify:
     - exit-code propagation from the chained hook;
     - a fail posture per event class;
