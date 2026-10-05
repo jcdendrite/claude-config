@@ -47,7 +47,7 @@ The Step 3 evidence needed these corrections. Each one changes the plan:
   This plan puts everything that B or spend also reads in the core module, and everything only rearm reads in rearm (M3).
 - **The cited `--no-redact` test doesn't reach the guard that moves.** Legacy :11100 runs through `cmd_rearm_backtest`, then `scope._resolve_cost_roots`, whose own refusal (scope.py:766–772) stays where it is. No test calls the inline guard in `_rearm_backtest_report` (:4855–4861) directly. M11 adds that one direct-call test, as cost, plan-boundary, and cache-rebuild already have (row 19).
 - **Legacy :4609's `config_dir` patch passes vacuously once production moves** (row 18). Verification 4(b) controls for it once, and M17 controls for it permanently.
-- **The hook-contract class reads the real hook at class level, and select-tests' completeness check can't see that read** (row 24). Moving the class into a file the glob doesn't match would silently drop it from hooks-change selection. M10 adds an exact-path constant.
+- **The hook-contract class reads the real hook at class level, and select-tests' completeness check can't see that read** (row 24). The hooks-dir `.sh` rule already selects the new file, so M10 only corrects select-tests.py's comments: no new constant, no test_select_tests.py edit (rows 66–67).
 - **No conftest builder moves, and `fake_projects` gains no patch line** (M6). conftest changes only in docstrings.
 - **docs/transcript-analysis.md, cost.py, scope.py, and test_transcript_workstream_cost.py need no edit.** Their pointers name symbols, not files (row 38).
 - **#1175's claim that rearm-backtest calls `config_dir()` doesn't hold** (row 17).
@@ -63,7 +63,7 @@ Alternatives considered and set aside:
 - **Two modules, with spend inside the core.** That puts a `cmd_*` into the module B's two commands import. Spend shares nothing with rearm that the core doesn't already hold.
 - **One module.** It would be about 1,060 lines with its header, over the 1,000-line limit (row 8).
 - **The explorer's three-way split by theme.** See the first correction above.
-- **Keeping the hook-contract class in the legacy file, so select-tests.py isn't touched.** The class tests an A function, and the governing plan moves each group's tests with its code. It would also push the same selection problem onto the final phase.
+- **Keeping the hook-contract class in the legacy file.** The class tests an A function, and the governing plan moves each group's tests with its code.
 
 ### Engineer decisions
 
@@ -190,12 +190,13 @@ Three conditions look like givens but aren't. This repo owns each one, so each i
     - the `Path.exists` patch at :10885;
     - the legacy reads that stay, at :7952 and :11249.
   - Wrap-only reflow is allowed where E501 flags a line. Report the count.
-- **M10: Add an exact-path constant to select-tests.** `anchors: row22, row23, row24, row25`
-  - Add `TRANSCRIPT_HANDOFF_NUDGE_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_handoff_nudge.py"` after :108.
-  - Extend the :100–106 comment to read: "test_transcript_denials.py and test_transcript_handoff_nudge.py have the identical dependency shape but aren't glob-matched, so each gets its own exact-path constant."
-  - Add the constant to the `CROSS_DOMAIN_EXCEPTIONS` row (:667) and to the :546–548 comment.
-  - In test_select_tests.py, add `_mod.TRANSCRIPT_HANDOFF_NUDGE_TEST_PATH` next to each of the ten `_mod.TRANSCRIPT_DENIALS_TEST_PATH` sites (row 25).
-  - Wrap-only reflow is allowed where E501 flags a line. The expected count is exactly 8 lines: 7 test sites (:428, :440, :498, :817, :1268, :1428, :1477) plus select-tests.py :667 `[verified: round-2 platform reviewer's awk length count at d603ae99]`. Report the count separately from M4's and M9's.
+- **M10: Correct select-tests.py's comments.** `anchors: row22, row23, row24`
+  - No new constant, and no test_select_tests.py edit (rows 66–67). The hooks-dir `.sh` rule already selects `test_transcript_handoff_nudge.py` (SCRIPTS_TESTS_DIR) on a hook change, and the glob no longer reads any hook after the move.
+  - Replace the :100–106 comment with one that says the glob-matched `test_transcript_analysis.py` (with its two siblings) reads SKILL.md files by path, and `test_transcript_denials.py`, which isn't glob-matched, shells into hook scripts by path and so gets its own exact-path constant.
+  - Replace the :546–548 `_is_hooks_or_skills_change` audit-list comment with: `TRANSCRIPT_ANALYSIS_TEST_GLOB` reads SKILL.md files by path, and `TRANSCRIPT_DENIALS_TEST_PATH` shells into hook scripts.
+  - Append to the `_is_hooks_dir_shell_script_change` comment (:604–607): `test_transcript_handoff_nudge.py` (SCRIPTS_TESTS_DIR) also fires `nudge-handoff-near-context-cap.sh`, which sources `_lib.sh` and `_config.sh`; that read is a class attribute, so `TestCrossDomainReadCompleteness` can't see it. Then add: the hook's read closure is `.sh` files plus config-keys.psv, and the hooks-dir `.sh` rule and the `CONFIG_KEYS_PSV` row both map to SCRIPTS_TESTS_DIR, so the test needs no exact-path constant, and a read of any other file type would need one.
+  - select-tests.py is a global trigger even for a comment-only edit (row 64).
+  - Rejected: a `TRANSCRIPT_HANDOFF_NUDGE_TEST_PATH` constant (rows 66–67).
   - Rejected: a `test_transcript_analysis*` name for the core file. Selection would then rest on a name coincidence, and the glob comment's "two siblings" would go stale.
 - **M11: The `--no-redact` obligation.** `anchors: row19, row20, row21, row56`
   - The inline guard moves verbatim, and Verification 7's AST check confirms it did. The CLI-level test (legacy :11100) also moves verbatim.
@@ -204,7 +205,7 @@ Three conditions look like givens but aren't. This repo owns each one, so each i
     - One method, `test_no_redact_refused_by_report_itself_when_multi_root`.
     - It builds two `_write_cost_root` roots, each holding one priced session.
     - It calls `_mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2), roots=[root_a, root_b])`.
-    - It asserts `SystemExit` with code 2, and that `capsys.readouterr().out == ""`.
+    - It asserts `SystemExit` with code 2, that stdout is empty (`capsys.readouterr().out == ""`), and that stderr contains `--no-redact`. Today the guard is the first exit in `_rearm_backtest_report`; the stderr assertion keeps a reordered or replaced exit path from satisfying the test. These assertions go beyond legacy :11487's.
   - It is a separate class so that `TestRearmBacktestReport`'s AST still equals its legacy slice.
   - This meets rearm-backtest's per-command obligation, read the way the cost-family phase read it.
   - spend-over-threshold reads no `no_redact`.
@@ -238,18 +239,17 @@ Three conditions look like givens but aren't. This repo owns each one, so each i
       - The rearm section states that the multi-root `--no-redact` refusal stays inline in `_rearm_backtest_report`.
       - Name paths by code expression only, never `~/.claude/…`.
     - In :396–398, change "(for spend-over-threshold and rearm-backtest, not yet moved into the package)" to "(for handoff-signal-response, not yet moved into the package)".
-    - In Tests, after :465, add a paragraph that:
-      - names the four files and their seams, plus the helper module and why the legacy file imports it;
-      - states that select-tests selects `tests/test_transcript_handoff_nudge.py` by exact path on a hooks or skills change, because that file fires the real hook, just as it does for `tests/test_transcript_denials.py`.
+    - In Tests, after :465, add a paragraph that names the four files and their seams, plus the helper module and why the legacy file imports it.
 - **M15: Extend the prefix test, and teach it scope.py's lazy attribute.** `anchors: row34, row61, row63`
   - Add the three modules to `PRODUCTION_MODULES` and the four new test files to `TEST_FILES`.
-  - Add `_lazy_module_attrs(tree)`, which finds the module-level `def __getattr__` and reads its first parameter's name. It returns every `str` `Constant` among the operands of each `Compare` in that function whose operands include that parameter's `Name`. `_top_level_names` adds that set. For scope.py today the set is `{"PROJECTS_DIR"}` (scope.py:49).
-  - The derivation returns the string literals compared against `__getattr__`'s name parameter. Any other shape (set or dict membership, `startswith`, `match`, a vararg-only signature) yields no names, so the guard fails loudly on a read it cannot explain.
-  - A deny-list compare (`if name == "X": raise AttributeError`) would add its literal `X`, so the guard would accept a name the module does not provide. Scope.py's real shape is the allow-list form, `!=`, which derives correctly. No such `__getattr__` exists in the package today.
-  - Add one clause to `_top_level_names`' docstring: "plus each name a module-level PEP 562 `__getattr__` resolves (the string literals it compares its own parameter against)". The new helper gets a one-line docstring. The module docstring stays as it is.
+  - Add `_lazy_module_attrs(tree)`, which finds the module-level `def __getattr__` and reads its first parameter's name. It returns every `str` `Constant` among the operands of each `!=` `Compare` in that function whose operands include that parameter's `Name`. `_top_level_names` adds that set. For scope.py today the set is `{"PROJECTS_DIR"}` (scope.py:49).
+  - The derivation returns the string literals compared against `__getattr__`'s name parameter. Any other shape (a deny-list or positive `==` compare, set or dict membership, `startswith`, `match`, a vararg-only signature) yields no names, so the guard fails loudly on a read it cannot explain.
+  - Only the allow-list form (`if name != "X": raise AttributeError`), which is scope.py's shape, derives names. A deny-list compare (`==`) adds nothing, so the guard cannot accept a name the module does not provide. The helper's docstring states this assumption. A `!=` compare that guards a `return` instead of a `raise` would still over-derive; the docstring's assumption covers that residual limit.
+  - Two tests pin the derivation against over-accept. One reads scope.py from disk and asserts its derived set equals exactly `{"PROJECTS_DIR"}`. The other parses a synthetic deny-list-shaped `__getattr__` source and asserts it adds no name.
+  - Add one clause to `_top_level_names`' docstring: "plus each name a module-level PEP 562 `__getattr__` resolves (the string literals it compares its own parameter against)". The new helper gets a summary line plus a short paragraph stating the allow-list assumption. The module docstring stays as it is.
   - Nothing in scope.py or other production code changes.
   - Rejected: leaving rearm_backtest.py out of `PRODUCTION_MODULES`. It carries the most M4 renames of the three, which is the exact typo class the guard exists for.
-  - Rejected: a hardcoded `{"scope": {"PROJECTS_DIR"}}` allowance in the test. It would restate scope.py's knowledge in a second place. Deriving it from scope.py's own AST keeps scope.py the single source.
+  - Rejected: a hardcoded `{"scope": {"PROJECTS_DIR"}}` allowance in the test. It would restate scope.py's knowledge in a second place. Deriving it from scope.py's own AST keeps scope.py the single source. The exact-set test asserts the derived set, so it fails loudly if scope.py changes; it is not a hardcoded allowance.
   - Rejected: a top-level `PROJECTS_DIR` binding in scope.py. It would defeat the lazy resolution that scope.py's `__getattr__` exists for.
 - **M16: One `code-writer` dispatch in two internal stages.** `anchors: row28`
   - Rejected: sequenced dispatches. Both stages edit the shim and the legacy file.
@@ -329,7 +329,7 @@ Three conditions look like givens but aren't. This repo owns each one, so each i
 22. Only `TestParseNudgeLogEntriesRealHookLineContract` reads a hook by path, at class level (`_NUDGE_HOOK = HOOKS_DIR / …`, :9966). No A test reads a SKILL.md. `[verified: grep]`
 23. select-tests maps hooks and skills changes to `TRANSCRIPT_ANALYSIS_TEST_GLOB` plus `TRANSCRIPT_DENIALS_TEST_PATH` (:100–108, :667). The denials constant is the precedent for a hook reader the glob doesn't match. `[verified: Read at d603ae99]`
 24. `TestCrossDomainReadCompleteness` resolves only module-level, single-`Name` `Assign` targets and never descends into a `ClassDef` (test_select_tests.py:116–139). It would not flag the moved class. `[verified: Read; grep at d603ae99]`
-25. test_select_tests.py lists `TRANSCRIPT_DENIALS_TEST_PATH` at :428, :440, :498, :817, :1268, :1428, :1462, :1477, :1893, and :2487. `[verified: grep at d603ae99]`
+25. test_select_tests.py lists `TRANSCRIPT_DENIALS_TEST_PATH` at :428, :440, :498, :817, :1268, :1428, :1462, :1477, :1893, and :2487. `[verified: grep at d603ae99]` (no longer load-bearing; see row 67)
 26. `_mod.<A name>` reads. `[verified: grep at d603ae99]`
     - The legacy file holds 112 such lines (113 reads, since :9686 holds two).
     - :7952 and :11249 stay. The other 110 lines move, including :9686 inside `_ramp_curve_from_records`.
@@ -396,7 +396,7 @@ Three conditions look like givens but aren't. This repo owns each one, so each i
     - A later file that imports a created module or `_handoff_nudge_helpers`, or reads `_mod.handoff_nudge.<name>`, also invalidates a clean revert. It touches no file in this PR's list, so the revert applies textually and leaves that file failing at collection.
     - Check with `git grep` for the three module names, `_handoff_nudge_helpers`, and the 26 moved names. It must find no reader outside this PR's files.
     - The revert PR's full-suite CI is the check.
-    - #1222, which rebases onto this phase and edits five of its files, is the likeliest such commit.
+    - #1222, which rebases onto this phase and edits four of its files, is the likeliest such commit.
 46. The new test files import conftest builders that earlier phases promoted, including `_priced_sidechain_asst` (#1214; conftest :536). Cross-phase reverts therefore run last-in-first-out. `[verified: conftest :536; decompose-transcript-dispatch.md M9]` The other PR attributions are `[unverified]`.
 47. Four rules carried over from the dispatch phase.
     - ruff selects `E`, `F`, `B`, `I`, `UP`, and `SIM`, with line length 130. `[verified: pyproject.toml :2, :6]`
@@ -427,7 +427,7 @@ Three conditions look like givens but aren't. This repo owns each one, so each i
 55. Ask provenance: `[engineer-verified: "Yes, I said that"]`, answering whether the Ask line's first quote is theirs. The quote came from the earlier session's handoff file, not from this session's messages. It covers that one quote only.
 56. Scope: `[engineer-verified: "New --no-redact test"]`, selected when asked which items beyond a verbatim move to keep (M11).
 57. Scope: `[engineer-verified: "Four bootstrap tests"]`, selected in the same question (M13).
-58. Scope: `[engineer-verified: "select-tests.py changes"]`, selected in the same question (M10).
+58. Scope: `[engineer-verified: "select-tests.py changes"]`, selected in the same question (M10); narrowed by rows 66–67.
 59. Scope: `[engineer-verified: "render.py + review_rounds.py"]`, selected in the same question (M5). It covers keeping those two file edits in this phase. Row 49 stays the parent's reading of the "one home" answer.
 60. After the delete, F401 flags `HOOKS_DIR` and `_priced_sidechain_asst` in the legacy file, and not `errno`. `[verified: grep at d603ae99]`
     - The `errno` import (:3) predates #1009. What is new since 72830ca2 is its readers at :8918–8996, inside `TestScanGapCounter` (:8484), outside every slice. Those come from #1009.
@@ -439,7 +439,7 @@ Three conditions look like givens but aren't. This repo owns each one, so each i
       - its module-level `__getattr__` (:42–51), whose body compares its parameter against the single literal `"PROJECTS_DIR"` (:49);
       - `_projects_dir`'s `globals()` cache (:68–79).
     - `_top_level_names` collects only `tree.body` defs, assignments, and imports, so the production check would fail on rearm_backtest.py.
-    - M15's derivation returns the string literals compared against `__getattr__`'s name parameter, and any other shape yields nothing. A deny-list compare would add its literal. Scope.py's `!=` compare is the allow-list shape, so it derives exactly `{"PROJECTS_DIR"}`. A simulation of the derivation as worded confirmed both results `[verified: round-2 backend and SDET reviewers' simulations]`.
+    - M15's derivation returns the string literals compared against `__getattr__`'s name parameter, and any other shape yields nothing. Only `!=` compares count. Deny-list (`==`) and positive-`==` (`if name == "X": return ...`) shapes add nothing. Scope.py's `!=` compare is the allow-list shape, so it derives exactly `{"PROJECTS_DIR"}` `[verified: staged helper and tests/test_transcript_package_module_prefixes.py::test_scope_lazy_module_attrs_are_exactly_projects_dir and ::test_lazy_module_attrs_ignores_deny_list_shaped_getattr, green in the post-fix full-suite run]`.
     - scope.py's is the package's only `__getattr__`; the other one under `scripts/` is analyze-context.py:38, outside the package. #1009's scope.py edits added no other lazily provided attribute.
     - Every other sibling attribute in M4's map is a top-level binding at d603ae99:
       - scope.py: the `config_dir` import (:28–33), :271, :466, :503, :658, :669, :689, :898, :903;
@@ -454,7 +454,15 @@ Three conditions look like givens but aren't. This repo owns each one, so each i
     - select-tests.py is in `GLOBAL_TRIGGER_PATHS` (select-tests.py:366–370). Any diff that edits it selects the full suite plus the outside-root targets the other changed paths add, with reason `global-trigger` (:771–775).
     - select-tests passes its own arguments through to pytest (:1055, :927–933). pyproject's addopts sets `-n auto` (:25).
     - CI runs `-m "not timing"` in parallel, then `-m timing -n0` serially, over claude/.claude/, claude-skills/, and plugins/. It never runs evals/ (tests.yml :159, :166, :170).
-65. Open PRs #744 and #718 edit select-tests.py and test_select_tests.py. Neither names 1175, 1222, or handoff-nudge. `[verified: round-2 platform reviewer's gh pr view/diff at d603ae99, which found their hunks disjoint from M10's edit regions; the precondition's gh pr list re-reads it]` Under the overlap rule they are recorded, not blocking.
+65. Open PRs #744 and #718 edit select-tests.py and test_select_tests.py. Neither names 1175, 1222, or handoff-nudge. `[verified: gh pr diff 744 and 718 against M10's three current select-tests.py regions (:100–106, :546–548, :604–607 at d603ae99); the precondition's gh pr list re-reads it]` Both PRs' diffs are indexed against an older select-tests.py blob (93d94dce6, not d603ae99), so their base-side hunk ranges are not d603ae99 line numbers. In that blob M10's three regions sit at :51–54, :379–380, and :419–421, and the PRs' select-tests.py hunks are #744 :123–129 and #718 :29–36 and :351–357. In d603ae99 terms, matching each hunk by its context, those are the `CLAUDE_SETTINGS_JSON` line (:256), the `SKILLS_TESTS_DIR` constants (:38) and the `DOMAIN_RULES` rows after `SCRIPTS_DIR` (:518). Result: disjoint in both numberings. This phase no longer edits test_select_tests.py, so that file is not compared. Under the overlap rule they are recorded, not blocking.
+66. Delegation on M10's scope: `[engineer-verified: "Do what is correct here, don’t anchor on what I say just because I said it. What does the architect think"]`, said when the `TRANSCRIPT_HANDOFF_NUDGE_TEST_PATH` constant was raised. The engineer's words are only the quote.
+67. The architect's advice on that question, and the resulting scope: drop the constant. The hooks-dir `.sh` rule already selects the new file when the hook changes, and after the move the glob no longer reads any hook. M10 is now comment corrections only, and the ten-site test_select_tests.py edit (row 25) is dropped. The architect's advice is its own. The handoff-nudge hook's read closure is `.sh` files plus config-keys.psv, and both already map to SCRIPTS_TESTS_DIR (select-tests.py's hooks-dir `.sh` rule and `CONFIG_KEYS_PSV` row); a read of any other file type would need a constant. `[verified: architect consult return and Read of test_transcript_handoff_nudge.py:204, nudge-handoff-near-context-cap.sh:84, _lib.sh, _config.sh:31, select-tests.py rules at the hooks-dir .sh predicate and the CONFIG_KEYS_PSV row; grep of test_transcript_analysis.py, test_transcript_analysis_architecture_doc.py, and test_transcript_analysis_cost_import_direction.py for HOOKS_DIR and hooks/ finds no hook read, only string fixtures at test_transcript_analysis.py :10093–:10616]`
+68. M11 and M15 additions: `[engineer-verified: "I agree with the architect"]`, said after the architect's consult on them. The engineer's words are only the quote.
+69. Provenance of those additions. `[verified: architect consult return and this session's staff-sdet review findings; Read of test_transcript_rearm_backtest.py:755-773, test_transcript_package_module_prefixes.py, test_transcript_cost.py:1242, test_transcript_read_scope.py:236, test_transcript_cache_rebuild.py:496, and legacy test_transcript_analysis.py :3392, :4330, :11487 at d603ae99]`
+    - The consult returned keep-both: (a) M11's added stderr assertion and (b) M15's `!=`-only derivation plus its two over-accept tests. Both stay in this phase.
+    - Both additions came from staff-sdet during code review, not from the engineer.
+    - The helper `_lazy_module_attrs` is new in this phase, so pinning its allow-list assumption is part of making it correct.
+    - Sibling `*_report_itself` tests assert less. They are left for the out-of-scope parametrized test.
 
 **Plan-review should re-check:**
 - M15's derivation and its stated limits (row 61), plus Stage 2's pre-derivation control;
@@ -463,7 +471,6 @@ Three conditions look like givens but aren't. This repo owns each one, so each i
 - row 60's supersession of the `errno` note;
 - rows 49–51;
 - M3's placement of `_print_nudge_log_diagnostic`;
-- the ten M10 sites;
 - M11's new class;
 - row 28's single expected Stage 1 failure.
 
@@ -488,7 +495,7 @@ The scan follows these rules:
   - A match without overlap is record-only. Four open PRs match by name today without overlapping `[unverified — round-2 platform reviewer's scan; the precondition's gh pr list re-reads it]`.
   - A non-matching PR that overlaps does not block. Its disposition is that whichever of the two lands second rebases, and this phase's PR body names it with its overlapping files. #744 and #718 are expected here (row 65).
   - Reason: git surfaces any textual conflict at that rebase. The semantic backstop is the second lander's full-suite CI plus the sync rules below.
-  - For each overlapping non-blocking PR (#744, #718), record in the dispatch record that its hunks are disjoint from this phase's edit regions, with the hunk ranges compared.
+  - For each overlapping non-blocking PR (#744, #718), record in the dispatch record that its select-tests.py hunks are disjoint from M10's three regions (:100–106, :546–548, :604–607 at d603ae99), with the hunk ranges compared. Map the PR diff's base-side ranges onto the dispatch base first, since a PR's diff can be indexed against an older blob (row 65).
   - A closed #1175 or #1222 does not bypass an open matching PR.
   - #1009 has merged (row 13) and no longer gates dispatch.
 - **Known blind spot.** The scan can't see unpushed work on another machine (row 2).
@@ -507,7 +514,7 @@ Sync rules:
 - Immediately before opening the PR, re-check `origin/main`. If new commits touch a Critical file, stop and report to the engineer. Otherwise, apply the rule above.
 - If the synced base carries a line-limit check, its ceiling rows must change. Name that file to the engineer before editing it.
 
-If no #1222 PR exists at dispatch, the PR body states that #1222 rebases onto this phase. It lists this phase's edits to conftest.py, test_transcript_cli_bootstrap.py, select-tests.py, test_select_tests.py, and the prefix test. It also notes that M13's two seeded-run docstrings already follow item 6.
+If no #1222 PR exists at dispatch, the PR body states that #1222 rebases onto this phase. It lists this phase's edits to conftest.py, test_transcript_cli_bootstrap.py, select-tests.py (comments only), and the prefix test, which gains `test_scope_lazy_module_attrs_are_exactly_projects_dir` and `test_lazy_module_attrs_ignores_deny_list_shaped_getattr` and derives lazy names from `!=` compares only. It also notes that M13's two seeded-run docstrings already follow item 6.
 
 ### Create — production
 
@@ -546,8 +553,7 @@ Extract each node by its AST `lineno`–`end_lineno` from the step 0 scratch cop
 - **`claude/.claude/scripts/tests/conftest.py`**: docstrings only (M12).
 - **`claude/.claude/scripts/tests/test_transcript_cli_bootstrap.py`**: M13.
 - **`claude/.claude/scripts/tests/test_transcript_package_module_prefixes.py`**: M15.
-- **`claude/.claude/scripts/select-tests.py`**: M10.
-- **`claude/.claude/scripts/tests/test_select_tests.py`**: M10.
+- **`claude/.claude/scripts/select-tests.py`**: M10 (comments only).
 - **`claude/.claude/scripts/transcript_analysis/__init__.py`**: docstring only (M14).
 - **`docs/transcript-analysis-architecture.md`**: M14.
 
@@ -586,7 +592,7 @@ One `code-writer` dispatch covers every file above (M16). Capture the step 0 bas
   - M15, in this order:
     1. Add the three modules to `PRODUCTION_MODULES` and the four test files to `TEST_FILES`.
     2. Run the prefix test alone. It must fail in exactly one test, `test_production_modules_reference_only_real_sibling_attributes`, with the message naming `rearm_backtest.py reads scope.PROJECTS_DIR`. Any other result goes back to the parent.
-    3. Add `_lazy_module_attrs` and the docstring clause. The prefix test must then pass.
+    3. Add `_lazy_module_attrs`, the docstring clause, and M15's two over-accept tests together. The tests call the helper, so adding them at step 1 would add `NameError` failures to step 2's run. After this step all five prefix-test functions must pass.
   - Make the legacy, conftest, bootstrap, select-tests, `__init__`, and remaining doc edits.
   - Replace the temporary re-export with M7's final blocks.
 - **Abort procedure.** On a blocked return or an abnormal termination, the code-writer runs no cleanup and returns to the parent. The parent then:
@@ -598,7 +604,7 @@ One `code-writer` dispatch covers every file above (M16). Capture the step 0 bas
   The parent never runs `git clean`, `git checkout .`, `git reset --hard`, or `git stash`. Success check: `git status --short` lists only the plan file. If the tree holds anything this plan doesn't name, the parent reports to the engineer first.
 - **PR body:**
   - the Stage 1 result, and Stage 2's pre-derivation prefix-test result;
-  - reflow counts for M4, M9, and M10, each reported separately;
+  - reflow counts for M4 and M9, each reported separately;
   - measured `wc -l` for every new and shrunk file, flagging every file over 1,000 lines;
   - `git blame -C -C -s` counts;
   - the #1009 coordination outcome: #1009 landed first; its session reported no edit to the predicate or its duplicate; this phase is measured on d603ae99;
@@ -645,11 +651,11 @@ Run everything from the worktree root. `<venv>` is `../../../.venv`. Scratch fil
    - This diff edits select-tests.py, so both runs must print a `select-tests: running the full suite (global-trigger: …)` line (row 64). It is the one whole-repo run this plan expects, not a widening by hand.
    - Under `-n auto`, pytest prints no per-file lines without `-v`, and select-tests prints a target list only in its scoped branch. So answer the two confirmations below by grepping the `-v` output's node IDs. Alternatively, run `--collect-only -q` through select-tests once first and grep that.
    - Confirm the first run collected `evals/test_review_bench_*.py` and `evals/test_measure_subagent_model_resolution.py`. CI never runs evals/, so this step is their only gate for the render.py and review_rounds.py edits (row 52).
-   - Confirm that the prefix test's three test functions passed, with all three new modules in `PRODUCTION_MODULES` and the four new test files in `TEST_FILES`.
+   - Confirm that the prefix test's five test functions (the three original plus M15's two over-accept tests) passed, with all three new modules in `PRODUCTION_MODULES` and the four new test files in `TEST_FILES`.
 2. **Test-ID parity.** Strip each ID's file prefix and compare sorted lists.
    - Step 0's legacy list must equal the post-move legacy list plus the four new files' lists, minus M11's ID and M17's ID.
    - The bootstrap file gains exactly the four M13 IDs.
-   - The prefix test and test_select_tests.py lists are unchanged.
+   - The prefix test gains exactly M15's two over-accept tests; test_select_tests.py's list is unchanged.
    - Per-ID outcomes must match step 0, at the same `id -u`. Compare the union of Verification 1's `after-parallel.xml` and `after-timing.xml` against the union of step 0's two legacy XML files, restricted to the legacy file's and the four new files' IDs.
 3. **CLI parity.**
    - First confirm the account directory still matches step 0's manifest.
@@ -724,7 +730,7 @@ Run everything from the worktree root. `<venv>` is `../../../.venv`. Scratch fil
 
 - **Phase B:** moving plan-boundary and handoff-signal-response, deleting the shim's seven-name block, and dropping `fake_projects`' `mod.config_dir` line. B's phase owns all three.
 - **`_is_fresh_user_prompt_for_narrative`.** Its own docstring (shim :525) defines a different predicate, not a copy, so it stays in the shim for its own phase.
-- **The parametrized cross-command `--no-redact` refusal test.** Only rearm-backtest's obligation falls due in this phase (M11).
+- **The parametrized cross-command `--no-redact` refusal test.** Only rearm-backtest's obligation falls due in this phase (M11). That test should also assert stderr names `--no-redact` across the six sibling direct-call `*_report_itself` tests, which assert less than M11 does (at most `code == 2` and empty stdout). They are `test_no_redact_refused_by_cost_report_itself_even_when_called_directly` (test_transcript_cost.py), `test_no_redact_refused_by_read_scope_report_itself_even_when_called_directly` (test_transcript_read_scope.py), `test_no_redact_refused_by_cache_rebuild_report_itself_even_when_called_directly` (test_transcript_cache_rebuild.py), and the legacy file's `test_no_redact_refused_by_edit_format_report_itself_even_when_called_directly` (:3392), `test_no_redact_refused_by_report_itself_even_when_called_directly` (:4330), and `test_no_redact_refused_by_report_itself_when_multi_root` (:11487) `[verified: grep of the four files at d603ae99]`. The parametrized test augments them: it adds one cross-command test, and the siblings stay untouched in this phase.
 - **`_UNCONDITIONAL_HEADER_CASES` and `TestRootsThreadingSpy`.** They span groups, so they stay in the legacy file until the `cli.py` phase.
 - **The `cli.py` phase's Store assertion.** When `main()` moves into the package, its `scope.PROJECTS_DIR = …` (shim :7195) becomes a Store through a sibling attribute. The prefix test's production check rejects that. The `cli.py` phase owns it.
 - **The `--spacings` default literal.** `build_parser`'s `default="40000,80000,120000"` (shim :6921) restates `_REARM_BACKTEST_DEFAULT_SPACINGS` (:4198). After the move the two live in different files, and no test ties the literal to the constant. A verbatim move keeps both. A follow-up could derive the default from the constant.

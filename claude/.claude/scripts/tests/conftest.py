@@ -17,7 +17,9 @@ test_transcript_cache_rebuild_ttl_accumulation.py,
 test_transcript_cache_rebuild_ttl_footing.py, test_transcript_audit_routing.py,
 test_transcript_audit_routing_shape.py, test_transcript_audit_routing_samples.py,
 test_transcript_subagents.py, test_transcript_subagent_mix.py,
-test_transcript_subagent_mix_dollars.py, test_transcript_cost_counts.py, and
+test_transcript_subagent_mix_dollars.py, test_transcript_cost_counts.py,
+test_transcript_handoff_nudge.py, test_transcript_rearm_backtest.py,
+test_transcript_rearm_backtest_nudge_log.py, test_transcript_spend_over_threshold.py, and
 tests/_cache_rebuild_helpers.py (see the extraction rationale on
 _write_jsonl below).
 
@@ -905,9 +907,9 @@ def fake_projects(tmp_path, monkeypatch, request):
     derives its default root from a fresh config_dir() call, not from the
     PROJECTS_DIR patch above — without this, a subcommand routed through
     _resolve_cost_roots would silently fall back to this machine's real
-    config dir instead of this fixture's isolated tmp_path. spend-over-threshold
-    and rearm-backtest stay in the shim (not yet moved into the package) and call config_dir()
-    via their own separate import, so mod.config_dir is patched too. cost_ledger,
+    config dir instead of this fixture's isolated tmp_path. handoff-signal-response
+    stays in the shim (not yet moved into the package) and calls config_dir() via its own
+    separate import, so mod.config_dir is patched too. cost_ledger,
     ledger_common, and pr_cost_ledger each bind config_dir by name from _config_dir, mirroring
     scope.py's own binding, so all three are patched too -- five bindings of the same initial
     value, each the sole read path for its own still-independent call sites.
