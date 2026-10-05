@@ -428,11 +428,11 @@ class TestSessionWideWorktreeSweep:
 
 
 class TestInteriorFailureStillReachesExitZero:
-    """The usage banner promises "Always exits 0, whether or not anything
-    was in flight" -- pinned here against each interior failure after the
-    session is known that `set -e` would otherwise propagate: an
-    uncomputable marker key, an unresolvable main tree root, a failing
-    `git worktree list`, and a failing `rm -f` on the marker or an
+    """The usage banner promises exit 0 on every run past the argument check,
+    whether or not anything was in flight -- pinned here against each
+    interior failure after the session is known that `set -e` would otherwise
+    propagate: an uncomputable marker key, an unresolvable main tree root, a
+    failing `git worktree list`, and a failing `rm -f` on the marker or an
     artifact. The first three are guarded by their own `if ...; then ...
     else ...`, the last by `|| true`."""
 
@@ -516,7 +516,7 @@ class TestInteriorFailureStillReachesExitZero:
 
 
 class TestInteriorFailureBeforeSessionIsKnownStillExitsZero:
-    """Two more "Always exits 0" guards, each a step upstream of session/
+    """Two more exit-0 guards, each a step upstream of session/
     provenance resolution: CONFIG_DIR and SESSION_ID. Without either guard,
     `set -e` would abort the script non-zero before any cleanup is even
     attempted -- and there is nothing to clean up in either case, since

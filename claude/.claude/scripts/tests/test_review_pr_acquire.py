@@ -19,6 +19,8 @@ from helpers import SCRIPTS_DIR
 
 from .conftest import (
     GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
+    _assert_finish_and_clear_stale_each_empty_the_active_directory,
+    _assert_gh_calls_are_read_only,
     _provenance_fields,
     _seed_session,
     _shimmed_env,
@@ -33,10 +35,6 @@ SID = "test-session-review-pr-acquire"
 # A harness bound so a hung bash fails one test instead of the suite.
 _SUBPROCESS_TIMEOUT_SECONDS = 60
 
-# gh api's own default-method rule (`gh api --help`): GET unless a field flag
-# is present, in which case the default flips to POST.
-_WRITE_METHOD_FLAGS = ("-X", "--method")
-_WRITE_FIELD_FLAGS = ("-f", "-F", "--field", "--raw-field")
 _KNOWN_API_ENDPOINT = re.compile(
     rf"repos/{re.escape(OWNER_REPO)}/pulls/{re.escape(PR_NUMBER)}(/(files|commits|reviews|comments)\?per_page=100)?$"
 )
@@ -46,46 +44,6 @@ def _is_listing_call(call: list[str], suffix: str) -> bool:
     """True for a `gh api` call to the pulls listing ending in `suffix`,
     whatever query string it carries."""
     return call[:1] == ["api"] and call[1].split("?", 1)[0].endswith(suffix)
-
-
-def _flag_name(token: str) -> str:
-    """"--method=GET" and "--method" "GET" are both valid gh/cobra flag
-    syntax -- strip a glued "=value" suffix so a flag-name comparison
-    catches either form."""
-    return token.split("=", 1)[0]
-
-
-def _assert_gh_calls_are_read_only(calls: list[list[str]]) -> None:
-    """Allowlists the exact `gh` call shapes review-pr-acquire.sh makes (its
-    usage text lists the fetches): `gh pr view` and `gh api` against its
-    own known GET endpoints (the bare pulls/{N} resource plus its
-    files/commits/reviews/comments sub-resources, each at the maximum page
-    size), none carrying a method or field flag that would flip `gh api`'s
-    default method to POST. Any call outside that allowlist fails, including
-    an unanticipated write shape this suite's fixtures never modeled.
-
-    Covers only the `gh` invocations the shimmed code paths this suite's
-    fixtures drive actually make; it says nothing about a non-`gh` write
-    (e.g. a raw `curl`) review-pr-acquire.sh might issue.
-    """
-    for args in calls:
-        if args[:2] == ["pr", "view"]:
-            assert "-R" in args and "--json" in args, f"gh pr view missing expected flags: {args}"
-            continue
-        if args[:1] == ["api"]:
-            endpoint = args[1] if len(args) > 1 else ""
-            assert _KNOWN_API_ENDPOINT.fullmatch(endpoint), f"unexpected gh api endpoint: {args}"
-            flag_names = [_flag_name(a) for a in args]
-            assert not (set(flag_names) & set(_WRITE_FIELD_FLAGS)), (
-                f"gh api call carries a field flag, which flips the default method to POST: {args}"
-            )
-            for index, token in enumerate(args):
-                if _flag_name(token) not in _WRITE_METHOD_FLAGS:
-                    continue
-                method_value = token.split("=", 1)[1] if "=" in token else args[index + 1]
-                assert method_value.upper() == "GET", f"gh api call sets a non-GET method: {args}"
-            continue
-        pytest.fail(f"gh invocation outside the pr view/api allowlist: {args}")
 
 
 @pytest.fixture
@@ -284,7 +242,7 @@ def _run(
         ["bash", str(SCRIPT), *args], cwd=tmp_path, env=env, capture_output=True, text=True,
         timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
-    _assert_gh_calls_are_read_only(_read_calls(call_log))
+    _assert_gh_calls_are_read_only(_read_calls(call_log), known_api_endpoint=_KNOWN_API_ENDPOINT)
     return result, call_log
 
 
@@ -410,6 +368,15 @@ class TestSuccessfulAcquire:
         assert fields["head_ref_oid"] == "a" * 40
         assert fields["pid"].isdigit()
         assert fields["mode"] == "acquired"
+
+    def test_finish_and_clear_stale_each_leave_no_artifact_behind(self, isolated_home, tmp_path):
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid="a" * 40, capped_files=["a.py"], capped_commits=["c1"],
+        )
+        assert result.returncode == 0, result.stderr
+
+        _assert_finish_and_clear_stale_each_empty_the_active_directory(isolated_home, tmp_path, SID)
 
     def test_completeness_flags_are_the_first_keys_of_the_document(self, isolated_home, tmp_path):
         """The completeness flags SKILL.md tells the model to check come

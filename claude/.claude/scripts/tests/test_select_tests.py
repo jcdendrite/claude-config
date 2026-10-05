@@ -1203,11 +1203,14 @@ class TestSelectPytestTargets:
     def test_review_pr_skill_md_change_also_selects_scripts_tests(self):
         """test_review_pr_post.py (SCRIPTS_TESTS_DIR) reads review-pr/SKILL.md
         by path. Without this cross-domain exception, a SKILL.md change
-        selects only REVIEW_PR_SKILL_TESTS_DIR and SKILLS_TESTS_DIR, so that
-        coverage goes unrun."""
-        result = _mod.select_pytest_targets([_mod.REVIEW_PR_SKILL_MD])
-        assert result.is_full_suite is False
-        assert {_mod.REVIEW_PR_SKILL_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR} <= set(result.target_paths)
+        selects none of SCRIPTS_TESTS_DIR, so that coverage goes unrun. A
+        different skill's SKILL.md is the contrast case."""
+        review_pr_result = _mod.select_pytest_targets([_mod.REVIEW_PR_SKILL_MD])
+        other_skill_result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/SKILL.md"])
+        assert review_pr_result.is_full_suite is False
+        assert other_skill_result.is_full_suite is False
+        assert {_mod.SCRIPTS_TESTS_DIR, _mod.REVIEW_PR_SKILL_TESTS_DIR} <= set(review_pr_result.target_paths)
+        assert _mod.SCRIPTS_TESTS_DIR not in other_skill_result.target_paths
 
     def test_skills_test_tree_change_selects_skills_tests(self):
         """`_is_under(p, SKILLS_TESTS_DIR)` mirrors the hooks and scripts

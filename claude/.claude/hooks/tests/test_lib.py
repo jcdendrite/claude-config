@@ -1666,28 +1666,72 @@ class TestLibOriginOwnerRepo:
     and review-pr-post.sh and require-respond-pr.sh's own cross-repo check
     (cwd form) all call."""
 
-    def test_extracts_owner_repo_via_explicit_repo_root(self, tmp_path: Path) -> None:
+    @staticmethod
+    def _origin_owner_repo(repo: Path, resolution_form: str) -> subprocess.CompletedProcess:
+        """Run the function against repo in one of its two resolution forms.
+        The ambient git config is isolated so a contributor's own `insteadOf`
+        rules cannot change either form's answer."""
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        if resolution_form == "repo_root":
+            return _run_lib_call(f'_lib_origin_owner_repo "{repo}"', env=env)
+        return subprocess.run(
+            ["bash", "-c", f'. "{_LIB_SH}"; _lib_origin_owner_repo'],
+            cwd=repo, capture_output=True, text=True, env=env,
+        )
+
+    @pytest.mark.parametrize("resolution_form", ["repo_root", "cwd"])
+    @pytest.mark.parametrize(
+        "origin_url",
+        [
+            "https://github.com/foo/bar.git",
+            "https://github.com/foo/bar",
+            "git@github.com:foo/bar.git",
+            "ssh://git@github.com:22/foo/bar.git",
+            "https://user:token@github.com/foo/bar.git",
+            "/srv/remotes/foo/bar.git",
+        ],
+        ids=["https_dot_git", "https_no_suffix", "scp_like", "ssh_with_port", "https_with_userinfo", "local_path"],
+    )
+    def test_extracts_owner_repo_from_each_url_shape_in_both_resolution_forms(
+        self, tmp_path: Path, origin_url: str, resolution_form: str
+    ) -> None:
         repo = tmp_path / "repo"
         _init_repo(repo)
-        subprocess.run(
-            ["git", "remote", "add", "origin", "https://github.com/foo/bar.git"],
-            cwd=repo, check=True,
-        )
-        result = _run_lib_call(f'_lib_origin_owner_repo "{repo}"', env=dict(os.environ))
+        subprocess.run(["git", "remote", "add", "origin", origin_url], cwd=repo, check=True)
+        result = self._origin_owner_repo(repo, resolution_form)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "foo/bar"
 
-    def test_extracts_owner_repo_from_cwd_when_repo_root_omitted(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("resolution_form", ["repo_root", "cwd"])
+    @pytest.mark.parametrize(
+        "origin_url",
+        ["https://github.com/foo/bar/", "https://github.com/foo/bar.git/"],
+        ids=["trailing_slash", "dot_git_trailing_slash"],
+    )
+    def test_a_trailing_slash_fails_closed_in_both_resolution_forms(
+        self, tmp_path: Path, origin_url: str, resolution_form: str
+    ) -> None:
+        """A URL ending in `/` does not parse to an owner/repo shape, so a
+        caller denies rather than comparing a wrong slug."""
         repo = tmp_path / "repo"
         _init_repo(repo)
-        subprocess.run(
-            ["git", "remote", "add", "origin", "git@github.com:foo/bar.git"],
-            cwd=repo, check=True,
-        )
-        result = subprocess.run(
-            ["bash", "-c", f'. {_LIB_SH}; _lib_origin_owner_repo'],
-            cwd=repo, capture_output=True, text=True, env=dict(os.environ),
-        )
+        subprocess.run(["git", "remote", "add", "origin", origin_url], cwd=repo, check=True)
+        result = self._origin_owner_repo(repo, resolution_form)
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("resolution_form", ["repo_root", "cwd"])
+    def test_an_instead_of_rewrite_yields_the_same_owner_repo_in_both_resolution_forms(
+        self, tmp_path: Path, resolution_form: str
+    ) -> None:
+        """`git remote get-url` applies a `url.<base>.insteadOf` rewrite and
+        `git config --get` does not, so the two forms read different URLs here
+        and must still agree on the slug."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        subprocess.run(["git", "remote", "add", "origin", "alias:foo/bar.git"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "url.https://github.com/.insteadOf", "alias:"], cwd=repo, check=True)
+        result = self._origin_owner_repo(repo, resolution_form)
         assert result.returncode == 0, result.stderr
         assert result.stdout == "foo/bar"
 

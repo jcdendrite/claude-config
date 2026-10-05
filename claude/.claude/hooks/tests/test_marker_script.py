@@ -457,6 +457,30 @@ def _run(
     )
 
 
+def _marker_sh_in_synthetic_install(
+    tmp_path, sibling_sources: dict[str, str], real_siblings: tuple[str, ...] = ()
+) -> str:
+    """Path of a marker.sh symlinked into a scripts directory of its own, so
+    the sibling lookups it resolves from its own location land there instead
+    of beside the real file. `sibling_sources` maps a sibling file name to the
+    text it holds, and `real_siblings` names siblings symlinked from the real
+    scripts directory. _lib.sh and its own siblings are copied into the hooks
+    directory marker.sh sources them from."""
+    scripts_dir = tmp_path / "scripts"
+    hooks_dir = tmp_path / "hooks"
+    scripts_dir.mkdir()
+    hooks_dir.mkdir()
+    (scripts_dir / "marker.sh").symlink_to(MARKER_SCRIPT)
+    for sourced_name in ("_lib.sh", "_config.sh", "config-keys.psv"):
+        shutil.copy(HOOKS_DIR / sourced_name, hooks_dir / sourced_name)
+    for sibling_name in real_siblings:
+        (scripts_dir / sibling_name).symlink_to(MARKER_SCRIPT.parent / sibling_name)
+    for sibling_name, sibling_text in sibling_sources.items():
+        (scripts_dir / sibling_name).write_text(sibling_text)
+        (scripts_dir / sibling_name).chmod(0o755)
+    return str(scripts_dir / "marker.sh")
+
+
 class TestMarkerScriptSessionMissing:
     """When the session file ($HOME/.claude/sessions/$PPID) does not exist,
     every write/activate/deactivate subcommand must exit 2 and write nothing.
@@ -902,6 +926,78 @@ class TestMarkerScriptClearStale:
     def test_clear_stale_invalid_extra_arg_exits_2(self, isolated_home, git_repo):
         result = _run(["clear-stale", "--unknown-flag"], cwd=git_repo, home=isolated_home)
         assert result.returncode == 2
+
+    def _run_marker_sh_clear_stale(self, marker_sh: str, git_repo, isolated_home):
+        return subprocess.run(
+            ["bash", marker_sh, "clear-stale"],
+            cwd=git_repo,
+            env={**os.environ, "HOME": str(isolated_home)},
+            capture_output=True,
+            text=True,
+        )
+
+    def test_clear_stale_exits_with_a_failing_sweepers_status_after_printing_its_output(
+        self, tmp_path, isolated_home, git_repo
+    ):
+        """The sweeper's own "incomplete" summary is passed through, and the
+        arm's status is the sweeper's, so a chained caller does not proceed as
+        if every stale marker were evicted."""
+        marker_sh = _marker_sh_in_synthetic_install(
+            tmp_path,
+            {
+                "marker-clear-stale.py": (
+                    "print('  evict: .foo-active.d/kept-going (PID 1 dead)')\n"
+                    "print('clear-stale: incomplete, 1 failure(s); evicted 1 orphan(s), kept 0 active')\n"
+                    "raise SystemExit(1)\n"
+                )
+            },
+        )
+
+        result = self._run_marker_sh_clear_stale(marker_sh, git_repo, isolated_home)
+
+        assert result.returncode == 1
+        assert result.stdout == (
+            "  evict: .foo-active.d/kept-going (PID 1 dead)\n"
+            "clear-stale: incomplete, 1 failure(s); evicted 1 orphan(s), kept 0 active\n"
+        )
+        assert "clear-stale did not complete (sweeper exit status 1)" in result.stderr
+        assert '"failed:" lines above' in result.stderr
+        assert "re-run to retry" in result.stderr
+
+    def test_clear_stale_exits_nonzero_when_the_sweeper_file_is_missing(
+        self, tmp_path, isolated_home, git_repo
+    ):
+        """An install whose scripts directory lacks the sweeper must not read
+        as a completed sweep."""
+        marker_sh = _marker_sh_in_synthetic_install(tmp_path, {})
+
+        result = self._run_marker_sh_clear_stale(marker_sh, git_repo, isolated_home)
+
+        assert result.returncode != 0
+        assert result.stdout == ""
+        assert "clear-stale did not complete" in result.stderr
+
+    def test_clear_stale_does_not_import_a_module_planted_on_pythonpath(
+        self, tmp_path, isolated_home, git_repo
+    ):
+        """The sweeper runs under `python3 -I`, so PYTHONPATH never reaches it:
+        a shadowing glob.py must neither run nor keep the sweep from finishing."""
+        poison_dir = tmp_path / "poison"
+        poison_dir.mkdir()
+        sentinel = tmp_path / "poison-ran"
+        (poison_dir / "glob.py").write_text(
+            "import pathlib\n"
+            f"pathlib.Path({str(sentinel)!r}).write_text('ran')\n"
+            "raise RuntimeError('PYTHONPATH shadowed the standard library')\n"
+        )
+
+        result = _run(
+            ["clear-stale"], cwd=git_repo, home=isolated_home, extra_env={"PYTHONPATH": str(poison_dir)}
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert not sentinel.exists(), "the planted glob.py was imported and executed"
+        assert "evicted 0" in result.stdout
 
 
 class TestMarkerScriptEmptyStagedGuard:
@@ -6098,6 +6194,110 @@ class TestMarkerScriptReviewPr:
         assert not (git_repo / "poison-ran").exists(), "the planted hashlib.py was imported and executed"
         marker = review_pr_completion_marker_path(isolated_home, git_repo, sid)
         assert marker.read_text().splitlines()[2] == hashlib.sha256(findings_body.read_bytes()).hexdigest()
+
+    def test_write_refuses_a_body_that_changes_while_the_checks_read_it(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """The attribution and scan checks read the body by path, so a body
+        rewritten after the first hash must not get a marker covering bytes the
+        checks never saw. The stand-in attribution check rewrites the body and
+        then passes."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._write_findings_body_for_mode(isolated_home, "checkout", sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid)
+        marker_sh = _marker_sh_in_synthetic_install(
+            tmp_path,
+            {
+                "review-pr-check-attribution.sh": (
+                    "#!/usr/bin/env bash\n"
+                    f"printf 'rewritten after the first hash\\n' >> {str(findings_body)!r}\n"
+                )
+            },
+            real_siblings=("review-pr-scan-findings-body.sh",),
+        )
+
+        result = subprocess.run(
+            ["bash", marker_sh, "write", "review-pr"],
+            cwd=git_repo,
+            env={**os.environ, "HOME": str(isolated_home)},
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 2
+        assert "changed while it was being checked" in result.stderr
+        assert not review_pr_completion_marker_path(isolated_home, git_repo, sid).exists()
+
+    def _write_with_stand_in_check_siblings(
+        self, tmp_path, isolated_home, git_repo, sibling_sources, real_siblings
+    ):
+        marker_sh = _marker_sh_in_synthetic_install(tmp_path, sibling_sources, real_siblings=real_siblings)
+        return subprocess.run(
+            ["bash", marker_sh, "write", "review-pr"],
+            cwd=git_repo,
+            env={**os.environ, "HOME": str(isolated_home)},
+            capture_output=True,
+            text=True,
+        )
+
+    def test_write_refuses_a_body_that_changes_during_the_scan_step(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """The scan runs after the attribution check, so a hash taken only
+        between the two would miss a body rewritten during the scan. The
+        stand-in scan rewrites the body and then passes, and the real
+        attribution check passes first."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._write_findings_body_for_mode(isolated_home, "checkout", sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid)
+
+        result = self._write_with_stand_in_check_siblings(
+            tmp_path,
+            isolated_home,
+            git_repo,
+            {
+                "review-pr-scan-findings-body.sh": (
+                    "#!/usr/bin/env bash\n"
+                    f"printf 'rewritten during the scan\\n' >> {str(findings_body)!r}\n"
+                )
+            },
+            real_siblings=("review-pr-check-attribution.sh",),
+        )
+
+        assert result.returncode == 2
+        assert "changed while it was being checked" in result.stderr
+        assert not review_pr_completion_marker_path(isolated_home, git_repo, sid).exists()
+
+    def test_write_refuses_a_body_swapped_for_a_symlink_during_the_checks(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """A symlink with the same text makes the second hash fail, which must
+        read as a changed body and not as a match."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._write_findings_body_for_mode(isolated_home, "checkout", sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid)
+        link_target = tmp_path / "same-text-elsewhere.txt"
+        link_target.write_bytes(findings_body.read_bytes())
+
+        result = self._write_with_stand_in_check_siblings(
+            tmp_path,
+            isolated_home,
+            git_repo,
+            {
+                "review-pr-scan-findings-body.sh": (
+                    "#!/usr/bin/env bash\n"
+                    f"rm -f {str(findings_body)!r} && ln -s {str(link_target)!r} {str(findings_body)!r}\n"
+                )
+            },
+            real_siblings=("review-pr-check-attribution.sh",),
+        )
+
+        assert result.returncode == 2
+        assert "changed while it was being checked" in result.stderr
+        assert not review_pr_completion_marker_path(isolated_home, git_repo, sid).exists()
 
     def _write_findings_body_for_mode(self, home, mode, sid=SID):
         """A findings body passing the attribution check for `mode`:

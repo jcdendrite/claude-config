@@ -154,7 +154,8 @@ _lib_status_consistent_with_cap_kill() {
 # Runs `gh ARGS...` capped at SECONDS via _lib_capped_for.
 # Prints nothing of its own.
 # Returns _lib_capped_for's own exit status unchanged -- 124/137/143 on a cap kill, gh's own status otherwise.
-# A caller that words that status for the operator uses review_pr_gh_status_description in _review-pr-lib.sh, which names only 124 because 137 and 143 are also a child's own signal-death status (see _lib_capped_for's "Exit statuses" bullets).
+# A caller that words that status for the operator uses review_pr_gh_status_description in _review-pr-lib.sh.
+# That function names only 124, because 137 and 143 are also a child's own signal-death status (see _lib_capped_for's "Exit statuses" bullets).
 # A caller that wants every cap-kill-consistent status passes it through _lib_status_consistent_with_cap_kill.
 # Leaves gh's stderr to the caller: every caller redirects it to /dev/null except review-pr-post.sh's two `gh pr review` calls, which leave it visible.
 _lib_gh() {
@@ -584,12 +585,20 @@ _lib_repo_root() {
 # directory from any linked worktree (git-worktree(1), "Details").
 # review-pr-checkout.sh, review-pr-finish.sh, and
 # _lib_review_pr_marker_repo_hash all anchor here, so they agree from any tree.
-# Exit 1, empty stdout: not inside a git repository, git is absent, or the
-# call timed out.
+# git before 2.31 echoes the unknown --path-format flag as an output line and
+# exits 0, so the result is accepted only when it is a single absolute path.
+# Exit 1, empty stdout: not inside a git repository, git is absent, the call
+# timed out, or git is older than 2.31.
 _lib_main_repo_root() {
   local common_git_dir root
-  common_git_dir=$(_lib_capped git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | tr -d '\n')
-  [ -n "$common_git_dir" ] || return 1
+  common_git_dir=$(_lib_capped git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  case "$common_git_dir" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$common_git_dir" in
+    *$'\n'*) return 1 ;;
+  esac
   root=$(dirname "$common_git_dir")
   [ -n "$root" ] || return 1
   printf '%s' "$root"
@@ -2750,12 +2759,9 @@ _lib_active_bypass_marker_live_and_touch() {
 # own. A branch worktree, a nested directory, and a user-named directory all
 # still count, so a wrong-tree session is never silenced by a name alone.
 # The skip identifies a review worktree by that shape, not by a record written
-# at creation. A worktree it hides wrongly only lets the marker writer record a
-# marker keyed to the main tree's repo hash.
-# The skip assumes no gate keys a marker to the main tree's hash on a review
-# checkout's behalf. `docs/hooks.md` § "Marker keying and gate-release authority"
-# lists the readers that assumption rests on. If that keying changes, identify
-# a review checkout by a record written when it is created.
+# at creation.
+# `docs/hooks.md` § "Marker keying and gate-release authority", "Why that refusal
+# skips review checkouts", owns the assumption that makes the skip safe.
 # `git worktree list` still reports entries whose directory was deleted but not
 # pruned, so each candidate is tested rather than trusting the entry count.
 # Callers use this to distinguish "session is in the main tree while the

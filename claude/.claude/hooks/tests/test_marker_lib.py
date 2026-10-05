@@ -368,6 +368,58 @@ class TestLibMainRepoRoot:
         assert result.returncode != 0
         assert result.stdout == ""
 
+    @staticmethod
+    def _path_with_git_that_echoes_the_unknown_path_format_flag(shim_dir: Path) -> str:
+        """Prepend a `git` shim that behaves like git before 2.31: it prints
+        --path-format=<mode> as an output line, then answers the rest of the
+        command as usual."""
+        shim_dir.mkdir()
+        shim = shim_dir / "git"
+        shim.write_text(
+            "#!/bin/bash\n"
+            'forwarded=()\n'
+            'for arg in "$@"; do\n'
+            '  case "$arg" in\n'
+            '    --path-format=*) printf "%s\\n" "$arg" ;;\n'
+            '    *) forwarded+=("$arg") ;;\n'
+            '  esac\n'
+            'done\n'
+            f'exec "{shutil.which("git")}" "${{forwarded[@]}}"\n'
+        )
+        shim.chmod(0o755)
+        return f"{shim_dir}{os.pathsep}{os.environ['PATH']}"
+
+    @pytest.mark.parametrize("from_linked_worktree", [False, True])
+    def test_fails_closed_when_git_echoes_the_unsupported_path_format_flag(
+        self, tmp_path, from_linked_worktree
+    ):
+        repo = tmp_path / "old-git-repo"
+        _init_repo(repo)
+        (repo / "file.txt").write_text("first\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        caller_cwd = repo
+        if from_linked_worktree:
+            subprocess.run(["git", "branch", "feature"], cwd=repo, check=True)
+            caller_cwd = tmp_path / "old-git-linked-worktree"
+            subprocess.run(
+                ["git", "worktree", "add", str(caller_cwd), "feature"], cwd=repo, check=True,
+            )
+        env = {
+            **os.environ,
+            "PATH": self._path_with_git_that_echoes_the_unknown_path_format_flag(
+                tmp_path / "old-git-shim"
+            ),
+        }
+
+        result = subprocess.run(
+            ["bash", "-c", f'. "{LIB_SH}"; _lib_main_repo_root'],
+            cwd=caller_cwd, capture_output=True, text=True, env=env,
+        )
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+
 
 class TestLibReviewPrMarkerRepoHash:
     """Direct coverage for _lib_review_pr_marker_repo_hash -- the one key every

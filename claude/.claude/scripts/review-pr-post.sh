@@ -64,7 +64,7 @@ SESSION_ID=$("$(dirname "$0")/marker.sh" resolve-session-id) || {
 }
 
 REPO_HASH=$(_lib_review_pr_marker_repo_hash) || {
-  echo "review-pr-post.sh: not inside a git repository, or the repo hash could not be computed. Abort without posting." >&2
+  echo "review-pr-post.sh: not inside a git repository, git is older than 2.31 (which lacks rev-parse --path-format), or the repo hash could not be computed. Abort without posting." >&2
   exit 2
 }
 

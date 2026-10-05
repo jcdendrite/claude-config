@@ -20,8 +20,12 @@ runs in flight under one session id are not told apart, so the first finish
 removes both. Each git or rm call in the sweep is capped
 (_LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS in _lib.sh). Zero arguments,
 matching every other zero-argument review-pr script's exact-match
-settings.json entry. Always exits 0, whether or not anything was in flight;
-a failed removal is reported on stderr and a re-run retries it.
+settings.json entry. Exits 0 on every run that gets past the argument check,
+whether or not anything was in flight; a failed removal is reported on stderr
+and a re-run retries it.
+It does not check the caller's working directory, so a review worktree the
+caller is standing in is removed too: run it from the main tree or from a
+worktree that is not a review worktree.
 EOF
 }
 
@@ -78,11 +82,11 @@ SESSION_ID=$("$(dirname "$0")/marker.sh" resolve-session-id) || {
 
 # Best-effort: a failure here must not abort the artifact removal below. An
 # `|| true` on each rm keeps a failing removal (rm prints its own error) from
-# tripping `set -e`, since this script always exits 0.
+# tripping `set -e`, since every run past the argument check exits 0.
 if REPO_HASH=$(_lib_review_pr_marker_repo_hash); then
   rm -f -- "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID" || true
 else
-  echo "review-pr-finish.sh: could not compute the review-pr marker key (not inside a git repository, or hashing failed) -- skipping completion-marker cleanup." >&2
+  echo "review-pr-finish.sh: could not compute the review-pr marker key (not inside a git repository, git older than 2.31, which lacks rev-parse --path-format, or hashing failed) -- skipping completion-marker cleanup." >&2
 fi
 
 rm -f -- "$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)" \
@@ -91,7 +95,7 @@ rm -f -- "$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
   "$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" context.json)" || true
 
 if ! MAIN_REPO_ROOT=$(_lib_main_repo_root); then
-  echo "review-pr-finish.sh: could not resolve this repository's main tree root -- skipping worktree removal." >&2
+  echo "review-pr-finish.sh: could not resolve this repository's main tree root (not inside a git repository, or git older than 2.31, which lacks rev-parse --path-format) -- skipping worktree removal." >&2
 elif ! WORKTREE_LIST=$(_lib_capped_for "$_LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" worktree list --porcelain 2>/dev/null); then
   echo "review-pr-finish.sh: could not list this repository's worktrees -- skipping worktree removal." >&2
 # resolve-session-id already validated SESSION_ID, so this branch is defense

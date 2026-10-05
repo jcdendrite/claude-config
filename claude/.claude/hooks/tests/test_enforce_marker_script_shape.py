@@ -4272,7 +4272,7 @@ class TestMarkerRegistryShapeCountConsistency:
     @staticmethod
     def _marker_sh_array(name: str) -> list[str]:
         result = subprocess.run(
-            ["bash", "-c", f'. {MARKER_SCRIPT}; printf "%s\\n" "${{{name}[@]}}"'],
+            ["bash", "-c", f'. "{MARKER_SCRIPT}"; printf "%s\\n" "${{{name}[@]}}"'],
             capture_output=True,
             text=True,
             check=True,
@@ -4295,12 +4295,13 @@ class TestMarkerRegistryShapeCountConsistency:
             "side is stale."
         )
 
-    def test_denial_list_length_matches_the_registry(self):
+    def test_denial_list_names_exactly_the_registry_shapes(self):
         hook_text = ENFORCE_MARKER_SCRIPT_SHAPE_HOOK.read_text()
         denial_block_match = re.search(r"Valid shapes:\n(.*?)\n\nChains of", hook_text, re.DOTALL)
         assert denial_block_match, "denial list not found in enforce-marker-script-shape.sh"
         denial_lines = [
-            line for line in denial_block_match.group(1).splitlines()
+            line.strip() for line in denial_block_match.group(1).splitlines()
             if line.strip().startswith("~/.claude/scripts/marker.sh")
         ]
-        assert len(denial_lines) == len(TILDE_MARKER_SHAPES)
+        assert len(denial_lines) == len(set(denial_lines)), "a shape is listed twice in the denial text"
+        assert set(denial_lines) == set(TILDE_MARKER_SHAPES)

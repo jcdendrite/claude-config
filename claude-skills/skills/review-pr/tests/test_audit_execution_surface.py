@@ -98,6 +98,8 @@ class TestAuditExecutionSurfacePureFunction:
             ".claude/agentſ/x.md",
             "agentſ.md",
             ".claude/ruleſ/x.md",
+            ".claude/output-ſtyles/x.md",
+            ".claude/commandſ/x.md",
         ],
         ids=[
             "gitattributes",
@@ -112,6 +114,8 @@ class TestAuditExecutionSurfacePureFunction:
             "claude_agents",
             "agents_md",
             "claude_rules",
+            "claude_output_styles",
+            "claude_commands",
         ],
     )
     def test_casefold_only_variant_still_matches(self, path):
@@ -169,6 +173,26 @@ class TestAuditExecutionSurfacePureFunction:
 
     @pytest.mark.parametrize(
         "path",
+        [".claude/output-styles/x.md", "packages/api/.claude/output-styles/x.md", ".claude/output-styles/team/x.md"],
+        ids=["root", "nested", "subdir"],
+    )
+    def test_claude_output_styles_directory_matches(self, path):
+        result = audit_execution_surface([path])
+        assert result["stop"] is True
+        assert ".claude/output-styles/**" in result["matches"][0]["reason"]
+
+    @pytest.mark.parametrize(
+        "path",
+        [".claude/commands/x.md", "packages/api/.claude/commands/x.md", ".claude/commands/team/x.md"],
+        ids=["root", "nested", "subdir"],
+    )
+    def test_claude_commands_directory_matches(self, path):
+        result = audit_execution_surface([path])
+        assert result["stop"] is True
+        assert ".claude/commands/**" in result["matches"][0]["reason"]
+
+    @pytest.mark.parametrize(
+        "path",
         [
             "docs/rules/x.md",
             "src/agents.py",
@@ -176,6 +200,10 @@ class TestAuditExecutionSurfacePureFunction:
             ".claude/plans/x.md",
             "packages/api/.claude/plans/x.md",
             ".claude/rulesets/x.md",
+            "docs/output-styles/x.md",
+            "docs/commands/x.md",
+            ".claude/output-styles-archive/x.md",
+            ".claude/commands-archive/x.md",
         ],
         ids=[
             "docs_rules",
@@ -184,6 +212,10 @@ class TestAuditExecutionSurfacePureFunction:
             "claude_plans",
             "nested_claude_plans",
             "claude_rulesets",
+            "docs_output_styles",
+            "docs_commands",
+            "claude_output_styles_archive",
+            "claude_commands_archive",
         ],
     )
     def test_lookalike_paths_outside_a_flagged_surface_do_not_match(self, path):
@@ -191,6 +223,14 @@ class TestAuditExecutionSurfacePureFunction:
         `.claude/`, not named AGENTS.md, or in a `.claude/` sibling directory
         the harness does not load as instructions."""
         result = audit_execution_surface([path])
+        assert result == {"stop": False, "matches": []}
+
+    def test_a_symlink_replacing_a_flagged_directory_is_not_detected(self):
+        """A tracked symlink replacing `.claude/commands` is listed as that
+        directory's own path with no trailing slash, and path text cannot show
+        its tree-entry mode, so it stays clean (REFERENCES.md, "Git-tracked
+        symlinks are not defended against")."""
+        result = audit_execution_surface([".claude/commands"])
         assert result == {"stop": False, "matches": []}
 
     def test_claude_local_md_matches(self):

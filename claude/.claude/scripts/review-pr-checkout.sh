@@ -39,9 +39,11 @@ audit, and the checkout need rather than trusting them as arguments. In order:
    being paginated.
 5. Pipes the file list to audit-execution-surface.py. A stop verdict exits 3
    before any fetch of the PR's ref, naming the matched paths and reasons on
-   stderr. An audit that fails to return a verdict (python3 missing, a signal
-   death, an uncaught exception, an exit 0 without a clean verdict on stdout)
-   exits 2 with its stderr shown.
+   stderr, one line per match with the path as an ASCII-only JSON string,
+   bounded (review_pr_audit_match_report in _review-pr-lib.sh). An audit that
+   fails to return a verdict exits 2 with its stderr shown
+   (review_pr_audit_verdict in _review-pr-lib.sh defines what counts as a
+   verdict).
 6. On a clean audit, fetches refs/pull/<N>/head and asserts the fetched SHA
    equals the headRefOid fetched earlier in the same run. A mismatch means a
    force-push landed between audit and checkout, and aborts with no worktree
@@ -266,16 +268,12 @@ if [[ "$HEAD_REF_OID_RECHECK" != "$HEAD_REF_OID" ]]; then
   exit 2
 fi
 
-# The audit's own exit code mirrors its "stop" verdict (1 = stop, 0 = clean,
-# 2 = malformed stdin), so a status alone is not proof of a verdict: an
-# uncaught exception also exits 1, and an empty script exits 0.
-# review_pr_audit_verdict reads the status together with stdout, and anything
-# but a verdict exits 2. -I keeps PYTHON* variables and the user site directory
-# out of the gate; the audit imports only json and sys. The status is
-# captured through the if/else exemption from `set -e`
-# (shell-script-conventions.md) rather than a bare pipeline, so the stop path
-# can still print the audit's own named matches before exiting. The audit's
-# stderr is not redirected, so a failed run shows its own error.
+# Anything but a verdict exits 2, and a stop exits 3. See review_pr_audit_verdict
+# (_review-pr-lib.sh) for how the status and stdout are read, and why the audit
+# runs as `python3 -I` with its stderr unredirected. The status is captured
+# through the if/else exemption from `set -e` (shell-script-conventions.md)
+# rather than a bare pipeline, so the stop path can still print the audit's own
+# named matches before exiting.
 if AUDIT_OUTPUT=$(printf '%s' "$FILES_JSON" | python3 -I "$AUDIT_SCRIPT"); then
   AUDIT_EXIT=0
 else
@@ -285,7 +283,7 @@ fi
 case "$(review_pr_audit_verdict "$AUDIT_EXIT" "$AUDIT_OUTPUT")" in
   clean) ;;
   stop)
-    MATCHES=$(printf '%s' "$AUDIT_OUTPUT" | _lib_jq -r '.matches[] | "\(.path): \(.reason)"' 2>/dev/null) || MATCHES="$AUDIT_OUTPUT"
+    MATCHES=$(review_pr_audit_match_report "$AUDIT_OUTPUT")
     echo "review-pr-checkout.sh: passive-execution audit stopped PR $OWNER_REPO#$PR_NUMBER before checkout -- no refs/pull/$PR_NUMBER/head fetch was made. Use ~/.claude/scripts/review-pr-diff.sh instead. Matched paths:" >&2
     printf '%s\n' "$MATCHES" >&2
     exit "$EXIT_CHECKOUT_REFUSED"
@@ -341,7 +339,7 @@ fi
 # unaffected: those correctly hit the shared object/ref/config store from
 # either tree.
 MAIN_REPO_ROOT=$(_lib_main_repo_root) || {
-  echo "review-pr-checkout.sh: could not resolve this repository's main tree root. Abort with no worktree created." >&2
+  echo "review-pr-checkout.sh: could not resolve this repository's main tree root (not inside a git repository, or git older than 2.31, which lacks rev-parse --path-format). Abort with no worktree created." >&2
   exit 2
 }
 
@@ -357,8 +355,8 @@ if ! _lib_valid_session_id_component "$SESSION_ID"; then
 fi
 
 # The diff goes to a file because the harness truncates a large Bash result, so
-# a large PR would reach the review cut short. The figure is in
-# `claude-skills/skills/subagent-delegation/REFERENCES.md` § "Heavy command output — harness truncation and check-suite sizes"
+# a large PR would reach the review cut short. The truncation threshold is in
+# `claude-skills/skills/subagent-delegation/REFERENCES.md` § "Heavy command output — harness truncation and check-suite sizes".
 # The path is the fixed per-session path review-pr-diff.sh also writes, so
 # review-pr-finish.sh removes it.
 # The base fetch is needed because the PR-ref fetch above brought only the PR's
@@ -386,11 +384,9 @@ fi
 # path has no fallback, so the message tells the caller to report and stop.
 GIT_DIFF_TIMEOUT_SECONDS=30
 # --no-ext-diff and --no-textconv keep a configured diff driver from running.
-# --ignore-submodules=none overrides diff.ignoreSubmodules and .gitmodules, so
-# a submodule pointer change is never dropped from the diff. --src-prefix,
-# --dst-prefix and --unified override diff.noprefix, diff.mnemonicPrefix and
-# diff.context. Rename detection, algorithm, ordering and submodule display
-# format still follow the operator's git config.
+# REFERENCES.md's "The checkout-mode diff follows some local git config" bullet
+# (claude-skills/skills/review-pr/) lists which other config the remaining flags
+# pin and which still applies.
 GIT_DIFF_ARGS=(diff --no-ext-diff --no-textconv --no-color --ignore-submodules=none --src-prefix=a/ --dst-prefix=b/ --unified=3)
 if DIFF_TEXT=$(_lib_capped_for "$GIT_DIFF_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" "${GIT_DIFF_ARGS[@]}" "$BASE_REF_OID...$FETCHED_SHA" -- 2>/dev/null); then
   DIFF_STATUS=0
@@ -426,7 +422,6 @@ if ! printf '%s\n' "$DIFF_TEXT" | _lib_write_no_follow "$DIFF_FILE"; then
   echo "review-pr-checkout.sh: could not write diff file $DIFF_FILE (the file may be incomplete). Abort with no worktree created." >&2
   exit 2
 fi
-# Only an exit-0 run prints the diff path, so the caller reads the diff from that output alone, and review-pr-finish.sh removes a failed run's file.
 
 # Every invocation gets its own mktemp directory, so no two runs share a path.
 # review-pr-finish.sh finds the directory again by

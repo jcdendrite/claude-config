@@ -103,7 +103,11 @@ Subcommands:
              window. Also removes the review-pr artifacts (.body,
              .provenance, .diff, .context.json under .review-pr-active.d)
              whose owning session is dead. --dry-run reports without
-             removing.
+             removing. Prints the sweeper's output, then exits with its
+             status: 0 when the sweep completed, 1 when an entry or an
+             active directory could not be processed (--dry-run also exits
+             1 on an unlistable directory), and 2 or 127 when the sweeper
+             or python3 is missing. A re-run retries.
   resolve-session-id
              Print this session's canonically-resolved session id. Takes no
              skill argument.
@@ -750,23 +754,32 @@ case "$SUBCOMMAND" in
         # written from wherever the session stands. The remote headRefOid
         # re-check in review-pr-post.sh is the freshness binding.
         REPO_HASH=$(_lib_review_pr_marker_repo_hash) || {
-          printf 'marker.sh: not inside a git repository, or the repo hash could not be computed\n' >&2
+          printf 'marker.sh: not inside a git repository, git is older than 2.31 (which lacks rev-parse --path-format), or the repo hash could not be computed\n' >&2
           exit 2
         }
         # The findings-body path is derived here, never read from provenance,
         # so no path-equality guard is needed before using it.
         FINDINGS_BODY_PATH=$(_review_pr_findings_body_fixed_path "$SESSION_ID")
+        # _lib_sha256_no_follow reads through a single os.open(O_NOFOLLOW) --
+        # a separate `[ -L ]` check followed by `sha256sum` is not atomic, so
+        # an attacker could swap in a symlink between the two. Computed before
+        # writing, same as every arm above.
+        BODY_HASH=$(_lib_sha256_no_follow "$FINDINGS_BODY_PATH" 2>/dev/null)
+        [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s (missing, unreadable, or a symlink). Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
+        # The two checks below each read the body by path, so the hash is
+        # taken again after them: a body changed in between would otherwise
+        # get a marker covering bytes neither check saw.
         # Attribution prefix, trailer, and (diff-only mode) disclosure line
-        # check, run before the body is hashed so a failure refuses the whole
-        # write (see review-pr-check-attribution.sh's header for why it is
-        # mechanical). _lib_capped's 5s default bounds a local read of a
+        # check, run before the marker is written so a failure refuses the
+        # whole write (see review-pr-check-attribution.sh's header for why it
+        # is mechanical). _lib_capped's 5s default bounds a local read of a
         # session-owned text file.
         if ! ATTRIBUTION_OUTPUT=$(_lib_capped "$REVIEW_PR_ATTRIBUTION_SCRIPT" "$FINDINGS_BODY_PATH" "$MODE" 2>&1); then
           printf '%s\n' "$ATTRIBUTION_OUTPUT" >&2
           printf 'marker.sh: findings-body attribution check failed. Abort without writing a marker.\n' >&2
           exit 2
         fi
-        # Credential-shape scan, run before the body is hashed so a hit
+        # Credential-shape scan, run before the marker is written so a hit
         # refuses the whole write (see review-pr-scan-findings-body.sh's header
         # for why it is mechanical).
         if ! SCAN_OUTPUT=$(_lib_capped "$REVIEW_PR_SCAN_SCRIPT" "$FINDINGS_BODY_PATH" 2>&1); then
@@ -774,12 +787,11 @@ case "$SUBCOMMAND" in
           printf 'marker.sh: findings-body secret scan failed. Abort without writing a marker.\n' >&2
           exit 2
         fi
-        # _lib_sha256_no_follow reads through a single os.open(O_NOFOLLOW) --
-        # a separate `[ -L ]` check followed by `sha256sum` is not atomic, so
-        # an attacker could swap in a symlink between the two. Computed before
-        # writing, same as every arm above.
-        BODY_HASH=$(_lib_sha256_no_follow "$FINDINGS_BODY_PATH" 2>/dev/null)
-        [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s (missing, unreadable, or a symlink). Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
+        BODY_HASH_AFTER_CHECKS=$(_lib_sha256_no_follow "$FINDINGS_BODY_PATH" 2>/dev/null)
+        if [ "$BODY_HASH_AFTER_CHECKS" != "$BODY_HASH" ]; then
+          printf 'marker.sh: the findings-body file %s changed while it was being checked. Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2
+          exit 2
+        fi
         mkdir -p "$CONFIG_DIR/review-pr-markers"
         printf '%s\n%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$BODY_HASH" "$MODE" | _lib_write_no_follow "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID" \
           || { printf 'marker.sh: could not write the completion marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
@@ -907,8 +919,15 @@ case "$SUBCOMMAND" in
     # because it has its own control flow and data structures.
     DRY_RUN=0
     [ "$ARG2" = "--dry-run" ] && DRY_RUN=1
-    CLEAR_STALE_OUTPUT=$(python3 -I "$(dirname "$0")/marker-clear-stale.py" "$CONFIG_DIR" "$DRY_RUN")
-    printf '%s\n' "$CLEAR_STALE_OUTPUT"
+    # The sweeper's exit status is the arm's exit status. A missing python3 or
+    # sibling file prints nothing on stdout, so an empty capture adds no line.
+    CLEAR_STALE_STATUS=0
+    CLEAR_STALE_OUTPUT=$(python3 -I "$(dirname "$0")/marker-clear-stale.py" "$CONFIG_DIR" "$DRY_RUN") || CLEAR_STALE_STATUS=$?
+    [ -z "$CLEAR_STALE_OUTPUT" ] || printf '%s\n' "$CLEAR_STALE_OUTPUT"
+    if [ "$CLEAR_STALE_STATUS" -ne 0 ]; then
+      printf 'marker.sh: clear-stale did not complete (sweeper exit status %s); stale markers may remain. See any "failed:" lines above, and re-run to retry them.\n' "$CLEAR_STALE_STATUS" >&2
+      exit "$CLEAR_STALE_STATUS"
+    fi
     ;;
   resolve-session-id)
     SESSION_ID=$(_resolve_session_id) || exit 2

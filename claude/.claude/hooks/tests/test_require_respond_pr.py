@@ -1194,6 +1194,15 @@ class TestReviewPrWriteDeniedUnconditionally:
             f"gh pr review {REVIEW_PR_PR_NUMBER} --comment -F body.md",
             f"gh pr review {REVIEW_PR_PR_NUMBER} --request-changes -F body.md",
             f"gh pr review {REVIEW_PR_PR_NUMBER} --approve -F body.md",
+            # The wrapper allowance must not leak to a raw write chained after it.
+            (
+                f"~/.claude/scripts/review-pr-post.sh comment foo/bar#{REVIEW_PR_PR_NUMBER}"
+                f" && gh pr review {REVIEW_PR_PR_NUMBER} --approve -F body.md"
+            ),
+            (
+                f"~/.claude/scripts/review-pr-post.sh comment foo/bar#{REVIEW_PR_PR_NUMBER}"
+                f"; gh pr review {REVIEW_PR_PR_NUMBER} --approve -F body.md"
+            ),
             f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews -f event=COMMENT -f body=@body.md",
             f"gh api repos/foo/bar/pulls/{REVIEW_PR_PR_NUMBER}/reviews -f event=APPROVE -f body=@body.md",
             (

@@ -11,10 +11,14 @@ Usage: marker-clear-stale.py CONFIG_DIR DRY_RUN
 DRY_RUN is "1" or "0". Prints one line per evicted entry in both modes, and
 one line per kept entry in dry-run mode only. A real run also prints one
 "failed:" line per entry whose removal raised OSError, which counts as neither
-evicted nor kept. A summary line follows.
+evicted nor kept. An entry already gone when its removal runs, because another
+process evicted it first, prints nothing and counts as neither evicted nor
+failed. A "failed:" line also names each active directory that cannot be
+listed, and the sweep continues with the remaining directories. A summary line
+follows.
 
 Exit status: 0 after a completed sweep, 2 on a wrong argument count, and 1 when
-an unhandled exception escapes (an active directory that cannot be listed).
+any "failed:" line was printed or an unhandled exception escaped.
 """
 from __future__ import annotations
 
@@ -38,6 +42,10 @@ import time
 # An entry in that directory with none of these suffixes is skipped untouched,
 # never read as a PID.
 REVIEW_PR_SUFFIXES = (".body", ".provenance", ".diff", ".context.json")
+
+REMOVED = "removed"
+ALREADY_ABSENT = "already absent"
+REMOVAL_FAILED = "removal failed"
 
 
 def read_no_follow(path: str) -> bytes | None:
@@ -114,23 +122,30 @@ def live_session_ids(sessions_dir: str) -> set[str]:
     return session_ids
 
 
-def remove_entry(entry: str, display_name: str, reason: str, lines: list[str]) -> bool:
-    """Removes entry and appends its "evict:" line, returning True. When the
-    removal raises OSError, appends a "failed:" line instead and returns False,
-    so the caller counts an eviction only for a file that is gone."""
+def remove_entry(entry: str, display_name: str, reason: str, lines: list[str]) -> str:
+    """Removes entry and appends its "evict:" line, returning REMOVED. An entry
+    already gone returns ALREADY_ABSENT with no line, since another process
+    reached the desired end state first. Any other OSError appends a "failed:"
+    line and returns REMOVAL_FAILED, so the caller counts an eviction only for
+    a file this call removed."""
     try:
         os.remove(entry)
+    except FileNotFoundError:
+        return ALREADY_ABSENT
     except OSError as error:
         lines.append(f"  failed: {display_name} ({reason}; removal failed: {error.strerror or error})")
-        return False
+        return REMOVAL_FAILED
     lines.append(f"  evict: {display_name} ({reason})")
-    return True
+    return REMOVED
 
 
-def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
-    """Returns (evicted, kept, dry-run-only display lines)."""
+def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str], int]:
+    """Returns (evicted, kept, display lines, failed), where failed counts the
+    entries that could not be removed plus the directories that could not be
+    listed. An entry already absent at removal time is in neither count."""
     evicted = 0
     kept = 0
+    failed = 0
     lines: list[str] = []
     live_sessions = live_session_ids(os.path.join(config_dir, "sessions"))
 
@@ -138,7 +153,13 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
         if not os.path.isdir(active_dir):
             continue
         dir_name = os.path.basename(active_dir)
-        for entry_name in sorted(os.listdir(active_dir)):
+        try:
+            entry_names = sorted(os.listdir(active_dir))
+        except OSError as error:
+            lines.append(f"  failed: {dir_name} (cannot list directory: {error.strerror or error})")
+            failed += 1
+            continue
+        for entry_name in entry_names:
             # A bare shell glob (e.g. "$active_dir"/*) never expands to a
             # dotfile; os.listdir carries no such exclusion, so a stray
             # dotfile (e.g. .DS_Store) needs an explicit skip here.
@@ -211,12 +232,16 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
                     if dry_run:
                         evicted += 1
                         lines.append(f"  evict (dry-run): {dir_name}/{entry_name} ({reason})")
-                    elif remove_entry(entry, f"{dir_name}/{entry_name}", reason, lines):
-                        evicted += 1
+                    else:
+                        removal_outcome = remove_entry(entry, f"{dir_name}/{entry_name}", reason, lines)
+                        if removal_outcome == REMOVED:
+                            evicted += 1
+                        elif removal_outcome == REMOVAL_FAILED:
+                            failed += 1
                 continue
 
-            # Same two-part staleness definition _lib_active_bypass_marker_live
-            # uses: PID alive AND mtime within the 60-minute idle window.
+            # Equivalent to _lib_active_bypass_marker_live's two-part staleness
+            # definition: PID alive AND mtime within the 60-minute idle window.
             stored_content = read_no_follow(entry)
             stored_pid = stored_content.decode("utf-8", "replace").strip() if stored_content is not None else ""
             alive = pid_alive(stored_pid)
@@ -235,10 +260,14 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str]]:
                 if dry_run:
                     evicted += 1
                     lines.append(f"  evict (dry-run): {dir_name}/{entry_name} ({reason})")
-                elif remove_entry(entry, f"{dir_name}/{entry_name}", reason, lines):
-                    evicted += 1
+                else:
+                    removal_outcome = remove_entry(entry, f"{dir_name}/{entry_name}", reason, lines)
+                    if removal_outcome == REMOVED:
+                        evicted += 1
+                    elif removal_outcome == REMOVAL_FAILED:
+                        failed += 1
 
-    return evicted, kept, lines
+    return evicted, kept, lines, failed
 
 
 def main(argv: list[str]) -> int:
@@ -248,12 +277,15 @@ def main(argv: list[str]) -> int:
     _, config_dir, dry_run_arg = argv
     dry_run = dry_run_arg == "1"
 
-    evicted, kept, lines = sweep(config_dir, dry_run)
+    evicted, kept, lines, failed = sweep(config_dir, dry_run)
 
     for line in lines:
         print(line)
     verb = "would evict" if dry_run else "evicted"
     kept_verb = "keep" if dry_run else "kept"
+    if failed:
+        print(f"clear-stale: incomplete, {failed} failure(s); {verb} {evicted} orphan(s), {kept_verb} {kept} active")
+        return 1
     print(f"clear-stale: {verb} {evicted} orphan(s), {kept_verb} {kept} active")
     return 0
 

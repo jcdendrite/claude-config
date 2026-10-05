@@ -90,6 +90,12 @@ def _classify(path: str) -> str | None:
     if lower.startswith(".claude/rules/") or "/.claude/rules/" in lower:
         return ".claude/rules/** may load as standing instructions, unconditionally when it has no paths: key"
 
+    if lower.startswith(".claude/output-styles/") or "/.claude/output-styles/" in lower:
+        return ".claude/output-styles/** loads as a project output style that changes the harness's system prompt"
+
+    if lower.startswith(".claude/commands/") or "/.claude/commands/" in lower:
+        return ".claude/commands/** loads as a project slash command, which works like a skill"
+
     if segments[-1] == ".mcp.json":
         return ".mcp.json registers an MCP server the harness may launch"
 

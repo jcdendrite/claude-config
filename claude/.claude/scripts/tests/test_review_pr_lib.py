@@ -16,7 +16,7 @@ import subprocess
 import pytest
 from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR
 
-from .conftest import _base_test_env
+from .conftest import _base_test_env, _review_pr_audit_limit
 
 _LIB = SCRIPTS_DIR / "_review-pr-lib.sh"
 _HOOKS_LIB = HOOKS_DIR / "_lib.sh"
@@ -219,6 +219,226 @@ class TestAuditStdoutExcerpt:
         excerpt = _call("review_pr_audit_stdout_excerpt", f"{long_first_line}\nsecond line")
 
         assert excerpt == (0, "a" * echo_limit + "...[truncated]")
+
+
+class TestAuditMatchLines:
+    @staticmethod
+    def _stop_document(*path_reason_pairs: tuple[str, str]) -> str:
+        return json.dumps(
+            {"stop": True, "matches": [{"path": path, "reason": reason} for path, reason in path_reason_pairs]}
+        )
+
+    _limit = staticmethod(_review_pr_audit_limit)
+
+    def test_each_match_is_one_line_with_a_json_string_path_and_a_verbatim_reason(self):
+        document = self._stop_document(("a/CLAUDE.md", "loaded as instructions"), (".mcp.json", 'has "quotes"'))
+
+        assert _call("review_pr_audit_match_lines", document) == (
+            0,
+            '"a/CLAUDE.md": loaded as instructions\n".mcp.json": has "quotes"',
+        )
+
+    def test_a_newline_and_an_escape_byte_in_a_path_stay_on_the_one_line(self):
+        document = self._stop_document(("x\nsecond line: spoof/CLAUDE.md\x1b[31m", "reason"))
+
+        status, output = _call("review_pr_audit_match_lines", document)
+
+        assert status == 0
+        assert output.splitlines() == ['"x\\nsecond line: spoof/CLAUDE.md\\u001b[31m": reason']
+
+    @pytest.mark.parametrize(
+        ("character", "expected_escape"),
+        [
+            ("\x7f", "\\u007f"),
+            ("\u0080", "\\u0080"),
+            ("\u009b", "\\u009b"),
+            ("\u009f", "\\u009f"),
+            ("\u200b", "\\u200b"),
+            ("\u202e", "\\u202e"),
+            ("\u2028", "\\u2028"),
+            ("\u2029", "\\u2029"),
+            ("\U000e0041", "\\udb40\\udc41"),
+            ("\U0001f600", "\\ud83d\\ude00"),
+            ("\u00e9", "\\u00e9"),
+        ],
+        ids=[
+            "del",
+            "c1_first",
+            "c1_csi",
+            "c1_last",
+            "zero_width_space",
+            "bidi_right_to_left_override",
+            "line_separator",
+            "paragraph_separator",
+            "tag_block_letter",
+            "astral_emoji",
+            "latin_accent",
+        ],
+    )
+    def test_every_character_outside_printable_ascii_is_escaped_as_unicode_escapes(
+        self, character, expected_escape
+    ):
+        document = self._stop_document((f"a{character}b/CLAUDE.md", "reason"))
+
+        status, output = _call("review_pr_audit_match_lines", document)
+
+        assert status == 0
+        assert output == f'"a{expected_escape}b/CLAUDE.md": reason'
+        assert output.isascii()
+
+    def test_a_path_of_mixed_characters_prints_as_ascii_that_decodes_to_the_original_path(self):
+        path = 'dir "quoted"\\back\n\u202e\U000e0041\u0080/CLAUDE.md'
+        document = self._stop_document((path, "reason"))
+
+        status, output = _call("review_pr_audit_match_lines", document)
+
+        assert status == 0
+        assert output.isascii()
+        assert output.isprintable()
+        assert json.loads(output.removesuffix(": reason")) == path
+
+    def test_a_path_past_the_length_limit_is_cut_and_marked_truncated(self):
+        path_limit = self._limit("REVIEW_PR_AUDIT_PATH_ECHO_LIMIT")
+        document = self._stop_document(("p" * (path_limit + 10) + "/CLAUDE.md", "reason"))
+
+        assert _call("review_pr_audit_match_lines", document) == (0, f'"{"p" * path_limit}...[truncated]": reason')
+
+    def test_a_path_exactly_at_the_length_limit_is_not_marked_truncated(self):
+        path_limit = self._limit("REVIEW_PR_AUDIT_PATH_ECHO_LIMIT")
+        path_at_limit = "p" * path_limit
+        document = self._stop_document((path_at_limit, "reason"))
+
+        assert _call("review_pr_audit_match_lines", document) == (0, f'"{path_at_limit}": reason')
+
+    def test_matches_past_the_count_limit_are_replaced_by_a_counting_line_and_their_reason(self):
+        match_limit = self._limit("REVIEW_PR_AUDIT_MATCH_LINE_LIMIT")
+        document = self._stop_document(*[(f"d{index}/CLAUDE.md", "reason") for index in range(match_limit + 3)])
+
+        status, output = _call("review_pr_audit_match_lines", document)
+
+        assert status == 0
+        lines = output.splitlines()
+        assert len(lines) == match_limit + 2
+        assert lines[-2:] == ["... and 3 more matched path(s) not shown", "not shown: reason (3 path(s))"]
+
+    def test_truncated_listing_names_each_distinct_reason_among_the_unlisted_matches(self):
+        match_limit = self._limit("REVIEW_PR_AUDIT_MATCH_LINE_LIMIT")
+        listed_matches = [(f"d{index}/CLAUDE.md", "instructions reason") for index in range(match_limit)]
+        document = self._stop_document(
+            *listed_matches,
+            (".claude/settings.json", "settings reason"),
+            ("later/.mcp.json", "mcp reason"),
+            ("other/.mcp.json", "mcp reason"),
+        )
+
+        status, output = _call("review_pr_audit_match_lines", document)
+
+        assert status == 0
+        lines = output.splitlines()
+        assert lines[match_limit:] == [
+            "... and 3 more matched path(s) not shown",
+            "not shown: mcp reason (2 path(s))",
+            "not shown: settings reason (1 path(s))",
+        ]
+
+    def test_a_listing_within_the_count_limit_prints_no_not_shown_lines(self):
+        match_limit = self._limit("REVIEW_PR_AUDIT_MATCH_LINE_LIMIT")
+        document = self._stop_document(*[(f"d{index}/CLAUDE.md", f"reason {index}") for index in range(match_limit)])
+
+        status, output = _call("review_pr_audit_match_lines", document)
+
+        assert status == 0
+        assert "not shown" not in output
+
+    @pytest.mark.parametrize("not_a_stop_document", ["", "not json", '{"stop": true}', '{"matches": "x"}'])
+    def test_a_document_without_a_matches_array_returns_one(self, not_a_stop_document):
+        status, output = _call("review_pr_audit_match_lines", not_a_stop_document)
+
+        assert (status, output) == (1, "")
+
+    def test_a_document_with_a_formattable_entry_before_an_unformattable_one_prints_nothing(self):
+        document = '{"stop": true, "matches": [{"path": "ok/CLAUDE.md", "reason": "reason"}, 3]}'
+
+        assert _call("review_pr_audit_match_lines", document) == (1, "")
+
+    # Every rule in audit-execution-surface.py, one path each, so the worst case below
+    # carries each reason the audit can print.
+    _ONE_PATH_PER_AUDIT_REASON = (
+        ".gitattributes",
+        ".githooks/pre-commit",
+        "CLAUDE.md",
+        "CLAUDE.local.md",
+        "AGENTS.md",
+        ".claude/skills/a/SKILL.md",
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        ".claude/hooks/a.sh",
+        ".claude/agents/a.md",
+        ".claude/rules/a.md",
+        ".claude/output-styles/a.md",
+        ".claude/commands/a.md",
+        ".mcp.json",
+        ".gitmodules",
+    )
+
+    def test_the_worst_case_document_prints_fewer_bytes_than_the_harness_truncation_threshold(self):
+        audit_script = SKILLS_DIR / "review-pr" / "audit-execution-surface.py"
+        audit_run = subprocess.run(
+            ["python3", "-I", str(audit_script)],
+            input=json.dumps(list(self._ONE_PATH_PER_AUDIT_REASON)),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        audit_reasons = [match["reason"] for match in json.loads(audit_run.stdout)["matches"]]
+        assert len(set(audit_reasons)) == len(self._ONE_PATH_PER_AUDIT_REASON)
+        longest_reason = max(audit_reasons, key=len)
+        match_limit = self._limit("REVIEW_PR_AUDIT_MATCH_LINE_LIMIT")
+        astral_path = "\U0001f600" * (self._limit("REVIEW_PR_AUDIT_PATH_ECHO_LIMIT") + 50)
+        listed_matches = [(astral_path, longest_reason)] * match_limit
+        unlisted_matches = [(astral_path, reason) for reason in audit_reasons]
+
+        status, output = _call(
+            "review_pr_audit_match_lines", self._stop_document(*listed_matches, *unlisted_matches)
+        )
+
+        assert status == 0
+        # Bash output truncates above 30,000 decimal bytes (claude-skills/skills/subagent-delegation/REFERENCES.md).
+        assert len(output.encode()) < 30_000
+        assert output.splitlines()[-1].startswith("not shown: ")
+
+
+class TestAuditMatchReport:
+    _FIXED_LINE = "the audit reported {count} matched path(s), but its match list could not be formatted for display"
+
+    def test_a_formattable_document_prints_the_same_lines_as_the_match_lines_helper(self):
+        document = TestAuditMatchLines._stop_document(("a/CLAUDE.md", "loaded as instructions"))
+
+        assert _call("review_pr_audit_match_report", document) == (0, '"a/CLAUDE.md": loaded as instructions')
+
+    @pytest.mark.parametrize(
+        ("unformattable_document", "expected_count"),
+        [
+            ('{"stop": true, "matches": [1, 2, 3]}', "3"),
+            ('{"stop": true, "matches": "some raw text"}', "unknown"),
+            ('{"stop": true}', "unknown"),
+            ("not json", "unknown"),
+            ("", "unknown"),
+        ],
+        ids=["non_object_entries", "matches_not_an_array", "no_matches_key", "not_json", "empty_stdout"],
+    )
+    def test_an_unformattable_document_prints_one_fixed_line_with_the_count_and_never_the_document(
+        self, unformattable_document, expected_count
+    ):
+        status, output = _call("review_pr_audit_match_report", unformattable_document)
+
+        assert (status, output) == (0, self._FIXED_LINE.format(count=expected_count))
+
+    def test_a_document_with_a_formattable_entry_before_an_unformattable_one_prints_only_the_fixed_line(self):
+        document = '{"stop": true, "matches": [{"path": "ok/CLAUDE.md", "reason": "reason"}, 3]}'
+
+        assert _call("review_pr_audit_match_report", document) == (0, self._FIXED_LINE.format(count="2"))
 
 
 class TestGhStatusDescription:

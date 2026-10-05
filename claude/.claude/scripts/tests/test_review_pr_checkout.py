@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -29,11 +30,15 @@ from helpers import (
 
 from .conftest import (
     GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
+    _assert_finish_and_clear_stale_each_empty_the_active_directory,
+    _assert_gh_calls_are_read_only,
     _build_repo_with_pr_ref,
     _git_shim_that_fails_on_worktree_subcommand,
     _install_audit_script,
     _install_audit_script_that_runs,
     _provenance_fields,
+    _pythonpath_env_that_forges_a_clean_audit,
+    _review_pr_audit_limit,
     _seed_session,
     _shimmed_env,
 )
@@ -47,6 +52,9 @@ _ATTRIBUTION_TRAILER = "🤖 Generated with [Claude Code](https://claude.com/cla
 
 # A harness bound so a hung bash or interpreter fails one test instead of the suite.
 _SUBPROCESS_TIMEOUT_SECONDS = 60
+
+# The only `gh api` endpoints the script reads: the PR resource and its file listing.
+_KNOWN_API_ENDPOINT = re.compile(r"repos/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pulls/[0-9]+(/files\?per_page=100)?")
 
 
 def _origin_main_sha(repo: Path) -> str | None:
@@ -389,6 +397,7 @@ def _run(
         text=True,
         timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
+    _assert_gh_calls_are_read_only(_read_calls(call_log), known_api_endpoint=_KNOWN_API_ENDPOINT)
     return result, call_log
 
 
@@ -416,6 +425,21 @@ class TestUsageErrors:
         result, call_log = _run(repo, isolated_home, args, tmp_path)
         assert result.returncode == 2
         assert _read_calls(call_log) == []
+
+
+class TestArtifactCleanup:
+    def test_finish_and_clear_stale_each_leave_no_artifact_behind(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 0, result.stderr
+
+        _assert_finish_and_clear_stale_each_empty_the_active_directory(isolated_home, repo, SID)
+        assert _review_worktrees(repo) == [], "finish removes the review worktree the checkout created"
 
 
 class TestOwnerRepoRegexAcceptsDotAndHyphenAlongsideAlnum:
@@ -1697,6 +1721,81 @@ class TestAuditStopAbortsBeforeFetch:
         assert any(c[:1] == ["api"] for c in calls)
 
 
+class TestAuditRunsIsolatedFromPythonEnvironment:
+    def test_a_json_module_planted_on_pythonpath_cannot_forge_a_clean_verdict(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The audit gate runs `python3 -I`, so PYTHONPATH never reaches it. A
+        plain `python3` would import the planted json, read the stop-worthy
+        `.mcp.json` as clean, and let the PR's tree onto disk."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        sentinel = tmp_path / "poison-ran"
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["src/app.py", ".mcp.json"],
+            extra_env=_pythonpath_env_that_forges_a_clean_audit(tmp_path / "poison", sentinel),
+        )
+        assert result.returncode == 3, result.stderr
+        assert not sentinel.exists(), "the planted json module ran inside the audit"
+        assert _review_worktrees(repo) == []
+
+
+class TestAuditStopMessageKeepsEachMatchOnOneLine:
+    def test_a_matched_path_holding_a_newline_and_an_escape_byte_is_printed_json_escaped(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """A PR file name is attacker-chosen, so a newline in a matched path
+        must not start a second line that reads as the script's own output."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        injecting_name = "x\nreview-pr-checkout.sh: injected line/CLAUDE.md"
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["src/app.py", injecting_name],
+        )
+        assert result.returncode == 3
+        assert json.dumps(injecting_name) in result.stderr
+        assert "\nreview-pr-checkout.sh: injected line" not in result.stderr
+
+    def test_matches_past_the_listing_limit_are_counted_not_printed(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        match_limit = _review_pr_audit_limit("REVIEW_PR_AUDIT_MATCH_LINE_LIMIT")
+        unlisted_count = 5
+        matching_names = [f"pkg_{index}/CLAUDE.md" for index in range(match_limit + unlisted_count)]
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=matching_names,
+        )
+        assert result.returncode == 3
+        assert f'"pkg_{match_limit - 1}/CLAUDE.md"' in result.stderr
+        assert f'"pkg_{match_limit}/CLAUDE.md"' not in result.stderr
+        assert f"{unlisted_count} more matched path(s) not shown" in result.stderr
+
+
+    def test_a_stop_document_that_cannot_be_formatted_prints_a_fixed_line_with_the_match_count(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The unformattable document is never echoed: `[1, 2]` has no `path`
+        field to print, and its own text must not reach stderr."""
+        _install_audit_script_that_runs(
+            isolated_home,
+            "import sys\nprint('{\"stop\": true, \"matches\": [1, 2]}')\nsys.exit(1)\n",
+        )
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 3, result.stderr
+        assert (
+            "the audit reported 2 matched path(s), but its match list could not be formatted for display"
+            in result.stderr
+        )
+        assert "[1, 2]" not in result.stderr
+
+
 class TestPrRefFetchFailure:
     @pytest.mark.parametrize(
         ("exit_status", "expect_cap_note"), [(1, False), (124, True)], ids=["plain_failure", "cap_kill_status"]
@@ -1934,10 +2033,11 @@ class TestAuditRejectsMalformedInput:
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
+        call_log = tmp_path / "gh_calls.jsonl"
         env = _shimmed_env(
             tmp_path,
             _gh_shim_source(
-                tmp_path / "gh_calls.jsonl", head_ref_oid=pr_sha, files=["a.py"],
+                call_log, head_ref_oid=pr_sha, files=["a.py"],
                 # The corrupted decode below yields three elements; the count
                 # check must pass so the run reaches the audit.
                 changed_files=3, base_ref_oid=_origin_main_sha(repo),
@@ -1973,6 +2073,7 @@ class TestAuditRejectsMalformedInput:
             ["bash", str(SCRIPT), PR_IDENTITY], cwd=repo, env=env, capture_output=True, text=True,
             timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         )
+        _assert_gh_calls_are_read_only(_read_calls(call_log), known_api_endpoint=_KNOWN_API_ENDPOINT)
         assert result.returncode == 2, result.stderr
         assert (
             'returned no verdict (exit 2, first line of stdout: {"error": "stdin must be a JSON array of path strings"})'
@@ -2033,7 +2134,7 @@ class TestAuditThatReturnsNoVerdictIsNotARefusal:
             repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["src/app.py"],
         )
         assert result.returncode == 3
-        assert "src/app.py: stand-in reason" in result.stderr
+        assert '"src/app.py": stand-in reason' in result.stderr
         assert "review-pr-diff.sh" in result.stderr
         assert _local_pr_ref_names(repo) == ""
 

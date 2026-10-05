@@ -12,6 +12,7 @@ left real (not shimmed).
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -21,10 +22,14 @@ from helpers import SCRIPTS_DIR
 
 from .conftest import (
     GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
+    _assert_finish_and_clear_stale_each_empty_the_active_directory,
+    _assert_gh_calls_are_read_only,
     _build_repo_with_pr_ref,
     _install_audit_script,
     _install_audit_script_that_runs,
     _provenance_fields,
+    _pythonpath_env_that_forges_a_clean_audit,
+    _review_pr_audit_limit,
     _seed_session,
     _shimmed_env,
 )
@@ -37,6 +42,9 @@ SID = "test-session-review-pr-diff"
 
 # A harness bound so a hung bash or interpreter fails one test instead of the suite.
 _SUBPROCESS_TIMEOUT_SECONDS = 60
+
+# The only `gh api` endpoints the script reads: the PR resource and its file listing.
+_KNOWN_API_ENDPOINT = re.compile(r"repos/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pulls/[0-9]+(/files\?per_page=100)?")
 
 
 @pytest.fixture
@@ -80,6 +88,7 @@ def _gh_shim_source(
     omit_changed_files: bool = False,
     fail_rest: bool = False,
     files_failure_exit_status: int = 1,
+    head_ref_oid_third: str | None = None,
 ) -> str:
     """gh shim recording every invocation, matching
     test_review_pr_checkout.py's own shim shape. `diff_text` defaults to a
@@ -98,7 +107,9 @@ def _gh_shim_source(
     conftest.py). The listing call must carry `--paginate` and
     `per_page=100`; the shim exits 97 otherwise, so a script dropping either
     fails the run. `fail_files` exits
-    `files_failure_exit_status` on the listing call."""
+    `files_failure_exit_status` on the listing call. `head_ref_oid_third`
+    replaces the headRefOid from the THIRD `gh pr view` call onward, modeling a
+    force-push during the diff fetch."""
     resolved_diff_text = diff_text if diff_text is not None else _diff_text_for(files or [])
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
@@ -109,6 +120,7 @@ def _gh_shim_source(
         CALL_LOG = {str(call_log)!r}
         HEAD_REF_OID = {head_ref_oid!r}
         HEAD_REF_OID_SECOND = {head_ref_oid_second!r}
+        HEAD_REF_OID_THIRD = {head_ref_oid_third!r}
         FILES = {list(files or [])!r}
         DIFF_TEXT = {resolved_diff_text!r}
         FAIL_PR_VIEW = {fail_pr_view!r}
@@ -138,6 +150,8 @@ def _gh_shim_source(
             oid = HEAD_REF_OID
             if HEAD_REF_OID_SECOND is not None and prior_pr_view_calls >= 1:
                 oid = HEAD_REF_OID_SECOND
+            if HEAD_REF_OID_THIRD is not None and prior_pr_view_calls >= 2:
+                oid = HEAD_REF_OID_THIRD
             if oid:
                 print(oid)
             sys.exit(0)
@@ -209,6 +223,8 @@ def _run(
     omit_changed_files: bool = False,
     fail_rest: bool = False,
     files_failure_exit_status: int = 1,
+    head_ref_oid_third: str | None = None,
+    extra_env: dict | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     _seed_session(home, SID)
     call_log = tmp_path / "gh_calls.jsonl"
@@ -219,14 +235,20 @@ def _run(
                 call_log, head_ref_oid, files, diff_text, fail_pr_view, fail_files,
                 head_ref_oid_second, fail_diff, diff_error_text,
                 changed_files, omit_changed_files, fail_rest, files_failure_exit_status,
+                head_ref_oid_third,
             ),
         ),
         "HOME": str(home),
     }
     env.pop("CLAUDE_CONFIG_DIR", None)
+    if extra_env:
+        env.update(extra_env)
     result = subprocess.run(
         ["bash", str(SCRIPT), *args], cwd=cwd, env=env, capture_output=True, text=True,
         timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    _assert_gh_calls_are_read_only(
+        _read_calls(call_log), known_api_endpoint=_KNOWN_API_ENDPOINT, allowed_pr_subcommands=("view", "diff")
     )
     return result, call_log
 
@@ -323,6 +345,110 @@ class TestHeadRefOidDrift:
         )
 
 
+class TestHeadRefOidDriftDuringDiffFetch:
+    def test_headrefoid_change_during_the_diff_fetch_aborts_with_no_diff_or_provenance(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The first two headRefOid reads agree, so only the re-fetch after
+        `gh pr diff` can notice a push that landed while the diff was fetched."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, head_ref_oid_third="f" * 40, files=["a.py"],
+        )
+        assert result.returncode == 2, result.stderr
+        assert "force-push" in result.stderr
+        assert "while its diff was being fetched" in result.stderr
+        assert result.stdout == ""
+        calls = _read_calls(call_log)
+        assert any(c[:2] == ["pr", "diff"] for c in calls), "control: the diff was fetched before the drift was noticed"
+        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+        assert not active_dir.exists() or list(active_dir.glob(f"{SID}.*")) == []
+
+    def test_a_head_that_does_not_move_during_the_diff_fetch_still_produces_a_diff(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 0, result.stderr
+        pr_view_calls = [c for c in _read_calls(call_log) if c[:2] == ["pr", "view"]]
+        assert len(pr_view_calls) == 3, "initial read, pre-audit re-fetch, and post-diff re-fetch"
+
+
+class TestHeadRefOidRecheckThatReturnsNothingFailsClosed:
+    """The shim answers a `gh pr view` call it is told to blank with exit 0 and
+    no output, the shape of a gh that succeeded without printing the head."""
+
+    def test_an_empty_recheck_after_the_file_list_aborts_before_the_diff_fetch(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, head_ref_oid_second="", files=["a.py"],
+        )
+        assert result.returncode == 2, result.stderr
+        assert "could not re-fetch" in result.stderr
+        assert "to confirm the file list above is still current" in result.stderr
+        assert result.stdout == ""
+        assert not any(c[:2] == ["pr", "diff"] for c in _read_calls(call_log))
+        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+        assert not active_dir.exists() or list(active_dir.glob(f"{SID}.*")) == []
+
+    def test_an_empty_recheck_after_the_diff_aborts_with_no_diff_or_provenance(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, head_ref_oid_third="", files=["a.py"],
+        )
+        assert result.returncode == 2, result.stderr
+        assert "could not re-fetch" in result.stderr
+        assert "to confirm the diff above is still current" in result.stderr
+        assert result.stdout == ""
+        assert any(c[:2] == ["pr", "diff"] for c in _read_calls(call_log)), (
+            "control: the diff was fetched before the recheck failed"
+        )
+        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+        assert not active_dir.exists() or list(active_dir.glob(f"{SID}.*")) == []
+
+
+class TestEmptyDiffIsRefused:
+    @pytest.mark.parametrize("empty_diff_text", ["", "\n", "  \n\t\n"], ids=["empty", "newline", "whitespace"])
+    def test_an_empty_diff_for_a_pr_with_changed_files_aborts_with_no_diff_or_provenance(
+        self, isolated_home, repo_with_pr_ref, tmp_path, empty_diff_text
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], diff_text=empty_diff_text,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "printed no diff although the PR reports 1 changed files" in result.stderr
+        assert result.stdout == ""
+        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+        assert not active_dir.exists() or list(active_dir.glob(f"{SID}.*")) == []
+
+    def test_an_empty_diff_for_a_pr_with_no_changed_files_is_still_written(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=[], diff_text="",
+        )
+        assert result.returncode == 0, result.stderr
+        assert Path(result.stdout.strip()).exists()
+
+
 class TestNoCheckoutNoWorktreeNoLocalRef:
     def test_restricted_pr_produces_a_diff_file_and_diff_only_provenance(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -348,6 +474,20 @@ class TestNoCheckoutNoWorktreeNoLocalRef:
 
         assert _local_pr_ref_names(repo) == "", "diff-only mode must never fetch a local PR ref"
         assert _review_worktrees(repo) == []
+
+
+class TestArtifactCleanup:
+    def test_finish_and_clear_stale_each_leave_no_artifact_behind(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 0, result.stderr
+
+        _assert_finish_and_clear_stale_each_empty_the_active_directory(isolated_home, repo, SID)
 
 
 class TestActiveDirectoryCreationFailure:
@@ -389,6 +529,79 @@ class TestAuditHitReportedNotFatal:
         assert ".mcp.json" in result.stderr
         diff_path = Path(result.stdout.strip())
         assert diff_path.exists()
+
+
+class TestAuditRunsIsolatedFromPythonEnvironment:
+    def test_a_json_module_planted_on_pythonpath_cannot_forge_a_clean_verdict(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The audit gate runs `python3 -I`, so PYTHONPATH never reaches it. A
+        plain `python3` would import the planted json and drop the finding for
+        the stop-worthy `.mcp.json`."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        sentinel = tmp_path / "poison-ran"
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py", ".mcp.json"],
+            extra_env=_pythonpath_env_that_forges_a_clean_audit(tmp_path / "poison", sentinel),
+        )
+        assert result.returncode == 0, result.stderr
+        assert "AUDIT_FINDING" in result.stderr
+        assert not sentinel.exists(), "the planted json module ran inside the audit"
+
+
+class TestAuditFindingKeepsEachMatchOnOneLine:
+    def test_a_matched_path_holding_a_newline_is_printed_json_escaped(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """A PR file name is attacker-chosen, so a newline in a matched path
+        must not start a second line that reads as the script's own output."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        injecting_name = "x\nreview-pr-diff.sh: injected line/CLAUDE.md"
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py", injecting_name],
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.dumps(injecting_name) in result.stderr
+        assert "\nreview-pr-diff.sh: injected line" not in result.stderr
+
+    def test_a_matched_path_past_the_length_bound_is_cut_and_marked(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        path_limit = _review_pr_audit_limit("REVIEW_PR_AUDIT_PATH_ECHO_LIMIT")
+        long_name = "d" * (path_limit + 100) + "/CLAUDE.md"
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=[long_name],
+        )
+        assert result.returncode == 0, result.stderr
+        assert long_name not in result.stderr
+        assert f'"{"d" * path_limit}...[truncated]"' in result.stderr
+
+    def test_a_stop_document_that_cannot_be_formatted_prints_a_fixed_line_with_the_match_count(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The unformattable document is never echoed: `[1, 2]` has no `path`
+        field to print, and its own text must not reach stderr."""
+        _install_audit_script_that_runs(
+            isolated_home,
+            "import sys\nprint('{\"stop\": true, \"matches\": [1, 2]}')\nsys.exit(1)\n",
+        )
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
+        )
+        assert result.returncode == 0, result.stderr
+        assert "AUDIT_FINDING" in result.stderr
+        assert (
+            "the audit reported 2 matched path(s), but its match list could not be formatted for display"
+            in result.stderr
+        )
+        assert "[1, 2]" not in result.stderr
 
 
 class TestAuditThatReturnsNoVerdictIsNotAFinding:
@@ -445,7 +658,7 @@ class TestAuditThatReturnsNoVerdictIsNotAFinding:
         )
         assert result.returncode == 0, result.stderr
         assert "AUDIT_FINDING" in result.stderr
-        assert "a.py: stand-in reason" in result.stderr
+        assert '"a.py": stand-in reason' in result.stderr
         assert Path(result.stdout.strip()).exists()
 
 
@@ -628,7 +841,8 @@ class TestFileListIntegrity:
         )
         assert result.returncode == 0, result.stderr
         assert "AUDIT_FINDING" in result.stderr
-        assert audited_name in result.stderr
+        # The finding prints every non-ASCII character as a `\uXXXX` escape, as json.dumps does by default.
+        assert json.dumps(audited_name) in result.stderr
 
 
 class TestGhFailureNeverBypassesTheScrub:

@@ -29,15 +29,28 @@ review-pr-checkout.sh uses, but never checks the PR out. In order:
    reported on stderr as a mandatory pre-seeded finding rather than a stop:
    nothing is landing on disk here for that predicate to protect, and a PR
    touching .claude/hooks/** or .mcp.json is precisely what an inbound reviewer
-   must flag. An audit that fails to return a verdict (python3 missing, a
-   signal death, an uncaught exception, an exit 0 without a clean verdict on
-   stdout) aborts with exit 2 and its stderr shown, and is never reported as a
-   finding.
-6. Fetches `gh pr diff`, writes it to
-   $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff, and rewrites this
-   session's provenance file with mode "diff-only".
+   must flag. Each match is one stderr line with the path as an ASCII-only
+   JSON string, bounded (review_pr_audit_match_report in _review-pr-lib.sh).
+   An audit that fails to return a verdict aborts with exit 2 and its stderr
+   shown, and is never reported as a finding (review_pr_audit_verdict in
+   _review-pr-lib.sh defines what counts as a verdict).
+6. Fetches `gh pr diff`. Aborts, writing no diff file and no provenance, when
+   the diff is empty or whitespace-only although the PR reports changed
+   files. Re-fetches
+   headRefOid once more and aborts on drift, so the diff is bound to the head
+   the provenance records.
+7. Writes the diff to $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff and
+   rewrites this session's provenance file with mode "diff-only".
 
 Prints the diff file's path on stdout as the sole output of a successful run.
+
+Worst-case wall time: the per-step caps sum to 135 seconds on a run whose audit
+is clean (10 for the two local git reads, 100 for the six gh calls, 15 for
+three jq calls, 10 for the diff and provenance writes) and 150 when the audit
+reports a finding (three more jq calls). Each cap kill adds up to 2 seconds of
+SIGKILL grace. The session lookup's capped ps calls add up to 10 seconds per
+process-ancestor hop, and the audit script runs uncapped. The caps apply only
+when `timeout` or `gtimeout` is on PATH; otherwise every step is uncapped.
 EOF
 }
 
@@ -52,6 +65,25 @@ PR_IDENTITY="$1"
 . "$(dirname "$0")/../hooks/_lib.sh"
 # shellcheck source=_review-pr-lib.sh
 . "$(dirname "$0")/_review-pr-lib.sh"
+
+GH_PR_VIEW_TIMEOUT_SECONDS=10
+
+# confirm_head_ref_oid_unchanged CURRENT_SUBJECT FETCH_SUBJECT
+# Exits 2 unless the PR's headRefOid still equals HEAD_REF_OID, the value the
+# provenance records. CURRENT_SUBJECT names what the re-fetch confirms is still
+# current, and FETCH_SUBJECT names what was being fetched during the window.
+confirm_head_ref_oid_unchanged() {
+  local head_ref_oid_recheck
+  head_ref_oid_recheck=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || head_ref_oid_recheck=""
+  if [[ -z "$head_ref_oid_recheck" ]]; then
+    echo "review-pr-diff.sh: could not re-fetch PR $OWNER_REPO#$PR_NUMBER's headRefOid to confirm $1 is still current. Abort." >&2
+    exit 2
+  fi
+  if [[ "$head_ref_oid_recheck" != "$HEAD_REF_OID" ]]; then
+    echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER's headRefOid changed from $HEAD_REF_OID to $head_ref_oid_recheck while $2 was being fetched -- a force-push race. Abort." >&2
+    exit 2
+  fi
+}
 
 if ! PR_IDENTITY_FIELDS=$(_lib_parse_pr_identity "$PR_IDENTITY"); then
   echo "review-pr-diff.sh: PR identity '$PR_IDENTITY' is not a valid <owner>/<repo>#<number>." >&2
@@ -103,7 +135,6 @@ if [[ ! -f "$AUDIT_SCRIPT" ]]; then
   exit 2
 fi
 
-GH_PR_VIEW_TIMEOUT_SECONDS=10
 HEAD_REF_OID=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID=""
 if [[ -z "$HEAD_REF_OID" ]]; then
   echo "review-pr-diff.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's current headRefOid. Abort." >&2
@@ -161,28 +192,15 @@ fi
 # Same TOCTOU guard as review-pr-checkout.sh: a force-push landing between
 # the initial headRefOid fetch and the file-list fetch would leave the
 # audit running against a file list gh already considers stale.
-HEAD_REF_OID_RECHECK=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID_RECHECK=""
-if [[ -z "$HEAD_REF_OID_RECHECK" ]]; then
-  echo "review-pr-diff.sh: could not re-fetch PR $OWNER_REPO#$PR_NUMBER's headRefOid to confirm the file list above is still current. Abort." >&2
-  exit 2
-fi
-if [[ "$HEAD_REF_OID_RECHECK" != "$HEAD_REF_OID" ]]; then
-  echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER's headRefOid changed from $HEAD_REF_OID to $HEAD_REF_OID_RECHECK while its file list was being fetched -- a force-push race. Abort." >&2
-  exit 2
-fi
+confirm_head_ref_oid_unchanged "the file list above" "its file list"
 
-# The audit's own exit code mirrors its "stop" verdict (1 = stop, 0 =
-# clean, 2 = malformed stdin) -- but unlike review-pr-checkout.sh, a stop
-# verdict here is reported, not fatal: no checkout means no subject for the
-# audit's own protection, while a PR touching .claude/hooks/** or
-# .mcp.json is exactly what an inbound reviewer must flag in the review
-# itself. Same predicate, different disposition. A status alone is not proof
-# of a verdict (an uncaught exception also exits 1, an empty script exits 0), so
-# review_pr_audit_verdict reads the status together with stdout, and anything
-# but a verdict aborts instead of reporting a finding. The audit's stderr is
-# not redirected, so a failed run shows its own error. -I keeps PYTHON*
-# variables and the user site directory out of the gate; the audit imports only
-# json and sys.
+# Unlike review-pr-checkout.sh, a stop verdict here is reported, not fatal: no
+# checkout means no subject for the audit's own protection, while a PR touching
+# .claude/hooks/** or .mcp.json is exactly what an inbound reviewer must flag in
+# the review itself. Same predicate, different disposition. Anything but a
+# verdict aborts instead of reporting a finding. See review_pr_audit_verdict
+# (_review-pr-lib.sh) for how the status and stdout are read, and why the audit
+# runs as `python3 -I` with its stderr unredirected.
 if AUDIT_OUTPUT=$(printf '%s' "$FILES_JSON" | python3 -I "$AUDIT_SCRIPT"); then
   AUDIT_EXIT=0
 else
@@ -191,7 +209,7 @@ fi
 case "$(review_pr_audit_verdict "$AUDIT_EXIT" "$AUDIT_OUTPUT")" in
   clean) ;;
   stop)
-    MATCHES=$(printf '%s' "$AUDIT_OUTPUT" | _lib_jq -r '.matches[] | "\(.path): \(.reason)"' 2>/dev/null) || MATCHES="$AUDIT_OUTPUT"
+    MATCHES=$(review_pr_audit_match_report "$AUDIT_OUTPUT")
     echo "review-pr-diff.sh: AUDIT_FINDING -- passive-execution audit matched paths in PR $OWNER_REPO#$PR_NUMBER's file list. Treat this as a mandatory blocking finding in the synthesized review, not a stop -- no checkout means nothing landed on disk. Matched paths:" >&2
     printf '%s\n' "$MATCHES" >&2
     ;;
@@ -206,6 +224,17 @@ if ! DIFF_TEXT=$(_lib_gh "$GH_PR_DIFF_TIMEOUT_SECONDS" pr diff "$PR_NUMBER" -R "
   echo "review-pr-diff.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's diff (gh pr diff failed or timed out). Abort." >&2
   exit 2
 fi
+# review-pr-checkout.sh also refuses an empty diff, but not a whitespace-only one.
+# A diff that is empty or only whitespace for a PR that reports changed files is
+# a transient or truncated server response, and reviewing it would read as "no
+# findings".
+if [[ ! "$DIFF_TEXT" =~ [^[:space:]] && "$CHANGED_FILES_COUNT" -gt 0 ]]; then
+  echo "review-pr-diff.sh: gh pr diff for PR $OWNER_REPO#$PR_NUMBER printed no diff although the PR reports $CHANGED_FILES_COUNT changed files. Abort with no diff file written." >&2
+  exit 2
+fi
+# A force-push landing during the diff fetch would leave the provenance naming
+# a head the diff text does not describe.
+confirm_head_ref_oid_unchanged "the diff above" "its diff"
 
 ACTIVE_DIR="$CONFIG_DIR/.review-pr-active.d"
 if ! mkdir -p -- "$ACTIVE_DIR"; then

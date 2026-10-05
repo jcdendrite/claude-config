@@ -120,7 +120,7 @@ class TestSweepReviewPrSuffixBranch:
         # own sibling lookup resolves to itself -- self-referential, and
         # correctly so, since a provenance file's own liveness is judged by
         # the same PID field.
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (0, 2)
         assert (active_dir / "alive-session.body").exists()
         assert (active_dir / "alive-session.provenance").exists()
@@ -138,7 +138,7 @@ class TestSweepReviewPrSuffixBranch:
 
         # Both the .body entry and its self-referential .provenance entry
         # (see the live-sibling test above) are evicted.
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (2, 0)
         assert not (active_dir / "dead-session.body").exists()
         assert not (active_dir / "dead-session.provenance").exists()
@@ -158,7 +158,7 @@ class TestSweepReviewPrSuffixBranch:
         )
         _write_session_file(tmp_path / "sessions", os.getpid(), "resumed-session")
 
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (0, 2)
         assert (active_dir / "resumed-session.body").exists()
         assert (active_dir / "resumed-session.provenance").exists()
@@ -180,7 +180,7 @@ class TestSweepReviewPrSuffixBranch:
             tmp_path / "sessions", os.getpid(), "reused-pid-session", start_time="Thu Jan  1 00:00:00 1970"
         )
 
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (2, 0)
         assert not (active_dir / "reused-pid-session.body").exists()
         assert not (active_dir / "reused-pid-session.provenance").exists()
@@ -210,7 +210,7 @@ class TestSweepReviewPrSuffixBranch:
             raise ps_failure
 
         monkeypatch.setattr(_clear_stale.subprocess, "run", failing_ps)
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (0, 2)
         assert (active_dir / "resumed-session.body").exists()
         assert (active_dir / "resumed-session.provenance").exists()
@@ -238,7 +238,7 @@ class TestSweepReviewPrSuffixBranch:
             raise OSError("synthetic: ps cannot run")
 
         monkeypatch.setattr(_clear_stale.subprocess, "run", failing_ps)
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (2, 0)
         assert not (active_dir / "ended-session.body").exists()
         assert not (active_dir / "ended-session.provenance").exists()
@@ -255,7 +255,7 @@ class TestSweepReviewPrSuffixBranch:
         )
         _write_session_file(tmp_path / "sessions", os.getpid(), "some-other-live-session")
 
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (2, 0)
         assert not (active_dir / "ended-session.body").exists()
         assert not (active_dir / "ended-session.provenance").exists()
@@ -272,7 +272,7 @@ class TestSweepReviewPrSuffixBranch:
         )
         _write_session_file(tmp_path / "sessions", os.getpid(), "resumed-session")
 
-        evicted, kept, lines = _clear_stale.sweep(str(tmp_path), dry_run=True)
+        evicted, kept, lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=True)
         assert (evicted, kept) == (0, 2)
         assert "  keep: .review-pr-active.d/resumed-session.body (owning session resumed-session alive)" in lines
         assert (active_dir / "resumed-session.body").exists()
@@ -291,7 +291,7 @@ class TestSweepReviewPrSuffixBranch:
         sessions_dir.mkdir()
         (sessions_dir / str(proc.pid)).write_text("ended-session\nstart-time\n")
 
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (2, 0)
         assert not (active_dir / "ended-session.body").exists()
         assert not (active_dir / "ended-session.provenance").exists()
@@ -310,7 +310,7 @@ class TestSweepReviewPrSuffixBranch:
 
         # Both the .body entry and its self-referential .provenance entry
         # (see the live-sibling test above) are kept.
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (0, 2)
         assert (active_dir / "headerless-session.body").exists()
         assert (active_dir / "headerless-session.provenance").exists()
@@ -340,7 +340,7 @@ class TestSweepReviewPrSuffixBranch:
                 )
             )
 
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (2, 0)
         assert not (active_dir / "no-pid-session.body").exists()
         assert not provenance.exists()
@@ -360,7 +360,7 @@ class TestSweepReviewPrSuffixBranch:
         empty_provenance.write_text("")
         os.utime(empty_provenance, (0, 0))
 
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (0, 2)
         assert (active_dir / "truncated-session.body").exists()
         assert (active_dir / "truncated-session.provenance").exists()
@@ -372,7 +372,7 @@ class TestSweepReviewPrSuffixBranch:
         active_dir.mkdir()
         (active_dir / "orphan-session.body").write_text("findings\n")
 
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (1, 0)
         assert not (active_dir / "orphan-session.body").exists()
 
@@ -395,7 +395,7 @@ class TestReviewPrSuffixScopingIsDirNameGated:
         # (absent here) and evict unconditionally regardless of content.
         entry.write_text(f"{os.getpid()}\n")
 
-        evicted, kept, _lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        evicted, kept, _lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
         assert (evicted, kept) == (0, 1)
         assert entry.exists()
 
@@ -409,8 +409,8 @@ class TestReviewPrActiveDirEntryWithAnUnknownSuffixIsLeftAlone:
         entry = active_dir / "session.unknown-artifact"
         entry.write_text("content that is not a PID\n")
 
-        evicted, kept, lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
-        assert (evicted, kept, lines) == (0, 0, [])
+        evicted, kept, lines, _failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
+        assert (evicted, kept, lines, _failed) == (0, 0, [], 0)
         assert entry.exists()
 
 
@@ -443,9 +443,9 @@ class TestFailedRemovalIsNotCountedAsAnEviction:
 
         with monkeypatch.context() as patch:
             self._fail_removal_of(patch, stuck_entry)
-            evicted, kept, lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+            evicted, kept, lines, failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
 
-        assert (evicted, kept) == (1, 0)
+        assert (evicted, kept, failed) == (1, 0, 1)
         assert stuck_entry.exists()
         assert not removable_entry.exists()
         assert [line for line in lines if line.startswith("  evict: ")] == [
@@ -465,13 +465,115 @@ class TestFailedRemovalIsNotCountedAsAnEviction:
 
         with monkeypatch.context() as patch:
             self._fail_removal_of(patch, stuck_entry)
-            evicted, kept, lines = _clear_stale.sweep(str(tmp_path), dry_run=False)
+            evicted, kept, lines, failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
 
-        assert (evicted, kept) == (0, 0)
+        assert (evicted, kept, failed) == (0, 0, 1)
         assert stuck_entry.exists()
         assert lines == [
             "  failed: .review-pr-active.d/orphan-session.body "
             "(owning PID empty dead; removal failed: Operation not permitted)"
+        ]
+
+
+class TestAlreadyAbsentEntryIsNeitherAnEvictionNorAFailure:
+    """os.remove is replaced by a call that deletes the entry and then raises
+    FileNotFoundError, the result a concurrent eviction produces between the
+    sweep's listing and its removal."""
+
+    @staticmethod
+    def _lose_removal_race_for(monkeypatch, raced_path: Path) -> None:
+        real_remove = os.remove
+
+        def remove_that_loses_the_race_for_one_path(path, *args, **kwargs):
+            real_remove(path, *args, **kwargs)
+            if Path(path) == raced_path:
+                raise FileNotFoundError(2, "No such file or directory", str(path))
+
+        monkeypatch.setattr(_clear_stale.os, "remove", remove_that_loses_the_race_for_one_path)
+
+    def test_generic_branch_entry_already_gone_is_not_counted_and_prints_no_line(
+        self, tmp_path, monkeypatch
+    ):
+        active_dir = tmp_path / ".foo-active.d"
+        active_dir.mkdir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        raced_entry = active_dir / "raced-session"
+        raced_entry.write_text(f"{proc.pid}\n")
+
+        with monkeypatch.context() as patch:
+            self._lose_removal_race_for(patch, raced_entry)
+            evicted, kept, lines, failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
+
+        assert (evicted, kept, lines, failed) == (0, 0, [], 0)
+
+    def test_review_pr_branch_entry_already_gone_is_not_counted_and_prints_no_line(
+        self, tmp_path, monkeypatch
+    ):
+        active_dir = tmp_path / ".review-pr-active.d"
+        active_dir.mkdir()
+        raced_entry = active_dir / "orphan-session.body"
+        raced_entry.write_text("findings\n")
+
+        with monkeypatch.context() as patch:
+            self._lose_removal_race_for(patch, raced_entry)
+            evicted, kept, lines, failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
+
+        assert (evicted, kept, lines, failed) == (0, 0, [], 0)
+
+    def test_a_sweep_whose_only_removal_lost_the_race_exits_zero(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        active_dir = tmp_path / ".foo-active.d"
+        active_dir.mkdir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        raced_entry = active_dir / "raced-session"
+        raced_entry.write_text(f"{proc.pid}\n")
+        self._lose_removal_race_for(monkeypatch, raced_entry)
+
+        exit_status = _clear_stale.main(["marker-clear-stale.py", str(tmp_path), "0"])
+
+        assert exit_status == 0
+        assert capsys.readouterr().out == "clear-stale: evicted 0 orphan(s), kept 0 active\n"
+
+
+class TestUnlistableActiveDirectoryDoesNotStopTheSweep:
+    """os.listdir is replaced rather than a directory made unreadable, so the
+    failure is injected the same way whether or not the suite runs as root."""
+
+    @staticmethod
+    def _fail_listing_of(monkeypatch, failing_dir: Path) -> None:
+        real_listdir = os.listdir
+
+        def listdir_that_fails_for_one_dir(path):
+            if Path(path) == failing_dir:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_listdir(path)
+
+        monkeypatch.setattr(_clear_stale.os, "listdir", listdir_that_fails_for_one_dir)
+
+    def test_unlistable_directory_gets_a_failed_line_and_later_directories_are_still_swept(
+        self, tmp_path, monkeypatch
+    ):
+        unlistable_dir = tmp_path / ".aaa-active.d"
+        unlistable_dir.mkdir()
+        later_dir = tmp_path / ".zzz-active.d"
+        later_dir.mkdir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        orphan_entry = later_dir / "orphan-session"
+        orphan_entry.write_text(f"{proc.pid}\n")
+
+        with monkeypatch.context() as patch:
+            self._fail_listing_of(patch, unlistable_dir)
+            evicted, kept, lines, failed = _clear_stale.sweep(str(tmp_path), dry_run=False)
+
+        assert (evicted, kept, failed) == (1, 0, 1)
+        assert not orphan_entry.exists()
+        assert lines == [
+            "  failed: .aaa-active.d (cannot list directory: Permission denied)",
+            f"  evict: .zzz-active.d/orphan-session (PID {proc.pid} dead)",
         ]
 
 
@@ -531,6 +633,77 @@ class TestUsageErrors:
         )
         assert result.returncode == 2
         assert "usage" in result.stderr.lower()
+
+
+class TestMainExitStatusReflectsFailures:
+    """main() is called in-process with os.remove replaced, so the failure is
+    injected the same way whether or not the suite runs as root."""
+
+    def test_failed_removal_returns_one_with_an_incomplete_summary_and_the_evictions_already_made(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        removable_dir = tmp_path / ".aaa-active.d"
+        removable_dir.mkdir()
+        removable_entry = removable_dir / "removable-session"
+        removable_entry.write_text(f"{proc.pid}\n")
+        stuck_dir = tmp_path / ".zzz-active.d"
+        stuck_dir.mkdir()
+        stuck_entry = stuck_dir / "stuck-session"
+        stuck_entry.write_text(f"{proc.pid}\n")
+        real_remove = os.remove
+
+        def remove_that_fails_for_one_path(path, *args, **kwargs):
+            if Path(path) == stuck_entry:
+                raise PermissionError(1, "Operation not permitted", str(path))
+            real_remove(path, *args, **kwargs)
+
+        monkeypatch.setattr(_clear_stale.os, "remove", remove_that_fails_for_one_path)
+
+        exit_status = _clear_stale.main(["marker-clear-stale.py", str(tmp_path), "0"])
+
+        stdout = capsys.readouterr().out
+        assert exit_status == 1
+        assert not removable_entry.exists()
+        assert "  evict: .aaa-active.d/removable-session" in stdout
+        assert "  failed: .zzz-active.d/stuck-session" in stdout
+        assert "clear-stale: incomplete, 1 failure(s); evicted 1 orphan(s), kept 0 active" in stdout
+
+    def test_dry_run_with_an_unlistable_directory_returns_one_with_would_evict_wording(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        unlistable_dir = tmp_path / ".aaa-active.d"
+        unlistable_dir.mkdir()
+        later_dir = tmp_path / ".zzz-active.d"
+        later_dir.mkdir()
+        proc = subprocess.Popen(["true"])
+        proc.wait()
+        orphan_entry = later_dir / "orphan-session"
+        orphan_entry.write_text(f"{proc.pid}\n")
+        real_listdir = os.listdir
+
+        def listdir_that_fails_for_one_dir(path):
+            if Path(path) == unlistable_dir:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_listdir(path)
+
+        monkeypatch.setattr(_clear_stale.os, "listdir", listdir_that_fails_for_one_dir)
+
+        exit_status = _clear_stale.main(["marker-clear-stale.py", str(tmp_path), "1"])
+
+        stdout = capsys.readouterr().out
+        assert exit_status == 1
+        assert orphan_entry.exists()
+        assert "  failed: .aaa-active.d (cannot list directory: Permission denied)" in stdout
+        assert f"  evict (dry-run): .zzz-active.d/orphan-session (PID {proc.pid} dead)" in stdout
+        assert "clear-stale: incomplete, 1 failure(s); would evict 1 orphan(s), keep 0 active" in stdout
+
+    def test_a_completed_sweep_returns_zero_with_the_plain_summary(self, tmp_path, capsys):
+        exit_status = _clear_stale.main(["marker-clear-stale.py", str(tmp_path), "0"])
+
+        assert exit_status == 0
+        assert capsys.readouterr().out == "clear-stale: evicted 0 orphan(s), kept 0 active\n"
 
 
 class TestCliSweepsDeadPidMarker:

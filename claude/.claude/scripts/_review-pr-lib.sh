@@ -14,6 +14,10 @@
 #   review_pr_audit_verdict         — the audit's exit status and stdout classified as clean, stop or failed
 #   REVIEW_PR_AUDIT_STDOUT_ECHO_LIMIT — the most characters of the audit's stdout a failed-verdict message echoes
 #   review_pr_audit_stdout_excerpt  — the audit's stdout cut to its first line and to that limit, for a failed-verdict message
+#   REVIEW_PR_AUDIT_MATCH_LINE_LIMIT — the most matches a stop message lists
+#   REVIEW_PR_AUDIT_PATH_ECHO_LIMIT — the most characters of one matched path a stop message echoes
+#   review_pr_audit_match_lines     — the audit's stop document as one escaped, bounded line per match, for a stop message
+#   review_pr_audit_match_report    — review_pr_audit_match_lines, or a fixed line with the match count when the document cannot be formatted
 #   review_pr_gh_status_description — "timed out" for a gh exit status of 124, else "failed (exit N)"
 #
 # Every function takes its input as an argument, prints its result on stdout
@@ -30,6 +34,13 @@ REVIEW_PR_AUDIT_CLEAN_DOCUMENT='{"stop": false, "matches": []}'
 
 # A display bound for one terminal message. No protocol or vendor limit backs the value.
 REVIEW_PR_AUDIT_STDOUT_ECHO_LIMIT=200
+
+# Display bounds for one stop message. No protocol or vendor limit backs either value.
+# Worst case is 20 listed lines of 1,130 bytes each, plus a tail of about 1,740 bytes, for about 24,340 bytes measured. That is under the 30,000-byte Bash output truncation threshold (claude-skills/skills/subagent-delegation/REFERENCES.md).
+# One listed line is 976 bytes of path (2 quotes, 80 astral characters printing as 12 ASCII characters each, and the 14-byte `...[truncated]` marker), a 2-byte `: ` separator, the longest audit reason (151 characters) and a 1-byte newline.
+# The tail is a count line of about 43 bytes plus one `not shown:` line for each of the 15 distinct audit reasons: about 24 bytes of prefix, count and newline per line, plus the reasons' 1,335 characters in all.
+REVIEW_PR_AUDIT_MATCH_LINE_LIMIT=20
+REVIEW_PR_AUDIT_PATH_ECHO_LIMIT=80
 
 # review_pr_rest_changed_files REST_JSON
 # Prints the payload's `changed_files` when it is a non-negative integer.
@@ -64,6 +75,9 @@ review_pr_file_count_matches() {
 # Prints `clean` only for status 0 with stdout byte-equal to REVIEW_PR_AUDIT_CLEAN_DOCUMENT.
 # Prints `stop` only for status 1 with stdout whose `.stop` is true.
 # Prints `failed` for everything else, such as status 2, 127 (python3 missing), a signal death, an uncaught exception, or status 0 with any other stdout, so a tooling failure is never read as a verdict.
+# The status alone is not proof of a verdict: an uncaught exception also exits 1, and an empty script exits 0.
+# Callers run the audit as `python3 -I`, which keeps PYTHON* variables and the user site directory out of the gate (the audit imports only json and sys).
+# Callers leave the audit's stderr unredirected, so a failed run shows its own error.
 review_pr_audit_verdict() {
   if [[ "$1" == "0" && "$2" == "$REVIEW_PR_AUDIT_CLEAN_DOCUMENT" ]]; then
     printf 'clean'
@@ -83,6 +97,56 @@ review_pr_audit_stdout_excerpt() {
   else
     printf '%s' "$first_line"
   fi
+}
+
+# review_pr_audit_match_lines AUDIT_STDOUT
+# Prints one `<path as a JSON string>: <reason>` line per match in the audit's stop document.
+# A PR file name is attacker-chosen, so each path is cut to REVIEW_PR_AUDIT_PATH_ECHO_LIMIT characters (then marked `...[truncated]`) and printed as an ASCII-only JSON string.
+# Printable ASCII passes through, including the JSON two-character forms for a newline, tab, quote and backslash (`\n`, `\t`, `\"`, `\\`). Every other character, such as another control character, a C1 control, a bidirectional override, U+2028, a zero-width character or a tag-block character, prints as `\uXXXX`, with a surrogate pair above U+FFFF.
+# Matches past REVIEW_PR_AUDIT_MATCH_LINE_LIMIT are replaced by one line counting them, then one `not shown:` line per distinct reason among them, so no reason present in the document goes unnamed.
+# A reason is audit-owned and stays verbatim.
+# Prints nothing and returns 1 when AUDIT_STDOUT has no `.matches` array or a match entry cannot be formatted.
+review_pr_audit_match_lines() {
+  [[ -n "$1" ]] || return 1
+  local formatted_lines
+  # shellcheck disable=SC2016 # $matches, $match_limit and $path_limit are jq bindings in a single-quoted filter, and double quotes would expand them as shell variables.
+  formatted_lines=$(printf '%s' "$1" | _lib_jq -r \
+    --argjson match_limit "$REVIEW_PR_AUDIT_MATCH_LINE_LIMIT" \
+    --argjson path_limit "$REVIEW_PR_AUDIT_PATH_ECHO_LIMIT" '
+    def hex4: [(. / 4096 | floor) % 16, (. / 256 | floor) % 16, (. / 16 | floor) % 16, . % 16] | map("0123456789abcdef"[. : . + 1]) | join("");
+    def unicode_escape: "\\u" + hex4;
+    def escape_codepoint:
+      if . > 31 and . < 127 then [.]
+      elif . < 65536 then unicode_escape | explode
+      else (. - 65536) as $offset
+        | (55296 + ($offset / 1024 | floor) | unicode_escape) + (56320 + ($offset % 1024) | unicode_escape) | explode
+      end;
+    def ascii_json_string: @json | explode | map(escape_codepoint) | add | implode;
+    if (.matches | type) != "array" then error("no matches array") else
+      .matches as $matches
+      | ($matches[:$match_limit][]
+          | "\(.path | if length > $path_limit then .[:$path_limit] + "...[truncated]" else . end | ascii_json_string): \(.reason)"),
+        (if ($matches | length) > $match_limit then
+          "... and \($matches | length - $match_limit) more matched path(s) not shown",
+          ($matches[$match_limit:] | group_by(.reason)[] | "not shown: \(.[0].reason) (\(length) path(s))")
+        else empty end)
+    end
+  ' 2>/dev/null) || return 1
+  [[ -z "$formatted_lines" ]] || printf '%s\n' "$formatted_lines"
+}
+
+# review_pr_audit_match_report AUDIT_STDOUT
+# Prints review_pr_audit_match_lines' output for the audit's stop document.
+# When that helper cannot format the document, prints one fixed line with the count of matches the document reports (`unknown` when it has no `.matches` array) and never echoes the document.
+# Always returns 0, so a caller's stop path reaches its own exit.
+review_pr_audit_match_report() {
+  local match_count
+  if review_pr_audit_match_lines "$1"; then
+    return 0
+  fi
+  match_count=$(printf '%s' "$1" | _lib_jq -r 'if (.matches | type) == "array" then (.matches | length) else empty end' 2>/dev/null) || match_count=""
+  [[ "$match_count" =~ ^[0-9]+$ ]] || match_count="unknown"
+  printf 'the audit reported %s matched path(s), but its match list could not be formatted for display' "$match_count"
 }
 
 # review_pr_gh_status_description GH_EXIT_STATUS
