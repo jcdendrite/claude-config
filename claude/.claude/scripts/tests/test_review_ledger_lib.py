@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from helpers import CLAUDE_DIR, SCRIPTS_DIR
+from helpers import CLAUDE_DIR, SCRIPTS_DIR, init_git_repo
 
 # claude/.claude/ itself, so `hooks.tests...` below resolves, as in test_author_outcome.py.
 sys.path.insert(0, str(CLAUDE_DIR))
@@ -349,12 +349,7 @@ def _git(repo: Path, *args: str) -> None:
 @pytest.fixture
 def repo(tmp_path) -> Path:
     """A git repo whose working tree the site hash reads."""
-    root = tmp_path / "repo"
-    root.mkdir()
-    _git(root, "init", "-q", "-b", "feature")
-    _git(root, "config", "user.email", "test@test.com")
-    _git(root, "config", "user.name", "test")
-    return root
+    return init_git_repo(tmp_path / "repo", branch="feature")
 
 
 def _write(repo: Path, name: str, content: str | bytes) -> None:

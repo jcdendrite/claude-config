@@ -880,7 +880,7 @@ def init_git_repo_with_commit(
     seed_file = path / file_name
     seed_file.parent.mkdir(parents=True, exist_ok=True)
     seed_file.write_text(content)
-    subprocess.run(["git", "add", file_name], cwd=path, check=True)
+    subprocess.run(["git", "add", "--", file_name], cwd=path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
     return path
 
@@ -991,8 +991,7 @@ def build_conflicted_merge_via_origin_with_upstream_skill_edit(
     _build_conflicted_merge_via_origin_with_upstream_plan_edit in
     test_marker_script.py for the plan-review marker kind, generalized to a
     shared helper since the skill-review gate's tests need the same shape.
-    This builder does its own mkdir -p for the nested skill path, because
-    push_conflicting_edit_to_origin does not create parent directories."""
+    This builder creates the nested skill path's parent directories itself."""
     bare, clone = bare_remote_with_default_branch(tmp_path)
     skill_rel_path = f"claude-skills/skills/{skill_name}/SKILL.md"
     if not upstream_adds_skill:

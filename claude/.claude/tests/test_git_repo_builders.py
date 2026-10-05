@@ -61,7 +61,8 @@ def test_init_git_repo_with_commit_tracks_the_default_seed_file(tmp_path: Path) 
 
 
 def test_init_git_repo_with_commit_tracks_a_nested_seed_file_with_its_content(tmp_path: Path) -> None:
-    repo = init_git_repo_with_commit(tmp_path / "repo", file_name="a/b.txt", content="y\n")
+    # The leading dash fails `git add` unless the builder passes `--` before the pathspec.
+    repo = init_git_repo_with_commit(tmp_path / "repo", file_name="-a/b.txt", content="y\n")
 
-    assert _git_stdout(repo, "ls-files").splitlines() == ["a/b.txt"]
-    assert _git_stdout(repo, "show", "HEAD:a/b.txt") == "y\n"
+    assert _git_stdout(repo, "ls-files").splitlines() == ["-a/b.txt"]
+    assert _git_stdout(repo, "show", "HEAD:-a/b.txt") == "y\n"

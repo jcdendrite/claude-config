@@ -925,6 +925,9 @@ class TestReviewLedgerSubprocessIntegration:
 
     SESSION_ID = "subprocess-integration-session"
 
+    # Each test pins branch="main": a session-keyed ledger file only lands on the
+    # default branch, so the branch must not depend on the host's init.defaultBranch.
+
     def _run_append(self, args: list[str], *, cwd: Path, home: Path) -> subprocess.CompletedProcess:
         env = {**os.environ, "HOME": str(home)}
         env.pop("CLAUDE_CONFIG_DIR", None)
