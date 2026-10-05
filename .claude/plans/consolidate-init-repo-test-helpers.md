@@ -167,7 +167,7 @@ Every file below is edited in one `code-writer` dispatch, with `helpers.py` firs
 - `claude/.claude/hooks/tests/test_lib_worktree_collision_guard.py`: delete `_init_opted_in_repo` (`:54`). Its 32 calls become `init_git_repo_with_commit(repo)`.
 - `claude/.claude/hooks/tests/test_announce_approved_plan_path.py`: delete `_init_repo` (`:118`). Its one call (`:389`) becomes `init_git_repo_with_commit(repo)`.
 - `claude/.claude/hooks/tests/test_marker_lib.py`: delete `_init_repo` (`:143`). Its 18 calls become `init_git_repo(repo)`.
-- `claude/.claude/hooks/tests/test_require_code_review.py`: delete `_init_repo_on_branch`. Its 9 calls become `init_git_repo_with_commit(repo, branch="main")`. The file's `helpers` import already carries the builder.
+- `claude/.claude/hooks/tests/test_require_code_review.py`: delete `_init_repo_on_branch`. Its 9 calls become `init_git_repo_with_commit(repo, branch="main")`.
 - `claude/.claude/hooks/tests/test_marker_worktree_keying.py`: delete `_init_repo` (`:41`). Its 2 calls become `init_git_repo(other_repo)`.
 - These helpers become one-line delegations that keep their names and call sites:
   - `test_hook_alignment.py:2590`: `file_name="file.txt", content="first\n"`
@@ -179,11 +179,11 @@ Every file below is edited in one `code-writer` dispatch, with `helpers.py` firs
   All five files are in `claude/.claude/hooks/tests/`.
 - `.claude/plans/consolidate-init-repo-test-helpers.md`: this plan, committed with the change.
 
-Reuse: helpers.py's existing `_run_git` (`:812`) is not used inside the builder. It captures stdout, while every migrated site except the review-ledger fixture lets git's output pass through. That fixture captured output, which `-q` makes moot.
+Reuse: helpers.py's existing `_run_git` (`:812`) is not used inside the builder.
 
 ## Verification
 
-1. Before the first edit, record the collected-test count with `.venv/bin/pytest --collect-only -q -n0 claude/.claude/hooks/tests claude/.claude/scripts/tests claude/.claude/tests`. After the last edit, the count must be exactly 10 higher. Seven come from the new contract tests (six test functions, one parametrized over both builders). Three come from `hooks/tests/test_ticket_reference_discipline.py`, which parametrizes three checks over every test file, so the new file adds one case to each. This catches a test lost to a broken import. `--collect-only` does not run fixture bodies, so a broken fixture first surfaces in step 7.
+1. Collect test node ids with `.venv/bin/pytest --collect-only -q -n0 claude/.claude/hooks/tests claude/.claude/scripts/tests claude/.claude/tests` once at the merge-base and once at HEAD. Keep the lines containing `::`, sort both lists and diff them. Every id present at the merge-base must be present at HEAD. The only added ids are the new contract tests in `claude/.claude/tests/test_git_repo_builders.py` and the per-file cases `hooks/tests/test_ticket_reference_discipline.py` generates for that new file once it is tracked in git. This catches a test lost to a broken import. `--collect-only` does not run fixture bodies, so a broken fixture first surfaces in step 7.
 2. Sum `git grep -c '"git", "init"' -- claude/.claude` across files. The total is 149 at the merge-base and must be 128 after: 22 sites removed and 1 added in the builder. The new contract test calls the builders and spells no `"git", "init"`.
 3. `git grep -n -E 'def (_init_repo|_init_repo_on_branch|_init_opted_in_repo|_init_repo_with_commit|_make_git_repo)\b' -- claude/.claude` must list exactly six definitions: the five hooks delegations and `scripts/tests/conftest.py`'s `_init_repo`. This checks names only. Step 4 checks the bodies. Also, `git grep -h -E '(_git|_git_q|_run_git)\([^,()]+, "init"' -- claude/.claude | wc -l` is 19 at the merge-base and must be 18 after, which confirms the review-ledger fixture's wrapper-spelled `init` is gone.
 4. Per-site equivalence review: walk the diff site by site against row 4 and the Critical files list. For each of the 23 sites, confirm that the branch argument, commit-or-not, `file_name` and `content` match the pre-migration helper. The suite cannot detect drift in these, because no consumer reads them (row 15).
