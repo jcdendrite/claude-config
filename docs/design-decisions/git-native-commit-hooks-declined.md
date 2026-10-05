@@ -14,7 +14,7 @@ Best case, a replacement deletes these:
 - If `git diff --cached` inside the hook reflects the final index under `commit -a` and pathspec commits, which was not probed for `pre-commit` or `prepare-commit-msg`, the `-a`/pathspec `git diff HEAD` arm in `deny-pii-in-commits.sh`. The `-F` argument parsing there would retire because a hook reads the message file directly.
 - Tests of those predicates:
   - `test_deny_invisible_commit_content.py`.
-  - `test_lib.py` from `TestCommandConcludesCommit` through `_git_supports_sha256_object_format`, except the parts that do not retire, such as `TestSplitFragmentsPipefailContract` and the sha256 probe helper `_git_supports_sha256_object_format`.
+  - `test_lib.py` from `TestCommandConcludesCommit` up to, but not including, `_git_supports_sha256_object_format`, except the parts that do not retire, such as `TestSplitFragmentsPipefailContract` and the sha256 probe helper `_git_supports_sha256_object_format`.
   - Possibly `test_parse_git_command.py` and `test_hook_command_normalization.py`.
 
 `_lib_commit_fragment_has_worktree_target`'s walk is kept for the residual deny, so it is renamed, not deleted.
@@ -46,7 +46,7 @@ The best case is not the realistic case:
   - `pre-commit` misses `rebase --continue`, which those gates cover today, so placing them there is a regression.
   - `prepare-commit-msg` fires on ordinary rebase, cherry-pick, and revert picks, so placing them there over-denies.
   - Unless a maintainer accepts a regression, they stay on PreToolUse, and `deny-invisible-commit-content.sh` stays with them.
-- Realistic retirement then shrinks to the per-gate preambles and the PII gate's `-F` arm, plus its `-a`/pathspec arm if the index premise above holds.
+- Realistic retirement then shrinks to the per-gate preambles and the PII gate's `-F` arm, plus its `-a`/pathspec arm if `git diff --cached` reflects the final index under `commit -a` and pathspec commits.
 
 Smaller slices retire little, because the shared predicates stay for every gate that did not move. Moving only the PII gate to `prepare-commit-msg` retires at most that gate's own arms.
 
@@ -86,7 +86,7 @@ Not probed, so not relied on:
 
 - Whether a non-zero `prepare-commit-msg` aborts a pick inside a sequencer. githooks(5) says a non-zero exit aborts the commit. If it does not abort a pick, every scanner placed on that hook is off for rebase, cherry-pick, and revert picks, which is a fail-open.
 - Whether a multi-commit `cherry-pick` or `revert --continue` skips `pre-commit`.
-- Whether `$GIT_INDEX_FILE` and `git diff --cached` inside `pre-commit` and `prepare-commit-msg` reflect the final index during `commit -a` or a pathspec commit. The index premise above concerns both hooks.
+- Whether `$GIT_INDEX_FILE` and `git diff --cached` inside `pre-commit` and `prepare-commit-msg` reflect the final index during `commit -a` or a pathspec commit. This question concerns both hooks.
 - Whether `MERGE_HEAD` is present at `pre-merge-commit` for a clean merge.
 - Whether `rebase --apply` fires `prepare-commit-msg`.
 - Whether git errors on a `core.hooksPath` directory that does not exist. githooks(5) states only that a hook without the executable bit is ignored.
