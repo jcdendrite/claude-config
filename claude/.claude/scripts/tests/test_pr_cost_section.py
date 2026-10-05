@@ -394,7 +394,7 @@ def _fake_transcript_analysis_source_cost_counts_backstop_crash() -> str:
     echo. This fake does not invoke that real backstop -- it verifies the
     wrapper's own content-agnostic stderr discard on any child failure,
     not the reworded AssertionError text itself; see
-    test_transcript_analysis.py's test_backstop_assertion_fires_on_bypassed_partition_step
+    test_transcript_cost_counts.py's test_backstop_assertion_fires_on_bypassed_partition_step
     for the test that exercises the real AssertionError's message."""
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
@@ -689,7 +689,7 @@ class TestCountsCallFails:
         says. A stand-in child crashes with a message embedding a marker
         that represents an untracked-label leak; the marker must not
         surface in either stream. This is a wrapper-level, content-agnostic
-        guarantee -- see test_transcript_analysis.py's own
+        guarantee -- see test_transcript_cost_counts.py's own
         test_backstop_assertion_fires_on_bypassed_partition_step for the
         test that pins the real backstop AssertionError's own message
         content."""
@@ -800,11 +800,11 @@ class TestCostBodyEndsWithTableRowBothSeams:
 
 
 class TestCombinedZeroState:
-    """The one table-to-non-table seam the rounds-table zero-state test and
-    the spawns-sentence zero-state test each cover separately at the Python
-    level (test_transcript_analysis.py) but never together as one rendered
-    body: the rounds table's fixed zero-count rows immediately followed by
-    the spawns section's bare sentence with no table at all."""
+    """The one table-to-non-table seam: the rounds table's fixed zero-count
+    rows immediately followed by the spawns section's bare sentence with no
+    table at all. At the Python level, test_transcript_cost_counts.py's
+    test_zero_spawns_renders_the_sentence_not_a_table pins only the spawns
+    side, never the two as one rendered body."""
 
     def test_stdout_matches_combined_zero_rendering(
         self, tmp_path, combined_zero_state_script_fixture,
