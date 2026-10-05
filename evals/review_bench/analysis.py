@@ -991,6 +991,18 @@ def check_record_defect_ids_match(records: Sequence[runner.RunRecord], frozen_de
         )
 
 
+def check_records_name_confirmed_defects(
+    records: Sequence[runner.RunRecord], confirmed_defect_ids: Sequence[str], *, record_kind: str,
+) -> None:
+    """Raises HarnessInvalidatedError when `records` name a defect that is not
+    in the confirmed set. `record_kind` names the record file in the message."""
+    unconfirmed = sorted({record.defect_id for record in records} - set(confirmed_defect_ids))
+    if unconfirmed:
+        raise HarnessInvalidatedError(
+            f"invalidated -- {record_kind} records name defects absent from defects.json: {unconfirmed}"
+        )
+
+
 def check_freeze_preconditions(
     *, current_manifest_hash: str, last_smoke_manifest_hash: str, k_to_freeze: int, smoke_full_k: int,
     provenance_failures: Sequence[tuple[str, str]], review_round_defects_without_excerpt: Sequence[str],

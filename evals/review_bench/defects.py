@@ -460,7 +460,7 @@ def pin_defect_commits(repo_dir: Path, defect: ConfirmedDefect, *, run=subproces
     ancestors of `fix_commit`, so this one ref keeps all three reachable."""
     ref = defect_pin_ref(defect.id)
     run(
-        ["git", "update-ref", ref, defect.fix_commit], cwd=repo_dir, capture_output=True, text=True,
+        ["git", "update-ref", ref, defect.fix_commit], cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace",
         timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
     )
     return ref
@@ -490,11 +490,12 @@ def public_git_text(repo_dir: Path, introducing_commit: str, fix_commit: str, *,
     """The defect's public git text: `git show` of its introducing commit
     plus its fix commit -- what `check_description_provenance` treats as
     legitimately shared code or identifiers, never a leaked `.local/`
-    excerpt."""
+    excerpt. Undecodable bytes are replaced, so one non-UTF-8 commit cannot
+    abort a run."""
     parts = []
     for commit in (introducing_commit, fix_commit):
         result = run(
-            ["git", "show", commit], cwd=repo_dir, capture_output=True, text=True,
+            ["git", "show", commit], cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace",
             timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
         )
         parts.append(result.stdout)

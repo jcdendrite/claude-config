@@ -76,8 +76,11 @@ def _is_blank_or_comment(line: str) -> bool:
 
 
 def _run_git(args: Sequence[str], *, cwd: Path) -> str:
+    """git's stdout, with undecodable bytes replaced so one non-UTF-8 commit
+    cannot abort the run."""
     result = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, timeout=_LOCAL_GIT_TIMEOUT_S,
+        ["git", *args], cwd=cwd, capture_output=True, encoding="utf-8", errors="replace", check=True,
+        timeout=_LOCAL_GIT_TIMEOUT_S,
     )
     return result.stdout
 

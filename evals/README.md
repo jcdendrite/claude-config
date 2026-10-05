@@ -484,7 +484,8 @@ python evals/run_review_bench.py analyze \
   --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl> --k 10
 ```
 
-`mine-pr-comments` needs an authenticated `gh` for github.com.
+`mine-pr-comments` needs an authenticated `gh` for github.com. The ambient
+token needs only read access to public data, plus `GET /user`.
 
 ### Mining
 
@@ -504,18 +505,11 @@ Run them in this order:
   prompt. It resolves `owner/repo` once from `origin` and exits 2 unless
   `origin` is exactly `github.com` and the provider reports the repository
   public, so it publishes only public text. It prints the mined login and a
-  count of skipped comments by reason. A body holding a joiner, variation
-  selector, or other invisible character is counted as `invisible-characters`,
-  and one holding any other control character as `control-characters`. A PR
-  head that could not be fetched makes the run exit 2, name the PR numbers, and
-  write nothing, so a fetch failure never replaces a shortlist with a partial
-  one. A rerun clears a network, auth, or ref-lock failure, not a pull ref the
-  remote lacks. A comment on which a git call gave no answer is counted as
-  `git-error` and its ID is printed. The run still writes its shortlist, like
-  every completed run, so a run with `git-error` skips rewrites it. A rerun
-  retries that comment, and one that fails again fails for that comment, not
-  for the run. Edit a candidate's description in `.local/` only after the last
-  `mine-pr-comments` run, because every completed run rewrites that file.
+  count of skipped comments by reason. A PR head that could not be fetched
+  makes the run exit 2, name the PR numbers, and write nothing, so a fetch
+  failure never replaces a shortlist with a partial one. Edit a candidate's
+  description in `.local/` only after the last `mine-pr-comments` run, because
+  every completed run rewrites that file.
 - **`mine-szz`** (source `szz`) blames the removed or modified non-markdown
   lines of each `fix|bug|regression` commit on first-parent `origin/main`.
 
@@ -597,8 +591,9 @@ terminal.
   whose heading pattern makes the function context the enclosing heading
   section. Git's default pattern anchors on any line that starts with a
   letter. The pattern matches per line, so a line-start `#` inside a fenced
-  block can start a function context, and attribute patterns are
-  case-sensitive, so `x.MD` keeps git's default. The diff artifacts are built
+  block can start a function context, and attribute patterns follow
+  `core.ignorecase`, so `x.MD` keeps git's default only where it is false.
+  The diff artifacts are built
   with the engineer's global and system git config disabled, so a diff driver
   set there cannot change them. Only those two diff calls ignore that config;
   the fixture builder's other git calls read it.
@@ -638,26 +633,31 @@ again.
 
 Given `--baseline-conditions-path`, as a later arm's analysis is, `analyze`
 recomputes every one of those hashes through the same `compute_frozen_fields`
-function `freeze` records them with. A mismatch against the frozen manifest
-exits 2, naming the changed, added, or removed file or field. In that mode
-`analyze` also exits 2 when `--k` differs from the frozen K, or when the
-reviewer records and the frozen defect IDs disagree in either direction. It
-reads each gate's baseline sensitivity verdict from the baseline-mode report
-at `--baseline-report-path` (default `evals/review_bench/results/baseline.json`)
-and exits 2 when that file is missing or unreadable, a verdict key is missing,
-a null verdict sits beside two or more fixtures, or the report's
-`freeze_identity` is missing or differs from `conditions.json` in the harness
-closure hash, any other frozen digest, K, or the campaign environment. The
-message names the differing fields. After a re-freeze, rerun all arms under the
-new freeze, then regenerate the baseline report. A null verdict is valid only for a gate of fewer than two fixtures, which is
-short. No case reads a missing verdict as sensitive. Without
+function `freeze` records them with. It reads each gate's baseline sensitivity
+verdict from the baseline-mode report at `--baseline-report-path` (default
+`evals/review_bench/results/baseline.json`). In that mode `analyze` exits 2 when:
+
+- a recomputed hash differs from the frozen manifest, naming the changed,
+  added, or removed file or field;
+- `--k` differs from the frozen K;
+- the reviewer records and the frozen defect IDs disagree in either direction;
+- the baseline report is missing or unreadable;
+- a verdict key is missing from the baseline report;
+- a null verdict sits beside two or more fixtures;
+- the report's `freeze_identity` is missing or differs from `conditions.json`
+  in the harness closure hash, any other frozen digest, K, or the campaign
+  environment, naming the differing fields.
+
+A null verdict is valid only for a gate of fewer than two fixtures, which is
+short. No case reads a missing verdict as sensitive. After a re-freeze, rerun
+all arms under the new freeze, then regenerate the baseline report. Without
 `--baseline-conditions-path`, the baseline's own `analyze` checks that its
-records carry one environment and checks no frozen field. `analyze` and `judge`
-exit 2 when a reviewer or judge records path they read does not exist; only
-`judge`'s own output file may be absent. `run` and `judge` recompute the same
-hashes and compare the CLI version and ambient config commit before their
-first dispatch, and `run` also compares `--k` and holds `--seed` to the frozen
-campaign seed. `run` exits 2 when `conditions.json` does not exist. `judge`
+records carry one environment and name only defects in `defects.json`, and
+checks no frozen field. `analyze` and `judge` exit 2 when a reviewer or judge
+records path they read does not exist; only `judge`'s own output file may be
+absent. `run` and `judge` recompute the same hashes and compare the CLI
+version and ambient config commit before their first dispatch, and `run` also
+compares `--k` and holds `--seed` to the frozen campaign seed. `run` exits 2 when `conditions.json` does not exist. `judge`
 prints a note and proceeds, because the smoke campaign's judges run before the
 freeze. `smoke` never checks, since it precedes the freeze. Two further checks
 sit alongside the hash comparison, and either can exit 2 without a single hash
@@ -849,9 +849,9 @@ project config a session must not load (see "Out-of-session reads"), and that
 both arms have a snapshot file for its lens, then print the run count and the
 nominal cost cap product; any problem exits 2 with the full list. That preflight
 reads the commit's git tree (`git ls-tree`), which does not traverse a
-symlinked parent such as a symlinked `.claude` directory. The build's checks on
-the extracted tree do refuse that case, so it fails closed at build time, not
-before dispatch. After each block, `smoke` and `run` print its ok and
+symlinked parent such as a symlinked `.claude` directory. The build's archive
+extraction refuses any symlink or hardlink at or under `.claude` and any member
+under `.bench`, so that case fails closed at build time, not before dispatch. After each block, `smoke` and `run` print its ok and
 missing counts by reason. A block whose runs are all missing stops the
 campaign with exit 2 and is left un-marked, so resuming under the same
 `--campaign-id` reruns it; `smoke --inject-fault` never stops this way, since
@@ -939,8 +939,20 @@ refuses. `smoke` and `run` apply the same check to every pending defect's head
 commit in their preflight, so a refusal exits 2 before any dispatch. The
 preflight reads git's tree while the build reads the archive extraction, so a
 symlinked `.claude/settings.json` or an `export-ignore` or `export-subst`
-attribute can make the two verdicts differ. The build re-checks the extracted
-tree and fails closed.
+attribute can make the two verdicts differ. The build refuses a link at or
+under `.claude` and any member under `.bench` (the harness's own artifact
+directory) before it writes anything, and re-checks the extracted tree. Other
+links extract. The bench supports case-sensitive volumes. On a case-insensitive
+volume a differently-named parent link can map onto `.bench` or `.claude`,
+which these refusals do not cover.
+
+This check is not a trust boundary. It does not check the values of an allowed
+key, such as `permissions` or `claudeMdExcludes`, and it does not read the
+tree's `CLAUDE.md`, which the dispatcher loads. The dispatcher holds the CLI's
+default tools, Bash included, so a tree can steer it into running commands as
+you, with your credentials. The run-validity check fails such a run only after
+the command has run. Run the bench only on a repository whose pull-request
+branches were all written by you or by someone you trust.
 
 `main()` runs with an owner-only umask, so run records and everything under
 `evals/review_bench/.local/` are created without group or other bits. A

@@ -1793,7 +1793,7 @@ class TestCmdAnalyzePerGateFigures:
         self._assert_gate_figures_are_the_gates_own(report)
         code_sensitivity = report["gates"]["code"]["baseline_sensitivity"]
         assert code_sensitivity["verdict"] == analysis.SENSITIVITY_NOT_SENSITIVE
-        assert code_sensitivity["interval_lower_limit"] == pytest.approx(0.0)  # M1
+        assert code_sensitivity["interval_lower_limit"] == pytest.approx(0.0)
         assert code_sensitivity["interval_upper_limit"] == pytest.approx(1.0)
         markdown_sensitivity = report["gates"]["markdown"]["baseline_sensitivity"]
         assert markdown_sensitivity["verdict"] == analysis.SENSITIVITY_NOT_SENSITIVE
@@ -1868,8 +1868,9 @@ class TestCmdAnalyzePerGateFigures:
         assert markdown["baseline_sensitivity"]["verdict"] is None
 
     def test_an_empty_gate_in_a_later_arm_is_inconclusive_with_null_verdicts_without_raising(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch, patch_n_min,
     ) -> None:
+        patch_n_min(2)
         confirmed = _two_gate_defects(markdown_count=0)
         files = _frozen_files(tmp_path, monkeypatch, confirmed=confirmed)
         files["baseline_report"].write_text(json.dumps(_baseline_report(
@@ -1880,8 +1881,8 @@ class TestCmdAnalyzePerGateFigures:
         )
         out_path = tmp_path / "report.json"
 
-        exit_code = _analyze_with_n_min(
-            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)), n_min_override=2,
+        exit_code = run_review_bench.main(
+            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)),
         )
 
         assert exit_code == 0
@@ -1893,34 +1894,20 @@ class TestCmdAnalyzePerGateFigures:
         assert report["certification"] == analysis.CERTIFICATION_INCONCLUSIVE
 
 
-class TestAnalyzeNMinOverrideIsUnreachableFromTheCommandLine:
-    """`cmd_analyze(n_min_override=...)` weakens the short-gate test and exists for tests alone."""
+class TestParserRejectsFourNMinFlagSpellings:
+    """A tripwire on four flag spellings, not a proof that no flag reaches N_min(K); the pin that N_min(K) is
+    computed from K alone is the unpatched `analysis.n_min(2)` report-value test."""
 
     _REQUIRED_ARGV = ["analyze", "--reviewer-records-path", "r.jsonl", "--judge-records-path", "j.jsonl", "--k", "1"]
 
-    def test_the_parser_defines_no_namespace_attribute_or_flag_for_it(self) -> None:
+    def test_the_parser_rejects_each_of_the_four_n_min_flag_spellings(self) -> None:
         parser = run_review_bench.build_parser()
+        parser.parse_args(self._REQUIRED_ARGV)  # positive control: the required argv alone parses
 
-        assert "n_min_override" not in vars(parser.parse_args(self._REQUIRED_ARGV))
         for flag in ("--n-min", "--n-min-override", "--nmin", "--override-n-min"):
             with pytest.raises(SystemExit) as exit_info:
                 parser.parse_args([*self._REQUIRED_ARGV, flag, "1"])
             assert exit_info.value.code == 2
-
-    def test_main_calls_the_command_with_the_namespace_alone(self, monkeypatch) -> None:
-        received: list[tuple] = []
-
-        def recording_cmd_analyze(*args, **kwargs):
-            received.append((args, kwargs))
-            return 0
-
-        monkeypatch.setattr(run_review_bench, "cmd_analyze", recording_cmd_analyze)
-
-        assert run_review_bench.main(self._REQUIRED_ARGV) == 0
-
-        ((positional, keyword),) = received
-        assert len(positional) == 1
-        assert keyword == {}
 
 
 class TestCmdAnalyzeCliFlags:
@@ -2060,9 +2047,18 @@ def _analyze_argv(files: dict[str, Path], reviewer_path: Path, judge_path: Path,
     ]
 
 
-def _analyze_with_n_min(argv: list[str], *, n_min_override: int) -> int:
-    """`cmd_analyze` with its test-only N_min override, which no CLI flag reaches."""
-    return run_review_bench.cmd_analyze(run_review_bench.build_parser().parse_args(argv), n_min_override=n_min_override)
+# Each gate in the later-arm data-path tests holds at most two fixtures, so one meets this bar.
+_N_MIN_NO_GATE_IS_SHORT = 1
+
+
+@pytest.fixture
+def patch_n_min(monkeypatch):
+    """Returns a setter that replaces N_min(K) with a fixed value, so a few fixtures can build a gate that meets it."""
+
+    def set_n_min(value: int) -> None:
+        monkeypatch.setattr(analysis, "n_min", lambda k: value)
+
+    return set_n_min
 
 
 _REJECTED_DESCRIPTION_CHARACTERS = ["\x1b", "\ufe0f", "\u3164", "\u2800", "\u2028", "\ue000"]
@@ -2141,6 +2137,42 @@ class TestAnalyzeRefusesRecordsFromTwoEnvironments:
         assert "more than one environment" in error_text
         assert "'2.0.0'@'deadbeef': ['d1']" in error_text
         assert "'2.0.0'@'cafebabe': ['d2']" in error_text
+        assert not (tmp_path / "report.json").exists()
+
+
+@pytest.mark.usefixtures("stubbed_environment")
+class TestBaselineAnalyzeRefusesRecordsNamingAnUnconfirmedDefect:
+    """Baseline-mode `analyze` exits 2 naming a defect the records carry and
+    defects.json lacks, instead of crashing on the missing key."""
+
+    @pytest.mark.parametrize("with_out", [True, False], ids=["with-out", "without-out"])
+    @pytest.mark.parametrize(
+        ("record_file", "named_kind"), [("reviewer", "reviewer"), ("judge", "judge"), ("both", "reviewer")],
+    )
+    def test_records_naming_a_defect_absent_from_defects_json_exit_2_naming_it_and_the_record_kind(
+        self, tmp_path: Path, capsys, record_file: str, named_kind: str, with_out: bool,
+    ) -> None:
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect("d1")])
+        reviewer_path, judge_path = _judged_records(tmp_path, defect_ids=("d1", "d2"))
+        if record_file == "judge":
+            kept_reviewer_records = [r for r in runner.read_run_records(reviewer_path) if r.defect_id == "d1"]
+            reviewer_path.unlink()
+            runner.append_run_records(reviewer_path, kept_reviewer_records)
+        if record_file == "reviewer":
+            kept_judge_records = [r for r in runner.read_run_records(judge_path) if r.defect_id == "d1"]
+            judge_path.unlink()
+            runner.append_run_records(judge_path, kept_judge_records)
+        out_args = ["--out", str(tmp_path / "report.json")] if with_out else []
+
+        exit_code = run_review_bench.main([
+            "analyze", "--defects-path", str(defects_path), "--reviewer-records-path", str(reviewer_path),
+            "--judge-records-path", str(judge_path), "--k", "1", *out_args,
+        ])
+
+        assert exit_code == 2
+        error_text = capsys.readouterr().err
+        assert f"{named_kind} records name defects absent from defects.json: ['d2']" in error_text
         assert not (tmp_path / "report.json").exists()
 
 
@@ -2317,9 +2349,10 @@ class TestAnalyzeLaterArmVerdicts:
         ],
     )
     def test_the_n_min_bar_counts_each_gates_fixtures_and_binds_the_smaller_kept_set(
-        self, tmp_path: Path, monkeypatch, capsys, code_count: int, markdown_count: int,
+        self, tmp_path: Path, monkeypatch, capsys, patch_n_min, code_count: int, markdown_count: int,
         defects_without_precision_answer: tuple[str, ...], patched_n_min: int, expected_certification: str,
     ) -> None:
+        patch_n_min(patched_n_min)
         confirmed = _two_gate_defects(code_count=code_count, markdown_count=markdown_count)
         files = _frozen_files(tmp_path, monkeypatch, confirmed=confirmed)
         reviewer_path, judge_path = _judged_table(
@@ -2327,7 +2360,7 @@ class TestAnalyzeLaterArmVerdicts:
             defects_without_precision_answer=defects_without_precision_answer,
         )
 
-        exit_code = _analyze_with_n_min(_analyze_argv(files, reviewer_path, judge_path, "--k", "1"), n_min_override=patched_n_min)
+        exit_code = run_review_bench.main(_analyze_argv(files, reviewer_path, judge_path, "--k", "1"))
 
         stderr = capsys.readouterr().err
         assert exit_code == 0
@@ -2335,8 +2368,9 @@ class TestAnalyzeLaterArmVerdicts:
         assert f"analyze: certification = {expected_certification}" in stderr
 
     def test_a_later_arm_that_misses_the_defects_the_baseline_found_in_one_gate_is_not_certified(
-        self, tmp_path: Path, monkeypatch, capsys,
+        self, tmp_path: Path, monkeypatch, capsys, patch_n_min,
     ) -> None:
+        patch_n_min(2)
         confirmed = _two_gate_defects()
         files = _frozen_files(tmp_path, monkeypatch, confirmed=confirmed)
         reviewer_path, judge_path = _judged_table(tmp_path, {
@@ -2345,8 +2379,8 @@ class TestAnalyzeLaterArmVerdicts:
         })
         out_path = tmp_path / "later-arm-report.json"
 
-        exit_code = _analyze_with_n_min(
-            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)), n_min_override=2,
+        exit_code = run_review_bench.main(
+            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)),
         )
 
         stderr = capsys.readouterr().err
@@ -2361,9 +2395,10 @@ class TestAnalyzeLaterArmVerdicts:
         )
 
     def test_a_secondary_stratum_that_loses_decisively_leaves_a_later_arm_passing_both_gates_certified(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch, patch_n_min,
     ) -> None:
         """Non-markdown `pr-comment` defects form the secondary stratum, which is reported and never gates."""
+        patch_n_min(2)
         secondary = [_confirmed_single_defect(f"s{i}", source="pr-comment") for i in (1, 2)]
         confirmed = [*_two_gate_defects(), *secondary]
         files = _frozen_files(tmp_path, monkeypatch, confirmed=confirmed)
@@ -2374,8 +2409,8 @@ class TestAnalyzeLaterArmVerdicts:
         })
         out_path = tmp_path / "later-arm-report.json"
 
-        exit_code = _analyze_with_n_min(
-            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)), n_min_override=2,
+        exit_code = run_review_bench.main(
+            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)),
         )
 
         assert exit_code == 0
@@ -2457,8 +2492,12 @@ class TestAnalyzeLaterArmVerdicts:
 
 class TestAnalyzeLaterArmReadsThePerGateBaselineVerdicts:
     """Later-arm `analyze` reads each gate's sensitivity verdict from the baseline report. Arm X
-    passes all four tests in every case here, and `n_min_override` keeps no gate short, so the outcome
+    passes all four tests in every case here, and the patched N_min keeps no gate short, so the outcome
     comes from the baseline verdicts alone."""
+
+    @pytest.fixture(autouse=True)
+    def _no_gate_is_short(self, patch_n_min) -> None:
+        patch_n_min(_N_MIN_NO_GATE_IS_SHORT)
 
     def _certification(
         self, tmp_path: Path, monkeypatch, *, gate_verdicts: dict | None = None,
@@ -2475,7 +2514,7 @@ class TestAnalyzeLaterArmReadsThePerGateBaselineVerdicts:
         )
         out_path = tmp_path / "later-arm-report.json"
         argv = _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path))
-        assert _analyze_with_n_min(argv, n_min_override=1) == 0
+        assert run_review_bench.main(argv) == 0
         return json.loads(out_path.read_text())["certification"]
 
     def test_both_gates_sensitive_with_no_gate_short_certifies(self, tmp_path: Path, monkeypatch) -> None:
@@ -2632,7 +2671,12 @@ class TestAnalyzeBaselineThenLaterArmThroughTheWrittenReport:
     """The baseline report is written by baseline-mode `analyze --out` and read by a later arm's `analyze`
     through `--baseline-report-path`, so the writer's keys and the reader's keys are tested together.
     A gate whose defects only arm 1 finds reads sensitive in the baseline, and a gate whose defects both
-    arms find reads not sensitive."""
+    arms find reads not sensitive. The patched N_min keeps no gate short, so each outcome comes
+    from the baseline verdicts alone."""
+
+    @pytest.fixture(autouse=True)
+    def _no_gate_is_short(self, patch_n_min) -> None:
+        patch_n_min(_N_MIN_NO_GATE_IS_SHORT)
 
     @staticmethod
     def _write_baseline_report(
@@ -2664,8 +2708,8 @@ class TestAnalyzeBaselineThenLaterArmThroughTheWrittenReport:
         )
         out_path = tmp_path / "later-arm-report.json"
 
-        exit_code = _analyze_with_n_min(
-            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)), n_min_override=2,
+        exit_code = run_review_bench.main(
+            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)),
         )
 
         assert exit_code == 0

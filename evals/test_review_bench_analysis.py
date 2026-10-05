@@ -1081,8 +1081,8 @@ class TestCertifyLaterArm:
             analysis.certify_later_arm({name: _gate_result("pass") for name in gate_names})
 
 
-# The assignment of every (source, file_is_markdown) cell, written from the plan's
-# "Gating and secondary strata" and never read from analysis.GATING_RULE.
+# The assignment of every (source, file_is_markdown) cell. Written independently of
+# `analysis.GATING_RULE`, so an edit to the rule fails this table.
 _EXPECTED_GATE_OF_CELL = {
     ("szz", False): "code",
     ("review-round", False): "code",
@@ -1273,7 +1273,7 @@ class TestFixtureClusterBootstrap:
 
 
 class TestUndefinedFiguresAreNull:
-    """Sizes 0, 1, and 2 through each function that returned 0.0 on an empty set, or raised. Counts are
+    """Sizes 0, 1, and 2 through each function whose figure is undefined on a small set. Counts are
     of fixtures wherever an interval is concerned."""
 
     @staticmethod

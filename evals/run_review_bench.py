@@ -1063,10 +1063,7 @@ def _later_arm_gate_sections(
     return sections, gate_results
 
 
-def cmd_analyze(args: argparse.Namespace, *, n_min_override: int | None = None) -> int:
-    """`n_min_override` is test-only and no CLI flag reaches it: it replaces
-    N_min(K) in the short-gate test, so a test can build a gate that meets it
-    from a few fixtures."""
+def cmd_analyze(args: argparse.Namespace) -> int:
     from review_bench import adjudicate, analysis, arms, defects, runner
 
     # Caught here too, not only by main()'s own top-level handler, since
@@ -1090,10 +1087,16 @@ def cmd_analyze(args: argparse.Namespace, *, n_min_override: int | None = None) 
             )
             analysis.check_record_defect_ids_match(reviewer_records, frozen["defect_ids"])
             baseline_verdicts = analysis.load_baseline_gate_verdicts(Path(args.baseline_report_path), frozen)
-        elif args.out is not None:
-            freeze_identity = analysis.baseline_report_freeze_identity(
-                Path(args.defects_path), Path(args.arms_root), reviewer_records, k=args.k,
+        else:
+            confirmed_defect_ids = [defect.id for defect in confirmed]
+            analysis.check_records_name_confirmed_defects(
+                reviewer_records, confirmed_defect_ids, record_kind="reviewer",
             )
+            analysis.check_records_name_confirmed_defects(judge_records, confirmed_defect_ids, record_kind="judge")
+            if args.out is not None:
+                freeze_identity = analysis.baseline_report_freeze_identity(
+                    Path(args.defects_path), Path(args.arms_root), reviewer_records, k=args.k,
+                )
     except analysis.HarnessInvalidatedError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -1132,7 +1135,7 @@ def cmd_analyze(args: argparse.Namespace, *, n_min_override: int | None = None) 
     precision_kept_ids = analysis.kept_precision_defect_ids(kept_ids, precision_counts)
 
     baseline_arm, other_arm = arms.ARM_CURRENT_RULE, (args.arm_x or arms.ARM_FUNCTION_CONTEXT)
-    n_min_value = n_min_override if n_min_override is not None else analysis.n_min(args.k)
+    n_min_value = analysis.n_min(args.k)
     print(
         f"analyze: {len(confirmed)} confirmed defect(s), {len(kept_ids)} kept for recall (N_min={n_min_value})",
         file=sys.stderr,
@@ -1179,7 +1182,8 @@ def cmd_analyze(args: argparse.Namespace, *, n_min_override: int | None = None) 
             sensitivity = gate_sections[gate]["baseline_sensitivity"]
             print(
                 f"analyze: {gate} gate baseline sensitivity = {sensitivity['verdict']} "
-                f"(M1 {sensitivity['interval_lower_limit']}, upper limit {sensitivity['interval_upper_limit']})",
+                f"(interval lower limit {sensitivity['interval_lower_limit']}, "
+                f"upper limit {sensitivity['interval_upper_limit']})",
                 file=sys.stderr,
             )
     else:

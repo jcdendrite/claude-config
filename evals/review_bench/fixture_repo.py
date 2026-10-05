@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import posixpath
 import shutil
 import subprocess
 import tarfile
@@ -73,8 +74,9 @@ _GIT_INFO_ATTRIBUTES_LINES = (f"*.md diff={_MARKDOWN_DIFF_DRIVER}\n", f"*.markdo
 # carry executable config (hooks, env, apiKeyHelper, statusLine, MCP servers)
 # into the session that runs in the fixture.
 _ALLOWED_PROJECT_SETTINGS_KEYS = frozenset({"attribution", "claudeMdExcludes", "enabledPlugins", "permissions"})
-_PROJECT_SETTINGS_RELPATH = Path(".claude") / "settings.json"
-_FORBIDDEN_PROJECT_CONFIG_RELPATHS = (Path(".mcp.json"), Path(".claude") / "settings.local.json")
+_PROJECT_CONFIG_DIR_NAME = ".claude"
+_PROJECT_SETTINGS_RELPATH = Path(_PROJECT_CONFIG_DIR_NAME) / "settings.json"
+_FORBIDDEN_PROJECT_CONFIG_RELPATHS = (Path(".mcp.json"), Path(_PROJECT_CONFIG_DIR_NAME) / "settings.local.json")
 
 
 class UnsafeFixtureConfigError(ValueError):
@@ -94,7 +96,7 @@ def _run_git(
         env = {**env, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
     return subprocess.run(
         ["git", *args], cwd=cwd, check=True, timeout=_LOCAL_GIT_TIMEOUT_S,
-        capture_output=True, text=True, env=env,
+        capture_output=True, encoding="utf-8", errors="replace", env=env,
     )
 
 
@@ -131,7 +133,55 @@ def _extract_commit_tree(source_repo: Path, commit: str, dest_dir: Path) -> None
         ["git", "archive", commit], cwd=source_repo, check=True,
         timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=environment_without_git_local_vars(),
     )
-    with tarfile.open(fileobj=io.BytesIO(result.stdout)) as tar:
+    _extract_archive(result.stdout, dest_dir)
+
+
+def _has_git_path_component(path: str) -> bool:
+    return any(component.casefold() == ".git" for component in path.split("/"))
+
+
+def _first_path_component_casefolded(path: str) -> str:
+    """The first component of `path` as extraction would resolve it: leading
+    `./` and `/` and any `x/..` detours are dropped."""
+    components = posixpath.normpath(path).lstrip("/").split("/")
+    return components[0].casefold()
+
+
+def _extract_archive(archive: bytes, dest_dir: Path) -> None:
+    """Extract a tar `archive` into `dest_dir`, refusing before any write:
+    - a member with a `.git` path component, or a link whose target has one,
+      since a case-insensitive volume maps `.GIT` onto the fixture's own `.git`
+      and a link into `.git` lets a later member write through it;
+    - a member whose first path component is `.bench`, which the harness
+      reserves for its own artifacts;
+    - a link, symbolic or hard, whose own path starts with `.claude`, since a
+      harness write into `.bench` or `.claude/agents` would follow it into
+      project config after the config check has run.
+    Other links extract. The `.git` case fold covers Linux and APFS, not HFS+
+    ignorable code points or NTFS short names. The `.bench` and `.claude`
+    refusals fold case but do not resolve links above a path, so a
+    differently-named parent link on a case-insensitive volume is not covered.
+    The refusal runs at fixture
+    build, not in `preflight_defects`, and a hit aborts that fixture."""
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        for member in tar.getmembers():
+            is_link = member.islnk() or member.issym()
+            first_component = _first_path_component_casefolded(member.name)
+            if _has_git_path_component(member.name):
+                raise UnsafeFixtureConfigError(f"fixture tree holds a member with a .git path component: {member.name!r}")
+            if is_link and _has_git_path_component(member.linkname):
+                raise UnsafeFixtureConfigError(
+                    f"fixture tree holds a link {member.name!r} whose target has a .git path component: {member.linkname!r}"
+                )
+            if first_component == _BENCH_DIR_NAME:
+                raise UnsafeFixtureConfigError(
+                    f"fixture tree holds {member.name!r} under {_BENCH_DIR_NAME}/, which the harness reserves"
+                )
+            if is_link and first_component == _PROJECT_CONFIG_DIR_NAME:
+                raise UnsafeFixtureConfigError(
+                    f"fixture tree holds a link {member.name!r} under {_PROJECT_CONFIG_DIR_NAME}/, "
+                    "which a later harness write would follow into project config"
+                )
         tar.extractall(dest_dir, filter="data")
 
 
@@ -196,7 +246,7 @@ def _commit_snapshot(dest_dir: Path, message: str) -> None:
     subprocess.run(
         ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
          "commit", "-q", "--allow-empty", "-m", message], cwd=dest_dir,
-        check=True, timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, text=True,
+        check=True, timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, encoding="utf-8", errors="replace",
         env={**environment_without_git_local_vars(), **_git_commit_env()},
     )
 
@@ -290,7 +340,10 @@ def _write_changed_files_tsv(dest_dir: Path, stats: list[ChangedFileStat]) -> No
     lines = ["path\tline_count\testimated_tokens\tover_read_cap"]
     for stat in stats:
         lines.append(f"{stat.path}\t{stat.line_count}\t{stat.estimated_tokens}\t{'1' if stat.over_read_cap else '0'}")
-    (dest_dir / _BENCH_DIR_NAME / "changed-files.tsv").write_text("\n".join(lines) + "\n")
+    # `surrogateescape` re-encodes the lone surrogates `os.fsdecode` gave a non-UTF-8 name.
+    (dest_dir / _BENCH_DIR_NAME / "changed-files.tsv").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8", errors="surrogateescape",
+    )
 
 
 def _write_bench_diffs(dest_dir: Path) -> None:

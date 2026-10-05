@@ -693,14 +693,16 @@ def mine(repo_dir: Path, *, run: GhRun = subprocess.run) -> list[Candidate]:
 
     `run` carries every `gh` call and is the test seam; git calls always run
     for real. A comment the miner cannot attribute is skipped and counted by
-    reason, as in `mine_review_rounds.mine`. A comment on which git gave no
-    answer is skipped and counted under `git-error`, and the run completes. A
-    run that skipped a comment on an unfetchable PR head exits 2 after printing
-    the counts and writes nothing, because that skip depends on the PR head's
-    fetch, not the comment, and a partial shortlist would stand in for a
-    complete one. That cause is usually transient (network, auth, a ref-lock
-    collision in the shared .git) and permanent only for a pull ref the remote
-    lacks.
+    reason, as in `mine_review_rounds.mine`. A body holding a joiner,
+    variation selector, or other invisible character is counted as
+    `invisible-characters`, and one holding any other control character as
+    `control-characters`. A comment on which git gave no answer is skipped,
+    counted under `git-error`, and listed by ID. The run completes and writes
+    its shortlist, so a rerun retries that comment and rewrites the file, and
+    one that fails again fails for that comment, not for the run. A run that
+    skipped a comment on an unfetchable PR head exits 2 after printing the
+    counts and writes nothing, because a partial shortlist would stand in for
+    a complete one. See `_REF_STATUS_FETCH_FAILED` for the cause.
     """
     repository = resolve_origin_repository(repo_dir)
     require_public_repo(repo_dir, repository, run=run)

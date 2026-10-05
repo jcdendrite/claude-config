@@ -428,6 +428,18 @@ class TestPublicGitText:
         assert "introduce x is one" in text
         assert "fix x should be two" in text
 
+    def test_a_non_utf8_byte_in_a_commits_diff_is_replaced_not_raised(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        (repo / "latin1.txt").write_bytes(b"caf\xe9 = 1\n")
+        introducing_sha = _commit(repo, "introduce a latin-1 file")
+        (repo / "latin1.txt").write_bytes(b"caf\xe9 = 2\n")
+        fix_sha = _commit(repo, "fix the latin-1 file")
+
+        text = defects.public_git_text(repo, introducing_sha, fix_sha)
+
+        assert "caf\ufffd = 1" in text
+        assert "caf\ufffd = 2" in text
+
     def test_raises_when_the_injected_run_fails(self, tmp_path):
         """A failing run (e.g. an unreachable commit from rewritten history)
         must propagate, not be swallowed here -- cmd_confirm is the layer
@@ -916,6 +928,17 @@ class TestParseUnifiedDiff:
         assert files[1].hunks[0].removed_lines == ["old"]
 
 
+class TestSzzRunGitDecoding:
+    def test_a_non_utf8_byte_in_a_commits_diff_is_replaced_not_raised(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        (repo / "latin1.txt").write_bytes(b"caf\xe9 = 1\n")
+        introducing_sha = _commit(repo, "introduce a latin-1 file")
+
+        diff_text = mine_szz._run_git(["show", "--format=", introducing_sha], cwd=repo)
+
+        assert "+caf\ufffd = 1" in diff_text
+
+
 class TestMineSzzDegradesInsteadOfRaising:
     def test_removed_double_dash_comment_does_not_break_blame_of_the_real_removal(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
@@ -1027,6 +1050,23 @@ class TestBlameFixCommit:
 # --- mine_review_rounds: branch-ref resolution -------------------------------
 
 
+class TestPathsTouchedOnBranch:
+    def test_a_path_that_is_not_valid_utf8_is_listed_with_a_replacement_character_instead_of_raising(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "seed.py", "seed = 1\n")
+        base_sha = _commit(repo, "seed")
+        try:
+            _write(repo, os.fsdecode(b"caf\xe9.py"), "named = 1\n")
+        except OSError:
+            pytest.skip("this filesystem rejects a non-UTF-8 file name")
+        _write(repo, "plain.py", "plain = 1\n")
+        _commit(repo, "touch a non-UTF-8 path and a plain one")
+
+        touched = mine_review_rounds._paths_touched_on_branch(repo, base_sha, "HEAD")
+
+        assert touched == frozenset({"caf\ufffd.py", "plain.py"})
+
+
 class TestCommitsTouchingPath:
     @pytest.mark.parametrize("path", ["t[1].py", ":(top)x.py", ":!x.py"])
     def test_a_path_with_glob_characters_or_pathspec_magic_lists_only_the_commits_touching_that_name(
@@ -1084,6 +1124,30 @@ class TestResolveBranchRef:
         assert _git(repo, "rev-parse", ref).strip() == rewritten_head_sha
         assert rewritten_head_sha != first_head_sha
 
+    def test_a_pr_head_whose_tree_holds_a_dot_git_entry_is_refused_and_leaves_no_local_ref(self, tmp_path):
+        repo, bare = self._repo_with_bare_origin(tmp_path)
+
+        def git_in_bare(*args: str, stdin: bytes | None = None) -> str:
+            return subprocess.run(
+                ["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],
+                cwd=bare, input=stdin, capture_output=True, check=True,
+            ).stdout.decode().strip()
+
+        blob_id = git_in_bare("hash-object", "-w", "--stdin", stdin=b"hostile\n")
+        # `--literally` skips the tree-format check that would reject a `.git` entry name.
+        raw_tree = b"100644 .git\0" + bytes.fromhex(blob_id)
+        tree_id = git_in_bare("hash-object", "-t", "tree", "--literally", "-w", "--stdin", stdin=raw_tree)
+        hostile_head = git_in_bare("commit-tree", tree_id, "-m", "hostile head")
+        git_in_bare("update-ref", "refs/pull/7/head", hostile_head)
+
+        ref_status, ref = mine_review_rounds.resolve_branch_ref(repo, "nonexistent-branch", 7)
+
+        assert (ref_status, ref) == ("fetch-failed", None)
+        unresolved = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", "refs/review-bench/pr/7"], cwd=repo, capture_output=True,
+        )
+        assert unresolved.returncode != 0
+
     def test_missing_pr_head_records_fetch_failed(self, tmp_path):
         repo, _bare = self._repo_with_bare_origin(tmp_path)
         ref_status, ref = mine_review_rounds.resolve_branch_ref(repo, "nonexistent-branch", 999)
@@ -1096,7 +1160,7 @@ class TestResolveBranchRef:
         real_run = subprocess.run
 
         def run_with_a_hostile_fetch_failure(command, **kwargs):
-            if command[:2] == ["git", "fetch"]:
+            if command[0] == "git" and "fetch" in command:
                 raise subprocess.CalledProcessError(128, command, stderr="fatal: \x1b[31mred\u202e\n")
             return real_run(command, **kwargs)
 
@@ -1170,6 +1234,31 @@ class TestResolvePrNumber:
 
         captured = capsys.readouterr()
         assert "rate limited" in captured.err
+
+    def test_an_escape_sequence_in_a_failed_gh_calls_stderr_is_not_printed_raw(self, tmp_path, monkeypatch, capsys):
+        """`gh` stderr can echo text the provider chose, so it reaches the terminal escaped."""
+        def fake_run(*args, **kwargs):
+            raise subprocess.CalledProcessError(1, args, stderr="\x1b[31mred\u202e\n")
+
+        monkeypatch.setattr(mine_review_rounds.subprocess, "run", fake_run)
+
+        assert mine_review_rounds.resolve_pr_number(tmp_path, "feat") is None
+
+        assert capsys.readouterr().err == (
+            "mine-rounds: gh pr list for branch 'feat' failed (CalledProcessError): \\x1b[31mred\\u202e\n"
+        )
+
+    def test_the_text_of_a_non_subprocess_gh_failure_is_escaped_too(self, tmp_path, monkeypatch, capsys):
+        def fake_run(*args, **kwargs):
+            raise FileNotFoundError("gh \x1b[31m missing")
+
+        monkeypatch.setattr(mine_review_rounds.subprocess, "run", fake_run)
+
+        assert mine_review_rounds.resolve_pr_number(tmp_path, "feat") is None
+
+        stderr = capsys.readouterr().err
+        assert "gh \\x1b[31m missing" in stderr
+        assert "\x1b" not in stderr
 
 
 def _ts(iso_date: str) -> float:
@@ -1779,6 +1868,7 @@ _COMMENT_ID = 1001
 # with their blockquote prefix. The FIXED example prints `commit_sha: <sha>`,
 # a placeholder. These reply texts and the field tokens below are hand-copied:
 # no test reads SKILL.md, so an edit to its reply format does not fail them.
+# Drift surfaces only as a zero-candidate run.
 _RESPOND_PR_FIXED_EXAMPLE = (
     "> **[Claude Code]** Fixed. Applied the reviewer's intent (validate before writing) but checked at the handler "
     "level rather than inline at the call site — the call site is shared by three paths and an inline check would "
@@ -1803,7 +1893,8 @@ _RESPOND_PR_AGREE_NO_CHANGE_REPLY = (
     "**[Claude Code]** Agreed, and the caller already guards it. `acknowledgment: confirmed` | "
     "`rationale: the guard sits one frame up`"
 )
-# SKILL.md:124's preferred wording, beside a `disposition: fixed-` token and no sha.
+# The wording SKILL.md's "Avoid SHA-pinned commit references" guideline prefers, beside a `disposition: fixed-` token and
+# no sha.
 _RESPOND_PR_LATEST_COMMIT_REPLY = (
     "**[Claude Code]** Addressed in the latest commit on this branch. `disposition: fixed-as-requested`"
 )
@@ -1887,9 +1978,11 @@ def _closed_pull(number: int, branch: str, *, merged: bool = True) -> dict:
     return {"number": number, "head": {"ref": branch}, "merged_at": "2026-01-05T00:00:00Z" if merged else None}
 
 
-def _pr_comment_repo(tmp_path: Path, path: str = "app.py") -> tuple[Path, str, str, str]:
+def _pr_comment_repo(
+    tmp_path: Path, path: str = "app.py", *, bad_line: str = "bad_value",
+) -> tuple[Path, str, str, str]:
     """Returns (repo, main_sha, introducing_sha, fix_sha) for local branch `feat`, which introduces
-    `bad_value` as line 2 of `path` on 2026-01-02 and fixes it on 2026-01-04. `origin` names a github.com
+    `bad_line` as line 2 of `path` on 2026-01-02 and fixes it on 2026-01-04. `origin` names a github.com
     URL that no fetch can reach."""
     repo = _init_repo(tmp_path / "repo")
     _git(repo, "remote", "add", "origin", _ORIGIN_URL)
@@ -1897,7 +1990,7 @@ def _pr_comment_repo(tmp_path: Path, path: str = "app.py") -> tuple[Path, str, s
     main_sha = _commit_at(repo, "seed", "2026-01-01T00:00:00+0000")
     _set_origin_main(repo, main_sha)
     _git(repo, "checkout", "-q", "-b", "feat")
-    _write(repo, path, "line0\nbad_value\n")
+    _write(repo, path, f"line0\n{bad_line}\n")
     introducing_sha = _commit_at(repo, "introduce bad value", "2026-01-02T00:00:00+0000")
     _write(repo, path, "line0\ngood_value\n")
     fix_sha = _commit_at(repo, "fix wrong value", "2026-01-04T00:00:00+0000")
@@ -2001,6 +2094,13 @@ class TestMinePrComments:
             "created_at": "2026-01-03T00:00:00Z", "head_on_pr_branch": True,
             "public_comment_text": "app.py:2 — This value is wrong.",
         }
+
+    def test_the_same_comment_listed_twice_fails_on_the_duplicate_candidate_id(self, tmp_path):
+        repo, _main_sha, introducing_sha, fix_sha = _pr_comment_repo(tmp_path)
+        thread = [_pr_review_comment(introducing_sha), _pr_thread_reply(_fixed_reply_body(fix_sha))]
+
+        with pytest.raises(ValueError, match=f"duplicate candidate id 'pr-comment:{_COMMENT_ID}'"):
+            _mine_pr_comments(repo, [*thread, _pr_review_comment(introducing_sha)])
 
     def test_a_comment_on_a_markdown_path_is_kept_and_flagged_markdown(self, tmp_path):
         """Markdown instruction files, whose prose the engineer reviews, must not fall to a markdown filter."""
@@ -2432,6 +2532,20 @@ class TestMinePrComments:
         assert candidates == []
         assert "'anchor-mismatch': 1" in capsys.readouterr().err
 
+    def test_a_commented_line_of_non_ascii_prose_anchors_across_whitespace_and_quote_characters(self, tmp_path):
+        """Markdown prose carries em-dashes, curly quotes, and no-break spaces, which the hunk and the file may spell
+        with different whitespace characters."""
+        repo, _main_sha, introducing_sha, fix_sha = _pr_comment_repo(
+            tmp_path, bad_line="\u201cUse it\u201d \u2014 never\u00a0that, \u2018ever\u2019.",
+        )
+        comment = _pr_review_comment(
+            introducing_sha, diff_hunk="@@ -1 +1,2 @@\n line0\n+\u201cUse it\u201d \u2014 never that, \u2018ever\u2019.",
+        )
+
+        candidates, _fake_gh = _mine_pr_comments(repo, [comment, _pr_thread_reply(_fixed_reply_body(fix_sha))])
+
+        assert [candidate.id for candidate in candidates] == [f"pr-comment:{_COMMENT_ID}"]
+
     def test_an_original_line_past_the_end_of_the_file_is_an_anchor_mismatch(self, tmp_path, capsys):
         repo, _main_sha, introducing_sha, fix_sha = _pr_comment_repo(tmp_path)
         comment = _pr_review_comment(introducing_sha, original_line=99)
@@ -2616,11 +2730,10 @@ class TestMinePrComments:
             mine_pr_comments.mine(repo, run=fake_gh)
         assert exit_info.value.code == 2
         assert fake_gh.calls == []  # no gh call, so no endpoint was read
-        stderr = capsys.readouterr().err
-        assert "origin remote is missing or does not name a repository on github.com" in stderr
-        assert origin_url not in stderr
-        remote_parts = [part for part in re.split(r"[/@:?#]+", origin_url) if len(part) > 3]
-        assert [part for part in remote_parts if part not in {"https", "file", "github.com"} and part in stderr] == []
+        assert capsys.readouterr().err == (
+            "mine-pr-comments: origin remote is missing or does not name a repository on github.com, "
+            "or git could not read this checkout\n"
+        )
 
     def test_a_repository_with_no_origin_remote_exits_2(self, tmp_path, capsys):
         repo = _init_repo(tmp_path / "repo")
@@ -3099,7 +3212,7 @@ class TestMinePrComments:
             pytest.param("A" * 40, id="uppercase-hex"),
             pytest.param("g" * 40, id="non-hex"),
             pytest.param("a" * 41, id="forty-one-hex"),
-            pytest.param("a" * 39 + "\n", id="trailing-newline"),
+            pytest.param("a" * 40 + "\n", id="trailing-newline"),
         ],
     )
     def test_an_original_commit_id_that_is_not_a_40_hex_sha_is_malformed_and_reaches_no_git_call(

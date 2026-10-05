@@ -1669,7 +1669,7 @@ def _unresolvable_commits(source_repo: Path, commits: Sequence[str]) -> list[str
         proc = subprocess.run(
             ["git", "cat-file", "--batch-check"], cwd=source_repo,
             input="".join(f"{commit}^{{commit}}\n" for commit in commits),
-            capture_output=True, text=True, check=False, timeout=_ENVIRONMENT_READ_TIMEOUT_S,
+            capture_output=True, encoding="utf-8", errors="replace", check=False, timeout=_ENVIRONMENT_READ_TIMEOUT_S,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise HarnessInvalidatedError(f"preflight: could not check commits in {source_repo}: {exc}") from exc

@@ -271,7 +271,9 @@ def resolve_pr_number(repo_dir: Path, branch: str) -> int | None:
         # unreachable" is distinguishable after the fact from a genuine
         # "no PR for this branch" -- both otherwise resolve to the same
         # None -> ref_status pr-unknown.
-        detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
+        detail = escape_for_terminal(
+            exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
+        )
         print(f"mine-rounds: gh pr list for branch {branch!r} failed ({type(exc).__name__}): {detail}", file=sys.stderr)
         return None
     if not payload:
@@ -295,12 +297,13 @@ def resolve_branch_ref(repo_dir: Path, branch: str, pr_number: int | None) -> tu
         return "pr-unknown", None
     dest_ref = f"refs/review-bench/pr/{pr_number}"
     try:
+        # fetch.fsckObjects makes git reject malformed or hostile trees (a `.git` entry among them) as they arrive.
         # The `+` lets a re-mine move this ref after a force-pushed PR head;
         # `confirm` pins each defect's commits under its own ref, so moving
         # this one cannot orphan a confirmed defect.
         subprocess.run(
-            ["git", "fetch", "--no-tags", "origin", f"+refs/pull/{pr_number}/head:{dest_ref}"],
-            cwd=repo_dir, capture_output=True, text=True, timeout=_GIT_FETCH_TIMEOUT_S, check=True,
+            ["git", "-c", "fetch.fsckObjects=true", "fetch", "--no-tags", "origin", f"+refs/pull/{pr_number}/head:{dest_ref}"],
+            cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=_GIT_FETCH_TIMEOUT_S, check=True,
         )
     except subprocess.CalledProcessError as exc:
         # This repo's own .git is shared across every worktree, so a
@@ -326,7 +329,7 @@ def resolve_branch_ref(repo_dir: Path, branch: str, pr_number: int | None) -> tu
 def _merge_base(repo_dir: Path, a: str, b: str) -> str | None:
     try:
         result = subprocess.run(
-            ["git", "merge-base", a, b], cwd=repo_dir, capture_output=True, text=True,
+            ["git", "merge-base", a, b], cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace",
             timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
         )
     except _LOCAL_GIT_ERRORS:
@@ -338,7 +341,7 @@ def _commits_touching_path(repo_dir: Path, base: str, ref: str, path: str) -> li
     try:
         result = subprocess.run(
             ["git", "--literal-pathspecs", "log", "--format=%H\x1f%aI", f"{base}..{ref}", "--", path],
-            cwd=repo_dir, capture_output=True, text=True, timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
+            cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
         )
     except _LOCAL_GIT_ERRORS:
         return []
@@ -354,7 +357,7 @@ def _commits_touching_path(repo_dir: Path, base: str, ref: str, path: str) -> li
 def _rev_parse(repo_dir: Path, rev: str) -> str | None:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", rev], cwd=repo_dir, capture_output=True, text=True,
+            ["git", "rev-parse", rev], cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace",
             timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
         )
     except _LOCAL_GIT_ERRORS:
@@ -365,7 +368,7 @@ def _rev_parse(repo_dir: Path, rev: str) -> str | None:
 def _commit_date(repo_dir: Path, commit: str) -> str | None:
     try:
         result = subprocess.run(
-            ["git", "log", "-1", "--format=%aI", commit], cwd=repo_dir, capture_output=True, text=True,
+            ["git", "log", "-1", "--format=%aI", commit], cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace",
             timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
         )
     except _LOCAL_GIT_ERRORS:
@@ -379,7 +382,7 @@ def _paths_touched_on_branch(repo_dir: Path, base: str, ref: str) -> frozenset[s
     try:
         result = subprocess.run(
             ["git", "log", "-z", "--name-only", "--no-renames", "--format=", f"{base}..{ref}"],
-            cwd=repo_dir, capture_output=True, text=True, timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
+            cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
         )
     except _LOCAL_GIT_ERRORS:
         return frozenset()
