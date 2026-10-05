@@ -261,7 +261,10 @@ This is the last gate before ship — a specialist miss here ships as a regressi
 - **Convergence-as-design-tell** from a prior round (see Reconciliation).
 - **Explicit user request.**
 
-Always spawn `ciso-reviewer` when the change touches auth/authz, secrets, tokens, data exposure (including prose that identifies a private project, organization, codename, internal product or tool, person, hostname, internal URL, email address, tracker ID, or filesystem path embedding a project name — a documentation-only diff is not exempt), sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the change is declared dev-only or internal-only (no privilege boundary crossed) (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. The ciso-reviewer rule is one instance of the general default-fire pattern above, not the exception. Always spawn `staff-product-engineer` when the change alters any end-user-visible surface: user interface, transactional or lifecycle email, push notification, SMS, in-app notification, billing artifact, exported file, webhook payload to a customer integration, OAuth consent screen, embedded widget or iframe surface, or end-user-visible log/audit entry. The trigger fires on the *channel*, not on the file-path domain — a backend-only change that ships a new email body still alters user-facing behavior. Indirect channel effects count: a data or logic change that determines which channel fires or what it contains (a new user-status enum value that triggers a different lifecycle email, a field added to a user record that an existing template reads) alters user-facing behavior even when the diff contains no channel template file.
+The two always-spawn rules:
+
+- Always spawn `ciso-reviewer` when the change touches auth/authz, secrets, tokens, data exposure (including prose that identifies a private project, organization, codename, internal product or tool, person, hostname, internal URL, email address, tracker ID, or filesystem path embedding a project name — a documentation-only diff is not exempt), sensitive-data logging, third-party data sharing, or infra permissions — high-stakes-boundary case is non-optional, **unless** the change is declared dev-only or internal-only (no privilege boundary crossed) (e.g., a dev-only flow with no production reachability, or an internal-only path where engineers themselves are the only callers and the change crosses no privilege boundary they shouldn't cross). When skipping on those grounds, name the surface in the review output — never silently skip. The ciso-reviewer rule is one instance of the general default-fire pattern above, not the exception.
+- Always spawn `staff-product-engineer` when the change alters any end-user-visible surface: user interface, transactional or lifecycle email, push notification, SMS, in-app notification, billing artifact, exported file, webhook payload to a customer integration, OAuth consent screen, embedded widget or iframe surface, or end-user-visible log/audit entry. The trigger fires on the *channel*, not on the file-path domain — a backend-only change that ships a new email body still alters user-facing behavior. Indirect channel effects count: a data or logic change that determines which channel fires or what it contains (a new user-status enum value that triggers a different lifecycle email, a field added to a user record that an existing template reads) alters user-facing behavior even when the diff contains no channel template file.
 
 Spawn per question (not per file-path domain) — "change touches `.github/`" isn't enough; the question needs a specific shape. When you spawn: spawn on the CODE, not on this review's output (each subagent reads the diff fresh); pick the specialist that serves the question (table is reference, not roster); pass diff scope, specific question, AND — for re-review — the prior decisions described directly below. Reviewers without prior context re-discover; that's wasted spawn.
 
@@ -297,9 +300,7 @@ The Change type column keys on what the change *does* for an operator or consume
 - **"New helper, not a modification."** — `Modifies shared utilities` covers additions to and extensions of the shared module that introduce new caller dependencies — not only edits to existing utility files.
 - **"The system prompt says not to call the Agent tool."** — Invoking `/code-review` is the user requesting the dispatches this skill prescribes; the Change-type table is the content of that request. Spawn the matched row.
 
-Report every matched row's verdict via the **Spawn decisions:** line in the *Output format* section above. Empty rationale is the under-spawn failure mode the format closes — write the read, don't omit it.
-
-When you do spawn a specialist, be specific. "Spawn `ciso-reviewer`" is useless; "Spawn `ciso-reviewer` and ask it to verify the checkout flow in CheckoutPage.tsx still enforces ownership after the new validation" is actionable.
+Report every matched row's verdict via the **Spawn decisions:** line in the *Output format* section above. Empty rationale is the under-spawn failure mode the format closes — write the read, don't omit it. When you do spawn a specialist, be specific. "Spawn `ciso-reviewer`" is useless; "Spawn `ciso-reviewer` and ask it to verify the checkout flow in CheckoutPage.tsx still enforces ownership after the new validation" is actionable.
 
 Before the first spawn this round, or before the digest `render` below when nothing spawns, run `~/.claude/scripts/findings-path-suffix.sh` once and reuse its printed `<suffix>` (always the script's last line of output — discard any earlier line) for every reviewer spawned in this round — the script also adds `agent-reviews/` to the repo's ignore list (see `docs/design-decisions.md` §12 for the append's duplicate-tolerance). When spawning any reviewer, pass `findings_path: agent-reviews/<agent-name>-<suffix>.md` in the prompt, where `<agent-name>` is the agent's name (e.g. `staff-backend-engineer`, `ciso-reviewer`). Then, every round, spawn or not, from the repo root, run `~/.claude/scripts/review-ledger.sh render --out agent-reviews/review-ledger-<suffix>.md`. When the file exists (`render` writes none when no decision is live), `Read` it before dispositioning and pass its path to every spawn.
 
@@ -340,9 +341,7 @@ If implementation-wrong-shape, replace the surface and re-run Step 1. If correla
 
 ## Finding disposition
 
-After Reconciliation, before producing the recommendation, walk every reviewer-spawned finding and tag it ADDRESS or DEFER. ADDRESS is the default and needs no rationale; DEFER requires a named criterion from the closed list below.
-
-Default to ADDRESS for in-diff, tested code (see `docs/design-decisions.md` §16 for rationale).
+After Reconciliation, before producing the recommendation, walk every reviewer-spawned finding and tag it ADDRESS or DEFER. ADDRESS is the default for in-diff, tested code (see `docs/design-decisions.md` §16 for rationale) and needs no rationale; DEFER requires a named criterion from the closed list below.
 
 Disposition turns on complexity/risk/test coverage, never fix size — a small fix in already-touched, already-tested code is still ADDRESS.
 
@@ -421,9 +420,7 @@ When a round logged a DEFER, SETTLED or `--ref` row, or the PR body already hold
 
 ## Item ownership
 
-Routes each checklist item to the reviewer subagent(s) that file findings on it. Bold shorthands match titles above; numbers are the dispatcher's primary key. **Primary owner** files findings; **co-owners** are spawned where the item touches their turf. When in doubt, this table wins over inline mentions.
-
-The dispatcher fires reviewers per file-path domain detection. Each agent self-scopes against the diff and returns early ("No X concerns") when out of lane.
+Routes each checklist item to the reviewer subagent(s) that file findings on it. Bold shorthands match titles above; numbers are the dispatcher's primary key. **Primary owner** files findings; **co-owners** are spawned where the item touches their turf. When in doubt, this table wins over inline mentions. The dispatcher fires reviewers per file-path domain detection. Each agent self-scopes against the diff and returns early ("No X concerns") when out of lane.
 
 | Item | Primary owner | Co-owners |
 |------|---------------|-----------|
@@ -481,15 +478,10 @@ This writes the hash of the currently staged diff into `<config-dir>/code-review
 
 Run the command standalone, or chained only as `marker.sh write code-review && git commit …`. If it fails (empty `SESSION_ID`, etc.), `marker.sh` could not resolve this session's id — abort and report; do not proceed without the marker, since `git commit` will be blocked by the gate.
 
-**Authoring the commit message.** A single-line message goes inline with `-m`. For a multi-line message, create the file with `mktemp "${TMPDIR:-/tmp}/commit-msg.XXXXXX"`, populate it with the **`Write` tool**, then pass that path to `git commit -F <path>` as literal text — a `$VAR` is opaque to the gates, which resolve the argument statically and fail closed on it.
-
-Never author the message any of these ways:
+**Authoring the commit message.** A single-line message goes inline with `-m`. For a multi-line message, create the file with `mktemp "${TMPDIR:-/tmp}/commit-msg.XXXXXX"`, populate it with the **`Write` tool**, then pass that path to `git commit -F <path>` as literal text — a `$VAR` is opaque to the PII gate and the redaction gate, which resolve the argument statically and fail closed on it. `-F` names a regular on-disk file, never `-`, `/dev/stdin` or `/dev/fd/*`, in any spelling: both the PII gate and the redaction gate read the `-F` file before git runs, and neither can read the stdin of a process that hasn't started, so a pseudo-file source is denied outright rather than scanned. Keep the file out of `$HOME` and out of any UUID-shaped or 32-plus-hex-character path — e.g. not the session scratchpad. The redaction gate scans the commit command string itself. Its home-rooted-path and long-hex-identifier detectors both match on the `-F` argument. Never author the message either of these ways:
 
 - **A shell heredoc.** An unquoted `<<EOF` parses embedded backticks and `$(...)` as shell substitution before either gate ever sees the content — use the `Write` tool instead.
-- **`-F` pointed at `-`, `/dev/stdin`, `/dev/fd/*`, or any other pseudo-file.** Both the PII gate and the redaction gate read the `-F` file before git runs; neither can read the stdin of a process that hasn't started, so a pseudo-file source is denied outright rather than scanned.
 - **`-m "$(cat …)"` command substitution.** The gates scan only the literal command string, so the real message would reach the commit unscanned.
-
-Keep the file out of `$HOME` and out of any UUID-shaped or 32-plus-hex-character path — e.g. not the session scratchpad. The redaction gate scans the commit command string itself. Its home-rooted-path and long-hex-identifier detectors both match on the `-F` argument.
 
 **Do NOT write the marker if:**
 
