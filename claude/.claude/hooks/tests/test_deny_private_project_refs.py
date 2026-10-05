@@ -131,6 +131,7 @@ class TestDenyPrivateProjectRefs:
             "Fix BUG-4242 in parser",
             "Reference ISO-8601 dates",
             "Per IETF-draft handling",
+            "Per IEEE-754 floating point",
             "Conform to W3C-REC",
             "Map to NIST-800-53",
             "Per ECMA-262",
@@ -151,7 +152,7 @@ class TestDenyPrivateProjectRefs:
             "See TICKET-456 for the placeholder convention",
         ],
         ids=[
-            "cve", "cwe", "pep", "rfc", "gh", "bug", "iso", "ietf",
+            "cve", "cwe", "pep", "rfc", "gh", "bug", "iso", "ietf", "ieee",
             "w3c", "nist", "ecma", "ansi", "osc", "jep", "jdk", "llvm", "gcc", "gpt",
             "sha", "md", "http", "tls",
             "agpl", "bsd",
@@ -223,15 +224,16 @@ class TestDenyPrivateProjectRefs:
             "Land OURTICKET-42 follow-up",
             "Fix MYAGPL-99 regression",
             "Bump SUPERBSD-1 dep",
+            "Bump ACMEIEEE-5 dep",
         ],
-        ids=["myproj", "superticket", "bigproj", "ourticket", "myagpl", "superbsd"],
+        ids=["myproj", "superticket", "bigproj", "ourticket", "myagpl", "superbsd", "acmeieee"],
     )
     def test_placeholder_prefix_substring_still_denied(self, claude_config_repo, message):
         """Anchor (`^`) on OSS_ALLOWLIST must keep prefixes that *contain*
-        but don't *equal* PROJ / TICKET / AGPL / BSD in the deny path.
+        but don't *equal* PROJ / TICKET / AGPL / BSD / IEEE in the deny path.
         Without this test, a refactor that drops the anchor would pass CI
-        silently. The AGPL/BSD cases also pair with this file's AGPL/BSD
-        allow-path tests, giving the AGPL/BSD pair the same allow+deny
+        silently. The AGPL/BSD/IEEE cases also pair with this file's
+        AGPL/BSD/IEEE allow-path tests, giving each the same allow+deny
         symmetry the PROJ/TICKET cases already have."""
         assert (
             run_hook(
