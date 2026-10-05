@@ -16,7 +16,7 @@ Evidence inputs:
 
 ## Approach
 
-**Recommendation: no-go — keep the freeze.** A git-native replacement retires only the command-shape layer (magnitude: `docs/design-decisions/git-native-commit-hooks-declined.md` § "What would and would not retire"; method: `docs/design-decisions/git-native-commit-hooks-declined.md` § "Sources"; much less in the realistic case). It keeps the novel-content base, the marker machinery, and the plugin matcher copy, and it adds a dispatcher that every repo Claude touches would depend on. The recorded target is sketched only as far as the verdict needed and is not a design to execute: a reopen starts from the decision doc's reconsideration triggers and designs gate placement, the residual deny, rollout and rollback order, and the probes for the `[unverified]` rows from scratch.
+**Recommendation: no-go — keep the freeze.** A git-native replacement retires only the command-shape layer. The magnitude is in `docs/design-decisions/git-native-commit-hooks-declined.md` § "What would and would not retire". The method is in `docs/design-decisions/git-native-commit-hooks-declined.md` § "Sources". In the realistic case it retires much less. It keeps the novel-content base, the marker machinery, and the plugin matcher copy. It also adds a dispatcher that every repo Claude touches would depend on. The recorded target is sketched only as far as the verdict needed and is not a design to execute. A reopen starts from the decision doc's reconsideration triggers and designs gate placement, the residual deny, rollout and rollback order, and the probes for the `[unverified]` rows from scratch.
 
 ### Why it doesn't pay: net-complexity verdict
 
@@ -256,7 +256,11 @@ The dispatch is a single `code-writer` dispatch for the doc. `/tmp/git-hooks-spi
 - The per-Bash-call parser cost tracked by GH-1180 (row 23). It has its own lighter fix that doesn't depend on this decision.
 - Content scanning of human and IDE commits through a repo-local hooks dir, and a `pre-push` content scan. Both are new gate investment beyond the Ask's complexity question. They are recorded as reopen triggers 1 and 2.
 - Server-side branch protection and `pre-receive` hooks. Branch protection is a per-repo hosting setting that these hooks cannot verify (`rebase-continue-marker-gate-carveout.md` § "Direct push to the default branch"). `docs/security-hardening.md` § "Limitations" covers `pre-receive`.
-- Closing the residuals of the current gates, given the standing freeze (row 25). One residual is documented only for the marker gates, not in the two `irreversible` scanners' own Known-gaps sections: they don't fire on clean merge, cherry-pick, revert, rebase picks, or `am` (per the probe output, and the Known-gaps lists in the headers of `deny-pii-in-commits.sh` and `deny-private-project-refs.sh` name none of these). `docs/hooks.md` § "Threat-model tiers" says accepted debt is recorded on the gate header or a tracking issue. Adding a one-line Known-gaps entry to each scanner is a doc edit outside this spike's Ask, so it is raised to the engineer rather than planned here.
+- Closing the residuals of the current gates, given the standing freeze (row 25). One residual is documented only for the marker gates, not in the two `irreversible` scanners' own Known-gaps sections.
+  - The scanners don't fire on clean merge, cherry-pick, revert, rebase picks, or `am`, per the probe output.
+  - The Known-gaps lists in the headers of `deny-pii-in-commits.sh` and `deny-private-project-refs.sh` name none of these.
+  - `docs/hooks.md` § "Threat-model tiers" says accepted debt is recorded on the gate header or a tracking issue.
+  - Adding a one-line Known-gaps entry to each scanner is a doc edit outside this spike's Ask, so it is raised to the engineer rather than planned here.
 - Letting marketplace plugins depend on the stow tree (former G3).
   - Plugins standing alone is this repo's own distribution model (`rebase-continue-marker-gate-carveout.md` § "The version-bump gates keep their narrow matcher", which calls the duplication the price of a plugin installable without this repo; `README.md` § "Plugins (marketplace)"). This plan could change it but declines to.
   - Without it, a plugin hook could call the stow dispatcher when one is present. That dissolves the plugin blocker (row 11) only for stow-plus-plugin installs.
