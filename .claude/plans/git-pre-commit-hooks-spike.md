@@ -101,7 +101,7 @@ Evidence inputs:
 
 - Every moved gate is `cooperative`. `deny-pii-in-commits.sh`, `deny-private-project-refs.sh`, and `deny-invisible-commit-content.sh` also carry `irreversible`.
 - The regression-only rule applies at every tier (row 14). No placement may newly allow `--no-verify`/`-n`, `-c core.hooksPath`, `env -i`, or any `--continue` form denied today.
-- Inside a git hook, the gate reads git state rather than command text. For commit-shape detection, that removes most of the surface where steered command text can evade detection while the hook runs. Disabling the hook stays driven by command text and environment, and the target adds an open launcher class and carrier-absent fail-opens. It is the replacement's strongest argument, but it earns no tier credit: the commit-boundary disclosure gates deliberately carry no `untrusted-input` tier (`docs/hooks.md` § "Threat-model tiers").
+- Inside a git hook, the gate reads git state rather than command text. For commit-shape detection, that removes most of the surface where steered command text can evade detection while the hook runs. Disabling the hook stays driven by command text and environment. The target adds an open launcher class and carrier-absent fail-opens. The git-state read is the replacement's strongest argument, but it earns no tier credit: the commit-boundary disclosure gates deliberately carry no `untrusted-input` tier (`docs/hooks.md` § "Threat-model tiers").
 - The regression-only rule fixes the deletion order (row 14). `deny-invisible-commit-content.sh` is the snapshot backstop its dependents name. Deleting it before the three plugin gates (row 13) stop needing it would be a regression for those gates, and that needs the engineer's decision, not a waiver.
 
 ### Reopen triggers
@@ -256,7 +256,7 @@ The dispatch is a single `code-writer` dispatch for the doc. `/tmp/git-hooks-spi
 - Content scanning of human and IDE commits through a repo-local hooks dir, and a `pre-push` content scan. Both are new gate investment beyond the Ask's complexity question. They are recorded as reopen triggers 1 and 2.
 - Server-side branch protection and `pre-receive` hooks. Branch protection is a per-repo hosting setting that these hooks cannot verify (`rebase-continue-marker-gate-carveout.md` § "Direct push to the default branch"). `docs/security-hardening.md` § "Limitations" covers `pre-receive`.
 - Closing the residuals of the current gates, given the standing freeze (row 25). One residual is documented only for the marker gates, not in the two `irreversible` scanners' own Known-gaps sections.
-  - The scanners don't fire on clean merge, cherry-pick, revert, rebase picks, or `am`, per the probe output.
+  - The scanners don't fire on clean merge, cherry-pick, revert, rebase picks, or `am`, per rows 15 and 16.
   - The Known-gaps lists in the headers of `deny-pii-in-commits.sh` and `deny-private-project-refs.sh` name none of these.
   - `docs/hooks.md` § "Threat-model tiers" says accepted debt is recorded on the gate header or a tracking issue.
   - Adding a one-line Known-gaps entry to each scanner is a doc edit outside this spike's Ask, so it is raised to the engineer rather than planned here.

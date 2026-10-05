@@ -144,7 +144,7 @@ Dispatcher, silent loss of consumer hooks, hook-manager matrix, and latency appl
 - No token list closes the launcher, hook-file, and dispatcher-deletion overrides in the Costs section above. Dispatcher deletion is such an override only if git does not hard-fail on a missing hooks directory, which is unprobed. A dispatcher-based replacement would need an explicit maintainer decision on those regressions before it shipped.
 - Two of the moved gates, `deny-pii-in-commits.sh` and `deny-private-project-refs.sh`, carry `irreversible`. The residual deny would be their backstop against evasion, so under the dependency invariant it would inherit `irreversible`.
 - For commit-shape detection, a hook reads git state, not command text, which removes most of the surface where steered text could evade detection while the hook runs. Disabling the hook stays driven by command text and environment (`--no-verify`, `-c core.hooksPath`, `env -i`). A dispatcher-based replacement also adds an open launcher class and carrier-absent fail-opens that today's layer lacks. It earns no tier credit, because the commit-boundary disclosure gates deliberately carry no `untrusted-input` tier (`docs/hooks.md` § "Threat-model tiers").
-- Under the regression-only rule, retiring `deny-invisible-commit-content.sh` before its dependent gates move would be a regression (see "The best case is not the realistic case" above).
+- Under the regression-only rule, retiring `deny-invisible-commit-content.sh` before its dependent gates move would be a regression (see "What would and would not retire" above).
 
 ## Who gets gated
 
