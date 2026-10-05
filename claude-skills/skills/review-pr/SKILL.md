@@ -46,7 +46,7 @@ Branch on the printed document's `authorAssociation` and cross-repo signal, but 
 ```
 The script re-derives its own file list and `headRefOid`.
 
-- It refuses unconditionally, naming `review-pr-diff.sh` as the alternative, on any author association outside `MEMBER`/`OWNER`/`COLLABORATOR`/`CONTRIBUTOR` (so `FIRST_TIME_CONTRIBUTOR`, `NONE`, and any value not listed) and on a cross-repo head.
+- It refuses unconditionally, naming `review-pr-diff.sh` as the alternative, on any author association outside `MEMBER`/`OWNER`/`COLLABORATOR`/`CONTRIBUTOR` (so `FIRST_TIME_CONTRIBUTOR`, `NONE`, and any value not listed), on a cross-repo head, and on a base branch other than the base repo's default branch.
 - It audits the file list before ever fetching the PR's ref.
 - It checks out into a linked worktree and rewrites provenance with mode `checkout`.
 - Each run gets its own new worktree, including a second run against the same PR. `review-pr-finish.sh` removes every worktree of the session.
@@ -58,7 +58,7 @@ Run it with Bash `timeout: 600000`, the tool's documented maximum (its default i
 
 Read its exit status: exit 3 → switch to the diff-only path below; any other non-zero exit → report stderr and stop, do not switch paths.
 
-**Restricted, or the checkout script refused** (`FIRST_TIME_CONTRIBUTOR`/`NONE`/cross-repo):
+**Restricted, or the checkout script refused** (`FIRST_TIME_CONTRIBUTOR`/`NONE`/cross-repo, or the script's exit 3 for a base branch other than the default):
 ```
 ~/.claude/scripts/review-pr-diff.sh <owner>/<repo>#<number>
 ```

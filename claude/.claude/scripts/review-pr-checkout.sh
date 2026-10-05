@@ -24,11 +24,13 @@ Self-derives every fact the trust classification, the passive-execution
 audit, and the checkout need rather than trusting them as arguments. In order:
 1. Checks that <owner>/<repo> matches this worktree's own origin remote,
    aborting before any gh call on a mismatch.
-2. Fetches this PR's own author_association and cross-repo status from
+2. Fetches this PR's own author_association, cross-repo status, base branch,
+   and the base repository's default branch from
    `gh api repos/{owner}/{repo}/pulls/{number}`, on every invocation. Refuses
    an author whose association is not one of MEMBER, OWNER, COLLABORATOR, or
-   CONTRIBUTOR, and a cross-repository PR (including a deleted-fork PR, whose
-   head.repo reads null), before any further fetch. Both refusals name
+   CONTRIBUTOR, a cross-repository PR (including a deleted-fork PR, whose
+   head.repo reads null), and a PR whose base branch is not the base
+   repository's default branch, before any further fetch. Every refusal names
    review-pr-diff.sh as the path to use instead.
 3. Fetches the PR's own full, paginated file list (one JSON string per file
    name, so a name holding a newline decodes intact) and its current
@@ -68,11 +70,11 @@ then the diff file's absolute path. Only an exit-0 run prints the diff path on
 stdout, and the caller reads the diff from that output alone. review-pr-finish.sh
 removes the diff file a failed run leaves behind.
 
-Worst-case wall time: the per-step caps sum to 250 seconds on the success path
-(10 for the two local git reads, 60 for the four gh calls, 40 for eight jq
+Worst-case wall time: the per-step caps sum to 260 seconds on the success path
+(10 for the two local git reads, 60 for the four gh calls, 50 for ten jq
 calls, 30 for the PR-ref fetch, 10 for two more local git reads, 30 for the
 base fetch, 30 for the diff, 5 for the diff write, 30 for worktree add, 5 for
-the provenance write) and 305 on the worst failure path (a failed worktree add
+the provenance write) and 315 on the worst failure path (a failed worktree add
 followed by its two capped cleanups). Each cap kill adds up to 2 seconds of
 SIGKILL grace. The session lookup's capped ps calls add up to 10 seconds per
 process-ancestor hop, and the audit script runs uncapped. The caps apply only
@@ -80,7 +82,8 @@ when `timeout` or `gtimeout` is on PATH; otherwise every step is uncapped.
 
 Exit status: 0 on success, 3 when checkout is positively refused and
 review-pr-diff.sh is the path to use instead (the PR's trust class, a
-cross-repository head, or an audit stop verdict), 2 on every other refusal or
+cross-repository head, a base branch other than the base repository's default
+branch, or an audit stop verdict), 2 on every other refusal or
 failure the script itself detects, including a check that could not be completed.
 EOF
 }
@@ -194,6 +197,20 @@ case "$AUTHOR_ASSOCIATION" in
 esac
 if [[ -z "$HEAD_REPO_FULL_NAME" || "$HEAD_REPO_FULL_NAME" != "$BASE_REPO_FULL_NAME" ]]; then
   echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER is cross-repository (head repo '$HEAD_REPO_FULL_NAME' vs base repo '$BASE_REPO_FULL_NAME') -- checkout is refused unconditionally for this trust class, regardless of author standing. Use ~/.claude/scripts/review-pr-diff.sh instead. Abort before any fetch." >&2
+  exit "$EXIT_CHECKOUT_REFUSED"
+fi
+# The audit covers only the PR's changed files, but the checkout writes the
+# whole head tree. A base other than the default branch can already hold a
+# file the audit would stop on (CLAUDE.md, .claude/settings.json) that the PR
+# never touches, so such a PR is refused rather than audited.
+if ! BASE_REF_NAME=$(printf '%s' "$TRUST_JSON" | _lib_jq -r '.base.ref // empty' 2>/dev/null) \
+  || ! BASE_DEFAULT_BRANCH=$(printf '%s' "$TRUST_JSON" | _lib_jq -r '.base.repo.default_branch // empty' 2>/dev/null) \
+  || [[ -z "$BASE_REF_NAME" || -z "$BASE_DEFAULT_BRANCH" ]]; then
+  echo "review-pr-checkout.sh: could not read PR $OWNER_REPO#$PR_NUMBER's base branch and the base repository's default branch from its trust-classification data (jq failed or timed out, or a field was absent), so whether it targets the default branch is undecided. Abort before any fetch." >&2
+  exit 2
+fi
+if [[ "$BASE_REF_NAME" != "$BASE_DEFAULT_BRANCH" ]]; then
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER targets base branch '$BASE_REF_NAME', not the base repository's default branch '$BASE_DEFAULT_BRANCH' -- checkout is refused unconditionally, because the audit covers only the PR's changed files while the checkout writes the whole head tree. Use ~/.claude/scripts/review-pr-diff.sh instead. Abort before any fetch." >&2
   exit "$EXIT_CHECKOUT_REFUSED"
 fi
 

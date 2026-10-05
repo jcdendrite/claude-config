@@ -200,6 +200,8 @@ def _gh_shim_source(
     omit_changed_files: bool = False,
     files_failure_exit_status: int = 1,
     base_ref_oid: str | None = None,
+    base_ref_name: str | None = "main",
+    base_default_branch: str | None = "main",
 ) -> str:
     """gh shim recording every invocation, dispatching on the invocation's own
     first word(s): `gh pr view ... --json headRefOid` returns `head_ref_oid`
@@ -223,6 +225,8 @@ def _gh_shim_source(
     `files` listing: it defaults to `len(files)`, a test sets it apart from
     `files` to model a truncated or padded listing, and `omit_changed_files`
     drops the field.
+    `base_ref_name` and `base_default_branch` are the REST payload's `base.ref`
+    and `base.repo.default_branch`; a value of None drops that field.
     The files listing prints one JSON string per line when the call carries
     the `@json` jq filter, and raw names otherwise: raw UTF-8, with a control
     character rendered in caret notation as gh 2.100.0 is modeled to do (see
@@ -251,6 +255,8 @@ def _gh_shim_source(
         OMIT_CHANGED_FILES = {omit_changed_files!r}
         FILES_FAILURE_EXIT_STATUS = {files_failure_exit_status!r}
         BASE_REF_OID = {base_ref_oid!r}
+        BASE_REF_NAME = {base_ref_name!r}
+        BASE_DEFAULT_BRANCH = {base_default_branch!r}
         {GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE}
         args = sys.argv[1:]
         prior_pr_view_calls = 0
@@ -294,10 +300,16 @@ def _gh_shim_source(
             head_name = requested_repo if HEAD_REPO_FULL_NAME == SAME_AS_REQUEST else HEAD_REPO_FULL_NAME
             base_name = requested_repo if BASE_REPO_FULL_NAME == SAME_AS_REQUEST else BASE_REPO_FULL_NAME
             head_repo = {{"full_name": head_name}} if head_name is not None else None
+            base_repo = {{"full_name": base_name}}
+            if BASE_DEFAULT_BRANCH is not None:
+                base_repo["default_branch"] = BASE_DEFAULT_BRANCH
+            base = {{"repo": base_repo}}
+            if BASE_REF_NAME is not None:
+                base["ref"] = BASE_REF_NAME
             payload = {{
                 "author_association": AUTHOR_ASSOCIATION,
                 "head": {{"repo": head_repo}},
-                "base": {{"repo": {{"full_name": base_name}}}},
+                "base": base,
             }}
             if not OMIT_CHANGED_FILES:
                 payload["changed_files"] = CHANGED_FILES
@@ -358,6 +370,8 @@ def _run(
     omit_changed_files: bool = False,
     files_failure_exit_status: int = 1,
     base_ref_oid: str | None = _BASE_FROM_ORIGIN_MAIN,
+    base_ref_name: str | None = "main",
+    base_default_branch: str | None = "main",
     extra_env: dict | None = None,
     path_prefix: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
@@ -375,7 +389,7 @@ def _run(
                 call_log, head_ref_oid, files, fail_pr_view, fail_files, partial_files_then_fail,
                 head_ref_oid_second, author_association, head_repo_full_name, base_repo_full_name,
                 fail_trust_check, malformed_trust_check, changed_files, omit_changed_files,
-                files_failure_exit_status, base_ref_oid,
+                files_failure_exit_status, base_ref_oid, base_ref_name, base_default_branch,
             ),
         ),
         "HOME": str(home),
@@ -647,6 +661,82 @@ class TestTrustClassificationRefuses:
         )
         assert result.returncode == 0, result.stderr
         assert [_printed_worktree_path(result)] == _review_worktrees(repo)
+
+    def test_pr_into_the_default_branch_proceeds_to_the_ref_fetch(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            base_ref_name="trunk", base_default_branch="trunk",
+        )
+        assert result.returncode == 0, result.stderr
+        assert _local_pr_ref_names(repo) != ""
+
+    def test_pr_into_a_non_default_base_refuses_before_any_fetch(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The audit sees only the PR's changed files, so a stacked PR whose
+        base already holds an execution-surface file passes the audit clean
+        while the checkout writes that file. The script never sees base
+        content, so the refusal keys on the base branch alone."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            base_ref_name="feature-base", base_default_branch="main",
+        )
+        assert result.returncode == 3
+        assert "review-pr-diff.sh" in result.stderr
+        assert "feature-base" in result.stderr
+        assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
+        assert _local_pr_ref_names(repo) == ""
+        assert _review_worktrees(repo) == []
+
+    @pytest.mark.parametrize(
+        "base_ref_name",
+        ["Main", "refs/heads/main", " main", "main "],
+        ids=["case-variant", "refs-heads-prefix", "leading-space", "trailing-space"],
+    )
+    def test_base_branch_comparison_is_exact_not_normalized(
+        self, isolated_home, repo_with_pr_ref, tmp_path, base_ref_name
+    ):
+        """Git ref names are case-sensitive, so a base that differs from the
+        default branch only by case, prefix, or whitespace is a different
+        branch and is refused."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            base_ref_name=base_ref_name, base_default_branch="main",
+        )
+        assert result.returncode == 3, result.stderr
+        assert "review-pr-diff.sh" in result.stderr
+        assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
+        assert _local_pr_ref_names(repo) == ""
+        assert _review_worktrees(repo) == []
+
+    @pytest.mark.parametrize(
+        "missing_field", ["base_ref_name", "base_default_branch"],
+    )
+    def test_absent_base_branch_field_exits_two_never_three(
+        self, isolated_home, repo_with_pr_ref, tmp_path, missing_field
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], **{missing_field: None},
+        )
+        assert result.returncode == 2, result.stderr
+        assert "undecided" in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr
+        assert _local_pr_ref_names(repo) == ""
+        assert _review_worktrees(repo) == []
 
     def test_trust_block_fires_before_the_paginated_file_list_call(
         self, isolated_home, repo_with_pr_ref, tmp_path

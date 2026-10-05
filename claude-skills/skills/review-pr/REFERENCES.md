@@ -129,7 +129,7 @@ into a plain text file, and it was not adopted, for two reasons:
 
 The residual is accepted by decision, not by a threat-model exclusion. Both backstops are partial:
 
-- The `author_association` allowlist in `review-pr-checkout.sh` refuses every value outside `MEMBER`, `OWNER`, `COLLABORATOR` and `CONTRIBUTOR`, including any value GitHub adds later. It admits those four, so it does not stop a `CONTRIBUTOR` or a compromised collaborator account. A cross-repository PR is refused by a separate check in the same script.
+- The `author_association` allowlist in `review-pr-checkout.sh` refuses every value outside `MEMBER`, `OWNER`, `COLLABORATOR` and `CONTRIBUTOR`, including any value GitHub adds later. It admits those four, so it does not stop a `CONTRIBUTOR` or a compromised collaborator account. A cross-repository PR, and a PR whose base branch is not the base repository's default branch, are each refused by a separate check in the same script.
 - `deny-credential-file-reads.sh` resolves a `Read` target with `readlink -f` only when the target's last path component is itself a symlink (`[ -L ]`). A symlinked directory earlier in the path is not resolved, so a `Read` through such a link to a credential file is checked against its raw path text alone.
 
 Two further controls do not close the gap:
@@ -146,6 +146,10 @@ Two further controls do not close the gap:
 routes to once `review-pr-checkout.sh`'s trust block refuses it
 unconditionally — the common case on a public repo, so this path exists
 to keep that PR class reviewable rather than permanently locked out.
+The checkout script also refuses a PR whose base branch is not the base
+repository's default branch, because the audit covers only the changed
+files while the checkout writes the whole head tree. Step 1 cannot read
+the base branch, so that refusal is learned only from the script's exit 3.
 The checkout path stays the default for a trusted PR because it gives the
 reviewer full-file context, which the diff alone does not.
 What the no-checkout path gives up against it, named explicitly rather than
