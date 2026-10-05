@@ -442,17 +442,19 @@ here too, with one addition: `smoke`, `run`, and `judge` each price out a
 real reviewer or judge dispatch per sample, not one classification call, so
 the cost scales faster (see "Runtime cost" below). The harness needs Python
 3.12 or newer, since `review_bench/runner.py` calls `shutil.rmtree(onexc=...)`;
-the repository's floor elsewhere is 3.11.
+the repository's floor elsewhere is 3.11. It also needs Git 2.32 or newer, the
+first release that honors `GIT_CONFIG_GLOBAL`, which the fixture diffs use to
+ignore the engineer's git config.
 
 ### Usage
 
 ```bash
 # Mine defect candidates (mine-rounds first -- transcripts age out):
 python evals/run_review_bench.py mine-rounds
+python evals/run_review_bench.py mine-pr-comments
 python evals/run_review_bench.py mine-szz
 
-# After writing a candidate's description in .local/, approve it at the
-# [y/N/q] prompt (needs a terminal):
+# Triage every candidate at the [y/N/q] prompt (needs a terminal):
 python evals/run_review_bench.py confirm
 
 # Snapshot both frozen arms from production at the freeze commit:
@@ -482,47 +484,153 @@ python evals/run_review_bench.py analyze \
   --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl> --k 10
 ```
 
-`evals/review_bench/.local/*_candidates.json` (`mine-rounds`' and `mine-szz`'s
-own miner output) can carry real session or finding-excerpt text and is
-gitignored for that reason — never copy its content into a committed file or
-another private-project-adjacent surface.
+`mine-pr-comments` needs an authenticated `gh` for github.com.
 
-`confirm` is the engineer's approval step. It checks every `.local/` candidate
-that has a description and is not yet in `defects.json`: the schema, and the
-description-provenance check against every `.local/` excerpt. It prompts
-`[y/N/q]` for each candidate that passes, showing the candidate's ID, source,
-lens, short SHAs, `fix_date`, path, commit subjects, description, and the
-miner's inclusion guesses, two of which are labeled "unchecked default". `y`
-promotes the candidate. Any other answer, `Y` and `yes` included, skips it, and
-it stays in `.local/`. `q` or end of input stops the loop and writes the
-candidates accepted so far. Ctrl-C during the prompts writes and pins nothing.
-After the last prompt, `confirm` pins each accepted candidate's fix commit under
-`refs/review-bench/`, then appends the candidates to `defects.json`. An
-interrupt in that pin-and-write phase can leave earlier pins in place and
-writes no defect. `confirm` aborts, exiting 1, when `defects.json` differs from
-what it loaded once the prompts end. It prints
-model-derived text with control characters as backslash escapes. An empty
-description marks a candidate as not yet written up. That is a completeness
-check, not approval.
+### Mining
 
-`confirm` needs a terminal on stdin. Without one it runs every check, prints
-the rejections, writes and pins nothing, prints how many candidates await the
-engineer at a terminal, and exits 2 when any do. No flag or environment
-variable supplies an answer in place of a terminal.
+Three miners write candidate shortlists under `evals/review_bench/.local/`.
+Run them in this order:
+
+- **`mine-rounds`** (source `review-round`) reads this account's own session
+  transcripts for a finding in a later `/code-review` round about a file an
+  earlier round on the same branch had read. Run it first, because
+  transcripts age out.
+- **`mine-pr-comments`** (source `pr-comment`) reads the inline review
+  comments of the authenticated `gh` login on merged pull requests of this
+  repository, and nothing else: no review bodies, no PR conversation comments,
+  no other repository. A comment qualifies when the thread holds a
+  `respond-pr` reply marked fixed with a commit SHA. The head is the blame of
+  the commented line, and the fix is that SHA. The miner is a script with no
+  prompt. It resolves `owner/repo` once from `origin` and exits 2 unless
+  `origin` is exactly `github.com` and the provider reports the repository
+  public, so it publishes only public text. It prints the mined login and a
+  count of skipped comments by reason. A body holding a joiner, variation
+  selector, or other invisible character is counted as `invisible-characters`,
+  and one holding any other control character as `control-characters`. A PR
+  head that could not be fetched makes the run exit 2, name the PR numbers, and
+  write nothing, so a fetch failure never replaces a shortlist with a partial
+  one. A rerun clears a network, auth, or ref-lock failure, not a pull ref the
+  remote lacks. A comment on which a git call gave no answer is counted as
+  `git-error` and its ID is printed. The run still writes its shortlist, like
+  every completed run, so a run with `git-error` skips rewrites it. A rerun
+  retries that comment, and one that fails again fails for that comment, not
+  for the run. Edit a candidate's description in `.local/` only after the last
+  `mine-pr-comments` run, because every completed run rewrites that file.
+- **`mine-szz`** (source `szz`) blames the removed or modified non-markdown
+  lines of each `fix|bug|regression` commit on first-parent `origin/main`.
+
+Markdown files (skills, rules, `CLAUDE.md`, docs) are eligible through
+`review-round` and `pr-comment`. `defects.is_markdown_path` is the one
+markdown predicate. `mine-szz` skips markdown paths.
+
+`evals/review_bench/.local/*_candidates.json` is gitignored: `mine-rounds`'
+output can carry real session or finding-excerpt text, so never copy its
+content into a committed file or another private-project-adjacent surface.
+`pr_comment_candidates.json` holds public comment text only.
+
+`confirm` is the engineer's approval step. It reads every `.local/`
+candidate that is not yet in `defects.json`, ordered by source (`review-round`,
+then `pr-comment`, then `szz`) and then by the miner's own order, so an early
+`q` never starves the source whose transcripts age out. It suppresses no
+candidate. For each one it checks the schema and, when the candidate has a
+description, the description-provenance check against every `.local/`
+excerpt. It then prompts `[y/N/q]`. The prompt shows:
+
+- the candidate's ID, source, short SHAs, `fix_date`, path, and commit
+  subjects;
+- for a `pr-comment`, the comment's `diff_hunk`, bounded in length with the
+  end kept because the commented line is its last, and the head path, labeled
+  "(head is outside the PR branch)" when the head is not among the PR's own
+  commits, or "(PR branch membership unknown)" when the candidate does not
+  record that;
+- the description, or a note that none exists yet. It prints in full with no
+  length cut, one indented line per line of text, ahead of the path;
+- the four inclusion fields the engineer's answer accepts: `lens`,
+  `lines_exist_at_introducing_head`, `reviewer_could_have_caught_it`, and
+  `file_is_markdown`. A field the miner hard-coded rather than computed is
+  labeled "unchecked default".
+
+A candidate that shares its head, fix, and path with a candidate from another
+source is annotated with that candidate's ID, source, and status (confirmed,
+accepted this run, skipped this run, rejected by checks, or pending). The
+annotation never suppresses either candidate, and the engineer's `y` or `N`
+decides.
+
+A candidate with no description is triaged first and described after `y`: `y`
+prompts for a one-line description, which runs through the same provenance
+check. An empty line, a rejected character, or a provenance rejection accepts
+nothing for that candidate, and the loop continues. A description may not hold
+a control, format, separator, surrogate, private-use, or noncharacter code
+point, a variation selector, or a blank filler (the Hangul fillers and the
+Braille blank), because those render as nothing or drive the terminal. Other
+unassigned code points are accepted, so the interpreter's table of unassigned
+code points does not decide whether a record loads. `ConfirmedDefect` enforces
+this when a record loads, so `defects.json` edited past `confirm` fails to load in
+`freeze`, `run`, and `judge`. A mined description may keep LF and TAB, and a
+typed one may keep neither. A `pr-comment`
+candidate's mined description counts as public text, so it passes verbatim.
+Words typed or edited in are still checked.
+
+`y` promotes the candidate. Any other answer, `Y` and `yes` included, skips
+it, and it stays in `.local/`. `q` or end of input stops the loop and writes
+the candidates accepted so far. Ctrl-C during the prompts writes and pins
+nothing. After the last prompt, `confirm` pins each accepted candidate's fix
+commit under `refs/review-bench/`, then appends the candidates to
+`defects.json`, each with `file_is_markdown` and the candidate's own path (the
+head path for a `pr-comment`). An interrupt in that pin-and-write phase can
+leave earlier pins in place and writes no defect. `confirm` aborts, exiting 1,
+when `defects.json` differs from what it loaded once the prompts end. It
+prints model-derived text with control characters as backslash escapes.
+
+`confirm` needs a terminal on stdin. Without one it runs every check that
+needs no typed input, prints the rejections, writes and pins nothing, prints
+how many candidates await the engineer at a terminal, and exits 2 when any do.
+A candidate with no description that passes the schema checks counts as
+awaiting. No flag or environment variable supplies an answer in place of a
+terminal.
+
+### Fixtures and judge input
+
+- **Markdown function context.** Arm 2 reads `.bench/change-function-context.diff`,
+  which is `git diff -W`. The fixture builder gives `*.md` and `*.markdown` a
+  diff driver, set in the fixture's `.git/info/attributes` and `.git/config`,
+  whose heading pattern makes the function context the enclosing heading
+  section. Git's default pattern anchors on any line that starts with a
+  letter. The pattern matches per line, so a line-start `#` inside a fenced
+  block can start a function context, and attribute patterns are
+  case-sensitive, so `x.MD` keeps git's default. The diff artifacts are built
+  with the engineer's global and system git config disabled, so a diff driver
+  set there cannot change them. Only those two diff calls ignore that config;
+  the fixture builder's other git calls read it.
+- **Recall judge's fix diff.** One fix commit can hold fixes for many
+  comments, so the recall judge's input shows the fix diff limited to the
+  defect's recorded `path`. When the fix commit changes no line of that path,
+  the section says so and lists the path and the fix commit's changed paths
+  without their diffs. That limit is the head path, so a blame that followed
+  the line across files, or a fix that renames the file, usually gets the
+  listing. The confirmed description and that listing sit between fence lines
+  in the judge input, as data the judge is told never to follow, like each
+  run's findings.
 
 ### Frozen conditions and invalidation
 
 `freeze` writes `evals/review_bench/conditions.json`: the reviewer and judge
 model IDs, K, delta, alpha, N_min, the planning variance, the bootstrap's
 resample count and seed, the campaign seed, the kappa floor, the retry and
-missing-run rule, the later-arm certification rule, the environment (CLI
-version and ambient config commit at freeze), main's commit SHA (for
-reference only), the confirmed defect IDs, and sha256 hashes of the
+missing-run rule, the later-arm certification rule, the gating rule as a
+record (which `(source, file_is_markdown)` cells land in the code gate, the
+markdown gate, and the secondary stratum, and the fixture cluster key
+`(base_commit, head_commit)`), each gate's distinct-fixture and defect counts,
+the environment (CLI version and ambient config commit at freeze), main's
+commit SHA (for reference only), the confirmed defect IDs, and sha256 hashes of the
 harness's own import closure, both arm directories, the judge agent files,
 `defects.json`, and the prompt templates.
 The import closure is walked from `runner`, `adjudicate` and `analysis`, so
 edits to `run_review_bench.py` and the `mine_*.py` miners after freeze go
-undetected.
+undetected. `analysis.GATING_RULE` is in the closure and is the authority for
+gate membership, so editing it after freeze changes the manifest. `freeze`
+prints each gate's fixture and defect counts, and names any gate below
+N_min(K), because a later arm's verdict is then capped at `inconclusive`.
 
 `freeze` fails, exiting 2, on a missing or empty arm directory. It refuses to
 overwrite an existing `conditions.json`; delete the file deliberately to freeze
@@ -533,7 +641,16 @@ recomputes every one of those hashes through the same `compute_frozen_fields`
 function `freeze` records them with. A mismatch against the frozen manifest
 exits 2, naming the changed, added, or removed file or field. In that mode
 `analyze` also exits 2 when `--k` differs from the frozen K, or when the
-reviewer records and the frozen defect IDs disagree in either direction. Without
+reviewer records and the frozen defect IDs disagree in either direction. It
+reads each gate's baseline sensitivity verdict from the baseline-mode report
+at `--baseline-report-path` (default `evals/review_bench/results/baseline.json`)
+and exits 2 when that file is missing or unreadable, a verdict key is missing,
+a null verdict sits beside two or more fixtures, or the report's
+`freeze_identity` is missing or differs from `conditions.json` in the harness
+closure hash, any other frozen digest, K, or the campaign environment. The
+message names the differing fields. After a re-freeze, rerun all arms under the
+new freeze, then regenerate the baseline report. A null verdict is valid only for a gate of fewer than two fixtures, which is
+short. No case reads a missing verdict as sensitive. Without
 `--baseline-conditions-path`, the baseline's own `analyze` checks that its
 records carry one environment and checks no frozen field. `analyze` and `judge`
 exit 2 when a reviewer or judge records path they read does not exist; only
@@ -591,7 +708,8 @@ caps were sized at that K), every `defects.json` record still passes the
 description-provenance check against the `.local/` excerpts, and `.local/`
 holds a non-empty excerpt for every record whose `source` is `review-round`.
 A shortlist file alone does not satisfy that last check: an SZZ shortlist
-carries no excerpt.
+carries no excerpt. A `pr-comment` record's description is checked against
+those excerpts too, with its stored comment text counted as public.
 
 ### Building a later arm
 
@@ -604,21 +722,56 @@ arms; a later arm's own snapshot is a hand-applied diff of
 
 ### Reading the report
 
-`analyze` prints the baseline sensitivity or later-arm verdicts (a later arm
-that passes both gates prints `inconclusive`, not `certified`, when either
-gate's effective defect set is smaller than N_min), plus every secondary column: Read tokens
-per run, `PARTIAL view`/paged-read counts, whole-file-read adherence,
-missing-run counts by reason, out-of-session read counts, and the observed
-standard deviation of the per-defect difference. In baseline mode (no
-`--baseline-conditions-path`), `--out` also writes each arm's recall and
-pooled precision with a paired-bootstrap interval, the per-defect detection
-rates, the arm 2 minus arm 1 pooled-precision difference with its interval,
-the sensitivity verdict with its interval limits, and N and the effective N
-after the sub-K/2 drop against N_min, with the dropped counts. Every `--out`
-report carries `confirmed_defects`, the size of the confirmed set. The recall
-drop count is taken against that set, so a defect with no valid recall label
-counts as dropped. `analyze` exits 2, printing a message and writing no
-report, when no defect is kept for recall. Arm 1 is `current-rule`, arm 2 is
+`analyze` computes every figure per gate. The code gate holds non-markdown
+`szz` and `review-round` defects, and the markdown gate holds markdown
+`review-round` and `pr-comment` defects. The two remaining cells, a
+non-markdown `pr-comment` and a markdown `szz`, form the secondary stratum,
+which is reported and never gates. `analysis.GATING_RULE` and
+`analysis.certify_later_arm` are the authority for membership and for how the
+gates combine into a certification. The intervals are a paired cluster
+bootstrap that resamples fixtures, the `(base_commit, head_commit)` pair, so
+two defects on one fixture do not narrow an interval. A gate is short when its
+kept defects span fewer than N_min distinct fixtures.
+
+The `--out` report holds:
+
+- `gates.code` and `gates.markdown`: per-arm recall and pooled precision with
+  intervals, the arm differences with intervals, the effective N as a defect
+  count and a fixture count beside the largest fixture's defect count, whether
+  the kept sets meet N_min, and the dropped counts. In baseline mode (no
+  `--baseline-conditions-path`) each gate also holds `baseline_sensitivity`,
+  the verdict with its interval limits. In a later arm's mode it holds
+  `baseline_sensitivity.verdict` (read from the baseline report),
+  `recall_noninferiority`, `precision_noninferiority`, and the gate's
+  `outcome`.
+- `per_source` and `secondary_stratum`: the same figures per `source` and for
+  the secondary stratum, with no verdict key.
+- `n_min`, and in a later arm's mode `certification` (`certified`,
+  `not-certified`, or `inconclusive`).
+- In baseline mode, `freeze_identity` (the harness closure hash, every frozen
+  digest, K, and the campaign environment, which a later arm's analysis checks
+  against `conditions.json`), `detection_rate_per_defect`, and the
+  `dropped_defects_recall` and `dropped_defects_precision` counts. Computing
+  the identity needs `--arms-root` to hold both arm snapshots.
+- The secondary columns: Read tokens per run, `PARTIAL view` and paged-read
+  counts, whole-file-read adherence, missing-run counts by reason,
+  out-of-session read counts, recall by fix-date half per gate and arm, the
+  recall difference in the code gate's over-read-cap stratum, and the observed
+  standard deviation of the per-defect difference per gate.
+
+A figure that is undefined on its set is null: an empty set, or an interval or
+standard deviation over fewer than two fixtures. An arm that finds nothing in
+a non-empty set has a real recall of 0.0. A gate with no kept defect reports a
+null baseline verdict, and its later-arm verdict is `inconclusive`. A
+bootstrap resample in which either arm has no adjudicated finding has no
+precision difference, so it is dropped, and the count of drops prints beside
+the interval.
+
+Every `--out` report carries `confirmed_defects`, the size of the confirmed
+set. The recall drop count is taken against that set, so a defect with no
+valid recall label counts as dropped. `analyze` exits 2, printing a message and
+writing no report, when no defect is kept for recall, and in a later arm's mode
+also when none is kept for precision. Arm 1 is `current-rule`, arm 2 is
 `function-context`, and X is any later arm. Two caveats govern how to read it:
 
 - **Pairing protects the difference, not the absolute figures.** The
@@ -796,8 +949,11 @@ restricted to 0700 at startup, and the command exits 2 if it cannot be.
 
 ### Runtime cost
 
-- **Reviewer runs:** `2 x N x K`, 2,520 at N = 126 and K = 10. The expected
-  cost is that count times
+- **Reviewer runs:** `2 x N x K`, where N counts every confirmed defect, the
+  secondary stratum's included. A baseline that can certify a later arm needs
+  each gate at N_min fixtures, so at K = 10 that is at least 252 fixtures and
+  5,040 runs. One gate at N_min is 2,520 runs, the floor of a baseline that
+  cannot certify. The expected cost is that count times
   `measure_subagent_model_resolution.REPRESENTATIVE_DISPATCH_COST_USD`. A
   ceiling exists only if `--max-budget-usd` bounds the subagent's spend, and not
   only the dispatcher's own overhead. If it does, the ceiling is that count times
@@ -822,19 +978,21 @@ restricted to 0700 at startup, and the command exits 2 if it cannot be.
   judge has its own measured values.
 - **Wall-clock:** blocks run one at a time, `ceil(2K / workers)` run-slots
   each, at `run_skill_evals.DEFAULT_WORKERS`'s default of 4 — 5 slots at
-  K = 10, so 630 slots at N = 126. Each minute of median run duration adds
-  10.5 hours.
+  K = 10, so 1,260 slots at 252 fixtures. Each minute of median run duration
+  adds 21 hours.
 - **Judge wall-clock:** `judge` dispatches one recall and one precision judge
   run per defect, fully serially with no worker pool, so wall-clock is
-  `2 x N` run-slots with no division by a worker count — 252 at N = 126.
-  Each minute of median judge-run duration adds 4.2 hours.
+  `2 x N` run-slots with no division by a worker count — 504 at 252 fixtures.
+  Each minute of median judge-run duration adds 8.4 hours.
 
 ### Publication
 
-The `source` breakdown (`szz` vs. `review-round`, in a published defect-set
-summary) is an own-history count: its whole scope is this repository's own
-git history and this account's own session transcripts, on one account, via
-`mine-rounds`, which itself refuses to run against more than one config-dir
-root. Publish it beside that command and its own scope refusal, per
+The `source` breakdown (`szz`, `review-round`, and `pr-comment`, in a published
+defect-set summary) is an own-history count: its whole scope is this
+repository's own git history and this account's own session transcripts, on
+one account, via `mine-rounds`, which itself refuses to run against more than
+one config-dir root. Publish it beside that command and its own scope
+refusal, per
 `docs/private-project-redaction.md` § "This repository, one account" —
-never beside a wider corpus.
+never beside a wider corpus. A `pr-comment` figure is published beside
+`mine-pr-comments` and its public-repository refusal.

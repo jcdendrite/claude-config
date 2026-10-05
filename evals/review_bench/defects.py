@@ -11,10 +11,11 @@ import json
 import os
 import re
 import subprocess
+import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
 from review_bench.arms import LENS_READ_CLAUSES
@@ -28,7 +29,13 @@ from review_bench.arms import LENS_READ_CLAUSES
 # added or removed there can't drift out of sync here.
 KNOWN_LENSES: frozenset[str] = frozenset(LENS_READ_CLAUSES)
 
-KNOWN_SOURCES: frozenset[str] = frozenset({"szz", "review-round"})
+KNOWN_SOURCES: frozenset[str] = frozenset({"szz", "review-round", "pr-comment"})
+
+# Sources whose candidate stores the public GitHub comment text it was mined
+# from, which counts as public text for `check_description_provenance`.
+GITHUB_COMMENT_SOURCES: frozenset[str] = frozenset({"pr-comment"})
+
+_MARKDOWN_SUFFIXES: frozenset[str] = frozenset({".md", ".markdown"})
 
 # mine_review_rounds.resolve_branch_ref's four possible outcomes for
 # resolving a review round's branch to a reachable ref.
@@ -120,10 +127,15 @@ class Candidate:
         return cls(**dict(data))
 
 
+# The characters of the terminal-unsafe set a stored description may still hold,
+# which is also what a mined comment body may hold.
+STORED_DESCRIPTION_ALLOWED: frozenset[str] = frozenset({"\n", "\t"})
+
 # ConfirmedDefect's exact field set -- no field outside the schema, so
 # description is the only free text field.
 _CONFIRMED_DEFECT_FIELDS: frozenset[str] = frozenset({
     "id", "source", "lens", "base_commit", "head_commit", "fix_commit", "fix_date", "description",
+    "path", "file_is_markdown",
 })
 
 
@@ -134,7 +146,14 @@ class ConfirmedDefect:
     `description` is the only free-text field. `confirm` runs it through
     `check_description_provenance`, which catches a verbatim or
     near-verbatim word run shared with a `.local/` finding excerpt --
-    see that function's own docstring for the check's limits.
+    see that function's own docstring for the check's limits. Construction
+    rejects a description holding a character `is_terminal_unsafe_character`
+    flags, LF and TAB aside, so every loader inherits that rule.
+
+    `path` is the candidate's `evidence["path"]` -- the head path for a
+    `pr-comment` -- and `file_is_markdown` is the engineer-confirmed kind of
+    that file. Neither has a default, so a record written without them
+    fails to load rather than reading as a non-markdown or path-less defect.
     """
 
     id: str
@@ -145,12 +164,25 @@ class ConfirmedDefect:
     fix_commit: str
     fix_date: str
     description: str
+    path: str
+    file_is_markdown: bool
 
     def __post_init__(self) -> None:
         _validate_common(
             lens=self.lens, source=self.source, base_commit=self.base_commit,
             head_commit=self.head_commit, fix_commit=self.fix_commit, fix_date=self.fix_date,
         )
+        if not isinstance(self.path, str) or not self.path:
+            raise ValueError(f"path must be a non-empty string, got {self.path!r}")
+        if not isinstance(self.description, str):
+            raise ValueError(f"description must be a string, got {self.description!r}")
+        # LF and TAB stay legal, since a mined comment body can hold them.
+        disallowed = first_disallowed_character(self.description, allowed=STORED_DESCRIPTION_ALLOWED)
+        if disallowed is not None:
+            raise ValueError(f"description holds the disallowed character U+{ord(disallowed):04X}")
+        # isinstance, not truthiness: a JSON string like "false" is truthy.
+        if not isinstance(self.file_is_markdown, bool):
+            raise ValueError(f"file_is_markdown must be a bool, got {self.file_is_markdown!r}")
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -213,6 +245,86 @@ def save_confirmed_defects(path: Path, defects: list[ConfirmedDefect]) -> None:
     atomic_write_text(path, json.dumps([d.to_dict() for d in defects], indent=2, sort_keys=True) + "\n")
 
 
+def is_markdown_path(path: str) -> bool:
+    """True when the last path component's suffix, lowercased, is `.md` or
+    `.markdown`. The one markdown predicate every miner and `guess_lens` share,
+    so `x.MD` and `notes.markdown` match and `docs.md/x.py` and `x.mdx` do not."""
+    return PurePosixPath(path).suffix.lower() in _MARKDOWN_SUFFIXES
+
+
+# Unicode categories whose characters can drive a terminal or render as nothing.
+# Cn (unassigned) is absent: its membership follows the interpreter's Unicode
+# version, so a committed description could load on one interpreter and fail on
+# another. The fixed ranges below cover the unassigned code points worth rejecting.
+_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Zl", "Zp"})
+# Characters outside those categories that render as nothing or hide the glyph
+# before them: the Default_Ignorable_Code_Point characters of category Mn or Lo
+# (combining grapheme joiner, Khmer inherent vowels, variation selectors, Hangul
+# fillers), the Default_Ignorable code points reserved without an assignment, and
+# the Braille blank.
+_INVISIBLE_RANGES = (
+    (0x034F, 0x034F),  # combining grapheme joiner
+    (0x17B4, 0x17B5),  # Khmer inherent vowels
+    (0x180B, 0x180D), (0x180F, 0x180F),  # Mongolian free variation selectors
+    (0xFE00, 0xFE0F), (0xE0100, 0xE01EF),  # variation selectors, and their supplement
+    (0x115F, 0x1160), (0x3164, 0x3164), (0xFFA0, 0xFFA0),  # Hangul fillers
+    (0x2065, 0x2065), (0xFFF0, 0xFFF8),  # reserved Default_Ignorable code points
+    (0xE0000, 0xE0000), (0xE0002, 0xE001F), (0xE0080, 0xE00FF), (0xE01F0, 0xE0FFF),
+    (0x2800, 0x2800),  # Braille pattern blank
+)
+# The Unicode noncharacters: U+FDD0-FDEF, and the last two code points of every
+# plane. The standard fixes the set, so it does not move with the interpreter.
+_NONCHARACTER_RANGES = (
+    (0xFDD0, 0xFDEF),
+    *((plane * 0x10000 + 0xFFFE, plane * 0x10000 + 0xFFFF) for plane in range(17)),
+)
+
+
+def _in_ranges(code_point: int, ranges: tuple[tuple[int, int], ...]) -> bool:
+    return any(low <= code_point <= high for low, high in ranges)
+
+
+def is_terminal_unsafe_character(char: str) -> bool:
+    """True for a character no description may hold and no terminal display
+    may print raw: a control, format, separator, surrogate, private-use, or
+    noncharacter code point, a variation selector, or a blank filler. The one
+    definition behind `ConfirmedDefect.description`, a mined comment body, a
+    typed description, and `escape_for_terminal`."""
+    code_point = ord(char)
+    return (
+        unicodedata.category(char) in _UNSAFE_CATEGORIES
+        or _in_ranges(code_point, _INVISIBLE_RANGES)
+        or _in_ranges(code_point, _NONCHARACTER_RANGES)
+    )
+
+
+def is_invisible_character(char: str) -> bool:
+    """True for a terminal-unsafe character that renders as nothing: a format
+    character such as a joiner or bidi override, a variation selector, or a
+    blank filler. The rest of the unsafe set is control, separator,
+    private-use, or noncharacter code points."""
+    return unicodedata.category(char) == "Cf" or _in_ranges(ord(char), _INVISIBLE_RANGES)
+
+
+def first_disallowed_character(text: str, *, allowed: frozenset[str] = frozenset({"\n"})) -> str | None:
+    """The first character of `text` that `is_terminal_unsafe_character` flags
+    and `allowed` does not excuse, or None. A mined comment body and a typed
+    description differ only in whether TAB is allowed."""
+    return next((char for char in text if char not in allowed and is_terminal_unsafe_character(char)), None)
+
+
+def has_disallowed_control_character(text: str, *, allowed: frozenset[str] = frozenset({"\n"})) -> bool:
+    return first_disallowed_character(text, allowed=allowed) is not None
+
+
+def escape_for_terminal(text: str) -> str:
+    """`text` with each terminal-unsafe character shown as a backslash escape,
+    so externally sourced text can never act on the operator's terminal."""
+    return "".join(
+        char.encode("unicode_escape").decode("ascii") if is_terminal_unsafe_character(char) else char for char in text
+    )
+
+
 def guess_lens(path: str) -> str:
     """A miner's pre-fill guess for a candidate's owning lens.
 
@@ -229,7 +341,7 @@ def guess_lens(path: str) -> str:
     lowered = path.lower()
     if any(token in lowered for token in ("permission", "credential", "denial", "auth")):
         return "ciso-reviewer"
-    if path.endswith(".md"):
+    if is_markdown_path(path):
         return "comment-discipline-reviewer"
     return "staff-backend-engineer"
 
@@ -265,14 +377,15 @@ class ProvenanceViolation(NamedTuple):
 
 def check_description_provenance(
     description: str,
-    public_git_text: str,
+    public_texts: Sequence[str],
     excerpts_by_candidate_id: Mapping[str, str],
 ) -> ProvenanceViolation | None:
     """None when `description` is clear to promote; otherwise a word run it
     shares with some candidate's `.local/` finding excerpt, unless that run
-    also occurs in `public_git_text` -- `git show` of the defect's
-    introducing and fix commits (see `public_git_text` below) -- which
-    marks it as shared code or an identifier rather than lifted prose.
+    also occurs in one of `public_texts` -- see `defect_public_texts` below --
+    which marks it as shared code, an identifier, or the engineer's own
+    public comment rather than lifted prose. Each public text is checked on
+    its own, so a run that spans the join of two texts is not exempt.
 
     The run length is `_SIX_GRAM_WINDOW` (six words) whenever both texts
     are long enough for that window. When either the description or a
@@ -296,10 +409,12 @@ def check_description_provenance(
     `redact-credential-values.sh` only redacts tool results and cannot block a
     commit.
     """
+    if isinstance(public_texts, str):  # a bare string would iterate as one text per character
+        raise TypeError("public_texts must be a sequence of texts, not a single string")
     description_tokens = _tokenize(description)
     if not description_tokens:
         return None
-    public_tokens = _tokenize(public_git_text)
+    public_token_lists = [_tokenize(text) for text in public_texts]
     public_grams_by_window: dict[int, set] = {}
 
     for candidate_id in sorted(excerpts_by_candidate_id):
@@ -309,7 +424,9 @@ def check_description_provenance(
         window = min(_SIX_GRAM_WINDOW, len(description_tokens), len(excerpt_tokens))
         excerpt_grams = set(_n_grams(excerpt_tokens, window))
         if window not in public_grams_by_window:
-            public_grams_by_window[window] = set(_n_grams(public_tokens, window))
+            public_grams_by_window[window] = {
+                gram for tokens in public_token_lists for gram in _n_grams(tokens, window)
+            }
         public_grams = public_grams_by_window[window]
         for gram in _n_grams(description_tokens, window):
             if gram in public_grams:
@@ -382,3 +499,18 @@ def public_git_text(repo_dir: Path, introducing_commit: str, fix_commit: str, *,
         )
         parts.append(result.stdout)
     return "\n".join(parts)
+
+
+def defect_public_texts(
+    repo_dir: Path, introducing_commit: str, fix_commit: str, *, source: str, evidence: Mapping | None = None,
+) -> list[str]:
+    """The texts `check_description_provenance` treats as public for one
+    defect: `public_git_text`, plus the stored comment text in
+    `evidence["public_comment_text"]` when `source` is in
+    `GITHUB_COMMENT_SOURCES`. A source outside that set gets no comment
+    exemption even if its evidence carries the field."""
+    texts = [public_git_text(repo_dir, introducing_commit, fix_commit)]
+    comment_text = (evidence or {}).get("public_comment_text")
+    if source in GITHUB_COMMENT_SOURCES and isinstance(comment_text, str) and comment_text:
+        texts.append(comment_text)
+    return texts

@@ -57,6 +57,16 @@ _BENCH_DIR_NAME = ".bench"
 _COMMIT_SUBJECT_FILE_NAME = "commit-subject.txt"
 _GIT_INFO_EXCLUDE_LINE = f"/{_BENCH_DIR_NAME}/\n"
 
+# Without a markdown funcname pattern, `git diff -W` anchors on any line that
+# starts with a letter, so a one-line edit in a long markdown file pulls in
+# most of the file. The pattern anchors on an ATX heading line instead. It
+# matches per line, so a line-start `#` inside a fenced block counts as one.
+# Attribute patterns follow `core.ignorecase`, which `git init` sets true on a
+# case-insensitive volume, so `x.MD` keeps git's default only where it is false.
+_MARKDOWN_DIFF_DRIVER = "markdown"
+_MARKDOWN_HEADING_XFUNCNAME = "^(#{1,6}[[:space:]].*)$"
+_GIT_INFO_ATTRIBUTES_LINES = (f"*.md diff={_MARKDOWN_DIFF_DRIVER}\n", f"*.markdown diff={_MARKDOWN_DIFF_DRIVER}\n")
+
 
 # The top-level keys `.claude/settings.json` has held across this repository's
 # history (`git log -p -- .claude/settings.json`). A key outside this set could
@@ -71,10 +81,20 @@ class UnsafeFixtureConfigError(ValueError):
     pass
 
 
-def _run_git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_git(
+    args: list[str], *, cwd: Path, ignore_user_config: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """`ignore_user_config` drops the engineer's global and system git config,
+    so a diff driver set there (`textconv`, `command`) cannot change a diff
+    artifact between machines. Only the two diff calls pass it, so every other
+    fixture git call reads the engineer's config. `GIT_CONFIG_GLOBAL` needs git
+    2.32 or later, and an older git ignores it."""
+    env = environment_without_git_local_vars()
+    if ignore_user_config:
+        env = {**env, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
     return subprocess.run(
         ["git", *args], cwd=cwd, check=True, timeout=_LOCAL_GIT_TIMEOUT_S,
-        capture_output=True, text=True, env=environment_without_git_local_vars(),
+        capture_output=True, text=True, env=env,
     )
 
 
@@ -230,8 +250,21 @@ def changed_paths_between(repo_dir: Path, base: str, head: str) -> list[str]:
 
 
 def fix_commit_paths(repo_dir: Path, defect: ConfirmedDefect) -> list[str]:
-    """Paths the defect's fix commit changed against its first parent."""
-    return changed_paths_between(repo_dir, f"{defect.fix_commit}^", defect.fix_commit)
+    """Paths the defect's fix commit changed against its first parent, or
+    every path it holds when it has no parent."""
+    parent = f"{defect.fix_commit}^"
+    has_parent = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", parent], cwd=repo_dir, timeout=_LOCAL_GIT_TIMEOUT_S,
+        capture_output=True, env=environment_without_git_local_vars(),
+    ).returncode == 0
+    if has_parent:
+        return changed_paths_between(repo_dir, parent, defect.fix_commit)
+    # The empty tree's id depends on the repository's hash algorithm, so git computes it.
+    empty_tree = subprocess.run(
+        ["git", "hash-object", "-t", "tree", "--stdin"], cwd=repo_dir, input=b"", check=True,
+        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=environment_without_git_local_vars(),
+    ).stdout.decode().strip()
+    return changed_paths_between(repo_dir, empty_tree, defect.fix_commit)
 
 
 def _changed_paths(dest_dir: Path) -> list[str]:
@@ -263,10 +296,10 @@ def _write_changed_files_tsv(dest_dir: Path, stats: list[ChangedFileStat]) -> No
 def _write_bench_diffs(dest_dir: Path) -> None:
     bench_dir = dest_dir / _BENCH_DIR_NAME
     bench_dir.mkdir(parents=True, exist_ok=True)
-    change_diff = _run_git(["diff", "HEAD~1", "HEAD"], cwd=dest_dir).stdout
+    change_diff = _run_git(["diff", "HEAD~1", "HEAD"], cwd=dest_dir, ignore_user_config=True).stdout
     (bench_dir / "change.diff").write_text(change_diff)
     # git-diff(1) -W: "Show whole function as context lines".
-    function_context_diff = _run_git(["diff", "-W", "HEAD~1", "HEAD"], cwd=dest_dir).stdout
+    function_context_diff = _run_git(["diff", "-W", "HEAD~1", "HEAD"], cwd=dest_dir, ignore_user_config=True).stdout
     (bench_dir / "change-function-context.diff").write_text(function_context_diff)
 
 
@@ -287,11 +320,35 @@ def _exclude_bench_dir(dest_dir: Path) -> None:
         exclude_path.write_text(existing + _GIT_INFO_EXCLUDE_LINE)
 
 
+def _install_markdown_function_context(dest_dir: Path) -> None:
+    """Points `*.md` and `*.markdown` at a heading-anchored diff driver, via
+    .git/info/attributes and .git/config -- never a tracked `.gitattributes`,
+    for the same reason `_exclude_bench_dir` avoids `.gitignore`. Raises
+    UnsafeFixtureConfigError unless `dest_dir/.git` is a directory, so the
+    config write cannot land in an enclosing repository."""
+    git_dir = dest_dir / ".git"
+    if not git_dir.is_dir():
+        raise UnsafeFixtureConfigError(f"{dest_dir} is not a git repository root, so no fixture config is written")
+    attributes_path = dest_dir / ".git" / "info" / "attributes"
+    attributes_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = attributes_path.read_text() if attributes_path.exists() else ""
+    missing_lines = [line for line in _GIT_INFO_ATTRIBUTES_LINES if line not in existing]
+    if missing_lines:
+        attributes_path.write_text(existing + "".join(missing_lines))
+    _run_git(
+        ["config", "--file", str(git_dir / "config"), f"diff.{_MARKDOWN_DIFF_DRIVER}.xfuncname",
+         _MARKDOWN_HEADING_XFUNCNAME],
+        cwd=dest_dir,
+    )
+
+
 def write_bench_artifacts(dest_dir: Path, commit_subject: str) -> list[ChangedFileStat]:
     """Write `.bench/change.diff`, `.bench/change-function-context.diff`,
     `.bench/changed-files.tsv`, and `.bench/commit-subject.txt` (holding
     `commit_subject`) into an already-built two-commit `dest_dir`, and exclude
-    `.bench/` from git. Returns the per-file stats written to the TSV."""
+    `.bench/` from git. Markdown files get a heading-anchored function
+    context. Returns the per-file stats written to the TSV."""
+    _install_markdown_function_context(dest_dir)
     _write_bench_diffs(dest_dir)
     _write_commit_subject(dest_dir, commit_subject)
     stats = [_stat_changed_file(dest_dir, path) for path in _changed_paths(dest_dir)]

@@ -2142,6 +2142,7 @@ def _build_two_commit_source_repo(repo_dir: Path, *, changed_file_content: str =
     return ConfirmedDefect(
         id="defect-1", source="szz", lens="staff-backend-engineer", base_commit=base_commit,
         head_commit=head_commit, fix_commit=head_commit, fix_date="2024-01-01", description="test defect",
+        path="app.py", file_is_markdown=False,
     )
 
 
@@ -2408,6 +2409,7 @@ class TestPreflightDefects:
         defect = ConfirmedDefect(
             id="defect-1", source="szz", lens="staff-backend-engineer", base_commit=real.base_commit,
             head_commit="a" * 40, fix_commit="b" * 40, fix_date="2024-01-01", description="test defect",
+            path="app.py", file_is_markdown=False,
         )
         self._arm_snapshots(tmp_path / "arms", "current-rule")
 
@@ -2936,6 +2938,7 @@ class TestRunOrSmokeDefaultFillReachesRunCampaign:
         defect = ConfirmedDefect(
             id="defect-1", source="szz", lens="staff-backend-engineer", base_commit="a" * 40,
             head_commit="b" * 40, fix_commit="b" * 40, fix_date="2024-01-01", description="test defect",
+            path="app.py", file_is_markdown=False,
         )
         monkeypatch.setattr(run_review_bench, "_load_defects_for_run", lambda args: [defect])
 

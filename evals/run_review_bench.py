@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Review bench CLI: `mine-szz`, `mine-rounds`, `confirm` for evals/review_bench's
-known-defect set; `snapshot-arms`, `smoke`, and `run` for its fixture and
-runner harness; `judge`, `spot-check export|import`, `analyze`, and `freeze`
-for its adjudication and analysis.
+"""Review bench CLI: `mine-szz`, `mine-rounds`, `mine-pr-comments`, `confirm` for
+evals/review_bench's known-defect set; `snapshot-arms`, `smoke`, and `run` for its
+fixture and runner harness; `judge`, `spot-check export|import`, `analyze`, and
+`freeze` for its adjudication and analysis.
 
 LOCAL USE ONLY -- never run in CI. `mine-rounds` reads this account's own
-session transcripts; `mine-szz` and `confirm` read this repo's own git
+session transcripts; `mine-pr-comments` reads the authenticated `gh` user's
+inline PR review comments; `mine-szz` and `confirm` read this repo's own git
 history. Every miner writes to the gitignored evals/review_bench/.local/;
 only `confirm` writes to the committed evals/review_bench/defects.json, and
 only for a candidate the engineer approves at its interactive prompt, which
@@ -26,9 +27,9 @@ import signal
 import stat
 import subprocess
 import sys
-import unicodedata
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +44,7 @@ DEFAULT_JUDGE_RUN_STORE_DIR = EVALS_DIR / "review_bench" / ".local" / "judge-run
 DEFAULT_JUDGE_RECORDS_DIR = EVALS_DIR / "review_bench" / ".local" / "judge-runs"
 DEFAULT_SPOT_CHECK_EXPORT_PATH = EVALS_DIR / "review_bench" / ".local" / "spot-check-export.json"
 DEFAULT_CONDITIONS_PATH = EVALS_DIR / "review_bench" / "conditions.json"
+DEFAULT_BASELINE_REPORT_PATH = EVALS_DIR / "review_bench" / "results" / "baseline.json"
 
 
 def _positive_int(text: str) -> int:
@@ -52,18 +54,12 @@ def _positive_int(text: str) -> int:
     return value
 
 
-# Categories whose characters can drive a terminal (escape sequences, bidi
-# overrides, line separators) or render as nothing.
-_TERMINAL_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
-
-
 def _escape_control_characters(text: str) -> str:
     """text with each terminal-unsafe character shown as a backslash escape,
     so model-emitted text can never act on the operator's terminal."""
-    return "".join(
-        ch.encode("unicode_escape").decode("ascii") if unicodedata.category(ch) in _TERMINAL_UNSAFE_CATEGORIES else ch
-        for ch in text
-    )
+    from review_bench import defects
+
+    return defects.escape_for_terminal(text)
 
 
 def _print_out_of_session_reads(subcommand: str, records: Iterable) -> None:
@@ -158,11 +154,38 @@ def cmd_mine_rounds(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mine_pr_comments(args: argparse.Namespace) -> int:
+    from review_bench import defects, mine_pr_comments
+
+    candidates = mine_pr_comments.mine(REPO_ROOT)
+    out_path = Path(args.local_dir) / "pr_comment_candidates.json"
+    defects.save_candidates(out_path, candidates)
+    print(f"mine-pr-comments: wrote {len(candidates)} candidate(s) to {out_path}", file=sys.stderr)
+    return 0
+
+
 _SHORT_SHA_LENGTH = 12  # the length mined candidate IDs already use for a commit
 # Commit-authored text reaches the terminal through the approval display, so
 # both its count and its length are capped.
 _CONFIRM_MAX_COMMIT_SUBJECTS = 3
 _CONFIRM_MAX_SUBJECT_CHARS = 120
+# A mined `diff_hunk` is GitHub-authored text, so its displayed length is capped too.
+_CONFIRM_MAX_DIFF_HUNK_CHARS = 600
+# Sources whose miner computes lines_exist_at_introducing_head instead of defaulting it to True.
+_SOURCES_CHECKING_LINES_EXIST = frozenset({"pr-comment"})
+# The order `confirm` presents sources in. `review-round` comes first because its
+# transcripts age out, so an early `q` must never starve it. A source not listed sorts last.
+_CONFIRM_SOURCE_ORDER = ("review-round", "pr-comment", "szz")
+# Sources whose evidence records whether the head is among the PR's own commits.
+_SOURCES_LABELING_HEAD_BRANCH = frozenset({"pr-comment"})
+_HEAD_OUTSIDE_PR_BRANCH_LABEL = " (head is outside the PR branch)"
+_HEAD_BRANCH_UNKNOWN_LABEL = " (PR branch membership unknown)"
+_NO_DESCRIPTION_NOTE = "(none -- a y asks for a one-line description)"
+_CONFIRM_HEADER = (
+    "confirm: {count} candidate(s) to review. Answer y to promote one, q or end of input to stop and keep the "
+    "answers so far, and anything else to skip it. Ctrl-C discards every answer in this run, so q is the "
+    "durable exit. Paste one line at a time: a multi-line paste can answer a later prompt unseen."
+)
 
 _DECISION_PROMOTE = "y"
 _DECISION_SKIP = "n"
@@ -193,7 +216,10 @@ def _defect_passing_confirm_checks(candidate, excerpts_by_id: dict[str, str]):
 
     escaped_id = _escape_control_characters(candidate.id)
     try:
-        public_text = defects.public_git_text(REPO_ROOT, candidate.head_commit, candidate.fix_commit)
+        public_texts = defects.defect_public_texts(
+            REPO_ROOT, candidate.head_commit, candidate.fix_commit, source=candidate.source,
+            evidence=candidate.evidence,
+        )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         # One candidate's commits being unreachable (rewritten history,
         # a stale .local/ shortlist) must not abort every other
@@ -205,7 +231,7 @@ def _defect_passing_confirm_checks(candidate, excerpts_by_id: dict[str, str]):
         )
         return None
 
-    violation = defects.check_description_provenance(candidate.description, public_text, excerpts_by_id)
+    violation = defects.check_description_provenance(candidate.description, public_texts, excerpts_by_id)
     if violation is not None:
         # No other excerpt text ever reaches the terminal here -- only
         # the candidate ID, the matched run, and its source candidate ID.
@@ -222,37 +248,89 @@ def _defect_passing_confirm_checks(candidate, excerpts_by_id: dict[str, str]):
             id=candidate.id, source=candidate.source, lens=candidate.lens,
             base_commit=candidate.base_commit, head_commit=candidate.head_commit,
             fix_commit=candidate.fix_commit, fix_date=candidate.fix_date,
-            description=candidate.description,
+            description=candidate.description, path=candidate.evidence.get("path", ""),
+            file_is_markdown=candidate.file_is_markdown,
         )
     except ValueError as exc:
         print(f"confirm: rejected {escaped_id} -- {_escape_control_characters(str(exc))}", file=sys.stderr)
         return None
 
 
-def _print_candidate_for_approval(candidate, subjects: list[tuple[str, str]]) -> None:
-    """Show one passing candidate to the engineer. The four inclusion fields
-    the engineer's answer accepts print last, beside the prompt. The miner
-    hard-codes two of them as guesses it never checked, so they are labeled."""
+def _indented_escaped_lines(text: str, indent: str) -> list[str]:
+    """`text` as display lines, each escaped and indented. It splits on LF
+    only, because the escape turns every other line separator into a visible
+    backslash escape."""
+    return [f"{indent}{_escape_control_characters(line)}" for line in text.split("\n")]
+
+
+def _shown_diff_hunk_lines(diff_hunk) -> list[str]:
+    """The display lines for a candidate's mined `diff_hunk`, each escaped. A
+    hunk longer than `_CONFIRM_MAX_DIFF_HUNK_CHARS` keeps its end, because the
+    commented line is the hunk's last, and a marker precedes the kept lines.
+    Empty when the candidate carries no text hunk."""
+    if not isinstance(diff_hunk, str) or not diff_hunk:
+        return []
+    cut = len(diff_hunk) > _CONFIRM_MAX_DIFF_HUNK_CHARS
+    bounded = diff_hunk[-_CONFIRM_MAX_DIFF_HUNK_CHARS:] if cut else diff_hunk
+    if cut and "\n" in bounded.rstrip("\n"):
+        bounded = bounded.partition("\n")[2]  # drops the line the cut fell inside
+    shown = ["  diff_hunk:"]
+    if cut:
+        shown.append("    ... (diff_hunk cut)")
+    shown.extend(_indented_escaped_lines(bounded, "    "))
+    return shown
+
+
+def _print_candidate_for_approval(
+    candidate, subjects: list[tuple[str, str]], same_location_candidates: Sequence[tuple] = (),
+) -> None:
+    """Show one passing candidate to the engineer, with the description first
+    and in full. The four inclusion fields the engineer's answer accepts print
+    last, beside the prompt. A miner that hard-codes a field as a guess it
+    never checked has that field labeled. `same_location_candidates` are the
+    other-source candidates that share this one's head, fix, and path, each
+    with its status."""
     escape = _escape_control_characters
     path = escape(str(candidate.evidence.get("path", "(none recorded)")))
+    if candidate.source in _SOURCES_LABELING_HEAD_BRANCH:
+        head_on_pr_branch = candidate.evidence.get("head_on_pr_branch")
+        # A missing key means the miner could not list the branch's commits, and any non-boolean is no answer either.
+        if head_on_pr_branch is False:
+            path += _HEAD_OUTSIDE_PR_BRANCH_LABEL
+        elif head_on_pr_branch is not True:
+            path += _HEAD_BRANCH_UNKNOWN_LABEL
+    shown_same_location = [
+        f"    {escape(other.id)} ({escape(other.source)}): {status}" for other, status in same_location_candidates
+    ]
+    if shown_same_location:
+        shown_same_location.insert(0, "  also mined from another source at this head, fix, and path:")
     shown_subjects = [
         f"    {escape(_short_sha(sha))} {escape(subject[:_CONFIRM_MAX_SUBJECT_CHARS])}"
         for sha, subject in subjects[:_CONFIRM_MAX_COMMIT_SUBJECTS]
     ]
+    shown_diff_hunk = _shown_diff_hunk_lines(candidate.evidence.get("diff_hunk"))
+    # The whole description prints, with no length cut: the engineer approves the text as committed.
+    shown_description = (
+        ["  description:", *_indented_escaped_lines(candidate.description, "    ")]
+        if candidate.description.strip()
+        else [f"  description: {_NO_DESCRIPTION_NOTE}"]
+    )
     lines = [
         "",
         f"candidate {escape(candidate.id)}",
         f"  source: {escape(candidate.source)}  fix_date: {escape(candidate.fix_date)}",
         f"  base {_short_sha(candidate.base_commit)}  introducing {_short_sha(candidate.head_commit)}  "
         f"fix {_short_sha(candidate.fix_commit)}",
+        *shown_description,
         f"  path: {path}",
         "  commit subjects:",
         *shown_subjects,
-        f"  description: {escape(candidate.description)}",
+        *shown_diff_hunk,
+        *shown_same_location,
         "  inclusion fields:",
         f"    lens: {escape(candidate.lens)}",
-        f"    lines_exist_at_introducing_head: {escape(str(candidate.lines_exist_at_introducing_head))} "
-        "(unchecked default)",
+        f"    lines_exist_at_introducing_head: {escape(str(candidate.lines_exist_at_introducing_head))}"
+        f"{'' if candidate.source in _SOURCES_CHECKING_LINES_EXIST else ' (unchecked default)'}",
         f"    reviewer_could_have_caught_it: {escape(str(candidate.reviewer_could_have_caught_it))} "
         "(unchecked default)",
         f"    file_is_markdown: {escape(str(candidate.file_is_markdown))}",
@@ -276,6 +354,60 @@ def _read_promotion_decision() -> str:
     return _DECISION_SKIP
 
 
+def _confirmation_status(
+    candidate_id: str, existing_ids: set[str], accepted_ids: set[str], declined_ids: set[str],
+    rejected_ids: set[str],
+) -> str:
+    if candidate_id in existing_ids:
+        return "confirmed"
+    if candidate_id in accepted_ids:
+        return "accepted this run"
+    if candidate_id in declined_ids:
+        return "skipped this run"
+    if candidate_id in rejected_ids:
+        return "rejected by checks"
+    return "pending"
+
+
+def _read_typed_description() -> str | None:
+    """One typed description line, without its line feed, or None at end of
+    input. A carriage return stays in the text, so the control-character check
+    rejects it."""
+    print("one-line description: ", end="", file=sys.stderr, flush=True)
+    line = sys.stdin.readline()
+    if line == "":
+        return None
+    return line.removesuffix("\n")
+
+
+def _defect_with_typed_description(candidate, typed_description: str, excerpts_by_id: dict[str, str]):
+    """The ConfirmedDefect `candidate` promotes to with `typed_description`, or
+    None after printing why it is rejected. The control-character check runs
+    before the surrounding whitespace is stripped, so a trailing carriage
+    return is not trimmed away."""
+    from review_bench import defects
+
+    if defects.has_disallowed_control_character(typed_description):
+        print(
+            f"confirm: rejected {_escape_control_characters(candidate.id)} -- the description holds a control character",
+            file=sys.stderr,
+        )
+        return None
+    return _defect_passing_confirm_checks(
+        replace(candidate, description=typed_description.strip()), excerpts_by_id,
+    )
+
+
+def _confirm_source_rank(candidate) -> int:
+    if candidate.source in _CONFIRM_SOURCE_ORDER:
+        return _CONFIRM_SOURCE_ORDER.index(candidate.source)
+    return len(_CONFIRM_SOURCE_ORDER)
+
+
+def _cross_source_location(candidate) -> tuple:
+    return (candidate.head_commit, candidate.fix_commit, candidate.evidence.get("path"))
+
+
 def cmd_confirm(args: argparse.Namespace) -> int:
     from review_bench import defects
 
@@ -284,6 +416,12 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     for shortlist in sorted(local_dir.glob("*_candidates.json")):
         candidates.extend(defects.load_candidates(shortlist))
     defects.assert_unique_ids(candidates, miner="confirm")
+
+    # Stable, so a source's candidates keep the order their miner wrote them in.
+    candidates.sort(key=_confirm_source_rank)
+    candidates_by_location: dict[tuple, list[defects.Candidate]] = {}
+    for candidate in candidates:
+        candidates_by_location.setdefault(_cross_source_location(candidate), []).append(candidate)
 
     # Checked against every candidate's excerpt, not only the one a given
     # description confirms -- the drafting session saw the whole shortlist.
@@ -295,15 +433,17 @@ def cmd_confirm(args: argparse.Namespace) -> int:
 
     passing: list[tuple[defects.Candidate, defects.ConfirmedDefect]] = []
     rejected = 0
+    rejected_ids: set[str] = set()
     for candidate in candidates:
-        # An empty description marks a candidate the engineer has not written
-        # up yet: a completeness check, not approval. One already in
-        # defects.json is a no-op retry, not a rejection.
-        if not candidate.description or candidate.id in existing_ids:
+        # One already in defects.json is a no-op retry, not a rejection. A
+        # candidate with no description yet passes here and is described after
+        # the engineer's `y`.
+        if candidate.id in existing_ids:
             continue
         defect = _defect_passing_confirm_checks(candidate, excerpts_by_id)
         if defect is None:
             rejected += 1
+            rejected_ids.add(candidate.id)
         else:
             passing.append((candidate, defect))
 
@@ -318,7 +458,10 @@ def cmd_confirm(args: argparse.Namespace) -> int:
         return 2 if passing else 0
 
     approved: list[defects.ConfirmedDefect] = []
+    accepted_ids: set[str] = set()
+    declined_ids: set[str] = set()
     skipped = 0
+    print(_CONFIRM_HEADER.format(count=len(passing)), file=sys.stderr)
     try:
         for candidate, defect in passing:
             try:
@@ -332,15 +475,40 @@ def cmd_confirm(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 rejected += 1
+                rejected_ids.add(candidate.id)
                 continue
-            _print_candidate_for_approval(candidate, subjects)
+            same_location_candidates = [
+                (other, _confirmation_status(other.id, existing_ids, accepted_ids, declined_ids, rejected_ids))
+                for other in candidates_by_location[_cross_source_location(candidate)]
+                if other.source != candidate.source
+            ]
+            _print_candidate_for_approval(candidate, subjects, same_location_candidates)
             decision = _read_promotion_decision()
             if decision == _DECISION_QUIT:
                 break
-            if decision == _DECISION_PROMOTE:
-                approved.append(defect)
-            else:
+            if decision != _DECISION_PROMOTE:
+                declined_ids.add(candidate.id)
                 skipped += 1
+                continue
+            if not candidate.description.strip():
+                typed_description = _read_typed_description()
+                if typed_description is None:
+                    break
+                if not typed_description.strip():
+                    print(
+                        f"confirm: skipped {_escape_control_characters(candidate.id)} -- empty description",
+                        file=sys.stderr,
+                    )
+                    declined_ids.add(candidate.id)
+                    skipped += 1
+                    continue
+                defect = _defect_with_typed_description(candidate, typed_description, excerpts_by_id)
+                if defect is None:
+                    rejected += 1
+                    rejected_ids.add(candidate.id)
+                    continue
+            approved.append(defect)
+            accepted_ids.add(candidate.id)
     except KeyboardInterrupt as exc:
         print("confirm: interrupted -- nothing written or pinned", file=sys.stderr)
         return 128 + getattr(exc, "signum", signal.SIGINT)
@@ -717,80 +885,194 @@ def cmd_spot_check_import(args: argparse.Namespace) -> int:
     return 0
 
 
-def _baseline_report_fields(
-    recall_counts, precision_counts, kept_ids: list[str], precision_kept_ids: list[str], *,
-    baseline_arm: str, other_arm: str, k: int, sensitivity: tuple[str, tuple[float, float]],
-    dropped_recall_defects: int,
-) -> dict:
-    """The baseline-mode `--out` fields: per-arm recall and pooled precision
-    with paired-bootstrap intervals, per-defect detection rates over the kept
-    defects, the sensitivity verdict with its interval limits, and N against
-    N_min. `dropped_defects_recall` counts confirmed defects, so a defect with
-    no recall label is counted too. `precision_difference` is the interval
-    half of `precision_noninferiority_verdict` alone, never its verdict. The
-    pooled precision fields are None when no defect has a precision-judge
-    run."""
+def _stratum_figures(
+    recall_counts, precision_counts, recall_ids: list[str], precision_ids: list[str], *,
+    cluster_by_defect, baseline_arm: str, other_arm: str,
+) -> tuple[dict, str | None, str | None]:
+    """The figures reported for one gate or stratum, over its own defects
+    alone: effective N as a defect count and a fixture count beside the
+    largest fixture's size, per-arm recall and pooled precision with
+    paired-cluster-bootstrap intervals, and the arm difference in each, other
+    arm minus baseline arm. Every figure that is undefined on this set, such
+    as an interval over fewer than two fixtures, is None. Also returns the two
+    non-inferiority verdicts, which a caller records only for a gate."""
     from review_bench import analysis
 
-    arms = (baseline_arm, other_arm)
-    sensitivity_verdict, (interval_lower_limit, interval_upper_limit) = sensitivity
-    n_min = analysis.n_min(k)
-
-    fields = {
-        "n_min": n_min,
-        "effective_n": len(kept_ids),
-        "effective_n_meets_n_min": len(kept_ids) >= n_min,
-        "precision_effective_n": len(precision_kept_ids),
-        "dropped_defects_recall": dropped_recall_defects,
-        "dropped_defects_precision": len(kept_ids) - len(precision_kept_ids),
+    recall_verdict, recall_difference_interval = analysis.recall_noninferiority_verdict(
+        recall_counts, recall_ids, baseline_arm, other_arm, cluster_by_defect=cluster_by_defect,
+    )
+    precision_verdict, precision_difference_interval, precision_difference_dropped = (
+        analysis.precision_noninferiority_verdict(
+            precision_counts, precision_ids, baseline_arm, other_arm, cluster_by_defect=cluster_by_defect,
+        )
+    )
+    pooled_precision_per_arm = {}
+    for arm in (baseline_arm, other_arm):
+        interval, dropped_resamples = analysis.bootstrap_interval_with_drops(
+            precision_ids, lambda resample_ids, arm=arm: analysis.pooled_precision(precision_counts, resample_ids, arm),
+            cluster_by_defect=cluster_by_defect,
+        )
+        pooled_precision_per_arm[arm] = {
+            "precision": analysis.pooled_precision(precision_counts, precision_ids, arm),
+            "interval": interval, "dropped_resamples": dropped_resamples,
+        }
+    figures = {
+        "effective_n": len(recall_ids),
+        "fixture_count": analysis.fixture_count(recall_ids, cluster_by_defect),
+        "largest_cluster_size": analysis.largest_cluster_size(recall_ids, cluster_by_defect),
+        "precision_effective_n": len(precision_ids),
+        "precision_fixture_count": analysis.fixture_count(precision_ids, cluster_by_defect),
         "recall_per_arm": {
             arm: {
-                "recall": analysis.arm_recall(recall_counts, kept_ids, arm),
+                "recall": analysis.arm_recall(recall_counts, recall_ids, arm),
                 "interval": analysis.bootstrap_interval(
-                    kept_ids, lambda resample_ids, arm=arm: analysis.arm_recall(recall_counts, resample_ids, arm),
+                    recall_ids, lambda resample_ids, arm=arm: analysis.arm_recall(recall_counts, resample_ids, arm),
+                    cluster_by_defect=cluster_by_defect,
                 ),
             }
-            for arm in arms
+            for arm in (baseline_arm, other_arm)
         },
-        "detection_rate_per_defect": {
-            defect_id: {arm: recall_counts[defect_id].detection_rate(arm) for arm in arms} for defect_id in kept_ids
+        "recall_difference": {
+            "arm": other_arm, "minus_arm": baseline_arm, "interval": recall_difference_interval,
+            "difference": analysis.recall_difference(recall_counts, recall_ids, other_arm, baseline_arm),
         },
-        "baseline_sensitivity": {
-            "verdict": sensitivity_verdict, "interval_lower_limit": interval_lower_limit,
-            "interval_upper_limit": interval_upper_limit, "delta": analysis.DELTA,
+        "pooled_precision_per_arm": pooled_precision_per_arm,
+        "precision_difference": {
+            "arm": other_arm, "minus_arm": baseline_arm, "interval": precision_difference_interval,
+            "dropped_resamples": precision_difference_dropped,
+            "difference": analysis.precision_difference(precision_counts, precision_ids, other_arm, baseline_arm),
         },
-        "pooled_precision_per_arm": None,
-        "precision_difference": None,
     }
-    if precision_kept_ids:
-        _verdict_never_recorded, difference_interval = analysis.precision_noninferiority_verdict(
-            precision_counts, precision_kept_ids, baseline_arm, other_arm,
+    return figures, recall_verdict, precision_verdict
+
+
+def _gate_size_fields(
+    recall_ids: list[str], precision_ids: list[str], confirmed_in_gate: int, *, cluster_by_defect, n_min_value: int,
+) -> dict:
+    """What a gate adds to its figures: whether each kept set spans N_min
+    fixtures, and the confirmed defects the recall and precision analyses
+    dropped."""
+    from review_bench import analysis
+
+    return {
+        "effective_n_meets_n_min": analysis.effective_n_meets_n_min(
+            recall_ids, cluster_by_defect, n_min_value=n_min_value,
+        ),
+        "precision_effective_n_meets_n_min": analysis.effective_n_meets_n_min(
+            precision_ids, cluster_by_defect, n_min_value=n_min_value,
+        ),
+        "dropped_defects_recall": confirmed_in_gate - len(recall_ids),
+        "dropped_defects_precision": len(recall_ids) - len(precision_ids),
+    }
+
+
+def _strata_report(
+    recall_counts, precision_counts, confirmed, kept_ids: list[str], precision_kept_ids: list[str],
+    kept_by_gate: dict[str, list[str]], precision_kept_by_gate: dict[str, list[str]], *, cluster_by_defect,
+    baseline_arm: str, other_arm: str,
+) -> dict:
+    """The per-source strata and the secondary stratum: figures only. A
+    stratum never gates, so none carries a verdict."""
+    from review_bench import analysis
+
+    kept_by_source = analysis.source_defect_ids(confirmed, kept_ids)
+    precision_kept_by_source = analysis.source_defect_ids(confirmed, precision_kept_ids)
+    figures_kwargs = {"cluster_by_defect": cluster_by_defect, "baseline_arm": baseline_arm, "other_arm": other_arm}
+    return {
+        "per_source": {
+            source: _stratum_figures(
+                recall_counts, precision_counts, kept_by_source[source], precision_kept_by_source[source],
+                **figures_kwargs,
+            )[0]
+            for source in kept_by_source
+        },
+        "secondary_stratum": _stratum_figures(
+            recall_counts, precision_counts, kept_by_gate[analysis.STRATUM_SECONDARY],
+            precision_kept_by_gate[analysis.STRATUM_SECONDARY], **figures_kwargs,
+        )[0],
+    }
+
+
+def _baseline_gate_sections(
+    recall_counts, precision_counts, confirmed_by_gate: dict[str, list[str]], kept_by_gate: dict[str, list[str]],
+    precision_kept_by_gate: dict[str, list[str]], *, cluster_by_defect, baseline_arm: str, other_arm: str,
+    n_min_value: int,
+) -> dict:
+    """Per gate, a baseline report's figures, N against N_min, and the
+    sensitivity verdict with its interval limits (None for an empty or
+    one-fixture gate), computed over that gate's own defects alone."""
+    from review_bench import analysis
+
+    sections = {}
+    for gate in analysis.GATES:
+        figures, _recall_verdict, _precision_verdict = _stratum_figures(
+            recall_counts, precision_counts, kept_by_gate[gate], precision_kept_by_gate[gate],
+            cluster_by_defect=cluster_by_defect, baseline_arm=baseline_arm, other_arm=other_arm,
         )
-        fields["pooled_precision_per_arm"] = {
-            arm: {
-                "precision": analysis.pooled_precision(precision_counts, precision_kept_ids, arm),
-                "interval": analysis.bootstrap_interval(
-                    precision_kept_ids,
-                    lambda resample_ids, arm=arm: analysis.pooled_precision(precision_counts, resample_ids, arm),
-                ),
-            }
-            for arm in arms
-        }
-        fields["precision_difference"] = {
-            "arm": other_arm, "minus_arm": baseline_arm, "interval": difference_interval,
-            "difference": (
-                analysis.pooled_precision(precision_counts, precision_kept_ids, other_arm)
-                - analysis.pooled_precision(precision_counts, precision_kept_ids, baseline_arm)
+        sensitivity_verdict, sensitivity_interval = analysis.baseline_sensitivity_verdict(
+            recall_counts, kept_by_gate[gate], baseline_arm, other_arm, cluster_by_defect=cluster_by_defect,
+        )
+        lower_limit, upper_limit = sensitivity_interval if sensitivity_interval is not None else (None, None)
+        sections[gate] = {
+            **figures,
+            **_gate_size_fields(
+                kept_by_gate[gate], precision_kept_by_gate[gate], len(confirmed_by_gate[gate]),
+                cluster_by_defect=cluster_by_defect, n_min_value=n_min_value,
             ),
+            "baseline_sensitivity": {
+                "verdict": sensitivity_verdict, "interval_lower_limit": lower_limit,
+                "interval_upper_limit": upper_limit, "delta": analysis.DELTA,
+            },
         }
-    return fields
+    return sections
 
 
-def cmd_analyze(args: argparse.Namespace) -> int:
+def _later_arm_gate_sections(
+    recall_counts, precision_counts, confirmed_by_gate: dict[str, list[str]], kept_by_gate: dict[str, list[str]],
+    precision_kept_by_gate: dict[str, list[str]], baseline_verdicts: dict[str, str | None], *, cluster_by_defect,
+    baseline_arm: str, other_arm: str, n_min_value: int,
+) -> tuple[dict, dict]:
+    """Per gate, a later arm's figures, non-inferiority verdicts, and outcome,
+    computed over that gate's own defects alone, plus the `GateResult`
+    `certify_later_arm` reads. A gate is short when either its recall-kept or
+    its precision-kept set spans fewer than N_min fixtures."""
+    from review_bench import analysis
+
+    sections, gate_results = {}, {}
+    for gate in analysis.GATES:
+        figures, recall_verdict, precision_verdict = _stratum_figures(
+            recall_counts, precision_counts, kept_by_gate[gate], precision_kept_by_gate[gate],
+            cluster_by_defect=cluster_by_defect, baseline_arm=baseline_arm, other_arm=other_arm,
+        )
+        size_fields = _gate_size_fields(
+            kept_by_gate[gate], precision_kept_by_gate[gate], len(confirmed_by_gate[gate]),
+            cluster_by_defect=cluster_by_defect, n_min_value=n_min_value,
+        )
+        gate_results[gate] = analysis.GateResult(
+            recall_verdict=recall_verdict, precision_verdict=precision_verdict,
+            baseline_sensitivity=baseline_verdicts[gate],
+            short=not (size_fields["effective_n_meets_n_min"] and size_fields["precision_effective_n_meets_n_min"]),
+        )
+        sections[gate] = {
+            **figures, **size_fields,
+            "baseline_sensitivity": {"verdict": baseline_verdicts[gate]},
+            "recall_noninferiority": {"verdict": recall_verdict},
+            "precision_noninferiority": {"verdict": precision_verdict},
+            "outcome": analysis.gate_outcome(gate_results[gate]),
+        }
+    return sections, gate_results
+
+
+def cmd_analyze(args: argparse.Namespace, *, n_min_override: int | None = None) -> int:
+    """`n_min_override` is test-only and no CLI flag reaches it: it replaces
+    N_min(K) in the short-gate test, so a test can build a gate that meets it
+    from a few fixtures."""
     from review_bench import adjudicate, analysis, arms, defects, runner
 
     # Caught here too, not only by main()'s own top-level handler, since
     # tests invoke cmd_analyze directly and rely on it returning 2 itself.
+    baseline_verdicts: dict[str, str | None] = {}
+    freeze_identity: dict | None = None
     try:
         confirmed = defects.load_confirmed_defects(Path(args.defects_path))
         reviewer_records = runner.read_run_records(_existing_records_path(args.reviewer_records_path))
@@ -807,6 +1089,11 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 frozen, analysis.compute_frozen_fields(Path(args.defects_path), Path(args.arms_root)), k=args.k,
             )
             analysis.check_record_defect_ids_match(reviewer_records, frozen["defect_ids"])
+            baseline_verdicts = analysis.load_baseline_gate_verdicts(Path(args.baseline_report_path), frozen)
+        elif args.out is not None:
+            freeze_identity = analysis.baseline_report_freeze_identity(
+                Path(args.defects_path), Path(args.arms_root), reviewer_records, k=args.k,
+            )
     except analysis.HarnessInvalidatedError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -845,9 +1132,9 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     precision_kept_ids = analysis.kept_precision_defect_ids(kept_ids, precision_counts)
 
     baseline_arm, other_arm = arms.ARM_CURRENT_RULE, (args.arm_x or arms.ARM_FUNCTION_CONTEXT)
+    n_min_value = n_min_override if n_min_override is not None else analysis.n_min(args.k)
     print(
-        f"analyze: {len(confirmed)} confirmed defect(s), {len(kept_ids)} kept for recall "
-        f"(N_min={analysis.n_min(args.k)})",
+        f"analyze: {len(confirmed)} confirmed defect(s), {len(kept_ids)} kept for recall (N_min={n_min_value})",
         file=sys.stderr,
     )
     dropped_recall_defects = len({defect.id for defect in confirmed} - set(kept_ids))
@@ -865,13 +1152,36 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         print("analyze: no defect is kept for recall -- nothing to analyze", file=sys.stderr)
         return 2
 
-    baseline_sensitivity = None
-    if args.baseline_conditions_path is None:
-        baseline_sensitivity = analysis.baseline_sensitivity_verdict(recall_counts, kept_ids, baseline_arm, other_arm)
+    cluster_by_defect = analysis.fixture_clusters(confirmed)
+    try:
+        confirmed_by_gate = analysis.gate_defect_ids(confirmed, [defect.id for defect in confirmed])
+        kept_by_gate = analysis.gate_defect_ids(confirmed, kept_ids)
+        precision_kept_by_gate = analysis.gate_defect_ids(confirmed, precision_kept_ids)
+    except analysis.HarnessInvalidatedError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    for gate_or_stratum in (*analysis.GATES, analysis.STRATUM_SECONDARY):
         print(
-            f"analyze: baseline sensitivity = {baseline_sensitivity[0]} (interval {baseline_sensitivity[1]})",
+            f"analyze: {gate_or_stratum}: {len(kept_by_gate[gate_or_stratum])} kept defect(s) over "
+            f"{analysis.fixture_count(kept_by_gate[gate_or_stratum], cluster_by_defect)} fixture(s), largest fixture "
+            f"holds {analysis.largest_cluster_size(kept_by_gate[gate_or_stratum], cluster_by_defect)}",
             file=sys.stderr,
         )
+    figures_kwargs = {"cluster_by_defect": cluster_by_defect, "baseline_arm": baseline_arm, "other_arm": other_arm}
+    gate_sections: dict = {}
+    certification = None
+    if args.baseline_conditions_path is None:
+        gate_sections = _baseline_gate_sections(
+            recall_counts, precision_counts, confirmed_by_gate, kept_by_gate, precision_kept_by_gate,
+            n_min_value=n_min_value, **figures_kwargs,
+        )
+        for gate in analysis.GATES:
+            sensitivity = gate_sections[gate]["baseline_sensitivity"]
+            print(
+                f"analyze: {gate} gate baseline sensitivity = {sensitivity['verdict']} "
+                f"(M1 {sensitivity['interval_lower_limit']}, upper limit {sensitivity['interval_upper_limit']})",
+                file=sys.stderr,
+            )
     else:
         if not precision_kept_ids:
             print(
@@ -880,18 +1190,30 @@ def cmd_analyze(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        recall_verdict, recall_interval = analysis.recall_noninferiority_verdict(
-            recall_counts, kept_ids, baseline_arm, other_arm,
+        gate_sections, gate_results = _later_arm_gate_sections(
+            recall_counts, precision_counts, confirmed_by_gate, kept_by_gate, precision_kept_by_gate,
+            baseline_verdicts, n_min_value=n_min_value, **figures_kwargs,
         )
-        precision_verdict, precision_interval = analysis.precision_noninferiority_verdict(
-            precision_counts, precision_kept_ids, baseline_arm, other_arm,
-        )
-        # precision_kept_ids is a subset of kept_ids, so its size binds both gates' N_min bar.
-        certification = analysis.certify_later_arm(
-            recall_verdict, precision_verdict, meets_n_min=len(precision_kept_ids) >= analysis.n_min(args.k),
-        )
-        print(f"analyze: recall non-inferiority = {recall_verdict} (interval {recall_interval})", file=sys.stderr)
-        print(f"analyze: precision non-inferiority = {precision_verdict} (interval {precision_interval})", file=sys.stderr)
+        certification = analysis.certify_later_arm(gate_results)
+        for gate in analysis.GATES:
+            section = gate_sections[gate]
+            print(
+                f"analyze: {gate} gate recall non-inferiority = {section['recall_noninferiority']['verdict']} "
+                f"(interval {section['recall_difference']['interval']})",
+                file=sys.stderr,
+            )
+            print(
+                f"analyze: {gate} gate precision non-inferiority = {section['precision_noninferiority']['verdict']} "
+                f"(interval {section['precision_difference']['interval']}, "
+                f"{section['precision_difference']['dropped_resamples']} resample(s) dropped for a zero "
+                "precision denominator)",
+                file=sys.stderr,
+            )
+            print(
+                f"analyze: {gate} gate baseline sensitivity = {baseline_verdicts[gate]}, "
+                f"outcome = {section['outcome']}, {section['fixture_count']} fixture(s) (N_min={n_min_value})",
+                file=sys.stderr,
+            )
         print(f"analyze: certification = {certification}", file=sys.stderr)
 
     print(f"analyze: read tokens/run per arm = {analysis.read_token_stats(reviewer_records)}", file=sys.stderr)
@@ -926,31 +1248,52 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     # doesn't carry.
     fix_dates_by_defect = {defect.id: defect.fix_date for defect in confirmed}
     recall_by_fix_date_half_per_arm = {
-        arm: analysis.recall_by_fix_date_half(recall_counts, kept_ids, fix_dates_by_defect, arm)
-        for arm in (baseline_arm, other_arm)
+        gate: {
+            arm: analysis.recall_by_fix_date_half(recall_counts, kept_by_gate[gate], fix_dates_by_defect, arm)
+            for arm in (baseline_arm, other_arm)
+        }
+        for gate in analysis.GATES
     }
-    print(f"analyze: recall by fix-date half per arm = {recall_by_fix_date_half_per_arm}", file=sys.stderr)
+    print(f"analyze: recall by fix-date half per gate and arm = {recall_by_fix_date_half_per_arm}", file=sys.stderr)
 
+    # The over-read-cap stratum is the code gate's alone: markdown files are read whole.
     over_read_cap_defect_ids = {record.defect_id for record in reviewer_records if record.over_read_cap}
     recall_diff_over_read_cap_stratum = analysis.recall_diff_over_read_cap_stratum(
-        recall_counts, kept_ids, over_read_cap_defect_ids, baseline_arm, other_arm,
+        recall_counts, kept_by_gate[analysis.GATE_CODE], over_read_cap_defect_ids, baseline_arm, other_arm,
     )
-    print(f"analyze: recall diff in the over-read-cap stratum = {recall_diff_over_read_cap_stratum}", file=sys.stderr)
+    print(f"analyze: recall diff in the code gate's over-read-cap stratum = {recall_diff_over_read_cap_stratum}", file=sys.stderr)
 
-    observed_sigma_d = analysis.observed_sigma_d(recall_counts, kept_ids, baseline_arm, other_arm)
-    print(f"analyze: observed sigma_d = {observed_sigma_d}", file=sys.stderr)
+    observed_sigma_d = {
+        gate: analysis.observed_sigma_d(
+            recall_counts, kept_by_gate[gate], baseline_arm, other_arm, cluster_by_defect=cluster_by_defect,
+        )
+        for gate in analysis.GATES
+    }
+    print(f"analyze: observed sigma_d per gate = {observed_sigma_d}", file=sys.stderr)
 
     if args.out is not None:
         # No key holds a dollar total: the cost lines above go to stderr for
         # the engineer only, and the report is committed.
+        if certification is not None:
+            mode_fields = {"certification": certification}
+        else:
+            # Only a baseline report records the freeze identity a later arm checks it against.
+            mode_fields = {
+                "freeze_identity": freeze_identity,
+                "dropped_defects_recall": dropped_recall_defects,
+                "dropped_defects_precision": len(kept_ids) - len(precision_kept_ids),
+                "detection_rate_per_defect": {
+                    defect_id: {arm: recall_counts[defect_id].detection_rate(arm) for arm in (baseline_arm, other_arm)}
+                    for defect_id in kept_ids
+                },
+            }
         report = {
-            **(
-                _baseline_report_fields(
-                    recall_counts, precision_counts, kept_ids, precision_kept_ids, baseline_arm=baseline_arm,
-                    other_arm=other_arm, k=args.k, sensitivity=baseline_sensitivity,
-                    dropped_recall_defects=dropped_recall_defects,
-                )
-                if baseline_sensitivity is not None else {}
+            **mode_fields,
+            "n_min": n_min_value,
+            "gates": gate_sections,
+            **_strata_report(
+                recall_counts, precision_counts, confirmed, kept_ids, precision_kept_ids, kept_by_gate,
+                precision_kept_by_gate, **figures_kwargs,
             ),
             "confirmed_defects": len(confirmed),
             "kept_defect_ids": kept_ids,
@@ -969,6 +1312,23 @@ def cmd_analyze(args: argparse.Namespace) -> int:
         defects.atomic_write_text(out_path, json.dumps(report, indent=2, sort_keys=True) + "\n")
         print(f"analyze: wrote {args.out}", file=sys.stderr)
     return 0
+
+
+def _gate_counts(confirmed) -> dict[str, dict[str, int]]:
+    """Each gate's and the secondary stratum's distinct fixture count and
+    defect count over the confirmed set, the secondary cells excluded from
+    each gate's."""
+    from review_bench import analysis
+
+    cluster_by_defect = analysis.fixture_clusters(confirmed)
+    ids_by_gate = analysis.gate_defect_ids(confirmed, [defect.id for defect in confirmed])
+    return {
+        gate: {
+            "fixture_count": analysis.fixture_count(defect_ids, cluster_by_defect),
+            "defect_count": len(defect_ids),
+        }
+        for gate, defect_ids in ids_by_gate.items()
+    }
 
 
 def cmd_freeze(args: argparse.Namespace) -> int:
@@ -993,8 +1353,10 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     confirmed = defects.load_confirmed_defects(defects_path)
     local_dir = Path(args.local_dir)
     excerpts_by_id: dict[str, str] = {}
+    evidence_by_id: dict[str, dict] = {}
     for shortlist in sorted(local_dir.glob("*_candidates.json")):
         for candidate in defects.load_candidates(shortlist):
+            evidence_by_id[candidate.id] = candidate.evidence
             if candidate.excerpt.strip():
                 excerpts_by_id[candidate.id] = candidate.excerpt
     review_round_defects_without_excerpt = [
@@ -1004,11 +1366,14 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     provenance_failures: list[tuple[str, str]] = []
     for defect in confirmed:
         try:
-            public_text = defects.public_git_text(REPO_ROOT, defect.head_commit, defect.fix_commit)
+            public_texts = defects.defect_public_texts(
+                REPO_ROOT, defect.head_commit, defect.fix_commit, source=defect.source,
+                evidence=evidence_by_id.get(defect.id),
+            )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             provenance_failures.append((defect.id, f"could not read public git text ({exc})"))
             continue
-        violation = defects.check_description_provenance(defect.description, public_text, excerpts_by_id)
+        violation = defects.check_description_provenance(defect.description, public_texts, excerpts_by_id)
         if violation is not None:
             provenance_failures.append((defect.id, f"shares word run {violation.shared_run!r}"))
 
@@ -1022,6 +1387,22 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     except analysis.HarnessInvalidatedError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    try:
+        gating_rule = analysis.gating_rule_record()
+        gate_counts = _gate_counts(confirmed)
+    except analysis.HarnessInvalidatedError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    n_min_value = analysis.n_min(args.k)
+    for gate_or_stratum, counts in gate_counts.items():
+        below_n_min = gate_or_stratum in analysis.GATES and counts["fixture_count"] < n_min_value
+        print(
+            f"freeze: {gate_or_stratum}: {counts['fixture_count']} fixture(s), {counts['defect_count']} defect(s)"
+            + (f" -- below N_min({args.k}) = {n_min_value}, so a later arm's verdict is capped at inconclusive"
+               if below_n_min else ""),
+            file=sys.stderr,
+        )
 
     environment = runner.read_environment_record()
     conditions = {
@@ -1037,7 +1418,12 @@ def cmd_freeze(args: argparse.Namespace) -> int:
         "campaign_seed": args.campaign_seed,
         "kappa_floor": analysis.KAPPA_SUBSTANTIAL_FLOOR,
         "missing_run_retry_rule": "a failed run is retried once; a run that fails twice is recorded missing",
-        "later_arm_gate": "non-inferiority at delta on recall and on pooled precision; both required",
+        "later_arm_gate": (
+            "non-inferiority at delta on recall and on pooled precision, in the code gate and in the markdown "
+            "gate; all four required"
+        ),
+        "gating_rule": gating_rule,
+        "gate_counts": {gate: gate_counts[gate] for gate in analysis.GATES},
         **frozen_fields,
         "environment": {"cli_version": environment.cli_version, "ambient_config_commit": environment.ambient_config_commit},
         "main_commit_sha": args.main_commit_sha,
@@ -1104,10 +1490,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_rounds.add_argument("--local-dir", default=str(DEFAULT_LOCAL_DIR), help="Where to write the candidate shortlist.")
     p_rounds.set_defaults(func=cmd_mine_rounds)
 
+    # No author or repository flag: the miner discovers the authenticated `gh`
+    # login itself and reads only this checkout's github.com `origin`, when the
+    # provider reports it public.
+    p_pr_comments = sub.add_parser(
+        "mine-pr-comments",
+        help="Mine candidates from the repo owner's own inline review comments on merged PRs, where a "
+        "respond-pr reply marked the comment fixed. Needs an authenticated gh.",
+    )
+    p_pr_comments.add_argument(
+        "--local-dir", default=str(DEFAULT_LOCAL_DIR), help="Where to write the candidate shortlist.",
+    )
+    p_pr_comments.set_defaults(func=cmd_mine_pr_comments)
+
     p_confirm = sub.add_parser(
         "confirm",
-        help="Check each described .local/ candidate, then promote into the committed defects.json the ones the "
-        "engineer approves at a [y/N/q] prompt. Needs a terminal.",
+        help="Check each .local/ candidate, then promote into the committed defects.json the ones the engineer "
+        "approves at a [y/N/q] prompt, asking for a one-line description of any that has none. Needs a terminal.",
     )
     p_confirm.add_argument("--local-dir", default=str(DEFAULT_LOCAL_DIR), help="Where the miners' shortlists live.")
     p_confirm.add_argument("--defects-path", default=str(DEFAULT_DEFECTS_PATH), help="The committed defect-set file.")
@@ -1209,11 +1608,17 @@ def build_parser() -> argparse.ArgumentParser:
         "instead of a later arm's non-inferiority verdicts.",
     )
     p_analyze.add_argument(
+        "--baseline-report-path", default=str(DEFAULT_BASELINE_REPORT_PATH),
+        help="The baseline-mode report (`analyze --out`, committed as results/baseline.json) whose per-gate "
+        "sensitivity verdicts a later arm's analysis reads. Read only with --baseline-conditions-path.",
+    )
+    p_analyze.add_argument(
         "--out", default=None,
-        help="Optional path to write the machine-readable report JSON. Baseline mode (no --baseline-conditions-path) "
-        "writes per-arm recall and pooled precision with intervals, the arm difference in pooled precision, the "
-        "sensitivity verdict, and N against N_min. The report carries no dollar totals; `analyze` prints them to "
-        "stderr only.",
+        help="Optional path to write the machine-readable report JSON. Per gate (code, markdown) and per source, "
+        "and for the secondary stratum, it writes per-arm recall and pooled precision with intervals, the arm "
+        "differences, and N against N_min. Baseline mode (no --baseline-conditions-path) adds each gate's "
+        "sensitivity verdict; a later arm's analysis adds each gate's non-inferiority verdicts and the "
+        "certification. The report carries no dollar totals; `analyze` prints them to stderr only.",
     )
     p_analyze.set_defaults(func=cmd_analyze)
 

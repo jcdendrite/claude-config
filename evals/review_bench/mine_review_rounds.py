@@ -24,13 +24,15 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPTS_DIR = _REPO_ROOT / "claude" / ".claude" / "scripts"
+# The imports below carry `noqa: E402`: `transcript_analysis` resolves only after this
+# `sys.path` edit, and pytest's `pythonpath` setting does not cover running the CLI directly.
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from transcript_analysis import corpus, pricing, review_rounds, reviewer_yield, scope  # noqa: E402
 
 from review_bench import mine_szz  # noqa: E402
-from review_bench.defects import Candidate, assert_unique_ids, guess_lens  # noqa: E402
+from review_bench.defects import Candidate, assert_unique_ids, escape_for_terminal, guess_lens, is_markdown_path  # noqa: E402
 
 
 def resolve_scoped_sessions(roots: Sequence[Path] | None = None):
@@ -303,10 +305,11 @@ def resolve_branch_ref(repo_dir: Path, branch: str, pr_number: int | None) -> tu
     except subprocess.CalledProcessError as exc:
         # This repo's own .git is shared across every worktree, so a
         # ref-lock collision with a concurrent git operation elsewhere is a
-        # real possibility. Logging the raw stderr lets an operator tell
+        # real possibility. Logging the stderr (escaped) lets an operator tell
         # that collision apart from a genuine missing/protected PR head --
         # both otherwise resolve to the same fetch-failed outcome.
-        print(f"mine-rounds: fetch of PR #{pr_number}'s head failed: {exc.stderr.strip()}", file=sys.stderr)
+        detail = escape_for_terminal(exc.stderr.strip())
+        print(f"mine-rounds: fetch of PR #{pr_number}'s head failed: {detail}", file=sys.stderr)
         return "fetch-failed", None
     except subprocess.TimeoutExpired:
         print(f"mine-rounds: fetch of PR #{pr_number}'s head timed out after {_GIT_FETCH_TIMEOUT_S}s", file=sys.stderr)
@@ -334,7 +337,7 @@ def _merge_base(repo_dir: Path, a: str, b: str) -> str | None:
 def _commits_touching_path(repo_dir: Path, base: str, ref: str, path: str) -> list[tuple[str, float | None]]:
     try:
         result = subprocess.run(
-            ["git", "log", "--format=%H\x1f%aI", f"{base}..{ref}", "--", path],
+            ["git", "--literal-pathspecs", "log", "--format=%H\x1f%aI", f"{base}..{ref}", "--", path],
             cwd=repo_dir, capture_output=True, text=True, timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
         )
     except _LOCAL_GIT_ERRORS:
@@ -575,7 +578,7 @@ def _grouped_candidate(
         fix_date=resolution.fix_date,
         lines_exist_at_introducing_head=True,
         reviewer_could_have_caught_it=True,
-        file_is_markdown=path.endswith(".md"),
+        file_is_markdown=is_markdown_path(path),
         ref_status=resolution.ref_status,
         # Every distinct excerpt stays, so confirm's provenance check still
         # covers text from the round pairs this candidate absorbed.

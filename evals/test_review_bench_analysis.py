@@ -17,6 +17,12 @@ ARM_BASELINE = "current-rule"
 ARM_X = "function-context"
 
 
+def _own_fixture_each(defect_ids) -> dict[str, tuple[str, str]]:
+    """Every defect on a fixture of its own, so a cluster bootstrap resamples
+    per defect."""
+    return {defect_id: (defect_id, defect_id) for defect_id in defect_ids}
+
+
 def _run_record(
     defect_id: str, arm: str, opaque_run_id: str, *, cli_version: str = "2.0.0",
     ambient_config_commit: str = "deadbeef", missing_reason: str | None = None, status: str = "ok",
@@ -158,7 +164,7 @@ class TestArmRecallAndSensitivityVerdict:
         ids = list(counts)
         lower, upper = analysis.bootstrap_interval(
             ids, lambda rs: analysis.arm_recall(counts, rs, ARM_BASELINE) - analysis.arm_recall(counts, rs, ARM_X),
-            resamples=500, seed=1,
+            cluster_by_defect=_own_fixture_each(ids), resamples=500, seed=1,
         )
         assert lower == pytest.approx(0.0, abs=1e-9)
         assert upper == pytest.approx(0.0, abs=1e-9)
@@ -167,13 +173,16 @@ class TestArmRecallAndSensitivityVerdict:
         # arm_x much worse than baseline -- non-inferiority must fail.
         counts = self._counts(0.9, 0.3)
         ids = list(counts)
-        verdict, _ = analysis.recall_noninferiority_verdict(counts, ids, ARM_BASELINE, ARM_X, resamples=500, seed=1)
+        verdict, _ = analysis.recall_noninferiority_verdict(
+            counts, ids, ARM_BASELINE, ARM_X, resamples=500, seed=1, cluster_by_defect=_own_fixture_each(counts),
+        )
         assert verdict == analysis.NONINFERIORITY_FAIL
 
         # arm_x equal to baseline -- non-inferiority must pass.
         counts_equal = self._counts(0.9, 0.9)
         verdict_equal, _ = analysis.recall_noninferiority_verdict(
             counts_equal, list(counts_equal), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+            cluster_by_defect=_own_fixture_each(counts_equal),
         )
         assert verdict_equal == analysis.NONINFERIORITY_PASS
 
@@ -183,12 +192,14 @@ class TestArmRecallAndSensitivityVerdict:
         ids = list(counts)
         verdict, (lower, upper) = analysis.baseline_sensitivity_verdict(
             counts, ids, ARM_BASELINE, ARM_X, resamples=500, seed=1,
+            cluster_by_defect=_own_fixture_each(counts),
         )
         assert verdict == analysis.SENSITIVITY_SENSITIVE
         assert lower > analysis.DELTA
         assert upper >= lower
         swapped_verdict, _ = analysis.baseline_sensitivity_verdict(
             counts, ids, ARM_X, ARM_BASELINE, resamples=500, seed=1,
+            cluster_by_defect=_own_fixture_each(counts),
         )
         assert swapped_verdict == analysis.SENSITIVITY_NOT_SENSITIVE
 
@@ -196,6 +207,7 @@ class TestArmRecallAndSensitivityVerdict:
         counts = self._counts(0.7, 0.7)
         verdict, _ = analysis.baseline_sensitivity_verdict(
             counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+            cluster_by_defect=_own_fixture_each(counts),
         )
         assert verdict == analysis.SENSITIVITY_NOT_SENSITIVE
 
@@ -242,6 +254,7 @@ class TestVerdictsReadTheIntervalLowerLimit:
         counts = self._recall_counts([(80, 60), (50, 70)])
         verdict, (lower, upper) = analysis.recall_noninferiority_verdict(
             counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+            cluster_by_defect=_own_fixture_each(counts),
         )
         assert lower == pytest.approx(-0.20)
         assert upper == pytest.approx(0.20)
@@ -254,6 +267,7 @@ class TestVerdictsReadTheIntervalLowerLimit:
         counts = self._recall_counts([(80, 76), (50, 60)])
         verdict, (lower, upper) = analysis.recall_noninferiority_verdict(
             counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+            cluster_by_defect=_own_fixture_each(counts),
         )
         assert lower == pytest.approx(-0.04)
         assert upper == pytest.approx(0.10)
@@ -264,8 +278,9 @@ class TestVerdictsReadTheIntervalLowerLimit:
         d1 = 0.70 - 0.50 = +0.20. Interval = [-0.20, +0.20], point estimate =
         0; only the lower limit -0.20 misses -delta, so the verdict is fail."""
         counts = self._precision_counts([(90, 70), (50, 70)])
-        verdict, (lower, upper) = analysis.precision_noninferiority_verdict(
+        verdict, (lower, upper), _ = analysis.precision_noninferiority_verdict(
             counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+            cluster_by_defect=_own_fixture_each(counts),
         )
         assert lower == pytest.approx(-0.20)
         assert upper == pytest.approx(0.20)
@@ -276,8 +291,9 @@ class TestVerdictsReadTheIntervalLowerLimit:
         [-0.04, +0.10]; the lower limit -0.04 exceeds -delta, so the verdict
         is pass."""
         counts = self._precision_counts([(80, 76), (50, 60)])
-        verdict, (lower, upper) = analysis.precision_noninferiority_verdict(
+        verdict, (lower, upper), _ = analysis.precision_noninferiority_verdict(
             counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+            cluster_by_defect=_own_fixture_each(counts),
         )
         assert lower == pytest.approx(-0.04)
         assert upper == pytest.approx(0.10)
@@ -292,6 +308,7 @@ class TestVerdictsReadTheIntervalLowerLimit:
         counts = self._recall_counts([(52, 50), (80, 50)])
         verdict, (lower, upper) = analysis.baseline_sensitivity_verdict(
             counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+            cluster_by_defect=_own_fixture_each(counts),
         )
         assert lower == pytest.approx(0.02)
         assert upper == pytest.approx(0.30)
@@ -304,6 +321,7 @@ class TestVerdictsReadTheIntervalLowerLimit:
         counts = self._recall_counts([(60, 50), (80, 50)])
         verdict, (lower, upper) = analysis.baseline_sensitivity_verdict(
             counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+            cluster_by_defect=_own_fixture_each(counts),
         )
         assert lower == pytest.approx(0.10)
         assert upper == pytest.approx(0.30)
@@ -323,38 +341,18 @@ class TestPrecisionAndCertification:
     def test_a_known_shift_in_pooled_precision_flips_the_verdict_at_delta(self) -> None:
         counts = self._precision_counts(9, 10, 3, 10)
         ids = list(counts)
-        verdict, _ = analysis.precision_noninferiority_verdict(counts, ids, ARM_BASELINE, ARM_X, resamples=500, seed=1)
+        verdict, _, _ = analysis.precision_noninferiority_verdict(
+            counts, ids, ARM_BASELINE, ARM_X, resamples=500, seed=1, cluster_by_defect=_own_fixture_each(counts),
+        )
         assert verdict == analysis.NONINFERIORITY_FAIL
 
     def test_equal_pooled_precision_passes_noninferiority(self) -> None:
         counts = self._precision_counts(9, 10, 9, 10)
-        verdict, _ = analysis.precision_noninferiority_verdict(
+        verdict, _, _ = analysis.precision_noninferiority_verdict(
             counts, list(counts), ARM_BASELINE, ARM_X, resamples=500, seed=1,
+            cluster_by_defect=_own_fixture_each(counts),
         )
         assert verdict == analysis.NONINFERIORITY_PASS
-
-    def test_later_arm_passing_only_one_gate_is_not_certified(self) -> None:
-        assert analysis.certify_later_arm(analysis.NONINFERIORITY_PASS, analysis.NONINFERIORITY_FAIL, meets_n_min=True) == (
-            analysis.CERTIFICATION_NOT_CERTIFIED
-        )
-        assert analysis.certify_later_arm(analysis.NONINFERIORITY_FAIL, analysis.NONINFERIORITY_PASS, meets_n_min=True) == (
-            analysis.CERTIFICATION_NOT_CERTIFIED
-        )
-
-    def test_later_arm_passing_both_gates_at_n_min_is_certified(self) -> None:
-        assert analysis.certify_later_arm(
-            analysis.NONINFERIORITY_PASS, analysis.NONINFERIORITY_PASS, meets_n_min=True,
-        ) == analysis.CERTIFICATION_CERTIFIED
-
-    def test_later_arm_passing_both_gates_below_n_min_is_inconclusive(self) -> None:
-        assert analysis.certify_later_arm(
-            analysis.NONINFERIORITY_PASS, analysis.NONINFERIORITY_PASS, meets_n_min=False,
-        ) == analysis.CERTIFICATION_INCONCLUSIVE
-
-    def test_later_arm_failing_a_gate_below_n_min_stays_not_certified(self) -> None:
-        assert analysis.certify_later_arm(
-            analysis.NONINFERIORITY_FAIL, analysis.NONINFERIORITY_PASS, meets_n_min=False,
-        ) == analysis.CERTIFICATION_NOT_CERTIFIED
 
     def test_defect_with_missing_precision_judge_run_is_dropped_from_both_arms(self) -> None:
         recall_kept = ["d0", "d1", "d2"]
@@ -545,6 +543,7 @@ def _frozen_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[
         defects.ConfirmedDefect(
             id=defect_id, source="szz", lens="staff-backend-engineer", base_commit="a" * 40, head_commit="b" * 40,
             fix_commit="b" * 40, fix_date="2024-01-01", description="test defect",
+            path="app.py", file_is_markdown=False,
         )
         for defect_id in ("d1", "d2")
     ])
@@ -867,9 +866,18 @@ class TestSecondaryReportColumns:
         result = analysis.recall_by_fix_date_half(counts, ["d1", "d2"], fix_dates, ARM_BASELINE)
         assert result == {"earlier_half": pytest.approx(0.8), "later_half": pytest.approx(0.2)}
 
-    def test_recall_by_fix_date_half_empty_kept_defects_returns_zero_both_halves(self) -> None:
+    def test_recall_by_fix_date_half_empty_kept_defects_returns_null_both_halves(self) -> None:
         result = analysis.recall_by_fix_date_half({}, [], {}, ARM_BASELINE)
-        assert result == {"earlier_half": 0.0, "later_half": 0.0}
+        assert result == {"earlier_half": None, "later_half": None}
+
+    def test_recall_by_fix_date_half_single_kept_defect_leaves_the_earlier_half_null(self) -> None:
+        counts = {
+            "d1": analysis.DefectRecallCounts(
+                defect_id="d1", found_by_arm={ARM_BASELINE: 8}, completed_by_arm={ARM_BASELINE: 10},
+            ),
+        }
+        result = analysis.recall_by_fix_date_half(counts, ["d1"], {"d1": "2024-01-01"}, ARM_BASELINE)
+        assert result == {"earlier_half": None, "later_half": pytest.approx(0.8)}
 
     def test_recall_by_fix_date_half_odd_count_puts_the_extra_defect_in_the_later_half(self) -> None:
         counts = {
@@ -919,9 +927,16 @@ class TestSecondaryReportColumns:
         diff = analysis.recall_diff_over_read_cap_stratum(counts, ["d1", "d2"], ["d1"], ARM_BASELINE, ARM_X)
         assert diff == pytest.approx(0.4)
 
-    def test_recall_diff_over_read_cap_stratum_empty_kept_defects_is_zero(self) -> None:
-        diff = analysis.recall_diff_over_read_cap_stratum({}, [], [], ARM_BASELINE, ARM_X)
-        assert diff == 0.0
+    def test_recall_diff_over_read_cap_stratum_empty_kept_defects_is_null(self) -> None:
+        assert analysis.recall_diff_over_read_cap_stratum({}, [], [], ARM_BASELINE, ARM_X) is None
+
+    def test_recall_diff_over_read_cap_stratum_with_no_flagged_defect_is_null_not_zero_minus_zero(self) -> None:
+        counts = {
+            "d1": analysis.DefectRecallCounts(
+                defect_id="d1", found_by_arm={ARM_BASELINE: 5, ARM_X: 9}, completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
+            ),
+        }
+        assert analysis.recall_diff_over_read_cap_stratum(counts, ["d1"], [], ARM_BASELINE, ARM_X) is None
 
     def test_observed_sigma_d_matches_stdev_of_per_defect_differences(self) -> None:
         counts = {
@@ -935,17 +950,624 @@ class TestSecondaryReportColumns:
                 defect_id="d3", found_by_arm={ARM_BASELINE: 2, ARM_X: 6}, completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
             ),
         }
-        result = analysis.observed_sigma_d(counts, ["d1", "d2", "d3"], ARM_BASELINE, ARM_X)
+        ids = ["d1", "d2", "d3"]
+        result = analysis.observed_sigma_d(counts, ids, ARM_BASELINE, ARM_X, cluster_by_defect=_own_fixture_each(ids))
         assert result == pytest.approx(statistics.stdev([0.4, 0.0, 0.4]))
 
-    def test_observed_sigma_d_single_kept_defect_is_zero(self) -> None:
+    def test_observed_sigma_d_single_kept_defect_is_null(self) -> None:
         counts = {
             "d1": analysis.DefectRecallCounts(
                 defect_id="d1", found_by_arm={ARM_BASELINE: 5, ARM_X: 9}, completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
             ),
         }
-        result = analysis.observed_sigma_d(counts, ["d1"], ARM_BASELINE, ARM_X)
-        assert result == 0.0
+        result = analysis.observed_sigma_d(
+            counts, ["d1"], ARM_BASELINE, ARM_X, cluster_by_defect=_own_fixture_each(["d1"]),
+        )
+        assert result is None
 
-    def test_observed_sigma_d_empty_kept_defects_is_zero(self) -> None:
-        assert analysis.observed_sigma_d({}, [], ARM_BASELINE, ARM_X) == 0.0
+    def test_observed_sigma_d_empty_kept_defects_is_null(self) -> None:
+        assert analysis.observed_sigma_d({}, [], ARM_BASELINE, ARM_X, cluster_by_defect={}) is None
+
+    def test_observed_sigma_d_with_several_defects_on_one_fixture_is_null(self) -> None:
+        counts = {
+            defect_id: analysis.DefectRecallCounts(
+                defect_id=defect_id, found_by_arm={ARM_BASELINE: found, ARM_X: 5},
+                completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
+            )
+            for defect_id, found in (("d1", 5), ("d2", 9))
+        }
+        one_fixture = {"d1": ("base", "head"), "d2": ("base", "head")}
+        assert analysis.observed_sigma_d(counts, ["d1", "d2"], ARM_BASELINE, ARM_X, cluster_by_defect=one_fixture) is None
+
+
+_PASS, _FAIL = analysis.NONINFERIORITY_PASS, analysis.NONINFERIORITY_FAIL
+_SENSITIVE, _NOT_SENSITIVE = analysis.SENSITIVITY_SENSITIVE, analysis.SENSITIVITY_NOT_SENSITIVE
+
+
+def _gate_result(cell: str) -> analysis.GateResult:
+    """A gate's later-arm evidence for one cell of the certification table. A
+    cell with a `+` combines a failing test with a second attribute."""
+    cells = {
+        "pass": analysis.GateResult(_PASS, _PASS, _SENSITIVE, short=False),
+        "fail": analysis.GateResult(_FAIL, _PASS, _SENSITIVE, short=False),
+        "short": analysis.GateResult(_PASS, _PASS, _SENSITIVE, short=True),
+        "not-sensitive": analysis.GateResult(_PASS, _PASS, _NOT_SENSITIVE, short=False),
+        "fail+short": analysis.GateResult(_FAIL, _PASS, _SENSITIVE, short=True),
+        "fail+not-sensitive": analysis.GateResult(_PASS, _FAIL, _NOT_SENSITIVE, short=False),
+    }
+    return cells[cell]
+
+
+class TestCertifyLaterArm:
+    """Certification precedence, one rule at both levels: a failing test
+    dominates at any N, then a gate that is short or not sensitive, then pass."""
+
+    @pytest.mark.parametrize("inconclusive_cell", ["short", "not-sensitive"])
+    @pytest.mark.parametrize(("code_cell", "markdown_cell", "expected"), [
+        pytest.param("pass", "pass", analysis.CERTIFICATION_CERTIFIED, id="pass-pass"),
+        pytest.param("pass", "fail", analysis.CERTIFICATION_NOT_CERTIFIED, id="pass-fail"),
+        pytest.param("pass", "inconclusive", analysis.CERTIFICATION_INCONCLUSIVE, id="pass-inconclusive"),
+        pytest.param("fail", "pass", analysis.CERTIFICATION_NOT_CERTIFIED, id="fail-pass"),
+        pytest.param("fail", "fail", analysis.CERTIFICATION_NOT_CERTIFIED, id="fail-fail"),
+        pytest.param("fail", "inconclusive", analysis.CERTIFICATION_NOT_CERTIFIED, id="fail-inconclusive"),
+        pytest.param("inconclusive", "pass", analysis.CERTIFICATION_INCONCLUSIVE, id="inconclusive-pass"),
+        pytest.param("inconclusive", "fail", analysis.CERTIFICATION_NOT_CERTIFIED, id="inconclusive-fail"),
+        pytest.param("inconclusive", "inconclusive", analysis.CERTIFICATION_INCONCLUSIVE, id="inconclusive-inconclusive"),
+    ])
+    def test_the_nine_gate_outcome_cells(
+        self, code_cell: str, markdown_cell: str, expected: str, inconclusive_cell: str,
+    ) -> None:
+        cell_of = {"pass": "pass", "fail": "fail", "inconclusive": inconclusive_cell}
+        result = analysis.certify_later_arm({
+            analysis.GATE_CODE: _gate_result(cell_of[code_cell]),
+            analysis.GATE_MARKDOWN: _gate_result(cell_of[markdown_cell]),
+        })
+        assert result == expected
+
+    @pytest.mark.parametrize("failing_gate", [analysis.GATE_CODE, analysis.GATE_MARKDOWN])
+    @pytest.mark.parametrize("failing_cell", ["fail+short", "fail+not-sensitive"])
+    @pytest.mark.parametrize("other_cell", ["pass", "short", "not-sensitive"])
+    def test_a_failing_gate_that_is_also_short_or_not_sensitive_is_not_certified(
+        self, failing_gate: str, failing_cell: str, other_cell: str,
+    ) -> None:
+        other_gate = analysis.GATE_MARKDOWN if failing_gate == analysis.GATE_CODE else analysis.GATE_CODE
+        result = analysis.certify_later_arm({failing_gate: _gate_result(failing_cell), other_gate: _gate_result(other_cell)})
+        assert result == analysis.CERTIFICATION_NOT_CERTIFIED
+
+    @pytest.mark.parametrize("failing_gate", [analysis.GATE_CODE, analysis.GATE_MARKDOWN])
+    @pytest.mark.parametrize(("recall_verdict", "precision_verdict"), [
+        pytest.param(_FAIL, _PASS, id="recall"), pytest.param(_PASS, _FAIL, id="precision"),
+    ])
+    def test_each_of_the_four_components_failing_alone_is_not_certified(
+        self, failing_gate: str, recall_verdict: str, precision_verdict: str,
+    ) -> None:
+        other_gate = analysis.GATE_MARKDOWN if failing_gate == analysis.GATE_CODE else analysis.GATE_CODE
+        result = analysis.certify_later_arm({
+            failing_gate: analysis.GateResult(recall_verdict, precision_verdict, _SENSITIVE, short=False),
+            other_gate: _gate_result("pass"),
+        })
+        assert result == analysis.CERTIFICATION_NOT_CERTIFIED
+
+    @pytest.mark.parametrize(("recall_verdict", "precision_verdict"), [
+        pytest.param(None, None, id="null-interval"),
+        pytest.param(_PASS, None, id="null-precision-verdict-only"),
+        pytest.param(None, _PASS, id="null-recall-verdict-only"),
+    ])
+    def test_a_gate_with_a_null_verdict_is_short_and_never_fails(
+        self, recall_verdict: str | None, precision_verdict: str | None,
+    ) -> None:
+        null_gate = analysis.GateResult(recall_verdict, precision_verdict, _SENSITIVE, short=False)
+        assert analysis.gate_outcome(null_gate) == analysis.GATE_OUTCOME_INCONCLUSIVE
+        result = analysis.certify_later_arm({analysis.GATE_CODE: null_gate, analysis.GATE_MARKDOWN: _gate_result("pass")})
+        assert result == analysis.CERTIFICATION_INCONCLUSIVE
+
+    def test_a_null_precision_verdict_does_not_hide_a_failing_recall_test(self) -> None:
+        result = analysis.certify_later_arm({
+            analysis.GATE_CODE: analysis.GateResult(_FAIL, None, _SENSITIVE, short=False),
+            analysis.GATE_MARKDOWN: _gate_result("pass"),
+        })
+        assert result == analysis.CERTIFICATION_NOT_CERTIFIED
+
+    def test_a_null_baseline_verdict_makes_the_gate_inconclusive_never_sensitive(self) -> None:
+        null_baseline = analysis.GateResult(_PASS, _PASS, None, short=False)
+        assert analysis.gate_outcome(null_baseline) == analysis.GATE_OUTCOME_INCONCLUSIVE
+
+    @pytest.mark.parametrize("gate_names", [
+        pytest.param((analysis.GATE_CODE,), id="markdown-missing"),
+        pytest.param((analysis.GATE_CODE, analysis.GATE_MARKDOWN, analysis.STRATUM_SECONDARY), id="stratum-carried"),
+    ])
+    def test_the_gates_alone_decide_so_any_other_key_set_is_refused(self, gate_names: tuple[str, ...]) -> None:
+        with pytest.raises(ValueError, match="needs exactly the gates"):
+            analysis.certify_later_arm({name: _gate_result("pass") for name in gate_names})
+
+
+# The assignment of every (source, file_is_markdown) cell, written from the plan's
+# "Gating and secondary strata" and never read from analysis.GATING_RULE.
+_EXPECTED_GATE_OF_CELL = {
+    ("szz", False): "code",
+    ("review-round", False): "code",
+    ("review-round", True): "markdown",
+    ("pr-comment", True): "markdown",
+    ("pr-comment", False): "secondary",
+    ("szz", True): "secondary",
+}
+
+
+def _defect_in_cell(source: str, file_is_markdown: bool) -> defects.ConfirmedDefect:
+    return defects.ConfirmedDefect(
+        id=f"{source}-{'md' if file_is_markdown else 'code'}", source=source, lens="staff-backend-engineer",
+        base_commit="a" * 40, head_commit="b" * 40, fix_commit="c" * 40, fix_date="2024-01-01",
+        description="test defect", path="notes.md" if file_is_markdown else "app.py",
+        file_is_markdown=file_is_markdown,
+    )
+
+
+class TestGatingRulePartition:
+    def test_the_expected_map_covers_every_cell_of_known_sources_by_kind(self) -> None:
+        assert set(_EXPECTED_GATE_OF_CELL) == {
+            (source, is_markdown) for source in defects.KNOWN_SOURCES for is_markdown in (False, True)
+        }
+
+    def test_the_rule_holds_exactly_the_expected_cells_and_names_no_unknown_source(self) -> None:
+        assert analysis.GATING_RULE == _EXPECTED_GATE_OF_CELL
+        assert {source for source, _is_markdown in analysis.GATING_RULE} <= defects.KNOWN_SOURCES
+        analysis.validate_gating_rule()
+
+    @pytest.mark.parametrize("is_markdown", [False, True])
+    @pytest.mark.parametrize("source", sorted(defects.KNOWN_SOURCES))
+    def test_each_cell_lands_in_exactly_the_expected_gate_or_the_secondary_stratum(
+        self, source: str, is_markdown: bool,
+    ) -> None:
+        defect = _defect_in_cell(source, is_markdown)
+
+        assert analysis.gate_of(defect) == _EXPECTED_GATE_OF_CELL[(source, is_markdown)]
+        placed = analysis.gate_defect_ids([defect], [defect.id])
+        assert [name for name, ids in placed.items() if defect.id in ids] == [_EXPECTED_GATE_OF_CELL[(source, is_markdown)]]
+
+    def test_the_two_gate_sets_are_disjoint_over_a_record_set_holding_all_six_cells(self) -> None:
+        cells = sorted(_EXPECTED_GATE_OF_CELL)
+        confirmed = [_defect_in_cell(source, is_markdown) for source, is_markdown in cells]
+
+        placed = analysis.gate_defect_ids(confirmed, [defect.id for defect in confirmed])
+
+        assert not set(placed[analysis.GATE_CODE]) & set(placed[analysis.GATE_MARKDOWN])
+        assert sorted(sum(placed.values(), [])) == sorted(defect.id for defect in confirmed)
+        assert sorted(placed[analysis.GATE_CODE]) == ["review-round-code", "szz-code"]
+        assert sorted(placed[analysis.GATE_MARKDOWN]) == ["pr-comment-md", "review-round-md"]
+        assert sorted(placed[analysis.STRATUM_SECONDARY]) == ["pr-comment-code", "szz-md"]
+
+    def test_a_source_the_rule_does_not_list_is_refused_as_unclassified(self, monkeypatch) -> None:
+        rule_without_the_cell = {cell: gate for cell, gate in analysis.GATING_RULE.items() if cell != ("szz", True)}
+        monkeypatch.setattr(analysis, "GATING_RULE", rule_without_the_cell)
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="no cell of the gating rule"):
+            analysis.gate_of(_defect_in_cell("szz", True))
+        with pytest.raises(analysis.HarnessInvalidatedError, match="unclassified cells"):
+            analysis.validate_gating_rule()
+
+    def test_a_rule_naming_a_source_outside_known_sources_is_refused(self, monkeypatch) -> None:
+        monkeypatch.setattr(analysis, "GATING_RULE", {**analysis.GATING_RULE, ("pr-body", False): "code"})
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="unknown sources: \\['pr-body'\\]"):
+            analysis.validate_gating_rule()
+
+    def test_the_record_lists_each_gates_cells_the_secondary_cells_and_the_cluster_key(self) -> None:
+        record = analysis.gating_rule_record()
+
+        assert record["cells_by_gate"] == {
+            "code": [["review-round", False], ["szz", False]],
+            "markdown": [["pr-comment", True], ["review-round", True]],
+        }
+        assert record["secondary_cells"] == [["pr-comment", False], ["szz", True]]
+        assert record["cluster_key"] == ["base_commit", "head_commit"]
+        json.dumps(record)
+
+    def test_source_defect_ids_splits_by_source_and_keeps_every_known_source_present(self) -> None:
+        confirmed = [_defect_in_cell("szz", False), _defect_in_cell("pr-comment", True)]
+
+        split = analysis.source_defect_ids(confirmed, [defect.id for defect in confirmed])
+
+        assert split == {"pr-comment": ["pr-comment-md"], "review-round": [], "szz": ["szz-code"]}
+
+
+class TestFixtureClusterBootstrap:
+    @staticmethod
+    def _recall_counts_with_differences(differences_in_tenths: list[int]) -> dict[str, analysis.DefectRecallCounts]:
+        """Defect i recalls (10 + difference) / 20 in the baseline arm and 0.5 in arm X."""
+        return {
+            f"d{i}": analysis.DefectRecallCounts(
+                defect_id=f"d{i}", found_by_arm={ARM_BASELINE: 5 + difference, ARM_X: 5},
+                completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
+            )
+            for i, difference in enumerate(differences_in_tenths)
+        }
+
+    def test_singleton_clusters_in_defect_order_draw_exactly_what_a_per_defect_bootstrap_draws(self) -> None:
+        import random
+
+        ids = [f"d{i}" for i in range(7)]
+        rng = random.Random(7)
+        per_defect_resamples = [[ids[rng.randrange(len(ids))] for _ in range(len(ids))] for _ in range(300)]
+        clustered_resamples: list[list[str]] = []
+
+        def recording_statistic(resample_ids) -> float:
+            clustered_resamples.append(list(resample_ids))
+            return float(len(clustered_resamples))
+
+        analysis.bootstrap_interval(
+            ids, recording_statistic, cluster_by_defect=_own_fixture_each(ids), resamples=300, seed=7,
+        )
+
+        assert clustered_resamples == per_defect_resamples
+
+    def test_a_drawn_fixture_brings_all_its_member_defects_and_only_them(self) -> None:
+        clusters = {"a1": ("base-a", "head-a"), "a2": ("base-a", "head-a"), "b": ("base-b", "head-b")}
+        seen: list[list[str]] = []
+
+        def recording_statistic(resample_ids) -> float:
+            seen.append(list(resample_ids))
+            return 0.0
+
+        analysis.bootstrap_interval(["a1", "a2", "b"], recording_statistic, cluster_by_defect=clusters, resamples=50, seed=3)
+
+        assert len(seen) == 50
+        assert all(resample.count("a1") == resample.count("a2") for resample in seen)
+        assert any(resample.count("a1") != 1 for resample in seen)
+
+    def test_five_defects_on_one_fixture_give_a_null_interval(self) -> None:
+        counts = self._recall_counts_with_differences([1, 2, 3, 4, 5])
+        ids = list(counts)
+        one_fixture = {defect_id: ("base", "head") for defect_id in ids}
+
+        interval = analysis.bootstrap_interval(
+            ids, lambda resample_ids: analysis.arm_recall(counts, resample_ids, ARM_BASELINE),
+            cluster_by_defect=one_fixture, resamples=50, seed=1,
+        )
+
+        assert interval is None
+
+    def test_one_fixture_of_identical_defects_beside_singletons_widens_the_interval(self) -> None:
+        """Four defects share one fixture and one outcome (+0.8 in the baseline arm's favor); four
+        singletons show none. Treating each defect as its own fixture understates the variance."""
+        counts = self._recall_counts_with_differences([4, 4, 4, 4, 0, 0, 0, 0])
+        ids = list(counts)
+        shared = {f"d{i}": ("base-shared", "head-shared") for i in range(4)}
+        clustered_keys = {**shared, **{f"d{i}": (f"base-{i}", f"head-{i}") for i in range(4, 8)}}
+
+        def statistic(resample_ids) -> float:
+            return analysis.arm_recall(counts, resample_ids, ARM_BASELINE) - analysis.arm_recall(counts, resample_ids, ARM_X)
+
+        clustered = analysis.bootstrap_interval(ids, statistic, cluster_by_defect=clustered_keys, resamples=2000, seed=5)
+        per_defect = analysis.bootstrap_interval(ids, statistic, cluster_by_defect=_own_fixture_each(ids), resamples=2000, seed=5)
+
+        assert clustered[1] - clustered[0] > per_defect[1] - per_defect[0]
+
+    def test_fixture_count_and_largest_cluster_size_count_distinct_fixtures_not_defects(self) -> None:
+        clusters = {"a1": ("base-a", "head-a"), "a2": ("base-a", "head-a"), "a3": ("base-a", "head-a"), "b": ("base-b", "head-b")}
+
+        assert analysis.fixture_count(["a1", "a2", "a3", "b"], clusters) == 2
+        assert analysis.largest_cluster_size(["a1", "a2", "a3", "b"], clusters) == 3
+        assert (analysis.fixture_count([], clusters), analysis.largest_cluster_size([], clusters)) == (0, 0)
+
+    def test_the_same_head_under_a_different_base_is_another_fixture(self) -> None:
+        confirmed = [
+            defects.ConfirmedDefect(
+                id=defect_id, source="szz", lens="staff-backend-engineer", base_commit=base_commit,
+                head_commit="b" * 40, fix_commit="c" * 40, fix_date="2024-01-01", description="test defect",
+                path="app.py", file_is_markdown=False,
+            )
+            for defect_id, base_commit in (("d1", "a" * 40), ("d2", "e" * 40), ("d3", "a" * 40))
+        ]
+
+        clusters = analysis.fixture_clusters(confirmed)
+
+        assert analysis.fixture_count(["d1", "d2", "d3"], clusters) == 2
+
+    def test_the_short_gate_test_counts_fixtures_and_an_empty_set_is_below_n_min(self) -> None:
+        clusters = {"a1": ("base-a", "head-a"), "a2": ("base-a", "head-a"), "b": ("base-b", "head-b")}
+
+        assert analysis.effective_n_meets_n_min(["a1", "a2", "b"], clusters, n_min_value=2)
+        assert not analysis.effective_n_meets_n_min(["a1", "a2", "b"], clusters, n_min_value=3)
+        assert not analysis.effective_n_meets_n_min(["a1", "a2"], clusters, n_min_value=2)
+        assert not analysis.effective_n_meets_n_min([], clusters, n_min_value=1)
+
+
+class TestUndefinedFiguresAreNull:
+    """Sizes 0, 1, and 2 through each function that returned 0.0 on an empty set, or raised. Counts are
+    of fixtures wherever an interval is concerned."""
+
+    @staticmethod
+    def _recall_counts(*detection_rates_in_tenths: int) -> dict[str, analysis.DefectRecallCounts]:
+        return {
+            f"d{i}": analysis.DefectRecallCounts(
+                defect_id=f"d{i}", found_by_arm={ARM_BASELINE: found, ARM_X: found // 2},
+                completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
+            )
+            for i, found in enumerate(detection_rates_in_tenths)
+        }
+
+    def test_arm_recall_is_null_for_no_defect_and_a_real_zero_for_an_arm_that_finds_nothing(self) -> None:
+        counts = self._recall_counts(0)
+        assert analysis.arm_recall(counts, [], ARM_BASELINE) is None
+        assert analysis.arm_recall(counts, ["d0"], ARM_BASELINE) == 0.0
+
+    @pytest.mark.parametrize(("fixtures", "expect_interval"), [(0, False), (1, False), (2, True)])
+    def test_bootstrap_interval_is_null_below_two_fixtures_and_never_raises(
+        self, fixtures: int, expect_interval: bool,
+    ) -> None:
+        counts = self._recall_counts(*([6, 8][:fixtures]))
+        ids = list(counts)
+
+        interval = analysis.bootstrap_interval(
+            ids, lambda resample_ids: analysis.arm_recall(counts, resample_ids, ARM_BASELINE),
+            cluster_by_defect=_own_fixture_each(ids), resamples=50, seed=1,
+        )
+
+        assert (interval is not None) is expect_interval
+
+    @pytest.mark.parametrize(("fixtures", "expect_defined"), [(0, False), (1, False), (2, True)])
+    def test_the_three_verdicts_are_null_below_two_fixtures(self, fixtures: int, expect_defined: bool) -> None:
+        recall_counts = self._recall_counts(*([6, 8][:fixtures]))
+        precision_counts = {
+            defect_id: analysis.DefectPrecisionCounts(defect_id, {ARM_BASELINE: 5, ARM_X: 5}, {ARM_BASELINE: 10, ARM_X: 10})
+            for defect_id in recall_counts
+        }
+        ids, clusters = list(recall_counts), _own_fixture_each(recall_counts)
+
+        sensitivity = analysis.baseline_sensitivity_verdict(
+            recall_counts, ids, ARM_BASELINE, ARM_X, cluster_by_defect=clusters, resamples=50, seed=1,
+        )
+        recall = analysis.recall_noninferiority_verdict(
+            recall_counts, ids, ARM_BASELINE, ARM_X, cluster_by_defect=clusters, resamples=50, seed=1,
+        )
+        precision = analysis.precision_noninferiority_verdict(
+            precision_counts, ids, ARM_BASELINE, ARM_X, cluster_by_defect=clusters, resamples=50, seed=1,
+        )
+
+        assert (sensitivity[0] is not None) is expect_defined
+        assert (recall[0] is not None) is expect_defined
+        assert (precision[0] is not None) is expect_defined
+        if not expect_defined:
+            assert sensitivity == (None, None)
+            assert recall == (None, None)
+            assert precision == (None, None, 0)
+
+    @pytest.mark.parametrize(("defect_count", "expected_halves"), [
+        (0, {"earlier_half": None, "later_half": None}),
+        (1, {"earlier_half": None, "later_half": pytest.approx(0.6)}),
+        (2, {"earlier_half": pytest.approx(0.6), "later_half": pytest.approx(0.8)}),
+    ])
+    def test_recall_by_fix_date_half_leaves_an_empty_half_null(self, defect_count: int, expected_halves: dict) -> None:
+        counts = self._recall_counts(*([6, 8][:defect_count]))
+        fix_dates = {"d0": "2024-01-01", "d1": "2024-06-01"}
+
+        result = analysis.recall_by_fix_date_half(counts, list(counts), fix_dates, ARM_BASELINE)
+
+        assert result == expected_halves
+
+    def test_observed_sigma_d_counts_fixtures_so_two_fixtures_define_it_and_one_does_not(self) -> None:
+        counts = self._recall_counts(6, 8, 4)
+        ids = list(counts)
+        two_fixtures = {"d0": ("base-a", "head-a"), "d1": ("base-a", "head-a"), "d2": ("base-b", "head-b")}
+        one_fixture = {defect_id: ("base-a", "head-a") for defect_id in ids}
+
+        assert analysis.observed_sigma_d(counts, ids, ARM_BASELINE, ARM_X, cluster_by_defect=two_fixtures) is not None
+        assert analysis.observed_sigma_d(counts, ids, ARM_BASELINE, ARM_X, cluster_by_defect=one_fixture) is None
+
+    def test_pooled_precision_is_null_over_a_zero_denominator_and_a_real_zero_over_no_valid_finding(self) -> None:
+        counts = {
+            "d1": analysis.DefectPrecisionCounts("d1", {ARM_BASELINE: 0, ARM_X: 0}, {ARM_BASELINE: 3, ARM_X: 0}),
+        }
+        assert analysis.pooled_precision(counts, [], ARM_BASELINE) is None
+        assert analysis.pooled_precision(counts, ["d1"], ARM_X) is None
+        assert analysis.pooled_precision(counts, ["d1"], ARM_BASELINE) == 0.0
+
+    def test_a_resample_with_a_zero_precision_denominator_is_dropped_and_counted(self) -> None:
+        """Arm X has no adjudicated finding on d2, so a resample that draws only d2 has no
+        precision difference."""
+        import random
+
+        counts = {
+            "d1": analysis.DefectPrecisionCounts("d1", {ARM_BASELINE: 5, ARM_X: 5}, {ARM_BASELINE: 10, ARM_X: 10}),
+            "d2": analysis.DefectPrecisionCounts("d2", {ARM_BASELINE: 5, ARM_X: 0}, {ARM_BASELINE: 10, ARM_X: 0}),
+        }
+        resamples, seed = 400, 11
+        rng = random.Random(seed)
+        expected_dropped = sum(
+            1 for _ in range(resamples) if {rng.randrange(2), rng.randrange(2)} == {1}
+        )
+
+        verdict, interval, dropped = analysis.precision_noninferiority_verdict(
+            counts, ["d1", "d2"], ARM_BASELINE, ARM_X, cluster_by_defect=_own_fixture_each(counts),
+            resamples=resamples, seed=seed,
+        )
+
+        assert 0 < dropped < resamples
+        assert dropped == expected_dropped
+        assert interval is not None
+        assert verdict in (_PASS, _FAIL)
+
+    def test_a_gate_where_every_resample_drops_has_a_null_interval_and_verdict(self) -> None:
+        counts = {
+            defect_id: analysis.DefectPrecisionCounts(
+                defect_id, {ARM_BASELINE: 5, ARM_X: 0}, {ARM_BASELINE: 10, ARM_X: 0},
+            )
+            for defect_id in ("d1", "d2")
+        }
+
+        result = analysis.precision_noninferiority_verdict(
+            counts, ["d1", "d2"], ARM_BASELINE, ARM_X, cluster_by_defect=_own_fixture_each(counts),
+            resamples=40, seed=1,
+        )
+
+        assert result == (None, None, 40)
+
+
+class TestBaselineReportFreezeIdentity:
+    def test_records_the_closure_hash_every_frozen_digest_k_and_the_campaign_environment(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
+        frozen_fields = analysis.compute_frozen_fields(defects_path, arms_root)
+        records = [_run_record("d1", ARM_BASELINE, "r1", cli_version="2.1.0", ambient_config_commit="cafe")]
+
+        identity = analysis.baseline_report_freeze_identity(defects_path, arms_root, records, k=10)
+
+        assert identity == {
+            "harness_closure_hash": frozen_fields["harness_closure_hash"],
+            **{field: frozen_fields[field] for field in analysis._FROZEN_DIGEST_FIELDS},
+            "k": 10,
+            "environment": {"cli_version": "2.1.0", "ambient_config_commit": "cafe"},
+        }
+
+    def test_an_empty_record_set_records_no_environment(self, tmp_path: Path, monkeypatch) -> None:
+        defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
+
+        identity = analysis.baseline_report_freeze_identity(defects_path, arms_root, [], k=10)
+
+        assert identity["environment"] is None
+
+
+class TestLoadBaselineGateVerdicts:
+    @pytest.fixture
+    def frozen_and_identity(self, tmp_path: Path, monkeypatch) -> tuple[dict, dict]:
+        """A conditions.json record and the identity of the baseline campaign frozen as it."""
+        defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
+        frozen = _frozen(analysis.compute_frozen_fields(defects_path, arms_root))
+        identity = analysis.baseline_report_freeze_identity(
+            defects_path, arms_root, [_run_record("d1", ARM_BASELINE, "r1")], k=10,
+        )
+        return frozen, identity
+
+    @staticmethod
+    def _report(identity: dict, **gate_overrides) -> dict:
+        gates = {
+            gate: {"baseline_sensitivity": {"verdict": _SENSITIVE}, "fixture_count": 130}
+            for gate in analysis.GATES
+        }
+        for gate, override in gate_overrides.items():
+            gates[gate] = override
+        return {"gates": gates, "freeze_identity": identity}
+
+    def _load(self, tmp_path: Path, frozen_and_identity, report=None, **gate_overrides) -> dict:
+        frozen, identity = frozen_and_identity
+        report = self._report(identity, **gate_overrides) if report is None else report
+        path = tmp_path / "baseline.json"
+        path.write_text(report if isinstance(report, str) else json.dumps(report))
+        return analysis.load_baseline_gate_verdicts(path, frozen)
+
+    def test_reads_each_gates_verdict(self, tmp_path: Path, frozen_and_identity) -> None:
+        markdown = {"baseline_sensitivity": {"verdict": _NOT_SENSITIVE}, "fixture_count": 130}
+
+        assert self._load(tmp_path, frozen_and_identity, markdown=markdown) == {
+            "code": _SENSITIVE, "markdown": _NOT_SENSITIVE,
+        }
+
+    @pytest.mark.parametrize("fixtures", [0, 1])
+    def test_a_null_verdict_beside_fewer_than_two_fixtures_is_valid(
+        self, tmp_path: Path, frozen_and_identity, fixtures: int,
+    ) -> None:
+        markdown = {"baseline_sensitivity": {"verdict": None}, "fixture_count": fixtures}
+
+        assert self._load(tmp_path, frozen_and_identity, markdown=markdown) == {"code": _SENSITIVE, "markdown": None}
+
+    @pytest.mark.parametrize("fixtures", [2, 130, None, "2"])
+    def test_a_null_verdict_beside_two_or_more_fixtures_or_an_unreadable_count_is_refused(
+        self, tmp_path: Path, frozen_and_identity, fixtures,
+    ) -> None:
+        code = {"baseline_sensitivity": {"verdict": None}, "fixture_count": fixtures}
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="null verdict"):
+            self._load(tmp_path, frozen_and_identity, code=code)
+
+    def test_a_missing_file_is_refused(self, tmp_path: Path, frozen_and_identity) -> None:
+        with pytest.raises(analysis.HarnessInvalidatedError, match="unreadable"):
+            analysis.load_baseline_gate_verdicts(tmp_path / "absent.json", frozen_and_identity[0])
+
+    @pytest.mark.parametrize("malformed", ["not json", "[]", "{}", '{"gates": {}}'])
+    def test_unparseable_or_gateless_content_is_refused(
+        self, tmp_path: Path, frozen_and_identity, malformed: str,
+    ) -> None:
+        with pytest.raises(analysis.HarnessInvalidatedError, match="unreadable, or is missing or malformed"):
+            self._load(tmp_path, frozen_and_identity, report=malformed)
+
+    def test_a_missing_verdict_key_is_refused(self, tmp_path: Path, frozen_and_identity) -> None:
+        code = {"baseline_sensitivity": {}, "fixture_count": 130}
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="verdict"):
+            self._load(tmp_path, frozen_and_identity, code=code)
+
+    def test_a_verdict_that_is_neither_sensitive_nor_not_sensitive_is_refused(
+        self, tmp_path: Path, frozen_and_identity,
+    ) -> None:
+        code = {"baseline_sensitivity": {"verdict": "mostly-sensitive"}, "fixture_count": 130}
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="not a known verdict"):
+            self._load(tmp_path, frozen_and_identity, code=code)
+
+    def test_a_report_computed_under_the_frozen_identity_is_read(self, tmp_path: Path, frozen_and_identity) -> None:
+        assert self._load(tmp_path, frozen_and_identity) == {"code": _SENSITIVE, "markdown": _SENSITIVE}
+
+    @pytest.mark.parametrize(
+        ("mutate", "expected_field"),
+        [
+            pytest.param(lambda identity: identity.update(harness_closure_hash="stale"), "harness_closure_hash",
+                         id="closure-hash"),
+            pytest.param(lambda identity: identity.update(defects_json_hash="stale"), "defects_json_hash",
+                         id="defects-json-hash"),
+            pytest.param(lambda identity: identity.update(k=15), "k", id="k"),
+            pytest.param(lambda identity: identity["arm_dir_hashes"].update({ARM_X: "stale"}),
+                         f"arm_dir_hashes[{ARM_X}]", id="an-arm-dir-hash"),
+            pytest.param(lambda identity: identity["judge_agent_hashes"].update({"bench-judge-recall": "stale"}),
+                         "judge_agent_hashes[bench-judge-recall]", id="a-judge-hash"),
+            pytest.param(lambda identity: identity["prompt_template_hashes"].update({"review_prompt": "stale"}),
+                         "prompt_template_hashes[review_prompt]", id="a-prompt-template-hash"),
+            pytest.param(lambda identity: identity.update(defect_ids=["d1"]), "defect_ids", id="defect-ids"),
+            pytest.param(lambda identity: identity["environment"].update(cli_version="1.0.0"),
+                         "environment[cli_version]", id="cli-version"),
+            pytest.param(lambda identity: identity["environment"].update(ambient_config_commit="0ld"),
+                         "environment[ambient_config_commit]", id="ambient-config-commit"),
+            pytest.param(lambda identity: identity.update(environment=None), "environment", id="no-environment"),
+        ],
+    )
+    def test_a_report_computed_under_a_different_freeze_is_refused_naming_the_field_and_the_regeneration(
+        self, tmp_path: Path, frozen_and_identity, mutate, expected_field: str,
+    ) -> None:
+        _frozen_record, identity = frozen_and_identity
+        mutate(identity)
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="invalidated -- rerun all arms") as excinfo:
+            self._load(tmp_path, frozen_and_identity)
+
+        assert expected_field in str(excinfo.value)
+        assert "rerun all arms under the new freeze, then regenerate the baseline report" in str(excinfo.value)
+
+    def test_a_refreeze_that_changes_only_the_closure_refuses_the_report_of_the_earlier_freeze(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        defects_path, arms_root = _frozen_workspace(tmp_path, monkeypatch)
+        earlier_identity = analysis.baseline_report_freeze_identity(
+            defects_path, arms_root, [_run_record("d1", ARM_BASELINE, "r1")], k=10,
+        )
+        closure = analysis.compute_harness_closure()
+        monkeypatch.setattr(analysis, "compute_harness_closure", lambda: {**closure, "edited-harness-file": "0" * 64})
+        refrozen = _frozen(analysis.compute_frozen_fields(defects_path, arms_root))
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match=r"differing: \['harness_closure_hash'\]"):
+            self._load(tmp_path, (refrozen, earlier_identity))
+
+    @pytest.mark.parametrize("missing_key", ["harness_closure_hash", "k", "environment", "arm_dir_hashes"])
+    def test_an_identity_missing_a_key_is_refused_as_malformed(
+        self, tmp_path: Path, frozen_and_identity, missing_key: str,
+    ) -> None:
+        del frozen_and_identity[1][missing_key]
+
+        with pytest.raises(analysis.HarnessInvalidatedError, match="missing or malformed"):
+            self._load(tmp_path, frozen_and_identity)
+
+    @pytest.mark.parametrize("identity", [None, "digest", ["k"]])
+    def test_a_report_with_a_missing_or_non_object_identity_is_refused_as_malformed(
+        self, tmp_path: Path, frozen_and_identity, identity,
+    ) -> None:
+        with pytest.raises(analysis.HarnessInvalidatedError, match="missing or malformed"):
+            self._load(tmp_path, frozen_and_identity, report=self._report(identity))

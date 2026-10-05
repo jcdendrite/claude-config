@@ -128,11 +128,15 @@ def kept_recall_defect_ids(
     )
 
 
-def arm_recall(counts_by_defect: Mapping[str, DefectRecallCounts], defect_ids: Sequence[str], arm: str) -> float:
+def arm_recall(
+    counts_by_defect: Mapping[str, DefectRecallCounts], defect_ids: Sequence[str], arm: str,
+) -> float | None:
     """An arm's recall is the mean of its per-defect detection rates across
-    defect_ids."""
+    defect_ids. None when defect_ids is empty: an arm that finds nothing in a
+    non-empty set has a real recall of 0.0, which is not the same as no
+    defects to measure."""
     if not defect_ids:
-        return 0.0
+        return None
     return mean(counts_by_defect[defect_id].detection_rate(arm) for defect_id in defect_ids)
 
 
@@ -187,12 +191,140 @@ def kept_precision_defect_ids(
 
 def pooled_precision(
     counts_by_defect: Mapping[str, DefectPrecisionCounts], defect_ids: Sequence[str], arm: str,
-) -> float:
+) -> float | None:
     """VALID findings divided by all adjudicated findings, pooled across
-    every defect in defect_ids."""
+    every defect in defect_ids. None when the arm has no adjudicated finding
+    there: precision over zero findings is undefined, not 0.0."""
     total_valid = sum(counts_by_defect[d].valid_by_arm.get(arm, 0) for d in defect_ids if d in counts_by_defect)
     total_all = sum(counts_by_defect[d].total_by_arm.get(arm, 0) for d in defect_ids if d in counts_by_defect)
-    return total_valid / total_all if total_all else 0.0
+    return total_valid / total_all if total_all else None
+
+
+# --- Gating sets and fixture clusters ----------------------------------------
+
+GATE_CODE = "code"
+GATE_MARKDOWN = "markdown"
+GATES = (GATE_CODE, GATE_MARKDOWN)
+STRATUM_SECONDARY = "secondary"
+
+# The one statement of gate membership: every (source, file_is_markdown) cell
+# of defects.KNOWN_SOURCES lands in exactly one gate or in the secondary
+# stratum, which is reported and never gates. A cell this table lacks is
+# unclassified, and gate_of refuses it. Both `analyze` modes read it, and it
+# is in the harness closure, so a post-freeze edit changes the manifest.
+GATING_RULE: dict[tuple[str, bool], str] = {
+    ("szz", False): GATE_CODE,
+    ("review-round", False): GATE_CODE,
+    ("review-round", True): GATE_MARKDOWN,
+    ("pr-comment", True): GATE_MARKDOWN,
+    ("pr-comment", False): STRATUM_SECONDARY,
+    ("szz", True): STRATUM_SECONDARY,
+}
+
+# A fixture is the (base_commit, head_commit) pair: the reviewer's input is
+# constant per fixture and lens, so defects on one fixture share their
+# variance.
+FIXTURE_KEY_FIELDS = ("base_commit", "head_commit")
+
+FixtureKey = tuple[str, str]
+
+
+def validate_gating_rule() -> None:
+    """Raises HarnessInvalidatedError when GATING_RULE names a source outside
+    defects.KNOWN_SOURCES or leaves a KNOWN_SOURCES cell unclassified."""
+    rule_sources = {source for source, _is_markdown in GATING_RULE}
+    unknown_sources = sorted(rule_sources - defects.KNOWN_SOURCES)
+    unclassified_cells = sorted(
+        (source, is_markdown)
+        for source in defects.KNOWN_SOURCES for is_markdown in (False, True)
+        if (source, is_markdown) not in GATING_RULE
+    )
+    if unknown_sources or unclassified_cells:
+        raise HarnessInvalidatedError(
+            f"gating rule is out of step with KNOWN_SOURCES (unknown sources: {unknown_sources}; "
+            f"unclassified cells: {unclassified_cells})"
+        )
+
+
+def gating_rule_record() -> dict:
+    """The gating rule as the JSON-ready record `freeze` writes to
+    conditions.json. GATING_RULE here is the authority, so the record is
+    informational."""
+    validate_gating_rule()
+    cells_by_assignment: dict[str, list[list]] = defaultdict(list)
+    for (source, is_markdown), assignment in sorted(GATING_RULE.items()):
+        cells_by_assignment[assignment].append([source, is_markdown])
+    return {
+        "cells_by_gate": {gate: cells_by_assignment[gate] for gate in GATES},
+        "secondary_cells": cells_by_assignment[STRATUM_SECONDARY],
+        "cluster_key": list(FIXTURE_KEY_FIELDS),
+        "later_arm_rule": (
+            "certified only when recall and pooled precision both pass non-inferiority at delta in the code gate "
+            "and in the markdown gate, and neither gate is short or not sensitive; a failing test dominates, "
+            "then short or not sensitive, then pass"
+        ),
+    }
+
+
+def gate_of(defect: defects.ConfirmedDefect) -> str:
+    """The gate, or STRATUM_SECONDARY, a defect belongs to."""
+    try:
+        return GATING_RULE[(defect.source, defect.file_is_markdown)]
+    except KeyError:
+        raise HarnessInvalidatedError(
+            f"defect {defect.id!r} (source {defect.source!r}, file_is_markdown {defect.file_is_markdown!r}) "
+            "falls in no cell of the gating rule"
+        ) from None
+
+
+def gate_defect_ids(
+    confirmed: Sequence[defects.ConfirmedDefect], defect_ids: Sequence[str],
+) -> dict[str, list[str]]:
+    """defect_ids split by gate, keeping their order. Every key of GATES and
+    STRATUM_SECONDARY is present, empty when no defect lands there."""
+    defects_by_id = {defect.id: defect for defect in confirmed}
+    split: dict[str, list[str]] = {gate: [] for gate in (*GATES, STRATUM_SECONDARY)}
+    for defect_id in defect_ids:
+        split[gate_of(defects_by_id[defect_id])].append(defect_id)
+    return split
+
+
+def source_defect_ids(
+    confirmed: Sequence[defects.ConfirmedDefect], defect_ids: Sequence[str],
+) -> dict[str, list[str]]:
+    """defect_ids split by source, keeping their order. Every source in
+    defects.KNOWN_SOURCES is present, empty when no defect has it."""
+    defects_by_id = {defect.id: defect for defect in confirmed}
+    split: dict[str, list[str]] = {source: [] for source in sorted(defects.KNOWN_SOURCES)}
+    for defect_id in defect_ids:
+        split[defects_by_id[defect_id].source].append(defect_id)
+    return split
+
+
+def fixture_clusters(confirmed: Sequence[defects.ConfirmedDefect]) -> dict[str, FixtureKey]:
+    """Each defect ID's fixture key, the cluster map the bootstrap resamples by."""
+    base_commit_field, head_commit_field = FIXTURE_KEY_FIELDS
+    return {defect.id: (getattr(defect, base_commit_field), getattr(defect, head_commit_field)) for defect in confirmed}
+
+
+def fixture_count(defect_ids: Sequence[str], cluster_by_defect: Mapping[str, FixtureKey]) -> int:
+    return len({cluster_by_defect[defect_id] for defect_id in defect_ids})
+
+
+def largest_cluster_size(defect_ids: Sequence[str], cluster_by_defect: Mapping[str, FixtureKey]) -> int:
+    """The defect count of the fixture holding the most of defect_ids, 0 when empty."""
+    sizes: dict[FixtureKey, int] = defaultdict(int)
+    for defect_id in defect_ids:
+        sizes[cluster_by_defect[defect_id]] += 1
+    return max(sizes.values(), default=0)
+
+
+def effective_n_meets_n_min(
+    defect_ids: Sequence[str], cluster_by_defect: Mapping[str, FixtureKey], *, n_min_value: int,
+) -> bool:
+    """The short-gate test: a gate meets N_min when its kept defects span at
+    least n_min_value distinct fixtures. An empty set is below N_min."""
+    return fixture_count(defect_ids, cluster_by_defect) >= n_min_value
 
 
 # --- Intervals: paired cluster bootstrap --------------------------------------
@@ -212,24 +344,58 @@ def _percentile(sorted_values: Sequence[float], q: float) -> float:
     return sorted_values[lower_index] + (sorted_values[upper_index] - sorted_values[lower_index]) * fraction
 
 
-def bootstrap_interval(
-    defect_ids: Sequence[str], statistic_fn: Callable[[Sequence[str]], float], *,
-    resamples: int = BOOTSTRAP_RESAMPLES, seed: int = BOOTSTRAP_SEED, confidence: float = 1 - 2 * ALPHA_ONE_SIDED,
-) -> tuple[float, float]:
-    """A paired cluster bootstrap over defects: each of `resamples` draws
-    len(defect_ids) defect IDs with replacement,
-    and statistic_fn computes the wanted statistic over that resampled
-    defect list -- carrying both arms' data for each resampled defect
-    together, since statistic_fn's own callers (e.g. arm_recall) look both
-    arms up from the same resampled ID. Returns the percentile interval at
-    `confidence` (0.95 by default -> the 2.5/97.5 percentiles)."""
-    if not defect_ids:
-        raise ValueError("bootstrap_interval: no defects to resample")
+def bootstrap_interval_with_drops(
+    defect_ids: Sequence[str], statistic_fn: Callable[[Sequence[str]], float | None], *,
+    cluster_by_defect: Mapping[str, FixtureKey], resamples: int = BOOTSTRAP_RESAMPLES, seed: int = BOOTSTRAP_SEED,
+    confidence: float = 1 - 2 * ALPHA_ONE_SIDED,
+) -> tuple[tuple[float, float] | None, int]:
+    """A paired cluster bootstrap over fixtures: defect_ids are grouped by
+    their fixture key (in order of first appearance), each of `resamples`
+    draws as many fixtures as there are with replacement, and statistic_fn
+    computes the wanted statistic over the member defect IDs of the drawn
+    fixtures. Both arms' data travel together because statistic_fn's callers
+    (e.g. arm_recall) look both arms up from the same resampled ID. With
+    every fixture a singleton and in defect_ids order, the draws are those of
+    a plain per-defect bootstrap.
+
+    Returns (percentile interval at `confidence`, dropped resample count). A
+    resample whose statistic is None is dropped. The interval is None with
+    fewer than two fixtures, because one cluster has zero variance, and when
+    every resample drops."""
+    clusters: dict[FixtureKey, list[str]] = {}
+    for defect_id in defect_ids:
+        clusters.setdefault(cluster_by_defect[defect_id], []).append(defect_id)
+    fixtures = list(clusters.values())
+    if len(fixtures) < 2:
+        return None, 0
     rng = random.Random(seed)
-    n = len(defect_ids)
-    stats = sorted(statistic_fn([defect_ids[rng.randrange(n)] for _ in range(n)]) for _ in range(resamples))
+    n = len(fixtures)
+    resampled_statistics: list[float] = []
+    dropped = 0
+    for _ in range(resamples):
+        value = statistic_fn([defect_id for _ in range(n) for defect_id in fixtures[rng.randrange(n)]])
+        if value is None:
+            dropped += 1
+        else:
+            resampled_statistics.append(value)
+    if not resampled_statistics:
+        return None, dropped
+    resampled_statistics.sort()
     lower_q = (1 - confidence) / 2
-    return _percentile(stats, lower_q), _percentile(stats, 1 - lower_q)
+    return (_percentile(resampled_statistics, lower_q), _percentile(resampled_statistics, 1 - lower_q)), dropped
+
+
+def bootstrap_interval(
+    defect_ids: Sequence[str], statistic_fn: Callable[[Sequence[str]], float | None], *,
+    cluster_by_defect: Mapping[str, FixtureKey], resamples: int = BOOTSTRAP_RESAMPLES, seed: int = BOOTSTRAP_SEED,
+    confidence: float = 1 - 2 * ALPHA_ONE_SIDED,
+) -> tuple[float, float] | None:
+    """bootstrap_interval_with_drops' interval alone, for a statistic that is
+    never None."""
+    return bootstrap_interval_with_drops(
+        defect_ids, statistic_fn, cluster_by_defect=cluster_by_defect, resamples=resamples, seed=seed,
+        confidence=confidence,
+    )[0]
 
 
 # --- Verdicts ----------------------------------------------------------------
@@ -244,69 +410,184 @@ CERTIFICATION_CERTIFIED = "certified"
 CERTIFICATION_NOT_CERTIFIED = "not-certified"
 CERTIFICATION_INCONCLUSIVE = "inconclusive"
 
+GATE_OUTCOME_FAIL = "fail"
+GATE_OUTCOME_INCONCLUSIVE = "inconclusive"
+GATE_OUTCOME_PASS = "pass"
+
+
+def recall_difference(
+    recall_counts_by_defect: Mapping[str, DefectRecallCounts], defect_ids: Sequence[str], arm_minuend: str,
+    arm_subtrahend: str,
+) -> float | None:
+    """recall_minuend - recall_subtrahend over defect_ids, None when it is empty."""
+    minuend = arm_recall(recall_counts_by_defect, defect_ids, arm_minuend)
+    subtrahend = arm_recall(recall_counts_by_defect, defect_ids, arm_subtrahend)
+    return None if minuend is None or subtrahend is None else minuend - subtrahend
+
+
+def precision_difference(
+    precision_counts_by_defect: Mapping[str, DefectPrecisionCounts], defect_ids: Sequence[str], arm_minuend: str,
+    arm_subtrahend: str,
+) -> float | None:
+    """Pooled precision_minuend - precision_subtrahend over defect_ids, None
+    when either arm has no adjudicated finding there."""
+    minuend = pooled_precision(precision_counts_by_defect, defect_ids, arm_minuend)
+    subtrahend = pooled_precision(precision_counts_by_defect, defect_ids, arm_subtrahend)
+    return None if minuend is None or subtrahend is None else minuend - subtrahend
+
 
 def baseline_sensitivity_verdict(
     recall_counts_by_defect: Mapping[str, DefectRecallCounts], kept_defect_ids: Sequence[str],
-    arm_1: str, arm_2: str, *, delta: float = DELTA, resamples: int = BOOTSTRAP_RESAMPLES, seed: int = BOOTSTRAP_SEED,
-) -> tuple[str, tuple[float, float]]:
+    arm_1: str, arm_2: str, *, cluster_by_defect: Mapping[str, FixtureKey], delta: float = DELTA,
+    resamples: int = BOOTSTRAP_RESAMPLES, seed: int = BOOTSTRAP_SEED,
+) -> tuple[str | None, tuple[float, float] | None]:
     """ICH E10's assay sensitivity: sensitive when the lower limit of the
     two-sided 95% interval for recall_1 - recall_2 exceeds delta. Never
-    grounds to revise the defect set."""
-
-    def statistic(resample_ids: Sequence[str]) -> float:
-        return arm_recall(recall_counts_by_defect, resample_ids, arm_1) - arm_recall(
-            recall_counts_by_defect, resample_ids, arm_2
-        )
-
-    lower, upper = bootstrap_interval(kept_defect_ids, statistic, resamples=resamples, seed=seed)
-    verdict = SENSITIVITY_SENSITIVE if lower > delta else SENSITIVITY_NOT_SENSITIVE
-    return verdict, (lower, upper)
+    grounds to revise the defect set. (None, None) when the interval is
+    undefined."""
+    interval = bootstrap_interval(
+        kept_defect_ids,
+        lambda resample_ids: recall_difference(recall_counts_by_defect, resample_ids, arm_1, arm_2),
+        cluster_by_defect=cluster_by_defect, resamples=resamples, seed=seed,
+    )
+    if interval is None:
+        return None, None
+    verdict = SENSITIVITY_SENSITIVE if interval[0] > delta else SENSITIVITY_NOT_SENSITIVE
+    return verdict, interval
 
 
 def recall_noninferiority_verdict(
     recall_counts_by_defect: Mapping[str, DefectRecallCounts], kept_defect_ids: Sequence[str],
-    arm_baseline: str, arm_x: str, *, delta: float = DELTA, resamples: int = BOOTSTRAP_RESAMPLES,
-    seed: int = BOOTSTRAP_SEED,
-) -> tuple[str, tuple[float, float]]:
+    arm_baseline: str, arm_x: str, *, cluster_by_defect: Mapping[str, FixtureKey], delta: float = DELTA,
+    resamples: int = BOOTSTRAP_RESAMPLES, seed: int = BOOTSTRAP_SEED,
+) -> tuple[str | None, tuple[float, float] | None]:
     """Arm X passes when the lower limit of the two-sided 95% interval for
-    recall_X - recall_1 exceeds -delta."""
-
-    def statistic(resample_ids: Sequence[str]) -> float:
-        return arm_recall(recall_counts_by_defect, resample_ids, arm_x) - arm_recall(
-            recall_counts_by_defect, resample_ids, arm_baseline
-        )
-
-    lower, upper = bootstrap_interval(kept_defect_ids, statistic, resamples=resamples, seed=seed)
-    verdict = NONINFERIORITY_PASS if lower > -delta else NONINFERIORITY_FAIL
-    return verdict, (lower, upper)
+    recall_X - recall_1 exceeds -delta. (None, None) when the interval is
+    undefined."""
+    interval = bootstrap_interval(
+        kept_defect_ids,
+        lambda resample_ids: recall_difference(recall_counts_by_defect, resample_ids, arm_x, arm_baseline),
+        cluster_by_defect=cluster_by_defect, resamples=resamples, seed=seed,
+    )
+    if interval is None:
+        return None, None
+    return (NONINFERIORITY_PASS if interval[0] > -delta else NONINFERIORITY_FAIL), interval
 
 
 def precision_noninferiority_verdict(
     precision_counts_by_defect: Mapping[str, DefectPrecisionCounts], kept_defect_ids: Sequence[str],
-    arm_baseline: str, arm_x: str, *, delta: float = DELTA, resamples: int = BOOTSTRAP_RESAMPLES,
-    seed: int = BOOTSTRAP_SEED,
-) -> tuple[str, tuple[float, float]]:
-    """The same rule as recall_noninferiority_verdict, on pooled precision."""
+    arm_baseline: str, arm_x: str, *, cluster_by_defect: Mapping[str, FixtureKey], delta: float = DELTA,
+    resamples: int = BOOTSTRAP_RESAMPLES, seed: int = BOOTSTRAP_SEED,
+) -> tuple[str | None, tuple[float, float] | None, int]:
+    """The same rule as recall_noninferiority_verdict, on pooled precision.
+    A resample in which either arm has no adjudicated finding has no
+    difference and is dropped; the third element is that drop count. The
+    verdict and interval are None when the interval is undefined, including
+    when every resample drops."""
+    interval, dropped_resamples = bootstrap_interval_with_drops(
+        kept_defect_ids,
+        lambda resample_ids: precision_difference(precision_counts_by_defect, resample_ids, arm_x, arm_baseline),
+        cluster_by_defect=cluster_by_defect, resamples=resamples, seed=seed,
+    )
+    if interval is None:
+        return None, None, dropped_resamples
+    verdict = NONINFERIORITY_PASS if interval[0] > -delta else NONINFERIORITY_FAIL
+    return verdict, interval, dropped_resamples
 
-    def statistic(resample_ids: Sequence[str]) -> float:
-        return pooled_precision(precision_counts_by_defect, resample_ids, arm_x) - pooled_precision(
-            precision_counts_by_defect, resample_ids, arm_baseline
-        )
 
-    lower, upper = bootstrap_interval(kept_defect_ids, statistic, resamples=resamples, seed=seed)
-    verdict = NONINFERIORITY_PASS if lower > -delta else NONINFERIORITY_FAIL
-    return verdict, (lower, upper)
+@dataclass(frozen=True)
+class GateResult:
+    """One gate's later-arm evidence. A verdict is None when its interval is
+    undefined. `baseline_sensitivity` is the baseline report's verdict for
+    the gate, None when undefined there. `short` is True when the gate's
+    distinct fixture count is below N_min."""
+
+    recall_verdict: str | None
+    precision_verdict: str | None
+    baseline_sensitivity: str | None
+    short: bool
 
 
-def certify_later_arm(recall_verdict: str, precision_verdict: str, *, meets_n_min: bool) -> str:
-    """A later arm is certified only when both the recall gate and the
-    precision gate pass. Because both must pass, each gate keeps one-sided
-    alpha = ALPHA_ONE_SIDED with no multiplicity adjustment. Passing both
-    gates below N_min is inconclusive, not certified; a failing gate stays
-    not-certified at any N."""
-    if recall_verdict != NONINFERIORITY_PASS or precision_verdict != NONINFERIORITY_PASS:
+def gate_outcome(result: GateResult) -> str:
+    """One precedence: a failing test dominates at any N, then a gate that is
+    short, not sensitive, or lacks a verdict, then pass. A gate lacking a
+    verdict or a baseline verdict is short by construction, and never fails
+    for it."""
+    if NONINFERIORITY_FAIL in (result.recall_verdict, result.precision_verdict):
+        return GATE_OUTCOME_FAIL
+    cannot_certify = (
+        result.short
+        or result.recall_verdict is None
+        or result.precision_verdict is None
+        or result.baseline_sensitivity != SENSITIVITY_SENSITIVE
+    )
+    return GATE_OUTCOME_INCONCLUSIVE if cannot_certify else GATE_OUTCOME_PASS
+
+
+def certify_later_arm(gate_results: Mapping[str, GateResult]) -> str:
+    """A later arm is certified only when it passes recall and precision in
+    the code gate and in the markdown gate, and neither gate is short or not
+    sensitive. The same precedence applies across gates as within one: any
+    failing gate gives not-certified, whatever the other gate shows; else any
+    short or not-sensitive gate gives inconclusive; else certified. Each
+    component test keeps alpha = ALPHA_ONE_SIDED with no multiplicity
+    adjustment, because every one must pass. A stratum outside both gates
+    has no entry here and never changes the outcome."""
+    if set(gate_results) != set(GATES):
+        raise ValueError(f"certify_later_arm needs exactly the gates {list(GATES)}, got {sorted(gate_results)}")
+    outcomes = {gate_outcome(result) for result in gate_results.values()}
+    if GATE_OUTCOME_FAIL in outcomes:
         return CERTIFICATION_NOT_CERTIFIED
-    return CERTIFICATION_CERTIFIED if meets_n_min else CERTIFICATION_INCONCLUSIVE
+    if GATE_OUTCOME_INCONCLUSIVE in outcomes:
+        return CERTIFICATION_INCONCLUSIVE
+    return CERTIFICATION_CERTIFIED
+
+
+# The `freeze_identity` keys beyond the `_FROZEN_DIGEST_FIELDS` entries.
+_FREEZE_IDENTITY_SCALAR_KEYS = ("harness_closure_hash", "k", "environment")
+
+
+def load_baseline_gate_verdicts(path: Path, frozen: Mapping) -> dict[str, str | None]:
+    """Each gate's sensitivity verdict from the baseline-mode report at path.
+    Raises HarnessInvalidatedError, never reading a verdict as sensitive, for:
+    an unreadable file, a missing gate or verdict key, a missing or malformed
+    `freeze_identity`, a verdict outside {sensitive, not-sensitive, null}, a
+    null verdict beside two or more fixtures, and a report whose freeze
+    identity differs from `frozen` in any field (the closure, every frozen
+    digest, K, or the campaign environment). A null verdict is valid only when
+    the report's own fixture count for the gate is below two, an empty gate
+    included."""
+    try:
+        report = json.loads(path.read_text())
+        gate_verdicts: dict[str, str | None] = {}
+        for gate in GATES:
+            gate_report = report["gates"][gate]
+            verdict = gate_report["baseline_sensitivity"]["verdict"]
+            fixtures = gate_report["fixture_count"]
+            if verdict not in (SENSITIVITY_SENSITIVE, SENSITIVITY_NOT_SENSITIVE, None):
+                raise ValueError(f"{gate} gate verdict {verdict!r} is not a known verdict")
+            if verdict is None and (not isinstance(fixtures, int) or fixtures >= 2):
+                raise ValueError(f"{gate} gate has a null verdict beside a fixture count of {fixtures!r}")
+            gate_verdicts[gate] = verdict
+        identity = report["freeze_identity"]
+        if not isinstance(identity, dict):
+            raise TypeError(f"freeze_identity must be an object, got {type(identity).__name__}")
+        absent = [key for key in (*_FROZEN_DIGEST_FIELDS, *_FREEZE_IDENTITY_SCALAR_KEYS) if key not in identity]
+        if absent:
+            raise KeyError(absent)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise HarnessInvalidatedError(
+            f"baseline report ({path}) is unreadable, or is missing or malformed in a field a later arm reads: {exc!r}"
+        ) from exc
+    differing = _differing_freeze_identity_fields(frozen, identity)
+    if differing:
+        # Regenerating over the earlier freeze's records would pass this check on stale records.
+        raise HarnessInvalidatedError(
+            f"invalidated -- rerun all arms: baseline report ({path}) was computed under a different freeze than "
+            f"conditions.json records (differing: {differing}) -- rerun all arms under the new freeze, "
+            "then regenerate the baseline report"
+        )
+    return gate_verdicts
 
 
 # --- Secondary columns, never gating (evals/README.md's "Reading the report"
@@ -373,9 +654,10 @@ def out_of_session_counts_by_arm(records: Sequence[runner.RunRecord]) -> dict[st
 def recall_by_fix_date_half(
     recall_counts_by_defect: Mapping[str, DefectRecallCounts], kept_defect_ids: Sequence[str],
     fix_dates_by_defect: Mapping[str, str], arm: str,
-) -> dict[str, float]:
+) -> dict[str, float | None]:
     """Recall split at the median fix date of the kept defects -- an
-    observable proxy for memorization exposure, never gating."""
+    observable proxy for memorization exposure, never gating. A half with no
+    defects is None."""
     dated = sorted(kept_defect_ids, key=lambda defect_id: datetime.fromisoformat(fix_dates_by_defect[defect_id]))
     midpoint = len(dated) // 2
     return {
@@ -387,26 +669,29 @@ def recall_by_fix_date_half(
 def recall_diff_over_read_cap_stratum(
     recall_counts_by_defect: Mapping[str, DefectRecallCounts], kept_defect_ids: Sequence[str],
     over_cap_defect_ids: Sequence[str], arm_baseline: str, arm_x: str,
-) -> float:
+) -> float | None:
     """recall_X - recall_baseline, restricted to kept defects flagged
     over_read_cap -- files over one Read call, where the function-context rule changes
-    behavior the most."""
+    behavior the most. None when no kept defect is flagged."""
     stratum = [defect_id for defect_id in kept_defect_ids if defect_id in set(over_cap_defect_ids)]
-    return arm_recall(recall_counts_by_defect, stratum, arm_x) - arm_recall(recall_counts_by_defect, stratum, arm_baseline)
+    return recall_difference(recall_counts_by_defect, stratum, arm_x, arm_baseline)
 
 
 def observed_sigma_d(
     recall_counts_by_defect: Mapping[str, DefectRecallCounts], kept_defect_ids: Sequence[str],
-    arm_baseline: str, arm_x: str,
-) -> float:
+    arm_baseline: str, arm_x: str, *, cluster_by_defect: Mapping[str, FixtureKey],
+) -> float | None:
     """The observed per-defect-difference standard deviation -- reported for
-    the record, never used to revise N_min or delta."""
+    the record, never used to revise N_min or delta. None with fewer than two
+    fixtures, the same bar the intervals use."""
+    if fixture_count(kept_defect_ids, cluster_by_defect) < 2:
+        return None
     diffs = [
         recall_counts_by_defect[defect_id].detection_rate(arm_x)
         - recall_counts_by_defect[defect_id].detection_rate(arm_baseline)
         for defect_id in kept_defect_ids
     ]
-    return stdev(diffs) if len(diffs) > 1 else 0.0
+    return stdev(diffs)
 
 
 # --- Harness closure (evals/README.md's "Frozen conditions and invalidation"
@@ -554,15 +839,22 @@ def hash_directory(directory: Path) -> str:
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
+def defects_file_hash(defects_path: Path) -> str:
+    """The sha256 of the defects file's bytes, the digest conditions.json and
+    the baseline report both record. Raises HarnessInvalidatedError for an
+    unreadable file."""
+    try:
+        return hashlib.sha256(defects_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise HarnessInvalidatedError(f"defects file {defects_path} is unreadable: {exc}") from exc
+
+
 def compute_frozen_fields(defects_path: Path, arms_root: Path) -> dict:
     """Every conditions.json field derived from files on disk. `freeze`
     records these; `analyze`, `run`, and `judge` recompute them and compare
     (evals/README.md's "Frozen conditions and invalidation" section). The
     harness closure is computed here too, so all of them hash the same set."""
-    try:
-        defects_json_bytes = defects_path.read_bytes()
-    except OSError as exc:
-        raise HarnessInvalidatedError(f"defects file {defects_path} is unreadable: {exc}") from exc
+    defects_json_hash = defects_file_hash(defects_path)
     closure = compute_harness_closure()
     return {
         "defect_ids": sorted(defect.id for defect in defects.load_confirmed_defects(defects_path)),
@@ -575,7 +867,7 @@ def compute_frozen_fields(defects_path: Path, arms_root: Path) -> dict:
             "bench-judge-recall": hashlib.sha256(adjudicate.RECALL_JUDGE_AGENT_FILE.read_bytes()).hexdigest(),
             "bench-judge-precision": hashlib.sha256(adjudicate.PRECISION_JUDGE_AGENT_FILE.read_bytes()).hexdigest(),
         },
-        "defects_json_hash": hashlib.sha256(defects_json_bytes).hexdigest(),
+        "defects_json_hash": defects_json_hash,
         "prompt_template_hashes": {
             "review_prompt": hashlib.sha256(runner.REVIEW_PROMPT_TEMPLATE.encode()).hexdigest(),
             "dispatch_prompt": hashlib.sha256(runner.DISPATCH_PROMPT_TEMPLATE.encode()).hexdigest(),
@@ -605,6 +897,48 @@ def _differing_field_names(frozen: Mapping, current: Mapping) -> list[str]:
             )
         else:
             names.append(field)
+    return names
+
+
+def baseline_report_freeze_identity(
+    defects_path: Path, arms_root: Path, reviewer_records: Sequence[runner.RunRecord], *, k: int,
+) -> dict:
+    """The freeze a baseline-mode report is computed under: the harness closure
+    hash, every `_FROZEN_DIGEST_FIELDS` entry, K, and the campaign environment
+    read from `reviewer_records`. A later arm compares it with conditions.json
+    (`load_baseline_gate_verdicts`). An empty record set records no
+    environment, so that comparison cannot succeed."""
+    frozen_fields = compute_frozen_fields(defects_path, arms_root)
+    environment = None
+    if reviewer_records:
+        environment = {
+            "cli_version": reviewer_records[0].cli_version,
+            "ambient_config_commit": reviewer_records[0].ambient_config_commit,
+        }
+    return {
+        "harness_closure_hash": frozen_fields["harness_closure_hash"],
+        **{field: frozen_fields[field] for field in _FROZEN_DIGEST_FIELDS},
+        "k": k,
+        "environment": environment,
+    }
+
+
+def _differing_freeze_identity_fields(frozen: Mapping, identity: Mapping) -> list[str]:
+    """The names of the `identity` fields that differ from the conditions.json
+    record `frozen`. An environment that is not an object differs in whole."""
+    names = _differing_field_names(frozen, identity)
+    if identity["harness_closure_hash"] != frozen.get("harness_closure_hash"):
+        names.append("harness_closure_hash")
+    if identity["k"] != frozen.get("k"):
+        names.append("k")
+    recorded_environment, frozen_environment = identity["environment"], frozen.get("environment")
+    if not isinstance(recorded_environment, dict) or not isinstance(frozen_environment, dict):
+        names.append("environment")
+    else:
+        names.extend(
+            f"environment[{key}]" for key in ("cli_version", "ambient_config_commit")
+            if recorded_environment.get(key) != frozen_environment.get(key)
+        )
     return names
 
 

@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from review_bench.defects import Candidate, assert_unique_ids, guess_lens
+from review_bench.defects import Candidate, assert_unique_ids, guess_lens, is_markdown_path
 from review_bench.identifiers import validate_base_ref
 
 # A candidate fix commit's subject must mention fix/bug/regression to be considered.
@@ -73,10 +73,6 @@ class _MineStats:
 
 def _is_blank_or_comment(line: str) -> bool:
     return not line.strip() or bool(_COMMENT_LINE_RE.match(line))
-
-
-def _is_markdown_path(path: str) -> bool:
-    return path.endswith(".md")
 
 
 def _run_git(args: Sequence[str], *, cwd: Path) -> str:
@@ -216,7 +212,9 @@ def blame_fix_commit(
     Returns (introducing_shas, is_low_confidence).
     """
     try:
-        diff_text = _run_git(["diff", "-U0", f"{fix_commit}^", fix_commit, "--", path], cwd=repo_dir)
+        diff_text = _run_git(
+            ["--literal-pathspecs", "diff", "-U0", f"{fix_commit}^", fix_commit, "--", path], cwd=repo_dir,
+        )
     except _GIT_CALL_ERRORS:
         if stats is not None:
             stats.git_call_failures += 1
@@ -328,7 +326,7 @@ def mine(repo_dir: Path, *, base_ref: str = "origin/main") -> list[Candidate]:
         for file_diff in _parse_unified_diff(diff_text):
             if file_diff.old_path is None:
                 continue
-            if _is_markdown_path(file_diff.old_path):
+            if is_markdown_path(file_diff.old_path):
                 stats.markdown_path_skips += 1
                 continue
             confident, low_confidence = _blame_file_diff(repo_dir, fix_commit, file_diff, stats=stats)

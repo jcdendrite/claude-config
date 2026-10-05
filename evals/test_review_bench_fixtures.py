@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from review_bench import adjudicate, arms, fixture_repo
+from review_bench import adjudicate, arms, defects, fixture_repo
 from review_bench.defects import ConfirmedDefect
 from test_review_bench_mining import _commit, _commit_at, _git, _init_repo, _write
 
@@ -27,6 +27,7 @@ def _confirmed_defect(*, base_commit: str, head_commit: str, lens: str = "staff-
     return ConfirmedDefect(
         id="defect-1", source="szz", lens=lens, base_commit=base_commit, head_commit=head_commit,
         fix_commit=head_commit, fix_date="2024-01-01", description="test defect",
+        path="app.py", file_is_markdown=False,
     )
 
 
@@ -257,6 +258,172 @@ class TestWriteBenchArtifacts:
         default_diff = (dest_dir / ".bench" / "change.diff").read_text()
         assert actual == expected
         assert actual != default_diff  # -W actually pulled in more context than the default diff
+
+    def _function_context_diff_of_one_edited_markdown_item(self, tmp_path: Path, *, markdown_driver: bool) -> str:
+        """Builds a three-section markdown fixture whose edited list item sits
+        under a letter-initial prose line, so git's default function-name
+        pattern anchors on the prose and not the heading."""
+        source_repo = _init_repo(tmp_path / "source")
+        document = (
+            "# Guide\n\nIntro prose.\n\n"
+            "## Setup\n\nSetup prose line one.\nSetup prose line two.\nSetup prose line three.\n\n"
+            "## Usage\n\nUsage prose before the list.\n\n- first usage item\n- second usage item\n\n"
+            "## Notes\n\nNotes prose line one.\nNotes prose line two.\nNotes prose line three.\n"
+        )
+        _write(source_repo, "docs/guide.md", document)
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "docs/guide.md", document.replace("- second usage item", "- second usage item, edited"))
+        head_commit = _commit(source_repo, "fix: item")
+        defect = _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        fixture_repo.build_two_commit_repo(source_repo, defect, dest_dir)
+        if markdown_driver:
+            fixture_repo.write_bench_artifacts(dest_dir, "fix: item")
+            return (dest_dir / ".bench" / "change-function-context.diff").read_text()
+        return _git(dest_dir, "diff", "-W", "HEAD~1", "HEAD")
+
+    def test_markdown_function_context_holds_the_enclosing_heading_and_no_neighboring_section_body(
+        self, tmp_path: Path,
+    ) -> None:
+        diff = self._function_context_diff_of_one_edited_markdown_item(tmp_path, markdown_driver=True)
+
+        assert "\n ## Usage\n" in diff
+        assert "+- second usage item, edited" in diff
+        assert "Setup prose" not in diff
+        assert "Notes prose" not in diff
+
+    def test_without_the_markdown_driver_the_enclosing_heading_is_absent_from_the_function_context(
+        self, tmp_path: Path,
+    ) -> None:
+        diff = self._function_context_diff_of_one_edited_markdown_item(tmp_path, markdown_driver=False)
+
+        assert "\n ## Usage\n" not in diff
+
+    def test_the_markdown_driver_covers_both_markdown_suffixes_and_is_written_once(self, tmp_path: Path) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "a.md", "# A\n")
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "a.md", "# A\n\nedited\n")
+        head_commit = _commit(source_repo, "fix: a")
+        defect = _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
+        fixture_repo.write_bench_artifacts(dest_dir, "fix: a")
+
+        attributes_text = (dest_dir / ".git" / "info" / "attributes").read_text()
+        assert attributes_text.splitlines() == ["*.md diff=markdown", "*.markdown diff=markdown"]
+        for markdown_name in ("x.md", "docs/notes.markdown"):
+            check_attr = _git(dest_dir, "check-attr", "diff", "--", markdown_name)
+            assert check_attr.strip().endswith("diff: markdown")
+
+    def test_every_markdown_suffix_the_predicate_accepts_has_a_matching_attribute_line(self, tmp_path: Path) -> None:
+        """The attribute globs are a second encoding of `defects.is_markdown_path`'s suffixes."""
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "a.md", "# A\n")
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "a.md", "# A\n\nedited\n")
+        head_commit = _commit(source_repo, "fix: a")
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        fixture_repo.build_defect_fixture(
+            source_repo, _confirmed_defect(base_commit=base_commit, head_commit=head_commit), dest_dir,
+        )
+
+        attribute_lines = (dest_dir / ".git" / "info" / "attributes").read_text().splitlines()
+
+        assert sorted(attribute_lines) == sorted(
+            f"*{suffix} diff={fixture_repo._MARKDOWN_DIFF_DRIVER}" for suffix in defects._MARKDOWN_SUFFIXES
+        )
+
+    @pytest.mark.parametrize(
+        ("ignore_case", "expected_driver"),
+        [
+            pytest.param("false", "unspecified", id="case-sensitive-volume"),
+            pytest.param("true", "markdown", id="case-insensitive-volume"),
+        ],
+    )
+    def test_an_upper_case_markdown_suffix_gets_the_markdown_driver_only_when_core_ignorecase_is_set(
+        self, tmp_path: Path, ignore_case: str, expected_driver: str,
+    ) -> None:
+        """Attribute globs follow `core.ignorecase`, which `git init` sets on a case-insensitive volume, and
+        `is_markdown_path` ignores case. On a case-sensitive volume `x.MD` is a markdown file (the markdown
+        gate, the comment-discipline lens) whose arm-2 diff keeps git's default function context: a known
+        gap. The key is pinned here, so the result does not depend on the volume running the test."""
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "x.MD", "# A\n")
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "x.MD", "# A\n\nedited\n")
+        head_commit = _commit(source_repo, "fix: x")
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        fixture_repo.build_defect_fixture(
+            source_repo, _confirmed_defect(base_commit=base_commit, head_commit=head_commit), dest_dir,
+        )
+        _git(dest_dir, "config", "core.ignorecase", ignore_case)
+
+        assert defects.is_markdown_path("x.MD") is True
+        assert _git(dest_dir, "check-attr", "diff", "--", "x.MD").strip().endswith(f"diff: {expected_driver}")
+        assert _git(dest_dir, "check-attr", "diff", "--", "x.md").strip().endswith("diff: markdown")
+
+    def test_the_markdown_config_lands_in_the_fixtures_own_git_dir(self, tmp_path: Path) -> None:
+        dest_dir = self._two_commit_markdown_fixture(tmp_path)
+
+        configured_pattern = _git(dest_dir, "config", "--local", "--get", "diff.markdown.xfuncname").strip()
+
+        assert configured_pattern == fixture_repo._MARKDOWN_HEADING_XFUNCNAME
+
+    def test_the_config_is_never_written_into_an_enclosing_repository(self, tmp_path: Path) -> None:
+        enclosing_repo = _init_repo(tmp_path / "enclosing")
+        not_a_repo_root = enclosing_repo / "fixture"
+        not_a_repo_root.mkdir()
+        config_before = (enclosing_repo / ".git" / "config").read_text()
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="not a git repository root"):
+            fixture_repo.write_bench_artifacts(not_a_repo_root, "fix: a")
+
+        assert (enclosing_repo / ".git" / "config").read_text() == config_before
+        assert not (not_a_repo_root / ".git").exists()
+
+    def test_a_git_file_in_place_of_a_git_directory_is_refused(self, tmp_path: Path) -> None:
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        (dest_dir / ".git").write_text("gitdir: ../elsewhere\n")
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError):
+            fixture_repo.write_bench_artifacts(dest_dir, "fix: a")
+
+    def _two_commit_markdown_fixture(self, tmp_path: Path) -> Path:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "docs/guide.md", "# Guide\n\nIntro prose.\n")
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "docs/guide.md", "# Guide\n\nIntro prose, edited.\n")
+        head_commit = _commit(source_repo, "fix: guide")
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        fixture_repo.build_defect_fixture(
+            source_repo, _confirmed_defect(base_commit=base_commit, head_commit=head_commit), dest_dir,
+        )
+        return dest_dir
+
+    def test_a_conflicting_global_diff_driver_does_not_change_the_diff_artifacts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A converter configured for the `markdown` driver in the engineer's global git config would otherwise
+        rewrite the fixture's diffs on that machine alone."""
+        global_config = tmp_path / "global-gitconfig"
+        global_config.write_text('[diff "markdown"]\n\ttextconv = cat -n\n')
+        artifact_names = ("change.diff", "change-function-context.diff")
+        unaffected_dir = self._two_commit_markdown_fixture(tmp_path / "unaffected")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+
+        conflicted_dir = self._two_commit_markdown_fixture(tmp_path / "conflicted")
+
+        for name in artifact_names:
+            assert (conflicted_dir / ".bench" / name).read_text() == (unaffected_dir / ".bench" / name).read_text()
+        # The control: under that config a plain `git diff` of the same tree does change.
+        assert _git(conflicted_dir, "diff", "HEAD~1", "HEAD") != (conflicted_dir / ".bench" / "change.diff").read_text()
 
     def test_over_read_cap_flag_follows_the_chars_divided_by_four_threshold(self, tmp_path: Path) -> None:
         source_repo = _init_repo(tmp_path / "source")

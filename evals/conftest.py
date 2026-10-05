@@ -45,3 +45,10 @@ def isolate_review_bench_from_the_host(tmp_path_factory: pytest.TempPathFactory,
     review_bench_runner = sys.modules.get("review_bench.runner")
     if review_bench_runner is not None:
         monkeypatch.setattr(review_bench_runner, "default_live_checkout_roots", lambda: ())
+
+
+@pytest.fixture(autouse=True)
+def refuse_network_git_transports(monkeypatch: pytest.MonkeyPatch):
+    """Allowing only the file protocol makes a `git fetch` from a remote URL fail at once instead of reaching
+    the network, whichever test or helper triggers it. `TestNetworkGitTransportsAreRefused` pins that it does."""
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
