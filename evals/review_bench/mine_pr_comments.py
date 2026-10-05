@@ -696,13 +696,11 @@ def mine(repo_dir: Path, *, run: GhRun = subprocess.run) -> list[Candidate]:
     variation selector, or other invisible character is counted as
     `invisible-characters`, and one holding any other control character as
     `control-characters`. A comment on which git gave no answer is skipped,
-    counted under `git-error`, and listed by ID. The run completes and writes
-    its shortlist, so a rerun retries that comment and rewrites the file, and
-    one that fails again fails for that comment, not for the run. A run that
-    skipped a comment on an unfetchable PR head exits 2 after printing the
-    counts and writes nothing, because a partial shortlist would stand in for
-    a complete one. See `_REF_STATUS_FETCH_FAILED` for the cause and which
-    failures a rerun clears.
+    counted under `git-error`, and listed by ID. A run that skipped a comment
+    on an unfetchable PR head exits 2 after printing the counts and writes
+    nothing, because a partial shortlist would stand in for a complete one.
+    See `_GIT_ERROR_REASON` and `_REF_STATUS_FETCH_FAILED` for which failures
+    a rerun clears.
     """
     repository = resolve_origin_repository(repo_dir)
     require_public_repo(repo_dir, repository, run=run)

@@ -2357,8 +2357,9 @@ class TestAnalyzeLaterArmVerdicts:
         [
             pytest.param(2, 2, (), 2, analysis.CERTIFICATION_CERTIFIED, id="both-gates-fixture-count-equals-n-min"),
             pytest.param(2, 2, (), 3, analysis.CERTIFICATION_INCONCLUSIVE, id="both-gates-fixture-count-one-below-n-min"),
+            pytest.param(3, 3, (), 3, analysis.CERTIFICATION_CERTIFIED, id="both-gates-kept-fixture-counts-equal-n-min"),
             pytest.param(
-                3, 2, ("c3",), 3, analysis.CERTIFICATION_INCONCLUSIVE, id="recall-kept-meets-n-min-but-precision-kept-does-not",
+                3, 3, ("c3",), 3, analysis.CERTIFICATION_INCONCLUSIVE, id="recall-kept-meets-n-min-but-precision-kept-does-not",
             ),
             pytest.param(3, 2, ("c3",), 2, analysis.CERTIFICATION_CERTIFIED, id="precision-kept-fixture-count-equals-n-min"),
             pytest.param(

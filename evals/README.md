@@ -866,10 +866,9 @@ project config a session must not load (see "Out-of-session reads"), and that
 both arms have a snapshot file for its lens, then print the run count and the
 nominal cost cap product; any problem exits 2 with the full list. That preflight
 reads the commit's git tree (`git ls-tree`), which does not traverse a
-symlinked parent such as a symlinked `.claude` directory. The build's archive
-extraction refuses any symlink or hardlink at or under `.claude` and any member
-under `.bench`, so that case fails closed at build time, not before dispatch. After each block, `smoke` and `run` print its ok and
-missing counts by reason. A block whose runs are all missing stops the
+symlinked parent such as a symlinked `.claude` directory. The build, not the
+preflight, fails closed on that case (see "Out-of-session reads"). After each
+block, `smoke` and `run` print its ok and missing counts by reason. A block whose runs are all missing stops the
 campaign with exit 2 and is left un-marked, so resuming under the same
 `--campaign-id` reruns it; `smoke --inject-fault` never stops this way, since
 it forces every run to fail. `smoke` takes its harness closure manifest hash
