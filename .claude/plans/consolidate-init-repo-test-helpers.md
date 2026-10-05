@@ -89,7 +89,7 @@ Add one builder pair to `claude/.claude/tests/helpers.py`: `init_git_repo` (no c
    - No test of a migrated no-commit site depends on the unborn HEAD, so only the contract test below pins it. [verified: plan-review's SDET pass]
    - The `test_marker_script.py` lines come from the inventory and are untouched either way. [not re-read]
 8. Only one migrated helper is imported by name from other files: `scripts/tests/conftest.py`'s `_init_repo`. Seven files import it: `test_autonomous_shipping_active`, `test_branch_divergence_status`, `test_cleanup_idle_open_pr_worktrees`, `test_cleanup_merged_branches`, `test_findings_path_suffix`, `test_pr_diff_against_base` and `test_select_tests`. [verified: grep]
-9. The CI detect step depends only on file names, so changing `init_ci_detect_step_test_repo`'s seed message from "initial" to "init" changes no behavior. Swapping `git add .` for `git add README.md` is also equivalent, because README.md is the only file present at that point. [verified: `.github/workflows/tests.yml:72` runs `git diff --name-only "$BASE" "$HEAD"`; `helpers.py:1609-1615`]
+9. The CI detect step depends only on file names, so changing `init_ci_detect_step_test_repo`'s seed message from "initial" to "init" changes no behavior. Swapping `git add .` for `git add -- README.md` is also equivalent, because README.md is the only file present at that point. [verified: `.github/workflows/tests.yml:72` runs `git diff --name-only "$BASE" "$HEAD"`; `helpers.py:1609-1615`]
 10. Every tree, conftest files included, can import `helpers.py` as the top-level module `helpers`. [verified: `pyproject.toml:18` pythonpath; `hooks/tests/conftest.py:20`; 20 scripts test files already import `helpers`]
 11. Editing `helpers.py` makes select-tests.py select `FULL_SUITE_TARGETS` plus any domain targets outside it. select-tests.py needs no table change, because every new import here is of `helpers`, and no new `hooks.tests.*` import is added. [verified: `select-tests.py:364-368`, `:769-773`, `:163-206`]
 12. `FULL_SUITE_TARGETS` does not include `evals/`, and no evals file imports `helpers` today. [verified: `select-tests.py:355`; grep of `evals/`]
@@ -134,7 +134,7 @@ Every file below is edited in one `code-writer` dispatch, with `helpers.py` firs
         path: Path, *, branch: str | None = None, file_name: str = "f.txt", content: str = "x\n"
     ) -> Path:
         """`init_git_repo`, then commit one seed file so HEAD resolves."""
-        # init_git_repo; mkdir the seed file's parent (parents, exist_ok); write; git add file_name;
+        # init_git_repo; mkdir the seed file's parent (parents, exist_ok); write; git add -- file_name;
         # git commit -q -m init; return path
     ```
   - `bare_remote_with_default_branch`: replace the seed recipe (`:868-875`) with `init_git_repo_with_commit(seed, branch=branch, file_name=file_name, content=file_content)`. Keep the bare repo, the remote/push lines and the clone unchanged.
@@ -158,7 +158,7 @@ Every file below is edited in one `code-writer` dispatch, with `helpers.py` firs
   - `init_git_repo_with_commit(path, branch="probe")` lands on `probe`.
   - `init_git_repo(path, branch="probe")` leaves HEAD unborn (`git rev-parse --verify HEAD` fails) and `git symbolic-ref --short HEAD` prints `probe`.
   - `init_git_repo_with_commit(path)` leaves HEAD resolvable, with `f.txt` tracked and holding `"x\n"`.
-  - `init_git_repo_with_commit(path, file_name="a/b.txt", content="y\n")` tracks the nested seed with that content.
+  - `init_git_repo_with_commit(path, file_name="-a/b.txt", content="y\n")` tracks the nested seed with that content; the leading dash pins the builder's `--` before the pathspec.
 - New `helpers` imports: every hooks test file below that loses its local helper or gains a builder call adds the names it uses to its `from helpers import` line, or adds that line.
 - `claude/.claude/hooks/tests/test_lib.py`
   - Delete `_init_repo` (`:2088`). Its 7 calls become `init_git_repo_with_commit(repo)`.
