@@ -32,10 +32,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from measure_subagent_model_resolution import environment_without_git_local_vars
-
 from review_bench import fixture_repo, runner
 from review_bench.defects import ConfirmedDefect, atomic_write_text
+from review_bench.local_git import DIFF_TEXT_ARGS, isolated_git_environment
 
 JUDGES_DIR = Path(__file__).resolve().parent / "judges"
 RECALL_JUDGE_AGENT_FILE = JUDGES_DIR / "bench-judge-recall.md"
@@ -182,19 +181,32 @@ def _completed_findings_by_id(records: Sequence[runner.RunRecord]) -> dict[str, 
     }
 
 
-def _git_show(commit: str, *, repo_dir: Path, path: str | None = None) -> str:
-    """`git show commit`'s diff alone, limited to `path` when given. The commit
-    message is left out, since its author controls the text. `--literal-pathspecs`
-    keeps a path holding glob characters or pathspec magic from widening the
-    filter. Undecodable bytes are replaced, so one non-UTF-8 commit cannot
-    abort a judge run."""
-    pathspec_args = ["--", path] if path is not None else []
+def _git_diff_text(args: list[str], *, repo_dir: Path) -> str:
+    """Stdout of a `git` call under `isolated_git_environment`, for diff text a
+    judge reads. `--literal-pathspecs` keeps a path holding glob characters or
+    pathspec magic from widening a pathspec filter. Undecodable bytes are
+    replaced, so one non-UTF-8 commit cannot abort a judge run."""
     result = subprocess.run(
-        ["git", "--literal-pathspecs", "show", "--format=", commit, *pathspec_args], cwd=repo_dir,
+        ["git", "--literal-pathspecs", *args], cwd=repo_dir,
         capture_output=True, encoding="utf-8", errors="replace", timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
-        env=environment_without_git_local_vars(),
+        env=isolated_git_environment(),
     )
     return result.stdout
+
+
+def _git_show(commit: str, *, repo_dir: Path) -> str:
+    """`git show commit`'s diff alone. The commit message is left out, since
+    its author controls the text. For a merge head, the "defect's lines" section
+    is git's combined diff, unlike the fix diff and the fixture's `change.diff`,
+    which compare against the first parent."""
+    return _git_diff_text(["show", "--format=", *DIFF_TEXT_ARGS, commit], repo_dir=repo_dir)
+
+
+def _git_diff_against_first_parent(commit: str, *, repo_dir: Path, path: str) -> str:
+    """`commit`'s diff against its first parent, limited to `path`: the comparison
+    `fixture_repo.fix_commit_paths` lists paths from. Unlike `git show`, it
+    prints a merge commit's first-parent diff, not a combined diff."""
+    return _git_diff_text(["diff", *DIFF_TEXT_ARGS, f"{commit}^", commit, "--", path], repo_dir=repo_dir)
 
 
 def _fenced_git_text(text: str) -> str:
@@ -214,14 +226,14 @@ def _fix_diff_section_body(
 ) -> str:
     """The "Fix diff" section's body: the fix commit's diff limited to
     `defect.path`, since one fix commit may hold fixes for many other defects.
-    The limit is the defect's head path, so a blame that followed the line
-    across files, or a fix that renames the file, usually gets the other
-    outcome. When the fix changes no line of that path, the body says so and
-    gives the path and the fix commit's changed paths, without their diffs, as
-    fenced data. `fix_commit_paths` is the fix commit's changed paths, and
-    `marker` occurs in none of the text this fences."""
+    The limit is the defect's head path, so a fix that changes only the file a
+    blame followed the line into gets the path-and-changed-paths listing
+    instead of a diff. When the fix changes no line of that path, the body says
+    so and gives the path and the fix commit's changed paths, without their
+    diffs, as fenced data. `fix_commit_paths` is the fix commit's changed paths,
+    and `marker` occurs in none of the text this fences."""
     if defect.path in fix_commit_paths:
-        return _fenced_git_text(_git_show(defect.fix_commit, repo_dir=source_repo, path=defect.path))
+        return _fenced_git_text(_git_diff_against_first_parent(defect.fix_commit, repo_dir=source_repo, path=defect.path))
     listing = f"defect path: {defect.path}\nchanged paths:\n{_changed_paths_listing(fix_commit_paths)}"
     return (
         "The fix commit changes no line of the defect's path. "

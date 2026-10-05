@@ -442,9 +442,8 @@ here too, with one addition: `smoke`, `run`, and `judge` each price out a
 real reviewer or judge dispatch per sample, not one classification call, so
 the cost scales faster (see "Runtime cost" below). The harness needs Python
 3.12 or newer, since `review_bench/runner.py` calls `shutil.rmtree(onexc=...)`;
-the repository's floor elsewhere is 3.11. It also needs Git 2.32 or newer, the
-first release that honors `GIT_CONFIG_GLOBAL`, which the fixture diffs use to
-ignore the engineer's git config.
+the repository's floor elsewhere is 3.11. It also needs Git 2.32 or newer; see
+`review_bench/local_git.py`.
 
 ### Usage
 
@@ -507,9 +506,10 @@ Run them in this order:
   public, so it publishes only public text. It prints the mined login and a
   count of skipped comments by reason. A PR head that could not be fetched
   makes the run exit 2, name the PR numbers, and write nothing, so a fetch
-  failure never replaces a shortlist with a partial one. Edit a candidate's
-  description in `.local/` only after the last `mine-pr-comments` run, because
-  every completed run rewrites that file.
+  failure never replaces a shortlist with a partial one. A rerun repeats a
+  fetch that exceeds the fetch timeout, which scales with the head's size.
+  Edit a candidate's description in `.local/` only after the last
+  `mine-pr-comments` run, because every completed run rewrites that file.
 - **`mine-szz`** (source `szz`) blames the removed or modified non-markdown
   lines of each `fix|bug|regression` commit on first-parent `origin/main`.
 
@@ -553,17 +553,22 @@ decides.
 A candidate with no description is triaged first and described after `y`: `y`
 prompts for a one-line description, which runs through the same provenance
 check. An empty line, a rejected character, or a provenance rejection accepts
-nothing for that candidate, and the loop continues. A description may not hold
-a control, format, separator, surrogate, private-use, or noncharacter code
-point, a variation selector, or a blank filler (the Hangul fillers and the
-Braille blank), because those render as nothing or drive the terminal. Other
-unassigned code points are accepted, so the interpreter's table of unassigned
-code points does not decide whether a record loads. `ConfirmedDefect` enforces
-this when a record loads, so `defects.json` edited past `confirm` fails to load in
-`freeze`, `run`, and `judge`. A mined description may keep LF and TAB, and a
-typed one may keep neither. A `pr-comment`
-candidate's mined description counts as public text, so it passes verbatim.
-Words typed or edited in are still checked.
+nothing for that candidate, and the loop continues.
+
+The description policy:
+
+- A description may not hold a control, format, separator, surrogate,
+  private-use, or noncharacter code point, a variation selector, or a blank
+  filler (the Hangul fillers and the Braille blank). Those render as nothing
+  or drive the terminal.
+- Other unassigned code points are accepted, so the interpreter's table of
+  unassigned code points does not decide whether a record loads.
+- `ConfirmedDefect` enforces the policy when a record loads, so `defects.json`
+  edited past `confirm` fails to load in `freeze`, `run`, and `judge`.
+- A mined description may keep LF and TAB. A typed one may keep neither.
+- A `pr-comment` candidate's mined description counts as public text, so it
+  passes verbatim.
+- Words typed or edited in are still checked.
 
 `y` promotes the candidate. Any other answer, `Y` and `yes` included, skips
 it, and it stays in `.local/`. `q` or end of input stops the loop and writes
@@ -586,26 +591,35 @@ terminal.
 ### Fixtures and judge input
 
 - **Markdown function context.** Arm 2 reads `.bench/change-function-context.diff`,
-  which is `git diff -W`. The fixture builder gives `*.md` and `*.markdown` a
-  diff driver, set in the fixture's `.git/info/attributes` and `.git/config`,
-  whose heading pattern makes the function context the enclosing heading
-  section. Git's default pattern anchors on any line that starts with a
-  letter. The pattern matches per line, so a line-start `#` inside a fenced
-  block can start a function context, and attribute patterns follow
-  `core.ignorecase`, so `x.MD` keeps git's default only where it is false.
-  The diff artifacts are built
-  with the engineer's global and system git config disabled, so a diff driver
-  set there cannot change them. Only those two diff calls ignore that config;
-  the fixture builder's other git calls read it.
+  which is `git diff -W`. For `*.md` and `*.markdown` files, the function
+  context is the enclosing heading section. `review_bench/fixture_repo.py`
+  holds the mechanism and its limits.
+- **Local git isolation.** Each of these calls ignores the engineer's global
+  and system git config, global and system attributes files, and `GIT_*`
+  environment variables, and a call that produces diff text also passes
+  `--no-ext-diff --no-textconv --no-color`:
+  - every local git call in `review_bench/fixture_repo.py`;
+  - the recall judge's `git show` and `git diff`;
+  - the `git show` that `confirm`'s provenance check runs.
+
+  Calls that run in your own checkout, such as the recall judge's `git show`
+  and `git diff` and the provenance check's `git show`, still read that
+  checkout's local config and attributes.
+
+  The miners' git calls, the environment and preflight reads in
+  `review_bench/runner.py`, and `defects.py`'s `pin_defect_commits` and
+  `commit_subjects` read the engineer's setup. `review_bench/local_git.py`
+  holds the mechanism.
 - **Recall judge's fix diff.** One fix commit can hold fixes for many
   comments, so the recall judge's input shows the fix diff limited to the
   defect's recorded `path`. When the fix commit changes no line of that path,
   the section says so and lists the path and the fix commit's changed paths
-  without their diffs. That limit is the head path, so a blame that followed
-  the line across files, or a fix that renames the file, usually gets the
-  listing. The confirmed description and that listing sit between fence lines
-  in the judge input, as data the judge is told never to follow, like each
-  run's findings.
+  without their diffs. The limit is the head path, so a fix that changes only
+  the file a blame followed the line into gets the listing. The diff and the
+  listing both compare the fix commit against its first parent. A fix commit
+  with no first parent raises an error. The confirmed description and that
+  listing sit between fence lines in the judge input, as data the judge is
+  told never to follow, like each run's findings.
 
 ### Frozen conditions and invalidation
 
@@ -951,8 +965,20 @@ key, such as `permissions` or `claudeMdExcludes`, and it does not read the
 tree's `CLAUDE.md`, which the dispatcher loads. The dispatcher holds the CLI's
 default tools, Bash included, so a tree can steer it into running commands as
 you, with your credentials. The run-validity check fails such a run only after
-the command has run. Run the bench only on a repository whose pull-request
-branches were all written by you or by someone you trust.
+the command has run.
+
+The dispatcher is not the only place the bench processes the tree. Mining
+runs git over its content, and each fixture build in `smoke` or `run` runs
+`git archive` and `git add` on it and extracts it before that block's first
+dispatch. The preflight's git reads are `git ls-tree`, `git show`, and
+`git cat-file --batch-check`, all in your own checkout, and none of them
+extracts.
+Extraction relies on tarfile's `data` filter, whose soundness follows the
+interpreter's security patches. The harness neither pins nor checks an
+interpreter patch level.
+
+Run the bench only on a repository whose pull-request branches were all
+written by you or by someone you trust.
 
 `main()` runs with an owner-only umask, so run records and everything under
 `evals/review_bench/.local/` are created without group or other bits. A

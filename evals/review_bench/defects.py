@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import NamedTuple
 
 from review_bench.arms import LENS_READ_CLAUSES
+from review_bench.local_git import DIFF_TEXT_ARGS, isolated_git_environment
 
 # The lenses whose agent body carries a read clause -- the only lenses
 # the review bench's function-context arm can substitute a clause for.
@@ -152,8 +153,8 @@ class ConfirmedDefect:
 
     `path` is the candidate's `evidence["path"]` -- the head path for a
     `pr-comment` -- and `file_is_markdown` is the engineer-confirmed kind of
-    that file. Neither has a default, so a record written without them
-    fails to load rather than reading as a non-markdown or path-less defect.
+    that file. Both fields are required, so a record missing either fails to
+    load.
     """
 
     id: str
@@ -495,8 +496,8 @@ def public_git_text(repo_dir: Path, introducing_commit: str, fix_commit: str, *,
     parts = []
     for commit in (introducing_commit, fix_commit):
         result = run(
-            ["git", "show", commit], cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace",
-            timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
+            ["git", "show", *DIFF_TEXT_ARGS, commit], cwd=repo_dir, capture_output=True, encoding="utf-8",
+            errors="replace", timeout=_LOCAL_GIT_TIMEOUT_S, check=True, env=isolated_git_environment(),
         )
         parts.append(result.stdout)
     return "\n".join(parts)

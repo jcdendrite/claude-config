@@ -97,10 +97,13 @@ _GH_ERRORS = (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotF
 _GIT_FATAL_STATUS = 128
 
 # A skip reason whose cause is the PR head's fetch, not the comment: the same
-# comment can be mined once the head is fetchable. The cause is usually transient
-# (network, auth, a ref-lock collision in the shared .git) and permanent only for
-# a pull ref the remote lacks. `mine` exits 2 and writes nothing when any is
-# counted. It is a `resolve_branch_ref` outcome that is also a skip reason.
+# comment can be mined once the head is fetchable. The cause is often transient
+# (network, auth, a ref-lock collision in the shared .git). It repeats on every
+# rerun for a pull ref the remote lacks and for a head whose fetch exceeds
+# `mine_review_rounds._GIT_FETCH_TIMEOUT_S`. `mine` exits 2 and writes nothing
+# when any is counted. No option skips one PR or gives its fetch a longer
+# timeout, because text-only PRs sit below the size where that matters.
+# It is a `resolve_branch_ref` outcome that is also a skip reason.
 _REF_STATUS_FETCH_FAILED = "fetch-failed"
 # A per-comment skip: a rerun retries the comment, and a comment whose git call
 # fails again fails for that comment, e.g. a gitlink path, or a blame that runs
@@ -604,8 +607,9 @@ def _build_candidate(
         return None
     # A force-pushed PR head no longer reaches the commit the comment was
     # made on, so the commented code is not on the branch being resolved.
-    # A local branch named like the PR's head ref can bind the wrong ref and drop
-    # the candidate here as unreachable; accepted at current scale.
+    # A local branch named like the provider-supplied `head.ref` binds in place of the
+    # PR head, so a candidate can drop here as unreachable that the PR head would keep;
+    # accepted at current scale.
     if not _is_ancestor(repo_dir, original_commit_id, branch_git.ref):
         stats["original-commit-unreachable"] += 1
         return None
@@ -728,8 +732,9 @@ def mine(repo_dir: Path, *, run: GhRun = subprocess.run) -> list[Candidate]:
             continue
         pr_number = _pull_request_number(comment)
         if pr_number not in pull_request_git:
-            # `head.ref` is provider-supplied: a name equal to a local branch binds that ref,
-            # which can drop or mislabel a candidate.
+            # `head.ref` is provider-supplied: a name equal to a local branch binds that branch
+            # in place of the PR head. A candidate can then drop as unreachable, or be kept with
+            # `ref_status` "local-branch" and a `head_on_pr_branch` computed from that branch.
             branch_git = mine_review_rounds.open_branch_git(
                 repo_dir, mine_review_rounds.resolve_branch_ref(repo_dir, merged_branches[pr_number], pr_number),
             )
@@ -771,6 +776,7 @@ def mine(repo_dir: Path, *, run: GhRun = subprocess.run) -> list[Candidate]:
             f"{stats[_REF_STATUS_FETCH_FAILED]} comment(s) skipped: PR head(s) "
             f"{', '.join(f'#{pr_number}' for pr_number in unfetched_pr_numbers)} could not be fetched "
             "(git's error for each is above) -- nothing written; a rerun clears a network, auth, "
-            "or ref-lock failure, not a pull ref the remote lacks"
+            "or ref-lock failure, not a pull ref the remote lacks or a fetch that exceeds the "
+            f"{mine_review_rounds._GIT_FETCH_TIMEOUT_S:g}s fetch timeout, which scales with the head's size"
         )
     return candidates

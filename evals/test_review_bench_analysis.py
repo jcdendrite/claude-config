@@ -376,7 +376,7 @@ class TestHarnessClosure:
 
     def test_closure_includes_every_review_bench_module_the_run_judge_and_analyze_paths_import(self) -> None:
         closure = analysis.compute_harness_closure()
-        for module in ("adjudicate", "analysis", "arms", "defects", "fixture_repo", "identifiers", "runner"):
+        for module in ("adjudicate", "analysis", "arms", "defects", "fixture_repo", "identifiers", "local_git", "runner"):
             assert f"evals/review_bench/{module}.py" in closure
 
 

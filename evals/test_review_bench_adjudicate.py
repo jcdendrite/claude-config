@@ -15,9 +15,20 @@ from pathlib import Path
 
 import pytest
 import run_review_bench
-from review_bench import adjudicate, runner
+from review_bench import adjudicate, defects, runner
 from review_bench.defects import ConfirmedDefect
-from test_review_bench_mining import _commit, _git, _init_repo, _write
+from test_review_bench_mining import (
+    ENGINEER_GIT_SETUPS,
+    SOURCE_REPO_DIFF_SETTINGS,
+    SOURCE_REPO_DIFF_SETTINGS_THAT_CHANGE_GIT_SHOW,
+    _commit,
+    _git,
+    _init_repo,
+    _write,
+    apply_engineer_git_setup,
+    apply_source_repo_diff_setting,
+    commit_two_versions_of_a_multi_line_python_file,
+)
 from test_review_bench_runner import (
     INNER_PROMPT,
     SUCCESS_STREAM_LINES,
@@ -240,6 +251,49 @@ class TestRecallJudgeInputLimitsTheFixDiffToTheDefectsPath:
         assert "The fix commit changes no line of the defect's path." in section
         assert "\ndefect path: target.py\nchanged paths:\n(none)\n" in section
 
+    def test_a_fix_commit_with_no_parent_raises_instead_of_listing_the_whole_tree(self, tmp_path: Path) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "target.py", "root_marker = 1\n")
+        root_commit = _commit(source_repo, "the only commit")
+        defect = ConfirmedDefect(
+            id="d1", source="pr-comment", lens="staff-backend-engineer", base_commit=root_commit,
+            head_commit=root_commit, fix_commit=root_commit, fix_date="2024-01-01", description="a real concern.",
+            path="target.py", file_is_markdown=False,
+        )
+
+        with pytest.raises(subprocess.CalledProcessError):
+            adjudicate.build_recall_judge_input(
+                defect, [_run_record("d1", "current-rule", "run-a", "Real finding.")], source_repo=source_repo, seed=1,
+            )
+
+    def test_a_merge_fix_commit_shows_the_diff_of_a_path_its_first_parent_comparison_lists(self, tmp_path: Path) -> None:
+        """`git show` prints a combined diff for a merge, which omits a file whose merge result equals one
+        parent. The path listing and the diff body both use the first-parent comparison."""
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "target.py", "value = 1\n")
+        base_commit = _commit(source_repo, "base")
+        _git(source_repo, "checkout", "-q", "-b", "feature")
+        _write(source_repo, "merged_in.py", "merged_marker = 1\n")
+        _commit(source_repo, "feature work")
+        _git(source_repo, "checkout", "-q", "main")
+        _write(source_repo, "target.py", "value = 2\n")
+        introducing_commit = _commit(source_repo, "introduce")
+        _git(source_repo, "merge", "-q", "--no-ff", "-m", "merge feature", "feature")
+        merge_commit = _git(source_repo, "rev-parse", "HEAD").strip()
+        defect = ConfirmedDefect(
+            id="d1", source="szz", lens="staff-backend-engineer", base_commit=base_commit,
+            head_commit=introducing_commit, fix_commit=merge_commit, fix_date="2024-01-01",
+            description="test defect", path="merged_in.py", file_is_markdown=False,
+        )
+
+        text = adjudicate.build_recall_judge_input(
+            defect, [_run_record("d1", "current-rule", "run-a", "Real finding.")], source_repo=source_repo, seed=1,
+        ).text
+
+        section = text.split("## Fix diff\n\n", 1)[1].split("\n\n## Runs to label", 1)[0]
+        assert "+merged_marker = 1" in section
+        assert "The fix commit changes no line" not in section
+
 
 class TestCommitDiffsAreFencedLongerThanTheirBackticks:
     """A third-party commit's diff or message can hold a backtick run, so the
@@ -399,40 +453,59 @@ class TestDescriptionAndPathsAreFramedAsData:
         assert adjudicate._RUN_HEADER_RE.findall(text) == ["run-a"]
         assert adjudicate._RECALL_LABEL_LINE_RE.findall(text) == []
 
-    def test_a_fix_commit_with_no_parent_lists_its_paths_without_an_error(self, tmp_path: Path) -> None:
+
+class TestRecallJudgeInputIgnoresTheEngineersGitSetup:
+    @pytest.mark.parametrize("setup", ENGINEER_GIT_SETUPS)
+    def test_the_diff_text_the_judge_reads_is_unchanged_by_the_setup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setup: str,
+    ) -> None:
         source_repo = _init_repo(tmp_path / "source")
-        _write(source_repo, "target.py", "value = 1\n")
-        _write(source_repo, "other.py", "other_marker = 1\n")
-        root_commit = _commit(source_repo, "the only commit")
+        base_commit, head_commit = commit_two_versions_of_a_multi_line_python_file(source_repo)
         defect = ConfirmedDefect(
-            id="d1", source="pr-comment", lens="staff-backend-engineer", base_commit=root_commit,
-            head_commit=root_commit, fix_commit=root_commit, fix_date="2024-01-01", description="a real concern.",
-            path="missing.py", file_is_markdown=False,
+            id="d1", source="szz", lens="staff-backend-engineer", base_commit=base_commit,
+            head_commit=head_commit, fix_commit=head_commit, fix_date="2024-01-01",
+            description="test defect", path="app.py", file_is_markdown=False,
         )
+        records = [_run_record("d1", "current-rule", "run-a", "Real finding.")]
+        unaffected_text = adjudicate.build_recall_judge_input(defect, records, source_repo=source_repo, seed=1).text
+        unaffected_plain_diff = _git(source_repo, "diff", base_commit, head_commit)
 
-        text = adjudicate.build_recall_judge_input(
-            defect, [_run_record("d1", "current-rule", "run-a", "Real finding.")], source_repo=source_repo, seed=1,
-        ).text
+        apply_engineer_git_setup(setup, tmp_path, monkeypatch)
 
-        section = text.split("## Fix diff\n\n", 1)[1].split("\n\n## Runs to label", 1)[0]
-        assert "\nchanged paths:\nother.py\ntarget.py\n" in section
-        assert "other_marker" not in section
+        affected_text = adjudicate.build_recall_judge_input(defect, records, source_repo=source_repo, seed=1).text
+        assert affected_text == unaffected_text
+        assert _git(source_repo, "diff", base_commit, head_commit) != unaffected_plain_diff  # the control
 
-    def test_a_fix_commit_with_no_parent_shows_the_diff_of_a_defect_path_it_holds(self, tmp_path: Path) -> None:
+
+class TestDiffTextIgnoresTheSourceReposOwnDiffSettings:
+    """`--no-ext-diff --no-textconv --no-color` is the only control over settings in the checkout the
+    calls run in: the isolated environment removes global and system settings, not these."""
+
+    @pytest.mark.parametrize("setting", SOURCE_REPO_DIFF_SETTINGS)
+    def test_the_judges_diffs_and_the_provenance_text_are_unchanged_by_the_setting(
+        self, tmp_path: Path, setting: str,
+    ) -> None:
         source_repo = _init_repo(tmp_path / "source")
-        _write(source_repo, "target.py", "root_marker = 1\n")
-        root_commit = _commit(source_repo, "the only commit")
-        defect = ConfirmedDefect(
-            id="d1", source="pr-comment", lens="staff-backend-engineer", base_commit=root_commit,
-            head_commit=root_commit, fix_commit=root_commit, fix_date="2024-01-01", description="a real concern.",
-            path="target.py", file_is_markdown=False,
+        base_commit, head_commit = commit_two_versions_of_a_multi_line_python_file(source_repo)
+        unaffected_texts = (
+            adjudicate._git_show(head_commit, repo_dir=source_repo),
+            adjudicate._git_diff_against_first_parent(head_commit, repo_dir=source_repo, path="app.py"),
+            defects.public_git_text(source_repo, base_commit, head_commit),
         )
+        unaffected_plain_diff = _git(source_repo, "diff", base_commit, head_commit)
+        unaffected_plain_show = _git(source_repo, "show", head_commit)
 
-        text = adjudicate.build_recall_judge_input(
-            defect, [_run_record("d1", "current-rule", "run-a", "Real finding.")], source_repo=source_repo, seed=1,
-        ).text
+        apply_source_repo_diff_setting(setting, source_repo)
 
-        assert "+root_marker = 1" in text.split("## Fix diff\n\n", 1)[1]
+        assert (
+            adjudicate._git_show(head_commit, repo_dir=source_repo),
+            adjudicate._git_diff_against_first_parent(head_commit, repo_dir=source_repo, path="app.py"),
+            defects.public_git_text(source_repo, base_commit, head_commit),
+        ) == unaffected_texts
+        # The controls: under that setting a plain `git diff` changes, and so does a plain `git show` where git applies it.
+        assert _git(source_repo, "diff", base_commit, head_commit) != unaffected_plain_diff
+        if setting in SOURCE_REPO_DIFF_SETTINGS_THAT_CHANGE_GIT_SHOW:
+            assert _git(source_repo, "show", head_commit) != unaffected_plain_show
 
 
 class TestRecallJudgeInputToleratesNonUtf8Diffs:

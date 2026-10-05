@@ -52,3 +52,13 @@ def refuse_network_git_transports(monkeypatch: pytest.MonkeyPatch):
     """Allowing only the file protocol makes a `git fetch` from a remote URL fail at once instead of reaching
     the network, whichever test or helper triggers it. `TestNetworkGitTransportsAreRefused` pins that it does."""
     monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+
+
+@pytest.fixture(autouse=True)
+def isolate_git_from_the_hosts_global_config(monkeypatch: pytest.MonkeyPatch):
+    """Keeps a contributor's global or system git config (commit signing, a hooks path, an init template,
+    `blame.*`) out of the real-git test helpers. It isolates config only, not the default attributes or ignore
+    files. A test that needs a global config sets `GIT_CONFIG_GLOBAL` itself with `monkeypatch.setenv`, which
+    overrides this."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")

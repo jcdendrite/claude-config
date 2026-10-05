@@ -24,9 +24,8 @@ import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from measure_subagent_model_resolution import environment_without_git_local_vars
-
 from review_bench.defects import ConfirmedDefect, _validate_sha
+from review_bench.local_git import DIFF_TEXT_ARGS, isolated_git_environment
 
 # Duplicated from read_scope's chars-per-token estimate to avoid importing that
 # module; runner.py carries the same constant.
@@ -60,10 +59,13 @@ _GIT_INFO_EXCLUDE_LINE = f"/{_BENCH_DIR_NAME}/\n"
 
 # Without a markdown funcname pattern, `git diff -W` anchors on any line that
 # starts with a letter, so a one-line edit in a long markdown file pulls in
-# most of the file. The pattern anchors on an ATX heading line instead. It
-# matches per line, so a line-start `#` inside a fenced block counts as one.
-# Attribute patterns follow `core.ignorecase`, which `git init` sets true on a
-# case-insensitive volume, so `x.MD` keeps git's default only where it is false.
+# most of the file. The pattern anchors on an ATX heading line instead, via a
+# `markdown` diff driver that `_install_markdown_function_context` attaches to
+# `*.md` and `*.markdown` in the fixture's `.git/info/attributes` and `.git/config`.
+# Limits:
+# - The pattern matches per line, so a line-start `#` inside a fenced block counts as a heading.
+# - Attribute patterns follow `core.ignorecase`, which `git init` sets true on a
+#   case-insensitive volume, so `x.MD` keeps git's default only where it is false.
 _MARKDOWN_DIFF_DRIVER = "markdown"
 _MARKDOWN_HEADING_XFUNCNAME = "^(#{1,6}[[:space:]].*)$"
 _GIT_INFO_ATTRIBUTES_LINES = (f"*.md diff={_MARKDOWN_DIFF_DRIVER}\n", f"*.markdown diff={_MARKDOWN_DIFF_DRIVER}\n")
@@ -83,20 +85,13 @@ class UnsafeFixtureConfigError(ValueError):
     pass
 
 
-def _run_git(
-    args: list[str], *, cwd: Path, ignore_user_config: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    """`ignore_user_config` drops the engineer's global and system git config,
-    so a diff driver set there (`textconv`, `command`) cannot change a diff
-    artifact between machines. Only the two diff calls pass it, so every other
-    fixture git call reads the engineer's config. `GIT_CONFIG_GLOBAL` needs git
-    2.32 or later, and an older git ignores it."""
-    env = environment_without_git_local_vars()
-    if ignore_user_config:
-        env = {**env, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+def _run_git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+    """Runs git under `isolated_git_environment`, so the engineer's git
+    configuration and `GIT_*` variables cannot change what the fixture holds.
+    A call that produces diff text also passes `DIFF_TEXT_ARGS`."""
     return subprocess.run(
         ["git", *args], cwd=cwd, check=True, timeout=_LOCAL_GIT_TIMEOUT_S,
-        capture_output=True, encoding="utf-8", errors="replace", env=env,
+        capture_output=True, encoding="utf-8", errors="replace", env=isolated_git_environment(),
     )
 
 
@@ -131,7 +126,7 @@ def _extract_commit_tree(source_repo: Path, commit: str, dest_dir: Path) -> None
     """
     result = subprocess.run(
         ["git", "archive", commit], cwd=source_repo, check=True,
-        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=environment_without_git_local_vars(),
+        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=isolated_git_environment(),
     )
     _extract_archive(result.stdout, dest_dir)
 
@@ -148,7 +143,8 @@ def _first_path_component_casefolded(path: str) -> str:
 
 
 def _extract_archive(archive: bytes, dest_dir: Path) -> None:
-    """Extract a tar `archive` into `dest_dir`, refusing before any write:
+    """Extract a tar `archive` into `dest_dir`. Raises UnsafeFixtureConfigError,
+    before any write, for these hand-checked shapes:
     - a member with a `.git` path component, or a link whose target has one,
       since a case-insensitive volume maps `.GIT` onto the fixture's own `.git`
       and a link into `.git` lets a later member write through it;
@@ -161,8 +157,13 @@ def _extract_archive(archive: bytes, dest_dir: Path) -> None:
     ignorable code points or NTFS short names. The `.bench` and `.claude`
     refusals fold case but do not resolve links above a path, so a
     differently-named parent link on a case-insensitive volume is not covered.
-    The refusal runs at fixture
-    build, not in `preflight_defects`, and a hit aborts that fixture."""
+    The refusal runs at fixture build, not in `preflight_defects`, and a hit
+    aborts that fixture.
+    Every other traversal shape is left to tarfile's `data` filter, which refuses
+    a member that resolves outside `dest_dir` and a link with an absolute target.
+    A filter refusal also raises UnsafeFixtureConfigError, but the filter runs per
+    member during extraction, so a refusal can leave members extracted before the
+    refused one on disk."""
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         for member in tar.getmembers():
             is_link = member.islnk() or member.issym()
@@ -182,7 +183,10 @@ def _extract_archive(archive: bytes, dest_dir: Path) -> None:
                     f"fixture tree holds a link {member.name!r} under {_PROJECT_CONFIG_DIR_NAME}/, "
                     "which a later harness write would follow into project config"
                 )
-        tar.extractall(dest_dir, filter="data")
+        try:
+            tar.extractall(dest_dir, filter="data")
+        except tarfile.FilterError as exc:
+            raise UnsafeFixtureConfigError(f"fixture tree holds a member the tar extraction filter refuses: {exc}") from exc
 
 
 def _refuse_unsafe_project_settings(raw_settings: bytes) -> None:
@@ -224,7 +228,7 @@ def refuse_executable_project_config_at_commit(source_repo: Path, commit: str) -
     config_relpaths = [relpath.as_posix() for relpath in (*_FORBIDDEN_PROJECT_CONFIG_RELPATHS, _PROJECT_SETTINGS_RELPATH)]
     listing = subprocess.run(
         ["git", "ls-tree", "-z", "--name-only", commit, "--", *config_relpaths], cwd=source_repo, check=True,
-        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=environment_without_git_local_vars(),
+        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=isolated_git_environment(),
     ).stdout
     present = {os.fsdecode(raw_path) for raw_path in listing.split(b"\0") if raw_path}
     for relpath in _FORBIDDEN_PROJECT_CONFIG_RELPATHS:
@@ -233,7 +237,7 @@ def refuse_executable_project_config_at_commit(source_repo: Path, commit: str) -
     if _PROJECT_SETTINGS_RELPATH.as_posix() in present:
         raw_settings = subprocess.run(
             ["git", "show", f"{commit}:{_PROJECT_SETTINGS_RELPATH.as_posix()}"], cwd=source_repo, check=True,
-            timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=environment_without_git_local_vars(),
+            timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=isolated_git_environment(),
         ).stdout
         _refuse_unsafe_project_settings(raw_settings)
 
@@ -247,7 +251,7 @@ def _commit_snapshot(dest_dir: Path, message: str) -> None:
         ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
          "commit", "-q", "--allow-empty", "-m", message], cwd=dest_dir,
         check=True, timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, encoding="utf-8", errors="replace",
-        env={**environment_without_git_local_vars(), **_git_commit_env()},
+        env={**isolated_git_environment(), **_git_commit_env()},
     )
 
 
@@ -294,27 +298,18 @@ def changed_paths_between(repo_dir: Path, base: str, head: str) -> list[str]:
     rename lists both its old and new path."""
     result = subprocess.run(
         ["git", "diff", "-z", "--name-only", "--no-renames", base, head], cwd=repo_dir, check=True,
-        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=environment_without_git_local_vars(),
+        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=isolated_git_environment(),
     )
     return [os.fsdecode(raw_path) for raw_path in result.stdout.split(b"\0") if raw_path]
 
 
 def fix_commit_paths(repo_dir: Path, defect: ConfirmedDefect) -> list[str]:
-    """Paths the defect's fix commit changed against its first parent, or
-    every path it holds when it has no parent."""
-    parent = f"{defect.fix_commit}^"
-    has_parent = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", parent], cwd=repo_dir, timeout=_LOCAL_GIT_TIMEOUT_S,
-        capture_output=True, env=environment_without_git_local_vars(),
-    ).returncode == 0
-    if has_parent:
-        return changed_paths_between(repo_dir, parent, defect.fix_commit)
-    # The empty tree's id depends on the repository's hash algorithm, so git computes it.
-    empty_tree = subprocess.run(
-        ["git", "hash-object", "-t", "tree", "--stdin"], cwd=repo_dir, input=b"", check=True,
-        timeout=_LOCAL_GIT_TIMEOUT_S, capture_output=True, env=environment_without_git_local_vars(),
-    ).stdout.decode().strip()
-    return changed_paths_between(repo_dir, empty_tree, defect.fix_commit)
+    """Paths the defect's fix commit changed against its first parent, the
+    comparison the recall judge's fix diff also uses. Raises
+    CalledProcessError when git cannot resolve `fix_commit^`: a root commit, a
+    shallow-clone boundary, or a missing object. The miners record only fix
+    commits that have a first parent, so none of those is a valid state."""
+    return changed_paths_between(repo_dir, f"{defect.fix_commit}^", defect.fix_commit)
 
 
 def _changed_paths(dest_dir: Path) -> list[str]:
@@ -349,10 +344,10 @@ def _write_changed_files_tsv(dest_dir: Path, stats: list[ChangedFileStat]) -> No
 def _write_bench_diffs(dest_dir: Path) -> None:
     bench_dir = dest_dir / _BENCH_DIR_NAME
     bench_dir.mkdir(parents=True, exist_ok=True)
-    change_diff = _run_git(["diff", "HEAD~1", "HEAD"], cwd=dest_dir, ignore_user_config=True).stdout
+    change_diff = _run_git(["diff", *DIFF_TEXT_ARGS, "HEAD~1", "HEAD"], cwd=dest_dir).stdout
     (bench_dir / "change.diff").write_text(change_diff)
     # git-diff(1) -W: "Show whole function as context lines".
-    function_context_diff = _run_git(["diff", "-W", "HEAD~1", "HEAD"], cwd=dest_dir, ignore_user_config=True).stdout
+    function_context_diff = _run_git(["diff", *DIFF_TEXT_ARGS, "-W", "HEAD~1", "HEAD"], cwd=dest_dir).stdout
     (bench_dir / "change-function-context.diff").write_text(function_context_diff)
 
 

@@ -1663,8 +1663,9 @@ def arm_snapshot_path(arms_snapshot_root: Path, arm: str, lens: str) -> Path:
 
 
 def _unresolvable_commits(source_repo: Path, commits: Sequence[str]) -> list[str]:
-    """The commits `source_repo` cannot resolve, from one `git cat-file
-    --batch-check` call. Raises HarnessInvalidatedError when git itself fails."""
+    """The commits (or commit-ish revisions such as `<sha>^`) `source_repo`
+    cannot resolve, from one `git cat-file --batch-check` call. Raises
+    HarnessInvalidatedError when git itself fails."""
     try:
         proc = subprocess.run(
             ["git", "cat-file", "--batch-check"], cwd=source_repo,
@@ -1682,16 +1683,21 @@ def preflight_defects(
     defects: Sequence[ConfirmedDefect], *, arm_names: tuple[str, ...], source_repo: Path, arms_snapshot_root: Path,
 ) -> None:
     """Raises HarnessInvalidatedError listing every commit the source repo
-    cannot resolve, every arm snapshot file a defect's lens needs but lacks,
+    cannot resolve, every fix commit with no resolvable first parent (the fix
+    diff compares against it), every arm snapshot file a defect's lens needs but lacks,
     and every defect whose head tree holds project config a session must not
     load, before any billable dispatch: a build failure mid-campaign would
     otherwise repeat on every resume, after earlier blocks' spend."""
     commits = sorted({
         commit for defect in defects for commit in (defect.base_commit, defect.head_commit, defect.fix_commit)
     })
-    unresolvable_commits = _unresolvable_commits(source_repo, commits)
+    fix_parents = sorted({f"{defect.fix_commit}^" for defect in defects})
+    unresolvable_revisions = set(_unresolvable_commits(source_repo, [*commits, *fix_parents]))
+    unresolvable_commits = [commit for commit in commits if commit in unresolvable_revisions]
     problems = [f"commit {commit} does not resolve in {source_repo}" for commit in unresolvable_commits]
     for defect in defects:
+        if defect.fix_commit not in unresolvable_commits and f"{defect.fix_commit}^" in unresolvable_revisions:
+            problems.append(f"{defect.id}: fix commit {defect.fix_commit} has no resolvable first parent in {source_repo}")
         if defect.head_commit not in unresolvable_commits:
             try:
                 refuse_executable_project_config_at_commit(source_repo, defect.head_commit)

@@ -15,6 +15,7 @@ import re
 import signal
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -72,6 +73,75 @@ def _set_origin_main(repo: Path, sha: str) -> None:
     """Stands in for a real `origin` remote so mine_szz's `origin/main`
     default resolves without a network fetch."""
     subprocess.run(["git", "update-ref", "refs/remotes/origin/main", sha], cwd=repo, check=True)
+
+
+# Engineer-side git settings that change the text `git diff` prints.
+ENGINEER_GIT_SETUPS = (
+    "color-ui-always", "diff-external-config", "external-diff-env", "diff-opts-env", "xdg-default-attributes-file",
+)
+# The subset that also changes `git show`. `git show` ignores `diff.external` and `GIT_EXTERNAL_DIFF` without `--ext-diff`.
+ENGINEER_GIT_SETUPS_THAT_CHANGE_GIT_SHOW = ("color-ui-always", "diff-opts-env", "xdg-default-attributes-file")
+
+
+def apply_engineer_git_setup(setup: str, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Puts one of `ENGINEER_GIT_SETUPS` into the process environment, and its files under `root`. A plain
+    `git diff` of a multi-line `.py` edit differs from an unaffected run under every one of them."""
+    external_diff = root / "external-diff.sh"
+    external_diff.write_text("#!/bin/sh\necho EXTERNAL-DIFF-OUTPUT\n")
+    external_diff.chmod(0o755)
+    global_config = root / "engineer-gitconfig"
+    if setup == "color-ui-always":
+        global_config.write_text("[color]\n\tui = always\n")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    elif setup == "diff-external-config":
+        global_config.write_text(f"[diff]\n\texternal = {external_diff}\n")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    elif setup == "external-diff-env":
+        monkeypatch.setenv("GIT_EXTERNAL_DIFF", str(external_diff))
+    elif setup == "diff-opts-env":
+        monkeypatch.setenv("GIT_DIFF_OPTS", "--unified=0")
+    elif setup == "xdg-default-attributes-file":
+        # git reads `$XDG_CONFIG_HOME/git/attributes` when `core.attributesFile` is unset, whatever the global config says.
+        attributes_dir = root / "xdg-config" / "git"
+        attributes_dir.mkdir(parents=True)
+        (attributes_dir / "attributes").write_text("*.py -diff\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "xdg-config"))
+    else:
+        raise ValueError(f"unknown engineer git setup {setup!r}")
+
+
+# Settings in the source repository's own `.git/config` and `.git/info/attributes`, which no environment isolation removes.
+SOURCE_REPO_DIFF_SETTINGS = ("color-ui-always", "diff-external-config", "textconv-driver")
+# The subset that also changes `git show`. `git show` ignores `diff.external` without `--ext-diff`.
+SOURCE_REPO_DIFF_SETTINGS_THAT_CHANGE_GIT_SHOW = ("color-ui-always", "textconv-driver")
+
+
+def apply_source_repo_diff_setting(setting: str, repo: Path) -> None:
+    """Puts one of `SOURCE_REPO_DIFF_SETTINGS` into `repo`'s own git config and attributes. A plain `git diff` of
+    a multi-line `.py` edit differs from an unaffected run under every one of them."""
+    helper_script = repo.parent / f"{setting}.sh"
+    if setting == "color-ui-always":
+        _git(repo, "config", "color.ui", "always")
+    elif setting == "diff-external-config":
+        helper_script.write_text("#!/bin/sh\necho EXTERNAL-DIFF-OUTPUT\n")
+        helper_script.chmod(0o755)
+        _git(repo, "config", "diff.external", str(helper_script))
+    elif setting == "textconv-driver":
+        helper_script.write_text('#!/bin/sh\ntr a-z A-Z < "$1"\n')
+        helper_script.chmod(0o755)
+        _git(repo, "config", "diff.shout.textconv", str(helper_script))
+        (repo / ".git" / "info").mkdir(exist_ok=True)
+        (repo / ".git" / "info" / "attributes").write_text("*.py diff=shout\n")
+    else:
+        raise ValueError(f"unknown source repo diff setting {setting!r}")
+
+
+def commit_two_versions_of_a_multi_line_python_file(repo: Path) -> tuple[str, str]:
+    """(base, head): head edits the middle line of a five-line file, so a diff holds context lines."""
+    _write(repo, "app.py", "a = 1\nb = 2\nc = 3\nd = 4\ne = 5\n")
+    base_sha = _commit(repo, "add app")
+    _write(repo, "app.py", "a = 1\nb = 2\nc = 30\nd = 4\ne = 5\n")
+    return base_sha, _commit(repo, "edit app")
 
 
 # --- synthetic-transcript helpers --------------------------------------------
@@ -427,6 +497,18 @@ class TestPublicGitText:
         text = defects.public_git_text(repo, introducing_sha, fix_sha)
         assert "introduce x is one" in text
         assert "fix x should be two" in text
+
+    @pytest.mark.parametrize("setup", ENGINEER_GIT_SETUPS_THAT_CHANGE_GIT_SHOW)
+    def test_the_text_does_not_depend_on_the_engineers_git_setup(self, tmp_path, monkeypatch, setup):
+        repo = _init_repo(tmp_path / "repo")
+        introducing_sha, fix_sha = commit_two_versions_of_a_multi_line_python_file(repo)
+        unaffected_text = defects.public_git_text(repo, introducing_sha, fix_sha)
+        unaffected_plain_show = _git(repo, "show", fix_sha)
+
+        apply_engineer_git_setup(setup, tmp_path, monkeypatch)
+
+        assert defects.public_git_text(repo, introducing_sha, fix_sha) == unaffected_text
+        assert _git(repo, "show", fix_sha) != unaffected_plain_show  # the control: a plain `git show` is affected
 
     def test_a_non_utf8_byte_in_a_commits_diff_is_replaced_not_raised(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
@@ -2066,6 +2148,60 @@ class TestNetworkGitTransportsAreRefused:
         assert "transport 'https' not allowed" in result.stderr
 
 
+class TestProviderPayloadShapesFailClosed:
+    """GitHub's REST payload can hold a null or non-object `user` or `head` and a non-string `body` or
+    `head.ref` (a deleted account, a null body), and the origin URL is engineer-controlled text."""
+
+    @pytest.mark.parametrize("user", [None, "ghost", 7], ids=["null-user", "string-user", "integer-user"])
+    def test_a_comment_whose_user_is_not_an_object_is_another_authors(self, user):
+        comment = _pr_review_comment(_SHA_A, user=user)
+
+        reason = mine_pr_comments._skip_reason(
+            comment, login=_OWNER_LOGIN, merged_branches={_MERGED_PR_NUMBER: "feat"},
+        )
+
+        assert reason == "other-author"
+
+    @pytest.mark.parametrize("body", [None, 7, ["text"]], ids=["null-body", "integer-body", "list-body"])
+    def test_a_comment_whose_body_is_not_a_string_has_an_empty_body(self, body):
+        comment = _pr_review_comment(_SHA_A, body=body)
+
+        reason = mine_pr_comments._skip_reason(
+            comment, login=_OWNER_LOGIN, merged_branches={_MERGED_PR_NUMBER: "feat"},
+        )
+
+        assert reason == "empty-body"
+
+    def test_replies_with_a_null_user_or_a_null_body_are_not_agent_replies(self):
+        marked_body = _fixed_reply_body(_SHA_A)
+        replies = [
+            _pr_thread_reply(marked_body, user=None),
+            _pr_thread_reply(None, id=2002),
+        ]
+
+        outcome = mine_pr_comments._thread_outcome(
+            _pr_review_comment(_SHA_A), replies, login=_OWNER_LOGIN, stats=Counter(),
+        )
+
+        assert outcome == "no-agent-reply"
+
+    def test_a_merged_pull_whose_head_or_head_ref_is_not_usable_is_left_out(self, tmp_path):
+        closed_pulls = [
+            {"number": 11, "head": None, "merged_at": "2026-01-05T00:00:00Z"},
+            {"number": 12, "head": {"ref": 7}, "merged_at": "2026-01-05T00:00:00Z"},
+            _closed_pull(13, "feat"),
+        ]
+
+        branches = mine_pr_comments.fetch_merged_pr_branches(
+            tmp_path, _REPOSITORY, stats=Counter(), run=_FakeGh(comments=[], closed_pulls=closed_pulls),
+        )
+
+        assert branches == {13: "feat"}
+
+    def test_an_origin_url_that_urlsplit_rejects_names_no_repository(self):
+        assert mine_pr_comments._repository_from_remote_url("https://[github.com/o/r") is None
+
+
 class TestMinePrComments:
     def test_owner_comment_with_a_fixed_reply_yields_a_candidate_with_blamed_and_replied_commits(self, tmp_path):
         repo, main_sha, introducing_sha, fix_sha = _pr_comment_repo(tmp_path)
@@ -2340,7 +2476,8 @@ class TestMinePrComments:
         assert (
             f"1 comment(s) skipped: PR head(s) #{_MERGED_PR_NUMBER} could not be fetched "
             "(git's error for each is above) -- nothing written; a rerun clears a network, auth, "
-            "or ref-lock failure, not a pull ref the remote lacks"
+            "or ref-lock failure, not a pull ref the remote lacks or a fetch that exceeds the "
+            f"{mine_review_rounds._GIT_FETCH_TIMEOUT_S:g}s fetch timeout, which scales with the head's size"
         ) in stderr
 
     def test_several_unfetchable_pr_heads_are_named_in_numeric_order_beside_the_count_of_their_comments(
@@ -3771,7 +3908,7 @@ class TestConfirmCli:
             pytest.param("escape \x1b[31m", False, id="esc"),
             pytest.param("bidi \N{RIGHT-TO-LEFT OVERRIDE} override", False, id="bidi-override"),
             pytest.param("joiner \N{ZERO WIDTH JOINER} here", False, id="zero-width-joiner"),
-            pytest.param("selector ️ here", False, id="variation-selector"),
+            pytest.param("selector \ufe0f here", False, id="variation-selector"),
             pytest.param("selector \U000e0100 here", False, id="supplementary-variation-selector"),
             pytest.param("filler \N{HANGUL FILLER} here", False, id="hangul-filler"),
             pytest.param("blank \N{BRAILLE PATTERN BLANK} here", False, id="braille-blank"),
@@ -3800,7 +3937,7 @@ class TestConfirmCli:
         if not accepted:
             assert "rejected c-1 -- the description holds a control character" in stderr
         for raw in (
-            "\x1b", "\r", "\N{RIGHT-TO-LEFT OVERRIDE}", "\N{ZERO WIDTH JOINER}", "️",
+            "\x1b", "\r", "\N{RIGHT-TO-LEFT OVERRIDE}", "\N{ZERO WIDTH JOINER}", "\ufe0f",
             "\N{HANGUL FILLER}", "\N{BRAILLE PATTERN BLANK}", "\N{LINE SEPARATOR}", "\ue000",
         ):
             assert raw not in stderr

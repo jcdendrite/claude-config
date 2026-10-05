@@ -2422,6 +2422,7 @@ class TestPreflightDefects:
         message = str(excinfo.value)
         assert "a" * 40 in message and "b" * 40 in message
         assert real.base_commit not in message
+        assert "first parent" not in message  # an unresolvable fix commit is reported once, not again as a missing parent
         assert str(tmp_path / "arms" / "function-context" / "bench-staff-backend-engineer.md") in message
         assert str(tmp_path / "arms" / "current-rule") not in message
 
@@ -2478,6 +2479,25 @@ class TestPreflightDefects:
 
         assert str(excinfo.value).count("a" * 40) == 1
         assert "project config" not in str(excinfo.value)
+
+    def test_a_fix_commit_with_no_first_parent_is_reported_with_its_defect_id_before_any_fixture_is_built(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        real = _build_two_commit_source_repo(tmp_path / "source")
+        root_commit = real.base_commit  # a root commit: the fix diff has no first parent to compare against
+        defect = dataclasses.replace(real, fix_commit=root_commit)
+        self._arm_snapshots(tmp_path / "arms", "current-rule")
+        monkeypatch.setattr(runner.msmr, "_resolved_temp_project_dir", pytest.fail)  # a fixture build would call it
+
+        with pytest.raises(runner.HarnessInvalidatedError) as excinfo:
+            runner.preflight_defects(
+                [defect], arm_names=("current-rule",), source_repo=tmp_path / "source",
+                arms_snapshot_root=tmp_path / "arms",
+            )
+
+        message = str(excinfo.value)
+        assert f"{defect.id}: fix commit {root_commit} has no resolvable first parent" in message
+        assert "does not resolve" not in message  # the root commit itself resolves
 
     def test_a_directory_that_is_not_a_repo_is_reported_rather_than_read_as_all_resolved(
         self, tmp_path: Path,

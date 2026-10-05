@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 import run_review_bench
-from review_bench import analysis, defects, runner
+from review_bench import analysis, defects, fixture_repo, runner
 from review_bench import arms as arms_mod
 from review_bench.adjudicate import JUDGE_ARM_PRECISION, JUDGE_ARM_RECALL
 from review_bench.defects import ConfirmedDefect
@@ -928,6 +928,24 @@ class TestRunAndSmokeCampaignSelection:
         assert run_review_bench.cmd_run(parser.parse_args(argv)) == 0
 
         assert blocks_run == ["resume-me:d1"]
+
+    def test_a_fixture_build_refusal_exits_2_through_main_and_prints_the_reason(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        self._stub_blocks(monkeypatch, tmp_path)
+        files = _frozen_files(tmp_path, monkeypatch, k=runner.DEFAULT_K)
+
+        def refuse_the_fixture_build(defect, **kwargs):
+            raise fixture_repo.UnsafeFixtureConfigError("fixture tree holds a member the tar extraction filter refuses")
+
+        monkeypatch.setattr(runner, "build_defect_fixture_spec", refuse_the_fixture_build)
+
+        exit_code = run_review_bench.main(
+            ["run", "--records-dir", str(tmp_path / "runs"), *_frozen_conditions_flags(files)],
+        )
+
+        assert exit_code == 2
+        assert "tar extraction filter refuses" in capsys.readouterr().err
 
     @pytest.mark.parametrize("subcommand", ["run", "smoke"])
     @pytest.mark.parametrize("bad_k", ["0", "-1", "abc"])
