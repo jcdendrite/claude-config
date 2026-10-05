@@ -14,7 +14,7 @@ Best case, a replacement deletes these:
 - If `git diff --cached` inside the hook reflects the final index under `commit -a` and pathspec commits, which was not probed for `pre-commit` or `prepare-commit-msg`, the `-a`/pathspec `git diff HEAD` arm in `deny-pii-in-commits.sh`. The `-F` argument parsing there would retire because a hook reads the message file directly.
 - Tests of those predicates:
   - `test_deny_invisible_commit_content.py`.
-  - `test_lib.py` from `TestCommandConcludesCommit` up to, but not including, `_git_supports_sha256_object_format`, except the parts that do not retire, such as `TestSplitFragmentsPipefailContract` and the sha256 probe helper `_git_supports_sha256_object_format`.
+  - `test_lib.py` from `TestCommandConcludesCommit` up to, but not including, `_git_supports_sha256_object_format`. Parts of that range that do not retire, such as `TestSplitFragmentsPipefailContract`, stay.
   - Possibly `test_parse_git_command.py` and `test_hook_command_normalization.py`.
 
 `_lib_commit_fragment_has_worktree_target`'s walk is kept for the residual deny, so it is renamed, not deleted.
