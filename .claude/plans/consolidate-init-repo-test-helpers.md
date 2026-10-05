@@ -30,7 +30,7 @@ Scope question (posed to the engineer, answer above): how far to consolidate. Th
 
 ## Approach
 
-Add one builder pair to `claude/.claude/tests/helpers.py`: `init_git_repo` (no commit) and `init_git_repo_with_commit` (one seed commit). Then move onto it every helper or fixture whose body is only the throwaway-repo recipe, in `hooks/tests`, `scripts/tests` and `helpers.py` itself. Each migrated site keeps its branch, whether it commits, and any seed file its tests touch. This branch leaves three things alone: inline test-body sites, purpose-built builders that only open with the recipe, and `evals/`.
+Add one builder pair to `claude/.claude/tests/helpers.py`: `init_git_repo` (no commit) and `init_git_repo_with_commit` (one seed commit). Then move onto it the 23 sites listed in row 4, in `hooks/tests`, `scripts/tests` and `helpers.py` itself. Each migrated site keeps its branch, whether it commits, and any seed file its tests touch. This branch leaves three things alone: inline test-body sites, purpose-built builders that only open with the recipe, and `evals/`.
 
 **Scope decision.** The engineer handed this call over (row 2). The choice is the architect's, not the engineer's. It is wider than the session's "Hooks-tree helpers" option and narrower than its "All named helpers, every tree" option:
 
@@ -83,7 +83,7 @@ Add one builder pair to `claude/.claude/tests/helpers.py`: `init_git_repo` (no c
    [verified: greps and reads cited]
 
    The `test_author_outcome.py` SETTLED test (`:1022`) reads `file.txt:1` through its `--source` and `--cited-line` args, so it keeps `file_name="file.txt", content="first\n"`. [verified: read of the test's args]
-6. No hook, script, plugin or test reads the configured identity, so setting every site to `t@t.com`/`t` changes no behavior. [verified: grep of `claude/.claude` and `plugins` found no `user.email`, `user.name`, `%ae`, `%an`, `%ce`, `%cn`, `Author:` or `git var` read.] The `GIT_AUTHOR_*` env lines at `test_lib.py:2458`/`:2562` and `test_marker_script.py:173` are inline sites outside scope.
+6. No hook, script or test code reads the configured identity, so setting every site to `t@t.com`/`t` changes no behavior. [verified: grep of `claude/.claude` and `plugins` found no `user.email`, `user.name`, `%ae`, `%an`, `%ce`, `%cn`, `Author:` or `git var` read in hook, script or test code. The one `%an` hit is skill prose in `plugins/lovable-cloud/skills/lovable-cloud-migration-sync/SKILL.md`, not hook, script or test code.] The `GIT_AUTHOR_*` env lines at `test_lib.py:2458`/`:2562` and `test_marker_script.py:173` are inline sites outside scope.
 7. `test_marker_lib.py:143` and `test_marker_worktree_keying.py:41` make no commit.
    - These zero-commit tests are inline and untouched (`test_lib.py:2640-2646`, `test_lib_reviewer_round_state.py:198-201`, `test_marker_script.py:3153/:4044/:4325/:4546`). [verified for the `test_lib.py` and `test_lib_reviewer_round_state.py` sites; the `test_marker_script.py` sites are covered by the "not re-read" bullet below]
    - `test_marker_lib.py`'s and `test_marker_worktree_keying.py`'s `_init_repo`, `scripts/tests/conftest.py`'s `_init_repo` and the review-ledger `repo` fixture make no commit. `test_findings_path_suffix.py::TestUnbornHead` asserts on that unborn HEAD through `_init_repo`.
@@ -116,7 +116,7 @@ Add one builder pair to `claude/.claude/tests/helpers.py`: `init_git_repo` (no c
   - The threshold: a branch is scenario data the reader should see at the call, so `branch=` alone is passed per call (DAMP), as at `test_lib.py`'s 60 calls. A seed override is setup noise the test never reads at the call, so it stays inside a retained delegation rather than repeated per call (32 times in `test_log_reviewer_round.py` alone).
 
   anchors: row5, row8
-- M5. Scope is exactly the 23 sites listed in row 4. The rule that produced the list was "a helper or fixture whose body is the recipe plus at most one sentinel file, together with `helpers.py`'s internal copies". Only 4 of the 11 deferred files were sampled against it. Out of scope therefore names the deferred fixtures already known to fit the rule. anchors: row2, row4
+- M5. Scope is exactly the 23 sites listed in row 4. The rule that produced the list was "a helper or fixture whose body is the recipe plus at most one sentinel file, together with `helpers.py`'s internal copies". The eleven purpose-built-builder files in Out of scope's first bullet are exceptions to the list: only 4 of them were sampled against the rule, and Out of scope names the fixtures in them already known to fit it. anchors: row2, row4
 
 ## Critical files
 
