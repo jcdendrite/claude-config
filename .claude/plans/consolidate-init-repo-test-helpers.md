@@ -203,7 +203,7 @@ The new `test_git_repo_builders.py` pins the builder contract directly. No migra
   - `test_install_sh_un_adopt_loop.py`, `test_install_sh_stow_adopt_ignore.py`
 
   Only some of these were checked against M5's rule.
-  - Known to fit the rule, so the first follow-up targets: `test_deny_reviewer_tree_mutation.py:41` and `:61`, `test_check_skill_length.py:60` and `:75`, and `test_guard_settings_session_keys.py`'s `_init_settings_repo_on_branch` (line 88).
+  - Known to fit the rule, so the first follow-up targets: `test_deny_reviewer_tree_mutation.py:41` and `:61`, `test_check_skill_length.py:60` and `:75`, and `test_guard_settings_session_keys.py`'s `_init_settings_repo_on_branch` (line 88). Also known to fit, in a file outside the eleven above: `test_require_skill_review.py`'s `_init_repo_with_novel_reach_probe_skill` (host default branch, seed `file.txt`/`"first\n"`, then one staged SKILL.md).
   - Borderline: `test_check_skill_length.py:97`.
   - Genuinely purpose-built: `test_require_stow_reminder.py:37`.
   - DAMP does not protect the recipe copies. They are deferred on Axis 4 size grounds only.
