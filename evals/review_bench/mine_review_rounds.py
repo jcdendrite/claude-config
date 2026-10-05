@@ -19,7 +19,7 @@ import posixpath
 import subprocess
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -559,6 +559,9 @@ def _branch_citation_events(branch_entries: list[_RoundEntry]) -> list[_Citation
     return events
 
 
+_EXCERPT_SEPARATOR = "\n\n"
+
+
 def _grouped_candidate(
     branch: str, path: str, resolution: _CommitResolution, events: list[_CitationEvent],
 ) -> Candidate:
@@ -585,7 +588,7 @@ def _grouped_candidate(
         ref_status=resolution.ref_status,
         # Every distinct excerpt stays, so confirm's provenance check still
         # covers text from the round pairs this candidate absorbed.
-        excerpt="\n\n".join(dict.fromkeys(event.excerpt for event in events)),
+        excerpt=_EXCERPT_SEPARATOR.join(dict.fromkeys(event.excerpt for event in events)),
         evidence={
             "branch": branch,
             "path": path,
@@ -597,6 +600,26 @@ def _grouped_candidate(
             "branch_commits": resolution.branch_commits,
         },
     )
+
+
+def merge_prior_candidate(regenerated: Candidate, prior: Candidate) -> Candidate:
+    """`regenerated` plus the content of the same-id `prior` entry that a rerun
+    over partly aged-out transcripts cannot rebuild: a non-empty description (which wins),
+    excerpt text, and round pairs. Every other field comes from `regenerated`."""
+    excerpt = _EXCERPT_SEPARATOR.join(dict.fromkeys(
+        part for text in (regenerated.excerpt, prior.excerpt) for part in text.split(_EXCERPT_SEPARATOR) if part
+    ))
+    edited_by_round_pair: dict[tuple[float, float], bool] = {}
+    for pair in (*regenerated.evidence.get("round_pairs", []), *prior.evidence.get("round_pairs", [])):
+        key = (pair["earlier_round_ts"], pair["later_round_ts"])
+        edited_by_round_pair[key] = edited_by_round_pair.get(key, False) or pair["main_thread_edited_between"]
+    evidence = dict(regenerated.evidence)
+    if edited_by_round_pair:
+        evidence["round_pairs"] = [
+            {"earlier_round_ts": earlier_ts, "later_round_ts": later_ts, "main_thread_edited_between": edited}
+            for (earlier_ts, later_ts), edited in edited_by_round_pair.items()
+        ]
+    return replace(regenerated, description=prior.description or regenerated.description, excerpt=excerpt, evidence=evidence)
 
 
 def _resolve_branch(repo_dir: Path, branch: str) -> tuple[str, str | None]:

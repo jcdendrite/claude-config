@@ -203,6 +203,67 @@ class TestBuildTwoCommitRepo:
         assert _git(dest_dir, "ls-tree", "-r", "HEAD~1") == _git(source_repo, "ls-tree", "-r", base_commit)
         assert _git(dest_dir, "ls-tree", "-r", "HEAD") == _git(source_repo, "ls-tree", "-r", head_commit)
 
+    def _assert_snapshots_and_diff_match_source(
+        self, tmp_path: Path, source_repo: Path, base_commit: str, head_commit: str,
+    ) -> None:
+        defect = _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
+
+        # `ls-tree -r` lines carry each entry's mode, object type, oid, and path.
+        assert _git(dest_dir, "ls-tree", "-r", "HEAD~1") == _git(source_repo, "ls-tree", "-r", base_commit)
+        assert _git(dest_dir, "ls-tree", "-r", "HEAD") == _git(source_repo, "ls-tree", "-r", head_commit)
+        source_diff = _git(source_repo, "diff", *local_git.DIFF_TEXT_ARGS, base_commit, head_commit)
+        assert (dest_dir / ".bench" / "change.diff").read_text() == source_diff
+
+    def test_an_executable_file_and_a_mode_only_change_keep_their_source_modes_and_diff(
+        self, tmp_path: Path,
+    ) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "mode_only.sh", "echo same\n")
+        _write(source_repo, "edited.sh", "echo 1\n")
+        (source_repo / "edited.sh").chmod(0o755)
+        base_commit = _commit(source_repo, "base")
+        (source_repo / "mode_only.sh").chmod(0o755)
+        _write(source_repo, "edited.sh", "echo 2\n")
+        _write(source_repo, "added.sh", "echo added\n")
+        (source_repo / "added.sh").chmod(0o755)
+        head_commit = _commit(source_repo, "fix: bug")
+        # The control: the source really holds the executable mode the fixture must keep.
+        head_modes = {
+            line.split("\t")[1]: line.split()[0]
+            for line in _git(source_repo, "ls-tree", "-r", head_commit).splitlines()
+        }
+        assert head_modes == {"mode_only.sh": "100755", "edited.sh": "100755", "added.sh": "100755"}
+        assert "old mode 100644" in _git(source_repo, "diff", base_commit, head_commit)
+
+        self._assert_snapshots_and_diff_match_source(tmp_path, source_repo, base_commit, head_commit)
+
+    def test_a_relative_file_symlink_below_the_top_level_keeps_its_source_oid_and_diff(self, tmp_path: Path) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "pkg/target.txt", "target\n")
+        _write(source_repo, "pkg/other.txt", "other\n")
+        (source_repo / "pkg" / "sub").mkdir()
+        (source_repo / "pkg" / "sub" / "link.txt").symlink_to("../target.txt")
+        base_commit = _commit(source_repo, "base")
+        (source_repo / "pkg" / "sub" / "link.txt").unlink()
+        (source_repo / "pkg" / "sub" / "link.txt").symlink_to("../other.txt")
+        head_commit = _commit(source_repo, "fix: bug")
+        assert "120000" in _git(source_repo, "ls-tree", "-r", head_commit)
+
+        self._assert_snapshots_and_diff_match_source(tmp_path, source_repo, base_commit, head_commit)
+
+    def test_a_binary_blob_keeps_its_source_oid_and_diff(self, tmp_path: Path) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        (source_repo / "blob.bin").write_bytes(b"\x00\x01\x02\xff base\n")
+        base_commit = _commit(source_repo, "base")
+        (source_repo / "blob.bin").write_bytes(b"\x00\x01\x02\xff head\n")
+        head_commit = _commit(source_repo, "fix: bug")
+
+        self._assert_snapshots_and_diff_match_source(tmp_path, source_repo, base_commit, head_commit)
+
 
 class TestWriteBenchArtifacts:
     def _build_fixture(self, tmp_path: Path) -> Path:
@@ -1142,13 +1203,14 @@ class TestFixtureGitCallsTolerateNonUtf8Output:
         assert fixture_repo._head_commit_subject(repo, commit) == "fix caf\ufffd"
 
 
-class TestIsolatedGitEnvironmentDisablesSystemAttributes:
-    def test_git_attr_nosystem_is_set_even_when_the_engineer_environment_sets_it_off(
-        self, monkeypatch: pytest.MonkeyPatch,
+class TestIsolatedGitEnvironmentDisablesSystemFiles:
+    @pytest.mark.parametrize("variable", ["GIT_ATTR_NOSYSTEM", "GIT_CONFIG_NOSYSTEM"])
+    def test_the_system_file_switch_is_set_even_when_the_engineer_environment_sets_it_off(
+        self, monkeypatch: pytest.MonkeyPatch, variable: str,
     ) -> None:
-        monkeypatch.setenv("GIT_ATTR_NOSYSTEM", "0")
+        monkeypatch.setenv(variable, "0")
 
-        assert local_git.isolated_git_environment()["GIT_ATTR_NOSYSTEM"] == "1"
+        assert local_git.isolated_git_environment()[variable] == "1"
 
 
 class TestRenderArmAgent:

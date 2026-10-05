@@ -147,10 +147,37 @@ def cmd_mine_szz(args: argparse.Namespace) -> int:
 def cmd_mine_rounds(args: argparse.Namespace) -> int:
     from review_bench import defects, mine_review_rounds
 
-    candidates = mine_review_rounds.mine(REPO_ROOT)
     out_path = Path(args.local_dir) / "review_round_candidates.json"
+    try:
+        prior_candidates = defects.load_candidates(out_path)
+    except (OSError, ValueError, TypeError) as exc:
+        detail = exc.strerror if isinstance(exc, OSError) else str(exc)
+        print(
+            f"mine-rounds: cannot load the existing shortlist {out_path} "
+            f"({type(exc).__name__}: {defects.escape_for_terminal(str(detail))}); wrote nothing. "
+            "Repair the entry or field it names, or delete the file to drop its entries, then rerun.",
+            file=sys.stderr,
+        )
+        return 2
+
+    candidates = mine_review_rounds.mine(REPO_ROOT)
+    fresh_ids = {candidate.id for candidate in candidates}
+    prior_by_id = {candidate.id: candidate for candidate in prior_candidates}
+    candidates = [
+        mine_review_rounds.merge_prior_candidate(candidate, prior_by_id[candidate.id])
+        if candidate.id in prior_by_id else candidate
+        for candidate in candidates
+    ]
+    # Only this miner keeps old entries: aged-out transcripts cannot be mined again,
+    # while SZZ reads durable git and the pr-comment rerun recovers from GitHub.
+    kept_prior = [candidate for candidate in prior_candidates if candidate.id not in fresh_ids]
+    candidates.extend(kept_prior)
     defects.save_candidates(out_path, candidates)
-    print(f"mine-rounds: wrote {len(candidates)} candidate(s) to {out_path}", file=sys.stderr)
+    print(
+        f"mine-rounds: wrote {len(candidates)} candidate(s) to {out_path} "
+        f"({len(kept_prior)} kept from the prior shortlist)",
+        file=sys.stderr,
+    )
     return 0
 
 

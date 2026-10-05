@@ -494,7 +494,10 @@ Run them in this order:
 - **`mine-rounds`** (source `review-round`) reads this account's own session
   transcripts for a finding in a later `/code-review` round about a file an
   earlier round on the same branch had read. Run it first, because
-  transcripts age out.
+  transcripts age out. A rerun keeps every prior shortlist entry it can no
+  longer regenerate. For an entry it does regenerate, it keeps the prior
+  description (when it is non-empty), excerpts, and round pairs too. It
+  exits 2 without writing when the existing file cannot be loaded.
 - **`mine-pr-comments`** (source `pr-comment`) reads the inline review
   comments of the authenticated `gh` login on merged pull requests of this
   repository, and nothing else: no review bodies, no PR conversation comments,

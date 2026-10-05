@@ -145,25 +145,29 @@ def _first_path_component_casefolded(path: str) -> str:
 def _extract_archive(archive: bytes, dest_dir: Path) -> None:
     """Extract a tar `archive` into `dest_dir`. Raises UnsafeFixtureConfigError,
     before any write, for these hand-checked shapes:
-    - a member with a `.git` path component, or a link whose target has one,
-      since a case-insensitive volume maps `.GIT` onto the fixture's own `.git`
-      and a link into `.git` lets a later member write through it;
+    - a member with a `.git` path component, since a case-insensitive volume
+      maps `.GIT` onto the fixture's own `.git`;
+    - a link whose target has a `.git` path component, since a later member
+      can write through it into `.git`;
     - a member whose first path component is `.bench`, which the harness
       reserves for its own artifacts;
     - a link, symbolic or hard, whose own path starts with `.claude`, since a
       harness write into `.bench` or `.claude/agents` would follow it into
       project config after the config check has run.
-    Other links extract. The `.git` case fold covers Linux and APFS, not HFS+
-    ignorable code points or NTFS short names. The `.bench` and `.claude`
-    refusals fold case but do not resolve links above a path, so a
-    differently-named parent link on a case-insensitive volume is not covered.
-    The refusal runs at fixture build, not in `preflight_defects`, and a hit
-    aborts that fixture.
-    Every other traversal shape is left to tarfile's `data` filter, which refuses
-    a member that resolves outside `dest_dir` and a link with an absolute target.
-    A filter refusal also raises UnsafeFixtureConfigError, but the filter runs per
-    member during extraction, so a refusal can leave members extracted before the
-    refused one on disk."""
+    Other links extract. Every other traversal shape is left to tarfile's `data`
+    filter, which refuses a member that resolves outside `dest_dir` and a link
+    with an absolute target. A filter refusal also raises UnsafeFixtureConfigError.
+
+    Limits of those checks:
+    - The `.git` case fold covers Linux and APFS, not HFS+ ignorable code points
+      or NTFS short names.
+    - The `.bench` and `.claude` refusals fold case but do not resolve links
+      above a path, so a differently-named parent link on a case-insensitive
+      volume is not covered.
+    - The refusal runs at fixture build, not in `preflight_defects`, and a hit
+      aborts that fixture.
+    - The filter runs per member during extraction, so a filter refusal can
+      leave members extracted before the refused one on disk."""
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         for member in tar.getmembers():
             is_link = member.islnk() or member.issym()

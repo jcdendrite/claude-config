@@ -3301,6 +3301,116 @@ class TestCmdMineRounds:
         assert exit_code == 0
         assert f"mine-rounds: wrote 0 candidate(s) to {out_path}" in capsys.readouterr().err
 
+    def test_rerun_yielding_fewer_candidates_keeps_the_prior_entry_it_cannot_regenerate(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        from review_bench import mine_review_rounds
+
+        regenerated = _candidate(id="round-1", source="review-round", fix_date="2024-02-02")
+        prior_regenerated = _candidate(id="round-1", source="review-round", fix_date="2024-01-01")
+        prior_aged_out = _candidate(id="round-2", source="review-round")
+        out_path = tmp_path / "local" / "review_round_candidates.json"
+        defects.save_candidates(out_path, [prior_regenerated, prior_aged_out])
+        monkeypatch.setattr(mine_review_rounds, "mine", lambda repo_root: [regenerated])
+
+        exit_code = run_review_bench.cmd_mine_rounds(argparse.Namespace(local_dir=str(tmp_path / "local")))
+
+        assert exit_code == 0
+        assert defects.load_candidates(out_path) == [regenerated, prior_aged_out]
+
+    def test_rerun_yielding_none_keeps_every_prior_entry(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        from review_bench import mine_review_rounds
+
+        prior = [_candidate(id="round-1", source="review-round"), _candidate(id="round-2", source="review-round")]
+        out_path = tmp_path / "local" / "review_round_candidates.json"
+        defects.save_candidates(out_path, prior)
+        monkeypatch.setattr(mine_review_rounds, "mine", lambda repo_root: [])
+
+        exit_code = run_review_bench.cmd_mine_rounds(argparse.Namespace(local_dir=str(tmp_path / "local")))
+
+        assert exit_code == 0
+        assert defects.load_candidates(out_path) == prior
+        assert "wrote 2 candidate(s)" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        ("shortlist_text", "expected_error_class", "expected_detail"),
+        [
+            ("{not json", "JSONDecodeError", "Expecting property name"),
+            ('[{"id": "x"}]', "TypeError", "missing"),
+        ],
+        ids=["malformed-json", "stale-schema-entry"],
+    )
+    def test_unloadable_existing_shortlist_exits_2_and_writes_nothing(
+        self, tmp_path: Path, monkeypatch, capsys, shortlist_text: str, expected_error_class: str,
+        expected_detail: str,
+    ) -> None:
+        from review_bench import mine_review_rounds
+
+        out_path = tmp_path / "local" / "review_round_candidates.json"
+        out_path.parent.mkdir()
+        out_path.write_text(shortlist_text)
+        monkeypatch.setattr(
+            mine_review_rounds, "mine", lambda repo_root: [_candidate(id="round-1", source="review-round")],
+        )
+
+        exit_code = run_review_bench.cmd_mine_rounds(argparse.Namespace(local_dir=str(tmp_path / "local")))
+
+        assert exit_code == 2
+        assert out_path.read_text() == shortlist_text
+        stderr = capsys.readouterr().err
+        assert "cannot load the existing shortlist" in stderr
+        assert expected_error_class in stderr
+        assert expected_detail in stderr
+
+    def test_rerun_regenerating_an_id_from_fewer_events_keeps_the_prior_only_content(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        from review_bench import mine_review_rounds
+
+        def round_pair(earlier_ts: float, later_ts: float, *, edited: bool) -> dict:
+            return {"earlier_round_ts": earlier_ts, "later_round_ts": later_ts, "main_thread_edited_between": edited}
+
+        prior = _candidate(
+            id="round-1", source="review-round", description="hand-written description",
+            excerpt="aged-out excerpt\n\nshared excerpt",
+            evidence={
+                "path": "a.py", "round_pairs": [round_pair(1.0, 2.0, edited=True), round_pair(3.0, 4.0, edited=False)],
+            },
+        )
+        regenerated = _candidate(
+            id="round-1", source="review-round", fix_date="2024-02-02", excerpt="shared excerpt",
+            evidence={"path": "a.py", "round_pairs": [round_pair(3.0, 4.0, edited=True)]},
+        )
+        out_path = tmp_path / "local" / "review_round_candidates.json"
+        defects.save_candidates(out_path, [prior])
+        monkeypatch.setattr(mine_review_rounds, "mine", lambda repo_root: [regenerated])
+
+        exit_code = run_review_bench.cmd_mine_rounds(argparse.Namespace(local_dir=str(tmp_path / "local")))
+
+        assert exit_code == 0
+        (merged,) = defects.load_candidates(out_path)
+        assert merged.fix_date == "2024-02-02"
+        assert merged.description == "hand-written description"
+        assert merged.excerpt == "shared excerpt\n\naged-out excerpt"
+        assert merged.evidence["round_pairs"] == [round_pair(3.0, 4.0, edited=True), round_pair(1.0, 2.0, edited=True)]
+
+    def test_rerun_keeps_a_non_empty_prior_description_over_the_regenerated_one(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        from review_bench import mine_review_rounds
+
+        out_path = tmp_path / "local" / "review_round_candidates.json"
+        defects.save_candidates(out_path, [_candidate(id="round-1", source="review-round", description="prior")])
+        monkeypatch.setattr(
+            mine_review_rounds, "mine",
+            lambda repo_root: [_candidate(id="round-1", source="review-round", description="regenerated")],
+        )
+
+        run_review_bench.cmd_mine_rounds(argparse.Namespace(local_dir=str(tmp_path / "local")))
+
+        (merged,) = defects.load_candidates(out_path)
+        assert merged.description == "prior"
+
     def test_cli_flags_reach_cmd_mine_rounds_via_build_parser(self, tmp_path: Path, monkeypatch) -> None:
         from review_bench import mine_review_rounds
 

@@ -1234,6 +1234,53 @@ class TestUnreadableTranscript:
         assert result.prompt_verbatim is True
 
     @pytest.mark.parametrize(
+        ("tool_name", "tool_input"),
+        [
+            ("Read", {"file_path": "/repo/a\x00b.py"}),
+            ("Grep", {"pattern": "needle", "path": "/repo/a\x00b"}),
+            ("Glob", {"pattern": "/repo/a\x00b/*.py"}),
+        ],
+    )
+    def test_a_read_like_call_with_an_embedded_nul_byte_gets_its_own_reason_without_the_path(
+        self, tmp_path: Path, tool_name: str, tool_input: dict,
+    ) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        subagent_jsonl = scenario / "session-1" / "subagents" / "agent-1.jsonl"
+        _replace_tool_use(subagent_jsonl, "toolu_read_1", name=tool_name, input_=tool_input)
+
+        result = _evaluate(scenario, changed_relpaths=("changed_file.py",))
+
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE
+        assert result.failure_detail == "a read-like call carried a path that cannot be resolved"
+        assert result.prompt_verbatim is True
+
+    @pytest.mark.parametrize("nul_call_comes_first", [True, False], ids=["nul-then-leak", "leak-then-nul"])
+    def test_a_live_checkout_leak_read_wins_over_a_read_with_an_embedded_nul_byte(
+        self, tmp_path: Path, nul_call_comes_first: bool,
+    ) -> None:
+        scenario = _load_scenario(tmp_path, "live-checkout-leak")
+        subagent_jsonl = scenario / "session-1" / "subagents" / "agent-1.jsonl"
+        nul_call = {"type": "tool_use", "id": "toolu_read_nul", "name": "Read", "input": {"file_path": "/repo/a\x00b.py"}}
+
+        lines = []
+        for raw in subagent_jsonl.read_text().splitlines():
+            record = json.loads(raw)
+            if record.get("type") == "assistant":
+                content = record["message"]["content"]
+                leak_index = next(i for i, block in enumerate(content) if block.get("id") == "toolu_read_1")
+                content.insert(leak_index if nul_call_comes_first else leak_index + 1, nul_call)
+            lines.append(json.dumps(record))
+        subagent_jsonl.write_text("\n".join(lines) + "\n")
+
+        result = _evaluate(
+            scenario, live_checkout_roots=(scenario,), changed_relpaths=("fake-live-checkout/changed_file.py",),
+        )
+
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
+
+    @pytest.mark.parametrize(
         "reader", [runner.read_dispatcher_transcript, runner.extract_read_like_calls,
                    runner.extract_tool_results, runner.extract_final_text],
     )

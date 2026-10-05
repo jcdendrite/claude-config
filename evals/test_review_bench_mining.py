@@ -2692,6 +2692,20 @@ class TestMinePrComments:
         assert candidates == []
         assert "'anchor-mismatch': 1" in capsys.readouterr().err
 
+    def test_a_multi_line_range_comment_anchors_on_its_end_line(self, tmp_path):
+        """A range comment's `original_line` is the range's last line and its hunk ends there, so the
+        anchor is the end line and `original_start_line` plays no part."""
+        repo, _main_sha, introducing_sha, fix_sha = _pr_comment_repo(tmp_path, bad_line="first_bad\nsecond_bad")
+        comment = _pr_review_comment(
+            introducing_sha, original_start_line=2, original_line=3,
+            diff_hunk="@@ -1 +1,3 @@\n line0\n+first_bad\n+second_bad",
+        )
+
+        candidates, _fake_gh = _mine_pr_comments(repo, [comment, _pr_thread_reply(_fixed_reply_body(fix_sha))])
+
+        (candidate,) = candidates
+        assert candidate.description == "app.py:3 — This value is wrong."
+
     def test_whitespace_differences_between_the_hunk_and_the_file_do_not_break_the_anchor(self, tmp_path):
         repo, _main_sha, introducing_sha, fix_sha = _pr_comment_repo(tmp_path)
         comment = _pr_review_comment(introducing_sha, diff_hunk="@@ -1 +1,2 @@\n line0\n+    bad_ value  ")
@@ -3262,6 +3276,22 @@ class TestMinePrComments:
         (candidate,) = candidates
         assert "head_on_pr_branch" not in candidate.evidence
         assert "could not list the commits of refs/heads/feat (git rev-list exited 129)" in capsys.readouterr().err
+
+    def test_a_bidi_override_in_the_branch_name_is_escaped_in_the_listing_failure_message(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        branch_name = "feat\u202eevil"
+        repo, thread = self._fixed_thread(tmp_path)
+        _git(repo, "branch", "-m", "feat", branch_name)
+        self._fail_git_calls(monkeypatch, ("rev-list",), 129)
+
+        _candidates, _fake_gh = _mine_pr_comments(
+            repo, thread, closed_pulls=[_closed_pull(_MERGED_PR_NUMBER, branch_name)],
+        )
+
+        stderr = capsys.readouterr().err
+        assert "could not list the commits of refs/heads/feat\\u202eevil (git rev-list exited 129)" in stderr
+        assert "\u202e" not in stderr
 
     def test_a_branch_with_no_merge_base_leaves_the_membership_unrecorded(self, tmp_path, monkeypatch):
         repo, thread = self._fixed_thread(tmp_path)

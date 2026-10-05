@@ -96,14 +96,10 @@ _GH_ERRORS = (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotF
 # is one of those reads 128 as a negative only after checking the object exists.
 _GIT_FATAL_STATUS = 128
 
-# A skip reason whose cause is the PR head's fetch, not the comment: the same
-# comment can be mined once the head is fetchable. The cause is often transient
-# (network, auth, a ref-lock collision in the shared .git). It repeats on every
-# rerun for a pull ref the remote lacks and for a head whose fetch exceeds
-# `mine_review_rounds._GIT_FETCH_TIMEOUT_S`. `mine` exits 2 and writes nothing
-# when any is counted. No option skips one PR or gives its fetch a longer
-# timeout, because text-only PRs sit below the size where that matters.
-# It is a `resolve_branch_ref` outcome that is also a skip reason.
+# A skip reason whose cause is the PR head's fetch, not the comment, so `mine`
+# exits 2 and writes nothing when any is counted.
+# A rerun clears a network, auth, or ref-lock failure, but not a pull ref the
+# remote lacks or a fetch past `mine_review_rounds._GIT_FETCH_TIMEOUT_S`.
 _REF_STATUS_FETCH_FAILED = "fetch-failed"
 # A per-comment skip: a rerun retries the comment, and a comment whose git call
 # fails again fails for that comment, e.g. a gitlink path, or a blame that runs
@@ -516,7 +512,9 @@ def _pr_branch_commits(repo_dir: Path, branch: mine_review_rounds._BranchGit) ->
             repo_dir, ["rev-list", f"{branch.merge_base}..{branch.ref}"], answers=frozenset({0}),
         )
     except GitExecutionError as exc:
-        print(f"mine-pr-comments: could not list the commits of {branch.ref} ({exc})", file=sys.stderr)
+        print(
+            f"mine-pr-comments: could not list the commits of {escape_for_terminal(branch.ref)} ({exc})", file=sys.stderr,
+        )
         return None
     return frozenset(result.stdout.decode("utf-8", errors="replace").split()) or None
 
@@ -607,9 +605,6 @@ def _build_candidate(
         return None
     # A force-pushed PR head no longer reaches the commit the comment was
     # made on, so the commented code is not on the branch being resolved.
-    # A local branch named like the provider-supplied `head.ref` binds in place of the
-    # PR head, so a candidate can drop here as unreachable that the PR head would keep;
-    # accepted at current scale.
     if not _is_ancestor(repo_dir, original_commit_id, branch_git.ref):
         stats["original-commit-unreachable"] += 1
         return None
@@ -706,7 +701,8 @@ def mine(repo_dir: Path, *, run: GhRun = subprocess.run) -> list[Candidate]:
     one that fails again fails for that comment, not for the run. A run that
     skipped a comment on an unfetchable PR head exits 2 after printing the
     counts and writes nothing, because a partial shortlist would stand in for
-    a complete one. See `_REF_STATUS_FETCH_FAILED` for the cause.
+    a complete one. See `_REF_STATUS_FETCH_FAILED` for the cause and which
+    failures a rerun clears.
     """
     repository = resolve_origin_repository(repo_dir)
     require_public_repo(repo_dir, repository, run=run)
@@ -732,9 +728,12 @@ def mine(repo_dir: Path, *, run: GhRun = subprocess.run) -> list[Candidate]:
             continue
         pr_number = _pull_request_number(comment)
         if pr_number not in pull_request_git:
-            # `head.ref` is provider-supplied: a name equal to a local branch binds that branch
-            # in place of the PR head. A candidate can then drop as unreachable, or be kept with
-            # `ref_status` "local-branch" and a `head_on_pr_branch` computed from that branch.
+            # `head.ref` is provider-supplied, and a name equal to a local branch
+            # binds that branch in place of the PR head.
+            # A comment can then drop as `original-commit-unreachable` when the PR
+            # head would have kept it.
+            # It can instead be kept with `ref_status` "local-branch" and a
+            # `head_on_pr_branch` computed from that branch.
             branch_git = mine_review_rounds.open_branch_git(
                 repo_dir, mine_review_rounds.resolve_branch_ref(repo_dir, merged_branches[pr_number], pr_number),
             )

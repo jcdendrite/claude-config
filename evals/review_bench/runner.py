@@ -942,8 +942,13 @@ def evaluate_run_validity(
     leak_check_relpaths = tuple(dict.fromkeys((*changed_relpaths, *fix_commit_relpaths)))
     leak_targets = live_checkout_leak_targets(live_checkout_roots, leak_check_relpaths)
     out_of_session: list[str] = []
+    has_unresolvable_read_path = False
     for read_call in read_like_calls:
-        resolved = _resolve(read_call.path, base_dir=fixture_dir)
+        try:
+            resolved = _resolve(read_call.path, base_dir=fixture_dir)
+        except ValueError:  # a path the OS cannot represent, e.g. an embedded NUL
+            has_unresolvable_read_path = True
+            continue
         if is_changed_file_leak(resolved, leak_targets):
             return _fail(
                 VALIDITY_FAIL_LIVE_CHECKOUT_LEAK, observed_model=expected_model_id,
@@ -956,6 +961,13 @@ def evaluate_run_validity(
             )
         if is_out_of_session(resolved, own_dirs):
             out_of_session.append(read_call.path)
+
+    if has_unresolvable_read_path:
+        return _fail(
+            VALIDITY_FAIL_TRANSCRIPT_UNREADABLE, observed_model=expected_model_id,
+            observed_tools=tuple(sorted(dispatch.observed_tools)), prompt_verbatim=True,
+            detail="a read-like call carried a path that cannot be resolved",
+        )
 
     stats = compute_read_stats(
         read_like_calls, tool_results, fixture_dir=fixture_dir, changed_relpaths=frozenset(changed_relpaths)
