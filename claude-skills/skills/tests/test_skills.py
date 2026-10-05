@@ -3732,22 +3732,24 @@ def test_threat_model_tiers_citation_resolves_to_real_heading(relative_path: str
 
 
 # Tier-disposition clauses that keep the review layers fail-closed.
-# The docs/hooks.md entry pins the regression conditions in their single home.
-# The layer entries pin that a regression is an enforcement-invariant finding,
-# and that a finding the tier section does not explicitly waive or route stays
-# under the base rules.
+# The docs/hooks.md entry pins the regression-judging block in its single home.
+# The layer entries pin the per-vector-gap versus genuinely-lax question.
+# The layer entries pin that a regression stays blocking at every tier.
+# The layer entries pin that a finding the tier section does not explicitly waive or route stays under the base rules.
 # A tripwire for a wording trim that silently drops one of them.
 _TIER_DISPOSITION_SECTIONS = [
     pytest.param(
         ".claude/skills/code-review-claude-config/SKILL.md",
         "## Finding disposition addition",
         [
+            "per-vector gap",
+            "genuinely-lax failure stays under the base rules",
+            "lists `untrusted-input` stays under the base rules",
             "is an enforcement-invariant finding",
             "is not an enforcement-invariant finding",
-            "does not explicitly waive or route stays under the base rules.",
             "at every tier",
+            "does not explicitly waive or route stays under the base rules.",
             "No recording",
-            '`code-review/SKILL.md` § "Step — Record review completion"',
         ],
         id="code-review-layer",
     ),
@@ -3755,10 +3757,13 @@ _TIER_DISPOSITION_SECTIONS = [
         ".claude/skills/plan-review-claude-config/SKILL.md",
         "## Gate threat-model tiers (Domain: Security; Output format)",
         [
-            "is an enforcement-invariant finding",
+            "per-vector gap",
+            "genuinely-lax failure stays under the base rules",
+            "lists `untrusted-input` stays under the base rules",
+            "stays an enforcement-invariant finding",
             "is not an enforcement-invariant finding",
-            "does not explicitly waive or route stays under the base rules.",
             "at every tier",
+            "does not explicitly waive or route stays under the base rules.",
             "No recording",
             "cover every regression",
         ],
@@ -3768,11 +3773,18 @@ _TIER_DISPOSITION_SECTIONS = [
         "docs/hooks.md",
         "## Threat-model tiers",
         [
-            "When any of these holds, treat the finding as a regression: "
+            "A gate the change adds has no merge-base denials to regress from, "
+            "so no finding that it dropped a denial is a regression; its tier decides. "
+            "A gate that renames or replaces merge-base gates, wholly or in part, "
+            "is not one the change adds; neither is a gate whose status is unclear. "
+            "Compare such a gate against the merge-base behavior it takes over. "
+            "For any gate that is not strictly added by the change, including a "
+            "replacement or a gate of unclear status, treat the finding as a "
+            "regression when any of these holds: "
             "- The comparison against the merge-base is unclear. "
-            "- The gate has no merge-base counterpart. "
             "- A fail-open path the change adds or alters has no deny test. "
-            "- The change edits the gate's tier line, its tracking pointer, or this section. "
+            "- The change edits the gate's tier line, its tracking pointer, or this "
+            "section's rules above its per-hook classification table. "
             "A `CLAUDE.md` or SKILL.md that applies this rule points here rather than "
             "restating it; this section is its only home.",
         ],

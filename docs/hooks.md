@@ -25,12 +25,11 @@ Three independent axes: (1) agent intent, assumed cooperative — the only thing
 
 **The regression-only rule.** A gap a gate's header names, or a tracking issue its header points to, is accepted existing debt — the tier neither licenses it nor reopens it for debate. A change to that gate is reviewed for regressions only: an input the gate denied at the merge-base that it allows after the change, or a new fail-open path the change introduces. A regression is always ADDRESS or stop-and-ask, never deferred. A pre-existing gap a review happens to surface is recorded on the gate's tracking issue, not raised as a blocking finding. Adding a tracking-issue pointer to an elevated gate that had none is itself a scope-narrowing change and takes the same relaxation treatment as any other classification change (above; its commit message states the rationale). Wording is "route the finding, don't raise it as blocking" — never "don't look": "regression" means a behavioral delta against the merge-base, never against the header's own conceded-gaps list, so a diff cannot open a new bypass and legalize it by listing it in the same commit.
 
-Judge a regression from the gate's behavior at the merge-base against its behavior after the change, covering its matcher, its hook registration (in `settings.json` or its plugin's `hooks/hooks.json`), its early-exit and error paths, and the helpers it calls. The judgment never rests on a reviewer's or a plan's wording. When any of these holds, treat the finding as a regression:
+Judge a regression from the gate's behavior at the merge-base against its behavior after the change, covering its matcher, its hook registration (in `settings.json` or its plugin's `hooks/hooks.json`), its early-exit and error paths, and the helpers it calls. The judgment never rests on a reviewer's or a plan's wording. A gate the change adds has no merge-base denials to regress from, so no finding that it dropped a denial is a regression; its tier decides. A gate that renames or replaces merge-base gates, wholly or in part, is not one the change adds; neither is a gate whose status is unclear. Compare such a gate against the merge-base behavior it takes over. For any gate that is not strictly added by the change, including a replacement or a gate of unclear status, treat the finding as a regression when any of these holds:
 
 - The comparison against the merge-base is unclear.
-- The gate has no merge-base counterpart.
 - A fail-open path the change adds or alters has no deny test.
-- The change edits the gate's tier line, its tracking pointer, or this section.
+- The change edits the gate's tier line, its tracking pointer, or this section's rules above its per-hook classification table.
 
 A `CLAUDE.md` or SKILL.md that applies this rule points here rather than restating it; this section is its only home.
 
@@ -41,7 +40,7 @@ A `CLAUDE.md` or SKILL.md that applies this rule points here rather than restati
 - `require-ready-for-review.sh` checks a review marker, never content, and allows the pushes its own header lists.
 - A git-native pre-commit or pre-receive hook would inspect content. This repo does not ship one (see `docs/security-hardening.md`).
 
-A waived finding is recorded on the gate's header or tracking issue in the same change; a PR-body line links any issue comment recording it.
+A waived finding is recorded on the gate's header or tracking issue in the same PR; a PR-body line links any issue comment recording it.
 
 `irreversible` is a term of art scoped to this table, distinct from `CLAUDE.md`'s global confirm-before-destructive-action rule: it governs which findings a review may relax on false-positive-cost grounds, not which actions this session pauses to confirm. It covers the dispatching session's own uncommitted tree, not only another session's.
 
