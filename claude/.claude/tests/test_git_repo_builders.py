@@ -5,13 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import init_git_repo, init_git_repo_with_commit
-
-
-def _git_stdout(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
-    ).stdout
+from helpers import _run_git, init_git_repo, init_git_repo_with_commit
 
 
 def test_init_git_repo_leaves_head_unborn_on_the_requested_branch(tmp_path: Path) -> None:
@@ -22,14 +16,14 @@ def test_init_git_repo_leaves_head_unborn_on_the_requested_branch(tmp_path: Path
     )
 
     assert head_lookup.returncode != 0
-    assert _git_stdout(repo, "symbolic-ref", "--short", "HEAD").strip() == "probe"
+    assert _run_git(repo, "symbolic-ref", "--short", "HEAD").strip() == "probe"
 
 
 def test_init_git_repo_sets_a_local_commit_identity(tmp_path: Path) -> None:
     repo = init_git_repo(tmp_path / "repo")
 
-    assert _git_stdout(repo, "config", "--local", "user.email").strip()
-    assert _git_stdout(repo, "config", "--local", "user.name").strip()
+    assert _run_git(repo, "config", "--local", "user.email").strip()
+    assert _run_git(repo, "config", "--local", "user.name").strip()
 
 
 @pytest.mark.parametrize("builder", [init_git_repo, init_git_repo_with_commit])
@@ -43,26 +37,26 @@ def test_builder_without_a_branch_keeps_the_host_default(
 
     repo = builder(tmp_path / "repo")
 
-    assert _git_stdout(repo, "symbolic-ref", "--short", "HEAD").strip() == "host-default-probe"
+    assert _run_git(repo, "symbolic-ref", "--short", "HEAD").strip() == "host-default-probe"
 
 
 def test_init_git_repo_with_commit_forwards_the_requested_branch(tmp_path: Path) -> None:
     repo = init_git_repo_with_commit(tmp_path / "repo", branch="probe")
 
-    assert _git_stdout(repo, "symbolic-ref", "--short", "HEAD").strip() == "probe"
+    assert _run_git(repo, "symbolic-ref", "--short", "HEAD").strip() == "probe"
 
 
 def test_init_git_repo_with_commit_tracks_the_default_seed_file(tmp_path: Path) -> None:
     repo = init_git_repo_with_commit(tmp_path / "repo")
 
     subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=repo, capture_output=True, check=True)
-    assert _git_stdout(repo, "ls-files").splitlines() == ["f.txt"]
-    assert _git_stdout(repo, "show", "HEAD:f.txt") == "x\n"
+    assert _run_git(repo, "ls-files").splitlines() == ["f.txt"]
+    assert _run_git(repo, "show", "HEAD:f.txt") == "x\n"
 
 
 def test_init_git_repo_with_commit_tracks_a_nested_seed_file_with_its_content(tmp_path: Path) -> None:
     # The leading dash fails `git add` unless the builder passes `--` before the pathspec.
     repo = init_git_repo_with_commit(tmp_path / "repo", file_name="-a/b.txt", content="y\n")
 
-    assert _git_stdout(repo, "ls-files").splitlines() == ["-a/b.txt"]
-    assert _git_stdout(repo, "show", "HEAD:-a/b.txt") == "y\n"
+    assert _run_git(repo, "ls-files").splitlines() == ["-a/b.txt"]
+    assert _run_git(repo, "show", "HEAD:-a/b.txt") == "y\n"
