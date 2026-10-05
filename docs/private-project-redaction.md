@@ -190,6 +190,8 @@ The mechanical backstop is this repository's own human-only merge
 gate: the owner reviews every PR before it merges and can catch a
 citation for a yes that was never given.
 
+`review-round-cost --pooled` prints a publication pointer and refusals; it checks no authorization. `docs/transcript-analysis.md` § "review-round-cost" holds its refusal list, withholding floors, and sample output.
+
 An authorization covers the figure, the command, and the artifact it
 named. The following each count as a fresh ask:
 
@@ -210,7 +212,7 @@ figure as its own ask. That one citation must still enumerate every
 figure category the report contains. It must also name any category
 the report printed but withheld rather than approved (e.g. a
 per-account breakdown). Enumerating keeps the check each figure still
-needs against the four bars below from silently dropping out just
+needs against the bars below from silently dropping out just
 because the ask was made once — see
 [`docs/case-studies/rearm-spacing-deep-tail.md`](case-studies/rearm-spacing-deep-tail.md)'s
 own citation for the pattern.
@@ -224,7 +226,7 @@ composition in the proposal. "New figures against the grandfathered
 set" below is the mechanical half of that check. It does not, on its
 own, cover composition against a prior authorization.
 
-An authorization releases the corpus-scope bar and nothing else. Four
+An authorization releases the corpus-scope bar and nothing else. Five
 things stay barred alongside it:
 
 - A figure carrying a per-project, per-account, or per-engagement
@@ -238,6 +240,12 @@ things stay barred alongside it:
   two-point before/after split) drawn from a wider corpus — barred
   even as a single authorized figure, since no split mechanism
   exists here to sanction one.
+- `review-round-cost --pooled --show-withheld` output. It shows
+  whoever runs it a figure the dominance-precision floor withholds from a
+  plain `--pooled` run. It is barred outright and is never a candidate
+  for owner authorization. A floor breach means the figure is
+  functionally a single-account disclosure
+  (`docs/transcript-analysis.md` § "review-round-cost").
 
 ### Own-history counts were never inside this class
 

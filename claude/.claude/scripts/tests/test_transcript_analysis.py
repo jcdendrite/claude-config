@@ -6,9 +6,11 @@ import json
 import os
 import random
 import re
+import stat
 import subprocess
 import sys
 import time
+from collections import Counter
 from datetime import date
 from pathlib import Path
 
@@ -46,6 +48,7 @@ from .conftest import (
     _user_msg,
     _write_cost_root,
     _write_jsonl,
+    _write_subagent_dispatch,
     _write_subagent_jsonl,
     _write_use,
 )
@@ -2160,6 +2163,82 @@ class TestScanRootTranscripts:
         scanned, _skipped = _mod._scan_root_transcripts(tmp_path, "*")
         assert scanned == 1
 
+    def test_glob_mode_rejects_a_parent_traversing_projects_value(self, tmp_path):
+        """A '..' component in `projects_glob` is a real parent-directory step
+        for Path.glob, not a no-op: this function must count nothing for it
+        instead of counting a sibling account's own transcripts -- the same
+        guarantee corpus.iter_sessions gives its own glob match."""
+        root = tmp_path / "acct-a"
+        root.mkdir()
+        sibling = tmp_path / "acct-b"
+        sibling.mkdir()
+        (sibling / "secret.jsonl").write_text("{}\n")
+        scanned, skipped = _mod._scan_root_transcripts(root, "../acct-b")
+        assert (scanned, skipped) == (0, 0)
+
+    def test_symlink_loop_project_dir_is_silently_skipped_not_raised(self, tmp_path):
+        """A symlink-loop project dir reads as absent (its stat fails with ELOOP), so
+        _scan_root_transcripts skips it and counts the healthy sibling
+        without raising. Its two callers in cost.py only catch
+        PermissionError."""
+        proj_open = tmp_path / "-repo-open"
+        proj_open.mkdir(parents=True)
+        (proj_open / "sess.jsonl").write_text("{}\n")
+        loop_link = tmp_path / "-repo-loop"
+        loop_link.symlink_to(loop_link)
+        scanned, skipped = _mod._scan_root_transcripts(tmp_path, "*")
+        assert (scanned, skipped) == (1, 0)
+
+    @pytest.mark.parametrize("mode", ["glob", "slugs"])
+    def test_project_dir_symlinked_outside_the_root_is_counted(self, tmp_path, mode):
+        """Only a '..' in the raw glob is rejected. With a single scan root,
+        a project directory symlinked to a readable location outside `root`
+        stays in scope, in both the glob and the exact-slug branch, matching
+        iter_sessions. Multi-root consumers that attribute each session to a
+        root do not tolerate it (see the pooled-layer tests in
+        test_transcript_review_rounds.py)."""
+        root = tmp_path / "acct-a"
+        root.mkdir()
+        outside = tmp_path / "elsewhere" / "-repo-relocated"
+        outside.mkdir(parents=True)
+        (outside / "sess.jsonl").write_text("{}\n")
+        (root / "-repo-relocated").symlink_to(outside)
+        slugs = ["-repo-relocated"] if mode == "slugs" else None
+        assert _mod._scan_root_transcripts(root, "*", slugs=slugs) == (1, 0)
+
+    def test_symlink_loop_transcript_is_counted_as_skipped_not_raised(self, tmp_path):
+        """A looped .jsonl symlink fails open() with OSError, so it is
+        counted under `skipped` alongside the healthy transcript instead of
+        aborting the scan."""
+        proj = tmp_path / "-repo-main"
+        proj.mkdir()
+        (proj / "sess.jsonl").write_text("{}\n")
+        loop_link = proj / "loop.jsonl"
+        loop_link.symlink_to(loop_link)
+        assert _mod._scan_root_transcripts(tmp_path, "*") == (2, 1)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_project_dir_through_sealed_ancestor_is_silently_skipped_not_raised(self, tmp_path):
+        """A project dir reached through a sealed intermediate directory makes
+        its stat raise PermissionError (an OSError subclass).
+        _scan_root_transcripts skips it without raising and still counts the
+        healthy sibling project dir."""
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        (proj_open / "sess.jsonl").write_text("{}\n")
+        sealed_ancestor = tmp_path / "sealed-ancestor"
+        target = sealed_ancestor / "target-dir"
+        target.mkdir(parents=True)
+        proj_through_sealed = root / "-repo-through-sealed"
+        proj_through_sealed.symlink_to(target)
+        os.chmod(sealed_ancestor, 0o000)
+        try:
+            scanned, skipped = _mod._scan_root_transcripts(root, "*")
+        finally:
+            os.chmod(sealed_ancestor, 0o755)
+        assert (scanned, skipped) == (1, 0)
+
 
 class TestPriceTurnArity:
     def test_price_turn_returns_exactly_three_values(self):
@@ -3462,6 +3541,133 @@ class TestScanEditFormatSession:
         stats = _mod._scan_edit_format_session(records)
         assert stats["output_tokens"] == 3111
         assert stats["calls"] == {"Edit": 1}
+
+
+def _read_tool_use(tool_id: str, *, file_path: str, offset: int | None = None, limit: int | None = None) -> dict:
+    tool_input: dict = {"file_path": file_path}
+    if offset is not None:
+        tool_input["offset"] = offset
+    if limit is not None:
+        tool_input["limit"] = limit
+    return {"type": "tool_use", "id": tool_id, "name": "Read", "input": tool_input}
+
+
+class TestCorpusSubagentDirAndUtf8ErrorHandling:
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_read_session_file_partitioned_treats_unreadable_subagents_dir_as_absent(self, fake_projects):
+        """A subagents/ directory reached through a sealed session-id
+        ancestor makes `subagent_dir.is_dir()` raise `PermissionError`.
+        (`PermissionError` is an `OSError` subclass.)
+        `_read_session_file_partitioned` must treat that the same as an
+        absent directory, not crash. The only observable difference from a
+        readable-empty directory is that no subagent records are merged."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-a", [_opus([_read_tool_use("r2", file_path="/b.py")])])
+        session_dir = fake_projects / "sess"
+        os.chmod(session_dir, 0o000)
+        try:
+            result = _mod._read_session_file_partitioned(fake_projects / "sess.jsonl", include_subagents=True)
+        finally:
+            os.chmod(session_dir, 0o755)
+
+        expected = [[_opus([_read_tool_use("r1", file_path="/a.py")])]]
+        assert result == expected
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_index_subagent_dispatches_returns_empty_index_for_unreadable_subagents_dir(self, fake_projects):
+        """A subagents/ directory reached through a sealed session-id
+        ancestor makes subagent_dir.is_dir() raise PermissionError (an
+        OSError) -- corpus._index_subagent_dispatches must return an empty
+        index and no read errors, not crash, so every dispatch in that
+        session reads as dangling. Mirrors
+        test_read_session_file_partitioned_treats_unreadable_subagents_dir_as_absent's
+        chmod-based direct-call pattern for the sibling function."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a", "toolu_1",
+            [_opus([_read_tool_use("r2", file_path="/b.py")])],
+        )
+        session_dir = fake_projects / "sess"
+        os.chmod(session_dir, 0o000)
+        try:
+            index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+        finally:
+            os.chmod(session_dir, 0o755)
+
+        assert index == {}
+        assert meta_read_errors == 0
+
+    def test_index_subagent_dispatches_counts_non_utf8_meta_as_read_error(self, fake_projects):
+        """A meta.json containing non-UTF-8 bytes must be counted under
+        meta_read_errors, identical to an invalid-JSON or unreadable
+        meta.json -- corpus._index_subagent_dispatches must not raise
+        UnicodeDecodeError uncaught and abort the whole run. Uses the same
+        non-UTF-8 bytes as
+        test_parse_jsonl_records_returns_empty_list_for_a_file_of_only_non_utf8_bytes."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir.mkdir(parents=True, exist_ok=True)
+        (subdir / "agent-1.meta.json").write_bytes(b"\xff\xfe\x00\x01")
+
+        index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+
+        assert index == {}
+        assert meta_read_errors == 1
+
+    def test_parse_jsonl_records_skips_a_non_utf8_line_and_keeps_the_valid_ones(self, tmp_path):
+        """A line with non-UTF-8 bytes is skipped on its own like a
+        malformed-JSON line, so the valid records before and after it
+        survive instead of the whole file being discarded."""
+        mixed_jsonl = tmp_path / "mixed.jsonl"
+        mixed_jsonl.write_bytes(
+            b'{"type": "user", "n": 1}\n\xff\xfe\x00\x01\n{"type": "user", "n": 2}\n'
+        )
+        assert _mod.corpus._parse_jsonl_records(mixed_jsonl) == [
+            {"type": "user", "n": 1}, {"type": "user", "n": 2},
+        ]
+
+    def test_parse_jsonl_records_returns_empty_list_for_a_file_of_only_non_utf8_bytes(self, tmp_path):
+        """A readable file with no decodable record is empty ([]), not
+        unreadable (None), so an all-corrupt transcript is not mistaken for
+        a failed read."""
+        bad_jsonl = tmp_path / "bad.jsonl"
+        bad_jsonl.write_bytes(b"\xff\xfe\x00\x01")
+        assert _mod.corpus._parse_jsonl_records(bad_jsonl) == []
+
+    def test_parse_jsonl_records_returns_none_when_the_file_cannot_be_opened(self, tmp_path):
+        assert _mod.corpus._parse_jsonl_records(tmp_path / "missing.jsonl") is None
+
+    def test_parse_jsonl_records_keeps_valid_multibyte_utf8_lines_on_both_sides_of_a_corrupt_line(self, tmp_path):
+        """A transcript written as raw UTF-8 (not ASCII-escaped, unlike
+        _write_jsonl's output) round-trips every record intact. The
+        assertion compares whole records, so a codec that cannot decode
+        the multi-byte characters, or decodes them wrongly, fails it."""
+        multibyte_text = "café 🎉 — 北京"
+        multibyte_jsonl = tmp_path / "multibyte.jsonl"
+        multibyte_jsonl.write_bytes(
+            json.dumps({"type": "user", "n": 1, "text": multibyte_text}, ensure_ascii=False).encode("utf-8")
+            + b"\n\xff\xfe\x00\x01\n"
+            + json.dumps({"type": "user", "n": 2, "text": multibyte_text}, ensure_ascii=False).encode("utf-8")
+            + b"\n"
+        )
+        assert _mod.corpus._parse_jsonl_records(multibyte_jsonl) == [
+            {"type": "user", "n": 1, "text": multibyte_text},
+            {"type": "user", "n": 2, "text": multibyte_text},
+        ]
+
+    def test_index_subagent_dispatches_reads_a_multibyte_utf8_meta_json_without_a_read_error(self, fake_projects):
+        """A meta.json written as raw UTF-8 with non-ASCII text next to a
+        valid toolUseId is indexed, not counted under meta_read_errors."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir.mkdir(parents=True, exist_ok=True)
+        meta = {"agentType": "reviewer", "description": "café 🎉 — 北京", "toolUseId": "toolu_1", "spawnDepth": 1}
+        (subdir / "agent-1.meta.json").write_bytes(json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+
+        index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+
+        assert index == {"toolu_1": (subdir / "agent-1.jsonl", None)}
+        assert meta_read_errors == 0
 
 
 # ---------------------------------------------------------------------------
@@ -8263,6 +8469,766 @@ class TestIterScopedSessionsUnreadableRoot:
         err = capsys.readouterr().err
         assert str(root_b) not in err  # the raw unreadable path is never printed
         assert "skipping" in err
+
+
+def _assert_scan_error_chain_suppressed(excinfo) -> None:
+    """`_path_stripped_scan_error`'s callers raise `from None` so the raw
+    path-bearing original exception never surfaces via Python's implicit
+    exception-chain printer when the new exception reaches a CLI's
+    uncaught top level. Both attributes must hold for `from None` to be
+    doing that job."""
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__suppress_context__ is True
+
+
+class TestScanGapCounter:
+    """scope.py's opt-in scan-gap counter (_list_dir_recording_gaps,
+    _failed_transcript_read_is_gap, _iter_project_dir_sessions). Each level
+    of the traversal (root, project dir, session file) records one tag per
+    unreadable directory or transcript it skips. A missing path or a
+    non-directory/non-regular entry stays an empty scope, not a gap."""
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_root_records_root_level_gap_and_still_yields_readable_root(self, tmp_path):
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / "-repo-main"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="from-readable-root")])
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        os.chmod(root_b, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions(
+                [root_a, root_b], "*", False, scan_gaps=scan_gaps,
+            ))
+        finally:
+            os.chmod(root_b, 0o755)  # restore before tmp_path teardown
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-readable-root"}
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_ROOT: 1})
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_project_dir_records_project_dir_level_gap(self, tmp_path):
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        _write_jsonl(proj_open / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-open-project")])
+        proj_sealed = root / "-repo-sealed"
+        proj_sealed.mkdir(parents=True)
+        os.chmod(proj_sealed, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        finally:
+            os.chmod(proj_sealed, 0o755)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open-project"}
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+
+    def test_project_dir_symlink_loop_is_skipped_with_no_gap(self, tmp_path):
+        """A self-referencing symlink makes the stat fail with ELOOP (which
+        `_stat_mode_unless_absent` reads as absent), so `_dedup_new_project_dirs` skips it:
+        no gap is recorded and the healthy sibling is still read. Distinct
+        from the sealed-directory test above, where the OSError is
+        recorded as a gap."""
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        _write_jsonl(proj_open / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-open-project")])
+        loop_link = root / "-repo-loop"
+        loop_link.symlink_to(loop_link)
+        scan_gaps = Counter()
+        sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open-project"}
+        assert scan_gaps == Counter()
+
+    def test_project_dir_symlink_loop_without_scan_gaps_is_skipped_without_raising(self, tmp_path):
+        """Every non-pooled caller (_iter_scoped_sessions, and
+        _iter_glob_scoped_sessions when called without scan_gaps) passes
+        scan_gaps=None. A symlink-loop project dir reads as absent, so it is
+        skipped there too instead of raising."""
+        root = tmp_path / "acct-a"
+        root.mkdir(parents=True)
+        loop_link = root / "-repo-loop"
+        loop_link.symlink_to(loop_link)
+        assert list(_mod.scope._iter_glob_scoped_sessions([root], "*", False)) == []
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_project_dir_symlink_through_sealed_ancestor_records_project_dir_level_gap(self, tmp_path):
+        """A candidate that is itself a readable child of an already-readable
+        root can still fail its stat with PermissionError (an OSError
+        subclass) when it symlinks through a sealed intermediate directory
+        further down the target path. Distinct from
+        the symlink-loop test above, where the stat's ELOOP reads as absent and the
+        candidate is skipped without a gap."""
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        _write_jsonl(proj_open / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-open-project")])
+        sealed_ancestor = tmp_path / "sealed-ancestor"
+        target = sealed_ancestor / "target-dir"
+        target.mkdir(parents=True)
+        proj_through_sealed = root / "-repo-through-sealed"
+        proj_through_sealed.symlink_to(target)
+        os.chmod(sealed_ancestor, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        finally:
+            os.chmod(sealed_ancestor, 0o755)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open-project"}
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_project_dir_symlink_through_sealed_ancestor_without_scan_gaps_propagates_the_exception(self, tmp_path):
+        """A non-pooled caller passing no scan_gaps must see the stat's
+        PermissionError propagate uncaught, with the raw
+        proj_through_sealed path stripped from the message."""
+        root = tmp_path / "acct-a"
+        root.mkdir(parents=True)
+        sealed_ancestor = tmp_path / "sealed-ancestor"
+        target = sealed_ancestor / "target-dir"
+        target.mkdir(parents=True)
+        proj_through_sealed = root / "-repo-through-sealed"
+        proj_through_sealed.symlink_to(target)
+        os.chmod(sealed_ancestor, 0o000)
+        try:
+            with pytest.raises(PermissionError) as excinfo:
+                list(_mod.scope._iter_glob_scoped_sessions([root], "*", False))
+            assert str(proj_through_sealed) not in str(excinfo.value)
+            _assert_scan_error_chain_suppressed(excinfo)
+        finally:
+            os.chmod(sealed_ancestor, 0o755)
+
+    def test_iter_scoped_sessions_symlink_loop_is_skipped_without_raising(self, tmp_path):
+        """The slug-matched sibling of
+        test_project_dir_symlink_loop_without_scan_gaps_is_skipped_without_raising:
+        _iter_scoped_sessions selects project dirs by exact slug match rather
+        than glob, but shares _dedup_new_project_dirs, so a symlink-loop
+        project dir is skipped there too."""
+        root = tmp_path / "acct-a"
+        root.mkdir(parents=True)
+        loop_link = root / "-repo-loop"
+        loop_link.symlink_to(loop_link)
+        assert list(_mod.scope._iter_scoped_sessions(["-repo-loop"], False, roots=[root])) == []
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_iter_scoped_sessions_symlink_through_sealed_ancestor_without_scan_gaps_propagates_the_exception(
+        self, tmp_path,
+    ):
+        """The slug-matched sibling of
+        test_project_dir_symlink_through_sealed_ancestor_without_scan_gaps_propagates_
+        the_exception: _iter_scoped_sessions shares _dedup_new_project_dirs, so a
+        non-pooled caller passing no scan_gaps must see the stat's PermissionError
+        propagate uncaught here too, raw path stripped too."""
+        root = tmp_path / "acct-a"
+        root.mkdir(parents=True)
+        sealed_ancestor = tmp_path / "sealed-ancestor"
+        target = sealed_ancestor / "target-dir"
+        target.mkdir(parents=True)
+        proj_through_sealed = root / "-repo-through-sealed"
+        proj_through_sealed.symlink_to(target)
+        os.chmod(sealed_ancestor, 0o000)
+        try:
+            with pytest.raises(PermissionError) as excinfo:
+                list(_mod.scope._iter_scoped_sessions(["-repo-through-sealed"], False, roots=[root]))
+            assert str(proj_through_sealed) not in str(excinfo.value)
+            _assert_scan_error_chain_suppressed(excinfo)
+        finally:
+            os.chmod(sealed_ancestor, 0o755)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_transcript_records_session_file_gap_but_readable_empty_one_does_not(self, tmp_path):
+        root = tmp_path / "acct-a"
+        proj = root / "-repo-main"
+        proj.mkdir(parents=True)
+        sealed = proj / "sealed.jsonl"
+        _write_jsonl(sealed, [_asst("claude-sonnet-4-6", branch="from-sealed")])
+        os.chmod(sealed, 0o000)
+        (proj / "empty.jsonl").write_text("")
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        finally:
+            os.chmod(sealed, 0o644)
+
+        assert sessions == []  # neither the unreadable nor the readable-empty file yields
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_SESSION_FILE: 1})
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_project_dir_without_search_permission_records_session_file_gap(self, tmp_path):
+        """A directory with read but no search (x) permission lists its
+        entries, but stat and open on each entry fail with EACCES. That is
+        neither an absent entry nor a readable transcript, so it counts as
+        a session-file gap and propagates no exception."""
+        root = tmp_path / "acct-a"
+        proj = root / "-repo-main"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "held.jsonl", [_asst("claude-sonnet-4-6", branch="from-held")])
+        os.chmod(proj, 0o444)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        finally:
+            os.chmod(proj, 0o755)
+
+        assert sessions == []
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_SESSION_FILE: 1})
+
+    def test_nonexistent_root_records_no_gap(self, tmp_path):
+        missing_root = tmp_path / "never-created"
+        scan_gaps = Counter()
+        sessions = list(_mod.scope._iter_glob_scoped_sessions(
+            [missing_root], "*", False, scan_gaps=scan_gaps,
+        ))
+        assert sessions == []
+        assert scan_gaps == Counter()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_iter_scoped_sessions_unreadable_project_dir_records_project_dir_gap(self, tmp_path):
+        """The structural sibling of the project-dir test above: _iter_scoped_sessions
+        selects project dirs by exact slug match rather than glob, but shares
+        _iter_project_dir_sessions."""
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        _write_jsonl(proj_open / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-open-project")])
+        proj_sealed = root / "-repo-sealed"
+        proj_sealed.mkdir(parents=True)
+        os.chmod(proj_sealed, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_scoped_sessions(
+                ["-repo-open", "-repo-sealed"], False, roots=[root], scan_gaps=scan_gaps,
+            ))
+        finally:
+            os.chmod(proj_sealed, 0o755)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open-project"}
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+
+    def test_resolve_project_scope_single_root_glob_branch_raises_on_scan_gaps(self, tmp_path):
+        root = tmp_path / "acct-a" / "projects"
+        root.mkdir(parents=True)
+        args = argparse.Namespace(this_repo=False, projects="*")
+        with pytest.raises(ValueError):
+            _mod.scope._resolve_project_scope(args, "buckets", roots=[root], scan_gaps=Counter())
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_project_dir_without_scan_gaps_skips_it_silently(self, tmp_path):
+        """Same fixture as the project-dir gap test above, with scan_gaps
+        omitted -- a caller passing no counter skips the unreadable
+        directory silently, with no exception and the same sessions
+        yielded."""
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        _write_jsonl(proj_open / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-open-project")])
+        proj_sealed = root / "-repo-sealed"
+        proj_sealed.mkdir(parents=True)
+        os.chmod(proj_sealed, 0o000)
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False))
+        finally:
+            os.chmod(proj_sealed, 0o755)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open-project"}
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_gap_counter_keys_equal_the_three_level_constants(self, tmp_path):
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / "-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="from-a")])
+        proj_c = root_a / "-repo-c"
+        proj_c.mkdir(parents=True)
+        os.chmod(proj_c, 0o000)
+        sealed = proj_a / "sealed.jsonl"
+        _write_jsonl(sealed, [_asst("claude-sonnet-4-6", branch="from-sealed")])
+        os.chmod(sealed, 0o000)
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        os.chmod(root_b, 0o000)
+        scan_gaps = Counter()
+        try:
+            list(_mod.scope._iter_glob_scoped_sessions([root_a, root_b], "*", False, scan_gaps=scan_gaps))
+        finally:
+            os.chmod(proj_c, 0o755)
+            os.chmod(sealed, 0o644)
+            os.chmod(root_b, 0o755)
+
+        assert set(scan_gaps) == {
+            _mod.scope._SCAN_GAP_ROOT, _mod.scope._SCAN_GAP_PROJECT_DIR, _mod.scope._SCAN_GAP_SESSION_FILE,
+        }
+
+    def test_root_that_is_a_regular_file_records_no_gap(self, tmp_path):
+        """Catches a missing NotADirectoryError branch in
+        _list_dir_recording_gaps: a scan root that exists as a regular file
+        is an empty scope, not a gap."""
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / "-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="from-dir-root")])
+        root_b = tmp_path / "acct-b-not-a-dir"
+        root_b.write_text("not a directory")
+        scan_gaps = Counter()
+        sessions = list(_mod.scope._iter_glob_scoped_sessions(
+            [root_a, root_b], "*", False, scan_gaps=scan_gaps,
+        ))
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-dir-root"}
+        assert scan_gaps == Counter()
+
+    def test_stray_regular_file_directly_under_root_records_no_gap(self, tmp_path):
+        """Asserts _dedup_new_project_dirs' S_ISDIR skip filters a stray file
+        (e.g. .DS_Store) before any project-dir listing, independent of the
+        NotADirectoryError branch _list_dir_recording_gaps also has."""
+        root = tmp_path / "acct-a"
+        proj = root / "-repo-a"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-repo-a")])
+        (root / ".DS_Store").write_text("")
+        scan_gaps = Counter()
+        sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-repo-a"}
+        assert scan_gaps == Counter()
+
+    def test_directory_dangling_symlink_and_looped_symlink_named_jsonl_record_no_gap(self, tmp_path):
+        """Pins _failed_transcript_read_is_gap's classification in both
+        directions, paired with the unreadable-transcript test above: a
+        directory (stray.jsonl), a dangling symlink (dangling.jsonl), or a
+        looped symlink (loop.jsonl) is an empty scope, not a gap, since none
+        is a regular file whose read failed."""
+        root = tmp_path / "acct-a"
+        proj = root / "-repo-a"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "real.jsonl", [_asst("claude-sonnet-4-6", branch="from-real")])
+        (proj / "stray.jsonl").mkdir()
+        (proj / "dangling.jsonl").symlink_to(proj / "does-not-exist.jsonl")
+        (proj / "loop.jsonl").symlink_to(proj / "loop.jsonl")
+        scan_gaps = Counter()
+        sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-real"}
+        assert scan_gaps == Counter()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_multiple_gaps_at_every_level_accumulate_exactly(self, tmp_path):
+        """Two gaps at each of the three increment sites tell accumulation
+        (+=1) from assignment (=1) apart at every site at once. An
+        exact-equality counter check with only one gap per level would
+        pass under either bug."""
+        root_0 = tmp_path / "acct-sealed-root"
+        root_0.mkdir()
+        root_1 = tmp_path / "acct-open-root"
+        proj_sealed_a = root_1 / "proj-sealed-a"
+        proj_sealed_a.mkdir(parents=True)
+        proj_sealed_b = root_1 / "proj-sealed-b"
+        proj_sealed_b.mkdir(parents=True)
+        proj_open = root_1 / "proj-open"
+        proj_open.mkdir(parents=True)
+        sealed_a = proj_open / "sealed-a.jsonl"
+        _write_jsonl(sealed_a, [_asst("claude-sonnet-4-6", branch="from-sealed-a")])
+        sealed_b = proj_open / "sealed-b.jsonl"
+        _write_jsonl(sealed_b, [_asst("claude-sonnet-4-6", branch="from-sealed-b")])
+        _write_jsonl(proj_open / "open.jsonl", [_asst("claude-sonnet-4-6", branch="from-open")])
+
+        os.chmod(root_0, 0o000)
+        os.chmod(proj_sealed_a, 0o000)
+        os.chmod(proj_sealed_b, 0o000)
+        os.chmod(sealed_a, 0o000)
+        os.chmod(sealed_b, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions(
+                [root_0, root_1], "*", False, scan_gaps=scan_gaps,
+            ))
+        finally:
+            os.chmod(root_0, 0o755)
+            os.chmod(proj_sealed_a, 0o755)
+            os.chmod(proj_sealed_b, 0o755)
+            os.chmod(sealed_a, 0o644)
+            os.chmod(sealed_b, 0o644)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open"}
+        assert scan_gaps == Counter({
+            _mod.scope._SCAN_GAP_ROOT: 1,
+            _mod.scope._SCAN_GAP_PROJECT_DIR: 2,
+            _mod.scope._SCAN_GAP_SESSION_FILE: 2,
+        })
+
+    def test_project_dir_symlink_alias_across_roots_records_no_gap_and_yields_once(self, tmp_path):
+        """A project dir already visited under another root, reached here
+        via symlink, is a candidate _dedup_new_project_dirs drops. It is
+        skipped, not recorded as a gap."""
+        root_a = tmp_path / "acct-a"
+        proj = root_a / "-repo-shared"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-shared")])
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        (root_b / "-repo-shared-alias").symlink_to(proj, target_is_directory=True)
+        scan_gaps = Counter()
+        sessions = list(_mod.scope._iter_glob_scoped_sessions(
+            [root_a, root_b], "*", False, scan_gaps=scan_gaps,
+        ))
+        branches_seen = [rec["gitBranch"] for _jsonl, records in sessions for rec in records]
+        assert branches_seen == ["from-shared"]  # exactly once, not twice
+        assert scan_gaps == Counter()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_iter_scoped_sessions_records_two_root_level_gaps(self, tmp_path):
+        """The count of two distinguishes += 1 from = 1 at _iter_scoped_sessions'
+        own root-level except OSError -- the one increment site outside
+        _list_dir_recording_gaps and _iter_project_dir_sessions."""
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / "-repo-main"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="from-readable-root")])
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        os.chmod(root_b, 0o000)
+        root_c = tmp_path / "acct-c"
+        root_c.mkdir()
+        os.chmod(root_c, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_scoped_sessions(
+                ["-repo-main"], False, roots=[root_a, root_b, root_c], scan_gaps=scan_gaps,
+            ))
+        finally:
+            os.chmod(root_b, 0o755)
+            os.chmod(root_c, 0o755)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-readable-root"}
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_ROOT: 2})
+
+    @pytest.mark.parametrize("absent_errno", [errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP])
+    def test_stat_mode_unless_absent_returns_none_for_absent_entry_errnos(self, absent_errno):
+        """The errno partition is pinned with a stub, not chmod, so it holds
+        under root and on every interpreter."""
+        class _StatRaises:
+            def stat(self):
+                raise OSError(absent_errno, os.strerror(absent_errno))
+
+        assert _mod.scope._stat_mode_unless_absent(_StatRaises()) is None
+
+    @pytest.mark.parametrize("propagated_errno", [errno.EACCES, errno.EIO])
+    def test_stat_mode_unless_absent_reraises_every_other_errno(self, propagated_errno):
+        class _StatRaises:
+            def stat(self):
+                raise OSError(propagated_errno, os.strerror(propagated_errno))
+
+        with pytest.raises(OSError) as excinfo:
+            _mod.scope._stat_mode_unless_absent(_StatRaises())
+        assert excinfo.value.errno == propagated_errno
+
+    def test_stat_mode_unless_absent_returns_the_mode_of_an_existing_entry(self, tmp_path):
+        regular_file = tmp_path / "regular.jsonl"
+        regular_file.write_text("{}\n")
+        directory = tmp_path / "project-dir"
+        directory.mkdir()
+
+        regular_mode = _mod.scope._stat_mode_unless_absent(regular_file)
+        directory_mode = _mod.scope._stat_mode_unless_absent(directory)
+
+        assert stat.S_ISREG(regular_mode) and not stat.S_ISDIR(regular_mode)
+        assert stat.S_ISDIR(directory_mode) and not stat.S_ISREG(directory_mode)
+
+    @pytest.mark.parametrize("absent_errno", [errno.ENOENT, errno.ELOOP])
+    def test_dedup_skips_a_candidate_whose_stat_reports_it_absent_without_a_gap(self, absent_errno):
+        """The call-site arm is pinned with a stat stub, not chmod, so it holds under root."""
+        class _StatRaises:
+            def stat(self):
+                raise OSError(absent_errno, os.strerror(absent_errno))
+
+        scan_gaps = Counter()
+        yielded = list(_mod.scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
+        assert yielded == []
+        assert scan_gaps == Counter()
+
+    def test_dedup_records_a_project_dir_gap_when_stat_fails_with_eacces(self):
+        class _StatRaises:
+            def stat(self):
+                raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+
+        scan_gaps = Counter()
+        yielded = list(_mod.scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
+        assert yielded == []
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+
+    def test_dedup_without_scan_gaps_raises_eacces_with_the_path_stripped(self):
+        sensitive_path = "/private/acct-a/projects/-repo-sealed"
+
+        class _StatRaises:
+            def stat(self):
+                raise OSError(errno.EACCES, os.strerror(errno.EACCES), sensitive_path)
+
+        with pytest.raises(OSError) as excinfo:
+            list(_mod.scope._dedup_new_project_dirs([_StatRaises()], set()))
+        assert excinfo.value.errno == errno.EACCES
+        assert sensitive_path not in str(excinfo.value)
+        _assert_scan_error_chain_suppressed(excinfo)
+
+    @pytest.mark.parametrize("absent_errno", [errno.ENOENT, errno.ELOOP])
+    def test_failed_transcript_read_is_not_a_gap_when_stat_reports_it_absent(self, absent_errno):
+        class _StatRaises:
+            def stat(self):
+                raise OSError(absent_errno, os.strerror(absent_errno))
+
+        assert _mod.scope._failed_transcript_read_is_gap(_StatRaises()) is False
+
+    def test_failed_transcript_read_is_a_gap_when_stat_fails_with_eacces(self):
+        class _StatRaises:
+            def stat(self):
+                raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+
+        assert _mod.scope._failed_transcript_read_is_gap(_StatRaises()) is True
+
+    def test_failed_transcript_read_is_a_gap_when_stat_reports_a_regular_file(self):
+        """The regular-file arm, pinned with a stat stub so it holds under root."""
+        class _StatsAsRegularFile:
+            def stat(self):
+                return os.stat_result((stat.S_IFREG | 0o644,) + (0,) * 9)
+
+        assert _mod.scope._failed_transcript_read_is_gap(_StatsAsRegularFile()) is True
+
+    def test_failed_transcript_read_is_not_a_gap_when_stat_reports_a_directory(self):
+        class _StatsAsDirectory:
+            def stat(self):
+                return os.stat_result((stat.S_IFDIR | 0o755,) + (0,) * 9)
+
+        assert _mod.scope._failed_transcript_read_is_gap(_StatsAsDirectory()) is False
+
+
+class TestGlobScopedSessionsSelection:
+    """_iter_glob_scoped_sessions' own fnmatch selection of project directories
+    and *.jsonl transcripts. The class covers the multi-root selection
+    engine only; single-root scope uses corpus.iter_sessions (Path.glob),
+    which is the reference engine."""
+
+    @pytest.mark.parametrize("projects_glob", ["*", "feat-?", "feat-*", "[ab]*", "zeta", ".hidden*"])
+    def test_multi_root_selection_equals_union_of_per_root_path_glob_selection(self, tmp_path, projects_glob):
+        project_names_by_root = {
+            "acct-a": ["alpha", "feat-a", "feat-bb"],
+            "acct-b": ["beta", "feat-c", "zeta", ".hidden-x"],
+        }
+        roots = []
+        for root_name, project_names in project_names_by_root.items():
+            root = tmp_path / root_name
+            for project_name in project_names:
+                project_dir = root / project_name
+                project_dir.mkdir(parents=True)
+                _write_jsonl(project_dir / "sess.jsonl", [_asst("claude-sonnet-4-6", branch=project_name)])
+            roots.append(root)
+        stray_records = [_asst("claude-sonnet-4-6", branch="not-a-transcript")]
+        backup_copy = roots[0] / "feat-a" / "sess.jsonl.bak"
+        non_transcript = roots[0] / "feat-a" / "notes.txt"
+        _write_jsonl(backup_copy, stray_records)
+        _write_jsonl(non_transcript, stray_records)
+
+        yielded_paths = {
+            jsonl for jsonl, _records in _mod.scope._iter_glob_scoped_sessions(roots, projects_glob, False)
+        }
+        every_project_paths = {
+            jsonl for jsonl, _records in _mod.scope._iter_glob_scoped_sessions(roots, "*", False)
+        }
+
+        expected_paths = {
+            jsonl for root in roots for jsonl, _records in _mod.corpus.iter_sessions(root, projects_glob)
+        }
+        assert expected_paths
+        assert yielded_paths == expected_paths
+        if projects_glob != "*":
+            assert yielded_paths < every_project_paths
+        assert backup_copy not in every_project_paths
+        assert non_transcript not in every_project_paths
+
+
+class TestProjectsGlobStepsToParent:
+    @pytest.mark.parametrize("projects_glob", ["..", "../x", "x/..", "a/../.."])
+    def test_dotdot_path_component_steps_to_parent(self, projects_glob):
+        assert _mod.corpus._projects_glob_steps_to_parent(projects_glob) is True
+
+    @pytest.mark.parametrize("projects_glob", ["a..b", "..*", "...", ".hidden*", "*"])
+    def test_dotdot_inside_a_component_does_not_step_to_parent(self, projects_glob):
+        assert _mod.corpus._projects_glob_steps_to_parent(projects_glob) is False
+
+
+class TestSingleLevelProjectsGlob:
+    """_single_level_projects_glob: the runtime validator that rejects a
+    --projects value Path.glob would read as more than one directory-name
+    match, or a different shape entirely, than the root-level fnmatch
+    matching in _iter_glob_scoped_sessions selects for. Called only from a
+    multi-root branch (_resolve_project_scope's own, and cmd_skill_invocation's
+    inline equivalent) -- never wired as an argparse type=, since whether the
+    restriction applies depends on how many roots this invocation resolves at
+    runtime, not on the flag's syntax alone. A single-root invocation reads
+    corpus.iter_sessions, whose own Path.glob supports a nested-directory
+    pattern and must keep accepting one unchanged."""
+
+    @pytest.mark.parametrize("value", ["*", "-home-user-repo*", "feat-?", "[ab]*", ""])
+    def test_accepts_single_level_glob_values_unchanged(self, value):
+        assert _mod.scope._single_level_projects_glob(value) == value
+
+    @pytest.mark.parametrize("value", ["a/b", "a/", "/a", "**", "a**", ".", ".."])
+    def test_rejects_values_path_glob_would_read_differently(self, value):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _mod.scope._single_level_projects_glob(value)
+
+    @pytest.mark.parametrize(
+        "cli_args",
+        [["buckets", "--projects", "a/b"], ["skill-invocation", "--projects", "a/b"]],
+        ids=["buckets", "skill-invocation"],
+    )
+    def test_cli_accepts_a_multi_segment_projects_value_at_parse_time(self, cli_args):
+        """No subcommand's --projects carries an argparse type=, so
+        parsing alone never rejects a nested-directory value -- rejection, when
+        it applies, happens later, only under multi-root scope."""
+        parser = _mod.build_parser()
+        args = parser.parse_args(cli_args)
+        assert args.projects == "a/b"
+
+    def test_every_projects_registration_across_every_subcommand_has_no_argparse_type(self):
+        """Walks every subparser build_parser() registers: --projects's
+        one-level restriction must stay runtime-validated, since whether it
+        applies depends on how many roots this invocation resolves, not on
+        the flag's syntax alone."""
+        parser = _mod.build_parser()
+        subparsers_action = next(
+            action for action in parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        typed = [
+            subcommand
+            for subcommand, subparser in subparsers_action.choices.items()
+            for action in subparser._actions
+            if action.dest == "projects" and action.type is not None
+        ]
+        assert typed == []
+
+    def test_multi_root_scope_rejects_a_multi_segment_projects_value_at_runtime(self, tmp_path):
+        """The one-level `--projects` restriction applies in
+        `_resolve_project_scope`'s multi-root branch: a nested-directory value
+        under two roots exits 2."""
+        root_a = tmp_path / "acct-a"
+        root_a.mkdir()
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        args = argparse.Namespace(this_repo=False, projects="a/b")
+        with pytest.raises(SystemExit) as exc:
+            _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+        assert exc.value.code == 2
+
+    def test_single_root_scope_accepts_a_multi_segment_projects_value_at_runtime(self, tmp_path):
+        """The single-root branch reads corpus.iter_sessions, whose own
+        Path.glob supports a nested-directory pattern, so this branch accepts
+        a multi-segment `--projects` value."""
+        root = tmp_path / "acct-a"
+        nested = root / "sub" / "-repo-main"
+        nested.mkdir(parents=True)
+        _write_jsonl(nested / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-nested")])
+        args = argparse.Namespace(this_repo=False, projects="sub/-repo-main")
+        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
+        assert branches_seen == {"from-nested"}
+
+    def test_single_root_scope_rejects_a_parent_traversing_projects_value(self, tmp_path):
+        """A '..' component in --projects is a real parent-directory step for
+        Path.glob, not a no-op: iter_sessions must yield nothing for it
+        instead of yielding a sibling account's own session file."""
+        root = tmp_path / "acct-a"
+        root.mkdir()
+        sibling = tmp_path / "acct-b"
+        sibling.mkdir()
+        _write_jsonl(sibling / "secret.jsonl", [_asst("claude-sonnet-4-6", branch="from-sibling")])
+        args = argparse.Namespace(this_repo=False, projects="../acct-b")
+        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        assert list(session_iter) == []
+
+    def test_single_root_scope_reads_a_project_dir_symlinked_outside_the_root(self, tmp_path):
+        """Only a '..' in the raw glob is rejected. With a single scan root,
+        a project directory symlinked to a readable location outside the
+        root stays in scope with the default glob. Under more than one root
+        the same input has no owning root, so consumers that attribute each
+        session to a root abort."""
+        root = tmp_path / "acct-a"
+        root.mkdir()
+        outside = tmp_path / "elsewhere" / "-repo-relocated"
+        outside.mkdir(parents=True)
+        _write_jsonl(outside / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-relocated")])
+        (root / "-repo-relocated").symlink_to(outside)
+        args = argparse.Namespace(this_repo=False, projects="*")
+        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
+        assert branches_seen == {"from-relocated"}
+
+    def test_single_root_scope_skips_a_symlink_loop_transcript_without_raising(self, tmp_path):
+        """A looped .jsonl symlink fails open() with OSError, which the
+        record parser treats as an unreadable file, so the healthy sibling
+        transcript is still read and nothing raises."""
+        root = tmp_path / "acct-a"
+        proj = root / "-repo-main"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-healthy")])
+        loop_link = proj / "loop.jsonl"
+        loop_link.symlink_to(loop_link)
+        args = argparse.Namespace(this_repo=False, projects="*")
+        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
+        assert branches_seen == {"from-healthy"}
+
+    def test_cost_scan_diagnostic_rejects_a_parent_traversing_projects_value(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """cost's own per-root scan diagnostic (scope._scan_root_transcripts)
+        is reached with the raw, unvalidated --projects value, a separate
+        path from _resolve_project_scope's already-guarded iter_sessions
+        call above: a '..' value must not count a sibling account's own
+        transcripts there either."""
+        default_config = tmp_path / "default-account"
+        default_proj = default_config / "projects" / "-home-user-repo-a"
+        default_proj.mkdir(parents=True)
+        _write_jsonl(default_proj / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_config)
+
+        sibling_proj = tmp_path / "secret-account" / "projects" / "-home-secret-repo"
+        sibling_proj.mkdir(parents=True)
+        _write_jsonl(sibling_proj / "secret.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+
+        _mod.cmd_cost(_cost_args(projects="../../secret-account/projects/-home-secret-repo"))
+        out = capsys.readouterr().out
+        assert "cost: account-1: scanned 0 transcripts, 0 skipped (unreadable)" in out
+        assert "WARNING: cost: account-1: no transcripts found for this scope" in out
+
+    def test_skill_invocation_multi_root_rejects_a_multi_segment_projects_value_at_runtime(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """cmd_skill_invocation inlines the same len(roots) > 1 /
+        _iter_glob_scoped_sessions branch _resolve_project_scope's own
+        multi-root branch does, so it needs the identical runtime check."""
+        root_a = tmp_path / "acct-a"
+        root_a.mkdir()
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        args = argparse.Namespace(projects="a/b", branches=None, include_subagents=False, config_dir=None)
+        monkeypatch.setattr(_mod, "_resolve_scan_roots", lambda _args: [root_a, root_b])
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_skill_invocation(args)
+        assert exc.value.code == 2
+        assert "--projects" in capsys.readouterr().err
 
 
 class TestPoisonedProjectsDirGlobal:
