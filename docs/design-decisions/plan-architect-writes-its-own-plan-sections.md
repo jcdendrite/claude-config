@@ -16,7 +16,7 @@ A whole-file `Write` reproduces the plan's Context, `Ask:` line included, so a s
 
 ## Why a dedicated gate
 
-An arm inside `deny-reviewer-tree-mutation.sh` would save one hook process per call, but it would put a second invariant into a gate named for review-only agents. Agent-frontmatter `hooks:` do not fire for dispatched subagents, a path specifier in `tools:` is not documented for subagents, and a `permissions.deny` `Edit(...)` rule cannot key on agent identity. A new gate in the `Edit|Write|MultiEdit` group, keyed on `.agent_type`, is the lightest mechanism that confines one agent.
+An arm inside `deny-reviewer-tree-mutation.sh` would save one hook process per call, but it would put a second invariant into a gate named for review-only agents. An arm in any already-linked, already-registered hook would also close the two windows listed under Accepted residuals. Agent-frontmatter `hooks:` do not fire for dispatched subagents, a path specifier in `tools:` is not documented for subagents, and a `permissions.deny` `Edit(...)` rule cannot key on agent identity. A new gate in the `Edit|Write|MultiEdit` group, keyed on `.agent_type`, is the lightest mechanism that confines one agent.
 
 ## Why one agent
 
@@ -24,7 +24,7 @@ Three of the four prescribed consult call sites pass a plan path, and so does an
 
 ## Tier
 
-The gate is `cooperative, untrusted-input, irreversible`. `untrusted-input` is there because the agent reads files the session did not author, `agent-reviews/` findings among them, and because the forged-anchor record in [plan-review-gate-disarms-on-empty-active-plan-set.md](plan-review-gate-disarms-on-empty-active-plan-set.md) cites this gate against hand-written `MERGE_HEAD` and `refs/remotes/...` targets, a route no cooperative agent takes. `irreversible` is there because a bypass edits the dispatching session's uncommitted tree.
+The tier and the grounds for each component are in the gate's header and its row in `docs/hooks.md` § "Per-hook classification".
 
 ## Roster enrollment
 
@@ -46,13 +46,8 @@ Every plan now ends with the same four headings, in order: `## Approach`, `## Cr
   - A consult the engineer asks for mid-planning raises no signal, because the plan is already active and the plan-review gate does not re-arm.
   - The Context hash covers only plan-sections dispatches.
 - **A plan path on prompt line 1 classifies as a consult.** A session that puts the plan path there instead of on line 2 makes the dispatch classify as a consult, which writes the per-branch consult latch.
-- **Two windows in which the gate does not run**, both listed in its header.
-  - One is an install whose hooks directory is a real directory of per-file links, where a pull leaves the gate file unlinked while `settings.json` names it.
-  - The other is a session whose hook registrations predate the gate, which is unverified.
-  - In both windows `plan-architect` holds an `Edit` confined only by its charter, over the whole tree, forged-anchor targets (`MERGE_HEAD`, `refs/remotes/...`) included.
-  - Marker and ledger paths stay guarded through the roster derivation, and `ask-review-permissions.sh` still asks on `settings*.json`.
-  - The repo expects a hook error on each call in the unlinked case but has not verified it, so the grant may run ungated with no visible error.
-- **A plan-mode dispatch is denied twice.** Its `Edit` to plan mode's default plan path, which sits outside the repository, is denied on the `Edit` and on its one retry before the agent returns its sections. These denies count under `plan-writer-scope`.
+- **Two windows in which the gate does not run.** The gate's header lists both under Known gaps, with what a plan-writer's `Edit` can reach in them. The repo expects a hook error on each call where the gate file is not linked but has not verified it, so the grant may run ungated with no visible error.
+- **A plan-mode dispatch falls back to returned sections.** Plan mode's default plan path sits outside the repository's `.claude/plans/`, so the charter has the agent return its sections instead of editing. The gate denies any `Edit` it attempts there, and such a deny counts under `plan-writer-scope`.
 - **One more hook process per `Edit`/`Write`/`MultiEdit` call in every session.** For any caller other than a plan-writer the hook bootstraps and exits early. It runs in parallel with the group's other hooks, so it adds CPU time rather than wall-clock time. `.claude/plans/hook-bootstrap-cost.md` records the measurement this rests on.
 - **The live `.agent_type` wiring rests on vendor documentation** (`agent-review/REFERENCES.md`) and on the sibling gate's production use.
 - **The gate's known gaps are accepted as its header lists them.** Inside the allowed set, an untracked plan file has no git recovery, so the gate does not protect the uncommitted tree in general.
@@ -62,7 +57,7 @@ Every plan now ends with the same four headings, in order: `## Approach`, `## Cr
 - A gate deny on a repository plan file that `/plan-it` relays.
 - A plan-review deny right after a `MODE=consult` dispatch in `/code-review` or `/ready-for-review`.
 - A Context-hash stop.
-- A post-pull `test -e` on the installed gate file that reports it missing on the author's machine. The probe observes no other install.
+- The gate file found missing from `~/.claude/hooks/` on any install whose `settings.json` registers it.
 
 ## Sources
 

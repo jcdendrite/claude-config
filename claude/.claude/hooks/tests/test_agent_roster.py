@@ -955,7 +955,11 @@ def _plan_writer_agents() -> list[str]:
 
 
 def _declared_tool_names(path) -> set[str]:
-    """Tool names an agent file's frontmatter grants; empty when `tools` is absent."""
+    """Tool names an agent file's frontmatter grants.
+
+    Returns `{""}` when `tools` is absent. An agent without a `tools:` line inherits
+    every tool, and the empty name matches no permitted-tool set, so the registry
+    test fails closed."""
     declared = parse_frontmatter(path).get("tools") or ""
     if isinstance(declared, str):
         return {t.strip() for t in declared.split(",")}

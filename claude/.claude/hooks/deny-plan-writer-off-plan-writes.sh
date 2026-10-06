@@ -38,6 +38,14 @@
 #     directory.
 #   - A session that loaded its hook registrations before this hook was
 #     added may not run it.
+#   - Wherever this hook does not run, a plan-writer's Edit can write any path
+#     the other Edit|Write|MultiEdit hooks allow, including code that later
+#     runs, such as the hook scripts under ~/.claude/hooks/.
+#   - This hook approves the physically resolved path, while the Edit tool may
+#     normalize `..` lexically.
+#     A symlinked directory followed by `..` can therefore diverge.
+#     Reach is limited to existing plan-file basenames, and the agent cannot
+#     create the symlink.
 #   - Writes by the main session, and by agents outside the plan-writer
 #     registry, are out of scope.
 #

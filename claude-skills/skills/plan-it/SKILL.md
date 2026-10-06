@@ -74,6 +74,7 @@ Re-dispatch, rather than repairing inline, on any of these:
 - A return carrying some but not all four headings.
 - A file that fails the Check, a plan without the four headings excepted.
 - A context-limit failure or tool error mid-dispatch, only when the Check then fails.
+- On a revision dispatch, a harness-level failure (an error return, no completion), whatever the Check reports, because a revision that died partway can pass it.
 
 A near-empty return is the success shape, so never judge it truncated. A re-dispatch is always safe: `plan-architect` reads the plan file as it now stands, so a partial write is revised, not lost.
 

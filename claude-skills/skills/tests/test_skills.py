@@ -5782,6 +5782,7 @@ _PLAN_IT_STEP5_CONTEXT_CHECK_AND_GRAMMAR_LITERALS = (
     "the two digests differ",
     "on every return",
     "(pending: plan-architect)",
+    "absolute path as the prompt's second line",
 )
 
 _PLAN_HEADINGS_IN_ORDER = (
@@ -5793,6 +5794,16 @@ _PLAN_HEADINGS_IN_ORDER = (
 
 _PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE = (
     "never call `Edit`, even when the prompt names a plan file"
+)
+
+_PLAN_ARCHITECT_PLAN_SECTIONS_HEADING = "## MODE=plan-sections"
+_PLAN_ARCHITECT_CONSULT_HEADING = "## MODE=consult"
+
+_PLAN_ARCHITECT_LANDED_EDITS_RETURN_SENTENCE = (
+    "When your edits land, your return carries no `## ` heading lines"
+)
+_PLAN_ARCHITECT_PLAN_PATH_ON_LINE_2_SENTENCE = (
+    "Line 2 of the prompt is the plan file's absolute path."
 )
 
 _PLAN_IT_STEP5_HEADING = "## Step 5 — Architecture design"
@@ -5818,9 +5829,11 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
     which are LLM-consumed prose, plus an execution test of Step 5's hash command.
 
     The literal pin covers Step 5's Context-change check and the plan-grammar
-    literals Step 5 is the single home of. The consult pin covers the consult
-    charter's never-call-`Edit` sentence. A future edit that drops one fails
-    here instead of silently loosening the check or the consult boundary.
+    literals Step 5 is the single home of. The charter pins cover the consult
+    charter's never-call-`Edit` sentence and the plan-sections charter's
+    landed-edits return sentence and line-2 plan-path sentence. A future edit
+    that drops one fails here instead of silently loosening the check, the
+    consult boundary, or the splice contract.
     """
 
     @staticmethod
@@ -5848,18 +5861,21 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
         return _PLAN_TITLE_AND_CONTEXT_TEXT + cls._step5_scaffold_text()
 
     @classmethod
-    def _run_hash_command(cls, plan_path: Path) -> str:
+    def _run_hash_command_result(cls, plan_path: Path) -> subprocess.CompletedProcess:
         command = cls._step5_context_hash_command()
         # The skill quotes the path as "<plan path>"; bind it through the environment.
         runnable_command = command.replace('"<plan path>"', '"$PLAN_PATH"')
-        result = subprocess.run(
+        return subprocess.run(
             ["bash", "-c", runnable_command],
             env={**os.environ, "PLAN_PATH": str(plan_path)},
             capture_output=True,
             text=True,
             check=False,
         )
-        return result.stdout.strip()
+
+    @classmethod
+    def _run_hash_command(cls, plan_path: Path) -> str:
+        return cls._run_hash_command_result(plan_path).stdout.strip()
 
     def test_step5_literals_match_live_text(self) -> None:
         step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
@@ -5884,9 +5900,32 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
         )
 
     def test_consult_charter_never_calls_edit_sentence_matches_live_text(self) -> None:
-        assert _PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE in _agent_body("plan-architect"), (
+        consult_section = _heading_section_text(
+            _AGENTS_DIR / "plan-architect.md", _PLAN_ARCHITECT_CONSULT_HEADING
+        )
+        assert _PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE in consult_section, (
             "plan-architect.md's MODE=consult charter no longer carries its "
             "never-call-Edit sentence."
+        )
+
+    def test_plan_sections_charter_return_carries_no_headings_when_edits_land(self) -> None:
+        plan_sections_section = _heading_section_text(
+            _AGENTS_DIR / "plan-architect.md", _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING
+        )
+        assert _PLAN_ARCHITECT_LANDED_EDITS_RETURN_SENTENCE in plan_sections_section, (
+            "plan-architect.md's MODE=plan-sections charter no longer says the return "
+            "carries no `## ` heading lines once edits land, which Step 5's splice "
+            "relies on to avoid overwriting landed edits."
+        )
+
+    def test_plan_sections_charter_names_line_2_as_the_plan_path(self) -> None:
+        plan_sections_section = _heading_section_text(
+            _AGENTS_DIR / "plan-architect.md", _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING
+        )
+        assert _PLAN_ARCHITECT_PLAN_PATH_ON_LINE_2_SENTENCE in plan_sections_section, (
+            "plan-architect.md's MODE=plan-sections charter no longer names prompt "
+            "line 2 as the plan file's path, the contract plan-it/SKILL.md Step 5 "
+            "dispatches against."
         )
 
     def test_hash_command_ignores_an_edit_to_the_approach_region(self, tmp_path: Path) -> None:
@@ -5916,8 +5955,12 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
     def test_hash_command_yields_the_empty_input_digest_for_a_missing_path(
         self, tmp_path: Path
     ) -> None:
-        digest = self._run_hash_command(tmp_path / "missing-plan.md")
-        assert digest.startswith(_EMPTY_INPUT_SHA256_PREFIX)
+        result = self._run_hash_command_result(tmp_path / "missing-plan.md")
+        assert result.stdout.strip().startswith(_EMPTY_INPUT_SHA256_PREFIX)
+        # Step 5's stop rule treats any extra output as a stop, so sed's complaint
+        # must reach stderr while the pipeline still exits 0 on sha256sum's status.
+        assert result.returncode == 0
+        assert result.stderr.strip()
 
 
 _READY_FOR_REVIEW_STEP1_HEADING = "## 1. Preconditions (halt on fail)"

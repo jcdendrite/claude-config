@@ -115,8 +115,11 @@ def linked_worktree_with_plan(tmp_path_factory):
     nested_subdir_plan = _write_plan(plans_dir / "sub", "x.md")
     non_plan_suffix_file = plans_dir / "notes.rst"
     non_plan_suffix_file.write_text("notes\n")
+    # Same basename in .claude/ and in plans/, so a normalizer that drops `..` reads
+    # `plans/../outside.md` as the plan and one that keeps it reads the non-plan.
     lexically_inside_plans_file = worktree / ".claude" / "outside.md"
     lexically_inside_plans_file.write_text("outside\n")
+    plan_sharing_outside_basename = _write_plan(plans_dir, "outside.md")
     text_suffix_plan = _write_plan(plans_dir, "t.txt")
     directory_named_like_a_plan = plans_dir / "directory-plan.md"
     directory_named_like_a_plan.mkdir()
@@ -133,11 +136,20 @@ def linked_worktree_with_plan(tmp_path_factory):
 
     (plans_dir / "link.md").symlink_to(source_file)
 
+    # A directory symlink under plans/ whose physical parent holds a file named like
+    # a plan, so lexical `..` handling and physical handling land on different files.
     escape_target_dir = root / "escape-target"
     escape_target_dir.mkdir()
-    escaped_file = escape_target_dir / "escaped.md"
-    escaped_file.write_text("escaped\n")
     (plans_dir / "escape-dir").symlink_to(escape_target_dir, target_is_directory=True)
+    physical_parent_file = root / "p.md"
+    physical_parent_file.write_text("physical parent\n")
+
+    # A symlink outside plans/ pointing at a directory inside it: the lexical reading of
+    # `<link>/../p.md` is `.claude/p.md`, the physical reading is the plan `plans/p.md`.
+    plans_subdir_link = worktree / ".claude" / "plans-subdir-link"
+    plans_subdir_link.symlink_to(plans_dir / "sub", target_is_directory=True)
+    lexical_parent_file = worktree / ".claude" / "p.md"
+    lexical_parent_file.write_text("lexical parent\n")
 
     common_git_dir = Path(_git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"))
     loose_ref = common_git_dir / "refs" / "remotes" / "origin" / "main"
@@ -150,7 +162,8 @@ def linked_worktree_with_plan(tmp_path_factory):
 
     for path in (
         plan, source_file, loose_ref, main_repo_plan, nested_plan, nested_subdir_plan,
-        non_plan_suffix_file, lexically_inside_plans_file, subdirectory_plan, escaped_file,
+        non_plan_suffix_file, lexically_inside_plans_file, subdirectory_plan,
+        plan_sharing_outside_basename, physical_parent_file, lexical_parent_file,
         foreign_plan, text_suffix_plan,
     ):
         assert path.is_file(), f"fixture did not create {path}"
@@ -168,7 +181,7 @@ def linked_worktree_with_plan(tmp_path_factory):
         "lexically_inside_plans_file": lexically_inside_plans_file,
         "source_file": source_file,
         "subdirectory_plan": subdirectory_plan,
-        "escaped_file": escaped_file,
+        "plans_subdir_link": plans_subdir_link,
         "loose_ref": loose_ref,
         "foreign_repo": foreign_repo,
         "foreign_plan": foreign_plan,
@@ -240,6 +253,29 @@ class TestPlanWriterEditAllowed:
         fixture = linked_worktree_with_plan
         spelled_path = str(fixture["worktree"] / ".claude" / "plans" / ".." / "plans" / "p.md")
         assert ".." in spelled_path
+        payload = edit_input(spelled_path, agent_type=PLAN_WRITER, cwd=str(fixture["worktree"]))
+        _assert_silent_exit_zero(_run_gate(payload))
+
+    def test_edit_on_nested_worktree_own_plan_allowed(self, linked_worktree_with_plan):
+        """The layout this repository mandates: a worktree nested under the main
+        tree's .claude/worktrees/, with cwd at its root."""
+        fixture = linked_worktree_with_plan
+        payload = edit_input(
+            str(fixture["nested_plan"]),
+            agent_type=PLAN_WRITER,
+            cwd=str(fixture["nested_worktree"]),
+        )
+        _assert_silent_exit_zero(_run_gate(payload))
+
+    def test_symlinked_directory_followed_by_dotdot_allowed_on_physical_path_known_gap(
+        self, linked_worktree_with_plan
+    ):
+        """Pins the header's known gap: the gate approves the physical path, while the
+        Edit tool may normalize `..` lexically to .claude/p.md, which is not a plan."""
+        fixture = linked_worktree_with_plan
+        spelled_path = str(fixture["plans_subdir_link"] / ".." / "p.md")
+        assert fixture["plans_subdir_link"].is_symlink()
+        assert (fixture["worktree"] / ".claude" / "p.md").is_file()
         payload = edit_input(spelled_path, agent_type=PLAN_WRITER, cwd=str(fixture["worktree"]))
         _assert_silent_exit_zero(_run_gate(payload))
 
@@ -331,10 +367,12 @@ class TestPlanWriterDenied:
         _assert_denied(_run_gate(payload))
 
     def test_dotdot_spelling_that_normalizes_out_of_plans_denied(self, linked_worktree_with_plan):
-        """The path reads as .claude/plans/<name>.md lexically but resolves to .claude/<name>.md."""
+        """`plans/../outside.md` resolves to .claude/outside.md. A plan named outside.md
+        also sits in plans/, so a gate that ignored the `..` would allow it."""
         fixture = linked_worktree_with_plan
         spelled_path = str(fixture["worktree"] / ".claude" / "plans" / ".." / "outside.md")
         assert fixture["lexically_inside_plans_file"].is_file()
+        assert (fixture["worktree"] / ".claude" / "plans" / "outside.md").is_file()
         payload = edit_input(spelled_path, agent_type=PLAN_WRITER, cwd=str(fixture["worktree"]))
         _assert_denied(_run_gate(payload))
 
@@ -356,14 +394,16 @@ class TestPlanWriterDenied:
         )
         _assert_denied(_run_gate(payload))
 
-    def test_edit_through_symlinked_plans_subdirectory_denied(self, linked_worktree_with_plan):
-        """A directory symlink under .claude/plans/ resolves to a directory outside it."""
+    def test_symlinked_plans_subdirectory_followed_by_dotdot_resolves_physically_denied(
+        self, linked_worktree_with_plan
+    ):
+        """`plans/escape-dir/../p.md` resolves to the file beside the link's target,
+        outside the repository. A plan named p.md sits in plans/, so a gate that
+        normalized `..` lexically before resolving symlinks would allow it."""
         fixture = linked_worktree_with_plan
-        escaped_path = fixture["worktree"] / ".claude" / "plans" / "escape-dir" / "escaped.md"
-        assert escaped_path.is_file()
-        payload = edit_input(
-            str(escaped_path), agent_type=PLAN_WRITER, cwd=str(fixture["worktree"])
-        )
+        spelled_path = str(fixture["worktree"] / ".claude" / "plans" / "escape-dir" / ".." / "p.md")
+        assert fixture["plan"].is_file()
+        payload = edit_input(spelled_path, agent_type=PLAN_WRITER, cwd=str(fixture["worktree"]))
         _assert_denied(_run_gate(payload))
 
     def test_edit_to_plan_in_main_repo_from_linked_worktree_cwd_denied(
