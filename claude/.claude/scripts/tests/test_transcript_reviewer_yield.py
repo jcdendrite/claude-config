@@ -1812,6 +1812,30 @@ class TestScanReviewerTranscripts:
         scan = _mod.reviewer_yield._scan_reviewer_transcript(transcript_path)
         assert scan == _mod.reviewer_yield._ReviewerTranscriptScan("", [], [], "", False, frozenset())
 
+    def test_record_with_a_truncated_multibyte_character_inside_its_text_is_dropped_whole(self, tmp_path):
+        """A final record whose JSON string holds a truncated multibyte
+        character is dropped rather than kept with U+FFFD, so a lossy local
+        decode (errors="replace") fails this test."""
+        truncated_text_sentinel = "TRUNCATED_MULTIBYTE_SENTINEL"
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        intact_record = _asst(
+            "claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "text before the corrupted record"}],
+        )
+        corrupted_record = _asst(
+            "claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": truncated_text_sentinel}],
+        )
+        transcript_path.write_bytes(
+            json.dumps(intact_record).encode("utf-8")
+            + b"\n"
+            + json.dumps(corrupted_record).encode("utf-8").replace(
+                truncated_text_sentinel.encode("utf-8"), b"caf\xc3",
+            )
+            + b"\n"
+        )
+        scan = _mod.reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.read_error is False
+        assert scan.last_assistant_text == "text before the corrupted record"
+
 
 class TestIndexSessionEdits:
     """_index_session_edits(records, since_ts, *, reviewer_write_tool_use_ids)
