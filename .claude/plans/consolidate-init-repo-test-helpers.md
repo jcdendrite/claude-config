@@ -85,9 +85,8 @@ Add one builder pair to `claude/.claude/tests/helpers.py`: `init_git_repo` (no c
    The `test_author_outcome.py` SETTLED test (`:1022`) reads `file.txt:1` through its `--source` and `--cited-line` args, so it keeps `file_name="file.txt", content="first\n"`. [verified: read of the test's args]
 6. No hook, script or test code reads the configured identity, so setting every site to `t@t.com`/`t` changes no behavior. [verified: grep of `claude/.claude` and `plugins` found no `user.email`, `user.name`, `%ae`, `%an`, `%ce`, `%cn`, `Author:` or `git var` read in hook, script or test code. The one `%an` hit is skill prose in `plugins/lovable-cloud/skills/lovable-cloud-migration-sync/SKILL.md`, not hook, script or test code.] The `GIT_AUTHOR_*` env lines at `test_lib.py:2458`/`:2562` and `test_marker_script.py:173` are inline sites outside scope.
 7. `test_marker_lib.py:143` and `test_marker_worktree_keying.py:41` make no commit.
-   - These zero-commit tests are inline and untouched (`test_lib.py:2640-2646`, `test_lib_reviewer_round_state.py:198-201`, `test_marker_script.py:3153/:4044/:4325/:4546`). [verified for the `test_lib.py` and `test_lib_reviewer_round_state.py` sites; the `test_marker_script.py` sites are covered by the "not re-read" bullet below]
+   - These zero-commit tests are inline and untouched (`test_lib.py::test_head_tree_hash_absent_on_commit_less_repo`, `test_lib_reviewer_round_state.py::test_empty_when_no_commits_yet`). [verified: read of both tests]
    - `test_marker_lib.py`'s and `test_marker_worktree_keying.py`'s `_init_repo`, `scripts/tests/conftest.py`'s `_init_repo` and the review-ledger `repo` fixture make no commit. `test_findings_path_suffix.py::TestUnbornHead` asserts on that unborn HEAD through `_init_repo`.
-   - The `test_marker_script.py` lines come from the inventory and are untouched either way. [not re-read]
 8. Only one migrated helper is imported by name from other files: `scripts/tests/conftest.py`'s `_init_repo`. Seven files import it: `test_autonomous_shipping_active`, `test_branch_divergence_status`, `test_cleanup_idle_open_pr_worktrees`, `test_cleanup_merged_branches`, `test_findings_path_suffix`, `test_pr_diff_against_base` and `test_select_tests`. [verified: grep]
 9. The CI detect step depends only on file names, so changing `init_ci_detect_step_test_repo`'s seed message from "initial" to "init" changes no behavior. Swapping `git add .` for `git add -- README.md` is also equivalent, because README.md is the only file present at that point. [verified: `.github/workflows/tests.yml:72` runs `git diff --name-only "$BASE" "$HEAD"`; `helpers.py:1609-1615`]
 10. Every tree, conftest files included, can import `helpers.py` as the top-level module `helpers`. [verified: `pyproject.toml:18` pythonpath; `hooks/tests/conftest.py:20`; scripts test files already import `helpers`]
@@ -116,7 +115,7 @@ Add one builder pair to `claude/.claude/tests/helpers.py`: `init_git_repo` (no c
   - The threshold: a branch is scenario data the reader should see at the call, so `branch=` alone is passed per call (DAMP), as at `test_lib.py`'s 60 calls. A seed override is setup noise the test never reads at the call, so it stays inside a retained delegation rather than repeated per call (32 times in `test_log_reviewer_round.py` alone).
 
   anchors: row5, row8
-- M5. Scope is exactly the 23 sites listed in row 4. The rule that produced the list was "a helper or fixture whose body is the recipe plus at most one sentinel file, together with `helpers.py`'s internal copies". The eleven purpose-built-builder files in Out of scope's first bullet are exceptions to the list: only 4 of them were sampled against the rule, and Out of scope names the fixtures in them already known to fit it. anchors: row2, row4
+- M5. Scope is exactly the 23 sites listed in row 4. The rule that produced the list was "a helper or fixture whose body is the recipe plus at most one sentinel file, together with the `git_repo` fixture and `helpers.py`'s internal copies". The eleven purpose-built-builder files in Out of scope's first bullet are exceptions to the list: only 4 of them were sampled against the rule, and Out of scope names the fixtures in them already known to fit it. anchors: row2, row4
 
 ## Critical files
 
@@ -218,7 +217,7 @@ The new `test_git_repo_builders.py` pins the builder contract directly. The foll
   - The whole-fixture copy at `test_lib_reviewer_round_state.py:421`, which is labeled DAMP.
 
   These have the same bug shape but fall outside the Ask.
-- **Isolating the builder from host git config** (signing, hooks path, template dir, ambient `GIT_*` env). All 23 old copies behaved the same, so this is deliberately out of scope. Any isolation must keep `branch=None` reading the host `init.defaultBranch` (G1).
+- **Isolating the builder from host git config** (signing, hooks path, template dir, ambient `GIT_*` env). None of the 23 old copies was isolated from host git config, so this is deliberately out of scope. Any isolation must keep `branch=None` reading the host `init.defaultBranch` (G1).
 - **Clone-side identity configs elsewhere in `helpers.py`.** The `t@t.com`/`t` pairs outside `init_git_repo` are excluded.
 - **Unswept wrapper-spelled inline sites.** `test_require_npm_version_bump.py`, `test_set_session_title_from_branch.py`, `test_check_branch_divergence.py`, `test_require_plugin_version_bump.py` and `test_lib.py` (about line 7520) spell `init` through a wrapper. Four of those 18 calls are the seed prologue of a `bare_remote` fixture, already deferred under the `bare_remote` bullet above. The other 14 are inline test-body setup. All are out of scope.
 - **Pinning a branch where the host default is used today.** That would change behavior (G1).
