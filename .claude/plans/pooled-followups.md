@@ -52,8 +52,19 @@ No open decision needs the engineer.
 12. `test_file_that_fails_to_open_returns_empty_summary` patches `open` on `subagent_mix`'s namespace. After the change the open happens in `corpus`, so the patch no longer reaches it and the test would fail. `[verified: test_transcript_subagent_mix_dollars.py:500-512]`
 13. `reviewer_yield`'s existing unreadable-transcript tests use a missing file, which the helper maps to `None`, so `read_error` stays True. They need no change. `[verified: test_transcript_reviewer_yield.py:926-951, :1769-1783]`
 14. The helper loads the whole file into memory. `_read_session_file_partitioned` already does this for whole sessions, so loading one subagent transcript in `reviewer_yield` is no new memory pattern. `[verified: corpus.py:117-154]`
-15. Binary-mode iteration splits only on `\n`, while text mode also splits on a lone `\r`. The two modes can disagree on a record only when a raw `\r` sits between JSON tokens, and G1's `\n`-terminated format never produces that. A raw `\r` inside a JSON string is rejected by both modes. The stronger reason to accept the difference: both readers then match every other helper-routed reader. `[verified: plan-review's backend reviewer ran text-mode and binary-mode parses on `{"c":\r3}` and `{"a":1}\r{"b":2}\n`; no test in the three affected test files writes `\r`]`
-16. The test environment's default text encoding is UTF-8, so the new decode tests fail with `UnicodeDecodeError` before commit 2's reader edit. `UnicodeDecodeError` is a `ValueError`, not an `OSError`, so it escapes both readers' `except OSError`. Only the red step depends on the encoding, and Verification runs it with `PYTHONUTF8=1` to remove that dependency. `[verified: plan-review's backend reviewer, UTF-8 locale]`
+15. Binary-mode and text-mode iteration differ in how they split lines.
+    - Binary mode splits only on `\n`. Text mode also splits on a lone `\r`.
+    - The two modes can disagree on a record only when a raw `\r` sits between JSON tokens, and G1's `\n`-terminated format never produces that.
+    - A raw `\r` inside a JSON string is rejected by both modes.
+    - The stronger reason to accept the difference: both readers then match every other helper-routed reader.
+
+    `[verified: plan-review's backend reviewer ran text-mode and binary-mode parses on `{"c":\r3}` and `{"a":1}\r{"b":2}\n`; no test in the three affected test files writes `\r`]`
+16. The new decode tests depend on the test environment's text encoding.
+    - The default text encoding is UTF-8, so the tests fail with `UnicodeDecodeError` before commit 2's reader edit.
+    - `UnicodeDecodeError` is a `ValueError`, not an `OSError`, so it escapes both readers' `except OSError`.
+    - Only the red step depends on the encoding. Verification runs it with `PYTHONUTF8=1` to remove that dependency.
+
+    `[verified: plan-review's backend reviewer, UTF-8 locale]`
 17. `total_agent_dollars` sums every `pricing._SPAWN_TOOL_NAMES` dispatch inside a round window. Nothing in `review_rounds.py` filters by agent type. Main-thread turns go to `main_dollars`. `[verified: review_rounds.py:365-387, :1342, :1362-1365; Grep of review_rounds.py for subagent_type/staff-/_REVIEWER returns no filter]`
 18. The pooled block labels the same in-window numerator "subagent dispatches only", under key `spend_reviewer_only`. `[verified: review_rounds.py:720, :1039]`
 19. The exact text "Reviewer-dispatch dollars" appears in four files:
