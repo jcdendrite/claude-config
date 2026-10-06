@@ -1,6 +1,7 @@
 """Tests for transcript_analysis/spend_over_threshold.py's cmd_spend_over_threshold, including its
 nudge-log diagnostic footer."""
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -188,6 +189,9 @@ class TestSpendOverThresholdDiagnosticFooter:
         The test discriminates only because the autouse _isolate_transcript_corpus_lookups
         fixture pins CLAUDE_CONFIG_DIR away from fake_projects' tmp_path, so a by-name
         config_dir() reads a directory with no log."""
+        assert Path(os.environ["CLAUDE_CONFIG_DIR"]) != tmp_path, (
+            "autouse CLAUDE_CONFIG_DIR pin must differ from fake_projects' config dir"
+        )
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])

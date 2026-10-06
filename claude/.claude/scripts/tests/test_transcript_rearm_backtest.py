@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from ._handoff_nudge_helpers import _rearm_backtest_args
 from .conftest import (
     _asst,
     _bash_use,
@@ -30,27 +31,6 @@ _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
-
-
-def _rearm_backtest_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    since: str | None = None,
-    branches: str | None = None,
-    no_redact: bool = False,
-    extra_config_dirs: list[str] | None = None,
-    spacings: str | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "since": since,
-        "branches": branches,
-        "no_redact": no_redact,
-        "extra_config_dirs": extra_config_dirs,
-        "spacings": spacings,
-    })()
 
 
 def _tool_use_asst(model: str, tool_id: str, *, output: int = 100, ts: str = "2026-05-19T10:00:00.000Z") -> dict:
@@ -750,6 +730,24 @@ class TestRearmBacktestReport:
         assert str(tmp_path / ".handoff-nudge.log") in out
         assert _table_cols(out, header_contains="Bucket", row_contains="voluntary")["Count"] == "1"
         assert "leaky-session-1" not in out
+
+    def test_no_redact_allowed_and_stamps_banner_at_single_root(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2))
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+
+    def test_default_redact_omits_do_not_publish_banner(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        captured = capsys.readouterr()
+        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.out
+        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.err
 
 
 class TestRearmBacktestReportNoRedactGuard:

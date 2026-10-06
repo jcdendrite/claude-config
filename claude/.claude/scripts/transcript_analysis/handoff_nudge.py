@@ -75,11 +75,11 @@ _HANDOFF_NUDGE_PCT_THRESHOLD = 0.40
 # PR #605's own turn-index bands (.claude/plans/handoff-boundary-decision-rule.md),
 # reused here for comparability with that point-in-time measurement -- the
 # dollar/context figures themselves are re-derived from the current corpus on
-# every run, never hardcoded. Follows _EDIT_OLD_STRING_SIZE_BUCKETS' own
-# cascading less-than convention: a turn index is tested against each bound
-# in order and takes the first label whose bound it's under, so an index
-# PR #605's own table never explicitly labeled (10-19, between "5-10" and
-# "20-40") falls through to "20-40" rather than going unbucketed.
+# every run, never hardcoded. Uses a cascading less-than lookup: a turn index
+# is tested against each bound in order and takes the first label whose bound
+# it's under, so an index PR #605's own table never explicitly labeled (10-19,
+# between "5-10" and "20-40") falls through to "20-40" rather than going
+# unbucketed.
 _RAMP_CURVE_TURN_INDEX_BUCKETS: tuple[tuple[int, str], ...] = (
     (5, "0-5"),
     (10, "5-10"),
@@ -130,13 +130,11 @@ def _extract_rearm_session_turns(records: Sequence[dict]) -> dict:
     """Single dedup+price pass over one session's raw records, shared by
     _ramp_curve_from_corpus and _rearm_backtest_report so each session's
     records are decoded/deduped/priced exactly once per report run instead
-    of twice -- every sibling subcommand in this file (`cost`,
-    `context-distribution`, etc.) does a single streaming pass over its
-    corpus, not two.
+    of twice.
 
     Returns a dict with:
-    - "deduped": _dedup_turns_by_request_id's output, for a caller building
-      _hook_observable_boundaries from the same records.
+    - "deduped": pricing.dedup_turns_by_request_id's output, for a caller
+      building _hook_observable_boundaries from the same records.
     - "main_thread_turns": one (context_at_turn, output_tokens, actual_dollars)
       tuple per main-thread assistant turn carrying a usage block
       (actual_dollars is 0.0 when the turn's model is unpriced), in

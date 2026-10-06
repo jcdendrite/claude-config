@@ -46,9 +46,8 @@ class TestHookEffectiveFireThreshold:
 class TestRampCurveFromCorpus:
     def test_turn_index_bucket_edges_match_bands_including_the_gap(self):
         """PR #605's own table never labeled turn index 10-19 (its bands jump
-        from "5-10" to "20-40"); the cascading less-than lookup this reuses
-        from _EDIT_OLD_STRING_SIZE_BUCKETS' own convention folds that range
-        into "20-40" rather than leaving it unbucketed."""
+        from "5-10" to "20-40"); the cascading less-than lookup folds that
+        range into "20-40" rather than leaving it unbucketed."""
         cases = {
             0: "0-5", 4: "0-5",
             5: "5-10", 9: "5-10",
@@ -383,11 +382,10 @@ class TestSessionMatchesRearmScope:
 
 
 class TestExtractRearmSessionTurnsModelAndPosition:
-    """main_thread_models / main_thread_record_positions are new parallel
-    lists alongside main_thread_turns, not a widening of its own 3-tuple
-    shape -- _ramp_curve_from_corpus, _simulate_rearm_spacing, and
-    _rearm_backtest_report all positionally unpack that tuple as
-    Sequence[tuple[int, int, float]]."""
+    """main_thread_models / main_thread_record_positions run parallel to
+    main_thread_turns, whose 3-tuple shape _ramp_curve_from_corpus,
+    _simulate_rearm_spacing, and _rearm_backtest_report all positionally
+    unpack as Sequence[tuple[int, int, float]]."""
 
     def test_models_and_positions_are_parallel_to_main_thread_turns(self):
         records = [

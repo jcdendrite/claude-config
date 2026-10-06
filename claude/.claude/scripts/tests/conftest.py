@@ -908,7 +908,7 @@ def fake_projects(tmp_path, monkeypatch, request):
     PROJECTS_DIR patch above — without this, a subcommand routed through
     _resolve_cost_roots would silently fall back to this machine's real
     config dir instead of this fixture's isolated tmp_path. handoff-signal-response
-    stays in the shim (not yet moved into the package) and calls config_dir() via its own
+    still lives in the shim and calls config_dir() via its own
     separate import, so mod.config_dir is patched too. cost_ledger,
     ledger_common, and pr_cost_ledger each bind config_dir by name from _config_dir, mirroring
     scope.py's own binding, so all three are patched too -- five bindings of the same initial

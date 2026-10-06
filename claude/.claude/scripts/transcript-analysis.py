@@ -126,7 +126,8 @@ from transcript_analysis.gh_cli import (
     _git_remote_origin_host_and_owner_repo,
 )
 from transcript_analysis.handoff_nudge import (
-    # The seven names below are read bare by this file's own still-unmigrated code:
+    # The seven names below are read bare by this file's own plan-boundary and
+    # handoff-signal-response code, which still lives here:
     #   _extract_rearm_session_turns/_ramp_curve_from_corpus/_ramp_curve_turn_index_bucket/
     #     _session_matches_rearm_scope -> plan-boundary
     #   _hook_effective_fire_threshold/_operator_response_lag_from_log/_parse_nudge_log_entries
@@ -182,7 +183,7 @@ from transcript_analysis.read_scope import (
     cmd_read_scope,
 )
 from transcript_analysis.rearm_backtest import (
-    # Read bare by this file's own still-monolithic build_parser (the rearm-backtest
+    # Read bare by this file's own build_parser (the rearm-backtest
     # subcommand's own set_defaults).
     cmd_rearm_backtest,
 )
@@ -258,7 +259,7 @@ from transcript_analysis.scope import (
 from transcript_analysis.scope import print_resolved_scope as _print_resolved_scope
 from transcript_analysis.scope import resolve_scan_roots as _resolve_scan_roots
 from transcript_analysis.spend_over_threshold import (
-    # Read bare by this file's own still-monolithic build_parser (the spend-over-threshold
+    # Read bare by this file's own build_parser (the spend-over-threshold
     # subcommand's own set_defaults).
     cmd_spend_over_threshold,
 )

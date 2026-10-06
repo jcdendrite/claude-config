@@ -19,7 +19,7 @@ from helpers import SKILLS_DIR
 
 from ._audit_routing_helpers import _audit_routing_samples_args, _audit_routing_shape_args
 from ._cache_rebuild_helpers import _cache_rebuild_args
-from ._handoff_nudge_helpers import _ramp_curve_from_records, _spend_over_threshold_args
+from ._handoff_nudge_helpers import _ramp_curve_from_records, _rearm_backtest_args, _spend_over_threshold_args
 from ._subagent_helpers import _subagents_args
 from .conftest import (
     _agent_use,
@@ -7750,10 +7750,10 @@ def _fake_gh_pr_list_run(cmd, *a, **k):
     return subprocess.CompletedProcess(cmd, 0, "", "")
 
 
-# (cli_name, header_name, cmd_func, zero-arg args factory) for the 23
+# (cli_name, header_name, cmd_func, zero-arg args factory) for the
 # subcommands whose resolved-scope header prints unconditionally, even over
 # an empty scope. review-trace and skill-invocation print unconditionally
-# too, but carry zero-match message text and branches the other 23 don't, so
+# too, but carry zero-match message text and branches the other rows don't, so
 # they get their own tests below rather than a row here.
 _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
     ("buckets", "BUCKETS", _mod.cmd_buckets,
@@ -7785,6 +7785,7 @@ _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
     ("cost-trend", "COST TREND", _mod.cmd_cost_trend, _cost_trend_args),
     ("cache-rebuild", "CACHE REBUILD", _mod.cmd_cache_rebuild, _cache_rebuild_args),
     ("spend-over-threshold", "SPEND OVER THRESHOLD", _mod.cmd_spend_over_threshold, _spend_over_threshold_args),
+    ("rearm-backtest", "REARM BACKTEST", _mod.cmd_rearm_backtest, _rearm_backtest_args),
     ("audit-routing-shape", "AUDIT ROUTING SHAPE", _mod.cmd_audit_routing_shape, _audit_routing_shape_args),
     ("audit-routing-samples", "AUDIT ROUTING SAMPLES", _mod.cmd_audit_routing_samples, _audit_routing_samples_args),
     ("judgment-pair", "JUDGMENT PAIR", _mod.cmd_judgment_pair, _judgment_pair_args),

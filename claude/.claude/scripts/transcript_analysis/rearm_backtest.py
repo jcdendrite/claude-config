@@ -24,9 +24,9 @@ def _hook_observable_boundaries(records: Sequence[dict]) -> list[int]:
     """Turn-count positions (0..N, where N is the session's own main-thread
     turn count) at which nudge-handoff-near-context-cap.sh could observe this
     session's growing context. `records` must already be
-    _dedup_turns_by_request_id's output -- the same records a caller builds
-    its own main_thread_turns list from -- so a returned boundary is directly
-    usable as a slice/turn-count index into that list.
+    pricing.dedup_turns_by_request_id's output -- the same records a caller
+    builds its own main_thread_turns list from -- so a returned boundary is
+    directly usable as a slice/turn-count index into that list.
 
     UserPromptSubmit and Stop both check the transcript's latest recorded
     main-thread assistant usage (docs/handoff-nudge.md), so the two fire at
@@ -46,7 +46,7 @@ def _hook_observable_boundaries(records: Sequence[dict]) -> list[int]:
     A turn only counts toward the position (and thus toward a boundary) when
     it carries a usage block, matching exactly the predicate a caller uses to
     build main_thread_turns -- a main-thread assistant record with no usage
-    block (a synthetic error record, see _dedup_turns_by_request_id's
+    block (a synthetic error record, see pricing.dedup_turns_by_request_id's
     docstring) must not desync the two lists' shared indexing.
     """
     boundaries: list[int] = [0]
@@ -368,8 +368,7 @@ def _rearm_backtest_report(args: argparse.Namespace, today: date, roots: Sequenc
     # via _extract_rearm_session_turns, and the same extraction dict feeds
     # both _ramp_curve_from_corpus and this function's own
     # sessions_data/session_traces bookkeeping below -- a single pass over
-    # the corpus, matching every sibling subcommand in this file (`cost`,
-    # `context-distribution`, etc.).
+    # the corpus.
     scoped_sessions = [
         (jsonl, handoff_nudge._extract_rearm_session_turns(records)) for jsonl, records in session_iter
         if handoff_nudge._session_matches_rearm_scope(records, since_ts, branch_filter)

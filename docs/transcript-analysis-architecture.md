@@ -43,9 +43,8 @@ package's first two imports from one command-group module into another.
 The still-unmigrated context-composition code reads `subagents.py`'s `_MCP_TOOL_BUCKET_LABEL` by
 name from the shim.
 `build_parser()` likewise wires up `rearm_backtest.py`'s `cmd_rearm_backtest` and
-`spend_over_threshold.py`'s `cmd_spend_over_threshold` from the shim. The still-unmigrated
-plan-boundary and handoff-signal-response code reads seven `handoff_nudge.py` names by name from the
-shim.
+`spend_over_threshold.py`'s `cmd_spend_over_threshold` from the shim. The shim also reads
+`handoff_nudge.py` names bare; see the `handoff_nudge.py` section below for which names and consumers.
 
 ## The package
 
@@ -367,11 +366,11 @@ The handoff-nudge family's shared core, with no `cmd_*` of its own: the mirror o
 threshold (`_hook_effective_fire_threshold`, `_HANDOFF_NUDGE_ABS_CAP`, `_HANDOFF_NUDGE_PCT_THRESHOLD`),
 the turn-index ramp curve (`_ramp_curve_turn_index_bucket`, `_ramp_curve_from_corpus`), the single
 dedup-and-price pass over one session (`_extract_rearm_session_turns`) with its whole-session scope
-filter (`_session_matches_rearm_scope`), and the bounded `.handoff-nudge.log` reader, parser,
+filter (`_session_matches_rearm_scope`), and the `.handoff-nudge.log` reader, parser,
 operator-response lag join, and diagnostic footer (`_read_bounded_log_lines`,
 `_parse_nudge_log_entries`, `_operator_response_lag_from_log`, `_print_nudge_log_diagnostic`). Its
-consumers are `rearm_backtest.py`, `spend_over_threshold.py`, and the still-unmigrated
-plan-boundary and handoff-signal-response code in the shim. Imports `corpus`,
+consumers are `rearm_backtest.py`, `spend_over_threshold.py`, and the plan-boundary and
+handoff-signal-response code, which still lives in the shim. Imports `corpus`,
 `pricing`, and `scope` all by module (attribute access), matching `cost.py`'s convention.
 `_print_nudge_log_diagnostic` reads `config_dir() / ".handoff-nudge.log"` as
 `scope.config_dir()` by attribute access, per the rule under `scope.py` above, so `fake_projects`'
@@ -442,8 +441,8 @@ boundary and across every test file (`fake_projects`, `fake_config_dir_factory`,
 `_compact_boundary_rec`, `_cost_ledger_args`, `_cost_ledger_row`, `_two_declared_roots`,
 `_exit_plan_mode`, `_priced_opus`, `_priced_sidechain_asst`, `_read_use`, `_thinking_block`); see its own
 docstrings for why `fake_projects` patches five `config_dir` bindings: `scope.config_dir` and the
-shim's still-independent `config_dir` (for handoff-signal-response, not yet moved
-into the package), plus `cost_ledger.config_dir`, `ledger_common.config_dir`, and
+shim's still-independent `config_dir` (for handoff-signal-response, which still lives
+in the shim), plus `cost_ledger.config_dir`, `ledger_common.config_dir`, and
 `pr_cost_ledger.config_dir` (each module's own by-name binding, mirroring `scope.py`'s pattern). `author_outcome.py`'s own tests
 live in `tests/test_author_outcome.py`: most exercise the package module directly
 (`from transcript_analysis import author_outcome`), with a small `spec_from_file_location`-loaded
