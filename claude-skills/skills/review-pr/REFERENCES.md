@@ -206,10 +206,6 @@ A spawned review-only subagent carries no Write tool for this path, so requiring
 
 Passing the fixed path as a Bash argument would also put it in the command's argv, which appears in shell history and the process table. The findings-body path comes from `review-pr-findings-path.sh`, not from a value the model transcribes, so nothing needs independent verification against `$CONFIG_DIR`/`$SESSION_ID`.
 
-Accepted gap: neither the Write tool nor the review-pr scripts refuse a symlink at the session-scoped paths (`.body`, `.diff`, `.context.json`, `.provenance`, and the completion marker), so a pre-planted symlink there would be followed. Planting one takes same-user write access to the config directory, and any process with that access can already write this skill's own state.
-
-A followed write can overwrite or create an arbitrary file the Claude Code process has write access to. `/code-review` reads `.diff` with the agent's `Read`, which follows symlinks too.
-
 ## Known gaps and operator choices
 
 - **The stop-message escaper was run on jq 1.7 only.** On another jq version a
@@ -275,6 +271,15 @@ A followed write can overwrite or create an arbitrary file the Claude Code proce
   - Its redaction policy also short-circuits unless the clone's `origin.url`
     contains `claude-config`, while `/review-pr` runs in any repository.
   - The control is the Step 8 human approval of the exact body to post.
+- **Symlinks at the session-scoped paths are not refused.**
+  - Neither the Write tool nor the review-pr scripts refuse a symlink at
+    `.body`, `.diff`, `.context.json`, `.provenance`, or the completion
+    marker.
+  - Planting one takes same-user write access to the config directory.
+  - Any process with that access can already write this skill's own state.
+  - A followed write can overwrite or create any file the Claude Code process
+    can write.
+  - `/code-review` reads `.diff` with `Read`, which follows symlinks too.
 - **`review-pr-finish.sh` does not check the caller's working directory.**
   - It removes every review worktree of the session, including one the
     caller's Bash working directory is inside.

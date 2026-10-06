@@ -151,13 +151,9 @@ _lib_status_consistent_with_cap_kill() {
 }
 
 # _lib_gh SECONDS ARGS...
-# Runs `gh ARGS...` capped at SECONDS via _lib_capped_for.
-# Prints nothing of its own.
-# Returns _lib_capped_for's own exit status unchanged -- 124/137/143 on a cap kill, gh's own status otherwise.
-# A caller that words that status for the operator uses review_pr_gh_status_description in _review-pr-lib.sh.
-# That function names only 124, because 137 and 143 are also a child's own signal-death status (see _lib_capped_for's "Exit statuses" bullets).
-# A caller that wants every cap-kill-consistent status passes it through _lib_status_consistent_with_cap_kill.
-# Leaves gh's stderr to the caller: every caller redirects it to /dev/null except review-pr-post.sh's two `gh pr review` calls, which leave it visible.
+# Runs `gh ARGS...` capped at SECONDS via _lib_capped_for, returning its exit status unchanged (124/137/143 on a cap kill, gh's own status otherwise).
+# Prints nothing of its own and leaves gh's stderr to the caller.
+# A caller that words the status for the operator uses review_pr_gh_status_description (_review-pr-lib.sh), which owns why only 124 is named.
 _lib_gh() {
   local seconds="${1:?_lib_gh requires a seconds argument}"
   shift

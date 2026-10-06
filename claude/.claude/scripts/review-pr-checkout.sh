@@ -70,15 +70,15 @@ then the diff file's absolute path. Only an exit-0 run prints the diff path on
 stdout, and the caller reads the diff from that output alone. review-pr-finish.sh
 removes the diff file a failed run leaves behind.
 
-Worst-case wall time: the per-step caps sum to 260 seconds on the success path
+Worst-case wall time: the per-step caps sum to 250 seconds on the success path
 (10 for the two local git reads, 60 for the four gh calls, 50 for ten jq
 calls, 30 for the PR-ref fetch, 10 for two more local git reads, 30 for the
-base fetch, 30 for the diff, 5 for the diff write, 30 for worktree add, 5 for
-the provenance write) and 315 on the worst failure path (a failed worktree add
-followed by its two capped cleanups). Each cap kill adds up to 2 seconds of
-SIGKILL grace. The session lookup's capped ps calls add up to 10 seconds per
-process-ancestor hop, and the audit script runs uncapped. The caps apply only
-when `timeout` or `gtimeout` is on PATH; otherwise every step is uncapped.
+base fetch, 30 for the diff, 30 for worktree add) and 310 on the worst failure
+path (a failed worktree add followed by its two capped cleanups). Each cap kill
+adds up to 2 seconds of SIGKILL grace. The diff write and the provenance write
+are uncapped, as is the audit script. The session lookup's capped ps calls add
+up to 10 seconds per process-ancestor hop. The caps apply only when `timeout`
+or `gtimeout` is on PATH; otherwise every step is uncapped.
 
 Exit status: 0 on success, 3 when checkout is positively refused and
 review-pr-diff.sh is the path to use instead (the PR's trust class, a
@@ -139,7 +139,7 @@ ORIGIN_OWNER_REPO=$(_lib_origin_owner_repo "$REPO_ROOT") || {
   exit 2
 }
 if _lib_case_insensitive_ne "$ORIGIN_OWNER_REPO" "$OWNER_REPO"; then
-  echo "review-pr-checkout.sh: PR identity '$PR_IDENTITY' names repo '$OWNER_REPO', which does not match this worktree's own origin remote ('$ORIGIN_OWNER_REPO'). Abort before any fetch -- see this script's header comment for the cross-repo substitution this check exists to close." >&2
+  echo "review-pr-checkout.sh: PR identity '$PR_IDENTITY' names repo '$OWNER_REPO', which does not match this worktree's own origin remote ('$ORIGIN_OWNER_REPO'). Abort before any fetch -- see the comment above this check in review-pr-checkout.sh for the cross-repo substitution it exists to close." >&2
   exit 2
 fi
 

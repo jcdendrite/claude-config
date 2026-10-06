@@ -44,13 +44,13 @@ review-pr-checkout.sh uses, but never checks the PR out. In order:
 
 Prints the diff file's path on stdout as the sole output of a successful run.
 
-Worst-case wall time: the per-step caps sum to 135 seconds on a run whose audit
+Worst-case wall time: the per-step caps sum to 125 seconds on a run whose audit
 is clean (10 for the two local git reads, 100 for the six gh calls, 15 for
-three jq calls, 10 for the diff and provenance writes) and 150 when the audit
-reports a finding (three more jq calls). Each cap kill adds up to 2 seconds of
-SIGKILL grace. The session lookup's capped ps calls add up to 10 seconds per
-process-ancestor hop, and the audit script runs uncapped. The caps apply only
-when `timeout` or `gtimeout` is on PATH; otherwise every step is uncapped.
+three jq calls) and 140 when the audit reports a finding (three more jq calls).
+Each cap kill adds up to 2 seconds of SIGKILL grace. The diff write and the
+provenance write are uncapped, as is the audit script. The session lookup's
+capped ps calls add up to 10 seconds per process-ancestor hop. The caps apply
+only when `timeout` or `gtimeout` is on PATH; otherwise every step is uncapped.
 EOF
 }
 
@@ -107,10 +107,10 @@ if [[ -z "$REPO_ROOT" ]]; then
 fi
 
 # Same cross-repo audit-substitution reasoning as review-pr-checkout.sh's
-# own origin check (see that script's header comment): a PR's headRefOid is
-# content-addressed, so an unchecked mismatch would let this script's audit
-# and diff run against a decoy repo's manufactured content while claiming
-# to describe the real PR.
+# own origin check (see the comment above that check in review-pr-checkout.sh):
+# a PR's headRefOid is content-addressed, so an unchecked mismatch would let
+# this script's audit and diff run against a decoy repo's manufactured content
+# while claiming to describe the real PR.
 ORIGIN_OWNER_REPO=$(_lib_origin_owner_repo "$REPO_ROOT") || {
   echo "review-pr-diff.sh: could not resolve this worktree's origin remote, or parse an owner/repo out of its URL. Abort before any fetch." >&2
   exit 2

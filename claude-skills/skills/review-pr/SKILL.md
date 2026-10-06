@@ -62,11 +62,21 @@ Read its exit status: exit 3 → switch to the diff-only path below; any other n
 ```
 ~/.claude/scripts/review-pr-diff.sh <owner>/<repo>#<number>
 ```
-No checkout, no worktree: self-derives the same file list and `headRefOid`, writes `gh pr diff`'s own output to a file, prints that file's path, and rewrites provenance with mode `diff-only`. An execution-surface hit is reported on stderr as a mandatory finding, not a stop — carry it into step 5 as blocking. This is the reduced-coverage path; step 6 does not apply to it.
+There is no checkout and no worktree. The script:
+
+- Re-derives the same file list and `headRefOid`.
+- Writes `gh pr diff`'s own output to a file and prints that file's path.
+- Rewrites provenance with mode `diff-only`.
+- Reports an execution-surface hit on stderr as an `AUDIT_FINDING` line, a mandatory finding and not a stop. Carry it into step 5 as blocking.
+
+This is the reduced-coverage path. Step 6 does not apply to it.
 
 Run it with Bash `timeout: 600000` too. The "Worst-case wall time" in its usage text exceeds the default, and a mid-run kill leaves no worktree.
 
-A harness timeout kill is not a script exit status, so re-run the script once. Any non-zero exit status, from either run, is final: report stderr and stop; use no other acquisition route (a PR over 300 changed files is refused here too).
+A harness timeout kill is not a script exit status, so re-run the script once.
+Any non-zero exit status, from either run, is final: report stderr and stop.
+Use no other acquisition route.
+A PR over 300 changed files is refused here too.
 
 ## Step 3 — Plan pass (conditional)
 

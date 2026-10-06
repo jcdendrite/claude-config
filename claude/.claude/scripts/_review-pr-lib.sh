@@ -41,9 +41,7 @@ REVIEW_PR_AUDIT_CLEAN_DOCUMENT='{"stop": false, "matches": []}'
 REVIEW_PR_AUDIT_STDOUT_ECHO_LIMIT=200
 
 # Display bounds for one stop message. No protocol or vendor limit backs either value.
-# Worst case is 20 listed lines of 1,130 bytes each, plus a tail of about 1,740 bytes, for about 24,340 bytes measured. That is under the 30,000-byte Bash output truncation threshold (claude-skills/skills/subagent-delegation/REFERENCES.md).
-# One listed line is 976 bytes of path (2 quotes, 80 astral characters printing as 12 ASCII characters each, and the 14-byte `...[truncated]` marker), a 2-byte `: ` separator, the longest audit reason (151 characters) and a 1-byte newline.
-# The tail is a count line of about 43 bytes plus one `not shown:` line for each of the 15 distinct audit reasons: about 24 bytes of prefix, count and newline per line, plus the reasons' 1,335 characters in all.
+# The worst-case message stays under the 30,000-byte Bash output truncation threshold (claude-skills/skills/subagent-delegation/REFERENCES.md).
 REVIEW_PR_AUDIT_MATCH_LINE_LIMIT=20
 REVIEW_PR_AUDIT_PATH_ECHO_LIMIT=80
 
