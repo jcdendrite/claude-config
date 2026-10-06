@@ -1764,7 +1764,8 @@ class TestBuildToolResultTsMap:
 class TestScanReviewerTranscripts:
     """_scan_reviewer_transcripts(records, dispatch_index) ->
     {dispatch_id: _ReviewerTranscriptScan}: the pre-pass behind
-    _reviewer_write_tool_use_ids' edit-index exclusion set."""
+    _reviewer_write_tool_use_ids' edit-index exclusion set. The class also
+    covers the per-file _scan_reviewer_transcript(path) decode contract."""
 
     def test_unreadable_transcript_scans_to_empty_code_write_ids(self, tmp_path):
         """A reviewer dispatch resolvable through dispatch_index whose own

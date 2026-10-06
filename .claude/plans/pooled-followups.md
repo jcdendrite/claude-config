@@ -67,8 +67,27 @@ No open decision needs the engineer.
 21. Four test comments call the figure reviewer-only or reviewer-dispatch: `:1159`, `:1780`, `:2367`, `:2568`. `:2604` already says "subagent dispatches only". `:3655` names the key `spend_reviewer_only`, which stays. `[verified: test_transcript_review_rounds.py at those lines]`
 22. This repo records decode-behavior and select-tests-mapping changes under `[Unreleased]` → the first `### Changed`. `[verified: CHANGELOG.md:7, :13, :154]` The bullet order inside that section is `[unverified]`.
 23. The three per-commit CHANGELOG bullets (M7) are in scope. The engineer answered the question "is each bullet in scope?" with the label `[engineer-verified: "Keep all three (Recommended)"]`.
-24. Commit 2 changes more than the two readers' own tests. `_scan_reviewer_transcript` feeds `compute_reviewer_yield_data`, which `cmd_reviewer_yield`, `cost-ledger --record` (`cost_ledger.py:657`), and `evals/review_bench/mine_review_rounds.py:536` consume. `_dispatch_usage_summary` feeds only `cmd_subagent_mix` (`subagent_mix.py:210`). Today a non-UTF-8 byte aborts `cost-ledger --record` before it writes a row. After commit 2 it writes a row from a transcript with silently skipped lines, and the "N reviewer transcripts failed to read" line never fires for a skipped line. The plan accepts this: every other helper-routed reader already behaves the same way, and a skipped line is the stated policy of `corpus._parse_jsonl_records`. The commit-2 CHANGELOG bullet names `cost-ledger --record` and says an all-undecodable transcript reads as empty. `[verified: plan-review's backend reviewer, reviewer_yield.py:186, cost_ledger.py:657, mine_review_rounds.py:150/:536, subagent_mix.py:210]`
-25. Dropping commit 3 follows a fixed procedure. The trigger is a second `/code-review` round whose only open findings on commit 3 are wording findings on the label or its CHANGELOG bullet. Before the commit exists, drop it by discarding its staged diff. After it exists, `git revert` it as a new commit. The plan file stays unedited, because an edit would re-trigger `/plan-review`, the extra round the rule exists to avoid. The session logs a `review-ledger.sh` DEFER row for the mislabel, with the defer criterion chosen then, so the PR body's "Deferred review findings" block records it. `[unverified]` It is the session's proposal for the review's drop-rule finding, and the engineer has not seen it.
+24. Commit 2 changes more than the two readers' own tests.
+    - `_scan_reviewer_transcript` feeds `compute_reviewer_yield_data`, which `cmd_reviewer_yield`, `cost-ledger --record` (`cost_ledger.py:657`), and `evals/review_bench/mine_review_rounds.py:536` consume.
+    - `_dispatch_usage_summary` feeds only `cmd_subagent_mix` (`subagent_mix.py:210`).
+    - Today a non-UTF-8 byte aborts `cost-ledger --record` before it writes a row.
+    - After commit 2 it writes a row from a transcript with silently skipped lines.
+    - The "N reviewer transcripts failed to read" line never fires for a skipped line.
+    - The plan accepts this, because every other helper-routed reader already behaves the same way.
+    - A skipped line is the stated policy of `corpus._parse_jsonl_records`.
+    - The commit-2 CHANGELOG bullet names `cost-ledger --record`.
+    - The commit-2 CHANGELOG bullet says an all-undecodable transcript reads as empty.
+
+    `[verified: plan-review's backend reviewer, reviewer_yield.py:186, cost_ledger.py:657, mine_review_rounds.py:150/:536, subagent_mix.py:210]`
+25. Dropping commit 3 follows a fixed procedure.
+    - The trigger is a second `/code-review` round whose only open findings on commit 3 are wording findings on the label or its CHANGELOG bullet.
+    - Before the commit exists, drop it by discarding its staged diff.
+    - After it exists, `git revert` it as a new commit.
+    - The plan file stays unedited, because an edit would re-trigger `/plan-review`, the extra round the rule exists to avoid.
+    - The session logs a `review-ledger.sh` DEFER row for the mislabel, with the defer criterion chosen then.
+    - That row lets the PR body's "Deferred review findings" block record the mislabel.
+
+    `[unverified]` It is the session's proposal for the review's drop-rule finding, and the engineer has not seen it.
 
 **Mechanisms.**
 - M1 (commit 1). Add `TRANSCRIPT_ANALYSIS_DOC_MD` and `PRIVATE_PROJECT_REDACTION_DOC_MD`. Add one row directly after `select-tests.py:702`: `(lambda p: p in (TRANSCRIPT_ANALYSIS_DOC_MD, PRIVATE_PROJECT_REDACTION_DOC_MD), (SCRIPTS_TESTS_DIR,))`. This mirrors the adjacent `:702` precedent, including selecting the whole directory for one reading file. anchors: row3, row6. Alternatives set aside:
