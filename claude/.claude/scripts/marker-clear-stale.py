@@ -34,8 +34,7 @@ import time
 #   provenance keeps the old one.
 # The entry's own mtime never decides: cwd activity between writing an artifact
 # and posting it can idle past the 60-minute window below while a review is
-# still in flight. All four suffixes use the same two checks rather than a
-# per-suffix rule.
+# still in flight. All four suffixes use the same two checks.
 # An entry in that directory with none of these suffixes is skipped untouched,
 # never read as a PID.
 REVIEW_PR_SUFFIXES = (".body", ".provenance", ".diff", ".context.json")

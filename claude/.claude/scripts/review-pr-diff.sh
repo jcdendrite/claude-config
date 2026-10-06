@@ -19,7 +19,8 @@ review-pr-checkout.sh uses, but never checks the PR out. In order:
    aborting before any gh call on a mismatch.
 2. Fetches the PR's current headRefOid and its REST `changed_files` count.
    Stops naming the limit when the PR changes more than 300 files, a limit
-   third parties report for GitHub's diff endpoint (see REFERENCES.md).
+   third parties report for GitHub's diff endpoint (see
+   claude-skills/skills/review-pr/REFERENCES.md).
 3. Fetches the full, paginated file list (one JSON string per file name, so a
    name holding a newline stays one name) and aborts when its length differs
    from `changed_files`.

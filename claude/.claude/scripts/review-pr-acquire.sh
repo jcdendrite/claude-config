@@ -98,7 +98,8 @@ if [[ -z "$HEAD_REF_OID" ]]; then
 fi
 
 # authorAssociation is not a valid `gh pr view --json` field -- including it
-# errors the whole call rather than degrading (REFERENCES.md). This single
+# errors the whole call rather than degrading
+# (claude-skills/skills/review-pr/REFERENCES.md). This single
 # REST call also carries the PR's own true commit count (`.commits`, an
 # integer -- distinct from gh pr view's own "commits" field, which is a
 # capped array) and true file count (`.changed_files`), so it doubles as the

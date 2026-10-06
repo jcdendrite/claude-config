@@ -159,10 +159,11 @@ fi
 # left to the model: a stop the model evaluates in prose is not a stop.
 # Placed before the headRefOid fetch and the paginated file-list call, so a
 # refused PR never has its file list paginated.
-# authorAssociation is not a `gh pr view --json` field (REFERENCES.md), so
-# this REST call is the only way to get it; it also carries head.repo/
-# base.repo, deriving cross-repo status independently of step 1's own
-# isCrossRepository field rather than trusting that upstream read.
+# authorAssociation is not a `gh pr view --json` field
+# (claude-skills/skills/review-pr/REFERENCES.md), so this REST call is the
+# only way to get it; it also carries head.repo/base.repo, deriving cross-repo
+# status independently of step 1's own isCrossRepository field rather than
+# trusting that upstream read.
 # Trust classification widens the stop conditions below; it never removes
 # one -- a MEMBER/OWNER author paired with a cross-repository PR still
 # refuses via the cross-repo check further down, regardless of standing.
@@ -246,8 +247,9 @@ fi
 GH_PR_FILES_TIMEOUT_SECONDS=30
 # The REST files endpoint with --paginate, not `gh pr view --json files`,
 # which silently caps at 100 entries with no --paginate equivalent
-# (REFERENCES.md) -- this is exactly the full, paginated list the audit
-# below must see, self-fetched rather than trusted from Step 1's own read.
+# (claude-skills/skills/review-pr/REFERENCES.md) -- this is exactly the
+# full, paginated list the audit below must see, self-fetched rather than
+# trusted from Step 1's own read.
 # per_page=100 is GitHub's maximum page size and the size gh --paginate requests by default.
 FILES_FETCH_STATUS=0
 RAW_FILES=$(_lib_gh "$GH_PR_FILES_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/files?per_page=100" --paginate --jq "$REVIEW_PR_FILE_NAMES_JQ_FILTER" 2>/dev/null) || FILES_FETCH_STATUS=$?
@@ -392,9 +394,9 @@ fi
 # path has no fallback, so the message tells the caller to report and stop.
 GIT_DIFF_TIMEOUT_SECONDS=30
 # --no-ext-diff and --no-textconv keep a configured diff driver from running.
-# REFERENCES.md's "The checkout-mode diff follows some local git config" bullet
-# (claude-skills/skills/review-pr/) lists which other config the remaining flags
-# pin and which still applies.
+# claude-skills/skills/review-pr/REFERENCES.md's "The checkout-mode diff follows
+# some local git config" bullet lists which other config the remaining flags pin
+# and which still applies.
 GIT_DIFF_ARGS=(diff --no-ext-diff --no-textconv --no-color --ignore-submodules=none --src-prefix=a/ --dst-prefix=b/ --unified=3)
 if DIFF_TEXT=$(_lib_capped_for "$GIT_DIFF_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" "${GIT_DIFF_ARGS[@]}" "$BASE_REF_OID...$FETCHED_SHA" -- 2>/dev/null); then
   DIFF_STATUS=0
