@@ -1697,7 +1697,7 @@ class TestLibOriginOwnerRepo:
         self, tmp_path: Path, origin_url: str, resolution_form: str
     ) -> None:
         repo = tmp_path / "repo"
-        _init_repo(repo)
+        init_git_repo_with_commit(repo)
         subprocess.run(["git", "remote", "add", "origin", origin_url], cwd=repo, check=True)
         result = self._origin_owner_repo(repo, resolution_form)
         assert result.returncode == 0, result.stderr
@@ -1715,7 +1715,7 @@ class TestLibOriginOwnerRepo:
         """A URL ending in `/` does not parse to an owner/repo shape, so a
         caller denies rather than comparing a wrong slug."""
         repo = tmp_path / "repo"
-        _init_repo(repo)
+        init_git_repo_with_commit(repo)
         subprocess.run(["git", "remote", "add", "origin", origin_url], cwd=repo, check=True)
         result = self._origin_owner_repo(repo, resolution_form)
         assert result.returncode != 0
@@ -1729,7 +1729,7 @@ class TestLibOriginOwnerRepo:
         `git config --get` does not, so the two forms read different URLs here
         and must still agree on the slug."""
         repo = tmp_path / "repo"
-        _init_repo(repo)
+        init_git_repo_with_commit(repo)
         subprocess.run(["git", "remote", "add", "origin", "alias:foo/bar.git"], cwd=repo, check=True)
         subprocess.run(["git", "config", "url.https://github.com/.insteadOf", "alias:"], cwd=repo, check=True)
         result = self._origin_owner_repo(repo, resolution_form)
@@ -1738,7 +1738,7 @@ class TestLibOriginOwnerRepo:
 
     def test_fails_closed_with_no_origin_remote(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo(repo)
+        init_git_repo_with_commit(repo)
         result = _run_lib_call(f'_lib_origin_owner_repo "{repo}"', env=dict(os.environ))
         assert result.returncode != 0
         assert result.stdout == ""
@@ -2529,7 +2529,7 @@ def _add_review_worktree(repo: Path, name: str) -> Path:
 
 def test_first_live_linked_worktree_skips_a_review_worktree(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     _add_review_worktree(repo, REVIEW_WORKTREE_NAME)
 
     result = _first_live_linked_worktree(repo)
@@ -2673,7 +2673,7 @@ def test_first_live_linked_worktree_counts_a_review_named_directory_outside_the_
     """Only a directory directly under .claude/worktrees is a review worktree,
     so a detached worktree elsewhere that merely shares the name stays live."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     lookalike = tmp_path / REVIEW_WORKTREE_NAME
     subprocess.run(
         ["git", "worktree", "add", "--detach", str(lookalike)],
@@ -2692,7 +2692,7 @@ def test_first_live_linked_worktree_returns_a_branch_worktree_directly_under_the
     """The repo's own layout is .claude/worktrees/<branch>; that worktree is
     the one a main-tree session should be told to enter."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     branch_worktree = _add_worktree_under_worktrees_dir(repo, "feature", branch="feature")
 
     result = _first_live_linked_worktree(repo)
@@ -2707,7 +2707,7 @@ def test_first_live_linked_worktree_skips_a_review_sibling_but_returns_the_branc
     """Real git porcelain output; the listing order is not pinned here (the
     shim test above pins both orders)."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     _add_review_worktree(repo, REVIEW_WORKTREE_NAME)
     branch_worktree = _add_worktree_under_worktrees_dir(repo, "feature", branch="feature")
 
@@ -2723,7 +2723,7 @@ def test_first_live_linked_worktree_counts_a_user_named_review_prefixed_detached
     """A name that only starts with review-pr- is not the shape
     review-pr-checkout.sh creates, so it stays live even when detached."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     user_worktree = _add_review_worktree(repo, "review-pr-hardening")
 
     result = _first_live_linked_worktree(repo)
@@ -2736,7 +2736,7 @@ def test_first_live_linked_worktree_counts_a_review_named_directory_nested_one_l
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     nested = _add_review_worktree(repo, f"nested/{REVIEW_WORKTREE_NAME}")
 
     result = _first_live_linked_worktree(repo)
@@ -2751,7 +2751,7 @@ def test_first_live_linked_worktree_counts_a_review_shaped_worktree_that_is_on_a
     """Review checkouts are always detached, so a branch worktree with the
     review-shaped name is someone's real work tree."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     branch_worktree = _add_worktree_under_worktrees_dir(
         repo, REVIEW_WORKTREE_NAME, branch="review-branch"
     )
@@ -2768,7 +2768,7 @@ def test_first_live_linked_worktree_counts_a_review_shaped_worktree_under_anothe
     """Only the repo's own .claude/worktrees directory qualifies, not any
     directory with that tail."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     elsewhere = _add_worktree_under_worktrees_dir(
         repo, REVIEW_WORKTREE_NAME, worktrees_root=tmp_path / "other-tree"
     )

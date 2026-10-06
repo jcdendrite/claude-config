@@ -312,7 +312,7 @@ class TestLibMainRepoRoot:
 
     def test_matches_lib_repo_root_from_the_main_tree(self, tmp_path):
         repo = tmp_path / "main-repo-root-repo"
-        _init_repo(repo)
+        init_git_repo(repo)
         expected = subprocess.run(
             ["bash", "-c", f'. "{LIB_SH}"; _lib_repo_root'],
             cwd=repo, capture_output=True, text=True, check=True,
@@ -329,7 +329,7 @@ class TestLibMainRepoRoot:
         must always return the main tree's path instead, so every consumer
         agrees on one root from any tree."""
         repo = tmp_path / "main-repo"
-        _init_repo(repo)
+        init_git_repo(repo)
         (repo / "file.txt").write_text("first\n")
         subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -388,7 +388,7 @@ class TestLibMainRepoRoot:
         self, tmp_path, from_linked_worktree
     ):
         repo = tmp_path / "old-git-repo"
-        _init_repo(repo)
+        init_git_repo(repo)
         (repo / "file.txt").write_text("first\n")
         subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
@@ -431,7 +431,7 @@ class TestLibReviewPrMarkerRepoHash:
 
     def test_main_tree_and_linked_worktree_resolve_the_same_key_as_the_main_root_hash(self, tmp_path):
         repo = tmp_path / "marker-key-repo"
-        _init_repo(repo)
+        init_git_repo(repo)
         (repo / "file.txt").write_text("first\n")
         subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
