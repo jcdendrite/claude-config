@@ -226,12 +226,11 @@ def _fix_diff_section_body(
 ) -> str:
     """The "Fix diff" section's body: the fix commit's diff limited to
     `defect.path`, since one fix commit may hold fixes for many other defects.
-    The limit is the defect's head path, so a fix that changes only the file a
-    blame followed the line into gets the path-and-changed-paths listing
-    instead of a diff. When the fix changes no line of that path, the body says
-    so and gives the path and the fix commit's changed paths, without their
-    diffs, as fenced data. `fix_commit_paths` is the fix commit's changed paths,
-    and `marker` occurs in none of the text this fences."""
+    The limit is the defect's head path. When the fix changes no line of that
+    path (as when it changes only the file a blame followed the line into), the
+    body says so and gives the path and the fix commit's changed paths, without
+    their diffs, as fenced data. `fix_commit_paths` is the fix commit's changed
+    paths, and `marker` occurs in none of the text this fences."""
     if defect.path in fix_commit_paths:
         return _fenced_git_text(_git_diff_against_first_parent(defect.fix_commit, repo_dir=source_repo, path=defect.path))
     listing = f"defect path: {defect.path}\nchanged paths:\n{_changed_paths_listing(fix_commit_paths)}"

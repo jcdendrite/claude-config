@@ -791,6 +791,12 @@ _PRINTABLE_DESCRIPTIONS = [
     pytest.param("em\u2003space and ideographic\u3000space", id="other-space-separators"),
     pytest.param("\u05e9\u05dc\u05d5\u05dd hebrew", id="hebrew-word-without-a-bidi-control"),
     pytest.param("\u0645\u0631\u062d\u0628\u0627 arabic", id="arabic-word-without-a-bidi-control"),
+    # The code point just outside each `_NONCHARACTER_RANGES` edge: a range widened by one code point rejects the row.
+    pytest.param("edge \ufdcf text", id="so-arabic-ligature-before-the-arabic-presentation-noncharacters"),
+    pytest.param("edge \ufdf0 text", id="lo-arabic-ligature-after-the-arabic-presentation-noncharacters"),
+    pytest.param("edge \ufffd text", id="so-replacement-character-before-the-last-two-of-plane-0"),
+    pytest.param("edge \U00010000 text", id="lo-linear-b-syllable-after-plane-0"),
+    pytest.param("edge \U0001fffd text", id="cn-unassigned-before-the-last-two-of-plane-1"),
     *_VISIBLE_RANGE_NEIGHBOURS,
 ]
 

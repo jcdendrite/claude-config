@@ -434,7 +434,9 @@ class TestCmdFreezeGuards:
     ) -> argparse.Namespace:
         """`freeze` args for one record of `source` with `description`, beside a review-round candidate whose
         excerpt repeats the comment text. `.local/` holds the record's candidate, with its stored comment text,
-        unless `stored_in_local` is false. That candidate claims `local_source`, which defaults to `source`."""
+        unless `stored_in_local` is false. That candidate claims `local_source`, which defaults to `source`. A
+        review-round record's candidate also carries an excerpt sharing no word run with the description, so the
+        freeze reaches the provenance check."""
         args = _prepare_freeze(tmp_path, monkeypatch)
         (record,) = defects.load_confirmed_defects(Path(args.defects_path))
         defects.save_confirmed_defects(Path(args.defects_path), [ConfirmedDefect(
@@ -446,6 +448,7 @@ class TestCmdFreezeGuards:
         if stored_in_local:
             local_candidates.append(_candidate(
                 id="comment-1", source=local_source or source, evidence={"public_comment_text": self._COMMENT_TEXT},
+                excerpt="an unrelated excerpt that repeats nothing from the comment" if source == "review-round" else "",
             ))
         defects.save_candidates(Path(args.local_dir) / "szz_candidates.json", local_candidates)
         return args
@@ -493,7 +496,9 @@ class TestCmdFreezeGuards:
         exit_code = run_review_bench.cmd_freeze(args)
 
         assert exit_code == 2
-        assert "comment-1" in capsys.readouterr().err
+        stderr = capsys.readouterr().err
+        assert "comment-1" in stderr
+        assert "shares word run" in stderr
 
     def test_a_committed_szz_record_gets_no_exemption_from_a_local_candidate_that_claims_pr_comment(
         self, tmp_path: Path, monkeypatch, capsys,

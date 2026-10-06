@@ -159,7 +159,7 @@ class TestArmRecallAndSensitivityVerdict:
             for i in range(n_defects)
         }
 
-    def test_identical_arms_give_an_interval_around_zero(self) -> None:
+    def test_identical_per_defect_counts_give_a_zero_width_interval_at_zero(self) -> None:
         counts = self._counts(0.7, 0.7)
         ids = list(counts)
         lower, upper = analysis.bootstrap_interval(
@@ -168,6 +168,30 @@ class TestArmRecallAndSensitivityVerdict:
         )
         assert lower == pytest.approx(0.0, abs=1e-9)
         assert upper == pytest.approx(0.0, abs=1e-9)
+
+    def test_arms_of_equal_mean_recall_with_per_defect_differences_give_an_interval_bracketing_zero(self) -> None:
+        # The per-defect found-count differences sum to zero, so the point estimate is 0 while resamples vary.
+        found_count_differences = [2, -2, 1, -1, 3, -3, 0, 0, 1, -1]
+        baseline_found = 5
+        counts = {
+            f"d{i}": analysis.DefectRecallCounts(
+                defect_id=f"d{i}", found_by_arm={ARM_BASELINE: baseline_found, ARM_X: baseline_found + difference},
+                completed_by_arm={ARM_BASELINE: 10, ARM_X: 10},
+            )
+            for i, difference in enumerate(found_count_differences)
+        }
+        ids = list(counts)
+        assert analysis.arm_recall(counts, ids, ARM_BASELINE) == pytest.approx(analysis.arm_recall(counts, ids, ARM_X))
+
+        interval = analysis.bootstrap_interval(
+            ids, lambda rs: analysis.arm_recall(counts, rs, ARM_BASELINE) - analysis.arm_recall(counts, rs, ARM_X),
+            cluster_by_defect=_own_fixture_each(ids), resamples=500, seed=1,
+        )
+
+        assert interval is not None
+        lower, upper = interval
+        assert lower < 0 < upper
+        assert upper - lower > 0
 
     def test_a_known_shift_flips_the_recall_verdict_at_delta(self) -> None:
         # arm_x much worse than baseline -- non-inferiority must fail.
