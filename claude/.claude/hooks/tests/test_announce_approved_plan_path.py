@@ -16,6 +16,7 @@ from helpers import (
     bash_input,
     extract_skill_command,
     git_toplevel,
+    init_git_repo_with_commit,
     install_marker_script,
     run_hook,
     symlink_hooks_lib_chain,
@@ -113,16 +114,6 @@ def _observed_tool_response(stdout: str) -> dict:
 def _announce(home: Path, command: str, stdout: str, tool_name: str = "Bash") -> str | None:
     payload = _payload(command, _observed_tool_response(stdout), tool_name)
     return _message(_run_hook_raw(payload, home))
-
-
-def _init_repo(repo: Path) -> None:
-    repo.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-    (repo / "file.txt").write_text("first\n")
-    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
 
 
 def _run_real_marker_write(
@@ -386,7 +377,7 @@ class TestWithheldPath:
         self, isolated_home, tmp_path
     ):
         repo = tmp_path / "dir with space" / "repo"
-        _init_repo(repo)
+        init_git_repo_with_commit(repo)
         marker_stdout = _run_real_marker_write(repo, isolated_home)
         assert marker_stdout.startswith(COVERED_PATH_PREFIX)
 

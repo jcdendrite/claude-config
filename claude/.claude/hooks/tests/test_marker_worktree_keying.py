@@ -24,6 +24,7 @@ import pytest
 from helpers import (
     HOOKS_DIR,
     SCRIPTS_DIR,
+    init_git_repo,
     run_hook,
     staged_diff_hash,
     write_marker,
@@ -37,13 +38,6 @@ MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 REQUIRE_CODE_REVIEW = HOOKS_DIR / "require-code-review.sh"
 REQUIRE_PLAN_REVIEW = HOOKS_DIR / "require-plan-review.sh"
 REQUIRE_SKILL_REVIEW = HOOKS_DIR.parent.parent.parent / "plugins" / "skill-management" / "hooks" / "require-skill-review.sh"
-
-
-def _init_repo(path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
 
 
 def _run_marker(args: list[str], cwd, home) -> subprocess.CompletedProcess:
@@ -617,7 +611,7 @@ class TestReaderHooksHashComparisonUsesPayloadCwd:
         self, isolated_home, git_repo, tmp_path
     ):
         other_repo = tmp_path / "other-repo"
-        _init_repo(other_repo)
+        init_git_repo(other_repo)
         (other_repo / "f.txt").write_text("first\n")
         subprocess.run(["git", "add", "f.txt"], cwd=other_repo, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=other_repo, check=True)
@@ -645,7 +639,7 @@ class TestReaderHooksHashComparisonUsesPayloadCwd:
         self, isolated_home, git_repo, tmp_path
     ):
         other_repo = tmp_path / "other-skill-repo"
-        _init_repo(other_repo)
+        init_git_repo(other_repo)
         other_skill = other_repo / "claude-skills" / "skills" / "s" / "SKILL.md"
         other_skill.parent.mkdir(parents=True)
         other_skill.write_text("## initial\n")

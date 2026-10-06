@@ -43,6 +43,7 @@ from helpers import (
     build_octopus_merge_conflict,
     build_path_without,
     build_rebase_merges_replay_conflict,
+    init_git_repo_with_commit,
     push_conflicting_edit_to_origin,
     resolve_conflicted_rebase,
     reviewer_round_state_key,
@@ -2478,19 +2479,9 @@ def _first_live_linked_worktree(
     )
 
 
-def _init_repo(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
-    (path / "f.txt").write_text("x\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
-
-
 def test_first_live_linked_worktree_finds_a_present_worktree(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     wt = tmp_path / "wt"
     subprocess.run(
         ["git", "worktree", "add", "-b", "feature", str(wt)], cwd=repo, check=True, capture_output=True
@@ -2507,7 +2498,7 @@ def test_first_live_linked_worktree_ignores_a_stale_unpruned_entry(tmp_path: Pat
     without `git worktree prune` or `git worktree remove`. That stale entry
     must not count as a live worktree."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     wt = tmp_path / "wt"
     subprocess.run(
         ["git", "worktree", "add", "-b", "feature", str(wt)], cwd=repo, check=True, capture_output=True
@@ -2524,7 +2515,7 @@ def test_first_live_linked_worktree_returns_not_found_with_no_worktree_at_all(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
 
     result = _first_live_linked_worktree(repo)
 
@@ -2807,22 +2798,12 @@ def _resolve_default_branch(
     )
 
 
-def _init_repo_on_branch(path: Path, branch: str) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q", "-b", branch], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
-    (path / "f.txt").write_text("x\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
-
-
 def test_resolve_default_branch_via_symbolic_ref_for_non_main_name(tmp_path: Path) -> None:
     """A repo whose default branch is neither main/master/develop still
     resolves correctly via the direct origin/HEAD symbolic ref, without
     ever reaching the candidate-probe fallback."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "trunk")
+    init_git_repo_with_commit(repo, branch="trunk")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/trunk", "HEAD"], cwd=repo, check=True
     )
@@ -2845,7 +2826,7 @@ def test_resolve_default_branch_falls_back_to_candidate_probe_for_develop(
     landing on the first one (main, master, develop) with a matching
     origin/<candidate> ref."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "develop")
+    init_git_repo_with_commit(repo, branch="develop")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
     )
@@ -2865,7 +2846,7 @@ def test_resolve_default_branch_candidate_probe_reads_remote_ref_not_local_branc
     reading the remote-tracking ref, not by reporting whatever branch
     happens to be checked out locally."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "feature")
+    init_git_repo_with_commit(repo, branch="feature")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
     )
@@ -2881,7 +2862,7 @@ def test_resolve_default_branch_empty_when_unresolvable(tmp_path: Path) -> None:
     all (e.g. a repo with no configured remote) — the helper reports "could
     not resolve" as empty stdout and a non-zero exit rather than guessing."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
 
     result = _resolve_default_branch(repo)
 
@@ -2897,7 +2878,7 @@ def test_resolve_default_branch_empty_when_candidate_probe_finds_no_match(
     report unresolvable, with a non-zero exit, rather than matching trunk by
     some other means."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "trunk")
+    init_git_repo_with_commit(repo, branch="trunk")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/trunk", "HEAD"], cwd=repo, check=True
     )
@@ -2915,7 +2896,7 @@ def test_resolve_default_branch_symbolic_ref_preserves_slash_in_branch_name(
     unmangled -- the "refs/remotes/origin/" strip is a literal anchored
     prefix strip, not a strip of every slash in the string."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "release/v2")
+    init_git_repo_with_commit(repo, branch="release/v2")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/release/v2", "HEAD"], cwd=repo, check=True
     )
@@ -2937,7 +2918,7 @@ def test_resolve_default_branch_candidate_probe_prefers_earlier_candidate(
     origin/main) — the candidate loop returns master, the earlier-listed
     candidate in the main/master/develop order, not develop."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "master")
+    init_git_repo_with_commit(repo, branch="master")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/master", "HEAD"], cwd=repo, check=True
     )
@@ -2960,7 +2941,7 @@ def test_resolve_default_branch_candidate_probe_prefers_main_over_master(
     test_resolve_default_branch_candidate_probe_prefers_earlier_candidate
     covers."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
     )
@@ -2983,7 +2964,7 @@ def test_resolve_default_branch_symbolic_ref_with_dangling_target_is_rejected(
     target reports unresolvable, with a non-zero exit, exactly like any
     other unverified origin/HEAD (docs/design-decisions.md #54)."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
         cwd=repo, check=True,
@@ -3002,7 +2983,7 @@ def test_default_branch_from_origin_head_resolves_verified_target_in_isolation(
     guessing layer): a valid origin/HEAD symbolic ref pointing at a verified
     target resolves, with no candidate-probe fallback involved at all."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "trunk")
+    init_git_repo_with_commit(repo, branch="trunk")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/trunk", "HEAD"], cwd=repo, check=True
     )
@@ -3029,7 +3010,7 @@ def test_default_branch_from_origin_head_rejects_dangling_target_in_isolation(
     test_resolve_default_branch_symbolic_ref_with_dangling_target_is_rejected
     does."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
         cwd=repo, check=True,
@@ -3050,7 +3031,7 @@ def test_default_branch_or_guess_falls_through_on_dangling_origin_head_to_live_d
     _lib_default_branch_or_guess falls through to the candidate probe on the
     narrow layer's failure rather than returning empty outright."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "develop")
+    init_git_repo_with_commit(repo, branch="develop")
     subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
         cwd=repo, check=True,
@@ -3118,7 +3099,7 @@ def test_verification_cache_sentinel_present_on_origin_default(tmp_path: Path) -
     """The positive case the opt-in gate depends on: the sentinel committed
     at origin/<default-branch> reads present."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     _commit_sentinel_at_ref(repo, "refs/remotes/origin/main")
     subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
@@ -3134,7 +3115,7 @@ def test_verification_cache_sentinel_absent_from_origin_default(tmp_path: Path) 
     """origin/<default-branch> exists and resolves, but the sentinel was
     never committed to it -- the default-off gate's ordinary state."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
     )
@@ -3154,7 +3135,7 @@ def test_verification_cache_sentinel_absent_when_origin_head_unset(tmp_path: Pat
     _lib_default_branch_from_origin_head's own two-outcome contract rather
     than falling back to guessing a branch name."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     _commit_sentinel_at_ref(repo, "refs/remotes/origin/main")
 
     result = _sentinel_present(repo)
@@ -3169,7 +3150,7 @@ def test_verification_cache_sentinel_present_only_on_non_default_branch_reads_ab
     origin/main, which lacks it -- presence on a non-default branch must not
     count as opted in."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
     )
@@ -3223,7 +3204,7 @@ def test_verification_cache_sentinel_present_when_path_is_a_tree(tmp_path: Path)
     an object exists at the sentinel path but not its type, so a tree
     (directory) committed there reads as present identically to a blob."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     _commit_sentinel_tree_at_ref(repo, "refs/remotes/origin/main")
     subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
@@ -3258,7 +3239,7 @@ def test_head_tree_hash_capped_matches_git_rev_parse(tmp_path: Path) -> None:
     """The capped path's stdout is exactly `git rev-parse HEAD^{tree}` --
     write and check's shared recipe depends on this matching bit-for-bit."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     expected = subprocess.run(
         ["git", "rev-parse", "HEAD^{tree}"], cwd=repo,
         capture_output=True, text=True, check=True,
@@ -3274,7 +3255,7 @@ def test_head_tree_hash_uncapped_matches_git_rev_parse(tmp_path: Path) -> None:
     """Same recipe as the capped case, run through the uncapped branch --
     both cap_mode arguments must compute the identical hash."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     expected = subprocess.run(
         ["git", "rev-parse", "HEAD^{tree}"], cwd=repo,
         capture_output=True, text=True, check=True,
@@ -3305,7 +3286,7 @@ def test_head_tree_hash_invalid_cap_mode_exits_2_with_message(tmp_path: Path) ->
     it exits 2 (distinct from the 1 a resolvable-but-absent HEAD returns) and
     names the bad value in its stderr message."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
 
     result = _head_tree_hash_result(repo, "sideways")
 
@@ -3322,7 +3303,7 @@ def test_head_tree_hash_capped_timeout_returns_absent_not_a_hang(tmp_path: Path)
     the 5s _lib_capped cap, and a killed call must fall through to the same
     absent outcome a commit-less repo gets, never a false hash."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     real_git = shutil.which("git")
     if not real_git:
         pytest.skip("git not found in PATH")
@@ -7974,7 +7955,7 @@ def _git_supports_sha256_object_format() -> bool:
 class TestGitInprogressStateDetection:
     def test_detects_merge(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_merge(repo)
         result = _git_inprogress_state(repo)
         assert result.returncode == 0
@@ -7982,7 +7963,7 @@ class TestGitInprogressStateDetection:
 
     def test_detects_cherry_pick(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_cherry_pick(repo)
         result = _git_inprogress_state(repo)
         assert result.returncode == 0
@@ -7990,7 +7971,7 @@ class TestGitInprogressStateDetection:
 
     def test_detects_revert(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         result = _git_inprogress_state(repo)
         assert result.returncode == 0
@@ -7998,7 +7979,7 @@ class TestGitInprogressStateDetection:
 
     def test_detects_rebase_plain(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_rebase(repo)
         result = _git_inprogress_state(repo)
         assert result.returncode == 0
@@ -8014,7 +7995,7 @@ class TestGitInprogressStateDetection:
         here, alongside a genuine conflicted interactive rebase for the
         rebase half."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         feature_tip = build_conflicted_rebase(repo, interactive=True)
         gitdir = repo / ".git"
         (gitdir / "CHERRY_PICK_HEAD").write_text(feature_tip + "\n")
@@ -8024,14 +8005,14 @@ class TestGitInprogressStateDetection:
 
     def test_no_state_in_ordinary_repo(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         result = _git_inprogress_state(repo)
         assert result.returncode == 1
         assert result.stdout == ""
 
     def test_undetermined_when_git_missing(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         farm_dir = tmp_path / "path-without-git"
         farm_dir.mkdir()
         restricted_path = build_path_without("git", farm_dir)
@@ -8061,7 +8042,7 @@ class TestGitInprogressStateDetection:
         pair but rebase-vs-cherry-pick, which the previous test covers with
         a real fixture."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         gitdir = repo / ".git"
         head = _run_git(repo, "rev-parse", "HEAD").strip()
         _forge_state_marker(gitdir, higher, head)
@@ -8090,7 +8071,7 @@ def test_build_conflicted_rebase_pre_resolution_checkpoint_has_all_three_stages(
     ancestor. `git ls-files --unmerged` reports one line per populated
     stage for the conflicted path."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     build_conflicted_rebase(repo)
     unmerged = _run_git(repo, "ls-files", "--unmerged")
     stages = {line.split()[2] for line in unmerged.splitlines() if line}
@@ -8102,7 +8083,7 @@ def test_resolve_conflicted_rebase_advances_to_staged_checkpoint(tmp_path: Path)
     stage 1/2/3 entries) and post-resolution (staged, ready for
     `git rebase --continue`)."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     build_conflicted_rebase(repo)
     resolve_conflicted_rebase(repo)
     status = _run_git(repo, "status", "--porcelain=v1")
@@ -8130,7 +8111,7 @@ def test_git_diff_cached_against_unresolved_conflict_git_primitive_fact(
     test_continue_at_unresolved_conflict_checkpoint_is_a_clean_passthrough in
     test_deny_pii_in_commits.py and test_deny_private_project_refs.py."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     build_conflicted_rebase(repo)  # pre-`git add` checkpoint: unresolved
     result = subprocess.run(
         ["git", "diff", "--cached"], cwd=repo, capture_output=True, text=True
@@ -8149,7 +8130,7 @@ def test_git_diff_cached_against_unresolved_conflict_git_primitive_fact(
 class TestGateDiffBaseNoState:
     def test_no_state_exits_1_with_empty_base(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         (repo / "f.txt").write_text("y\n")
         _run_git(repo, "add", "f.txt")
         result = _gate_diff_base(repo)
@@ -8163,7 +8144,7 @@ class TestGateDiffBaseNoState:
         _lib_staged_diff_hash must produce the exact byte-identical digest
         today's production `git diff --cached | sha256sum` recipe does."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         (repo / "f.txt").write_text("y\n")
         _run_git(repo, "add", "f.txt")
         result = _staged_diff_hash(repo, "")
@@ -8229,7 +8210,7 @@ class TestGateDiffBaseTrustedAnchor:
         """REVERT_HEAD is an ancestor of HEAD by construction, so a
         genuine revert always trusts via the HEAD anchor."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         base_result = _gate_diff_base(repo)
         assert base_result.returncode == 0
@@ -8310,7 +8291,7 @@ class TestGateDiffBaseAnchorNamespaceShadow:
         self, tmp_path: Path, shadow_kind: str, has_remote_tracking_ref: bool, state: str
     ) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         _run_git(repo, "checkout", "-qb", "side")
         (repo / "f.txt").write_text("unreviewed\n")
         _run_git(repo, "add", "f.txt")
@@ -8344,7 +8325,7 @@ class TestGateDiffBaseUntrustedAnchor:
         -- the right answer, since that content genuinely has not been
         reviewed on this branch."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_cherry_pick(repo)
         result = _gate_diff_base(repo)
         assert result.returncode == 1
@@ -8358,7 +8339,7 @@ class TestGateDiffBaseUntrustedAnchor:
         -- an orphan-history commit, sharing no ancestry with the
         checked-out branch at all -- must not be trusted."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         _run_git(repo, "checkout", "-q", "--orphan", "orphan")
         (repo / "orphan.txt").write_text("z\n")
         _run_git(repo, "add", "orphan.txt")
@@ -8381,7 +8362,7 @@ class TestGateDiffBaseUntrustedAnchor:
         narrow (exactly main/master/develop, never a refs/remotes/* pattern)
         and never resolves to this name."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         _run_git(repo, "checkout", "-qb", "side")
         (repo / "f.txt").write_text("side\n")
         _run_git(repo, "add", "f.txt")
@@ -8409,7 +8390,7 @@ class TestGateDiffBaseUntrustedAnchor:
         state_oid's shape guard, so it can't prove the guard is
         load-bearing."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         _forge_state_marker(repo / ".git", state, "HEAD")
         result = _gate_diff_base(repo)
         assert result.returncode == 1
@@ -8419,7 +8400,7 @@ class TestGateDiffBaseUntrustedAnchor:
 class TestGateDiffBaseTopologyFallback:
     def test_octopus_merge_falls_back_to_empty_base(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_octopus_merge_conflict(repo)
         result = _gate_diff_base(repo)
         assert result.returncode == 1
@@ -8438,7 +8419,7 @@ class TestGateDiffBaseTopologyFallback:
         must still fall back to the empty base -- not treat line 1's own
         trust as good enough for the whole value."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         trusted_oid = _run_git(repo, "rev-parse", "HEAD").strip()
         _run_git(repo, "checkout", "-qb", "untrusted-line")
         (repo / "f.txt").write_text("untrusted\n")
@@ -8459,7 +8440,7 @@ class TestGateDiffBaseTopologyFallback:
         erroring. Closed because the replayed merge commit reaches neither
         anchor, not by a second mechanism."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_rebase_merges_replay_conflict(repo)
         result = _gate_diff_base(repo)
         assert result.returncode == 1
@@ -8473,7 +8454,7 @@ class TestMergeBaseIsAncestorPrimitiveContract:
 
     def test_ancestor_returns_zero(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         first = _run_git(repo, "rev-parse", "HEAD").strip()
         (repo / "f.txt").write_text("y\n")
         _run_git(repo, "add", "f.txt")
@@ -8485,7 +8466,7 @@ class TestMergeBaseIsAncestorPrimitiveContract:
 
     def test_non_ancestor_returns_nonzero(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         _run_git(repo, "checkout", "-qb", "side")
         (repo / "f.txt").write_text("side\n")
         _run_git(repo, "add", "f.txt")
@@ -8499,7 +8480,7 @@ class TestMergeBaseIsAncestorPrimitiveContract:
 
     def test_unresolvable_oid_returns_nonzero(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", "0" * 40, "HEAD"], cwd=repo, capture_output=True
         )
@@ -8511,7 +8492,7 @@ def test_git_diff_cached_accepts_bare_tree_oid(tmp_path: Path) -> None:
     staged content against it directly -- pins that `git diff --cached`
     accepts one."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     tree_oid = _run_git(repo, "rev-parse", "HEAD^{tree}").strip()
     (repo / "f.txt").write_text("y\n")
     _run_git(repo, "add", "f.txt")
@@ -8722,7 +8703,7 @@ class TestGateDiffBaseGitVersionFallback:
         self, tmp_path: Path
     ) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         bin_dir = tmp_path / "bin-reject-write-tree"
         _make_git_rejecting_write_tree(bin_dir)
@@ -8733,7 +8714,7 @@ class TestGateDiffBaseGitVersionFallback:
 
     def test_merge_base_flag_rejected_falls_back_to_empty_base(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)  # revert's merge-tree call uses --merge-base=
         bin_dir = tmp_path / "bin-reject-merge-base"
         _make_git_rejecting_merge_base_flag(bin_dir)
@@ -8751,7 +8732,7 @@ class TestGateDiffBaseGitVersionFallback:
         version-specific stub, so the merge-tree call this design issues
         fails the same way the stubbed-rejection bands above do."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         root_oid = _run_git(repo, "rev-parse", "HEAD").strip()
         (repo / "f.txt").write_text("y\n")
         _run_git(repo, "add", "f.txt")
@@ -8780,7 +8761,7 @@ class TestGateDiffBaseCapFaultInjection:
         status. timeout=30 bounds a cap regression to a fast failure
         instead of a 20s hang (the shim's own sleep)."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         bin_dir = tmp_path / "bin-blocking-merge-tree"
         _make_blocking_merge_tree_git(bin_dir)
@@ -8801,7 +8782,7 @@ class TestGateDiffBaseCapFaultInjection:
         call -- its own independent `|| return 2` must not let a partial
         gitdir escape onto stdout either."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         bin_dir = tmp_path / "bin-blocking-absolute-git-dir"
         _make_blocking_absolute_git_dir_git(bin_dir)
         env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
@@ -8822,7 +8803,7 @@ class TestGateDiffBaseCapFaultInjection:
         exit-code-match block must not let the unvalidated tree_oid escape
         onto stdout either."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         bin_dir = tmp_path / "bin-blocking-tree-verify"
         _make_blocking_tree_verify_git(bin_dir)
@@ -8849,7 +8830,7 @@ class TestGateDiffBaseCapKillStatusesAreUndetermined:
         self, tmp_path: Path, arg_pattern: str, cap_kill_status: int
     ) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         bin_dir = tmp_path / "bin-exiting-with-status"
         _make_git_exiting_with_status(bin_dir, arg_pattern, cap_kill_status)
@@ -8869,7 +8850,7 @@ class TestGateDiffBaseMergeTreeSkippedWhenAnchorFails:
         every ordinary conflicted rebase, the exact arm this design newly
         gates."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_cherry_pick(repo)  # source never pushed: untrusted
         log_file = tmp_path / "git-calls.log"
         bin_dir = tmp_path / "bin-logging"
@@ -8894,7 +8875,7 @@ class TestGateDiffBaseSingleCallInvocationCount:
         self, tmp_path: Path
     ) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)  # HEAD-anchor trusted, no origin configured
         log_file = tmp_path / "git-calls.log"
         bin_dir = tmp_path / "bin-logging"
@@ -8922,7 +8903,7 @@ class TestGateDiffBaseNoCapBinary:
         actually degrades to running uncapped, not only that the capped
         path works."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         farm_dir = tmp_path / "path-without-timeout"
         farm_dir.mkdir()
@@ -8977,7 +8958,7 @@ class TestReviewerRoundStateKeyDuringRebase:
 
     def test_plain_rebase_leaves_head_detached(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_rebase(repo)
         symbolic_ref = subprocess.run(
             ["git", "symbolic-ref", "-q", "--short", "HEAD"], cwd=repo, capture_output=True
@@ -8987,7 +8968,7 @@ class TestReviewerRoundStateKeyDuringRebase:
 
     def test_interactive_rebase_leaves_head_detached(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_rebase(repo, interactive=True)
         symbolic_ref = subprocess.run(
             ["git", "symbolic-ref", "-q", "--short", "HEAD"], cwd=repo, capture_output=True
@@ -8999,7 +8980,7 @@ class TestReviewerRoundStateKeyDuringRebase:
 class TestStagedDiffHash:
     def test_empty_base_matches_production_recipe(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         (repo / "f.txt").write_text("changed\n")
         _run_git(repo, "add", "f.txt")
         result = _staged_diff_hash(repo, "")
@@ -9008,7 +8989,7 @@ class TestStagedDiffHash:
 
     def test_non_empty_base_matches_independent_oracle(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         tree_oid = _run_git(repo, "rev-parse", "HEAD^{tree}").strip()
         (repo / "f.txt").write_text("changed\n")
         _run_git(repo, "add", "f.txt")
@@ -9018,7 +8999,7 @@ class TestStagedDiffHash:
 
     def test_pathspec_restricts_diff(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         (repo / "other.txt").write_text("z\n")
         _run_git(repo, "add", "other.txt")
         _run_git(repo, "commit", "-qm", "add other.txt")
@@ -9035,7 +9016,7 @@ class TestStagedDiffHash:
 
     def test_sha256sum_absent_returns_empty_and_fails_closed(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         (repo / "f.txt").write_text("changed\n")
         _run_git(repo, "add", "f.txt")
         farm_dir = tmp_path / "path-without-sha256sum"
@@ -9059,7 +9040,7 @@ class TestStagedDiffHash:
         hashed onto stdout. timeout=30 bounds a cap regression to a fast
         failure instead of a 20s hang (the shim's own sleep)."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         (repo / "f.txt").write_text("changed\n")
         _run_git(repo, "add", "f.txt")
         bin_dir = tmp_path / "bin-blocking-diff"
