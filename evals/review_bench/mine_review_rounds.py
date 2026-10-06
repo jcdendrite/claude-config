@@ -19,18 +19,20 @@ import posixpath
 import subprocess
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPTS_DIR = _REPO_ROOT / "claude" / ".claude" / "scripts"
+# The imports below carry `noqa: E402`: `transcript_analysis` resolves only after this
+# `sys.path` edit, and pytest's `pythonpath` setting does not cover running the CLI directly.
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from transcript_analysis import corpus, pricing, review_rounds, reviewer_yield, scope  # noqa: E402
 
 from review_bench import mine_szz  # noqa: E402
-from review_bench.defects import Candidate, assert_unique_ids, guess_lens  # noqa: E402
+from review_bench.defects import Candidate, assert_unique_ids, escape_for_terminal, guess_lens, is_markdown_path  # noqa: E402
 
 
 def resolve_scoped_sessions(roots: Sequence[Path] | None = None):
@@ -269,7 +271,9 @@ def resolve_pr_number(repo_dir: Path, branch: str) -> int | None:
         # unreachable" is distinguishable after the fact from a genuine
         # "no PR for this branch" -- both otherwise resolve to the same
         # None -> ref_status pr-unknown.
-        detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
+        detail = escape_for_terminal(
+            exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
+        )
         print(f"mine-rounds: gh pr list for branch {branch!r} failed ({type(exc).__name__}): {detail}", file=sys.stderr)
         return None
     if not payload:
@@ -293,20 +297,22 @@ def resolve_branch_ref(repo_dir: Path, branch: str, pr_number: int | None) -> tu
         return "pr-unknown", None
     dest_ref = f"refs/review-bench/pr/{pr_number}"
     try:
+        # fetch.fsckObjects makes git reject malformed or hostile trees (a `.git` entry among them) as they arrive.
         # The `+` lets a re-mine move this ref after a force-pushed PR head;
         # `confirm` pins each defect's commits under its own ref, so moving
         # this one cannot orphan a confirmed defect.
         subprocess.run(
-            ["git", "fetch", "--no-tags", "origin", f"+refs/pull/{pr_number}/head:{dest_ref}"],
-            cwd=repo_dir, capture_output=True, text=True, timeout=_GIT_FETCH_TIMEOUT_S, check=True,
+            ["git", "-c", "fetch.fsckObjects=true", "fetch", "--no-tags", "origin", f"+refs/pull/{pr_number}/head:{dest_ref}"],
+            cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=_GIT_FETCH_TIMEOUT_S, check=True,
         )
     except subprocess.CalledProcessError as exc:
         # This repo's own .git is shared across every worktree, so a
         # ref-lock collision with a concurrent git operation elsewhere is a
-        # real possibility. Logging the raw stderr lets an operator tell
+        # real possibility. Logging the stderr (escaped) lets an operator tell
         # that collision apart from a genuine missing/protected PR head --
         # both otherwise resolve to the same fetch-failed outcome.
-        print(f"mine-rounds: fetch of PR #{pr_number}'s head failed: {exc.stderr.strip()}", file=sys.stderr)
+        detail = escape_for_terminal(exc.stderr.strip())
+        print(f"mine-rounds: fetch of PR #{pr_number}'s head failed: {detail}", file=sys.stderr)
         return "fetch-failed", None
     except subprocess.TimeoutExpired:
         print(f"mine-rounds: fetch of PR #{pr_number}'s head timed out after {_GIT_FETCH_TIMEOUT_S}s", file=sys.stderr)
@@ -323,7 +329,7 @@ def resolve_branch_ref(repo_dir: Path, branch: str, pr_number: int | None) -> tu
 def _merge_base(repo_dir: Path, a: str, b: str) -> str | None:
     try:
         result = subprocess.run(
-            ["git", "merge-base", a, b], cwd=repo_dir, capture_output=True, text=True,
+            ["git", "merge-base", a, b], cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace",
             timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
         )
     except _LOCAL_GIT_ERRORS:
@@ -334,8 +340,8 @@ def _merge_base(repo_dir: Path, a: str, b: str) -> str | None:
 def _commits_touching_path(repo_dir: Path, base: str, ref: str, path: str) -> list[tuple[str, float | None]]:
     try:
         result = subprocess.run(
-            ["git", "log", "--format=%H\x1f%aI", f"{base}..{ref}", "--", path],
-            cwd=repo_dir, capture_output=True, text=True, timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
+            ["git", "--literal-pathspecs", "log", "--format=%H\x1f%aI", f"{base}..{ref}", "--", path],
+            cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
         )
     except _LOCAL_GIT_ERRORS:
         return []
@@ -351,7 +357,7 @@ def _commits_touching_path(repo_dir: Path, base: str, ref: str, path: str) -> li
 def _rev_parse(repo_dir: Path, rev: str) -> str | None:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", rev], cwd=repo_dir, capture_output=True, text=True,
+            ["git", "rev-parse", rev], cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace",
             timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
         )
     except _LOCAL_GIT_ERRORS:
@@ -362,7 +368,7 @@ def _rev_parse(repo_dir: Path, rev: str) -> str | None:
 def _commit_date(repo_dir: Path, commit: str) -> str | None:
     try:
         result = subprocess.run(
-            ["git", "log", "-1", "--format=%aI", commit], cwd=repo_dir, capture_output=True, text=True,
+            ["git", "log", "-1", "--format=%aI", commit], cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace",
             timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
         )
     except _LOCAL_GIT_ERRORS:
@@ -376,7 +382,7 @@ def _paths_touched_on_branch(repo_dir: Path, base: str, ref: str) -> frozenset[s
     try:
         result = subprocess.run(
             ["git", "log", "-z", "--name-only", "--no-renames", "--format=", f"{base}..{ref}"],
-            cwd=repo_dir, capture_output=True, text=True, timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
+            cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace", timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
         )
     except _LOCAL_GIT_ERRORS:
         return frozenset()
@@ -553,6 +559,9 @@ def _branch_citation_events(branch_entries: list[_RoundEntry]) -> list[_Citation
     return events
 
 
+_EXCERPT_SEPARATOR = "\n\n"
+
+
 def _grouped_candidate(
     branch: str, path: str, resolution: _CommitResolution, events: list[_CitationEvent],
 ) -> Candidate:
@@ -575,11 +584,11 @@ def _grouped_candidate(
         fix_date=resolution.fix_date,
         lines_exist_at_introducing_head=True,
         reviewer_could_have_caught_it=True,
-        file_is_markdown=path.endswith(".md"),
+        file_is_markdown=is_markdown_path(path),
         ref_status=resolution.ref_status,
         # Every distinct excerpt stays, so confirm's provenance check still
         # covers text from the round pairs this candidate absorbed.
-        excerpt="\n\n".join(dict.fromkeys(event.excerpt for event in events)),
+        excerpt=_EXCERPT_SEPARATOR.join(dict.fromkeys(event.excerpt for event in events)),
         evidence={
             "branch": branch,
             "path": path,
@@ -591,6 +600,26 @@ def _grouped_candidate(
             "branch_commits": resolution.branch_commits,
         },
     )
+
+
+def merge_prior_candidate(regenerated: Candidate, prior: Candidate) -> Candidate:
+    """`regenerated` plus the content of the same-id `prior` entry that a rerun
+    over partly aged-out transcripts cannot rebuild: a non-empty description (which wins),
+    excerpt text, and round pairs. Every other field comes from `regenerated`."""
+    excerpt = _EXCERPT_SEPARATOR.join(dict.fromkeys(
+        part for text in (regenerated.excerpt, prior.excerpt) for part in text.split(_EXCERPT_SEPARATOR) if part
+    ))
+    edited_by_round_pair: dict[tuple[float, float], bool] = {}
+    for pair in (*regenerated.evidence.get("round_pairs", []), *prior.evidence.get("round_pairs", [])):
+        key = (pair["earlier_round_ts"], pair["later_round_ts"])
+        edited_by_round_pair[key] = edited_by_round_pair.get(key, False) or pair["main_thread_edited_between"]
+    evidence = dict(regenerated.evidence)
+    if edited_by_round_pair:
+        evidence["round_pairs"] = [
+            {"earlier_round_ts": earlier_ts, "later_round_ts": later_ts, "main_thread_edited_between": edited}
+            for (earlier_ts, later_ts), edited in edited_by_round_pair.items()
+        ]
+    return replace(regenerated, description=prior.description or regenerated.description, excerpt=excerpt, evidence=evidence)
 
 
 def _resolve_branch(repo_dir: Path, branch: str) -> tuple[str, str | None]:

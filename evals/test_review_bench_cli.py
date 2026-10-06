@@ -1,6 +1,6 @@
 """Tests for evals/run_review_bench.py's own CLI-level logic across `freeze`,
 `run`, `smoke`, `judge`, `analyze`, `spot-check`, `mine-szz`, `mine-rounds`,
-and `snapshot-arms`: argument handling, frozen-condition checks, report
+`mine-pr-comments`, and `snapshot-arms`: argument handling, frozen-condition checks, report
 contents, and exit codes, plus `analysis.hash_directory`, `cmd_freeze`'s
 written manifest fields, and `_build_spot_check_samples`'s reviewer/judge
 join. Offline throughout -- `cmd_freeze`'s own git calls run against a
@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import shutil
 import signal
@@ -21,11 +22,13 @@ from pathlib import Path
 
 import pytest
 import run_review_bench
-from review_bench import analysis, defects, runner
+from review_bench import analysis, defects, fixture_repo, runner
 from review_bench import arms as arms_mod
 from review_bench.adjudicate import JUDGE_ARM_PRECISION, JUDGE_ARM_RECALL
 from review_bench.defects import ConfirmedDefect
 from test_review_bench_mining import _commit, _init_repo, _write
+
+_ARM_1, _ARM_2 = arms_mod.ARM_CURRENT_RULE, arms_mod.ARM_FUNCTION_CONTEXT
 
 
 def _run_record(
@@ -68,7 +71,7 @@ _EXPECTED_FREEZE_CONDITIONS_FIELDS: frozenset[str] = frozenset({
     "planning_variance", "bootstrap_resamples", "bootstrap_seed", "campaign_seed",
     "kappa_floor", "missing_run_retry_rule", "later_arm_gate", "defect_ids",
     "harness_closure_hash", "harness_closure", "arm_dir_hashes", "judge_agent_hashes",
-    "defects_json_hash", "prompt_template_hashes", "environment", "main_commit_sha",
+    "defects_json_hash", "prompt_template_hashes", "environment", "main_commit_sha", "gating_rule", "gate_counts",
 })
 
 
@@ -100,6 +103,7 @@ class TestCmdFreezeManifestFields:
             ConfirmedDefect(
                 id="d1", source="szz", lens="staff-backend-engineer", base_commit=head_sha, head_commit=head_sha,
                 fix_commit=fix_sha, fix_date="2024-01-01", description="x changed its stale initial value.",
+                path="app.py", file_is_markdown=False,
             ),
         ]
         defects.save_confirmed_defects(defects_path, confirmed)
@@ -172,6 +176,7 @@ class TestCmdFreezeManifestFields:
             ConfirmedDefect(
                 id="d1", source="szz", lens="staff-backend-engineer", base_commit=head_sha, head_commit=head_sha,
                 fix_commit=fix_sha, fix_date="2024-01-01", description="x changed its stale initial value.",
+                path="app.py", file_is_markdown=False,
             ),
         ]
         defects.save_confirmed_defects(defects_path, confirmed)
@@ -216,6 +221,7 @@ def _prepare_freeze(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> argparse
         ConfirmedDefect(
             id="d1", source="szz", lens="staff-backend-engineer", base_commit=head_sha, head_commit=head_sha,
             fix_commit=fix_sha, fix_date="2024-01-01", description="x changed its stale initial value.",
+            path="app.py", file_is_markdown=False,
         ),
     ])
     local_dir = tmp_path / "local"
@@ -330,6 +336,54 @@ class TestCmdFreezeGuards:
 
         assert run_review_bench.cmd_freeze(args) == 0
 
+    def test_records_the_gating_rule_and_each_gates_fixture_and_defect_counts_without_the_secondary_cells(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        """Seven records over all six (source, kind) cells. The fixture is the (base, head) pair, so the
+        two `szz` code records share one and the two markdown records share another."""
+        args = _prepare_freeze(tmp_path, monkeypatch)
+        (record,) = defects.load_confirmed_defects(Path(args.defects_path))
+        base_commits = {name: character * 40 for name, character in (("a", "a"), ("b", "c"), ("c", "d"), ("d", "e"), ("e", "f"))}
+        cells = [  # (id, source, file_is_markdown, fixture)
+            ("szz-code-1", "szz", False, "a"), ("szz-code-2", "szz", False, "a"), ("rr-code", "review-round", False, "b"),
+            ("rr-md", "review-round", True, "c"), ("pc-md", "pr-comment", True, "c"),
+            ("pc-code", "pr-comment", False, "d"), ("szz-md", "szz", True, "e"),
+        ]
+        defects.save_confirmed_defects(Path(args.defects_path), [
+            ConfirmedDefect(**{
+                **record.to_dict(), "id": defect_id, "source": source, "file_is_markdown": file_is_markdown,
+                "base_commit": base_commits[fixture],
+            })
+            for defect_id, source, file_is_markdown, fixture in cells
+        ])
+        defects.save_candidates(Path(args.local_dir) / "review_round_candidates.json", [
+            _candidate(id=defect_id, source="review-round", excerpt="A finding about an unrelated cache.")
+            for defect_id in ("rr-code", "rr-md")
+        ])
+
+        assert run_review_bench.cmd_freeze(args) == 0
+
+        conditions = json.loads(Path(args.out).read_text())
+        assert conditions["gating_rule"] == analysis.gating_rule_record()
+        assert conditions["gate_counts"] == {
+            "code": {"fixture_count": 2, "defect_count": 3}, "markdown": {"fixture_count": 1, "defect_count": 2},
+        }
+        stderr = capsys.readouterr().err
+        assert "freeze: secondary: 2 fixture(s), 2 defect(s)" in stderr
+        assert f"freeze: code: 2 fixture(s), 3 defect(s) -- below N_min(10) = {analysis.n_min(10)}" in stderr
+
+    def test_a_gating_rule_out_of_step_with_known_sources_exits_2_without_writing(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        args = _prepare_freeze(tmp_path, monkeypatch)
+        monkeypatch.setattr(analysis, "GATING_RULE", {**analysis.GATING_RULE, ("pr-body", False): "code"})
+
+        exit_code = run_review_bench.cmd_freeze(args)
+
+        assert exit_code == 2
+        assert "unknown sources: ['pr-body']" in capsys.readouterr().err
+        assert not Path(args.out).exists()
+
     def test_a_stale_smoke_manifest_hash_exits_2(self, tmp_path: Path, monkeypatch, capsys) -> None:
         args = _prepare_freeze(tmp_path, monkeypatch)
         args.last_smoke_manifest_hash = "0" * 64
@@ -367,6 +421,112 @@ class TestCmdFreezeGuards:
         stderr = capsys.readouterr().err
         assert "d1" in stderr
         assert "shares word run" in stderr
+        assert not Path(args.out).exists()
+
+    # --- a pr-comment record's description may repeat the comment text stored in .local/ ---
+
+    _COMMENT_TEXT = "app.py:2 — alpha bravo charlie delta echo foxtrot golf."
+    _EXCERPT_REPEATING_THE_COMMENT = "the finding says alpha bravo charlie delta echo foxtrot golf and more"
+
+    def _freeze_args_for_a_record(
+        self, tmp_path: Path, monkeypatch, *, source: str, description: str, stored_in_local: bool = True,
+        local_source: str | None = None,
+    ) -> argparse.Namespace:
+        """`freeze` args for one record of `source` with `description`, beside a review-round candidate whose
+        excerpt repeats the comment text. `.local/` holds the record's candidate, with its stored comment text,
+        unless `stored_in_local` is false. That candidate claims `local_source`, which defaults to `source`. A
+        review-round record's candidate also carries an excerpt sharing no word run with the description, so the
+        freeze reaches the provenance check."""
+        args = _prepare_freeze(tmp_path, monkeypatch)
+        (record,) = defects.load_confirmed_defects(Path(args.defects_path))
+        defects.save_confirmed_defects(Path(args.defects_path), [ConfirmedDefect(
+            **{**record.to_dict(), "id": "comment-1", "source": source, "description": description},
+        )])
+        local_candidates = [_candidate(
+            id="rr-excerpt", source="review-round", excerpt=self._EXCERPT_REPEATING_THE_COMMENT,
+        )]
+        if stored_in_local:
+            local_candidates.append(_candidate(
+                id="comment-1", source=local_source or source, evidence={"public_comment_text": self._COMMENT_TEXT},
+                excerpt="an unrelated excerpt that repeats nothing from the comment" if source == "review-round" else "",
+            ))
+        defects.save_candidates(Path(args.local_dir) / "szz_candidates.json", local_candidates)
+        return args
+
+    def test_a_verbatim_pr_comment_description_sharing_a_run_with_an_excerpt_freezes(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        args = self._freeze_args_for_a_record(
+            tmp_path, monkeypatch, source="pr-comment", description=self._COMMENT_TEXT,
+        )
+
+        assert run_review_bench.cmd_freeze(args) == 0
+
+    def test_words_appended_to_a_pr_comment_that_form_an_excerpt_run_exit_2_naming_the_run(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        args = self._freeze_args_for_a_record(
+            tmp_path, monkeypatch, source="pr-comment", description=self._COMMENT_TEXT,
+        )
+        # An excerpt run the comment text does not hold, which the description now repeats.
+        defects.save_candidates(Path(args.local_dir) / "review_round_candidates.json", [_candidate(
+            id="rr-second-excerpt", source="review-round", excerpt="one two three four five six seven",
+        )])
+        (record,) = defects.load_confirmed_defects(Path(args.defects_path))
+        defects.save_confirmed_defects(Path(args.defects_path), [ConfirmedDefect(
+            **{**record.to_dict(), "description": f"{self._COMMENT_TEXT} one two three four five six"},
+        )])
+
+        exit_code = run_review_bench.cmd_freeze(args)
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert "comment-1" in stderr
+        assert "shares word run 'one two three four five six'" in stderr
+        assert not Path(args.out).exists()
+
+    @pytest.mark.parametrize("source", ["review-round", "szz"])
+    def test_a_record_outside_the_github_comment_sources_gets_no_exemption_from_the_stored_comment_text(
+        self, tmp_path: Path, monkeypatch, capsys, source: str,
+    ) -> None:
+        args = self._freeze_args_for_a_record(
+            tmp_path, monkeypatch, source=source, description=self._COMMENT_TEXT,
+        )
+
+        exit_code = run_review_bench.cmd_freeze(args)
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert "comment-1" in stderr
+        assert "shares word run" in stderr
+
+    def test_a_committed_szz_record_gets_no_exemption_from_a_local_candidate_that_claims_pr_comment(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        """`.local/` is hand-editable, so the record's own committed `source` decides the exemption."""
+        args = self._freeze_args_for_a_record(
+            tmp_path, monkeypatch, source="szz", description=self._COMMENT_TEXT, local_source="pr-comment",
+        )
+
+        exit_code = run_review_bench.cmd_freeze(args)
+
+        assert exit_code == 2
+        stderr = capsys.readouterr().err
+        assert "comment-1" in stderr
+        assert "shares word run" in stderr
+        assert not Path(args.out).exists()
+
+    def test_a_pr_comment_record_whose_candidate_is_missing_from_local_falls_back_to_git_text_and_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        args = self._freeze_args_for_a_record(
+            tmp_path, monkeypatch, source="pr-comment", description=self._COMMENT_TEXT, stored_in_local=False,
+        )
+
+        exit_code = run_review_bench.cmd_freeze(args)
+
+        assert exit_code == 2
+        assert "shares word run" in capsys.readouterr().err
         assert not Path(args.out).exists()
 
     def test_public_git_text_that_cannot_be_read_exits_2(self, tmp_path: Path, monkeypatch, capsys) -> None:
@@ -544,10 +704,16 @@ class TestSpotCheckSheetBlindingAndReproducibility:
         assert [c.item_id for c in first_precision] == [c.item_id for c in second_precision]
 
 
-def _confirmed_single_defect(defect_id: str = "d1") -> ConfirmedDefect:
+def _confirmed_single_defect(
+    defect_id: str = "d1", *, source: str = "szz", file_is_markdown: bool = False, fixture: str | None = None,
+) -> ConfirmedDefect:
+    """A defect on a fixture named `fixture`, which defaults to a fixture of its own so
+    that a cluster bootstrap resamples per defect."""
+    head_commit = hashlib.sha1((fixture or defect_id).encode()).hexdigest()
     return ConfirmedDefect(
-        id=defect_id, source="szz", lens="staff-backend-engineer", base_commit="a" * 40, head_commit="b" * 40,
+        id=defect_id, source=source, lens="staff-backend-engineer", base_commit="a" * 40, head_commit=head_commit,
         fix_commit="b" * 40, fix_date="2024-01-01", description="test defect",
+        path="notes.md" if file_is_markdown else "app.py", file_is_markdown=file_is_markdown,
     )
 
 
@@ -767,6 +933,24 @@ class TestRunAndSmokeCampaignSelection:
         assert run_review_bench.cmd_run(parser.parse_args(argv)) == 0
 
         assert blocks_run == ["resume-me:d1"]
+
+    def test_a_fixture_build_refusal_exits_2_through_main_and_prints_the_reason(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        self._stub_blocks(monkeypatch, tmp_path)
+        files = _frozen_files(tmp_path, monkeypatch, k=runner.DEFAULT_K)
+
+        def refuse_the_fixture_build(defect, **kwargs):
+            raise fixture_repo.UnsafeFixtureConfigError("fixture tree holds a member the tar extraction filter refuses")
+
+        monkeypatch.setattr(runner, "build_defect_fixture_spec", refuse_the_fixture_build)
+
+        exit_code = run_review_bench.main(
+            ["run", "--records-dir", str(tmp_path / "runs"), *_frozen_conditions_flags(files)],
+        )
+
+        assert exit_code == 2
+        assert "tar extraction filter refuses" in capsys.readouterr().err
 
     @pytest.mark.parametrize("subcommand", ["run", "smoke"])
     @pytest.mark.parametrize("bad_k", ["0", "-1", "abc"])
@@ -1088,7 +1272,7 @@ class TestCmdAnalyzeOutOfSessionReport:
         args = argparse.Namespace(
             defects_path=str(defects_path), reviewer_records_path=str(reviewer_records_path),
             judge_records_path=str(judge_records_path), k=1, arm_x=None, baseline_conditions_path=None,
-            out=str(out_path),
+            out=str(out_path), arms_root=str(_arms_root_with_both_arm_snapshots(tmp_path)),
         )
 
         exit_code = run_review_bench.cmd_analyze(args)
@@ -1251,7 +1435,7 @@ class TestCmdAnalyzeReportCompleteness:
         args = argparse.Namespace(
             defects_path=str(defects_path), reviewer_records_path=str(reviewer_records_path),
             judge_records_path=str(judge_records_path), k=1, arm_x=None, baseline_conditions_path=None,
-            out=str(out_path),
+            out=str(out_path), arms_root=str(_arms_root_with_both_arm_snapshots(tmp_path)),
         )
 
         exit_code = run_review_bench.cmd_analyze(args)
@@ -1269,6 +1453,57 @@ class TestCmdAnalyzeReportCompleteness:
         # d2 is the sole over_read_cap defect and is found only in
         # function-context (ARM_FUNCTION_CONTEXT - ARM_CURRENT_RULE = 1 - 0).
         assert report["recall_diff_over_read_cap_stratum"] == 1.0
+        # The fix-date halves and sigma_d are per gate, and both defects are in the code gate.
+        assert sorted(report["recall_by_fix_date_half_per_arm"]) == ["code", "markdown"]
+        assert report["recall_by_fix_date_half_per_arm"]["markdown"][arms_mod.ARM_CURRENT_RULE] == {
+            "earlier_half": None, "later_half": None,
+        }
+        # The sample stdev of d1's and d2's recall differences, -1 and +1.
+        assert report["observed_sigma_d"]["code"] == pytest.approx(math.sqrt(2))
+        assert report["observed_sigma_d"]["markdown"] is None
+
+    def test_a_baseline_report_carries_the_freeze_identity_a_later_arm_compares(self, tmp_path: Path) -> None:
+        """The identity is the closure hash, every frozen digest, K, and the campaign environment the
+        reviewer records carry, so a re-freeze that edits only the harness still refuses the report."""
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect("d1")])
+        arms_root = _arms_root_with_both_arm_snapshots(tmp_path)
+        reviewer_records_path, judge_records_path = _judged_records(tmp_path)
+        out_path = tmp_path / "report.json"
+        args = argparse.Namespace(
+            defects_path=str(defects_path), reviewer_records_path=str(reviewer_records_path),
+            judge_records_path=str(judge_records_path), k=1, arm_x=None, baseline_conditions_path=None,
+            out=str(out_path), arms_root=str(arms_root),
+        )
+
+        assert run_review_bench.cmd_analyze(args) == 0
+
+        identity = json.loads(out_path.read_text())["freeze_identity"]
+        frozen_fields = analysis.compute_frozen_fields(defects_path, arms_root)
+        assert identity == {
+            "harness_closure_hash": frozen_fields["harness_closure_hash"],
+            **{field: frozen_fields[field] for field in analysis._FROZEN_DIGEST_FIELDS},
+            "k": 1,
+            "environment": {"cli_version": "2.0.0", "ambient_config_commit": "deadbeef"},
+        }
+
+    def test_a_baseline_analysis_with_an_unhashable_arm_directory_exits_2_before_writing_a_report(
+        self, tmp_path: Path, capsys,
+    ) -> None:
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect("d1")])
+        reviewer_records_path, judge_records_path = _judged_records(tmp_path)
+        out_path = tmp_path / "report.json"
+        args = argparse.Namespace(
+            defects_path=str(defects_path), reviewer_records_path=str(reviewer_records_path),
+            judge_records_path=str(judge_records_path), k=1, arm_x=None, baseline_conditions_path=None,
+            out=str(out_path), arms_root=str(tmp_path / "no-arms"),
+        )
+
+        assert run_review_bench.cmd_analyze(args) == 2
+
+        assert "missing or holds no files" in capsys.readouterr().err
+        assert not out_path.exists()
 
 
 def _keys_at_every_depth(node) -> list[str]:
@@ -1356,7 +1591,7 @@ class TestCmdAnalyzeBaselineReport:
         return argparse.Namespace(
             defects_path=str(defects_path), reviewer_records_path=str(reviewer_records_path),
             judge_records_path=str(judge_records_path), k=2, arm_x=None, baseline_conditions_path=None,
-            out=str(tmp_path / "report.json"),
+            out=str(tmp_path / "report.json"), arms_root=str(_arms_root_with_both_arm_snapshots(tmp_path)),
         )
 
     def test_writes_every_listed_item_with_its_hand_computed_value(self, tmp_path: Path) -> None:
@@ -1369,29 +1604,36 @@ class TestCmdAnalyzeBaselineReport:
         assert report["confirmed_defects"] == 2
         assert report["kept_defect_ids"] == ["d1", "d2"]
         assert report["n_min"] == analysis.n_min(2)
-        assert report["effective_n"] == 2
-        assert report["effective_n_meets_n_min"] is False
+        assert report["freeze_identity"]["k"] == 2
+        assert report["freeze_identity"]["defects_json_hash"] == (
+            hashlib.sha256(Path(args.defects_path).read_bytes()).hexdigest()
+        )
+        assert not {"k", "defects_json_hash"} & set(report)  # the identity is the only home of both
+        code_gate = report["gates"]["code"]
+        assert code_gate["effective_n"] == 2
+        assert code_gate["fixture_count"] == 2
+        assert code_gate["effective_n_meets_n_min"] is False
         assert (report["dropped_defects_recall"], report["dropped_defects_precision"]) == (0, 0)
-        assert report["precision_effective_n"] == 2
+        assert code_gate["precision_effective_n"] == 2
         assert report["detection_rate_per_defect"] == {
             "d1": {current_rule: 1.0, function_context: 0.5}, "d2": {current_rule: 0.5, function_context: 0.0},
         }
-        recall = report["recall_per_arm"]
+        recall = code_gate["recall_per_arm"]
         assert recall[current_rule]["recall"] == pytest.approx(0.75)
         assert recall[current_rule]["interval"] == pytest.approx([0.5, 1.0])
         assert recall[function_context]["recall"] == pytest.approx(0.25)
         assert recall[function_context]["interval"] == pytest.approx([0.0, 0.5])
-        precision = report["pooled_precision_per_arm"]
+        precision = code_gate["pooled_precision_per_arm"]
         assert precision[current_rule]["precision"] == pytest.approx(0.6)
         assert precision[current_rule]["interval"] == pytest.approx([0.5, 2 / 3])
         assert precision[function_context]["precision"] == pytest.approx(0.25)
         assert precision[function_context]["interval"] == pytest.approx([0.0, 1 / 3])
-        difference = report["precision_difference"]
+        difference = code_gate["precision_difference"]
         assert (difference["arm"], difference["minus_arm"]) == (function_context, current_rule)
         assert difference["difference"] == pytest.approx(-0.35)
         assert difference["interval"] == pytest.approx([-2 / 3, -1 / 6])
         assert "verdict" not in difference
-        sensitivity = report["baseline_sensitivity"]
+        sensitivity = code_gate["baseline_sensitivity"]
         assert sensitivity["verdict"] == analysis.SENSITIVITY_SENSITIVE  # recall_1 - recall_2 is 0.5 on every resample
         assert sensitivity["interval_lower_limit"] == pytest.approx(0.5)
         assert sensitivity["interval_upper_limit"] == pytest.approx(0.5)
@@ -1422,8 +1664,8 @@ class TestCmdAnalyzeBaselineReport:
         report = json.loads(Path(args.out).read_text())
         assert report["kept_defect_ids"] == ["d1", "d4"]
         assert report["precision_kept_defect_ids"] == ["d1"]
-        assert report["effective_n"] == 2
-        assert report["precision_effective_n"] == 1
+        assert report["gates"]["code"]["effective_n"] == 2
+        assert report["gates"]["code"]["precision_effective_n"] == 1
         assert report["dropped_defects_recall"] == 1
         assert report["dropped_defects_precision"] == 1
 
@@ -1458,15 +1700,19 @@ class TestCmdAnalyzeBaselineReport:
         assert "dropped 1 confirmed defect(s) from recall" in stderr
         assert not Path(args.out).exists()
 
-    def test_the_pooled_precision_fields_are_none_when_no_precision_judge_ran(self, tmp_path: Path) -> None:
+    def test_the_pooled_precision_fields_are_null_when_no_precision_judge_ran(self, tmp_path: Path) -> None:
         args = self._write_table(tmp_path, with_precision_judges=False)
 
         assert run_review_bench.cmd_analyze(args) == 0
 
         report = json.loads(Path(args.out).read_text())
-        assert report["pooled_precision_per_arm"] is None
-        assert report["precision_difference"] is None
-        assert report["precision_effective_n"] == 0
+        code_gate = report["gates"]["code"]
+        for arm in (arms_mod.ARM_CURRENT_RULE, arms_mod.ARM_FUNCTION_CONTEXT):
+            assert code_gate["pooled_precision_per_arm"][arm]["precision"] is None
+            assert code_gate["pooled_precision_per_arm"][arm]["interval"] is None
+        assert code_gate["precision_difference"]["difference"] is None
+        assert code_gate["precision_difference"]["interval"] is None
+        assert code_gate["precision_effective_n"] == 0
         assert report["dropped_defects_precision"] == 2
 
     def test_the_report_has_no_key_containing_cost_or_usd_and_stderr_carries_both_cost_lines(
@@ -1495,6 +1741,198 @@ class TestCmdAnalyzeBaselineReport:
         assert f"'{JUDGE_ARM_PRECISION}': {{'total_cost_usd': 0.0, 'runs_priced': 0, 'runs': 2}}" in cost_per_judge_line
 
 
+class TestCmdAnalyzePerGateFigures:
+    """Each gate's figures are computed over that gate's defects alone, never over the pooled set. K = 1, so
+    a run's detection rate is 0 or 1. Defects (fixture in parentheses):
+      code gate:      c1 (F1), c2 (F1), c3 (F2)
+      markdown gate:  m1 (F3), m2 (F4)
+      secondary:      s1 (F5), a non-markdown `pr-comment` defect
+    Recall, arm 1 / arm 2: code 2/3 and 0, markdown 0 and 1/2, secondary 1 and 1, pooled 1/2 and 1/3.
+    Pooled precision, arm 1 / arm 2: code 2/4 and 1/3, markdown 2/2 and 0/3, secondary 1/1 and 0/1.
+    With two fixtures, a resample draws (F, F), (F, F'), or (F', F') with probability 1/4, 1/2, 1/4, so each
+    interval's two ends are its two same-fixture resample values. The code gate's F1 holds two defects."""
+
+    _CONFIRMED = [
+        _confirmed_single_defect("c1", fixture="F1"), _confirmed_single_defect("c2", fixture="F1"),
+        _confirmed_single_defect("c3", source="review-round", fixture="F2"),
+        _confirmed_single_defect("m1", source="review-round", file_is_markdown=True, fixture="F3"),
+        _confirmed_single_defect("m2", source="pr-comment", file_is_markdown=True, fixture="F4"),
+        _confirmed_single_defect("s1", source="pr-comment", fixture="F5"),
+    ]
+    _TABLE = {
+        "c1": {_ARM_1: (True, ("VALID", "INVALID")), _ARM_2: (False, ("INVALID",))},
+        "c2": {_ARM_1: (True, ("VALID",)), _ARM_2: (False, ("INVALID",))},
+        "c3": {_ARM_1: (False, ("INVALID",)), _ARM_2: (False, ("VALID",))},
+        "m1": {_ARM_1: (False, ("VALID",)), _ARM_2: (True, ("INVALID",))},
+        "m2": {_ARM_1: (False, ("VALID",)), _ARM_2: (False, ("INVALID", "INVALID"))},
+        "s1": {_ARM_1: (True, ("VALID",)), _ARM_2: (True, ("INVALID",))},
+    }
+
+    def _report(self, tmp_path: Path, monkeypatch, *, later_arm: bool) -> dict:
+        files = _frozen_files(tmp_path, monkeypatch, confirmed=self._CONFIRMED)
+        reviewer_path, judge_path = _judged_table(tmp_path, self._TABLE)
+        out_path = tmp_path / "report.json"
+        argv = (
+            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)) if later_arm
+            else [
+                "analyze", "--defects-path", str(files["defects"]), "--reviewer-records-path", str(reviewer_path),
+                "--judge-records-path", str(judge_path), "--k", "1", "--out", str(out_path),
+                "--arms-root", str(files["arms"]),
+            ]
+        )
+        assert run_review_bench.main(argv) == 0
+        return json.loads(out_path.read_text())
+
+    @staticmethod
+    def _assert_gate_figures_are_the_gates_own(report: dict) -> None:
+        code, markdown = report["gates"]["code"], report["gates"]["markdown"]
+        assert (code["effective_n"], code["fixture_count"], code["largest_cluster_size"]) == (3, 2, 2)
+        assert (markdown["effective_n"], markdown["fixture_count"], markdown["largest_cluster_size"]) == (2, 2, 1)
+        assert (code["precision_effective_n"], markdown["precision_effective_n"]) == (3, 2)
+        assert code["recall_per_arm"][_ARM_1]["recall"] == pytest.approx(2 / 3)
+        assert code["recall_per_arm"][_ARM_1]["interval"] == pytest.approx([0.0, 1.0])
+        assert code["recall_per_arm"][_ARM_2]["recall"] == 0.0
+        assert code["recall_difference"]["difference"] == pytest.approx(-2 / 3)
+        assert code["recall_difference"]["interval"] == pytest.approx([-1.0, 0.0])
+        assert code["pooled_precision_per_arm"][_ARM_1]["precision"] == pytest.approx(0.5)
+        assert code["pooled_precision_per_arm"][_ARM_1]["interval"] == pytest.approx([0.0, 2 / 3])
+        assert code["pooled_precision_per_arm"][_ARM_2]["precision"] == pytest.approx(1 / 3)
+        assert code["precision_difference"]["difference"] == pytest.approx(-1 / 6)
+        assert code["precision_difference"]["interval"] == pytest.approx([-2 / 3, 1.0])
+        assert markdown["recall_per_arm"][_ARM_1]["recall"] == 0.0
+        assert markdown["recall_per_arm"][_ARM_2]["recall"] == pytest.approx(0.5)
+        assert markdown["recall_difference"]["difference"] == pytest.approx(0.5)
+        assert markdown["recall_difference"]["interval"] == pytest.approx([0.0, 1.0])
+        assert markdown["pooled_precision_per_arm"][_ARM_1]["precision"] == 1.0
+        assert markdown["pooled_precision_per_arm"][_ARM_2]["precision"] == 0.0
+        assert markdown["precision_difference"]["difference"] == -1.0
+        assert markdown["precision_difference"]["interval"] == pytest.approx([-1.0, -1.0])
+
+    def test_baseline_mode_reports_each_gates_own_figures_and_sensitivity_verdict(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        report = self._report(tmp_path, monkeypatch, later_arm=False)
+
+        self._assert_gate_figures_are_the_gates_own(report)
+        code_sensitivity = report["gates"]["code"]["baseline_sensitivity"]
+        assert code_sensitivity["verdict"] == analysis.SENSITIVITY_NOT_SENSITIVE
+        assert code_sensitivity["interval_lower_limit"] == pytest.approx(0.0)
+        assert code_sensitivity["interval_upper_limit"] == pytest.approx(1.0)
+        markdown_sensitivity = report["gates"]["markdown"]["baseline_sensitivity"]
+        assert markdown_sensitivity["verdict"] == analysis.SENSITIVITY_NOT_SENSITIVE
+        assert markdown_sensitivity["interval_lower_limit"] == pytest.approx(-1.0)
+        assert "certification" not in report
+
+    def test_later_arm_mode_reports_each_gates_own_figures_and_verdicts(self, tmp_path: Path, monkeypatch) -> None:
+        report = self._report(tmp_path, monkeypatch, later_arm=True)
+
+        self._assert_gate_figures_are_the_gates_own(report)
+        code, markdown = report["gates"]["code"], report["gates"]["markdown"]
+        assert code["recall_noninferiority"]["verdict"] == analysis.NONINFERIORITY_FAIL  # lower limit -1.0
+        assert markdown["recall_noninferiority"]["verdict"] == analysis.NONINFERIORITY_PASS  # lower limit 0.0
+        assert code["precision_noninferiority"]["verdict"] == analysis.NONINFERIORITY_FAIL  # lower limit -2/3
+        assert markdown["precision_noninferiority"]["verdict"] == analysis.NONINFERIORITY_FAIL  # lower limit -1.0
+        assert report["certification"] == analysis.CERTIFICATION_NOT_CERTIFIED
+
+    @pytest.mark.parametrize("later_arm", [False, True])
+    def test_each_gates_count_line_reports_that_gates_defects_fixtures_and_largest_fixture(
+        self, tmp_path: Path, monkeypatch, capsys, later_arm: bool,
+    ) -> None:
+        self._report(tmp_path, monkeypatch, later_arm=later_arm)
+
+        stderr_lines = capsys.readouterr().err.splitlines()
+        assert "analyze: code: 3 kept defect(s) over 2 fixture(s), largest fixture holds 2" in stderr_lines
+        assert "analyze: markdown: 2 kept defect(s) over 2 fixture(s), largest fixture holds 1" in stderr_lines
+
+    @pytest.mark.parametrize("later_arm", [False, True])
+    def test_per_source_and_secondary_strata_carry_figures_and_no_verdict_key(
+        self, tmp_path: Path, monkeypatch, later_arm: bool,
+    ) -> None:
+        report = self._report(tmp_path, monkeypatch, later_arm=later_arm)
+
+        assert sorted(report["per_source"]) == sorted(defects.KNOWN_SOURCES)
+        szz, review_round = report["per_source"]["szz"], report["per_source"]["review-round"]
+        assert (szz["effective_n"], szz["fixture_count"]) == (2, 1)
+        assert szz["recall_per_arm"][_ARM_1] == {"recall": 1.0, "interval": None}
+        assert (review_round["effective_n"], review_round["fixture_count"]) == (2, 2)
+        assert review_round["recall_per_arm"][_ARM_2]["recall"] == pytest.approx(0.5)
+        assert review_round["recall_per_arm"][_ARM_2]["interval"] == pytest.approx([0.0, 1.0])
+        secondary = report["secondary_stratum"]
+        assert (secondary["effective_n"], secondary["fixture_count"]) == (1, 1)
+        assert secondary["recall_difference"]["difference"] == 0.0
+        assert secondary["recall_difference"]["interval"] is None
+        assert secondary["pooled_precision_per_arm"][_ARM_2]["precision"] == 0.0
+        stratum_keys = _keys_at_every_depth([report["per_source"], report["secondary_stratum"]])
+        assert not [
+            key for key in stratum_keys
+            if any(word in key.lower() for word in ("verdict", "outcome", "noninferiority", "certif"))
+        ]
+
+    def test_an_empty_gate_reports_null_figures_and_a_null_baseline_verdict_without_raising(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        files = _frozen_files(tmp_path, monkeypatch, defect_ids=("d1", "d2"))
+        reviewer_path, judge_path = _judged_records(tmp_path, defect_ids=("d1", "d2"))
+        out_path = tmp_path / "report.json"
+
+        exit_code = run_review_bench.main([
+            "analyze", "--defects-path", str(files["defects"]), "--reviewer-records-path", str(reviewer_path),
+            "--judge-records-path", str(judge_path), "--k", "1", "--out", str(out_path),
+            "--arms-root", str(files["arms"]),
+        ])
+
+        assert exit_code == 0
+        markdown = json.loads(out_path.read_text())["gates"]["markdown"]
+        assert (markdown["effective_n"], markdown["fixture_count"], markdown["largest_cluster_size"]) == (0, 0, 0)
+        assert markdown["effective_n_meets_n_min"] is False
+        assert markdown["recall_per_arm"][_ARM_1] == {"recall": None, "interval": None}
+        assert markdown["pooled_precision_per_arm"][_ARM_1]["precision"] is None
+        assert markdown["precision_difference"]["difference"] is None
+        assert markdown["baseline_sensitivity"]["verdict"] is None
+
+    def test_an_empty_gate_in_a_later_arm_is_inconclusive_with_null_verdicts_without_raising(
+        self, tmp_path: Path, monkeypatch, patch_n_min,
+    ) -> None:
+        patch_n_min(2)
+        confirmed = _two_gate_defects(markdown_count=0)
+        files = _frozen_files(tmp_path, monkeypatch, confirmed=confirmed)
+        files["baseline_report"].write_text(json.dumps(_baseline_report(
+            json.loads(files["conditions"].read_text()), gate_verdicts={"markdown": None}, fixture_counts={"markdown": 0},
+        )))
+        reviewer_path, judge_path = _judged_table(
+            tmp_path, {defect.id: _BOTH_ARMS_FIND_WITH_ONE_VALID_FINDING for defect in confirmed},
+        )
+        out_path = tmp_path / "report.json"
+
+        exit_code = run_review_bench.main(
+            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)),
+        )
+
+        assert exit_code == 0
+        report = json.loads(out_path.read_text())
+        markdown = report["gates"]["markdown"]
+        assert markdown["outcome"] == analysis.GATE_OUTCOME_INCONCLUSIVE
+        assert (markdown["recall_noninferiority"]["verdict"], markdown["precision_noninferiority"]["verdict"]) == (None, None)
+        assert report["gates"]["code"]["outcome"] == analysis.GATE_OUTCOME_PASS
+        assert report["certification"] == analysis.CERTIFICATION_INCONCLUSIVE
+
+
+class TestParserRejectsFourNMinFlagSpellings:
+    """A tripwire on four flag spellings, not a proof that no flag reaches N_min(K); the pin that N_min(K) is
+    computed from K alone is the unpatched `analysis.n_min(2)` report-value test."""
+
+    _REQUIRED_ARGV = ["analyze", "--reviewer-records-path", "r.jsonl", "--judge-records-path", "j.jsonl", "--k", "1"]
+
+    def test_the_parser_rejects_each_of_the_four_n_min_flag_spellings(self) -> None:
+        parser = run_review_bench.build_parser()
+        parser.parse_args(self._REQUIRED_ARGV)  # positive control: the required argv alone parses
+
+        for flag in ("--n-min", "--n-min-override", "--nmin", "--override-n-min"):
+            with pytest.raises(SystemExit) as exit_info:
+                parser.parse_args([*self._REQUIRED_ARGV, flag, "1"])
+            assert exit_info.value.code == 2
+
+
 class TestCmdAnalyzeCliFlags:
     def test_cli_flags_reach_cmd_analyze_via_build_parser(self, tmp_path: Path) -> None:
         defects_path = tmp_path / "defects.json"
@@ -1517,6 +1955,7 @@ class TestCmdAnalyzeCliFlags:
         args = run_review_bench.build_parser().parse_args([
             "analyze", "--defects-path", str(defects_path), "--reviewer-records-path", str(reviewer_records_path),
             "--judge-records-path", str(judge_records_path), "--k", "1", "--out", str(out_path),
+            "--arms-root", str(_arms_root_with_both_arm_snapshots(tmp_path)),
         ])
 
         exit_code = run_review_bench.cmd_analyze(args)
@@ -1532,19 +1971,28 @@ class TestCmdAnalyzeCliFlags:
         assert report["kept_defect_ids"] == ["d1"]
 
 
-def _frozen_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, defect_ids=("d1",), k: int = 1, campaign_seed: int = 0,
-) -> dict[str, Path]:
-    """A defects file, both arm snapshot dirs, private judge-agent copies, and
-    a conditions.json frozen over them, for a test to edit one file at a time."""
-    from review_bench import adjudicate
-
-    defects_path = tmp_path / "defects.json"
-    defects.save_confirmed_defects(defects_path, [_confirmed_single_defect(defect_id) for defect_id in defect_ids])
+def _arms_root_with_both_arm_snapshots(tmp_path: Path) -> Path:
     arms_root = tmp_path / "arms"
     for arm in (arms_mod.ARM_CURRENT_RULE, arms_mod.ARM_FUNCTION_CONTEXT):
         (arms_root / arm).mkdir(parents=True)
         (arms_root / arm / "bench-staff-backend-engineer.md").write_text(f"{arm} agent body\n")
+    return arms_root
+
+
+def _frozen_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, defect_ids=("d1",), k: int = 1, campaign_seed: int = 0,
+    confirmed: list[ConfirmedDefect] | None = None,
+) -> dict[str, Path]:
+    """A defects file, both arm snapshot dirs, private judge-agent copies, a
+    conditions.json frozen over them, and a baseline report that reads sensitive in both gates,
+    for a test to edit one file at a time. `confirmed` replaces the defects built from `defect_ids`."""
+    from review_bench import adjudicate
+
+    defects_path = tmp_path / "defects.json"
+    defects.save_confirmed_defects(
+        defects_path, confirmed or [_confirmed_single_defect(defect_id) for defect_id in defect_ids],
+    )
+    arms_root = _arms_root_with_both_arm_snapshots(tmp_path)
     for attribute, name in (
         ("RECALL_JUDGE_AGENT_FILE", "bench-judge-recall.md"), ("PRECISION_JUDGE_AGENT_FILE", "bench-judge-precision.md"),
     ):
@@ -1553,16 +2001,39 @@ def _frozen_files(
         monkeypatch.setattr(adjudicate, attribute, judge_file)
 
     conditions_path = tmp_path / "conditions.json"
-    conditions_path.write_text(json.dumps({
+    conditions = {
         **analysis.compute_frozen_fields(defects_path, arms_root), "k": k, "campaign_seed": campaign_seed,
         "environment": {
             "cli_version": _STUBBED_ENVIRONMENT.cli_version,
             "ambient_config_commit": _STUBBED_ENVIRONMENT.ambient_config_commit,
         },
-    }))
+    }
+    conditions_path.write_text(json.dumps(conditions))
+    baseline_report_path = tmp_path / "baseline-report.json"
+    baseline_report_path.write_text(json.dumps(_baseline_report(conditions)))
     return {
         "defects": defects_path, "arms": arms_root, "conditions": conditions_path,
+        "baseline_report": baseline_report_path,
         "recall_judge": tmp_path / "bench-judge-recall.md", "precision_judge": tmp_path / "bench-judge-precision.md",
+    }
+
+
+def _baseline_report(conditions: dict, *, gate_verdicts: dict | None = None, fixture_counts: dict | None = None) -> dict:
+    """The fields of a baseline-mode report that a later arm reads, with the freeze identity of `conditions`.
+    Each gate reads sensitive over 130 fixtures unless overridden."""
+    verdicts = {"code": analysis.SENSITIVITY_SENSITIVE, "markdown": analysis.SENSITIVITY_SENSITIVE, **(gate_verdicts or {})}
+    counts = {"code": 130, "markdown": 130, **(fixture_counts or {})}
+    return {
+        "freeze_identity": {
+            "harness_closure_hash": conditions["harness_closure_hash"],
+            **{field: conditions[field] for field in analysis._FROZEN_DIGEST_FIELDS},
+            "k": conditions["k"],
+            "environment": dict(conditions["environment"]),
+        },
+        "gates": {
+            gate: {"baseline_sensitivity": {"verdict": verdicts[gate]}, "fixture_count": counts[gate]}
+            for gate in ("code", "markdown")
+        },
     }
 
 
@@ -1594,8 +2065,69 @@ def _analyze_argv(files: dict[str, Path], reviewer_path: Path, judge_path: Path,
     return [
         "analyze", "--defects-path", str(files["defects"]), "--arms-root", str(files["arms"]),
         "--reviewer-records-path", str(reviewer_path), "--judge-records-path", str(judge_path),
-        "--baseline-conditions-path", str(files["conditions"]), *extra,
+        "--baseline-conditions-path", str(files["conditions"]),
+        "--baseline-report-path", str(files["baseline_report"]), *extra,
     ]
+
+
+# Each gate in the later-arm data-path tests holds at most two fixtures, so one meets this bar.
+_N_MIN_NO_GATE_IS_SHORT = 1
+
+
+@pytest.fixture
+def patch_n_min(monkeypatch):
+    """Returns a setter that replaces N_min(K) with a fixed value, so a few fixtures can build a gate that meets it."""
+
+    def set_n_min(value: int) -> None:
+        monkeypatch.setattr(analysis, "n_min", lambda k: value)
+
+    return set_n_min
+
+
+_REJECTED_DESCRIPTION_CHARACTERS = ["\x1b", "\ufe0f", "\u3164", "\u2800", "\u2028", "\ue000"]
+
+
+def _edit_first_description(defects_path: Path, description: str) -> None:
+    """Hand-edits `defects.json`, past every writer that validates."""
+    records = json.loads(defects_path.read_text())
+    records[0]["description"] = description
+    defects_path.write_text(json.dumps(records))
+
+
+@pytest.mark.usefixtures("stubbed_environment")
+class TestAHandEditedDescriptionWithARejectedCharacterReachesNoSubcommand:
+    """`ConfirmedDefect` validates its description when a record loads, so `freeze`, `judge`, and `run`
+    refuse a defects file edited past `confirm`."""
+
+    @pytest.mark.parametrize("character", _REJECTED_DESCRIPTION_CHARACTERS)
+    def test_freeze_raises_naming_the_code_point_and_writes_no_conditions(
+        self, tmp_path: Path, monkeypatch, character: str,
+    ) -> None:
+        args = _prepare_freeze(tmp_path, monkeypatch)
+        _edit_first_description(Path(args.defects_path), f"x {character} y")
+
+        with pytest.raises(ValueError, match=rf"U\+{ord(character):04X}"):
+            run_review_bench.cmd_freeze(args)
+
+        assert not Path(args.out).exists()
+
+    @pytest.mark.parametrize("subcommand", ["judge", "run"])
+    @pytest.mark.parametrize("character", _REJECTED_DESCRIPTION_CHARACTERS)
+    def test_judge_and_run_raise_before_any_dispatch(
+        self, tmp_path: Path, monkeypatch, subcommand: str, character: str,
+    ) -> None:
+        files = _frozen_files(tmp_path, monkeypatch)
+        reviewer_path, _judge_path = _judged_records(tmp_path)
+        _edit_first_description(files["defects"], f"x {character} y")
+        argv = [
+            subcommand, "--defects-path", str(files["defects"]), "--arms-root", str(files["arms"]),
+            "--conditions-path", str(files["conditions"]),
+        ]
+        if subcommand == "judge":
+            argv += ["--reviewer-records-path", str(reviewer_path)]
+
+        with pytest.raises(ValueError, match=rf"U\+{ord(character):04X}"):
+            run_review_bench.main(argv)
 
 
 class TestAnalyzeRefusesRecordsFromTwoEnvironments:
@@ -1628,6 +2160,42 @@ class TestAnalyzeRefusesRecordsFromTwoEnvironments:
         assert "more than one environment" in error_text
         assert "'2.0.0'@'deadbeef': ['d1']" in error_text
         assert "'2.0.0'@'cafebabe': ['d2']" in error_text
+        assert not (tmp_path / "report.json").exists()
+
+
+@pytest.mark.usefixtures("stubbed_environment")
+class TestBaselineAnalyzeRefusesRecordsNamingAnUnconfirmedDefect:
+    """Baseline-mode `analyze` exits 2 naming a defect the records carry and
+    defects.json lacks, instead of crashing on the missing key."""
+
+    @pytest.mark.parametrize("with_out", [True, False], ids=["with-out", "without-out"])
+    @pytest.mark.parametrize(
+        ("record_file", "named_kind"), [("reviewer", "reviewer"), ("judge", "judge"), ("both", "reviewer")],
+    )
+    def test_records_naming_a_defect_absent_from_defects_json_exit_2_naming_it_and_the_record_kind(
+        self, tmp_path: Path, capsys, record_file: str, named_kind: str, with_out: bool,
+    ) -> None:
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect("d1")])
+        reviewer_path, judge_path = _judged_records(tmp_path, defect_ids=("d1", "d2"))
+        if record_file == "judge":
+            kept_reviewer_records = [r for r in runner.read_run_records(reviewer_path) if r.defect_id == "d1"]
+            reviewer_path.unlink()
+            runner.append_run_records(reviewer_path, kept_reviewer_records)
+        if record_file == "reviewer":
+            kept_judge_records = [r for r in runner.read_run_records(judge_path) if r.defect_id == "d1"]
+            judge_path.unlink()
+            runner.append_run_records(judge_path, kept_judge_records)
+        out_args = ["--out", str(tmp_path / "report.json")] if with_out else []
+
+        exit_code = run_review_bench.main([
+            "analyze", "--defects-path", str(defects_path), "--reviewer-records-path", str(reviewer_path),
+            "--judge-records-path", str(judge_path), "--k", "1", *out_args,
+        ])
+
+        assert exit_code == 2
+        error_text = capsys.readouterr().err
+        assert f"{named_kind} records name defects absent from defects.json: ['d2']" in error_text
         assert not (tmp_path / "report.json").exists()
 
 
@@ -1720,130 +2288,195 @@ class TestAnalyzeRecomputesFrozenConditions:
         assert "no records: ['d2']" in capsys.readouterr().err
 
 
-class TestAnalyzeLaterArmVerdicts:
-    """`analyze --baseline-conditions-path` certifies or rejects a later arm.
-    The recall verdict and the refusals are pinned here on constructed records,
-    as are the precision PASS lines, kept-set gating and the missing-precision
-    refusal. A precision FAIL verdict and which arm `cmd_analyze` passes as
-    baseline versus later arm to the precision comparison are not pinned here;
-    the unit tests pin the verdict function alone."""
+def _judged_table(
+    tmp_path: Path, table: dict[str, dict[str, tuple[bool, tuple[str, ...]]]], *, subdir: str = "",
+    defects_without_precision_answer: tuple[str, ...] = (),
+) -> tuple[Path, Path]:
+    """Reviewer and judge records for one run per arm and defect (K = 1). `table` maps a defect ID to
+    {arm: (found, finding labels)}, a label being "VALID" or "INVALID". The arm's run holds one finding per
+    label, `found` is the recall judge's FOUND for that run, and a found run needs at least one finding."""
+    directory = tmp_path / subdir if subdir else tmp_path
+    directory.mkdir(exist_ok=True)
+    reviewer_path, judge_path = directory / "reviewer.jsonl", directory / "judge.jsonl"
+    reviewer_records, judge_records = [], []
+    for defect_id, per_arm in table.items():
+        recall_lines, precision_sections = [], []
+        for arm, (found, labels) in per_arm.items():
+            run_id = f"{defect_id}-{'one' if arm == _ARM_1 else 'two'}"
+            findings = " ".join(f"Finding {number} text." for number in range(1, len(labels) + 1)) or "Nothing to report."
+            reviewer_records.append(_run_record(defect_id, arm, run_id, findings))
+            recall_lines.append(f'{run_id}: FOUND -- "Finding 1"' if found else f"{run_id}: NOT_FOUND")
+            precision_sections.append(
+                f"### Run {run_id}\n"
+                + "".join(f'{number}. {label} -- "Finding {number}"\n' for number, label in enumerate(labels, start=1))
+            )
+        judge_records.append(_run_record(defect_id, JUDGE_ARM_RECALL, f"{defect_id}-recall", "\n".join(recall_lines)))
+        if defect_id not in defects_without_precision_answer:
+            judge_records.append(
+                _run_record(defect_id, JUDGE_ARM_PRECISION, f"{defect_id}-precision", "".join(precision_sections)),
+            )
+    runner.append_run_records(reviewer_path, reviewer_records)
+    runner.append_run_records(judge_path, judge_records)
+    return reviewer_path, judge_path
 
-    def _judged_records_with_function_context_found(
-        self, tmp_path: Path, *, function_context_found: bool,
-    ) -> tuple[Path, Path]:
-        reviewer_path, judge_path = tmp_path / "reviewer.jsonl", tmp_path / "judge.jsonl"
-        runner.append_run_records(reviewer_path, [
-            _run_record("d1", arms_mod.ARM_CURRENT_RULE, "d1-a", "Leaks a connection on error."),
-            _run_record("d1", arms_mod.ARM_FUNCTION_CONTEXT, "d1-b", "Leaks a connection on error."),
-        ])
-        recall_answer = "d1-a: FOUND -- \"Leaks a connection\"\n" + (
-            "d1-b: FOUND -- \"Leaks a connection\"" if function_context_found else "d1-b: NOT_FOUND"
-        )
-        runner.append_run_records(judge_path, [
-            _run_record("d1", JUDGE_ARM_RECALL, "d1-recall", recall_answer),
-            _run_record(
-                "d1", JUDGE_ARM_PRECISION, "d1-precision",
-                '### Run d1-a\n1. VALID -- "Leaks a connection"\n### Run d1-b\n1. VALID -- "Leaks a connection"\n',
-            ),
-        ])
-        return reviewer_path, judge_path
+
+_BOTH_ARMS_FIND_WITH_ONE_VALID_FINDING = {_ARM_1: (True, ("VALID",)), _ARM_2: (True, ("VALID",))}
+_ONLY_ARM_1_FINDS = {_ARM_1: (True, ("VALID",)), _ARM_2: (False, ("VALID",))}
+
+
+def _two_gate_defects(*, code_count: int = 2, markdown_count: int = 2) -> list[ConfirmedDefect]:
+    """Defects on fixtures of their own: `code_count` in the code gate, `markdown_count` in the markdown gate."""
+    return [
+        *(_confirmed_single_defect(f"c{i}") for i in range(1, code_count + 1)),
+        *(
+            _confirmed_single_defect(f"m{i}", source="review-round", file_is_markdown=True)
+            for i in range(1, markdown_count + 1)
+        ),
+    ]
+
+
+class TestAnalyzeLaterArmVerdicts:
+    """`analyze --baseline-conditions-path` certifies or rejects a later arm. Each gate's verdicts
+    are pinned here on constructed records, as are the refusals, the kept-set gating and the
+    missing-precision refusal. The precision FAIL verdict is pinned by the unit tests alone."""
 
     def test_a_later_arm_matching_the_baseline_below_n_min_is_inconclusive(
         self, tmp_path: Path, monkeypatch, capsys,
     ) -> None:
-        files = _frozen_files(tmp_path, monkeypatch)
-        reviewer_path, judge_path = self._judged_records_with_function_context_found(
-            tmp_path, function_context_found=True,
+        files = _frozen_files(tmp_path, monkeypatch, confirmed=_two_gate_defects())
+        reviewer_path, judge_path = _judged_table(
+            tmp_path, {defect.id: _BOTH_ARMS_FIND_WITH_ONE_VALID_FINDING for defect in _two_gate_defects()},
         )
 
         exit_code = run_review_bench.main(_analyze_argv(files, reviewer_path, judge_path, "--k", "1"))
 
         stderr = capsys.readouterr().err
         assert exit_code == 0
-        assert f"analyze: recall non-inferiority = {analysis.NONINFERIORITY_PASS}" in stderr
-        assert f"analyze: precision non-inferiority = {analysis.NONINFERIORITY_PASS}" in stderr
+        for gate in ("code", "markdown"):
+            assert f"analyze: {gate} gate recall non-inferiority = {analysis.NONINFERIORITY_PASS}" in stderr
+            assert f"analyze: {gate} gate precision non-inferiority = {analysis.NONINFERIORITY_PASS}" in stderr
         assert f"analyze: certification = {analysis.CERTIFICATION_INCONCLUSIVE}" in stderr
 
-    def _matching_records_for_defects(
-        self, tmp_path: Path, *, defect_ids: tuple[str, ...], defects_without_precision_answer: tuple[str, ...] = (),
-    ) -> tuple[Path, Path]:
-        """Both arms find every defect; a defect listed in `defects_without_precision_answer`
-        has a recall-judge answer but no precision-judge run."""
-        reviewer_path, judge_path = tmp_path / "reviewer.jsonl", tmp_path / "judge.jsonl"
-        reviewer_records, judge_records = [], []
-        for defect_id in defect_ids:
-            reviewer_records += [
-                _run_record(defect_id, arms_mod.ARM_CURRENT_RULE, f"{defect_id}-a", "Leaks a connection on error."),
-                _run_record(defect_id, arms_mod.ARM_FUNCTION_CONTEXT, f"{defect_id}-b", "Leaks a connection on error."),
-            ]
-            judge_records.append(_run_record(
-                defect_id, JUDGE_ARM_RECALL, f"{defect_id}-recall",
-                f'{defect_id}-a: FOUND -- "Leaks a connection"\n{defect_id}-b: FOUND -- "Leaks a connection"',
-            ))
-            if defect_id not in defects_without_precision_answer:
-                judge_records.append(_run_record(
-                    defect_id, JUDGE_ARM_PRECISION, f"{defect_id}-precision",
-                    f'### Run {defect_id}-a\n1. VALID -- "Leaks a connection"\n'
-                    f'### Run {defect_id}-b\n1. VALID -- "Leaks a connection"\n',
-                ))
-        runner.append_run_records(reviewer_path, reviewer_records)
-        runner.append_run_records(judge_path, judge_records)
-        return reviewer_path, judge_path
-
-    @pytest.mark.parametrize(("patched_n_min", "defects_without_precision_answer", "expected_certification"), [
-        pytest.param(2, (), analysis.CERTIFICATION_CERTIFIED, id="both-gates-kept-count-equals-n-min"),
-        pytest.param(3, (), analysis.CERTIFICATION_INCONCLUSIVE, id="both-gates-kept-count-one-below-n-min"),
-        pytest.param(2, ("d2",), analysis.CERTIFICATION_INCONCLUSIVE, id="recall-kept-meets-n-min-but-precision-kept-does-not"),
-        pytest.param(1, ("d2",), analysis.CERTIFICATION_CERTIFIED, id="precision-kept-count-equals-n-min"),
-    ])
-    def test_the_n_min_bar_binds_the_smaller_of_the_recall_and_precision_kept_sets(
-        self, tmp_path: Path, monkeypatch, capsys, patched_n_min: int, defects_without_precision_answer: tuple[str, ...],
-        expected_certification: str,
+    @pytest.mark.parametrize(
+        ("code_count", "markdown_count", "defects_without_precision_answer", "patched_n_min", "expected_certification"),
+        [
+            pytest.param(2, 2, (), 2, analysis.CERTIFICATION_CERTIFIED, id="both-gates-fixture-count-equals-n-min"),
+            pytest.param(2, 2, (), 3, analysis.CERTIFICATION_INCONCLUSIVE, id="both-gates-fixture-count-one-below-n-min"),
+            pytest.param(3, 3, (), 3, analysis.CERTIFICATION_CERTIFIED, id="both-gates-kept-fixture-counts-equal-n-min"),
+            pytest.param(
+                3, 3, ("c3",), 3, analysis.CERTIFICATION_INCONCLUSIVE, id="recall-kept-meets-n-min-but-precision-kept-does-not",
+            ),
+            pytest.param(3, 2, ("c3",), 2, analysis.CERTIFICATION_CERTIFIED, id="precision-kept-fixture-count-equals-n-min"),
+            pytest.param(
+                2, 2, ("c2",), 1, analysis.CERTIFICATION_INCONCLUSIVE, id="one-precision-kept-fixture-has-no-interval",
+            ),
+        ],
+    )
+    def test_the_n_min_bar_counts_each_gates_fixtures_and_binds_the_smaller_kept_set(
+        self, tmp_path: Path, monkeypatch, capsys, patch_n_min, code_count: int, markdown_count: int,
+        defects_without_precision_answer: tuple[str, ...], patched_n_min: int, expected_certification: str,
     ) -> None:
-        files = _frozen_files(tmp_path, monkeypatch, defect_ids=("d1", "d2"))
-        reviewer_path, judge_path = self._matching_records_for_defects(
-            tmp_path, defect_ids=("d1", "d2"), defects_without_precision_answer=defects_without_precision_answer,
+        patch_n_min(patched_n_min)
+        confirmed = _two_gate_defects(code_count=code_count, markdown_count=markdown_count)
+        files = _frozen_files(tmp_path, monkeypatch, confirmed=confirmed)
+        reviewer_path, judge_path = _judged_table(
+            tmp_path, {defect.id: _BOTH_ARMS_FIND_WITH_ONE_VALID_FINDING for defect in confirmed},
+            defects_without_precision_answer=defects_without_precision_answer,
         )
-        monkeypatch.setattr(analysis, "n_min", lambda k: patched_n_min)
 
         exit_code = run_review_bench.main(_analyze_argv(files, reviewer_path, judge_path, "--k", "1"))
 
         stderr = capsys.readouterr().err
         assert exit_code == 0
-        assert f"analyze: recall non-inferiority = {analysis.NONINFERIORITY_PASS}" in stderr
-        assert f"analyze: precision non-inferiority = {analysis.NONINFERIORITY_PASS}" in stderr
+        assert f"analyze: code gate recall non-inferiority = {analysis.NONINFERIORITY_PASS}" in stderr
         assert f"analyze: certification = {expected_certification}" in stderr
 
-    def test_a_later_arm_that_misses_the_defect_the_baseline_found_is_not_certified(
+    def test_a_later_arm_that_misses_the_defects_the_baseline_found_in_one_gate_is_not_certified(
+        self, tmp_path: Path, monkeypatch, capsys, patch_n_min,
+    ) -> None:
+        patch_n_min(2)
+        confirmed = _two_gate_defects()
+        files = _frozen_files(tmp_path, monkeypatch, confirmed=confirmed)
+        reviewer_path, judge_path = _judged_table(tmp_path, {
+            **{defect.id: _BOTH_ARMS_FIND_WITH_ONE_VALID_FINDING for defect in confirmed if defect.id.startswith("c")},
+            **{defect.id: _ONLY_ARM_1_FINDS for defect in confirmed if defect.id.startswith("m")},
+        })
+        out_path = tmp_path / "later-arm-report.json"
+
+        exit_code = run_review_bench.main(
+            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)),
+        )
+
+        stderr = capsys.readouterr().err
+        assert exit_code == 0
+        assert f"analyze: code gate recall non-inferiority = {analysis.NONINFERIORITY_PASS}" in stderr
+        assert f"analyze: markdown gate recall non-inferiority = {analysis.NONINFERIORITY_FAIL}" in stderr
+        assert f"analyze: certification = {analysis.CERTIFICATION_NOT_CERTIFIED}" in stderr
+        report = json.loads(out_path.read_text())
+        assert report["certification"] == analysis.CERTIFICATION_NOT_CERTIFIED
+        assert (report["gates"]["code"]["outcome"], report["gates"]["markdown"]["outcome"]) == (
+            analysis.GATE_OUTCOME_PASS, analysis.GATE_OUTCOME_FAIL,
+        )
+
+    def test_a_secondary_stratum_that_loses_decisively_leaves_a_later_arm_passing_both_gates_certified(
+        self, tmp_path: Path, monkeypatch, patch_n_min,
+    ) -> None:
+        """Non-markdown `pr-comment` defects form the secondary stratum, which is reported and never gates."""
+        patch_n_min(2)
+        secondary = [_confirmed_single_defect(f"s{i}", source="pr-comment") for i in (1, 2)]
+        confirmed = [*_two_gate_defects(), *secondary]
+        files = _frozen_files(tmp_path, monkeypatch, confirmed=confirmed)
+        arm_1_alone_finds_validly = {_ARM_1: (True, ("VALID",)), _ARM_2: (False, ("INVALID",))}
+        reviewer_path, judge_path = _judged_table(tmp_path, {
+            **{defect.id: _BOTH_ARMS_FIND_WITH_ONE_VALID_FINDING for defect in _two_gate_defects()},
+            **{defect.id: arm_1_alone_finds_validly for defect in secondary},
+        })
+        out_path = tmp_path / "later-arm-report.json"
+
+        exit_code = run_review_bench.main(
+            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)),
+        )
+
+        assert exit_code == 0
+        report = json.loads(out_path.read_text())
+        assert report["certification"] == analysis.CERTIFICATION_CERTIFIED
+        assert (report["gates"]["code"]["outcome"], report["gates"]["markdown"]["outcome"]) == (
+            analysis.GATE_OUTCOME_PASS, analysis.GATE_OUTCOME_PASS,
+        )
+        stratum = report["secondary_stratum"]
+        assert stratum["recall_difference"]["difference"] == -1.0  # arm 2 finds neither secondary defect
+        assert stratum["pooled_precision_per_arm"][_ARM_1]["precision"] == 1.0
+        assert stratum["pooled_precision_per_arm"][_ARM_2]["precision"] == 0.0
+        assert not [
+            key for key in _keys_at_every_depth(stratum)
+            if any(word in key.lower() for word in ("verdict", "outcome", "noninferiority", "certif"))
+        ]
+
+    def test_a_failing_gate_with_an_empty_other_gate_is_still_not_certified(
         self, tmp_path: Path, monkeypatch, capsys,
     ) -> None:
-        files = _frozen_files(tmp_path, monkeypatch)
-        reviewer_path, judge_path = self._judged_records_with_function_context_found(
-            tmp_path, function_context_found=False,
-        )
+        confirmed = [_confirmed_single_defect("c1"), _confirmed_single_defect("c2")]
+        files = _frozen_files(tmp_path, monkeypatch, confirmed=confirmed)
+        reviewer_path, judge_path = _judged_table(tmp_path, {defect.id: _ONLY_ARM_1_FINDS for defect in confirmed})
 
         exit_code = run_review_bench.main(_analyze_argv(files, reviewer_path, judge_path, "--k", "1"))
 
         stderr = capsys.readouterr().err
         assert exit_code == 0
-        assert f"analyze: recall non-inferiority = {analysis.NONINFERIORITY_FAIL}" in stderr
+        assert f"analyze: code gate recall non-inferiority = {analysis.NONINFERIORITY_FAIL}" in stderr
         assert f"analyze: certification = {analysis.CERTIFICATION_NOT_CERTIFIED}" in stderr
 
     def test_a_later_arm_with_recall_but_no_precision_judge_answer_exits_2_without_a_traceback(
         self, tmp_path: Path, monkeypatch, capsys,
     ) -> None:
         files = _frozen_files(tmp_path, monkeypatch)
-        reviewer_path, judge_path = self._judged_records_with_function_context_found(
-            tmp_path, function_context_found=True,
+        reviewer_path, judge_path = _judged_table(
+            tmp_path, {"d1": _BOTH_ARMS_FIND_WITH_ONE_VALID_FINDING}, defects_without_precision_answer=("d1",),
         )
-        recall_only_judge_path = tmp_path / "recall-only-judge.jsonl"
-        runner.append_run_records(recall_only_judge_path, [
-            record for record in runner.read_run_records(judge_path) if record.arm == JUDGE_ARM_RECALL
-        ])
         out_path = tmp_path / "report.json"
 
         exit_code = run_review_bench.main(
-            _analyze_argv(files, reviewer_path, recall_only_judge_path, "--k", "1", "--out", str(out_path)),
+            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)),
         )
 
         assert exit_code == 2
@@ -1879,6 +2512,261 @@ class TestAnalyzeLaterArmVerdicts:
 
         assert exit_code == 2
         assert edited_module in capsys.readouterr().err
+
+
+class TestAnalyzeLaterArmReadsThePerGateBaselineVerdicts:
+    """Later-arm `analyze` reads each gate's sensitivity verdict from the baseline report. Arm X
+    passes all four tests in every case here, and the patched N_min keeps no gate short, so the outcome
+    comes from the baseline verdicts alone."""
+
+    @pytest.fixture(autouse=True)
+    def _no_gate_is_short(self, patch_n_min) -> None:
+        patch_n_min(_N_MIN_NO_GATE_IS_SHORT)
+
+    def _certification(
+        self, tmp_path: Path, monkeypatch, *, gate_verdicts: dict | None = None,
+        fixture_counts: dict | None = None, defect_counts: tuple[int, int] = (2, 2),
+    ) -> str:
+        confirmed = _two_gate_defects(code_count=defect_counts[0], markdown_count=defect_counts[1])
+        files = _frozen_files(tmp_path, monkeypatch, confirmed=confirmed)
+        conditions = json.loads(files["conditions"].read_text())
+        files["baseline_report"].write_text(
+            json.dumps(_baseline_report(conditions, gate_verdicts=gate_verdicts, fixture_counts=fixture_counts)),
+        )
+        reviewer_path, judge_path = _judged_table(
+            tmp_path, {defect.id: _BOTH_ARMS_FIND_WITH_ONE_VALID_FINDING for defect in confirmed},
+        )
+        out_path = tmp_path / "later-arm-report.json"
+        argv = _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path))
+        assert run_review_bench.main(argv) == 0
+        return json.loads(out_path.read_text())["certification"]
+
+    def test_both_gates_sensitive_with_no_gate_short_certifies(self, tmp_path: Path, monkeypatch) -> None:
+        assert self._certification(tmp_path, monkeypatch) == analysis.CERTIFICATION_CERTIFIED
+
+    @pytest.mark.parametrize("not_sensitive_gate", ["code", "markdown"])
+    def test_a_gate_the_baseline_found_not_sensitive_makes_the_later_arm_inconclusive(
+        self, tmp_path: Path, monkeypatch, not_sensitive_gate: str,
+    ) -> None:
+        certification = self._certification(
+            tmp_path, monkeypatch, gate_verdicts={not_sensitive_gate: analysis.SENSITIVITY_NOT_SENSITIVE},
+        )
+
+        assert certification == analysis.CERTIFICATION_INCONCLUSIVE
+
+    @pytest.mark.parametrize("fixtures", [0, 1])
+    def test_a_null_verdict_for_a_gate_of_fewer_than_two_fixtures_is_valid_and_never_read_as_sensitive(
+        self, tmp_path: Path, monkeypatch, fixtures: int,
+    ) -> None:
+        certification = self._certification(
+            tmp_path, monkeypatch, gate_verdicts={"markdown": None}, fixture_counts={"markdown": fixtures},
+        )
+
+        assert certification == analysis.CERTIFICATION_INCONCLUSIVE
+
+    def test_an_empty_gate_is_short_so_the_later_arm_is_inconclusive_without_raising(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        certification = self._certification(
+            tmp_path, monkeypatch, gate_verdicts={"markdown": None}, fixture_counts={"markdown": 0},
+            defect_counts=(2, 0),
+        )
+
+        assert certification == analysis.CERTIFICATION_INCONCLUSIVE
+
+
+class TestAnalyzeLaterArmRefusesAnUnusableBaselineReport:
+    """A baseline report that cannot be read, lacks a key, or was computed under another
+    defects.json or K exits 2, and is never read as sensitive."""
+
+    def _exit_code_and_stderr(self, tmp_path: Path, monkeypatch, capsys, edit_report) -> tuple[int, str]:
+        """Runs a later-arm `analyze` after `edit_report(report_path, conditions)` has edited the baseline report."""
+        files = _frozen_files(tmp_path, monkeypatch)
+        reviewer_path, judge_path = _judged_records(tmp_path)
+        edit_report(files["baseline_report"], json.loads(files["conditions"].read_text()))
+        exit_code = run_review_bench.main(_analyze_argv(files, reviewer_path, judge_path, "--k", "1"))
+        return exit_code, capsys.readouterr().err
+
+    def test_a_missing_file_exits_2_naming_the_path(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        exit_code, stderr = self._exit_code_and_stderr(
+            tmp_path, monkeypatch, capsys, lambda report_path, conditions: report_path.unlink(),
+        )
+
+        assert exit_code == 2
+        assert "baseline-report.json" in stderr
+        assert "unreadable" in stderr
+
+    def test_an_unparseable_file_exits_2(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        exit_code, stderr = self._exit_code_and_stderr(
+            tmp_path, monkeypatch, capsys, lambda report_path, conditions: report_path.write_text("not json"),
+        )
+
+        assert exit_code == 2
+        assert "unreadable" in stderr
+
+    @pytest.mark.parametrize("missing_gate", ["code", "markdown"])
+    def test_a_missing_verdict_key_exits_2(self, tmp_path: Path, monkeypatch, capsys, missing_gate: str) -> None:
+        def drop_verdict(report_path: Path, conditions: dict) -> None:
+            report = json.loads(report_path.read_text())
+            del report["gates"][missing_gate]["baseline_sensitivity"]["verdict"]
+            report_path.write_text(json.dumps(report))
+
+        exit_code, stderr = self._exit_code_and_stderr(tmp_path, monkeypatch, capsys, drop_verdict)
+
+        assert exit_code == 2
+        assert "verdict" in stderr
+
+    def test_a_null_verdict_beside_two_or_more_fixtures_exits_2_instead_of_reading_as_sensitive(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        def null_the_code_verdict(report_path: Path, conditions: dict) -> None:
+            report_path.write_text(json.dumps(
+                _baseline_report(conditions, gate_verdicts={"code": None}, fixture_counts={"code": 2}),
+            ))
+
+        exit_code, stderr = self._exit_code_and_stderr(tmp_path, monkeypatch, capsys, null_the_code_verdict)
+
+        assert exit_code == 2
+        assert "null verdict" in stderr
+
+    @pytest.mark.parametrize(
+        ("mutate", "expected_field"),
+        [
+            pytest.param(lambda identity: identity.update(defects_json_hash="0" * 64), "defects_json_hash",
+                         id="defects-digest"),
+            pytest.param(lambda identity: identity.update(k=99), "'k'", id="k"),
+            pytest.param(lambda identity: identity.update(harness_closure_hash="0" * 64), "harness_closure_hash",
+                         id="closure-hash"),
+            pytest.param(lambda identity: identity["arm_dir_hashes"].update({arms_mod.ARM_FUNCTION_CONTEXT: "0" * 64}),
+                         f"arm_dir_hashes[{arms_mod.ARM_FUNCTION_CONTEXT}]", id="an-arm-dir-hash"),
+            pytest.param(lambda identity: identity["judge_agent_hashes"].update({"bench-judge-precision": "0" * 64}),
+                         "judge_agent_hashes[bench-judge-precision]", id="a-judge-hash"),
+            pytest.param(lambda identity: identity["environment"].update(cli_version="1.0.0"),
+                         "environment[cli_version]", id="cli-version"),
+            pytest.param(lambda identity: identity["environment"].update(ambient_config_commit="0ld"),
+                         "environment[ambient_config_commit]", id="ambient-config-commit"),
+        ],
+    )
+    def test_a_report_computed_under_another_freeze_exits_2_naming_the_field_and_the_regeneration(
+        self, tmp_path: Path, monkeypatch, capsys, mutate, expected_field: str,
+    ) -> None:
+        def make_stale(report_path: Path, conditions: dict) -> None:
+            report = _baseline_report(conditions)
+            mutate(report["freeze_identity"])
+            report_path.write_text(json.dumps(report))
+
+        exit_code, stderr = self._exit_code_and_stderr(tmp_path, monkeypatch, capsys, make_stale)
+
+        assert exit_code == 2
+        assert "invalidated -- rerun all arms" in stderr
+        assert expected_field in stderr
+        assert "rerun all arms under the new freeze, then regenerate the baseline report" in stderr
+
+    def test_a_report_matching_in_every_compared_part_is_accepted_after_the_campaign_seed_and_main_commit_change(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        """`campaign_seed` and `main_commit_sha` are not part of a freeze identity, so changing them in
+        conditions.json after the report was made does not invalidate the report."""
+        files = _frozen_files(tmp_path, monkeypatch, campaign_seed=7)
+        conditions_at_report_time = {**json.loads(files["conditions"].read_text()), "main_commit_sha": "a" * 40}
+        files["baseline_report"].write_text(json.dumps(_baseline_report(conditions_at_report_time)))
+        files["conditions"].write_text(json.dumps(
+            {**conditions_at_report_time, "campaign_seed": 8, "main_commit_sha": "b" * 40},
+        ))
+        reviewer_path, judge_path = _judged_records(tmp_path)
+
+        exit_code = run_review_bench.main(_analyze_argv(files, reviewer_path, judge_path, "--k", "1"))
+
+        assert exit_code == 0, capsys.readouterr().err
+
+    def test_a_report_without_a_freeze_identity_exits_2(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        def drop_identity(report_path: Path, conditions: dict) -> None:
+            report = _baseline_report(conditions)
+            del report["freeze_identity"]
+            report_path.write_text(json.dumps(report))
+
+        exit_code, stderr = self._exit_code_and_stderr(tmp_path, monkeypatch, capsys, drop_identity)
+
+        assert exit_code == 2
+        assert "freeze_identity" in stderr
+
+
+class TestAnalyzeBaselineThenLaterArmThroughTheWrittenReport:
+    """The baseline report is written by baseline-mode `analyze --out` and read by a later arm's `analyze`
+    through `--baseline-report-path`, so the writer's keys and the reader's keys are tested together.
+    A gate whose defects only arm 1 finds reads sensitive in the baseline, and a gate whose defects both
+    arms find reads not sensitive. The patched N_min keeps no gate short, so each outcome comes
+    from the baseline verdicts alone."""
+
+    @pytest.fixture(autouse=True)
+    def _no_gate_is_short(self, patch_n_min) -> None:
+        patch_n_min(_N_MIN_NO_GATE_IS_SHORT)
+
+    @staticmethod
+    def _write_baseline_report(
+        tmp_path: Path, files: dict[str, Path], confirmed: list[ConfirmedDefect], *, gap_gates: tuple[str, ...],
+    ) -> Path:
+        """Runs baseline-mode `analyze --out`; the defects in `gap_gates` are found by arm 1 alone."""
+        table = {
+            defect.id: _ONLY_ARM_1_FINDS if ("markdown" if defect.file_is_markdown else "code") in gap_gates
+            else _BOTH_ARMS_FIND_WITH_ONE_VALID_FINDING
+            for defect in confirmed
+        }
+        reviewer_path, judge_path = _judged_table(tmp_path, table, subdir="baseline")
+        report_path = tmp_path / "written-baseline.json"
+        args = run_review_bench.build_parser().parse_args([
+            "analyze", "--defects-path", str(files["defects"]), "--reviewer-records-path", str(reviewer_path),
+            "--judge-records-path", str(judge_path), "--k", "1", "--out", str(report_path),
+            "--arms-root", str(files["arms"]),
+        ])
+        assert run_review_bench.cmd_analyze(args) == 0
+        return report_path
+
+    def _later_arm_report(self, tmp_path: Path, monkeypatch, *, gap_gates: tuple[str, ...]) -> dict:
+        """A later arm that finds everything, analyzed against a baseline report the writer produced."""
+        confirmed = _two_gate_defects()
+        files = _frozen_files(tmp_path, monkeypatch, confirmed=confirmed)
+        files["baseline_report"] = self._write_baseline_report(tmp_path, files, confirmed, gap_gates=gap_gates)
+        reviewer_path, judge_path = _judged_table(
+            tmp_path, {defect.id: _BOTH_ARMS_FIND_WITH_ONE_VALID_FINDING for defect in confirmed}, subdir="later",
+        )
+        out_path = tmp_path / "later-arm-report.json"
+
+        exit_code = run_review_bench.main(
+            _analyze_argv(files, reviewer_path, judge_path, "--k", "1", "--out", str(out_path)),
+        )
+
+        assert exit_code == 0
+        return json.loads(out_path.read_text())
+
+    def test_a_baseline_report_with_the_markdown_gate_not_sensitive_leaves_a_passing_later_arm_inconclusive(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        report = self._later_arm_report(tmp_path, monkeypatch, gap_gates=("code",))
+
+        assert report["certification"] == analysis.CERTIFICATION_INCONCLUSIVE
+        assert report["gates"]["code"]["baseline_sensitivity"]["verdict"] == analysis.SENSITIVITY_SENSITIVE
+        assert report["gates"]["markdown"]["baseline_sensitivity"]["verdict"] == analysis.SENSITIVITY_NOT_SENSITIVE
+        assert (report["gates"]["code"]["outcome"], report["gates"]["markdown"]["outcome"]) == (
+            analysis.GATE_OUTCOME_PASS, analysis.GATE_OUTCOME_INCONCLUSIVE,
+        )
+
+    def test_a_baseline_report_with_the_code_gate_not_sensitive_leaves_a_passing_later_arm_inconclusive(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        report = self._later_arm_report(tmp_path, monkeypatch, gap_gates=("markdown",))
+
+        assert report["certification"] == analysis.CERTIFICATION_INCONCLUSIVE
+        assert report["gates"]["code"]["baseline_sensitivity"]["verdict"] == analysis.SENSITIVITY_NOT_SENSITIVE
+        assert report["gates"]["markdown"]["baseline_sensitivity"]["verdict"] == analysis.SENSITIVITY_SENSITIVE
+
+    def test_the_control_with_both_gates_sensitive_and_no_gate_short_certifies(self, tmp_path: Path, monkeypatch) -> None:
+        report = self._later_arm_report(tmp_path, monkeypatch, gap_gates=("code", "markdown"))
+
+        assert report["certification"] == analysis.CERTIFICATION_CERTIFIED
+        assert (report["gates"]["code"]["outcome"], report["gates"]["markdown"]["outcome"]) == (
+            analysis.GATE_OUTCOME_PASS, analysis.GATE_OUTCOME_PASS,
+        )
 
 
 @pytest.mark.usefixtures("stubbed_environment")
@@ -2149,6 +3037,7 @@ class TestRunPreflightBeforeDispatch:
             ConfirmedDefect(
                 id="d1", source="szz", lens="staff-backend-engineer", base_commit=head_sha, head_commit=head_sha,
                 fix_commit=head_sha, fix_date="2024-01-01", description="test defect",
+                path="app.py", file_is_markdown=False,
             ),
         ])
         files = {"defects": defects_path, "arms": tmp_path / "arms"}
@@ -2418,6 +3307,116 @@ class TestCmdMineRounds:
         assert exit_code == 0
         assert f"mine-rounds: wrote 0 candidate(s) to {out_path}" in capsys.readouterr().err
 
+    def test_rerun_yielding_fewer_candidates_keeps_the_prior_entry_it_cannot_regenerate(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        from review_bench import mine_review_rounds
+
+        regenerated = _candidate(id="round-1", source="review-round", fix_date="2024-02-02")
+        prior_regenerated = _candidate(id="round-1", source="review-round", fix_date="2024-01-01")
+        prior_aged_out = _candidate(id="round-2", source="review-round")
+        out_path = tmp_path / "local" / "review_round_candidates.json"
+        defects.save_candidates(out_path, [prior_regenerated, prior_aged_out])
+        monkeypatch.setattr(mine_review_rounds, "mine", lambda repo_root: [regenerated])
+
+        exit_code = run_review_bench.cmd_mine_rounds(argparse.Namespace(local_dir=str(tmp_path / "local")))
+
+        assert exit_code == 0
+        assert defects.load_candidates(out_path) == [regenerated, prior_aged_out]
+
+    def test_rerun_yielding_none_keeps_every_prior_entry(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        from review_bench import mine_review_rounds
+
+        prior = [_candidate(id="round-1", source="review-round"), _candidate(id="round-2", source="review-round")]
+        out_path = tmp_path / "local" / "review_round_candidates.json"
+        defects.save_candidates(out_path, prior)
+        monkeypatch.setattr(mine_review_rounds, "mine", lambda repo_root: [])
+
+        exit_code = run_review_bench.cmd_mine_rounds(argparse.Namespace(local_dir=str(tmp_path / "local")))
+
+        assert exit_code == 0
+        assert defects.load_candidates(out_path) == prior
+        assert "wrote 2 candidate(s)" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        ("shortlist_text", "expected_error_class", "expected_detail"),
+        [
+            ("{not json", "JSONDecodeError", "Expecting property name"),
+            ('[{"id": "x"}]', "TypeError", "missing"),
+        ],
+        ids=["malformed-json", "stale-schema-entry"],
+    )
+    def test_unloadable_existing_shortlist_exits_2_and_writes_nothing(
+        self, tmp_path: Path, monkeypatch, capsys, shortlist_text: str, expected_error_class: str,
+        expected_detail: str,
+    ) -> None:
+        from review_bench import mine_review_rounds
+
+        out_path = tmp_path / "local" / "review_round_candidates.json"
+        out_path.parent.mkdir()
+        out_path.write_text(shortlist_text)
+        monkeypatch.setattr(
+            mine_review_rounds, "mine", lambda repo_root: [_candidate(id="round-1", source="review-round")],
+        )
+
+        exit_code = run_review_bench.cmd_mine_rounds(argparse.Namespace(local_dir=str(tmp_path / "local")))
+
+        assert exit_code == 2
+        assert out_path.read_text() == shortlist_text
+        stderr = capsys.readouterr().err
+        assert "cannot load the existing shortlist" in stderr
+        assert expected_error_class in stderr
+        assert expected_detail in stderr
+
+    def test_rerun_regenerating_an_id_from_fewer_events_keeps_the_prior_only_content(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        from review_bench import mine_review_rounds
+
+        def round_pair(earlier_ts: float, later_ts: float, *, edited: bool) -> dict:
+            return {"earlier_round_ts": earlier_ts, "later_round_ts": later_ts, "main_thread_edited_between": edited}
+
+        prior = _candidate(
+            id="round-1", source="review-round", description="hand-written description",
+            excerpt="aged-out excerpt\n\nshared excerpt",
+            evidence={
+                "path": "a.py", "round_pairs": [round_pair(1.0, 2.0, edited=True), round_pair(3.0, 4.0, edited=False)],
+            },
+        )
+        regenerated = _candidate(
+            id="round-1", source="review-round", fix_date="2024-02-02", excerpt="shared excerpt",
+            evidence={"path": "a.py", "round_pairs": [round_pair(3.0, 4.0, edited=True)]},
+        )
+        out_path = tmp_path / "local" / "review_round_candidates.json"
+        defects.save_candidates(out_path, [prior])
+        monkeypatch.setattr(mine_review_rounds, "mine", lambda repo_root: [regenerated])
+
+        exit_code = run_review_bench.cmd_mine_rounds(argparse.Namespace(local_dir=str(tmp_path / "local")))
+
+        assert exit_code == 0
+        (merged,) = defects.load_candidates(out_path)
+        assert merged.fix_date == "2024-02-02"
+        assert merged.description == "hand-written description"
+        assert merged.excerpt == "shared excerpt\n\naged-out excerpt"
+        assert merged.evidence["round_pairs"] == [round_pair(3.0, 4.0, edited=True), round_pair(1.0, 2.0, edited=True)]
+
+    def test_rerun_keeps_a_non_empty_prior_description_over_the_regenerated_one(
+        self, tmp_path: Path, monkeypatch,
+    ) -> None:
+        from review_bench import mine_review_rounds
+
+        out_path = tmp_path / "local" / "review_round_candidates.json"
+        defects.save_candidates(out_path, [_candidate(id="round-1", source="review-round", description="prior")])
+        monkeypatch.setattr(
+            mine_review_rounds, "mine",
+            lambda repo_root: [_candidate(id="round-1", source="review-round", description="regenerated")],
+        )
+
+        run_review_bench.cmd_mine_rounds(argparse.Namespace(local_dir=str(tmp_path / "local")))
+
+        (merged,) = defects.load_candidates(out_path)
+        assert merged.description == "prior"
+
     def test_cli_flags_reach_cmd_mine_rounds_via_build_parser(self, tmp_path: Path, monkeypatch) -> None:
         from review_bench import mine_review_rounds
 
@@ -2435,6 +3434,147 @@ class TestCmdMineRounds:
 
         assert exit_code == 0
         assert captured_calls == [tmp_path / "repo"]
+
+
+class TestCmdMinePrComments:
+    def test_writes_the_mined_candidates_under_the_glob_confirm_reads(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        from review_bench import mine_pr_comments
+
+        candidate = _candidate(id="pr-comment:1", source="pr-comment")
+        captured_calls: list[Path] = []
+
+        def fake_mine(repo_root):
+            captured_calls.append(repo_root)
+            return [candidate]
+
+        monkeypatch.setattr(mine_pr_comments, "mine", fake_mine)
+        monkeypatch.setattr(run_review_bench, "REPO_ROOT", tmp_path / "repo")
+
+        args = run_review_bench.build_parser().parse_args(["mine-pr-comments", "--local-dir", str(tmp_path / "local")])
+        exit_code = run_review_bench.cmd_mine_pr_comments(args)
+
+        assert exit_code == 0
+        assert captured_calls == [tmp_path / "repo"]
+        out_path = tmp_path / "local" / "pr_comment_candidates.json"
+        assert defects.load_candidates(out_path) == [candidate]
+        assert list((tmp_path / "local").glob("*_candidates.json")) == [out_path]
+        assert f"mine-pr-comments: wrote 1 candidate(s) to {out_path}" in capsys.readouterr().err
+
+    def test_a_refused_run_exits_2_and_writes_no_shortlist(self, tmp_path: Path, monkeypatch) -> None:
+        from review_bench import mine_pr_comments
+
+        def refusing_mine(repo_root):
+            raise SystemExit(2)
+
+        monkeypatch.setattr(mine_pr_comments, "mine", refusing_mine)
+        args = run_review_bench.build_parser().parse_args(["mine-pr-comments", "--local-dir", str(tmp_path / "local")])
+
+        with pytest.raises(SystemExit) as exit_info:
+            run_review_bench.cmd_mine_pr_comments(args)
+
+        assert exit_info.value.code == 2
+        assert not (tmp_path / "local").exists()
+
+
+class TestCmdMinePrCommentsKeepsAnExistingShortlistWhenTheRunFails:
+    """`mine` exits 2 before the CLI writes anything, so a failed or degraded run leaves the previous
+    shortlist as it was. `gh` is the fake from the miner's own tests, behind the real `mine`."""
+
+    _EXISTING = [_candidate(id="pr-comment:earlier-run", source="pr-comment")]
+
+    def _run_with_fake_gh(self, tmp_path: Path, monkeypatch, repo: Path, thread: list[dict], **fake_gh_kwargs) -> Path:
+        from review_bench import mine_pr_comments
+        from test_review_bench_mining import _MERGED_PR_NUMBER, _closed_pull, _FakeGh
+
+        fake_gh_kwargs.setdefault("closed_pulls", [_closed_pull(_MERGED_PR_NUMBER, "feat")])
+        fake_gh = _FakeGh(comments=thread, **fake_gh_kwargs)
+        real_mine = mine_pr_comments.mine
+        monkeypatch.setattr(mine_pr_comments, "mine", lambda repo_root: real_mine(repo_root, run=fake_gh))
+        monkeypatch.setattr(run_review_bench, "REPO_ROOT", repo)
+        shortlist = tmp_path / "local" / "pr_comment_candidates.json"
+        defects.save_candidates(shortlist, self._EXISTING)
+        args = run_review_bench.build_parser().parse_args(["mine-pr-comments", "--local-dir", str(tmp_path / "local")])
+        with pytest.raises(SystemExit) as exit_info:
+            run_review_bench.cmd_mine_pr_comments(args)
+        assert exit_info.value.code == 2
+        return shortlist
+
+    @pytest.mark.parametrize("failing_call_index", [2, 3], ids=["comments-listing", "closed-pulls-listing"])
+    def test_a_listing_call_that_exits_non_zero_leaves_the_shortlist_unchanged(
+        self, tmp_path: Path, monkeypatch, failing_call_index: int,
+    ) -> None:
+        from test_review_bench_mining import _pr_comment_repo
+
+        repo, _main_sha, _introducing_sha, _fix_sha = _pr_comment_repo(tmp_path)
+
+        shortlist = self._run_with_fake_gh(
+            tmp_path, monkeypatch, repo, [], nonzero_exit_on_call_index=failing_call_index,
+        )
+
+        assert defects.load_candidates(shortlist) == self._EXISTING
+
+    def test_a_fetch_failed_pr_head_exits_2_naming_the_pr_and_leaves_the_shortlist_byte_for_byte(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        from test_review_bench_mining import (
+            _MERGED_PR_NUMBER,
+            _closed_pull,
+            _fixed_reply_body,
+            _pr_comment_repo,
+            _pr_review_comment,
+            _pr_thread_reply,
+        )
+
+        repo, _main_sha, introducing_sha, fix_sha = _pr_comment_repo(tmp_path)
+        thread = [_pr_review_comment(introducing_sha), _pr_thread_reply(_fixed_reply_body(fix_sha))]
+        expected_shortlist = tmp_path / "expected_shortlist.json"
+        defects.save_candidates(expected_shortlist, self._EXISTING)
+
+        shortlist = self._run_with_fake_gh(
+            tmp_path, monkeypatch, repo, thread,
+            closed_pulls=[_closed_pull(_MERGED_PR_NUMBER, "branch-with-no-local-ref")],
+        )
+
+        assert f"#{_MERGED_PR_NUMBER} could not be fetched" in capsys.readouterr().err
+        assert defects.load_candidates(shortlist) == self._EXISTING
+        assert shortlist.read_bytes() == expected_shortlist.read_bytes()
+        assert list(shortlist.parent.iterdir()) == [shortlist]
+
+    def test_a_run_with_one_unfetchable_pr_head_beside_a_minable_comment_writes_nothing_and_names_only_that_pr(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        """A partial shortlist would stand in for a complete one, so the comment that could be mined is
+        not written either."""
+        from test_review_bench_mining import (
+            _MERGED_PR_NUMBER,
+            _closed_pull,
+            _fixed_thread_on_pull_request,
+            _pr_comment_repo,
+        )
+
+        unfetchable_pr_number = _MERGED_PR_NUMBER + 2
+        repo, _main_sha, introducing_sha, fix_sha = _pr_comment_repo(tmp_path)
+        thread = [
+            *_fixed_thread_on_pull_request(introducing_sha, fix_sha, comment_id=1001, pr_number=_MERGED_PR_NUMBER),
+            *_fixed_thread_on_pull_request(introducing_sha, fix_sha, comment_id=1002, pr_number=unfetchable_pr_number),
+        ]
+        expected_shortlist = tmp_path / "expected_shortlist.json"
+        defects.save_candidates(expected_shortlist, self._EXISTING)
+
+        shortlist = self._run_with_fake_gh(
+            tmp_path, monkeypatch, repo, thread,
+            closed_pulls=[
+                _closed_pull(_MERGED_PR_NUMBER, "feat"), _closed_pull(unfetchable_pr_number, "branch-with-no-local-ref"),
+            ],
+        )
+
+        stderr = capsys.readouterr().err
+        assert "1 candidate(s) from 4 comment(s)" in stderr  # the fetchable thread was mined, then discarded
+        (message,) = (line for line in stderr.splitlines() if "could not be fetched" in line)
+        assert message.startswith(f"mine-pr-comments: 1 comment(s) skipped: PR head(s) #{unfetchable_pr_number} could not")
+        assert f"#{_MERGED_PR_NUMBER}" not in message
+        assert shortlist.read_bytes() == expected_shortlist.read_bytes()
+        assert list(shortlist.parent.iterdir()) == [shortlist]
 
 
 class TestCmdSnapshotArms:
@@ -2761,7 +3901,9 @@ class TestJudgeRunStoreLock:
         assert "held by pid" not in capsys.readouterr().err
 
 
-_COMMITTED_DEFAULT_PATH_NAMES = frozenset({"DEFAULT_DEFECTS_PATH", "DEFAULT_ARMS_ROOT", "DEFAULT_CONDITIONS_PATH"})
+_COMMITTED_DEFAULT_PATH_NAMES = frozenset({
+    "DEFAULT_DEFECTS_PATH", "DEFAULT_ARMS_ROOT", "DEFAULT_CONDITIONS_PATH", "DEFAULT_BASELINE_REPORT_PATH",
+})
 # Read at import: conftest's autouse fixture moves the `.local/` defaults under a tmp directory for each test.
 _DEFAULT_PATHS = {name: value for name, value in vars(run_review_bench).items() if name.startswith("DEFAULT_")}
 
