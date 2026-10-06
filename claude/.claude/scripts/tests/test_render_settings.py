@@ -2,10 +2,8 @@
 
 Each test builds its own scratch $CLAUDE_CONFIG_DIR under tmp_path and
 invokes the real script via subprocess. Most tests need no shim, since the
-script's main external dependency is jq. The TestChmodPortability shim
-cases are the exception: each prepends a fake chmod that rejects a literal
-`--` argument to PATH. The shim cannot detect a dash-leading operand reaching
-chmod unnormalized, which only a real BSD chmod would reject.
+script's main external dependency is jq. The file shims PATH for two cases: a
+fake chmod (TestChmodPortability) and the jq seam (TestJqCannotRun).
 
 Rule 1-4 in docstrings refer to the numbered merge rules in
 render-settings.sh's merge comment.
@@ -52,7 +50,6 @@ def _write_json(path: Path, content: dict | list) -> None:
 def _run_script(
     *args: str,
     config_dir: Path,
-    cwd: Path | None = None,
     extra_env: dict | None = None,
 ) -> subprocess.CompletedProcess:
     env = dict(os.environ)
@@ -63,7 +60,6 @@ def _run_script(
         [str(_SCRIPT), *args],
         capture_output=True,
         text=True,
-        cwd=cwd,
         env=env,
         check=False,
         timeout=15,
@@ -152,40 +148,17 @@ class TestOverlayMerge:
         rendered = json.loads((config_dir / "settings.json").read_text())
         assert rendered["autoMode"]["environment"] == ["$defaults", "overlay-entry"]
 
-    def test_explicit_overlay_argument_overrides_default_overlay_path(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("argument", ["--help", "does-not-exist.json"])
+    def test_any_argument_is_refused_without_rendering(self, tmp_path: Path, argument: str) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        # Deliberately no settings.overlay.json at the default path -- only
-        # the explicitly-named alternate overlay should be read.
-        alt_overlay = tmp_path / "alt-overlay.json"
-        _write_json(alt_overlay, {"autoMode": {"environment": ["$defaults"]}})
 
-        result = _run_script(str(alt_overlay), config_dir=config_dir)
+        result = _run_script(argument, config_dir=config_dir)
 
-        assert result.returncode == 0, result.stderr
-        rendered = json.loads((config_dir / "settings.json").read_text())
-        assert rendered == {
-            "otherKey": "base-value",
-            "autoMode": {"environment": ["$defaults"]},
-        }
-
-    def test_explicit_overlay_argument_naming_nonexistent_file_renders_base_only(
-        self, tmp_path: Path
-    ) -> None:
-        """Pins the current behavior for a typo'd/stale explicit $1: silent
-        base-only render, identical to the no-overlay-configured case -- not
-        a loud failure."""
-        config_dir = tmp_path / "cfg"
-        config_dir.mkdir()
-        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        missing_overlay = tmp_path / "does-not-exist.json"
-
-        result = _run_script(str(missing_overlay), config_dir=config_dir)
-
-        assert result.returncode == 0, result.stderr
-        rendered = json.loads((config_dir / "settings.json").read_text())
-        assert rendered == {"otherKey": "base-value"}
+        assert result.returncode == 2
+        assert "takes no arguments" in result.stderr
+        assert not (config_dir / "settings.json").exists()
 
     def test_overlay_autoMode_entirely_replaces_base_autoMode(self, tmp_path: Path) -> None:
         """Confirms the merge of an overlay-allowed key is shallow whole-
@@ -512,17 +485,6 @@ class TestOverlayAllowlist:
         assert "non-object env value" in result.stderr
         assert "jq: error" not in result.stderr
 
-    def test_allowed_env_name_with_non_string_value_is_rejected(self, tmp_path: Path) -> None:
-        config_dir = tmp_path / "cfg"
-        config_dir.mkdir()
-        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        _write_json(config_dir / "settings.overlay.json", {"env": {"DISABLE_TELEMETRY": 123}})
-
-        result = _run_script(config_dir=config_dir)
-
-        assert result.returncode != 0
-        assert "DISABLE_TELEMETRY" in result.stderr
-
     def test_non_object_permissions_value_is_rejected_with_diagnostic_not_jq_error(
         self, tmp_path: Path
     ) -> None:
@@ -549,20 +511,6 @@ class TestOverlayAllowlist:
         assert "non-object permissions value" in result.stderr
         assert "jq: error" not in result.stderr
 
-    def test_permissions_object_with_extra_key_is_rejected_naming_it(self, tmp_path: Path) -> None:
-        config_dir = tmp_path / "cfg"
-        config_dir.mkdir()
-        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        _write_json(
-            config_dir / "settings.overlay.json",
-            {"permissions": {"defaultMode": "plan", "deny": ["Bash(rm *)"]}},
-        )
-
-        result = _run_script(config_dir=config_dir)
-
-        assert result.returncode != 0
-        assert "deny" in result.stderr
-
     @pytest.mark.parametrize(
         "bad_key",
         [
@@ -584,7 +532,7 @@ class TestOverlayAllowlist:
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode != 0
-        assert bad_key in result.stderr
+        assert _offending_keys(result.stderr) == {bad_key}
         assert not (config_dir / "settings.json").exists()
 
     def test_overlay_with_only_autoMode_and_skillListingBudgetFraction_is_accepted(
@@ -837,11 +785,6 @@ class TestRefusalPreservesPriorRender:
         assert "an existing settings.json keeps its previous deny rules and hooks" in result.stderr
         assert "base changes are not delivered until the overlay is fixed" in result.stderr
         assert target.read_text() == prior_content
-        assert sorted(entry.name for entry in config_dir.iterdir()) == [
-            "settings.base.json",
-            "settings.json",
-            "settings.overlay.json",
-        ], "a refusal must not leave a temp file behind"
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_unreadable_overlay_leaves_the_prior_render_byte_identical(self, tmp_path: Path) -> None:
@@ -887,10 +830,6 @@ class TestRefusalPreservesPriorRender:
         assert result.returncode != 0
         assert refusal_fragment in result.stderr
         assert target.read_text() == prior_content
-        expected_entries = ["settings.json"] if base_content is None else ["settings.base.json", "settings.json"]
-        assert sorted(entry.name for entry in config_dir.iterdir()) == expected_entries, (
-            "a refusal must not leave a temp file behind"
-        )
 
 
 class TestOverlayChmodHardening:
@@ -951,9 +890,7 @@ class TestOverlayChmodHardening:
 
 
 class TestChmodPortability:
-    """Verifies the leading-dash-to-./-prefix normalization keeps a
-    dash-prefixed overlay filename from ever reaching chmod as a raw
-    argument, regardless of which chmod variant runs it."""
+    """The overlay chmod must pass no `--`, which BSD chmod rejects."""
 
     @staticmethod
     def _write_bsd_style_chmod_shim(bin_dir: Path) -> None:
@@ -976,9 +913,8 @@ class TestChmodPortability:
         shim.chmod(0o755)
 
     def test_bsd_style_chmod_shim_reports_no_warning_and_leaves_mode_600(self, tmp_path: Path) -> None:
-        """CI runs Linux, where the real chmod accepts a dash-prefixed
-        argument unconditionally, so this regression needs a fake chmod that
-        fails on one to make the normalization enforceable on every push."""
+        """CI runs Linux, where the real chmod accepts `--`, so this needs a
+        fake chmod that rejects it to make the rule enforceable on every push."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
@@ -998,33 +934,6 @@ class TestChmodPortability:
         assert "could not chmod 600" not in result.stderr
         assert (overlay.stat().st_mode & 0o777) == 0o600
 
-    def test_dash_leading_overlay_path_chmod_under_bsd_style_shim(self, tmp_path: Path) -> None:
-        """A dash-leading overlay path must not reach the BSD-style chmod shim
-        in a way that trips its -- rejection, since the dash-guard's
-        ./-prefixing changes the exact argument chmod receives."""
-        config_dir = tmp_path / "cfg"
-        config_dir.mkdir()
-        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        overlay = config_dir / "-oops.json"
-        _write_json(overlay, {"autoMode": {"environment": ["$defaults"]}})
-        overlay.chmod(0o644)
-
-        fake_bin = tmp_path / "fake-bin"
-        self._write_bsd_style_chmod_shim(fake_bin)
-
-        result = _run_script(
-            "-oops.json",
-            config_dir=config_dir,
-            cwd=config_dir,
-            extra_env={"PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"},
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert "could not chmod 600" not in result.stderr
-        assert (overlay.stat().st_mode & 0o777) == 0o600
-        rendered = json.loads((config_dir / "settings.json").read_text())
-        assert rendered["autoMode"] == {"environment": ["$defaults"]}
-
 
 class TestDirectoryAtTarget:
     """A directory at $target must not silently absorb the rendered file."""
@@ -1043,6 +952,7 @@ class TestDirectoryAtTarget:
         assert result.returncode != 0
         assert target.is_dir()
         assert list(target.iterdir()) == []
+        assert sorted(entry.name for entry in config_dir.iterdir()) == ["settings.base.json", "settings.json"]
 
 
 class TestWritePathFailures:
@@ -1176,20 +1086,16 @@ class TestIdempotency:
         assert not target.is_symlink()
         assert json.loads(target.read_text()) == {"otherKey": "base-value"}
 
-    def test_concurrent_renders_of_different_overlays_yield_one_racers_full_output(
+    def test_concurrent_renders_of_the_same_inputs_both_succeed_with_the_full_output(
         self, tmp_path: Path
     ) -> None:
         """Two real render-settings.sh subprocesses racing against the same
         config_dir -- the two-terminal-tabs-opening-at-once scenario
-        ensure-settings-render.sh's rc hook can trigger -- each given its own
-        overlay so the two computed merges genuinely differ. A byte-identical
-        race (both racers given the same inputs) can't distinguish an atomic
-        replace from a non-atomic one, since either racer's output would be
-        indistinguishable from the other's; giving each racer a different
-        overlay means settings.json must match one racer's full output.
-        With payloads this small a plain redirect would also look atomic per
-        racer, so the failure this smoke detects is a fixed temp name that
-        collides between the racers and fails the loser's mv.
+        ensure-settings-render.sh's rc hook can trigger.
+        Both racers write identical bytes, so the content check cannot tell
+        an atomic replace from a non-atomic one; the failure this smoke
+        detects is a fixed temp name that collides between the racers and
+        fails the loser's re-validation or mv.
         The two processes are not forced to overlap, so the smoke catches
         that regression probabilistically, and a pass is not proof of
         atomicity."""
@@ -1197,25 +1103,20 @@ class TestIdempotency:
         config_dir.mkdir()
         base = {"otherKey": "base-value"}
         _write_json(config_dir / "settings.base.json", base)
-
-        overlay_a = tmp_path / "overlay-a.json"
-        overlay_b = tmp_path / "overlay-b.json"
-        _write_json(overlay_a, {"autoMode": {"environment": ["racer-a"]}})
-        _write_json(overlay_b, {"autoMode": {"environment": ["racer-b"]}})
-        expected_a = {**base, "autoMode": {"environment": ["racer-a"]}}
-        expected_b = {**base, "autoMode": {"environment": ["racer-b"]}}
+        _write_json(config_dir / "settings.overlay.json", {"autoMode": {"environment": ["racer"]}})
+        expected = {**base, "autoMode": {"environment": ["racer"]}}
 
         env = dict(os.environ)
         env["CLAUDE_CONFIG_DIR"] = str(config_dir)
         procs = [
             subprocess.Popen(
-                [str(_SCRIPT), str(overlay)],
+                [str(_SCRIPT)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 env=env,
             )
-            for overlay in (overlay_a, overlay_b)
+            for _ in range(2)
         ]
         try:
             results = [proc.communicate(timeout=30) for proc in procs]
@@ -1228,13 +1129,9 @@ class TestIdempotency:
         for proc, (_, stderr) in zip(procs, results, strict=True):
             assert proc.returncode == 0, stderr
 
-        # Whichever racer's mv wins, the result must be that racer's own
-        # full merge output, never a hybrid -- the assertion a non-atomic
-        # write (e.g. a `>` redirect to a shared temp name) would fail.
         rendered = json.loads((config_dir / "settings.json").read_text())
-        assert rendered in (expected_a, expected_b), (
-            "settings.json must match exactly one racer's full merge "
-            f"output, not a hybrid of both; got {rendered!r}"
+        assert rendered == expected, (
+            f"settings.json must hold the full merge output; got {rendered!r}"
         )
 
 

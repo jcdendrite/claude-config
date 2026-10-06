@@ -1,9 +1,8 @@
 """Tests for install.sh's stow + render-settings.sh invocation sequence: pins
-that render-settings.sh runs after the stow, with CLAUDE_CONFIG_DIR resolved
-to $HOME/.claude regardless of the invoking shell's own value, that a
-dangling-symlink settings.json is safely replaced rather than written
-through, and that a render failure aborts install.sh with a diagnostic after
-the recovery tooling it must not skip.
+CLAUDE_CONFIG_DIR resolved to $HOME/.claude regardless of the invoking shell's
+own value, that a dangling-symlink settings.json is safely replaced rather
+than written through, and that a render failure aborts install.sh with a
+diagnostic after the recovery tooling it must not skip.
 """
 from __future__ import annotations
 
@@ -39,7 +38,6 @@ _RENDER_START = "# INSTALL_TEST_FIXTURE: render-settings-invoke — start\n"
 _RENDER_END = "# INSTALL_TEST_FIXTURE: render-settings-invoke — end"
 
 _HARDENING_START = "# INSTALL_TEST_FIXTURE: continuity-hardening — start\n"
-_HARDENING_END = "# INSTALL_TEST_FIXTURE: continuity-hardening — end"
 
 _RC_HELPERS_START = "# INSTALL_TEST_FIXTURE: rc-block-helpers — start\n"
 _RC_HELPERS_END = "# INSTALL_TEST_FIXTURE: rc-block-helpers — end"
@@ -165,7 +163,7 @@ def _run_blocks(script_body: str, home: Path, repo_dir: Path, extra_env: dict | 
 
 def _run_stow_and_render(pkg_root: Path, home: Path) -> subprocess.CompletedProcess:
     """Runs the real extracted stow-adopt-ignore and render-settings-invoke
-    blocks back to back, exactly as install.sh sequences them, against an
+    blocks back to back (the stow block, then the render block), against an
     isolated $HOME. A decoy CLAUDE_CONFIG_DIR is set in the subprocess env to
     prove the render invocation pins its own value rather than inheriting
     the shell's."""
@@ -229,8 +227,7 @@ class TestDanglingSymlinkedSettingsUpgrade:
 class TestRenderInvokeBlockAbortsOnMissingBase:
     """The render-abort invariant doesn't depend on stow at all -- runs only
     the render-settings-invoke block against a $REPO_DIR with no
-    settings.base.json, so unlike TestAbortsOnRenderFailure below this has no
-    skip condition."""
+    settings.base.json."""
 
     def test_render_invoke_block_exits_non_zero_when_base_is_missing(
         self, tmp_path: Path
@@ -528,98 +525,22 @@ class TestFirstRenderFromADanglingSymlinkedSettingsJson:
         assert json.loads(rendered_path.read_text())["model"] == "opus"
 
 
-@pytest.mark.usefixtures("require_stow")
 class TestAbortsOnRenderFailure:
-    def test_render_failure_aborts_the_sequence_non_zero(self, tmp_path: Path) -> None:
-        """install.sh's render-settings-invoke block is a bare, unguarded
-        command under `set -e`: a render failure must abort the sequence,
-        not warn-and-continue like most other install.sh steps. Pins that
-        propagation through the real extracted blocks, not just
-        render-settings.sh's own exit code in isolation."""
-        pkg_root = tmp_path / "pkg"
-        pkg_root.mkdir()
-        scripts_dir = pkg_root / "claude" / ".claude" / "scripts"
-        scripts_dir.mkdir(parents=True)
-        (scripts_dir / "_stow_migration_lib.sh").symlink_to(
-            SCRIPTS_DIR / "_stow_migration_lib.sh"
-        )
-        (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
-        (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
-        _write_stow_packages_stub(scripts_dir)
-        symlink_hooks_lib_chain(pkg_root / "claude" / ".claude" / "hooks")
-        # No settings.base.json written -- render-settings.sh's own
-        # missing-base check fails the render.
-        subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True, timeout=10)
-        subprocess.run(
-            ["git", "add", "claude/.claude/scripts", "claude/.claude/hooks"],
-            cwd=pkg_root,
-            check=True,
-            timeout=10,
-        )
-
-        home = tmp_path / "home"
-        (home / ".claude").mkdir(parents=True)
-
-        result = _run_stow_and_render(pkg_root, home)
-
-        assert result.returncode != 0, (
-            "a failed render-settings.sh must abort the extracted install.sh "
-            f"sequence; got exit 0, stderr={result.stderr!r}"
-        )
-        assert "settings.base.json not found" in result.stderr, (
-            "the abort must come from the render's own diagnostic, not from a "
-            f"missing library; stderr={result.stderr!r}"
-        )
-        assert not (home / ".claude" / "settings.json").exists()
-
     def test_continuity_hardening_runs_even_when_render_fails(self, tmp_path: Path) -> None:
         """Pins install.sh's ordering: continuity-hardening (chmod 700
         ~/.claude, chmod 600 ~/.claude.json) sits ahead of the render step so
         it always runs, even when a subsequent render failure aborts the
         rest of the script."""
-        pkg_root = tmp_path / "pkg"
-        pkg_root.mkdir()
-        scripts_dir = pkg_root / "claude" / ".claude" / "scripts"
-        scripts_dir.mkdir(parents=True)
-        (scripts_dir / "_stow_migration_lib.sh").symlink_to(
-            SCRIPTS_DIR / "_stow_migration_lib.sh"
-        )
-        (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
-        (scripts_dir / "_capped-for-lib.sh").symlink_to(SCRIPTS_DIR / "_capped-for-lib.sh")
-        _write_stow_packages_stub(scripts_dir)
-        symlink_hooks_lib_chain(pkg_root / "claude" / ".claude" / "hooks")
+        repo_dir = _make_render_repo(tmp_path / "repo")
         # No settings.base.json written -- render-settings.sh's own
         # missing-base check fails the render, after hardening has run.
-        subprocess.run(["git", "init", "-q"], cwd=pkg_root, check=True, timeout=10)
-        subprocess.run(
-            ["git", "add", "claude/.claude/scripts", "claude/.claude/hooks"],
-            cwd=pkg_root,
-            check=True,
-            timeout=10,
-        )
-
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
         claude_json = home / ".claude.json"
         claude_json.write_text("{}")
         claude_json.chmod(0o664)
 
-        script = (
-            f'. "{SCRIPTS_DIR / "_stow_migration_lib.sh"}"\n'
-            "set -e\n"
-            'cd "$1"\n'
-            + _extract_block(_STOW_START, _STOW_END)
-            + _extract_block(_HARDENING_START, _HARDENING_END)
-            + _extract_block(_RENDER_START, _RENDER_END)
-        )
-        result = subprocess.run(
-            ["bash", "-c", script, "run_stow_harden_and_render", str(pkg_root)],
-            capture_output=True,
-            text=True,
-            check=False,
-            env={**os.environ, "HOME": str(home), "REPO_DIR": str(pkg_root)},
-            timeout=30,
-        )
+        result = _run_blocks(_extract_span(_HARDENING_START, _RENDER_END), home, repo_dir)
 
         assert result.returncode != 0, "the render step must still abort"
         assert "settings.base.json not found" in result.stderr

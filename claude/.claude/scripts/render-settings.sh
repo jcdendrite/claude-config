@@ -45,10 +45,15 @@ if [[ "${1:-}" == "--print-env-allowed-names" ]]; then
   exit 0
 fi
 
+if [[ $# -gt 0 ]]; then
+  echo "render-settings.sh: unexpected argument '$1' -- this script takes no arguments; set CLAUDE_CONFIG_DIR to render another profile" >&2
+  exit 2
+fi
+
 # Renders $CLAUDE_CONFIG_DIR/settings.json (or $HOME/.claude/settings.json
 # when unset) by merging settings.base.json with an optional overlay.
-# Overlay path: settings.overlay.json in the same directory by default, or
-# the path given as $1. No overlay present means settings.json is base only.
+# The overlay is settings.overlay.json in the same directory. No overlay means
+# settings.json is base only.
 #
 # Overlay top-level keys are restricted to {autoMode, env,
 # skillListingBudgetFraction}, plus a conditionally-admissible `permissions`
@@ -66,19 +71,12 @@ fi
 # merged result equals the prior settings.json and that file is a regular,
 # non-symlink file.
 #
-# Usage: render-settings.sh [overlay-path]
+# Usage: render-settings.sh (CLAUDE_CONFIG_DIR picks the profile)
 
 config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 base_file="$config_dir/settings.base.json"
-overlay_file="${1:-$config_dir/settings.overlay.json}"
+overlay_file="$config_dir/settings.overlay.json"
 target="$config_dir/settings.json"
-
-# A caller-supplied $1 overlay path could begin with a literal "-". The chmod
-# call below is made without "--" (BSD chmod), so a leading "-" is normalized
-# here. The default path never starts with "-".
-case "$overlay_file" in
-  -*) overlay_file="./$overlay_file" ;;
-esac
 
 # Overlay-allowed top-level keys: never carried forward, so deleting one
 # from the overlay actually takes effect on the next render.
@@ -134,8 +132,7 @@ if [[ -e "$overlay_file" ]]; then
   fi
 
   # Tighten the overlay to mode 600 so other local accounts can't read it.
-  # The "./" normalization above keeps a leading "-" from being parsed as a
-  # chmod flag, which BSD chmod would do where GNU chmod permutes arguments.
+  # No `--` here, because BSD chmod rejects it.
   chmod 600 "$overlay_file" 2>/dev/null || echo "render-settings.sh: warning: could not chmod 600 $overlay_file" >&2
 
   if ! require_json_object "$overlay_file"; then
@@ -248,11 +245,9 @@ if ! render_output="$(jq -n \
     def path_get($obj; $path): $obj | getpath($path | split("."));
     def path_set($obj; $path; $val): $obj | setpath($path | split("."); $val);
 
-    # Rule 1 (base always wins) holds on the resurrection side via
-    # $rule3Keys below; this strips any base-owned key out of the overlay
-    # side too, so rule 1 also holds on the override side even if a future
-    # change loosens OVERLAY_ALLOWED_KEYS_JSON without updating this
-    # merge -- the earlier allowlist gate is not the only enforcement layer.
+    # $overlay comes from a later read of the file than the validation checks,
+    # so no check except this strip applies to it: the strip drops any base-owned
+    # key a rewrite in between added, and every other key passes unchecked.
     ($overlay | del(.permissions) | with_entries(select(.key as $k | ($baseOwned | index($k)) == null))) as $overlayNonPerm
     | ($base + $overlayNonPerm) as $m12
     | ($m12 | keys) as $m12Keys

@@ -271,7 +271,7 @@ class TestEnsureSettingsRenderScript:
         scripts_dir = home / ".claude" / "scripts"
         scripts_dir.mkdir(parents=True)
         (scripts_dir / "render-settings.sh").symlink_to(SCRIPTS_DIR / "render-settings.sh")
-        repo_dir = tmp_path / "checkout" / "claude-config"
+        repo_dir = tmp_path / "check out" / "claude-config"
         (home / ".claude-config-source").write_text(f"{repo_dir}\n")
         # No settings.base.json written -- render-settings.sh's own
         # missing-base check fails the render.
@@ -279,7 +279,7 @@ class TestEnsureSettingsRenderScript:
         result = _run_ensure_script(home)
 
         assert result.returncode == 0, f"must always exit 0; stderr={result.stderr!r}"
-        assert str(repo_dir) in result.stderr
+        assert shlex.split(result.stderr.rsplit("run: ", 1)[1]) == ["cd", str(repo_dir), "&&", "./install.sh"]
 
     def test_missing_render_script_is_silent(self, tmp_path: Path) -> None:
         """A mid-install state (render-settings.sh not yet stowed) must not
@@ -293,8 +293,9 @@ class TestEnsureSettingsRenderScript:
         assert result.stderr == ""
 
     def test_successful_render_over_a_real_settings_json_is_silent(self, tmp_path: Path) -> None:
-        """A well-formed settings.json (already rendered) must not warn --
-        only a render failure adds ensure-settings-render.sh's own hint."""
+        """A stale prior settings.json re-rendered to changed content, with an
+        empty disclosure, must not warn -- only a render failure adds
+        ensure-settings-render.sh's own hint."""
         base_content = {"otherKey": "base-value"}
         home = _make_home_with_base(tmp_path, base_content)
         (home / ".claude" / "settings.json").write_text(json.dumps({"otherKey": "stale"}))
@@ -302,6 +303,8 @@ class TestEnsureSettingsRenderScript:
         result = _run_ensure_script(home)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stderr == ""
+        assert json.loads((home / ".claude" / "settings.json").read_text()) == base_content
 
 
 class TestEnsureSettingsRenderTimeoutGuard:

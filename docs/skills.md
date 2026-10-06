@@ -127,7 +127,7 @@ Persistent per-project: add to the repository's own `.claude/settings.local.json
 }
 ```
 
-`.claude/settings.local.json` is per-repository, not per-user — a re-enable added this way applies to sessions in this one repository. It overrides `settings.json` at the same scope, so the repo's `"off"` entry does not win. Remove the entry (or set to `"on"`) to restore. This repo's untracked, home-config-directory `settings.overlay.json` (see [Auto mode](auto-mode.md#what-to-put-in-settingsoverlayjson)) does not cover `skillOverrides` — its allowed key set is `autoMode`, `env`, `skillListingBudgetFraction`, and a narrow `permissions.defaultMode` exception — so a global re-enable still has no untracked home outside per-repo `.claude/settings.local.json`. Reference: [Claude Code skills — Override skill visibility from settings](https://code.claude.com/docs/en/skills.md).
+`.claude/settings.local.json` is per-repository, not per-user — a re-enable added this way applies to sessions in this one repository. It overrides `settings.json` at the same scope, so the repo's `"off"` entry does not win. Remove the entry (or set to `"on"`) to restore. This repo's untracked, home-config-directory `settings.overlay.json` (see [Auto mode](auto-mode.md#what-to-put-in-settingsoverlayjson)) does not cover `skillOverrides`, so a global re-enable still has no untracked home outside per-repo `.claude/settings.local.json`. Reference: [Claude Code skills — Override skill visibility from settings](https://code.claude.com/docs/en/skills.md).
 
 ## Skill evals
 

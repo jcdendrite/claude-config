@@ -236,15 +236,16 @@ class TestStowAdoptIgnorePattern:
             f"under-escaped pattern; stow output: {result.stderr!r}"
         )
 
-    def test_stray_settings_json_is_left_in_place_and_does_not_abort_stow(self, tmp_path: Path) -> None:
-        """A stray real claude/.claude/settings.json -- the write-through
-        shape, where a session opened a dangling settings.json symlink and
-        recreated its checkout-relative target -- is ignored by stow and left
-        in place, because the render may still need to read it as the prior
-        file."""
+    @pytest.mark.parametrize("stray_name", ["settings.json", "settings.overlay.json"])
+    def test_stray_profile_file_is_left_in_place_and_does_not_abort_stow(
+        self, tmp_path: Path, stray_name: str
+    ) -> None:
+        """A stray real claude/.claude/<stray_name>, such as a settings.json a
+        session recreated through a dangling symlink, is ignored by stow and
+        left in place."""
         home = tmp_path / "home"
         pkg_root = _make_package(tmp_path)
-        stray = pkg_root / "claude" / ".claude" / "settings.json"
+        stray = pkg_root / "claude" / ".claude" / stray_name
         stray.write_text('{"stray": true}')
         (home / ".claude").mkdir(parents=True)
 
@@ -254,7 +255,7 @@ class TestStowAdoptIgnorePattern:
         assert stray.read_text() == '{"stray": true}', (
             f"stow must neither remove nor adopt the stray file; stow output: {result.stderr!r}"
         )
-        assert not (home / ".claude" / "settings.json").exists()
+        assert not (home / ".claude" / stray_name).exists()
 
     def test_ds_store_conflict_across_packages_is_ignored(self, tmp_path: Path) -> None:
         """The target already holds a real `.DS_Store` file, as Finder creates.
@@ -465,25 +466,6 @@ def _run_ignore_arg_construction_only(pkg_root: Path, home: Path, *, stub: str) 
         env={**os.environ, "HOME": str(home), "REPO_DIR": str(pkg_root)},
         timeout=30,
     )
-
-
-class TestIgnoreArgsSeedRenderOutputNames:
-    """settings.json and settings.overlay.json are render-settings.sh's
-    own generated output, not tracked package content -- seeded into
-    stow_ignore_args the same way plans/handoffs/briefs already are, so a
-    not-yet-migrated stray copy is left alone rather than aborting stow."""
-
-    def test_ignore_args_include_settings_json_and_overlay(self, tmp_path: Path) -> None:
-        home = tmp_path / "home"
-        pkg_root = _make_package(tmp_path)
-        (home / ".claude").mkdir(parents=True)
-
-        result = _run_ignore_arg_construction_only(pkg_root, home, stub="")
-
-        assert result.returncode == 0, f"stderr={result.stderr!r}"
-        ignore_args = result.stdout.splitlines()
-        assert "--ignore=^\\.claude/settings\\.json$" in ignore_args, ignore_args
-        assert "--ignore=^\\.claude/settings\\.overlay\\.json$" in ignore_args, ignore_args
 
 
 class TestIgnoreArgConstructionRegexEscapeFailure:
