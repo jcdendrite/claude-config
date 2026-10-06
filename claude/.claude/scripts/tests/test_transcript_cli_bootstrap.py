@@ -757,3 +757,39 @@ def test_transcript_analysis_cost_counts_subprocess_refuses_without_branches(tmp
 
     assert result.returncode == 2
     assert "--branches is required" in result.stderr
+
+
+def test_transcript_analysis_rearm_backtest_help_exits_zero():
+    result = _run("transcript-analysis.py", "rearm-backtest", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--spacings" in result.stdout
+
+
+def test_transcript_analysis_rearm_backtest_subprocess_finds_seeded_session(tmp_path):
+    """Proves, in a fresh interpreter, that rearm_backtest.py resolves through sys.path[0] alone and
+    that real argparse dispatches rearm-backtest to cmd_rearm_backtest through set_defaults(func=...).
+    "Sessions in scope: 1" shows the seeded session was read and priced."""
+    config_dir = _seed_priced_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "rearm-backtest", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "Sessions in scope: 1" in result.stdout
+
+
+def test_transcript_analysis_spend_over_threshold_help_exits_zero():
+    result = _run("transcript-analysis.py", "spend-over-threshold", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--since DATE" in result.stdout
+
+
+def test_transcript_analysis_spend_over_threshold_subprocess_finds_seeded_session(tmp_path):
+    """Proves, in a fresh interpreter, that spend_over_threshold.py resolves through sys.path[0] alone
+    and that real argparse dispatches spend-over-threshold to cmd_spend_over_threshold through
+    set_defaults(func=...). The 2026-W21 row shows the seeded session was read and priced."""
+    config_dir = _seed_priced_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "spend-over-threshold", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "2026-W21" in result.stdout
