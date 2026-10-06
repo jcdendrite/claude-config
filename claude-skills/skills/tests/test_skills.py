@@ -5762,7 +5762,8 @@ _CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR = "DISPOSITION_RULE:code-review-contradi
 # no-explicit-verdict blocking stop, and how a keep is logged and carried. It
 # is pinned whole so removing or weakening any sentence fails a test. The whole
 # region is compared by exact equality, so any added, removed, or reworded text
-# inside the anchors fails.
+# inside the anchors fails. The mid-sentence "- " tokens are SKILL.md's
+# verdict bullets after whitespace collapse, not typos.
 _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "**A finding whose fix would undo a fix an earlier round applied "
     "is also a design question, in every round, staged commit-gate "
@@ -5794,13 +5795,13 @@ _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "standard is that the current text wins unless the finding names a "
     "defect, under a stated rule, that the current text actually has. "
     "One consult carries every such finding in the round and returns "
-    "exactly one of the three verdicts per finding. *Keep current "
+    "exactly one of the three verdicts per finding: - *Keep current "
     "text* resolves it with nothing dispatched, logged as "
     "`--disposition SETTLED --decided-by plan-architect` with the "
     "verdict in `--rationale` and a range-form `--source` naming the "
     "whole block, and is never available to a finding the "
-    "enforcement-invariant rule below covers. *Apply this round's fix* "
-    "is an ordinary ADDRESS row on the `code-writer` route. *Cannot "
+    "enforcement-invariant rule below covers. - *Apply this round's fix* "
+    "is an ordinary ADDRESS row on the `code-writer` route. - *Cannot "
     "choose* is a blocking stop-and-ask to the human. A finding with "
     "no explicit per-finding verdict from the consult (failed "
     "dispatch, empty, hedged, or partial coverage) is likewise a "
