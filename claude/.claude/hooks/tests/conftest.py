@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 from helpers import (
     git_toplevel,
+    init_git_repo_with_commit,
     scaled_shim_sleep,
     symlink_hooks_lib_chain,
     write_scaled_timeout_shim,
@@ -442,16 +443,9 @@ def isolated_home(monkeypatch, tmp_path):
 @pytest.fixture
 def git_repo(tmp_path):
     """Fresh git repo with one committed file and one staged change."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
     # Named explicitly: review-ledger scope depends on the branch name, so it
     # must not follow the machine's init.defaultBranch.
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
-    (repo / "file.txt").write_text("first\n")
-    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    repo = init_git_repo_with_commit(tmp_path / "repo", file_name="file.txt", content="first\n", branch="main")
     (repo / "file.txt").write_text("first\nsecond\n")
     subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
     return repo
@@ -461,16 +455,9 @@ def git_repo(tmp_path):
 def opted_in_repo(tmp_path):
     """Git repo with .claude/worktree-required committed (opted into
     worktree enforcement)."""
-    repo = tmp_path / "opted-in"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / ".claude").mkdir()
-    (repo / ".claude" / "worktree-required").write_text("# sentinel\n")
-    subprocess.run(["git", "add", "."], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-    return repo
+    return init_git_repo_with_commit(
+        tmp_path / "opted-in", file_name=".claude/worktree-required", content="# sentinel\n"
+    )
 
 
 @pytest.fixture
@@ -479,14 +466,7 @@ def stray_marker_repo(tmp_path):
     staged — the GH-427 scenario. Enforcement still activates (existence-based
     check, unchanged), but the deny message should carry the stray-marker
     hint since a tracked-marker repo would not."""
-    repo = tmp_path / "stray-marker"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "f.txt").write_text("x\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    repo = init_git_repo_with_commit(tmp_path / "stray-marker")
     (repo / ".claude").mkdir()
     (repo / ".claude" / "worktree-required").write_text("# stray, untracked\n")
     return repo
@@ -499,14 +479,7 @@ def staged_marker_repo(tmp_path):
     which succeeds for staged-not-committed files, not just committed ones —
     this fixture exercises that middle state so the hint's actual gate
     (index-tracked, not HEAD-committed) is what tests pin down."""
-    repo = tmp_path / "staged-marker"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "f.txt").write_text("x\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    repo = init_git_repo_with_commit(tmp_path / "staged-marker")
     (repo / ".claude").mkdir()
     (repo / ".claude" / "worktree-required").write_text("# staged, not committed\n")
     subprocess.run(["git", "add", ".claude/worktree-required"], cwd=repo, check=True)
@@ -516,15 +489,7 @@ def staged_marker_repo(tmp_path):
 @pytest.fixture
 def non_opted_repo(tmp_path):
     """Git repo without the sentinel — enforcement should be a no-op."""
-    repo = tmp_path / "non-opted"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "f.txt").write_text("x\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
-    return repo
+    return init_git_repo_with_commit(tmp_path / "non-opted")
 
 
 @pytest.fixture
@@ -544,14 +509,7 @@ def user_marker_home(isolated_home):
 def repo_with_optout(tmp_path):
     """Git repo with .claude/worktree-optout present (but no .claude/worktree-required).
     Used to verify opt-out is an inert modulator, not a trigger."""
-    repo = tmp_path / "optout-repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "f.txt").write_text("x\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    repo = init_git_repo_with_commit(tmp_path / "optout-repo")
     (repo / ".claude").mkdir()
     (repo / ".claude" / "worktree-optout").write_text("# opt-out\n")
     return repo

@@ -27,6 +27,7 @@ from helpers import (
     edit_input,
     extract_skill_command,
     git_toplevel,
+    init_git_repo_with_commit,
     marker_path,
     push_conflicting_edit_to_origin,
     resolve_conflicted_rebase,
@@ -1884,19 +1885,6 @@ class TestRequireCodeReviewDiffBaseFixtureShapes:
         )
 
 
-def _init_repo_on_branch(path: Path, branch: str) -> None:
-    """Same minimal-repo shape as test_lib.py's own private helper of this
-    name. Deliberately duplicated per test file (DAMP over DRY) so each file's
-    fixture setup reads in full without a shared-helper indirection."""
-    path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q", "-b", branch], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
-    (path / "f.txt").write_text("x\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
-
-
 DENY_INVISIBLE_COMMIT_CONTENT_HOOK = HOOKS_DIR / "deny-invisible-commit-content.sh"
 
 
@@ -1925,7 +1913,7 @@ class TestRequireCodeReviewCleanIndexContinueEmptyDiffBypass:
         self, isolated_home, tmp_path
     ):
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_cherry_pick(repo, resolve_to_head=True)
         assert (
             run_hook(
@@ -1938,7 +1926,7 @@ class TestRequireCodeReviewCleanIndexContinueEmptyDiffBypass:
 
     def test_chained_add_then_cherry_pick_continue_denied_by_toctou_gate(self, tmp_path):
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_cherry_pick(repo, resolve_to_head=True)
         (repo / "unreviewed.txt").write_text("payload\n")
         assert (
@@ -1954,7 +1942,7 @@ class TestRequireCodeReviewCleanIndexContinueEmptyDiffBypass:
         self, isolated_home, tmp_path
     ):
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_cherry_pick(repo, resolve_to_head=True)
         (repo / "unreviewed.txt").write_text("payload\n")
         subprocess.run(["git", "add", "unreviewed.txt"], cwd=repo, check=True)
@@ -1973,7 +1961,7 @@ class TestRequireCodeReviewCleanIndexContinueEmptyDiffBypass:
 
     def test_bare_merge_continue_allows_via_empty_diff_early_exit(self, isolated_home, tmp_path):
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_merge(repo, resolve_to_head=True)
         assert (
             run_hook(
@@ -1986,7 +1974,7 @@ class TestRequireCodeReviewCleanIndexContinueEmptyDiffBypass:
 
     def test_chained_add_then_merge_continue_denied_by_toctou_gate(self, tmp_path):
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_merge(repo, resolve_to_head=True)
         (repo / "unreviewed.txt").write_text("payload\n")
         assert (
@@ -2000,7 +1988,7 @@ class TestRequireCodeReviewCleanIndexContinueEmptyDiffBypass:
 
     def test_split_add_then_merge_continue_denies_on_dirty_index(self, isolated_home, tmp_path):
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_merge(repo, resolve_to_head=True)
         (repo / "unreviewed.txt").write_text("payload\n")
         subprocess.run(["git", "add", "unreviewed.txt"], cwd=repo, check=True)
@@ -2020,7 +2008,7 @@ class TestRequireCodeReviewCleanIndexContinueEmptyDiffBypass:
 
     def test_bare_revert_continue_allows_via_empty_diff_early_exit(self, isolated_home, tmp_path):
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert_of_unmerged_commit(repo, resolve_to_head=True)
         assert (
             run_hook(
@@ -2033,7 +2021,7 @@ class TestRequireCodeReviewCleanIndexContinueEmptyDiffBypass:
 
     def test_chained_add_then_revert_continue_denied_by_toctou_gate(self, tmp_path):
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert_of_unmerged_commit(repo, resolve_to_head=True)
         (repo / "unreviewed.txt").write_text("payload\n")
         assert (
@@ -2047,7 +2035,7 @@ class TestRequireCodeReviewCleanIndexContinueEmptyDiffBypass:
 
     def test_split_add_then_revert_continue_denies_on_dirty_index(self, isolated_home, tmp_path):
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert_of_unmerged_commit(repo, resolve_to_head=True)
         (repo / "unreviewed.txt").write_text("payload\n")
         subprocess.run(["git", "add", "unreviewed.txt"], cwd=repo, check=True)

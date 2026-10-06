@@ -6,10 +6,12 @@ import json
 import os
 import random
 import re
+import stat
 import subprocess
 import sys
 import time
-from datetime import UTC, date, datetime, timedelta
+from collections import Counter
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -17,6 +19,7 @@ from helpers import HOOKS_DIR, SKILLS_DIR
 
 from ._audit_routing_helpers import _audit_routing_samples_args, _audit_routing_shape_args
 from ._cache_rebuild_helpers import _cache_rebuild_args
+from ._subagent_helpers import _subagents_args
 from .conftest import (
     _agent_use,
     _asst,
@@ -33,6 +36,7 @@ from .conftest import (
     _hook_deny_current,
     _opus,
     _priced,
+    _priced_sidechain_asst,
     _read_use,
     _review_trace_args,
     _reviewer_yield_args,
@@ -59,57 +63,6 @@ sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
 
 
-def _sum_column_across_rows(out: str, *, header_contains: str, label: str, row_prefix: str) -> int:
-    """Sum one single-token integer column across every row whose leading
-    label starts with `row_prefix` (e.g. every multi-root "account-" row).
-
-    _table_cols can't be reused directly here: it asserts exactly one
-    matching data row, and a multi-root sum needs several. This still
-    anchors the column position to the header row's own token index
-    (`header.split().index(label)`) instead of a bare `line.split()[N]`
-    index, so a column reorder fails with a clear ValueError ("label not in
-    list") instead of silently summing the wrong column.
-    """
-    lines = out.splitlines()
-    headers = [ln for ln in lines if header_contains in ln]
-    assert len(headers) == 1, f"header match not unique for {header_contains!r}: {len(headers)}"
-    header_idx = lines.index(headers[0])
-    col_idx = headers[0].split().index(label)
-    total = 0
-    matched_any = False
-    for ln in lines[header_idx + 1:]:
-        if ln == "":
-            break
-        if not ln.startswith(row_prefix):
-            continue
-        matched_any = True
-        total += int(ln.split()[col_idx])
-    assert matched_any, f"no rows starting with {row_prefix!r} found under header {header_contains!r}"
-    return total
-
-
-def _column_values_for_matching_rows(
-    out: str, *, header_contains: str, label: str, row_prefix: str
-) -> list[str]:
-    """Sibling to _sum_column_across_rows for a caller that needs each
-    matched row's own column value -- e.g. asserting several rows stayed
-    distinct rather than merging into a sum. Same header-token-anchored
-    column lookup, not a bare line.split()[N] index."""
-    lines = out.splitlines()
-    headers = [ln for ln in lines if header_contains in ln]
-    assert len(headers) == 1, f"header match not unique for {header_contains!r}: {len(headers)}"
-    header_idx = lines.index(headers[0])
-    col_idx = headers[0].split().index(label)
-    values = []
-    for ln in lines[header_idx + 1:]:
-        if ln == "":
-            break
-        if ln.startswith(row_prefix):
-            values.append(ln.split()[col_idx])
-    assert values, f"no rows starting with {row_prefix!r} found under header {header_contains!r}"
-    return values
-
-
 def _extract_arm_dollars(out: str, arm_label: str) -> float:
     """Read plan-boundary's per-arm dollar figure (e.g. arm_label='C: fresh
     Sonnet handoff') by row-label prefix, not by the row's full formatted
@@ -117,29 +70,6 @@ def _extract_arm_dollars(out: str, arm_label: str) -> float:
     match = re.search(rf"^{re.escape(arm_label)}\s+([\d,]+\.\d\d)\s*$", out, re.MULTILINE)
     assert match is not None, f"no row found for arm {arm_label!r}"
     return float(match.group(1).replace(",", ""))
-
-
-def _priced_sidechain_asst(
-    model: str, *, input_tokens: int = 0, output_tokens: int = 0, cache_read_tokens: int = 0,
-    ts: str | None = None, branch: str = "main",
-) -> dict:
-    """Build a sidechain assistant record with explicit, flat-priced usage
-    fields, for subagent-mix's Actual $/Counterfactual $ dollar-column tests
-    -- a sidechain counterpart to TestCost's own _priced (cache-write-split
-    fidelity is irrelevant to these tests' hand-computed input-token math)."""
-    rec = _asst(model, branch=branch, sidechain=True, ts=ts, content=[])
-    rec["message"]["usage"] = {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "cache_read_input_tokens": cache_read_tokens,
-        "cache_creation_input_tokens": 0,
-    }
-    return rec
-
-
-def _mcp_use(tool_id: str, server: str, tool: str) -> dict:
-    """Build an mcp__<server>__<tool> tool_use block, the on-disk shape for an MCP tool call."""
-    return {"type": "tool_use", "id": tool_id, "name": f"mcp__{server}__{tool}", "input": {}}
 
 
 def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
@@ -323,8 +253,9 @@ class TestConfigDirFlag:
         """Regression coverage for the other branch of main()'s hasattr
         check: a subcommand that DOES register its own --config-dir (e.g.
         "cost") must still get the "use that instead" recommendation --
-        cost-counts's own no-flag test above only pins the branch that
-        omits it."""
+        test_transcript_cost_counts.py's
+        test_top_level_config_dir_message_omits_flag_recommendation only pins
+        the branch that omits it."""
         other_account = tmp_path / "other-account"
         (other_account / "projects").mkdir(parents=True)
         monkeypatch.setattr(
@@ -993,1155 +924,8 @@ class TestDurationGapSplit:
 
 
 # ---------------------------------------------------------------------------
-# subagent-mix
+# redaction: root-scoped display labels and the --this-repo agent-type allowlist
 # ---------------------------------------------------------------------------
-
-
-def _subagent_mix_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    branches: str | None = None,
-    per_session: bool = False,
-    since: str | None = None,
-    since_date: str | None = None,
-    until_date: str | None = None,
-    reprice_as: str | None = None,
-    extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "branches": branches,
-        "per_session": per_session,
-        "since": since,
-        "since_date": since_date,
-        "until_date": until_date,
-        "reprice_as": reprice_as,
-        "extra_config_dirs": extra_config_dirs,
-    })()
-
-
-def _cost_counts_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    branches: str | None = None,
-    this_repo_slugs: list[str] | None = None,
-) -> object:
-    """this_repo_slugs, when given, pre-seeds args._this_repo_slugs -- the
-    cache _resolve_project_scope reads first (see its own docstring), so a
-    direct cmd_cost_counts() call under --this-repo never shells out to git."""
-    attrs = {"projects": projects, "this_repo": this_repo, "branches": branches}
-    if this_repo_slugs is not None:
-        attrs["_this_repo_slugs"] = this_repo_slugs
-    return type("A", (), attrs)()
-
-
-class TestSubagentMix:
-    def test_counts_agent_spawns_by_subagent_type(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[
-                _agent_use("a1", "staff-backend-engineer"),
-                _agent_use("a2", "ciso-reviewer"),
-                _agent_use("a3", "staff-backend-engineer"),
-            ]),
-        ])
-        args = _subagent_mix_args()
-        _mod.cmd_subagent_mix(args)
-        out = capsys.readouterr().out
-        assert "feat" in out
-        assert "staff-backend-engineer(2)" in out
-        assert "ciso-reviewer(1)" in out
-
-    def test_counts_review_skill_invocations(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat", content=[
-                _skill_use("s1", "code-review"),
-                _skill_use("s2", "code-review"),
-                _skill_use("s3", "plan-review"),
-                _skill_use("s4", "ready-for-review"),
-                _skill_use("s5", "respond-pr"),  # excluded — not in REVIEW_SKILLS
-            ]),
-        ])
-        args = _subagent_mix_args()
-        _mod.cmd_subagent_mix(args)
-        out = capsys.readouterr().out
-        # CR=2, PR=1, RR=1; max_labels=6 excludes the trailing multi-word "Top subagent types" column
-        cols = _table_cols(out, header_contains="Spawns", row_contains="feat", max_labels=6)
-        assert cols["Spawns"] == "0"
-        assert cols["CR"] == "2"
-        assert cols["PR"] == "1"
-        assert cols["RR"] == "1"
-
-    def test_legacy_task_tool_name_also_counted(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="legacy", content=[
-                _agent_use("t1", "staff-frontend-engineer", tool_name="Task"),
-            ]),
-        ])
-        args = _subagent_mix_args()
-        _mod.cmd_subagent_mix(args)
-        out = capsys.readouterr().out
-        assert "staff-frontend-engineer(1)" in out
-
-    def test_sidechain_spawns_not_counted(self, fake_projects, capsys):
-        """Subagent-issued Agent calls (which appear on sidechain) must not double-count parent spawns."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-backend-engineer")]),
-            _asst("claude-sonnet-4-6", branch="feat", sidechain=True, content=[
-                _agent_use("a2", "ciso-reviewer"),  # excluded — sidechain
-            ]),
-        ])
-        args = _subagent_mix_args()
-        _mod.cmd_subagent_mix(args)
-        out = capsys.readouterr().out
-        assert "staff-backend-engineer(1)" in out
-        assert "ciso-reviewer" not in out
-
-    def test_branch_filter(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat-a", content=[_agent_use("a1", "ciso-reviewer")]),
-            _asst("claude-opus-4-7", branch="feat-b", content=[_agent_use("a2", "staff-backend-engineer")]),
-        ])
-        args = _subagent_mix_args(branches="feat-a")
-        _mod.cmd_subagent_mix(args)
-        out = capsys.readouterr().out
-        assert "feat-a" in out
-        assert "feat-b" not in out
-        assert "staff-backend-engineer" not in out
-
-    def test_per_session_splits_aggregate(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "abcd1234-aaaa.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "ciso-reviewer")]),
-        ])
-        _write_jsonl(fake_projects / "efgh5678-bbbb.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "staff-backend-engineer")]),
-        ])
-        args = _subagent_mix_args(per_session=True)
-        _mod.cmd_subagent_mix(args)
-        out = capsys.readouterr().out
-        # Both sessions should appear with stem prefixes; aggregate "feat" alone should not be present as a row.
-        assert "abcd1234" in out
-        assert "efgh5678" in out
-
-    def test_no_data_prints_message(self, fake_projects, capsys):
-        args = _subagent_mix_args()
-        _mod.cmd_subagent_mix(args)
-        out = capsys.readouterr().out
-        assert "No data found." in out
-
-    def test_single_root_output_strips_control_characters_from_branch_and_subagent_type(
-        self, fake_projects, capsys
-    ):
-        """gitBranch and subagent_type are both transcript-sourced, not
-        validated, before this table prints them -- same invariant as
-        cmd_subagents' single-root branch sanitization, extended here to
-        subagent_type since this table has its own second raw-value column."""
-        branch_payload = "\x1b]0;PWNED-BRANCH\x07"
-        stype_payload = "\x1b[31mPWNED-TYPE\x1b[0m"
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch=branch_payload, content=[_agent_use("a1", stype_payload)]),
-        ])
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        assert "]0;PWNED-BRANCH" in out
-        assert "[31mPWNED-TYPE[0m(1)" in out
-        assert "\x1b" not in out
-        assert "\x07" not in out
-
-    def test_control_byte_differing_branches_do_not_merge_into_one_row(self, fake_projects, capsys):
-        """Two raw gitBranch values that differ only in a stripped control
-        byte sanitize to the same display label but must stay distinct
-        rows -- aggregating on the sanitized label instead of the raw value
-        would silently sum their session/spawn counts into one row."""
-        _write_jsonl(fake_projects / "sess-a.jsonl", [
-            _asst("claude-opus-4-7", branch="feat\x01", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_jsonl(fake_projects / "sess-b.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
-        ])
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        sess_values = _column_values_for_matching_rows(
-            out, header_contains="Sess", label="Sess", row_prefix="feat "
-        )
-        assert sess_values == ["1", "1"], f"expected two distinct 'feat' rows, each Sess=1: {sess_values}"
-
-
-def _write_agent_frontmatter(config_dir_path: Path, agent_type: str, model: str) -> None:
-    """Write a minimal on-disk agent file with a `model:` frontmatter pin,
-    at the path _declared_pin reads: <config_dir>/agents/<agent_type>.md."""
-    agents_dir = config_dir_path / "agents"
-    agents_dir.mkdir(parents=True, exist_ok=True)
-    (agents_dir / f"{agent_type}.md").write_text(f"---\nmodel: {model}\nname: {agent_type}\n---\nbody\n")
-
-
-class TestSubagentMixModelMix:
-    """cmd_subagent_mix's second table: one test per column
-    (Runs/Dangling/Declared/Requested/Observed) in cmd_subagent_mix's own
-    docstring."""
-
-    def test_declared_pin_violation_reports_opus_fraction_of_runs(self, fake_projects, tmp_path, capsys):
-        """3 staff-sdet dispatches, declared pin sonnet: 2 observed opus (a
-        pin violation each), 1 observed sonnet — Runs=3, Observed shows
-        opus(2) and sonnet(1)."""
-        _write_agent_frontmatter(tmp_path, "staff-sdet", "sonnet")
-        session_id = "sess-mix"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[
-                _agent_use("a1", "staff-sdet"),
-                _agent_use("a2", "staff-sdet"),
-                _agent_use("a3", "staff-sdet"),
-            ]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
-            agent_type="staff-sdet",
-        )
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-2", "a2",
-            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
-            agent_type="staff-sdet",
-        )
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-3", "a3",
-            [_asst("claude-sonnet-4-6", branch="main", sidechain=True)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Runs", row_contains="staff-sdet", max_labels=4)
-        assert cols["Runs"] == "3"
-        assert cols["Declared"] == "sonnet"
-        assert "opus(2)" in out
-        assert "sonnet(1)" in out
-
-    def test_mixed_sidechain_reports_literal_mixed_bucket(self, fake_projects, capsys):
-        """Two distinct real model IDs within one dispatch's own sidechain
-        report the literal "mixed" bucket, never collapsed to one family."""
-        session_id = "sess-mixed"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [
-                _asst("claude-opus-4-7", branch="main", sidechain=True),
-                _asst("claude-sonnet-4-6", branch="main", sidechain=True),
-            ],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        assert "mixed(1)" in out
-
-    def test_synthetic_only_sidechain_lands_in_other_not_a_pin_violation(self, fake_projects, tmp_path, capsys):
-        """A sidechain whose only recorded model is the literal "<synthetic>"
-        resolves to the "other" bucket via _fam, distinct from any real
-        model family — never miscounted as an opus (or any) pin violation."""
-        _write_agent_frontmatter(tmp_path, "staff-sdet", "sonnet")
-        session_id = "sess-synthetic"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_asst("<synthetic>", branch="main", sidechain=True)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        assert "other(1)" in out
-        assert "opus(1)" not in out
-
-    def test_dangling_jsonl_excluded_from_runs_denominator(self, fake_projects, capsys):
-        """A meta.json with no readable sibling .jsonl is a dangling dispatch:
-        excluded from Runs, counted under Dangling instead."""
-        session_id = "sess-dangling"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
-        subdir.mkdir(parents=True, exist_ok=True)
-        meta = {"agentType": "staff-sdet", "description": "d", "toolUseId": "a1", "spawnDepth": 1}
-        (subdir / "agent-1.meta.json").write_text(json.dumps(meta))
-        # Deliberately no agent-1.jsonl written — the dangling case.
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Runs", row_contains="staff-sdet", max_labels=3)
-        assert cols["Runs"] == "0"
-        assert cols["Dangling"] == "1"
-
-    def test_requested_model_present_vs_absent_in_meta(self, fake_projects, capsys):
-        """meta.json's own "model" key drives the Requested column: present
-        buckets by its value, absent buckets under _UNREQUESTED_MODEL_LABEL."""
-        session_id = "sess-requested"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[
-                _agent_use("a1", "staff-sdet"),
-                _agent_use("a2", "staff-sdet"),
-            ]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_asst("claude-sonnet-4-6", branch="main", sidechain=True)],
-            agent_type="staff-sdet", requested_model="sonnet",
-        )
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-2", "a2",
-            [_asst("claude-sonnet-4-6", branch="main", sidechain=True)],
-            agent_type="staff-sdet",  # no requested_model -> key absent
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        assert "sonnet(1)" in out
-        assert f"{_mod._UNREQUESTED_MODEL_LABEL}(1)" in out
-
-    def test_undefined_agent_type_renders_built_in_declared_pin(self, fake_projects, capsys):
-        """An agentType with no on-disk agent file (e.g. general-purpose)
-        renders "built-in" in the Declared column, never a pin violation."""
-        session_id = "sess-builtin"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "general-purpose")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
-            agent_type="general-purpose",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Runs", row_contains="general-purpose", max_labels=4)
-        assert cols["Declared"] == _mod._DECLARED_PIN_BUILT_IN
-
-    def test_requested_and_observed_columns_are_directionally_distinct(self, fake_projects, capsys):
-        """Requested and Observed must land under their own header, not just
-        appear somewhere in the output -- uses disjoint value domains
-        (requested "haiku", observed "opus") so a column-transposition bug
-        (Requested/Observed populated from the swapped dict) produces a
-        value neither assertion could otherwise pass on, unlike a whole-
-        output substring check."""
-        session_id = "sess-directional"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
-            agent_type="staff-sdet", requested_model="haiku",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        header_line = next(ln for ln in out.splitlines() if "Requested" in ln and "Observed" in ln)
-        row_line = next(ln for ln in out.splitlines() if ln.startswith("staff-sdet"))
-        requested_start, observed_start = header_line.index("Requested"), header_line.index("Observed")
-        assert row_line[requested_start:observed_start].strip() == "haiku(1)"
-        assert row_line[observed_start:].strip() == "opus(1)"
-
-    def test_non_string_meta_model_does_not_crash_the_run(self, fake_projects, capsys):
-        """A meta.json whose "model" key is a list (a corrupted file, or a
-        future harness shape this repo doesn't control) must not raise
-        TypeError: unhashable type when used as a Requested-column dict key
-        -- the dispatch is excluded and counted under meta_read_errors
-        instead, isolated the same way an invalid-JSON or missing-toolUseId
-        meta.json already is, rather than aborting the entire subagent-mix
-        run for every branch/session in scope."""
-        session_id = "sess-badmodel"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
-        subdir.mkdir(parents=True, exist_ok=True)
-        meta = {
-            "agentType": "staff-sdet", "description": "d", "toolUseId": "a1",
-            "model": ["opus"], "spawnDepth": 1,
-        }
-        (subdir / "agent-1.meta.json").write_text(json.dumps(meta))
-        _mod.cmd_subagent_mix(_subagent_mix_args())  # must not raise TypeError
-        out = capsys.readouterr().out
-        assert "(1 meta.json files failed to parse, excluded)" in out
-
-    def test_control_byte_differing_subagent_types_do_not_merge_model_mix_rows(
-        self, fake_projects, capsys
-    ):
-        """Two raw subagent_type values that differ only in a stripped
-        control byte sanitize to the same AgentType label but must stay
-        distinct model-mix rows -- aggregating on the sanitized label
-        instead of the raw value would silently sum their Runs and dollar
-        figures into one row."""
-        session_id = "sess-collide"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[
-                _agent_use("a1", "staff-sdet\x01"),
-                _agent_use("a2", "staff-sdet"),
-            ]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
-            agent_type="staff-sdet\x01",
-        )
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-2", "a2",
-            [_asst("claude-opus-4-7", branch="main", sidechain=True)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        runs_values = _column_values_for_matching_rows(
-            out, header_contains="Runs", label="Runs", row_prefix="staff-sdet "
-        )
-        assert runs_values == ["1", "1"], f"expected two distinct 'staff-sdet' rows, each Runs=1: {runs_values}"
-
-
-class TestSubagentMixDollars:
-    """The model-mix table's Actual$/Counterfactual$/Delta columns
-    (_dispatch_usage_summary), including --since-date/--until-date's
-    per-record (not per-dispatch) window and --reprice-as's counterfactual
-    pricing."""
-
-    def test_actual_dollars_match_hand_computed_usage(self, fake_projects, capsys):
-        """1,000,000 input tokens at claude-sonnet-4-6's $3.00/MTok base rate
-        prices to exactly $3.00, with every other usage field at zero."""
-        session_id = "sess-actual"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
-        assert cols["Actual$"] == "$3.00"
-
-    def test_reprice_as_delta_arithmetic(self, fake_projects, capsys):
-        """The same 1,000,000-input-token dispatch re-priced at
-        claude-haiku-4-5-20251001's $1.00/MTok rate: Actual $3.00,
-        Counterfactual $1.00, Delta (Actual − Counterfactual) $2.00."""
-        session_id = "sess-reprice"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args(reprice_as="claude-haiku-4-5-20251001"))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=7)
-        assert cols["Actual$"] == "$3.00"
-        assert cols["Counterfactual$"] == "$1.00"
-        assert cols["Delta"] == "$2.00"
-
-    def test_reprice_as_same_model_yields_zero_delta(self, fake_projects, capsys):
-        """--reprice-as set to the dispatch's own real model must not diverge
-        from the actual-dollars path -- Delta is exactly $0.00, not merely
-        close to it, since both columns price the identical usage at the
-        identical model ID."""
-        session_id = "sess-reprice-same"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000, output_tokens=500)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args(reprice_as="claude-sonnet-4-6"))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=7)
-        assert cols["Actual$"] == cols["Counterfactual$"]
-        assert cols["Delta"] == "$0.00"
-
-    def test_invalid_reprice_as_value_exits_nonzero_listing_valid_ids(self, fake_projects, capsys):
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_subagent_mix(_subagent_mix_args(reprice_as="not-a-real-model"))
-        assert exc_info.value.code == 1
-        err = capsys.readouterr().err
-        assert "subagent-mix: --reprice-as" in err
-        assert "not-a-real-model" in err
-        assert "claude-opus-5" in err  # one of _MODEL_BASE_INPUT_RATES' listed valid IDs
-
-    def test_since_date_boundary_is_inclusive(self, fake_projects, capsys):
-        """A sidechain record timestamped exactly at --since-date's own
-        day-start instant is included, not excluded -- the [since_ts, ...)
-        lower bound is inclusive."""
-        session_id = "sess-since-boundary"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_priced_sidechain_asst(
-                "claude-sonnet-4-6", input_tokens=1_000_000, ts="2026-07-01T00:00:00.000Z",
-            )],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args(since_date="2026-07-01"))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
-        assert cols["Actual$"] == "$3.00"
-
-    def test_until_date_boundary_is_exclusive(self, fake_projects, capsys):
-        """A sidechain record timestamped exactly at --until-date's own
-        day-after instant (the [..., until_ts) upper bound) is excluded, not
-        included -- the dispatch itself still counts as a Run since window
-        filtering scopes only the dollar columns, not Runs/Observed."""
-        session_id = "sess-until-boundary"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_priced_sidechain_asst(
-                "claude-sonnet-4-6", input_tokens=1_000_000, ts="2026-07-02T00:00:00.000Z",
-            )],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args(until_date="2026-07-01"))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
-        assert cols["Runs"] == "1"
-        assert cols["Actual$"] == "$0.00"
-
-    def test_boundary_straddling_dispatch_prices_only_in_window_records(self, fake_projects, capsys):
-        """A single dispatch's own sidechain straddles --until-date: one
-        record before the cutoff, one after. Only the before-cutoff record's
-        usage may be priced into Actual $ -- a per-dispatch (rather than
-        per-record) filter would either price the whole $12.00 sidechain or
-        none of it, never the correct $3.00 in-window slice. Direct
-        regression test for _dispatch_usage_summary's per-deduped-turn filtering."""
-        session_id = "sess-straddle"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [
-                _priced_sidechain_asst(
-                    "claude-sonnet-4-6", input_tokens=1_000_000, ts="2026-07-01T00:00:00.000Z",
-                ),
-                _priced_sidechain_asst(
-                    "claude-sonnet-4-6", input_tokens=3_000_000, ts="2026-07-02T00:00:00.000Z",
-                ),
-            ],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args(until_date="2026-07-01"))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
-        assert cols["Actual$"] == "$3.00"
-
-    def test_synthetic_only_sidechain_renders_zero_dollars(self, fake_projects, capsys):
-        """A sidechain whose only recorded model is the literal "<synthetic>"
-        has no priced usage at all -- Actual $ renders "$0.00", never a crash
-        or a bare "None"."""
-        session_id = "sess-synthetic-dollars"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_asst("<synthetic>", branch="main", sidechain=True)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())  # must not raise
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
-        assert cols["Actual$"] == "$0.00"
-
-    def test_dollar_totals_not_merged_across_roots_under_multi_root_redaction(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        """The model-mix table is keyed on the redacted (root, subagent_type)
-        label -- two accounts' same-named "staff-sdet" dispatches must each
-        keep their own Actual $ total, never summed into one merged row that
-        blends two accounts' dollar figures."""
-        session_id = "sess-a"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
-            agent_type="staff-sdet",
-        )
-        acct_b = fake_config_dir_factory("acct-b")
-        proj_b = acct_b / "projects" / "-home-user-other-repo"
-        proj_b.mkdir(parents=True)
-        session_id_b = "sess-b"
-        _write_jsonl(proj_b / f"{session_id_b}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("b1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            proj_b, session_id_b, "agent-b1", "b1",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=2_000_000)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
-        out = capsys.readouterr().out
-        # _redaction_ordinals sorts by resolved path, not scan/insertion order,
-        # so which physical root lands on account-1 vs account-2 isn't asserted
-        # here -- only that the two accounts' dollar totals stay distinct
-        # (never summed into one merged $9.00 row).
-        cols_a = _table_cols(
-            out, header_contains="Actual$", row_contains="account-1/agent-type-1",
-            row_startswith=True, max_labels=5,
-        )
-        cols_b = _table_cols(
-            out, header_contains="Actual$", row_contains="account-2/agent-type-1",
-            row_startswith=True, max_labels=5,
-        )
-        assert {cols_a["Actual$"], cols_b["Actual$"]} == {"$3.00", "$6.00"}
-
-    def test_reprice_as_more_expensive_model_yields_negative_delta(self, fake_projects, capsys):
-        """--reprice-as a model *pricier* than the dispatch's own real model
-        (a realistic use case: "what would this have cost on Opus?") must
-        render Delta with the conventional -$N.NN form, not $-N.NN -- covers
-        _fmt_usd's negative branch, which every other reprice test in this
-        class leaves unexercised since they all reprice to something
-        cheaper or identical."""
-        session_id = "sess-reprice-pricier"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args(reprice_as="claude-opus-5"))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=7)
-        assert cols["Actual$"] == "$3.00"
-        assert cols["Counterfactual$"] == "$5.00"
-        assert cols["Delta"] == "-$2.00"
-
-    def test_actual_dollars_sum_across_multiple_dispatches_of_same_agent_type(self, fake_projects, capsys):
-        """Two separate dispatches of the same agent_type under one root must
-        accumulate into one row's Actual$ total (row["actual_dollars"] +=),
-        not overwrite or double-count -- the multi-root test above never
-        exercises this since it keeps exactly one dispatch per account."""
-        session_id = "sess-multi-dispatch"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[
-                _agent_use("a1", "staff-sdet"), _agent_use("a2", "staff-sdet"),
-            ]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
-            agent_type="staff-sdet",
-        )
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-2", "a2",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=2_000_000)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
-        assert cols["Runs"] == "2"
-        assert cols["Actual$"] == "$9.00"
-
-    def test_actual_dollars_sum_across_mixed_model_dispatches_equals_hand_computed_total(
-        self, fake_projects, capsys,
-    ):
-        """Per-dispatch dollars are priced at each dispatch's own model rate
-        and summed, across dispatches on different models sharing one
-        agent_type."""
-        session_id = "sess-mixed-model-dispatch"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[
-                _agent_use("a1", "staff-sdet"), _agent_use("a2", "staff-sdet"),
-            ]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
-            agent_type="staff-sdet",
-        )
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-2", "a2",
-            [_priced_sidechain_asst("claude-opus-4-8", input_tokens=1_000_000)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
-        assert cols["Runs"] == "2"
-        # claude-sonnet-4-6 ($3.00/MTok) + claude-opus-4-8 ($5.00/MTok), each
-        # dispatch priced independently at its own model's rate before
-        # summing into the row -- not one rate applied to the combined total.
-        assert cols["Actual$"] == "$8.00"
-
-    def test_unpriced_turn_surfaced_not_silently_zero(self, fake_projects, capsys):
-        """A turn whose model ID isn't in _MODEL_BASE_INPUT_RATES must not
-        silently read as a genuinely zero-cost dispatch -- matches cost's own
-        "(N unpriced turns / M tokens excluded ...)" convention. Before this
-        fix, _dispatch_usage_summary discarded _price_turn's unpriced-tokens
-        return value entirely."""
-        session_id = "sess-unpriced"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_priced_sidechain_asst(
-                "claude-unreleased-model", input_tokens=1_000_000, output_tokens=500,
-            )],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
-        assert cols["Actual$"] == "$0.00"
-        assert "1 unpriced turns / 1,000,500 tokens excluded" in out
-
-
-class TestDispatchUsageSummaryDedupBeforePricing:
-    """_dispatch_usage_summary dedups a same-requestId run into one turn
-    before pricing it (dedup_turns_by_request_id), so a multi-block API
-    response is priced once, not once per block. These regression tests
-    hand-roll their fixtures via _asst, since _priced_sidechain_asst takes
-    no request_id."""
-
-    def _two_block_run(self, model: str, *, request_id: str = "req-1") -> list[dict]:
-        """One API call's two content-block records sharing one requestId.
-        output_tokens ascends non-identically across the two records,
-        matching TestPrCostDedupBeforePricing's 3-then-50 pattern.
-        input_tokens is identical across both records, the invariant
-        _merge_assistant_run relies on to merge them. A correct pricing
-        pass must price the merged turn's last-record usage once, not sum
-        both blocks."""
-        rec1 = _asst(
-            model, branch="feature-a", sidechain=True, request_id=request_id,
-            content=[{"type": "thinking", "thinking": "..."}],
-        )
-        rec1["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 3,
-            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-        }
-        rec2 = _asst(
-            model, branch="feature-a", sidechain=True, request_id=request_id,
-            content=[{"type": "text", "text": "done"}],
-        )
-        rec2["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 50,
-            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-        }
-        return [rec1, rec2]
-
-    def test_two_block_run_prices_identically_via_subagent_mix_and_cost(self, fake_projects, capsys):
-        """A dispatch's two-content-block, one-requestId run must price
-        identically whether summed via subagent-mix's own
-        _dispatch_usage_summary or via cost's --branches path -- the
-        main-thread agent_use record carries no usage, so cost's grand
-        total for the branch is entirely this one dispatch's dollars."""
-        session_id = "sess-dispatch-dedup"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="feature-a", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            self._two_block_run("claude-sonnet-4-6"), agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        cols = _table_cols(
-            capsys.readouterr().out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5,
-        )
-        dispatch_dollars = float(cols["Actual$"].lstrip("$").replace(",", ""))
-
-        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
-        cost_total = _extract_grand_total(capsys.readouterr().out)
-        # abs= accounts for both figures' own 2-decimal-place rounding,
-        # not slack in the expected computation itself.
-        assert dispatch_dollars == pytest.approx(cost_total, abs=0.005)
-
-    def test_summed_per_dispatch_dollars_equal_hand_computed_figure(self, tmp_path):
-        """Two dispatches, each carrying the same two-content-block run:
-        summed actual_dollars across both must equal the hand-computed
-        figure derived from pricing only each run's final (billed) usage.
-        This is an equality assertion, not an inequality against `cost`'s
-        ceiling. A per-dispatch sum always undercuts `cost`'s ceiling
-        regardless of whether dedup runs, so an inequality assertion here
-        would pass even with a reverted dedup step."""
-        jsonl_1 = tmp_path / "dispatch-1.jsonl"
-        jsonl_2 = tmp_path / "dispatch-2.jsonl"
-        _write_jsonl(jsonl_1, self._two_block_run("claude-sonnet-4-6", request_id="req-1"))
-        _write_jsonl(jsonl_2, self._two_block_run("claude-sonnet-4-6", request_id="req-2"))
-        _, dollars_1, _, _, _, _, _ = _mod._dispatch_usage_summary(jsonl_1, None, None, None, date(2026, 8, 2))
-        _, dollars_2, _, _, _, _, _ = _mod._dispatch_usage_summary(jsonl_2, None, None, None, date(2026, 8, 2))
-        # claude-sonnet-4-6: $3.00/MTok input, $15.00/MTok output (5x
-        # multiplier). Each deduped turn prices only its last record's usage
-        # (1,000,000 input + 50 output); two dispatches double that.
-        per_dispatch = 1_000_000 / 1_000_000 * 3.00 + 50 / 1_000_000 * 15.00
-        assert dollars_1 + dollars_2 == pytest.approx(2 * per_dispatch)
-
-    def test_dollars_by_class_reflects_merged_cache_usage_not_summed_per_block(self, tmp_path):
-        """A two-block run's cache_read_input_tokens and
-        cache_creation_input_tokens are identical across both blocks, per
-        _merge_assistant_run's own documented invariant, so pricing must
-        take them once from the merged turn's usage, not sum them once per
-        block. A per-block-pricing regression would double both cache-class
-        dollar figures below. Both cache fields are nonzero here so that a
-        double-count is visible in the result."""
-        rec1 = _asst(
-            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-cache",
-            content=[{"type": "thinking", "thinking": "..."}],
-        )
-        rec1["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 3,
-            "cache_creation_input_tokens": 400_000, "cache_read_input_tokens": 200_000,
-        }
-        rec2 = _asst(
-            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-cache",
-            content=[{"type": "text", "text": "done"}],
-        )
-        rec2["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 50,
-            "cache_creation_input_tokens": 400_000, "cache_read_input_tokens": 200_000,
-        }
-        jsonl_path = tmp_path / "dispatch.jsonl"
-        _write_jsonl(jsonl_path, [rec1, rec2])
-        _, _, dollars_by_class, _, _, _, _ = _mod._dispatch_usage_summary(
-            jsonl_path, None, None, None, date(2026, 8, 2)
-        )
-        # claude-sonnet-4-6: cache_read $0.30/MTok, cache_write_5m $3.75/MTok.
-        assert dollars_by_class["cache_read"] == pytest.approx(0.06)
-        assert dollars_by_class["cache_write_5m"] == pytest.approx(1.50)
-
-    def test_dollars_by_class_covers_cache_write_1h_via_nested_cache_creation_block(self, tmp_path):
-        """_cache_write_split reads cache_write_1h only from the nested
-        cache_creation.ephemeral_1h_input_tokens field, which
-        test_dollars_by_class_reflects_merged_cache_usage_not_summed_per_block
-        never sets."""
-        rec1 = _asst(
-            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-cache-1h",
-            content=[{"type": "thinking", "thinking": "..."}],
-        )
-        rec1["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 3,
-            "cache_creation_input_tokens": 400_000, "cache_read_input_tokens": 200_000,
-            "cache_creation": {"ephemeral_1h_input_tokens": 250_000, "ephemeral_5m_input_tokens": 150_000},
-        }
-        rec2 = _asst(
-            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-cache-1h",
-            content=[{"type": "text", "text": "done"}],
-        )
-        rec2["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 50,
-            "cache_creation_input_tokens": 400_000, "cache_read_input_tokens": 200_000,
-            "cache_creation": {"ephemeral_1h_input_tokens": 250_000, "ephemeral_5m_input_tokens": 150_000},
-        }
-        jsonl_path = tmp_path / "dispatch.jsonl"
-        _write_jsonl(jsonl_path, [rec1, rec2])
-        _, _, dollars_by_class, _, _, _, _ = _mod._dispatch_usage_summary(
-            jsonl_path, None, None, None, date(2026, 8, 2)
-        )
-        # claude-sonnet-4-6: cache_read $0.30/MTok, cache_write_5m $3.75/MTok,
-        # cache_write_1h $6.00/MTok. A per-block-pricing regression would
-        # double all three, since each block carries the same nonzero counts.
-        assert dollars_by_class["cache_read"] == pytest.approx(0.06)
-        assert dollars_by_class["cache_write_5m"] == pytest.approx(0.5625)
-        assert dollars_by_class["cache_write_1h"] == pytest.approx(1.50)
-
-    def test_missing_path_returns_empty_summary(self, tmp_path):
-        """A path that is not a readable file returns the documented empty
-        tuple, the caller's dangling-dispatch exclusion signal."""
-        result = _mod._dispatch_usage_summary(
-            tmp_path / "absent.jsonl", None, None, None, date(2026, 8, 2)
-        )
-        assert result == (None, 0.0, {}, None, 0, 0, set())
-
-    def test_file_that_fails_to_open_returns_empty_summary(self, tmp_path, monkeypatch):
-        """A file that passes is_file() but raises OSError on open takes the
-        same empty-tuple return as a missing path rather than raising."""
-        jsonl_path = tmp_path / "dispatch.jsonl"
-        _write_jsonl(jsonl_path, self._two_block_run("claude-sonnet-4-6"))
-
-        def _open_failing(*_args, **_kwargs):
-            raise PermissionError("denied")
-
-        # Shadows the builtin only inside the module under test.
-        monkeypatch.setattr(_mod, "open", _open_failing, raising=False)
-        result = _mod._dispatch_usage_summary(jsonl_path, None, None, None, date(2026, 8, 2))
-        assert result == (None, 0.0, {}, None, 0, 0, set())
-
-    def test_priced_model_past_rate_expiry_lands_in_stale_models(self, tmp_path):
-        """A priced model is reported in stale_models only when the
-        caller-supplied today is after its _MODEL_RATE_EXPIRES date."""
-        model = "claude-sonnet-4-6"
-        jsonl_path = tmp_path / "dispatch.jsonl"
-        _write_jsonl(jsonl_path, self._two_block_run(model))
-        expiry = _mod._MODEL_RATE_EXPIRES[model]
-        *_, stale_on_expiry_day = _mod._dispatch_usage_summary(jsonl_path, None, None, None, expiry)
-        *_, stale_day_after_expiry = _mod._dispatch_usage_summary(
-            jsonl_path, None, None, None, expiry + timedelta(days=1)
-        )
-        assert stale_on_expiry_day == set()
-        assert stale_day_after_expiry == {model}
-
-    def test_reprice_as_counterfactual_prices_deduped_turn_once_alongside_actual(self, tmp_path):
-        """The reprice_as arm is a sibling of the actual-dollar arm, so a
-        deduped two-block run must price once in both. Repricing sonnet-4-6
-        usage as opus-4-8 pins counterfactual_dollars next to actual_dollars;
-        a dedup applied to only one arm would skew the pair."""
-        jsonl_path = tmp_path / "dispatch.jsonl"
-        _write_jsonl(jsonl_path, self._two_block_run("claude-sonnet-4-6"))
-        _, actual_dollars, _, counterfactual_dollars, _, _, _ = _mod._dispatch_usage_summary(
-            jsonl_path, None, None, "claude-opus-4-8", date(2026, 8, 2)
-        )
-        # Merged usage is the run's last record (1,000,000 input + 50 output).
-        # claude-sonnet-4-6: $3.00/MTok input, $15.00/MTok output.
-        # claude-opus-4-8: $5.00/MTok input, $25.00/MTok output.
-        assert actual_dollars == pytest.approx(3.00075)
-        assert counterfactual_dollars == pytest.approx(5.00125)
-
-    def test_mixed_model_dispatch_prices_each_turn_at_its_own_model_rate(self, tmp_path):
-        """One dispatch holding a sonnet-4-6 turn and an opus-4-8 turn, with
-        distinct input counts and distinct requestIds, prices each turn at its
-        own model's rate and reports the literal "mixed" bucket. A model
-        hoisted out of the per-turn loop would price both turns at one rate."""
-        sonnet_turn = _asst(
-            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-sonnet",
-            content=[{"type": "text", "text": "first"}],
-        )
-        sonnet_turn["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 50,
-            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-        }
-        opus_turn = _asst(
-            "claude-opus-4-8", branch="feature-a", sidechain=True, request_id="req-opus",
-            content=[{"type": "text", "text": "second"}],
-        )
-        opus_turn["message"]["usage"] = {
-            "input_tokens": 2_000_000, "output_tokens": 100,
-            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-        }
-        jsonl_path = tmp_path / "dispatch.jsonl"
-        _write_jsonl(jsonl_path, [sonnet_turn, opus_turn])
-        observed_bucket, actual_dollars, _, _, _, _, _ = _mod._dispatch_usage_summary(
-            jsonl_path, None, None, None, date(2026, 8, 2)
-        )
-        # claude-sonnet-4-6: 1,000,000 input at $3.00/MTok + 50 output at $15.00/MTok.
-        # claude-opus-4-8: 2,000,000 input at $5.00/MTok + 100 output at $25.00/MTok.
-        sonnet_turn_dollars = 1_000_000 / 1_000_000 * 3.00 + 50 / 1_000_000 * 15.00
-        opus_turn_dollars = 2_000_000 / 1_000_000 * 5.00 + 100 / 1_000_000 * 25.00
-        assert actual_dollars == pytest.approx(sonnet_turn_dollars + opus_turn_dollars)
-        assert observed_bucket == "mixed"
-
-    def test_non_contiguous_run_with_interleaved_tool_result_still_merges(self, tmp_path):
-        """A same-requestId run whose two assistant records straddle an
-        interleaved tool_result must still collapse into one priced turn, not
-        two, when every usage field (including output_tokens) agrees across
-        both records. (The harness executes one multi-tool_use response's
-        tool calls one at a time, which produces this interleaving.)"""
-        rec1 = _asst(
-            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-nc",
-            content=[_bash_use("t1", "echo hi")],
-        )
-        rec1["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 50,
-            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-        }
-        rec2 = _asst(
-            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-nc",
-            content=[{"type": "text", "text": "done"}],
-        )
-        rec2["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 50,
-            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-        }
-        jsonl_path = tmp_path / "dispatch.jsonl"
-        _write_jsonl(jsonl_path, [rec1, _tool_result("t1", "hi\n"), rec2])
-        _, actual_dollars, _, _, _, _, _ = _mod._dispatch_usage_summary(
-            jsonl_path, None, None, None, date(2026, 8, 2)
-        )
-        # A merge prices this once (1,000,000 input + 50 output = $3.00075);
-        # a failure to merge across the interleaved tool_result would double
-        # it to $6.0015.
-        assert actual_dollars == pytest.approx(3.00075)
-
-    def test_corrupt_line_between_same_request_id_records_still_merges(self, tmp_path):
-        """A corrupt JSONL line sitting between a same-requestId run's two
-        records must be filtered out before dedup grouping runs, not after.
-        Otherwise a corrupt line could split a contiguous run and
-        misattribute the dedup grouping around it. Same shape as
-        test_non_contiguous_run_with_interleaved_tool_result_still_merges,
-        substituting the interleaved record for a malformed line."""
-        rec1, rec2 = self._two_block_run("claude-sonnet-4-6", request_id="req-corrupt")
-        jsonl_path = tmp_path / "dispatch.jsonl"
-        jsonl_path.write_text(f"{json.dumps(rec1)}\nTHIS IS NOT JSON\n{json.dumps(rec2)}\n")
-        _, actual_dollars, _, _, _, _, _ = _mod._dispatch_usage_summary(
-            jsonl_path, None, None, None, date(2026, 8, 2)
-        )
-        # A merge prices this once (1,000,000 input + 50 output = $3.00075);
-        # the corrupt line contributes no dollars, and a failure to merge
-        # around it would double the total to $6.0015.
-        assert actual_dollars == pytest.approx(3.00075)
-
-    def test_unpriced_turn_count_is_once_per_deduped_turn_not_per_raw_record(self, tmp_path):
-        """A two-content-block, one-requestId run on an unpriced model
-        surfaces as 1 unpriced turn, not 2. The diagnostic counts (and
-        totals tokens for) the merged turn's final usage only."""
-        jsonl_path = tmp_path / "dispatch.jsonl"
-        _write_jsonl(jsonl_path, self._two_block_run("claude-unreleased-model"))
-        _, actual_dollars, _, _, unpriced_turns, unpriced_tokens, _ = _mod._dispatch_usage_summary(
-            jsonl_path, None, None, None, date(2026, 8, 2)
-        )
-        assert actual_dollars == 0.0
-        # Merged usage is the run's last record: 1,000,000 input + 50 output.
-        assert unpriced_turns == 1
-        assert unpriced_tokens == 1_000_050
-
-    def test_run_excluded_when_first_block_timestamp_outside_window_even_if_last_block_inside(self, tmp_path):
-        """A same-requestId run whose first record's timestamp sits before
-        since_ts while its last record's timestamp sits inside [since_ts,
-        until_ts) is excluded from actual_dollars entirely. Inclusion is
-        decided by the merged turn's first-block timestamp, per
-        _merge_assistant_run's run[0] convention. A run straddling the
-        window's lower edge this way must not leak its in-window last
-        block's usage into actual_dollars."""
-        rec1 = _asst(
-            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-straddle",
-            ts="2026-06-30T23:59:59.000Z", content=[{"type": "thinking", "thinking": "..."}],
-        )
-        rec1["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 3,
-            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-        }
-        rec2 = _asst(
-            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-straddle",
-            ts="2026-07-01T00:00:01.000Z", content=[{"type": "text", "text": "done"}],
-        )
-        rec2["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 50,
-            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-        }
-        jsonl_path = tmp_path / "dispatch.jsonl"
-        _write_jsonl(jsonl_path, [rec1, rec2])
-        since_ts = _mod._parse_ts("2026-07-01T00:00:00.000Z")
-        until_ts = _mod._parse_ts("2026-07-02T00:00:00.000Z")
-        _, actual_dollars, _, _, _, _, _ = _mod._dispatch_usage_summary(
-            jsonl_path, since_ts, until_ts, None, date(2026, 8, 2)
-        )
-        assert actual_dollars == 0.0
-
-    def test_run_included_when_last_block_timestamp_outside_window_even_if_first_inside(self, tmp_path):
-        """Mirror of the lower-edge test above: a same-requestId run whose
-        first record's timestamp sits inside [since_ts, until_ts) while its
-        last record's timestamp sits at or after until_ts is counted as
-        fully in-window spend, not excluded or partially priced. Inclusion is
-        decided by the merged turn's first-block timestamp, per
-        _merge_assistant_run's run[0] convention, so a run straddling the
-        window's upper edge this way has its full billed (last-block) usage
-        counted in actual_dollars -- the over-inclusion this convention
-        produces at the upper edge."""
-        rec1 = _asst(
-            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-straddle-upper",
-            ts="2026-07-01T23:59:59.000Z", content=[{"type": "thinking", "thinking": "..."}],
-        )
-        rec1["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 3,
-            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-        }
-        rec2 = _asst(
-            "claude-sonnet-4-6", branch="feature-a", sidechain=True, request_id="req-straddle-upper",
-            ts="2026-07-02T00:00:01.000Z", content=[{"type": "text", "text": "done"}],
-        )
-        rec2["message"]["usage"] = {
-            "input_tokens": 1_000_000, "output_tokens": 50,
-            "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-        }
-        jsonl_path = tmp_path / "dispatch.jsonl"
-        _write_jsonl(jsonl_path, [rec1, rec2])
-        since_ts = _mod._parse_ts("2026-07-01T00:00:00.000Z")
-        until_ts = _mod._parse_ts("2026-07-02T00:00:00.000Z")
-        _, actual_dollars, _, _, _, _, _ = _mod._dispatch_usage_summary(
-            jsonl_path, since_ts, until_ts, None, date(2026, 8, 2)
-        )
-        # Merged usage is the run's last record (1,000,000 input + 50
-        # output), priced in full despite that record's own timestamp
-        # falling after until_ts.
-        assert actual_dollars == pytest.approx(3.00075)
-
-
-class TestDeclaredPinPathSafety:
-    """_declared_pin builds a filesystem path from subagent_type -- data
-    that, under --config-dir, can originate from a scanned foreign root's
-    own transcript content, not just this process's own dispatches."""
-
-    def test_traversal_agent_type_does_not_escape_agents_dir(self, tmp_path):
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        secret_file = tmp_path / "outside-agents-dir.md"
-        secret_file.write_text("---\nmodel: SECRET-LEAKED-VALUE\n---\nbody\n")
-        assert _mod._declared_pin("../outside-agents-dir", agents_dir, {}) == _mod._DECLARED_PIN_BUILT_IN
-
-    def test_absolute_path_agent_type_does_not_escape_agents_dir(self, tmp_path):
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        secret_file = tmp_path / "outside-agents-dir.md"
-        secret_file.write_text("---\nmodel: SECRET-LEAKED-VALUE\n---\nbody\n")
-        absolute_agent_type = str(secret_file.with_suffix(""))
-        assert _mod._declared_pin(absolute_agent_type, agents_dir, {}) == _mod._DECLARED_PIN_BUILT_IN
-
-    def test_ordinary_agent_type_name_is_unaffected(self, tmp_path):
-        """The allowlist must not reject real subagent_type shapes (kebab-case
-        identifiers, underscores) -- only a deny-path regression, not a
-        false-positive rejection of legitimate names."""
-        agents_dir = tmp_path / "agents"
-        agents_dir.mkdir()
-        (agents_dir / "staff-sdet.md").write_text("---\nmodel: sonnet\n---\nbody\n")
-        assert _mod._declared_pin("staff-sdet", agents_dir, {}) == "sonnet"
-
-
-class TestSubagentMixSince:
-    def test_since_excludes_dispatches_older_than_window(self, fake_projects, capsys):
-        old_ts = "2020-01-01T00:00:00Z"
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", ts=old_ts, content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _mod.cmd_subagent_mix(_subagent_mix_args(since="1d"))
-        out = capsys.readouterr().out
-        assert "No data found." in out
-
-    def test_malformed_since_exits_nonzero_naming_subagent_mix(self, fake_projects, capsys):
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_subagent_mix(_subagent_mix_args(since="not-a-window"))
-        assert exc_info.value.code == 1
-        assert "subagent-mix: --since" in capsys.readouterr().err
-
-    def test_since_boundary_is_inclusive(self, fake_projects, capsys, monkeypatch):
-        """A dispatch timestamped exactly at the since-window cutoff (now -
-        1 day) is included, not excluded -- mirrors TestSubagentsSince's own
-        boundary test; both subcommands share the identical filter
-        conditional. time.time() is frozen so the record's timestamp and
-        _parse_since_nd_arg's own cutoff are computed from the same instant."""
-        fixed_now = 1_700_000_000.0
-        monkeypatch.setattr(time, "time", lambda: fixed_now)
-        boundary_ts = datetime.fromtimestamp(fixed_now - 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", ts=boundary_ts, content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _mod.cmd_subagent_mix(_subagent_mix_args(since="1d"))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Spawns", row_contains="main", max_labels=6)
-        assert cols["Spawns"] == "1"
-
-    def test_since_excludes_dispatches_missing_timestamp(self, fake_projects, capsys):
-        rec = _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")])  # no ts=
-        _write_jsonl(fake_projects / "sess.jsonl", [rec])
-        _mod.cmd_subagent_mix(_subagent_mix_args(since="1d"))
-        out = capsys.readouterr().out
-        assert "No data found." in out
 
 
 class TestRootScopedDisplayLabel:
@@ -2328,606 +1112,6 @@ class TestRepoTrackedAgentTypeNames:
         and its failure message unreadable, so the name is hardcoded; the
         unit tests above already carry the "real derivation works" fact."""
         assert "code-writer" in _mod._repo_tracked_agent_type_names()
-
-
-class TestTrackedAgentFilenamesMatchAgentTypeNameCharset:
-    """cost-counts prints a disclosed agent-type label raw with no escaping
-    step, on the assumption every tracked agents/*.md stem already matches
-    _AGENT_TYPE_NAME_RE's charset. A future filename outside this charset
-    must fail this test, not silently reach a GFM table cell raw once that
-    agent is dispatched."""
-
-    @pytest.fixture(autouse=True)
-    def _clear_cache(self):
-        _mod._repo_tracked_agent_type_names.cache_clear()
-        yield
-        _mod._repo_tracked_agent_type_names.cache_clear()
-
-    def test_every_tracked_agent_stem_matches_the_charset(self):
-        names = _mod._repo_tracked_agent_type_names() - _mod._BUILT_IN_AGENT_TYPES
-        assert names, "expected at least one repo-tracked agent definition"
-        for name in names:
-            assert _mod._AGENT_TYPE_NAME_RE.fullmatch(name), name
-
-
-class TestSpawnCountsByAgentType:
-    """_spawn_counts_by_agent_type: main-thread-only raw spawn counts,
-    feeding cost-counts's ### Subagent spawns table."""
-
-    def test_spawn_nested_inside_a_subagent_is_excluded(self):
-        """A spawn dispatched from inside another agent's own transcript
-        (isSidechain: true) is not counted. Only main-thread dispatches
-        decide this count, mirroring cmd_subagent_mix's own exclusion order
-        (see _spawn_counts_by_agent_type's own docstring)."""
-        records = [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
-            _asst("claude-opus-4-7", branch="feat", sidechain=True, content=[_agent_use("a2", "staff-sdet")]),
-        ]
-        counts = _mod._spawn_counts_by_agent_type([(Path("sess.jsonl"), records)], None)
-        assert counts == {"staff-sdet": 1}
-
-
-class TestCostCounts:
-    """cost-counts: per-branch review-round and subagent-spawn counts for a
-    public PR body -- counts only, no dollar attribution."""
-
-    @pytest.fixture(autouse=True)
-    def _clear_agent_type_cache(self):
-        """Same process-global lru_cache isolation as
-        TestRepoTrackedAgentTypeNames -- a monkeypatched
-        _REPO_AGENT_DEFINITIONS_DIR from one test here must never leak a
-        stale cached result into the next."""
-        _mod._repo_tracked_agent_type_names.cache_clear()
-        yield
-        _mod._repo_tracked_agent_type_names.cache_clear()
-
-    def _isolate_allowlist(self, tmp_path, monkeypatch, tracked: list[str]) -> None:
-        agents_dir = tmp_path / "isolated-agents"
-        agents_dir.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
-        for name in tracked:
-            (agents_dir / f"{name}.md").write_text("---\nname: x\n---\n")
-        if tracked:
-            subprocess.run(["git", "add", "--", *(f"{n}.md" for n in tracked)], cwd=agents_dir, check=True)
-        monkeypatch.setattr(_mod.redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
-        _mod._repo_tracked_agent_type_names.cache_clear()
-
-    def test_this_repo_required(self, fake_projects, capsys):
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_cost_counts(_cost_counts_args(this_repo=False, branches="feat"))
-        assert exc_info.value.code == 2
-        assert "--this-repo" in capsys.readouterr().err
-
-    def test_non_default_projects_refused(self, fake_projects, capsys):
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_cost_counts(_cost_counts_args(this_repo=True, projects="some-glob", branches="feat"))
-        assert exc_info.value.code == 2
-        assert "--projects" in capsys.readouterr().err
-
-    def test_branches_required(self, fake_projects, capsys):
-        """--branches is refused at runtime, inside cmd_cost_counts, not made
-        argparse-required -- an argparse-level requirement would fire during
-        parse_args(), before main()'s own top-level --config-dir refusal
-        check ever runs."""
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_cost_counts(_cost_counts_args(this_repo=True, branches=None))
-        assert exc_info.value.code == 2
-        assert "--branches" in capsys.readouterr().err
-
-    def test_review_round_table_renders_actual_round_counts(self, fake_projects, capsys):
-        """Every other TestCostCounts fixture seeds spawn records only, so
-        round_counts is all-zero in every one of them. This test seeds a
-        real round-opening record (a Skill tool_use matching a
-        REVIEW_SKILLS member) and asserts the ### Review rounds table's
-        actual rendered row values and caption, through the real
-        cmd_cost_counts rendering path."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_skill_use("s1", "code-review")]),
-        ])
-        _mod.cmd_cost_counts(_cost_counts_args(
-            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
-        ))
-        out = capsys.readouterr().out
-        assert "| code-review | 1 |" in out
-        assert "| plan-review | 0 |" in out
-        assert "| ready-for-review | 0 |" in out
-        assert "| **total** | **1** |" in out
-        assert _mod._COST_COUNTS_ROUNDS_CAPTION in out
-
-    def test_untracked_subagent_type_is_withheld_under_this_repo(
-        self, fake_projects, tmp_path, monkeypatch, capsys,
-    ):
-        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "totally-untracked-agent")]),
-        ])
-        _mod.cmd_cost_counts(_cost_counts_args(
-            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
-        ))
-        out = capsys.readouterr().out
-        assert "staff-sdet" in out
-        assert "totally-untracked-agent" not in out
-        assert "(withheld — untracked agent type)" in out
-
-    def test_withheld_row_stays_last_even_when_its_total_exceeds_a_disclosed_row(
-        self, fake_projects, tmp_path, monkeypatch, capsys,
-    ):
-        """The withheld row is appended after the (-count, name) sort, never
-        merged into it -- a withheld total that outweighs every disclosed
-        row's own count must still render last, not sort ahead of a named
-        row and get mistaken for one (see
-        _partition_spawn_counts_by_disclosure's own docstring)."""
-        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "untracked-agent-a")]),
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a3", "untracked-agent-b")]),
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a4", "untracked-agent-c")]),
-        ])
-        _mod.cmd_cost_counts(_cost_counts_args(
-            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
-        ))
-        out = capsys.readouterr().out
-        assert out.index("| staff-sdet | 1 |") < out.index("(withheld — untracked agent type)")
-
-    def test_backstop_assertion_fires_on_bypassed_partition_step(
-        self, fake_projects, tmp_path, monkeypatch,
-    ):
-        """cost-counts's own render-time backstop: a future regression to a
-        _stype_label-style direct reuse (bypassing
-        _partition_spawn_counts_by_disclosure's own allowlist gate) must
-        fail loudly, not silently disclose an untracked subagent_type."""
-        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        monkeypatch.setattr(
-            _mod, "_partition_spawn_counts_by_disclosure",
-            lambda raw_counts: [("some-untracked-agent-type", 1)],
-        )
-        with pytest.raises(AssertionError) as exc_info:
-            _mod.cmd_cost_counts(_cost_counts_args(
-                this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
-            ))
-        assert "some-untracked-agent-type" not in str(exc_info.value)
-
-    def test_more_than_five_distinct_agent_types_all_render(
-        self, fake_projects, tmp_path, monkeypatch, capsys,
-    ):
-        """This is the test that would have caught a top-5-scrape
-        reimplementation: cmd_subagent_mix's own table truncates to the top
-        5 spawn types per branch, but cost-counts must not."""
-        tracked = [f"agent-{i}" for i in range(6)]
-        self._isolate_allowlist(tmp_path, monkeypatch, tracked=tracked)
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use(f"a{i}", name)])
-            for i, name in enumerate(tracked)
-        ])
-        _mod.cmd_cost_counts(_cost_counts_args(
-            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
-        ))
-        out = capsys.readouterr().out
-        for name in tracked:
-            assert name in out
-
-    def test_zero_spawns_renders_the_sentence_not_a_table(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[]),
-        ])
-        _mod.cmd_cost_counts(_cost_counts_args(
-            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
-        ))
-        out = capsys.readouterr().out
-        assert "No subagent spawns found in scope." in out
-        assert "| Agent type | Spawns |" not in out
-
-    def test_no_branch_name_appears_anywhere_in_output(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="my-secret-branch-name", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _mod.cmd_cost_counts(_cost_counts_args(
-            this_repo=True, branches="my-secret-branch-name", this_repo_slugs=["-home-user-testrepo"],
-        ))
-        out = capsys.readouterr().out
-        assert "my-secret-branch-name" not in out
-
-    def test_second_declared_root_contributes_nothing(
-        self, fake_projects, tmp_path, monkeypatch, capsys,
-    ):
-        """cost-counts always resolves to [config_dir() / "projects"] alone
-        -- a populated ~/.claude/transcript-config-dirs must not pull
-        another account's activity into a public PR body's counts."""
-        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        declared_root = tmp_path / "declared-root"
-        declared_proj = declared_root / "projects" / "-home-user-other-repo"
-        declared_proj.mkdir(parents=True)
-        _write_jsonl(declared_proj / "sess-other.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "staff-sdet")]),
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a3", "staff-sdet")]),
-        ])
-        roots_file = tmp_path / "roots"
-        roots_file.write_text(f"{declared_root}\n")
-        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
-
-        _mod.cmd_cost_counts(_cost_counts_args(
-            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
-        ))
-        out = capsys.readouterr().out
-        assert "| staff-sdet | 1 |" in out
-
-    def test_top_level_config_dir_message_omits_flag_recommendation(self, monkeypatch, tmp_path, capsys):
-        """cost-counts registers no --config-dir flag of its own, unlike
-        every other _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR member -- the
-        shared refusal message must not recommend a flag that doesn't exist
-        on its own parser."""
-        other_account = tmp_path / "other-account"
-        (other_account / "projects").mkdir(parents=True)
-        monkeypatch.setattr(
-            sys, "argv", ["transcript-analysis.py", "--config-dir", str(other_account), "cost-counts"],
-        )
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.main()
-        assert exc_info.value.code == 2
-        err = capsys.readouterr().err
-        assert "cost-counts" in err
-        assert "use that instead" not in err
-        assert "with no override" in err
-
-
-class TestSubagentMixMultiRoot:
-    """Repeatable --config-dir on subagent-mix, and its disclosure controls."""
-
-    @pytest.fixture
-    def _isolated_staff_sdet_allowlist(self, tmp_path, monkeypatch):
-        """Points _REPO_AGENT_DEFINITIONS_DIR at a throwaway git-tracked
-        agents/ directory tracking staff-sdet.md, decoupling the two
-        --this-repo subagent_type disclosure tests below from this repo's
-        own real agents/ tree -- the same isolation TestRepoTrackedAgentTypeNames
-        applies to its own unit tests, via monkeypatch + cache_clear()."""
-        agents_dir = tmp_path / "isolated-agents"
-        agents_dir.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
-        (agents_dir / "staff-sdet.md").write_text("---\nname: x\n---\n")
-        subprocess.run(["git", "add", "--", "staff-sdet.md"], cwd=agents_dir, check=True)
-        monkeypatch.setattr(_mod.redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
-        _mod._repo_tracked_agent_type_names.cache_clear()
-        yield
-        _mod._repo_tracked_agent_type_names.cache_clear()
-
-    def test_two_roots_yield_strictly_more_spawns_than_either_alone(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        single_root_out = capsys.readouterr().out
-        single_root_cols = _table_cols(single_root_out, header_contains="Spawns", row_contains="feat", max_labels=6)
-        assert single_root_cols["Spawns"] == "1"
-
-        acct_b = fake_config_dir_factory("acct-b")
-        proj_b = acct_b / "projects" / "-home-user-other-repo"
-        proj_b.mkdir(parents=True)
-        _write_jsonl(proj_b / "sess-b.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
-        ])
-        _mod.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
-        multi_root_out = capsys.readouterr().out
-        total_spawns = _sum_column_across_rows(
-            multi_root_out, header_contains="Spawns", label="Spawns", row_prefix="account-"
-        )
-        assert total_spawns > int(single_root_cols["Spawns"])
-        # Single-root label was flat ("feat"); two-root labels are namespaced.
-        assert "account-1/branch-1" in multi_root_out
-        assert "account-2/branch-1" in multi_root_out
-
-    def test_colliding_branch_names_across_roots_get_distinct_redacted_labels(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        """Two roots each with their own "main" branch must not collapse
-        into one row, and neither raw branch name may appear in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        acct_b = fake_config_dir_factory("acct-b")
-        proj_b = acct_b / "projects" / "-home-user-other-repo"
-        proj_b.mkdir(parents=True)
-        _write_jsonl(proj_b / "sess-b.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("b1", "staff-backend-engineer")]),
-        ])
-        _mod.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
-        out = capsys.readouterr().out
-        assert "account-1/branch-1" in out
-        assert "account-2/branch-1" in out
-        assert "account-1/branch-1" != "account-2/branch-1"
-
-    def test_per_session_refused_under_multi_root(self, fake_projects, fake_config_dir_factory, capsys):
-        acct_b = fake_config_dir_factory("acct-b")
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)], per_session=True))
-        assert exc_info.value.code == 2
-        err = capsys.readouterr().err
-        assert "--per-session" in err
-        assert "--config-dir" in err
-
-    def test_multi_root_stamps_do_not_publish_banner_on_stdout_and_stderr(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        acct_b = fake_config_dir_factory("acct-b")
-        _mod.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
-        captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
-
-    def test_single_root_omits_do_not_publish_banner(self, fake_projects, capsys):
-        """The allow-path counterpart to the fire test above -- mirrors
-        cost's own test_default_redact_omits_do_not_publish_banner. Without
-        this, a broken/inverted multi_root guard (banner always fires, or
-        never fires) has no test signal in either direction."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _mod.cmd_subagent_mix(_subagent_mix_args())
-        captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.err
-
-    def test_subagent_type_redacted_under_multi_root_in_both_tables(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        """subagent_type carries the same disclosure risk gitBranch does (it
-        can name a project-scoped custom agent definition) but, unlike
-        gitBranch, was not redacted -- a distinctive custom subagent_type on
-        the scanned foreign root must never appear verbatim in either the
-        "Top subagent types" column or the new "AgentType" model-mix table.
-        Uses two different subagent_type values across roots (a same-value
-        fixture cannot surface this: it would leak either way)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        acct_b = fake_config_dir_factory("acct-b")
-        proj_b = acct_b / "projects" / "-home-user-other-repo"
-        proj_b.mkdir(parents=True)
-        distinctive_type = "acme-corp-internal-deploy-reviewer"
-        _write_jsonl(proj_b / "sess-b.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("b1", distinctive_type)]),
-        ])
-        _mod.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
-        out = capsys.readouterr().out
-        assert distinctive_type not in out
-        assert "account-2/agent-type-1" in out
-
-    def test_same_agent_type_across_roots_does_not_merge_model_mix_rows(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        """The model-mix table is keyed on the redacted (root, subagent_type)
-        label, not the raw subagent_type alone -- two accounts each
-        dispatching "staff-sdet" must land in two separate rows (Runs=1
-        each), never summed into one merged Runs=2 row that blends two
-        accounts' data."""
-        session_id = "sess-a"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            fake_projects, session_id, "agent-1", "a1",
-            [_asst("claude-sonnet-4-6", branch="main", sidechain=True)],
-            agent_type="staff-sdet",
-        )
-        acct_b = fake_config_dir_factory("acct-b")
-        proj_b = acct_b / "projects" / "-home-user-other-repo"
-        proj_b.mkdir(parents=True)
-        session_id_b = "sess-b"
-        _write_jsonl(proj_b / f"{session_id_b}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("b1", "staff-sdet")]),
-        ])
-        _write_subagent_dispatch(
-            proj_b, session_id_b, "agent-b1", "b1",
-            [_asst("claude-sonnet-4-6", branch="main", sidechain=True)],
-            agent_type="staff-sdet",
-        )
-        _mod.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
-        out = capsys.readouterr().out
-        row_a = _table_cols(out, header_contains="Runs", row_contains="account-1/agent-type-1", max_labels=4)
-        row_b = _table_cols(out, header_contains="Runs", row_contains="account-2/agent-type-1", max_labels=4)
-        assert row_a["Runs"] == "1"
-        assert row_b["Runs"] == "1"
-
-    def test_account_ordinal_is_resolved_path_sorted_not_scan_order(self, tmp_path, monkeypatch, capsys):
-        """account-N is assigned by resolved-path sort (_redaction_ordinals),
-        not by --config-dir argument order. The active/default profile is
-        deliberately named "zzz-active" -- sorting AFTER the extra
-        --config-dir root "aaa-extra" in resolved-path order despite being
-        scanned first (active profile is always scan-order position 0) --
-        so a regression back to raw scan-order indexing
-        (_root_index_for_path's position used directly as the account
-        number) would swap which root reads as account-1. Every sibling
-        test in this class uses fake_projects, whose active root is always
-        a path-prefix ancestor of any fake_config_dir_factory root and
-        therefore always sorts first regardless — that shared setup cannot
-        catch this regression class, the same blind spot PR #603's own
-        pre-fix edit-format test had."""
-        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
-        active = tmp_path / "zzz-active"
-        active_proj = active / "projects" / "-home-user-active-repo"
-        active_proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: active)
-        _write_jsonl(active_proj / "sess-active.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-
-        extra = tmp_path / "aaa-extra"
-        extra_proj = extra / "projects" / "-home-user-extra-repo"
-        extra_proj.mkdir(parents=True)
-        _write_jsonl(extra_proj / "sess-extra.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[
-                _agent_use("b1", "staff-sdet"), _agent_use("b2", "staff-sdet"),
-            ]),
-        ])
-
-        _mod.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(extra)]))
-        out = capsys.readouterr().out
-        account_1 = _table_cols(out, header_contains="Spawns", row_contains="account-1/branch-1", max_labels=6)
-        account_2 = _table_cols(out, header_contains="Spawns", row_contains="account-2/branch-1", max_labels=6)
-        # "aaa-extra" (2 spawns) resolved-path-sorts before "zzz-active" (1
-        # spawn) despite being scanned second -- account-1 must be the extra
-        # root's row.
-        assert account_1["Spawns"] == "2"
-        assert account_2["Spawns"] == "1"
-
-    def test_this_repo_with_explicit_config_dir_discloses_branch_and_allowlisted_agent_type(
-        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
-    ):
-        """--this-repo plus subagent-mix's own repeatable --config-dir (not
-        only the declared-roots file) discloses a raw branch name and an
-        allowlisted subagent_type in both tables -- pins that the two flags
-        are not mutually exclusive. Both roots write identical branch and
-        subagent_type values, so the two disclosed labels are the same
-        regardless of which physical root resolves to account-1 vs. account-2."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        acct_b = fake_config_dir_factory("acct-b")
-        proj_b = acct_b / "projects" / "-home-user-testrepo"
-        proj_b.mkdir(parents=True)
-        _write_jsonl(proj_b / "sess-b.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
-        ])
-        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.cmd_subagent_mix(args)  # no SystemExit
-        out = capsys.readouterr().out
-        # Substring-on-combined-stdout, not a per-table _table_cols extract:
-        # _mix_branch_label/_stype_label are idempotent per (root_idx, value)
-        # key, so both tables render the same label for the same key even
-        # though each computes it independently at its own print time -- a
-        # future change breaking that idempotence would need this test
-        # tightened to catch a per-table divergence.
-        assert "account-1/feat" in out
-        assert "account-2/feat" in out
-        assert "account-1/staff-sdet" in out
-        assert "account-2/staff-sdet" in out
-
-    def test_this_repo_non_allowlisted_agent_type_counter_starts_at_one_despite_allowlisted_seen_first(
-        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
-    ):
-        """A non-allowlisted subagent_type still renders as
-        account-<K>/agent-type-1, with its counter starting at 1 despite an
-        allowlisted type being seen first in the same session -- proves the
-        disclosed path never writes into subagent_type_redact_map, matching
-        TestRootScopedDisplayLabel's own unit-level pin at the integration
-        layer."""
-        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[
-                _agent_use("a1", "staff-sdet"),  # allowlisted, dispatched first
-                _agent_use("a2", "acme-corp-internal-tool"),  # not allowlisted
-            ]),
-        ])
-        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.cmd_subagent_mix(args)
-        out = capsys.readouterr().out
-        assert re.search(r"account-\d+/staff-sdet", out)
-        assert re.search(r"account-\d+/agent-type-1\b", out)
-        assert "acme-corp-internal-tool" not in out
-
-    def test_this_repo_case_varied_spelling_of_allowlisted_type_stays_opaque(
-        self, fake_projects, fake_config_dir_factory, _isolated_staff_sdet_allowlist, capsys
-    ):
-        """Pin against a later .lower()-style "robustness" change disclosing
-        a private type that collides case-insensitively with a real
-        allowlisted name. Asserts both directions in the same run: the
-        mixed-case collision stays opaque, and the exact-case allowlisted
-        form still discloses -- without the positive control, an
-        accidentally-empty allowlist would pass this test for the wrong
-        reason."""
-        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[
-                _agent_use("a1", "Staff-Sdet"),  # mixed-case collision, not allowlisted verbatim
-                _agent_use("a2", "staff-sdet"),  # exact-case allowlisted form -- positive control
-            ]),
-        ])
-        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.cmd_subagent_mix(args)
-        out = capsys.readouterr().out
-        assert "Staff-Sdet" not in out
-        assert re.search(r"account-\d+/agent-type-1\b", out)
-        assert re.search(r"account-\d+/staff-sdet\b", out)
-
-    def test_this_repo_colliding_branch_names_across_accounts_stay_on_separate_rows(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        """Two accounts' identically-named "main" branch must not collapse
-        into one row under --this-repo disclosure either -- the table this
-        measurement actually reads."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
-        ])
-        acct_b = fake_config_dir_factory("acct-b")
-        proj_b = acct_b / "projects" / "-home-user-testrepo"
-        proj_b.mkdir(parents=True)
-        _write_jsonl(proj_b / "sess-b.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_agent_use("b1", "staff-sdet")]),
-        ])
-        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.cmd_subagent_mix(args)
-        out = capsys.readouterr().out
-        assert "account-1/main" in out
-        assert "account-2/main" in out
-
-    def test_this_repo_still_stamps_do_not_publish_banner_under_multi_root(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        acct_b = fake_config_dir_factory("acct-b")
-        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.cmd_subagent_mix(args)
-        captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
-
-    def test_this_repo_per_session_still_refused_under_multi_root(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        acct_b = fake_config_dir_factory("acct-b")
-        args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)], per_session=True)
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_subagent_mix(args)
-        assert exc_info.value.code == 2
-        err = capsys.readouterr().err
-        assert "--per-session" in err
-
-    def test_this_repo_single_root_prints_raw_branch_and_raw_non_allowlisted_type_with_no_account_prefix(
-        self, fake_projects, capsys
-    ):
-        """Single-root path (no --config-dir, no declared roots): root_idx
-        is always None, so both fields print raw with no account-<K>/
-        prefix regardless of --this-repo or the allowlist. The
-        non-allowlisted type is the load-bearing half: it proves the
-        allowlist gate is never consulted at single root, catching a future
-        reordering that checks `disclose` before `root_idx is not None`."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "acme-corp-internal-tool")]),
-        ])
-        args = _subagent_mix_args(this_repo=True)
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.cmd_subagent_mix(args)
-        out = capsys.readouterr().out
-        assert "feat" in out
-        assert "acme-corp-internal-tool" in out
-        assert "account-" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -3978,6 +2162,82 @@ class TestScanRootTranscripts:
         alias.symlink_to(real_proj)
         scanned, _skipped = _mod._scan_root_transcripts(tmp_path, "*")
         assert scanned == 1
+
+    def test_glob_mode_rejects_a_parent_traversing_projects_value(self, tmp_path):
+        """A '..' component in `projects_glob` is a real parent-directory step
+        for Path.glob, not a no-op: this function must count nothing for it
+        instead of counting a sibling account's own transcripts -- the same
+        guarantee corpus.iter_sessions gives its own glob match."""
+        root = tmp_path / "acct-a"
+        root.mkdir()
+        sibling = tmp_path / "acct-b"
+        sibling.mkdir()
+        (sibling / "secret.jsonl").write_text("{}\n")
+        scanned, skipped = _mod._scan_root_transcripts(root, "../acct-b")
+        assert (scanned, skipped) == (0, 0)
+
+    def test_symlink_loop_project_dir_is_silently_skipped_not_raised(self, tmp_path):
+        """A symlink-loop project dir reads as absent (its stat fails with ELOOP), so
+        _scan_root_transcripts skips it and counts the healthy sibling
+        without raising. Its two callers in cost.py only catch
+        PermissionError."""
+        proj_open = tmp_path / "-repo-open"
+        proj_open.mkdir(parents=True)
+        (proj_open / "sess.jsonl").write_text("{}\n")
+        loop_link = tmp_path / "-repo-loop"
+        loop_link.symlink_to(loop_link)
+        scanned, skipped = _mod._scan_root_transcripts(tmp_path, "*")
+        assert (scanned, skipped) == (1, 0)
+
+    @pytest.mark.parametrize("mode", ["glob", "slugs"])
+    def test_project_dir_symlinked_outside_the_root_is_counted(self, tmp_path, mode):
+        """Only a '..' in the raw glob is rejected. With a single scan root,
+        a project directory symlinked to a readable location outside `root`
+        stays in scope, in both the glob and the exact-slug branch, matching
+        iter_sessions. Multi-root consumers that attribute each session to a
+        root do not tolerate it (see the pooled-layer tests in
+        test_transcript_review_rounds.py)."""
+        root = tmp_path / "acct-a"
+        root.mkdir()
+        outside = tmp_path / "elsewhere" / "-repo-relocated"
+        outside.mkdir(parents=True)
+        (outside / "sess.jsonl").write_text("{}\n")
+        (root / "-repo-relocated").symlink_to(outside)
+        slugs = ["-repo-relocated"] if mode == "slugs" else None
+        assert _mod._scan_root_transcripts(root, "*", slugs=slugs) == (1, 0)
+
+    def test_symlink_loop_transcript_is_counted_as_skipped_not_raised(self, tmp_path):
+        """A looped .jsonl symlink fails open() with OSError, so it is
+        counted under `skipped` alongside the healthy transcript instead of
+        aborting the scan."""
+        proj = tmp_path / "-repo-main"
+        proj.mkdir()
+        (proj / "sess.jsonl").write_text("{}\n")
+        loop_link = proj / "loop.jsonl"
+        loop_link.symlink_to(loop_link)
+        assert _mod._scan_root_transcripts(tmp_path, "*") == (2, 1)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_project_dir_through_sealed_ancestor_is_silently_skipped_not_raised(self, tmp_path):
+        """A project dir reached through a sealed intermediate directory makes
+        its stat raise PermissionError (an OSError subclass).
+        _scan_root_transcripts skips it without raising and still counts the
+        healthy sibling project dir."""
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        (proj_open / "sess.jsonl").write_text("{}\n")
+        sealed_ancestor = tmp_path / "sealed-ancestor"
+        target = sealed_ancestor / "target-dir"
+        target.mkdir(parents=True)
+        proj_through_sealed = root / "-repo-through-sealed"
+        proj_through_sealed.symlink_to(target)
+        os.chmod(sealed_ancestor, 0o000)
+        try:
+            scanned, skipped = _mod._scan_root_transcripts(root, "*")
+        finally:
+            os.chmod(sealed_ancestor, 0o755)
+        assert (scanned, skipped) == (1, 0)
 
 
 class TestPriceTurnArity:
@@ -5281,6 +3541,133 @@ class TestScanEditFormatSession:
         stats = _mod._scan_edit_format_session(records)
         assert stats["output_tokens"] == 3111
         assert stats["calls"] == {"Edit": 1}
+
+
+def _read_tool_use(tool_id: str, *, file_path: str, offset: int | None = None, limit: int | None = None) -> dict:
+    tool_input: dict = {"file_path": file_path}
+    if offset is not None:
+        tool_input["offset"] = offset
+    if limit is not None:
+        tool_input["limit"] = limit
+    return {"type": "tool_use", "id": tool_id, "name": "Read", "input": tool_input}
+
+
+class TestCorpusSubagentDirAndUtf8ErrorHandling:
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_read_session_file_partitioned_treats_unreadable_subagents_dir_as_absent(self, fake_projects):
+        """A subagents/ directory reached through a sealed session-id
+        ancestor makes `subagent_dir.is_dir()` raise `PermissionError`.
+        (`PermissionError` is an `OSError` subclass.)
+        `_read_session_file_partitioned` must treat that the same as an
+        absent directory, not crash. The only observable difference from a
+        readable-empty directory is that no subagent records are merged."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        _write_subagent_jsonl(fake_projects, "sess", "agent-a", [_opus([_read_tool_use("r2", file_path="/b.py")])])
+        session_dir = fake_projects / "sess"
+        os.chmod(session_dir, 0o000)
+        try:
+            result = _mod._read_session_file_partitioned(fake_projects / "sess.jsonl", include_subagents=True)
+        finally:
+            os.chmod(session_dir, 0o755)
+
+        expected = [[_opus([_read_tool_use("r1", file_path="/a.py")])]]
+        assert result == expected
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_index_subagent_dispatches_returns_empty_index_for_unreadable_subagents_dir(self, fake_projects):
+        """A subagents/ directory reached through a sealed session-id
+        ancestor makes subagent_dir.is_dir() raise PermissionError (an
+        OSError) -- corpus._index_subagent_dispatches must return an empty
+        index and no read errors, not crash, so every dispatch in that
+        session reads as dangling. Mirrors
+        test_read_session_file_partitioned_treats_unreadable_subagents_dir_as_absent's
+        chmod-based direct-call pattern for the sibling function."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        _write_subagent_dispatch(
+            fake_projects, "sess", "agent-a", "toolu_1",
+            [_opus([_read_tool_use("r2", file_path="/b.py")])],
+        )
+        session_dir = fake_projects / "sess"
+        os.chmod(session_dir, 0o000)
+        try:
+            index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+        finally:
+            os.chmod(session_dir, 0o755)
+
+        assert index == {}
+        assert meta_read_errors == 0
+
+    def test_index_subagent_dispatches_counts_non_utf8_meta_as_read_error(self, fake_projects):
+        """A meta.json containing non-UTF-8 bytes must be counted under
+        meta_read_errors, identical to an invalid-JSON or unreadable
+        meta.json -- corpus._index_subagent_dispatches must not raise
+        UnicodeDecodeError uncaught and abort the whole run. Uses the same
+        non-UTF-8 bytes as
+        test_parse_jsonl_records_returns_empty_list_for_a_file_of_only_non_utf8_bytes."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir.mkdir(parents=True, exist_ok=True)
+        (subdir / "agent-1.meta.json").write_bytes(b"\xff\xfe\x00\x01")
+
+        index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+
+        assert index == {}
+        assert meta_read_errors == 1
+
+    def test_parse_jsonl_records_skips_a_non_utf8_line_and_keeps_the_valid_ones(self, tmp_path):
+        """A line with non-UTF-8 bytes is skipped on its own like a
+        malformed-JSON line, so the valid records before and after it
+        survive instead of the whole file being discarded."""
+        mixed_jsonl = tmp_path / "mixed.jsonl"
+        mixed_jsonl.write_bytes(
+            b'{"type": "user", "n": 1}\n\xff\xfe\x00\x01\n{"type": "user", "n": 2}\n'
+        )
+        assert _mod.corpus._parse_jsonl_records(mixed_jsonl) == [
+            {"type": "user", "n": 1}, {"type": "user", "n": 2},
+        ]
+
+    def test_parse_jsonl_records_returns_empty_list_for_a_file_of_only_non_utf8_bytes(self, tmp_path):
+        """A readable file with no decodable record is empty ([]), not
+        unreadable (None), so an all-corrupt transcript is not mistaken for
+        a failed read."""
+        bad_jsonl = tmp_path / "bad.jsonl"
+        bad_jsonl.write_bytes(b"\xff\xfe\x00\x01")
+        assert _mod.corpus._parse_jsonl_records(bad_jsonl) == []
+
+    def test_parse_jsonl_records_returns_none_when_the_file_cannot_be_opened(self, tmp_path):
+        assert _mod.corpus._parse_jsonl_records(tmp_path / "missing.jsonl") is None
+
+    def test_parse_jsonl_records_keeps_valid_multibyte_utf8_lines_on_both_sides_of_a_corrupt_line(self, tmp_path):
+        """A transcript written as raw UTF-8 (not ASCII-escaped, unlike
+        _write_jsonl's output) round-trips every record intact. The
+        assertion compares whole records, so a codec that cannot decode
+        the multi-byte characters, or decodes them wrongly, fails it."""
+        multibyte_text = "café 🎉 — 北京"
+        multibyte_jsonl = tmp_path / "multibyte.jsonl"
+        multibyte_jsonl.write_bytes(
+            json.dumps({"type": "user", "n": 1, "text": multibyte_text}, ensure_ascii=False).encode("utf-8")
+            + b"\n\xff\xfe\x00\x01\n"
+            + json.dumps({"type": "user", "n": 2, "text": multibyte_text}, ensure_ascii=False).encode("utf-8")
+            + b"\n"
+        )
+        assert _mod.corpus._parse_jsonl_records(multibyte_jsonl) == [
+            {"type": "user", "n": 1, "text": multibyte_text},
+            {"type": "user", "n": 2, "text": multibyte_text},
+        ]
+
+    def test_index_subagent_dispatches_reads_a_multibyte_utf8_meta_json_without_a_read_error(self, fake_projects):
+        """A meta.json written as raw UTF-8 with non-ASCII text next to a
+        valid toolUseId is indexed, not counted under meta_read_errors."""
+        _write_jsonl(fake_projects / "sess.jsonl", [_opus([_read_tool_use("r1", file_path="/a.py")])])
+        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir.mkdir(parents=True, exist_ok=True)
+        meta = {"agentType": "reviewer", "description": "café 🎉 — 北京", "toolUseId": "toolu_1", "spawnDepth": 1}
+        (subdir / "agent-1.meta.json").write_bytes(json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+
+        index, meta_read_errors = _mod.corpus._index_subagent_dispatches(fake_projects / "sess.jsonl")
+
+        assert index == {"toolu_1": (subdir / "agent-1.jsonl", None)}
+        assert meta_read_errors == 0
 
 
 # ---------------------------------------------------------------------------
@@ -8296,453 +6683,6 @@ class TestIterSessionsSubagentMerge:
         assert len(sidechain) == 1, "corrupt line skipped; valid sidechain record present"
 
 
-# ---------------------------------------------------------------------------
-# subagents (cmd_subagents)
-# ---------------------------------------------------------------------------
-
-
-def _subagents_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    branches: str | None = None,
-    since: str | None = None,
-    extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "branches": branches,
-        "since": since,
-        "extra_config_dirs": extra_config_dirs,
-    })()
-
-
-class TestSubagents:
-    def test_split_subagent_file_populates_sidechain_row(self, fake_projects, capsys):
-        """Sidechain records from a split subagent file appear in the sidechain row."""
-        session_id = "sess-split"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="test-branch"),
-        ])
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="test-branch", sidechain=True),
-        ])
-        _mod.cmd_subagents(_subagents_args(branches="test-branch"))
-        out = capsys.readouterr().out
-        assert any("main" in ln for ln in out.splitlines()), "expected a main row in output"
-        assert any("sidechain" in ln for ln in out.splitlines()), "expected a sidechain row in output"
-        # Verify actual counts: 1 opus main turn, 1 sonnet sidechain turn.
-        # main row: Branch label present → drop_leading_labels=0
-        main_cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert main_cols["Opus"] == "1", "expected 1 opus main turn"
-        assert main_cols["Sonnet"] == "0", "expected 0 sonnet main turns"
-        # sidechain row: Branch label absent on second row → drop_leading_labels=1
-        sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain",
-                                     drop_leading_labels=1)
-        assert sidechain_cols["Opus"] == "0", "expected 0 opus sidechain turns"
-        assert sidechain_cols["Sonnet"] == "1", "expected 1 sonnet sidechain turn"
-
-    def test_branch_filter_still_applies_to_output(self, fake_projects, capsys):
-        """Branch filter limits the output rows even with split subagent files."""
-        session_id = "sess-two-branches"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="branch-a"),
-            _asst("claude-opus-4-7", branch="branch-b"),
-        ])
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="branch-a", sidechain=True),
-        ])
-        _mod.cmd_subagents(_subagents_args(branches="branch-a"))
-        out = capsys.readouterr().out
-        assert "branch-a" in out
-        assert "branch-b" not in out
-
-    def test_multi_record_request_id_group_counts_as_one_turn(self, fake_projects, capsys):
-        """Three assistant records sharing one requestId (one per content
-        block, as Claude Code writes for a single API call) count as one
-        turn in the per-branch table, not three."""
-        recs = [
-            _asst("claude-opus-4-7", branch="test-branch",
-                  content=[{"type": "thinking", "thinking": "..."}], request_id="req-1"),
-            _asst("claude-opus-4-7", branch="test-branch",
-                  content=[{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}],
-                  request_id="req-1"),
-            _asst("claude-opus-4-7", branch="test-branch",
-                  content=[{"type": "text", "text": "done"}], request_id="req-1"),
-        ]
-        _write_jsonl(fake_projects / "sess.jsonl", recs)
-        _mod.cmd_subagents(_subagents_args(branches="test-branch"))
-        out = capsys.readouterr().out
-        main_cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert main_cols["Opus"] == "1", "three content-block records for one API call count as one turn"
-
-    def test_single_root_branch_output_strips_control_characters(self, fake_projects, capsys):
-        """gitBranch is transcript-sourced, not git-validated -- an
-        OSC-injection payload must not reach the single-root (no
-        --config-dir) table row raw, the same invariant
-        _root_scoped_display_label's disclose path enforces under multi-root."""
-        payload = "\x1b]0;PWNED\x07\x1b[2J\x1b[H\x1b[31mFAKE-ROW\x1b[0m"
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-opus-4-7", branch=payload)])
-        _mod.cmd_subagents(_subagents_args())
-        out = capsys.readouterr().out
-        assert "]0;PWNED[2J[H[31mFAKE-ROW[0m" in out
-        assert "\x1b" not in out
-        assert "\x07" not in out
-
-
-class TestSubagentsToolResultBytes:
-    """cmd_subagents' tool-result byte-count dimension: main vs. sidechain,
-    per branch, reusing the same tool_result-block walk as cmd_fail_seq and
-    the friction-signal helpers."""
-
-    def test_main_thread_tool_result_bytes_attributed_to_main_row(self, fake_projects, capsys):
-        """A main-thread (isSidechain unset) tool_result block's content length
-        is counted into that branch's main row."""
-        text = "x" * 250
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[]),
-            _user_msg([_tool_result("t1", text)], branch="main"),
-        ])
-        _mod.cmd_subagents(_subagents_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert cols["Bytes"] == str(len(text.encode()))
-
-    def test_sidechain_tool_result_bytes_attributed_to_sidechain_row_not_main(
-        self, fake_projects, capsys
-    ):
-        """A sidechain (isSidechain=True) tool_result block's content length
-        is counted into that branch's sidechain row, never the main row."""
-        text = "y" * 100
-        sidechain_result = _user_msg([_tool_result("t2", text)], branch="main")
-        sidechain_result["isSidechain"] = True
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[]),
-            _asst("claude-sonnet-4-6", branch="main", sidechain=True, content=[]),
-            sidechain_result,
-        ])
-        _mod.cmd_subagents(_subagents_args())
-        out = capsys.readouterr().out
-        main_cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        sidechain_cols = _table_cols(
-            out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1
-        )
-        assert main_cols["Bytes"] == "0"
-        assert sidechain_cols["Bytes"] == str(len(text.encode()))
-
-    def test_user_record_without_tool_result_block_contributes_zero_bytes(
-        self, fake_projects, capsys
-    ):
-        """A plain user message (string content, no tool_result block) contributes
-        0 bytes — also pins the isinstance(content, list) guard against treating
-        a string message's characters as blocks."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[]),
-            _user_msg("just a plain user message, no tool_result", branch="main"),
-        ])
-        _mod.cmd_subagents(_subagents_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert cols["Bytes"] == "0"
-
-    def test_empty_transcript_produces_no_data_found_without_crash(self, fake_projects, capsys):
-        """A transcript file with zero records is skipped by iter_sessions
-        (records list is empty) — cmd_subagents prints the existing
-        no-data message rather than crashing on an empty session."""
-        _write_jsonl(fake_projects / "sess.jsonl", [])
-        _mod.cmd_subagents(_subagents_args())
-        out = capsys.readouterr().out
-        assert "No data found." in out
-
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
-    def test_unreadable_transcript_file_skipped_without_crash(self, fake_projects, capsys):
-        """An unreadable transcript file is silently skipped (mirrors
-        _read_session_file's existing OSError→[] handling) rather than
-        aborting the byte-attribution walk; a sibling readable transcript's
-        bytes are still counted correctly."""
-        text = "z" * 40
-        _write_jsonl(fake_projects / "readable.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[]),
-            _user_msg([_tool_result("t3", text)], branch="main"),
-        ])
-        locked = fake_projects / "locked.jsonl"
-        locked.write_text('{"type": "assistant"}\n')
-        os.chmod(locked, 0o000)
-        try:
-            _mod.cmd_subagents(_subagents_args())
-        finally:
-            os.chmod(locked, 0o644)  # restore before tmp_path teardown
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert cols["Bytes"] == str(len(text.encode()))
-
-
-class TestSubagentsByteGroupingByTool:
-    """cmd_subagents' second table: tool-result bytes grouped by the tool
-    name that produced them, paired via a tool_use_id -> name index built
-    from the same corpus walk."""
-
-    def test_bytes_grouped_under_producing_tool_name(self, fake_projects, capsys):
-        text = "r" * 64
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_read_use("t1", "/x")]),
-            _user_msg([_tool_result("t1", text)], branch="main"),
-        ])
-        _mod.cmd_subagents(_subagents_args())
-        out = capsys.readouterr().out
-        assert "Read" in out
-        assert str(len(text.encode())) in out
-
-    def test_byte_count_uses_utf8_encoded_length_not_character_count(self, fake_projects, capsys):
-        """"é" is 1 character but 2 UTF-8 bytes -- every other fixture in
-        this class is ASCII, where character count and encoded byte count
-        are identical and a len(text) regression would be invisible."""
-        text = "é" * 10
-        assert len(text) != len(text.encode()), "fixture must actually differ under the two length functions"
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_read_use("t1", "/x")]),
-            _user_msg([_tool_result("t1", text)], branch="main"),
-        ])
-        _mod.cmd_subagents(_subagents_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Tool", row_contains="Read")
-        assert cols["Bytes"] == str(len(text.encode()))
-
-    def test_mcp_tool_names_collapse_into_one_bucket(self, fake_projects, capsys):
-        """Two distinct mcp__<server>__<tool> tool names must both land in the
-        single _MCP_TOOL_BUCKET_LABEL row — an MCP server name is a
-        per-account integration identifier and must never appear raw."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[
-                _mcp_use("m1", "github", "search_issues"),
-                _mcp_use("m2", "linear", "list_issues"),
-            ]),
-            _user_msg([_tool_result("m1", "a" * 10), _tool_result("m2", "b" * 20)], branch="main"),
-        ])
-        _mod.cmd_subagents(_subagents_args())
-        out = capsys.readouterr().out
-        assert "mcp__github" not in out
-        assert "mcp__linear" not in out
-        assert _mod._MCP_TOOL_BUCKET_LABEL in out
-        cols = _table_cols(out, header_contains="Tool", row_contains=_mod._MCP_TOOL_BUCKET_LABEL)
-        assert cols["Bytes"] == "30"
-
-    def test_tool_result_with_no_matching_tool_use_buckets_as_unknown(self, fake_projects, capsys):
-        """A tool_result whose tool_use_id has no matching tool_use in this
-        corpus (e.g. the use was in a truncated or unparsed record) still
-        contributes its bytes, under an 'unknown' bucket rather than being
-        silently dropped."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[]),
-            _user_msg([_tool_result("orphan", "z" * 12)], branch="main"),
-        ])
-        _mod.cmd_subagents(_subagents_args())
-        out = capsys.readouterr().out
-        assert "unknown" in out
-
-    def test_tool_name_output_strips_control_characters(self, fake_projects, capsys):
-        """tool_use.name is transcript-sourced, not validated -- an
-        OSC-injection payload must not reach the byte-by-tool table's Tool
-        column raw, the same invariant cmd_subagents' branch column already
-        enforces (test_single_root_branch_output_strips_control_characters)."""
-        payload = "\x1b]0;PWNED-TOOL\x07\x1b[31mFAKE-TOOL-ROW\x1b[0m"
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[
-                {"type": "tool_use", "id": "t1", "name": payload, "input": {}},
-            ]),
-            _user_msg([_tool_result("t1", "z" * 16)], branch="main"),
-        ])
-        _mod.cmd_subagents(_subagents_args())
-        out = capsys.readouterr().out
-        assert "]0;PWNED-TOOL[31mFAKE-TOOL-ROW[0m" in out
-        assert "\x1b" not in out
-        assert "\x07" not in out
-
-
-class TestSubagentsSince:
-    """--since Nd filters both of cmd_subagents' reported tables but never
-    the corpus-wide counters feeding _warn_if_subagent_format_drift."""
-
-    def test_since_excludes_turns_older_than_window(self, fake_projects, capsys):
-        old_ts = "2020-01-01T00:00:00Z"
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", ts=old_ts),
-        ])
-        _mod.cmd_subagents(_subagents_args(since="1d"))
-        out = capsys.readouterr().out
-        assert "No data found." in out
-
-    def test_since_boundary_is_inclusive(self, fake_projects, capsys, monkeypatch):
-        """A record timestamped exactly at the since-window cutoff (now - 1
-        day) is included, not excluded -- the filter compares with `<`, not
-        `<=`. time.time() is frozen so the record's timestamp and
-        _parse_since_nd_arg's own cutoff are computed from the same instant;
-        without that, the two live wall-clock reads would race and the
-        record could land a hair on either side of the boundary."""
-        fixed_now = 1_700_000_000.0
-        monkeypatch.setattr(time, "time", lambda: fixed_now)
-        boundary_ts = datetime.fromtimestamp(fixed_now - 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", ts=boundary_ts),
-        ])
-        _mod.cmd_subagents(_subagents_args(since="1d"))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Thread", row_contains="main")
-        assert cols["Opus"] == "1"
-
-    def test_since_excludes_records_missing_timestamp(self, fake_projects, capsys):
-        rec = _asst("claude-opus-4-7", branch="main")  # no ts= given -> no timestamp key
-        _write_jsonl(fake_projects / "sess.jsonl", [rec])
-        _mod.cmd_subagents(_subagents_args(since="1d"))
-        out = capsys.readouterr().out
-        assert "No data found." in out
-
-    def test_malformed_since_exits_nonzero_naming_subagents(self, fake_projects, capsys):
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_subagents(_subagents_args(since="not-a-window"))
-        assert exc_info.value.code == 1
-        assert "subagents: --since" in capsys.readouterr().err
-
-    def test_since_does_not_suppress_format_drift_warning(self, fake_projects, capsys):
-        """A narrow --since window that excludes this session's only record
-        from the reported table must NOT also zero out the corpus-wide drift
-        canary: corpus_spawns/corpus_sidechain_turns are counted before the
-        --since filter runs, so a real spawns>0/sidechain_turns==0 drift
-        signature still fires the warning even though the table below prints
-        'No data found.' A buggy implementation that filtered those counters
-        by --since too would report corpus_spawns=0 here and silently drop
-        the warning — the false negative this test guards against."""
-        old_ts = "2020-01-01T00:00:00Z"
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main", ts=old_ts, content=[
-                _agent_use("a1", "staff-backend-engineer"),
-            ]),
-        ])
-        _mod.cmd_subagents(_subagents_args(since="1d"))
-        assert "WARNING" in capsys.readouterr().err
-
-
-class TestSubagentsMultiRoot:
-    """Repeatable --config-dir on subagents, and its disclosure controls --
-    mirrors TestSubagentMixMultiRoot's coverage for cmd_subagents' own output
-    shape. cmd_subagents carries no --per-session-shaped flag, so there is no
-    analogous refusal case to pin here (unlike subagent-mix's --per-session)."""
-
-    def test_two_roots_yield_strictly_more_turns_than_either_alone(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat"),
-        ])
-        _mod.cmd_subagents(_subagents_args())
-        single_root_out = capsys.readouterr().out
-        single_root_cols = _table_cols(single_root_out, header_contains="Thread", row_contains="feat")
-        assert single_root_cols["Opus"] == "1"
-
-        acct_b = fake_config_dir_factory("acct-b")
-        proj_b = acct_b / "projects" / "-home-user-other-repo"
-        proj_b.mkdir(parents=True)
-        _write_jsonl(proj_b / "sess-b.jsonl", [
-            _asst("claude-opus-4-7", branch="feat"),
-        ])
-        _mod.cmd_subagents(_subagents_args(extra_config_dirs=[str(acct_b)]))
-        multi_root_out = capsys.readouterr().out
-        total_opus = _sum_column_across_rows(
-            multi_root_out, header_contains="Thread", label="Opus", row_prefix="account-"
-        )
-        assert total_opus > int(single_root_cols["Opus"])
-        # Single-root label was flat ("feat"); two-root labels are namespaced.
-        assert "account-1/branch-1" in multi_root_out
-        assert "account-2/branch-1" in multi_root_out
-
-    def test_colliding_branch_names_across_roots_get_distinct_redacted_labels(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        """Two roots each with their own "main" branch must not collapse
-        into one row, and neither raw branch name may appear in output."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main"),
-        ])
-        acct_b = fake_config_dir_factory("acct-b")
-        proj_b = acct_b / "projects" / "-home-user-other-repo"
-        proj_b.mkdir(parents=True)
-        _write_jsonl(proj_b / "sess-b.jsonl", [
-            _asst("claude-opus-4-7", branch="main"),
-        ])
-        _mod.cmd_subagents(_subagents_args(extra_config_dirs=[str(acct_b)]))
-        out = capsys.readouterr().out
-        assert "account-1/branch-1" in out
-        assert "account-2/branch-1" in out
-        assert "account-1/branch-1" != "account-2/branch-1"
-
-    def test_multi_root_stamps_do_not_publish_banner_on_stdout_and_stderr(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main"),
-        ])
-        acct_b = fake_config_dir_factory("acct-b")
-        _mod.cmd_subagents(_subagents_args(extra_config_dirs=[str(acct_b)]))
-        captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
-
-    def test_single_root_omits_do_not_publish_banner(self, fake_projects, capsys):
-        """The allow-path counterpart to the fire test above -- mirrors
-        cost's own test_default_redact_omits_do_not_publish_banner. Without
-        this, a broken/inverted multi_root guard (banner always fires, or
-        never fires) has no test signal in either direction."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="main"),
-        ])
-        _mod.cmd_subagents(_subagents_args())
-        captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.err
-
-    def test_account_ordinal_is_resolved_path_sorted_not_scan_order(self, tmp_path, monkeypatch, capsys):
-        """account-N is assigned by resolved-path sort (_redaction_ordinals),
-        not by --config-dir argument order. The active/default profile is
-        deliberately named "zzz-active" -- sorting AFTER the extra
-        --config-dir root "aaa-extra" in resolved-path order despite being
-        scanned first (active profile is always scan-order position 0) --
-        so a regression back to raw scan-order indexing
-        (_root_index_for_path's position used directly as the account
-        number) would swap which root reads as account-1. Every sibling
-        test in this class uses fake_projects, whose active root is always
-        a path-prefix ancestor of any fake_config_dir_factory root and
-        therefore always sorts first regardless — that shared setup cannot
-        catch this regression class, the same blind spot PR #603's own
-        pre-fix edit-format test had."""
-        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
-        active = tmp_path / "zzz-active"
-        active_proj = active / "projects" / "-home-user-active-repo"
-        active_proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: active)
-        _write_jsonl(active_proj / "sess-active.jsonl", [
-            _asst("claude-opus-4-7", branch="feat"),
-        ])
-
-        extra = tmp_path / "aaa-extra"
-        extra_proj = extra / "projects" / "-home-user-extra-repo"
-        extra_proj.mkdir(parents=True)
-        _write_jsonl(extra_proj / "sess-extra.jsonl", [
-            _asst("claude-opus-4-7", branch="feat"),
-            _asst("claude-opus-4-7", branch="feat"),
-        ])
-
-        _mod.cmd_subagents(_subagents_args(extra_config_dirs=[str(extra)]))
-        out = capsys.readouterr().out
-        account_1 = _table_cols(out, header_contains="Thread", row_contains="account-1/branch-1")
-        account_2 = _table_cols(out, header_contains="Thread", row_contains="account-2/branch-1")
-        # "aaa-extra" (2 opus turns) resolved-path-sorts before "zzz-active"
-        # (1 opus turn) despite being scanned second -- account-1 must be
-        # the extra root's row.
-        assert account_1["Opus"] == "2"
-        assert account_2["Opus"] == "1"
-
-
 class TestSkillPairSubagentFile:
     def test_follower_in_subagent_file_increments_sidechain_only(self, fake_projects, capsys):
         """Follower skill in a split subagent file (isSidechain=True) counts as Side, not Main."""
@@ -10531,6 +8471,766 @@ class TestIterScopedSessionsUnreadableRoot:
         assert "skipping" in err
 
 
+def _assert_scan_error_chain_suppressed(excinfo) -> None:
+    """`_path_stripped_scan_error`'s callers raise `from None` so the raw
+    path-bearing original exception never surfaces via Python's implicit
+    exception-chain printer when the new exception reaches a CLI's
+    uncaught top level. Both attributes must hold for `from None` to be
+    doing that job."""
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__suppress_context__ is True
+
+
+class TestScanGapCounter:
+    """scope.py's opt-in scan-gap counter (_list_dir_recording_gaps,
+    _failed_transcript_read_is_gap, _iter_project_dir_sessions). Each level
+    of the traversal (root, project dir, session file) records one tag per
+    unreadable directory or transcript it skips. A missing path or a
+    non-directory/non-regular entry stays an empty scope, not a gap."""
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_root_records_root_level_gap_and_still_yields_readable_root(self, tmp_path):
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / "-repo-main"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="from-readable-root")])
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        os.chmod(root_b, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions(
+                [root_a, root_b], "*", False, scan_gaps=scan_gaps,
+            ))
+        finally:
+            os.chmod(root_b, 0o755)  # restore before tmp_path teardown
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-readable-root"}
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_ROOT: 1})
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_project_dir_records_project_dir_level_gap(self, tmp_path):
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        _write_jsonl(proj_open / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-open-project")])
+        proj_sealed = root / "-repo-sealed"
+        proj_sealed.mkdir(parents=True)
+        os.chmod(proj_sealed, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        finally:
+            os.chmod(proj_sealed, 0o755)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open-project"}
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+
+    def test_project_dir_symlink_loop_is_skipped_with_no_gap(self, tmp_path):
+        """A self-referencing symlink makes the stat fail with ELOOP (which
+        `_stat_mode_unless_absent` reads as absent), so `_dedup_new_project_dirs` skips it:
+        no gap is recorded and the healthy sibling is still read. Distinct
+        from the sealed-directory test above, where the OSError is
+        recorded as a gap."""
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        _write_jsonl(proj_open / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-open-project")])
+        loop_link = root / "-repo-loop"
+        loop_link.symlink_to(loop_link)
+        scan_gaps = Counter()
+        sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open-project"}
+        assert scan_gaps == Counter()
+
+    def test_project_dir_symlink_loop_without_scan_gaps_is_skipped_without_raising(self, tmp_path):
+        """Every non-pooled caller (_iter_scoped_sessions, and
+        _iter_glob_scoped_sessions when called without scan_gaps) passes
+        scan_gaps=None. A symlink-loop project dir reads as absent, so it is
+        skipped there too instead of raising."""
+        root = tmp_path / "acct-a"
+        root.mkdir(parents=True)
+        loop_link = root / "-repo-loop"
+        loop_link.symlink_to(loop_link)
+        assert list(_mod.scope._iter_glob_scoped_sessions([root], "*", False)) == []
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_project_dir_symlink_through_sealed_ancestor_records_project_dir_level_gap(self, tmp_path):
+        """A candidate that is itself a readable child of an already-readable
+        root can still fail its stat with PermissionError (an OSError
+        subclass) when it symlinks through a sealed intermediate directory
+        further down the target path. Distinct from
+        the symlink-loop test above, where the stat's ELOOP reads as absent and the
+        candidate is skipped without a gap."""
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        _write_jsonl(proj_open / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-open-project")])
+        sealed_ancestor = tmp_path / "sealed-ancestor"
+        target = sealed_ancestor / "target-dir"
+        target.mkdir(parents=True)
+        proj_through_sealed = root / "-repo-through-sealed"
+        proj_through_sealed.symlink_to(target)
+        os.chmod(sealed_ancestor, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        finally:
+            os.chmod(sealed_ancestor, 0o755)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open-project"}
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_project_dir_symlink_through_sealed_ancestor_without_scan_gaps_propagates_the_exception(self, tmp_path):
+        """A non-pooled caller passing no scan_gaps must see the stat's
+        PermissionError propagate uncaught, with the raw
+        proj_through_sealed path stripped from the message."""
+        root = tmp_path / "acct-a"
+        root.mkdir(parents=True)
+        sealed_ancestor = tmp_path / "sealed-ancestor"
+        target = sealed_ancestor / "target-dir"
+        target.mkdir(parents=True)
+        proj_through_sealed = root / "-repo-through-sealed"
+        proj_through_sealed.symlink_to(target)
+        os.chmod(sealed_ancestor, 0o000)
+        try:
+            with pytest.raises(PermissionError) as excinfo:
+                list(_mod.scope._iter_glob_scoped_sessions([root], "*", False))
+            assert str(proj_through_sealed) not in str(excinfo.value)
+            _assert_scan_error_chain_suppressed(excinfo)
+        finally:
+            os.chmod(sealed_ancestor, 0o755)
+
+    def test_iter_scoped_sessions_symlink_loop_is_skipped_without_raising(self, tmp_path):
+        """The slug-matched sibling of
+        test_project_dir_symlink_loop_without_scan_gaps_is_skipped_without_raising:
+        _iter_scoped_sessions selects project dirs by exact slug match rather
+        than glob, but shares _dedup_new_project_dirs, so a symlink-loop
+        project dir is skipped there too."""
+        root = tmp_path / "acct-a"
+        root.mkdir(parents=True)
+        loop_link = root / "-repo-loop"
+        loop_link.symlink_to(loop_link)
+        assert list(_mod.scope._iter_scoped_sessions(["-repo-loop"], False, roots=[root])) == []
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_iter_scoped_sessions_symlink_through_sealed_ancestor_without_scan_gaps_propagates_the_exception(
+        self, tmp_path,
+    ):
+        """The slug-matched sibling of
+        test_project_dir_symlink_through_sealed_ancestor_without_scan_gaps_propagates_
+        the_exception: _iter_scoped_sessions shares _dedup_new_project_dirs, so a
+        non-pooled caller passing no scan_gaps must see the stat's PermissionError
+        propagate uncaught here too, raw path stripped too."""
+        root = tmp_path / "acct-a"
+        root.mkdir(parents=True)
+        sealed_ancestor = tmp_path / "sealed-ancestor"
+        target = sealed_ancestor / "target-dir"
+        target.mkdir(parents=True)
+        proj_through_sealed = root / "-repo-through-sealed"
+        proj_through_sealed.symlink_to(target)
+        os.chmod(sealed_ancestor, 0o000)
+        try:
+            with pytest.raises(PermissionError) as excinfo:
+                list(_mod.scope._iter_scoped_sessions(["-repo-through-sealed"], False, roots=[root]))
+            assert str(proj_through_sealed) not in str(excinfo.value)
+            _assert_scan_error_chain_suppressed(excinfo)
+        finally:
+            os.chmod(sealed_ancestor, 0o755)
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_transcript_records_session_file_gap_but_readable_empty_one_does_not(self, tmp_path):
+        root = tmp_path / "acct-a"
+        proj = root / "-repo-main"
+        proj.mkdir(parents=True)
+        sealed = proj / "sealed.jsonl"
+        _write_jsonl(sealed, [_asst("claude-sonnet-4-6", branch="from-sealed")])
+        os.chmod(sealed, 0o000)
+        (proj / "empty.jsonl").write_text("")
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        finally:
+            os.chmod(sealed, 0o644)
+
+        assert sessions == []  # neither the unreadable nor the readable-empty file yields
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_SESSION_FILE: 1})
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_project_dir_without_search_permission_records_session_file_gap(self, tmp_path):
+        """A directory with read but no search (x) permission lists its
+        entries, but stat and open on each entry fail with EACCES. That is
+        neither an absent entry nor a readable transcript, so it counts as
+        a session-file gap and propagates no exception."""
+        root = tmp_path / "acct-a"
+        proj = root / "-repo-main"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "held.jsonl", [_asst("claude-sonnet-4-6", branch="from-held")])
+        os.chmod(proj, 0o444)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        finally:
+            os.chmod(proj, 0o755)
+
+        assert sessions == []
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_SESSION_FILE: 1})
+
+    def test_nonexistent_root_records_no_gap(self, tmp_path):
+        missing_root = tmp_path / "never-created"
+        scan_gaps = Counter()
+        sessions = list(_mod.scope._iter_glob_scoped_sessions(
+            [missing_root], "*", False, scan_gaps=scan_gaps,
+        ))
+        assert sessions == []
+        assert scan_gaps == Counter()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_iter_scoped_sessions_unreadable_project_dir_records_project_dir_gap(self, tmp_path):
+        """The structural sibling of the project-dir test above: _iter_scoped_sessions
+        selects project dirs by exact slug match rather than glob, but shares
+        _iter_project_dir_sessions."""
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        _write_jsonl(proj_open / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-open-project")])
+        proj_sealed = root / "-repo-sealed"
+        proj_sealed.mkdir(parents=True)
+        os.chmod(proj_sealed, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_scoped_sessions(
+                ["-repo-open", "-repo-sealed"], False, roots=[root], scan_gaps=scan_gaps,
+            ))
+        finally:
+            os.chmod(proj_sealed, 0o755)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open-project"}
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+
+    def test_resolve_project_scope_single_root_glob_branch_raises_on_scan_gaps(self, tmp_path):
+        root = tmp_path / "acct-a" / "projects"
+        root.mkdir(parents=True)
+        args = argparse.Namespace(this_repo=False, projects="*")
+        with pytest.raises(ValueError):
+            _mod.scope._resolve_project_scope(args, "buckets", roots=[root], scan_gaps=Counter())
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_project_dir_without_scan_gaps_skips_it_silently(self, tmp_path):
+        """Same fixture as the project-dir gap test above, with scan_gaps
+        omitted -- a caller passing no counter skips the unreadable
+        directory silently, with no exception and the same sessions
+        yielded."""
+        root = tmp_path / "acct-a"
+        proj_open = root / "-repo-open"
+        proj_open.mkdir(parents=True)
+        _write_jsonl(proj_open / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-open-project")])
+        proj_sealed = root / "-repo-sealed"
+        proj_sealed.mkdir(parents=True)
+        os.chmod(proj_sealed, 0o000)
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False))
+        finally:
+            os.chmod(proj_sealed, 0o755)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open-project"}
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_gap_counter_keys_equal_the_three_level_constants(self, tmp_path):
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / "-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="from-a")])
+        proj_c = root_a / "-repo-c"
+        proj_c.mkdir(parents=True)
+        os.chmod(proj_c, 0o000)
+        sealed = proj_a / "sealed.jsonl"
+        _write_jsonl(sealed, [_asst("claude-sonnet-4-6", branch="from-sealed")])
+        os.chmod(sealed, 0o000)
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        os.chmod(root_b, 0o000)
+        scan_gaps = Counter()
+        try:
+            list(_mod.scope._iter_glob_scoped_sessions([root_a, root_b], "*", False, scan_gaps=scan_gaps))
+        finally:
+            os.chmod(proj_c, 0o755)
+            os.chmod(sealed, 0o644)
+            os.chmod(root_b, 0o755)
+
+        assert set(scan_gaps) == {
+            _mod.scope._SCAN_GAP_ROOT, _mod.scope._SCAN_GAP_PROJECT_DIR, _mod.scope._SCAN_GAP_SESSION_FILE,
+        }
+
+    def test_root_that_is_a_regular_file_records_no_gap(self, tmp_path):
+        """Catches a missing NotADirectoryError branch in
+        _list_dir_recording_gaps: a scan root that exists as a regular file
+        is an empty scope, not a gap."""
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / "-repo-a"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="from-dir-root")])
+        root_b = tmp_path / "acct-b-not-a-dir"
+        root_b.write_text("not a directory")
+        scan_gaps = Counter()
+        sessions = list(_mod.scope._iter_glob_scoped_sessions(
+            [root_a, root_b], "*", False, scan_gaps=scan_gaps,
+        ))
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-dir-root"}
+        assert scan_gaps == Counter()
+
+    def test_stray_regular_file_directly_under_root_records_no_gap(self, tmp_path):
+        """Asserts _dedup_new_project_dirs' S_ISDIR skip filters a stray file
+        (e.g. .DS_Store) before any project-dir listing, independent of the
+        NotADirectoryError branch _list_dir_recording_gaps also has."""
+        root = tmp_path / "acct-a"
+        proj = root / "-repo-a"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-repo-a")])
+        (root / ".DS_Store").write_text("")
+        scan_gaps = Counter()
+        sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-repo-a"}
+        assert scan_gaps == Counter()
+
+    def test_directory_dangling_symlink_and_looped_symlink_named_jsonl_record_no_gap(self, tmp_path):
+        """Pins _failed_transcript_read_is_gap's classification in both
+        directions, paired with the unreadable-transcript test above: a
+        directory (stray.jsonl), a dangling symlink (dangling.jsonl), or a
+        looped symlink (loop.jsonl) is an empty scope, not a gap, since none
+        is a regular file whose read failed."""
+        root = tmp_path / "acct-a"
+        proj = root / "-repo-a"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "real.jsonl", [_asst("claude-sonnet-4-6", branch="from-real")])
+        (proj / "stray.jsonl").mkdir()
+        (proj / "dangling.jsonl").symlink_to(proj / "does-not-exist.jsonl")
+        (proj / "loop.jsonl").symlink_to(proj / "loop.jsonl")
+        scan_gaps = Counter()
+        sessions = list(_mod.scope._iter_glob_scoped_sessions([root], "*", False, scan_gaps=scan_gaps))
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-real"}
+        assert scan_gaps == Counter()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_multiple_gaps_at_every_level_accumulate_exactly(self, tmp_path):
+        """Two gaps at each of the three increment sites tell accumulation
+        (+=1) from assignment (=1) apart at every site at once. An
+        exact-equality counter check with only one gap per level would
+        pass under either bug."""
+        root_0 = tmp_path / "acct-sealed-root"
+        root_0.mkdir()
+        root_1 = tmp_path / "acct-open-root"
+        proj_sealed_a = root_1 / "proj-sealed-a"
+        proj_sealed_a.mkdir(parents=True)
+        proj_sealed_b = root_1 / "proj-sealed-b"
+        proj_sealed_b.mkdir(parents=True)
+        proj_open = root_1 / "proj-open"
+        proj_open.mkdir(parents=True)
+        sealed_a = proj_open / "sealed-a.jsonl"
+        _write_jsonl(sealed_a, [_asst("claude-sonnet-4-6", branch="from-sealed-a")])
+        sealed_b = proj_open / "sealed-b.jsonl"
+        _write_jsonl(sealed_b, [_asst("claude-sonnet-4-6", branch="from-sealed-b")])
+        _write_jsonl(proj_open / "open.jsonl", [_asst("claude-sonnet-4-6", branch="from-open")])
+
+        os.chmod(root_0, 0o000)
+        os.chmod(proj_sealed_a, 0o000)
+        os.chmod(proj_sealed_b, 0o000)
+        os.chmod(sealed_a, 0o000)
+        os.chmod(sealed_b, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_glob_scoped_sessions(
+                [root_0, root_1], "*", False, scan_gaps=scan_gaps,
+            ))
+        finally:
+            os.chmod(root_0, 0o755)
+            os.chmod(proj_sealed_a, 0o755)
+            os.chmod(proj_sealed_b, 0o755)
+            os.chmod(sealed_a, 0o644)
+            os.chmod(sealed_b, 0o644)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-open"}
+        assert scan_gaps == Counter({
+            _mod.scope._SCAN_GAP_ROOT: 1,
+            _mod.scope._SCAN_GAP_PROJECT_DIR: 2,
+            _mod.scope._SCAN_GAP_SESSION_FILE: 2,
+        })
+
+    def test_project_dir_symlink_alias_across_roots_records_no_gap_and_yields_once(self, tmp_path):
+        """A project dir already visited under another root, reached here
+        via symlink, is a candidate _dedup_new_project_dirs drops. It is
+        skipped, not recorded as a gap."""
+        root_a = tmp_path / "acct-a"
+        proj = root_a / "-repo-shared"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-shared")])
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        (root_b / "-repo-shared-alias").symlink_to(proj, target_is_directory=True)
+        scan_gaps = Counter()
+        sessions = list(_mod.scope._iter_glob_scoped_sessions(
+            [root_a, root_b], "*", False, scan_gaps=scan_gaps,
+        ))
+        branches_seen = [rec["gitBranch"] for _jsonl, records in sessions for rec in records]
+        assert branches_seen == ["from-shared"]  # exactly once, not twice
+        assert scan_gaps == Counter()
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_iter_scoped_sessions_records_two_root_level_gaps(self, tmp_path):
+        """The count of two distinguishes += 1 from = 1 at _iter_scoped_sessions'
+        own root-level except OSError -- the one increment site outside
+        _list_dir_recording_gaps and _iter_project_dir_sessions."""
+        root_a = tmp_path / "acct-a"
+        proj_a = root_a / "-repo-main"
+        proj_a.mkdir(parents=True)
+        _write_jsonl(proj_a / "sess-a.jsonl", [_asst("claude-sonnet-4-6", branch="from-readable-root")])
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        os.chmod(root_b, 0o000)
+        root_c = tmp_path / "acct-c"
+        root_c.mkdir()
+        os.chmod(root_c, 0o000)
+        scan_gaps = Counter()
+        try:
+            sessions = list(_mod.scope._iter_scoped_sessions(
+                ["-repo-main"], False, roots=[root_a, root_b, root_c], scan_gaps=scan_gaps,
+            ))
+        finally:
+            os.chmod(root_b, 0o755)
+            os.chmod(root_c, 0o755)
+
+        branches_seen = {rec["gitBranch"] for _jsonl, records in sessions for rec in records}
+        assert branches_seen == {"from-readable-root"}
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_ROOT: 2})
+
+    @pytest.mark.parametrize("absent_errno", [errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP])
+    def test_stat_mode_unless_absent_returns_none_for_absent_entry_errnos(self, absent_errno):
+        """The errno partition is pinned with a stub, not chmod, so it holds
+        under root and on every interpreter."""
+        class _StatRaises:
+            def stat(self):
+                raise OSError(absent_errno, os.strerror(absent_errno))
+
+        assert _mod.scope._stat_mode_unless_absent(_StatRaises()) is None
+
+    @pytest.mark.parametrize("propagated_errno", [errno.EACCES, errno.EIO])
+    def test_stat_mode_unless_absent_reraises_every_other_errno(self, propagated_errno):
+        class _StatRaises:
+            def stat(self):
+                raise OSError(propagated_errno, os.strerror(propagated_errno))
+
+        with pytest.raises(OSError) as excinfo:
+            _mod.scope._stat_mode_unless_absent(_StatRaises())
+        assert excinfo.value.errno == propagated_errno
+
+    def test_stat_mode_unless_absent_returns_the_mode_of_an_existing_entry(self, tmp_path):
+        regular_file = tmp_path / "regular.jsonl"
+        regular_file.write_text("{}\n")
+        directory = tmp_path / "project-dir"
+        directory.mkdir()
+
+        regular_mode = _mod.scope._stat_mode_unless_absent(regular_file)
+        directory_mode = _mod.scope._stat_mode_unless_absent(directory)
+
+        assert stat.S_ISREG(regular_mode) and not stat.S_ISDIR(regular_mode)
+        assert stat.S_ISDIR(directory_mode) and not stat.S_ISREG(directory_mode)
+
+    @pytest.mark.parametrize("absent_errno", [errno.ENOENT, errno.ELOOP])
+    def test_dedup_skips_a_candidate_whose_stat_reports_it_absent_without_a_gap(self, absent_errno):
+        """The call-site arm is pinned with a stat stub, not chmod, so it holds under root."""
+        class _StatRaises:
+            def stat(self):
+                raise OSError(absent_errno, os.strerror(absent_errno))
+
+        scan_gaps = Counter()
+        yielded = list(_mod.scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
+        assert yielded == []
+        assert scan_gaps == Counter()
+
+    def test_dedup_records_a_project_dir_gap_when_stat_fails_with_eacces(self):
+        class _StatRaises:
+            def stat(self):
+                raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+
+        scan_gaps = Counter()
+        yielded = list(_mod.scope._dedup_new_project_dirs([_StatRaises()], set(), scan_gaps=scan_gaps))
+        assert yielded == []
+        assert scan_gaps == Counter({_mod.scope._SCAN_GAP_PROJECT_DIR: 1})
+
+    def test_dedup_without_scan_gaps_raises_eacces_with_the_path_stripped(self):
+        sensitive_path = "/private/acct-a/projects/-repo-sealed"
+
+        class _StatRaises:
+            def stat(self):
+                raise OSError(errno.EACCES, os.strerror(errno.EACCES), sensitive_path)
+
+        with pytest.raises(OSError) as excinfo:
+            list(_mod.scope._dedup_new_project_dirs([_StatRaises()], set()))
+        assert excinfo.value.errno == errno.EACCES
+        assert sensitive_path not in str(excinfo.value)
+        _assert_scan_error_chain_suppressed(excinfo)
+
+    @pytest.mark.parametrize("absent_errno", [errno.ENOENT, errno.ELOOP])
+    def test_failed_transcript_read_is_not_a_gap_when_stat_reports_it_absent(self, absent_errno):
+        class _StatRaises:
+            def stat(self):
+                raise OSError(absent_errno, os.strerror(absent_errno))
+
+        assert _mod.scope._failed_transcript_read_is_gap(_StatRaises()) is False
+
+    def test_failed_transcript_read_is_a_gap_when_stat_fails_with_eacces(self):
+        class _StatRaises:
+            def stat(self):
+                raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+
+        assert _mod.scope._failed_transcript_read_is_gap(_StatRaises()) is True
+
+    def test_failed_transcript_read_is_a_gap_when_stat_reports_a_regular_file(self):
+        """The regular-file arm, pinned with a stat stub so it holds under root."""
+        class _StatsAsRegularFile:
+            def stat(self):
+                return os.stat_result((stat.S_IFREG | 0o644,) + (0,) * 9)
+
+        assert _mod.scope._failed_transcript_read_is_gap(_StatsAsRegularFile()) is True
+
+    def test_failed_transcript_read_is_not_a_gap_when_stat_reports_a_directory(self):
+        class _StatsAsDirectory:
+            def stat(self):
+                return os.stat_result((stat.S_IFDIR | 0o755,) + (0,) * 9)
+
+        assert _mod.scope._failed_transcript_read_is_gap(_StatsAsDirectory()) is False
+
+
+class TestGlobScopedSessionsSelection:
+    """_iter_glob_scoped_sessions' own fnmatch selection of project directories
+    and *.jsonl transcripts. The class covers the multi-root selection
+    engine only; single-root scope uses corpus.iter_sessions (Path.glob),
+    which is the reference engine."""
+
+    @pytest.mark.parametrize("projects_glob", ["*", "feat-?", "feat-*", "[ab]*", "zeta", ".hidden*"])
+    def test_multi_root_selection_equals_union_of_per_root_path_glob_selection(self, tmp_path, projects_glob):
+        project_names_by_root = {
+            "acct-a": ["alpha", "feat-a", "feat-bb"],
+            "acct-b": ["beta", "feat-c", "zeta", ".hidden-x"],
+        }
+        roots = []
+        for root_name, project_names in project_names_by_root.items():
+            root = tmp_path / root_name
+            for project_name in project_names:
+                project_dir = root / project_name
+                project_dir.mkdir(parents=True)
+                _write_jsonl(project_dir / "sess.jsonl", [_asst("claude-sonnet-4-6", branch=project_name)])
+            roots.append(root)
+        stray_records = [_asst("claude-sonnet-4-6", branch="not-a-transcript")]
+        backup_copy = roots[0] / "feat-a" / "sess.jsonl.bak"
+        non_transcript = roots[0] / "feat-a" / "notes.txt"
+        _write_jsonl(backup_copy, stray_records)
+        _write_jsonl(non_transcript, stray_records)
+
+        yielded_paths = {
+            jsonl for jsonl, _records in _mod.scope._iter_glob_scoped_sessions(roots, projects_glob, False)
+        }
+        every_project_paths = {
+            jsonl for jsonl, _records in _mod.scope._iter_glob_scoped_sessions(roots, "*", False)
+        }
+
+        expected_paths = {
+            jsonl for root in roots for jsonl, _records in _mod.corpus.iter_sessions(root, projects_glob)
+        }
+        assert expected_paths
+        assert yielded_paths == expected_paths
+        if projects_glob != "*":
+            assert yielded_paths < every_project_paths
+        assert backup_copy not in every_project_paths
+        assert non_transcript not in every_project_paths
+
+
+class TestProjectsGlobStepsToParent:
+    @pytest.mark.parametrize("projects_glob", ["..", "../x", "x/..", "a/../.."])
+    def test_dotdot_path_component_steps_to_parent(self, projects_glob):
+        assert _mod.corpus._projects_glob_steps_to_parent(projects_glob) is True
+
+    @pytest.mark.parametrize("projects_glob", ["a..b", "..*", "...", ".hidden*", "*"])
+    def test_dotdot_inside_a_component_does_not_step_to_parent(self, projects_glob):
+        assert _mod.corpus._projects_glob_steps_to_parent(projects_glob) is False
+
+
+class TestSingleLevelProjectsGlob:
+    """_single_level_projects_glob: the runtime validator that rejects a
+    --projects value Path.glob would read as more than one directory-name
+    match, or a different shape entirely, than the root-level fnmatch
+    matching in _iter_glob_scoped_sessions selects for. Called only from a
+    multi-root branch (_resolve_project_scope's own, and cmd_skill_invocation's
+    inline equivalent) -- never wired as an argparse type=, since whether the
+    restriction applies depends on how many roots this invocation resolves at
+    runtime, not on the flag's syntax alone. A single-root invocation reads
+    corpus.iter_sessions, whose own Path.glob supports a nested-directory
+    pattern and must keep accepting one unchanged."""
+
+    @pytest.mark.parametrize("value", ["*", "-home-user-repo*", "feat-?", "[ab]*", ""])
+    def test_accepts_single_level_glob_values_unchanged(self, value):
+        assert _mod.scope._single_level_projects_glob(value) == value
+
+    @pytest.mark.parametrize("value", ["a/b", "a/", "/a", "**", "a**", ".", ".."])
+    def test_rejects_values_path_glob_would_read_differently(self, value):
+        with pytest.raises(argparse.ArgumentTypeError):
+            _mod.scope._single_level_projects_glob(value)
+
+    @pytest.mark.parametrize(
+        "cli_args",
+        [["buckets", "--projects", "a/b"], ["skill-invocation", "--projects", "a/b"]],
+        ids=["buckets", "skill-invocation"],
+    )
+    def test_cli_accepts_a_multi_segment_projects_value_at_parse_time(self, cli_args):
+        """No subcommand's --projects carries an argparse type=, so
+        parsing alone never rejects a nested-directory value -- rejection, when
+        it applies, happens later, only under multi-root scope."""
+        parser = _mod.build_parser()
+        args = parser.parse_args(cli_args)
+        assert args.projects == "a/b"
+
+    def test_every_projects_registration_across_every_subcommand_has_no_argparse_type(self):
+        """Walks every subparser build_parser() registers: --projects's
+        one-level restriction must stay runtime-validated, since whether it
+        applies depends on how many roots this invocation resolves, not on
+        the flag's syntax alone."""
+        parser = _mod.build_parser()
+        subparsers_action = next(
+            action for action in parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        typed = [
+            subcommand
+            for subcommand, subparser in subparsers_action.choices.items()
+            for action in subparser._actions
+            if action.dest == "projects" and action.type is not None
+        ]
+        assert typed == []
+
+    def test_multi_root_scope_rejects_a_multi_segment_projects_value_at_runtime(self, tmp_path):
+        """The one-level `--projects` restriction applies in
+        `_resolve_project_scope`'s multi-root branch: a nested-directory value
+        under two roots exits 2."""
+        root_a = tmp_path / "acct-a"
+        root_a.mkdir()
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        args = argparse.Namespace(this_repo=False, projects="a/b")
+        with pytest.raises(SystemExit) as exc:
+            _mod._resolve_project_scope(args, "buckets", roots=[root_a, root_b])
+        assert exc.value.code == 2
+
+    def test_single_root_scope_accepts_a_multi_segment_projects_value_at_runtime(self, tmp_path):
+        """The single-root branch reads corpus.iter_sessions, whose own
+        Path.glob supports a nested-directory pattern, so this branch accepts
+        a multi-segment `--projects` value."""
+        root = tmp_path / "acct-a"
+        nested = root / "sub" / "-repo-main"
+        nested.mkdir(parents=True)
+        _write_jsonl(nested / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-nested")])
+        args = argparse.Namespace(this_repo=False, projects="sub/-repo-main")
+        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
+        assert branches_seen == {"from-nested"}
+
+    def test_single_root_scope_rejects_a_parent_traversing_projects_value(self, tmp_path):
+        """A '..' component in --projects is a real parent-directory step for
+        Path.glob, not a no-op: iter_sessions must yield nothing for it
+        instead of yielding a sibling account's own session file."""
+        root = tmp_path / "acct-a"
+        root.mkdir()
+        sibling = tmp_path / "acct-b"
+        sibling.mkdir()
+        _write_jsonl(sibling / "secret.jsonl", [_asst("claude-sonnet-4-6", branch="from-sibling")])
+        args = argparse.Namespace(this_repo=False, projects="../acct-b")
+        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        assert list(session_iter) == []
+
+    def test_single_root_scope_reads_a_project_dir_symlinked_outside_the_root(self, tmp_path):
+        """Only a '..' in the raw glob is rejected. With a single scan root,
+        a project directory symlinked to a readable location outside the
+        root stays in scope with the default glob. Under more than one root
+        the same input has no owning root, so consumers that attribute each
+        session to a root abort."""
+        root = tmp_path / "acct-a"
+        root.mkdir()
+        outside = tmp_path / "elsewhere" / "-repo-relocated"
+        outside.mkdir(parents=True)
+        _write_jsonl(outside / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-relocated")])
+        (root / "-repo-relocated").symlink_to(outside)
+        args = argparse.Namespace(this_repo=False, projects="*")
+        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
+        assert branches_seen == {"from-relocated"}
+
+    def test_single_root_scope_skips_a_symlink_loop_transcript_without_raising(self, tmp_path):
+        """A looped .jsonl symlink fails open() with OSError, which the
+        record parser treats as an unreadable file, so the healthy sibling
+        transcript is still read and nothing raises."""
+        root = tmp_path / "acct-a"
+        proj = root / "-repo-main"
+        proj.mkdir(parents=True)
+        _write_jsonl(proj / "sess.jsonl", [_asst("claude-sonnet-4-6", branch="from-healthy")])
+        loop_link = proj / "loop.jsonl"
+        loop_link.symlink_to(loop_link)
+        args = argparse.Namespace(this_repo=False, projects="*")
+        session_iter, _scope_label = _mod._resolve_project_scope(args, "buckets", roots=[root])
+        branches_seen = {rec["gitBranch"] for _jsonl, records in session_iter for rec in records}
+        assert branches_seen == {"from-healthy"}
+
+    def test_cost_scan_diagnostic_rejects_a_parent_traversing_projects_value(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """cost's own per-root scan diagnostic (scope._scan_root_transcripts)
+        is reached with the raw, unvalidated --projects value, a separate
+        path from _resolve_project_scope's already-guarded iter_sessions
+        call above: a '..' value must not count a sibling account's own
+        transcripts there either."""
+        default_config = tmp_path / "default-account"
+        default_proj = default_config / "projects" / "-home-user-repo-a"
+        default_proj.mkdir(parents=True)
+        _write_jsonl(default_proj / "sess-a.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_config)
+
+        sibling_proj = tmp_path / "secret-account" / "projects" / "-home-secret-repo"
+        sibling_proj.mkdir(parents=True)
+        _write_jsonl(sibling_proj / "secret.jsonl", [_priced("claude-sonnet-5", input=1_000_000)])
+
+        _mod.cmd_cost(_cost_args(projects="../../secret-account/projects/-home-secret-repo"))
+        out = capsys.readouterr().out
+        assert "cost: account-1: scanned 0 transcripts, 0 skipped (unreadable)" in out
+        assert "WARNING: cost: account-1: no transcripts found for this scope" in out
+
+    def test_skill_invocation_multi_root_rejects_a_multi_segment_projects_value_at_runtime(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """cmd_skill_invocation inlines the same len(roots) > 1 /
+        _iter_glob_scoped_sessions branch _resolve_project_scope's own
+        multi-root branch does, so it needs the identical runtime check."""
+        root_a = tmp_path / "acct-a"
+        root_a.mkdir()
+        root_b = tmp_path / "acct-b"
+        root_b.mkdir()
+        args = argparse.Namespace(projects="a/b", branches=None, include_subagents=False, config_dir=None)
+        monkeypatch.setattr(_mod, "_resolve_scan_roots", lambda _args: [root_a, root_b])
+        with pytest.raises(SystemExit) as exc:
+            _mod.cmd_skill_invocation(args)
+        assert exc.value.code == 2
+        assert "--projects" in capsys.readouterr().err
+
+
 class TestPoisonedProjectsDirGlobal:
     """PROJECTS_DIR pointed at a nonexistent path, with one real root
     declared via TRANSCRIPT_CONFIG_DIRS_FILE — sessions are still found
@@ -10625,220 +9325,6 @@ class TestMultiRootFormatOutliers:
         header_lines = [ln for ln in lines if ln.startswith("JUDGMENT PAIR SOURCES")]
         assert len(header_lines) == 1
         assert content.count("Logic error in retry loop.") == 2  # one block per root's session
-
-
-class TestSubagentsDeclaredRootsMultiRoot:
-    """subagents' and subagent-mix's multi_root-gated disclosure controls
-    (DO_NOT_PUBLISH banner, branch/subagent_type redaction) are gated on
-    len(roots) > 1 alone, not on whether --config-dir was passed --
-    _resolve_cost_roots now also unions declared_transcript_roots(), so a
-    populated ~/.claude/transcript-config-dirs makes multi_root True with
-    zero --config-dir flags. Neither TestSubagentsMultiRoot nor
-    TestSubagentMixMultiRoot covers this: every test in both classes passes
-    extra_config_dirs explicitly."""
-
-    def test_subagent_mix_banner_and_redaction_fire_via_declared_roots_alone(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        roots = _two_declared_roots(tmp_path, monkeypatch)
-        for idx, root in enumerate(roots):
-            proj = root / f"-home-user-repo-{idx}"
-            proj.mkdir(parents=True)
-            _write_jsonl(proj / f"sess-{idx}.jsonl", [
-                _asst("claude-opus-4-7", branch="main", content=[_agent_use(f"a{idx}", "staff-sdet")]),
-            ])
-
-        _mod.cmd_subagent_mix(_subagent_mix_args())  # no extra_config_dirs passed
-        captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
-        assert "account-1/branch-1" in captured.out
-        assert "account-2/branch-1" in captured.out
-
-    def test_subagents_banner_and_redaction_fire_via_declared_roots_alone(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        roots = _two_declared_roots(tmp_path, monkeypatch)
-        for idx, root in enumerate(roots):
-            proj = root / f"-home-user-repo-{idx}"
-            proj.mkdir(parents=True)
-            _write_jsonl(proj / f"sess-{idx}.jsonl", [
-                _asst("claude-opus-4-7", branch="main"),
-            ])
-
-        _mod.cmd_subagents(_subagents_args())  # no extra_config_dirs passed
-        captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
-        assert "account-1/branch-1" in captured.out
-        assert "account-2/branch-1" in captured.out
-
-    def test_this_repo_via_declared_roots_discloses_branch_raw(self, tmp_path, monkeypatch, capsys):
-        roots = _two_declared_roots(tmp_path, monkeypatch)
-        this_repo_slug = "-repo-main"
-        for idx, root in enumerate(roots):
-            proj = root / this_repo_slug
-            proj.mkdir(parents=True)
-            _write_jsonl(proj / f"sess-{idx}.jsonl", [
-                _asst("claude-opus-4-7", branch="feat-disclosed"),
-            ])
-        args = _subagents_args(this_repo=True)
-        args._this_repo_slugs = [this_repo_slug]
-        _mod.cmd_subagents(args)
-        out = capsys.readouterr().out
-        assert "account-1/feat-disclosed" in out
-        assert "account-2/feat-disclosed" in out
-
-    def test_subagent_mix_this_repo_via_declared_roots_discloses_branch_raw(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        """cmd_subagent_mix's own --this-repo x declared-roots-file
-        coverage, mirroring test_this_repo_via_declared_roots_discloses_branch_raw
-        above for cmd_subagents -- closes the asymmetry where only
-        cmd_subagents' declared-roots path (as opposed to explicit
-        --config-dir, already covered by TestSubagentMixMultiRoot) had this
-        coverage."""
-        roots = _two_declared_roots(tmp_path, monkeypatch)
-        this_repo_slug = "-repo-main"
-        for idx, root in enumerate(roots):
-            proj = root / this_repo_slug
-            proj.mkdir(parents=True)
-            _write_jsonl(proj / f"sess-{idx}.jsonl", [
-                _asst("claude-opus-4-7", branch="feat-disclosed", content=[_agent_use(f"a{idx}", "staff-sdet")]),
-            ])
-        args = _subagent_mix_args(this_repo=True)
-        args._this_repo_slugs = [this_repo_slug]
-        _mod.cmd_subagent_mix(args)
-        out = capsys.readouterr().out
-        assert "account-1/feat-disclosed" in out
-        assert "account-2/feat-disclosed" in out
-
-    def test_this_repo_discloses_attested_main_thread_branch_but_not_sidechain_only_branch(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        """One session's main-thread record attests branch 'alpha'; its own
-        sidechain record carries a different branch 'beta' with no
-        main-thread attestation anywhere in scope -- alpha discloses raw
-        and beta prints as account-<K>/branch-<N>, in the same run. Both
-        halves asserted together so the contrast is what fails."""
-        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
-        session_id = "sess-attest"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="alpha"),
-        ])
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="beta", sidechain=True),
-        ])
-        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.cmd_subagents(args)
-        out = capsys.readouterr().out
-        assert re.search(r"account-\d+/alpha\b", out)
-        assert re.search(r"account-\d+/branch-\d+", out)
-        assert "beta" not in out
-
-    def test_this_repo_attestation_is_corpus_wide_not_since_window_scoped(
-        self, fake_projects, fake_config_dir_factory, capsys, monkeypatch
-    ):
-        """main_thread_branches attestation runs before the --since filter
-        and is never narrowed by it -- a branch attested by a main-thread
-        record outside the --since window still discloses raw for an
-        in-window sidechain record on that same branch. Pins this as
-        intentional: the attestation question is whether a real
-        main-thread session ever used this branch, not whether the
-        attesting record itself appears in the displayed table."""
-        fixed_now = 1_700_000_000.0
-        monkeypatch.setattr(time, "time", lambda: fixed_now)
-        old_ts = datetime.fromtimestamp(fixed_now - 10 * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        recent_ts = datetime.fromtimestamp(fixed_now, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
-        session_id = "sess-attest-window"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="gamma", ts=old_ts),  # main-thread, outside --since 1d
-        ])
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="gamma", sidechain=True, ts=recent_ts),  # in-window
-        ])
-        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)], since="1d")
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.cmd_subagents(args)
-        out = capsys.readouterr().out
-        assert re.search(r"account-\d+/gamma\b", out)
-
-    def test_this_repo_branch_attestation_collision_residual_folds_unattested_sidechain_into_disclosed_row(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        """Accepted residual: attestation is keyed on (root_idx, branch) --
-        a same-account, same-string check, not a same-repo check. A
-        sidechain record that happens to carry the SAME branch name as a
-        genuine main-thread record in the same account -- e.g. a subagent
-        dispatched to a different repo whose own gitBranch coincidentally
-        also reads "main" -- still folds into that disclosed row. Pinned
-        here as a deliberate, tested tradeoff, not a silent consequence."""
-        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
-        session_id = "sess-collision"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main"),
-        ])
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
-        ])
-        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.cmd_subagents(args)
-        out = capsys.readouterr().out
-        assert re.search(r"account-\d+/main\b", out)
-        assert not re.search(r"account-\d+/branch-\d+", out)  # only one branch total, and it's disclosed
-        sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1)
-        assert sidechain_cols["Sonnet"] == "1"  # the coincidental sidechain's own data reached the disclosed row
-
-    def test_this_repo_cross_account_attestation_independence(self, tmp_path, monkeypatch, capsys):
-        """main_thread_branches keyed on (root_idx, branch), not a flat
-        set[str] -- account A's own main-thread attestation of a generic
-        branch name must not leak disclosure to account B's own unattested
-        (sidechain-only) copy of the same branch name."""
-        roots = _two_declared_roots(tmp_path, monkeypatch)
-        this_repo_slug = "-repo-main"
-        proj_a = roots[0] / this_repo_slug
-        proj_a.mkdir(parents=True)
-        _write_jsonl(proj_a / "sess-a.jsonl", [
-            _asst("claude-opus-4-7", branch="main"),
-        ])
-        proj_b = roots[1] / this_repo_slug
-        proj_b.mkdir(parents=True)
-        session_id_b = "sess-b"
-        _write_jsonl(proj_b / f"{session_id_b}.jsonl", [
-            _asst("claude-opus-4-7", branch="other"),  # keeps proj_b's own top-level file non-empty
-        ])
-        _write_subagent_jsonl(proj_b, session_id_b, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
-        ])
-        args = _subagents_args(this_repo=True)
-        args._this_repo_slugs = [this_repo_slug]
-        _mod.cmd_subagents(args)
-        out = capsys.readouterr().out
-        assert re.search(r"account-\d+/main\b", out)  # account A's attested row
-        assert re.search(r"account-\d+/branch-\d+", out)  # account B's unattested row stays opaque
-
-    def test_this_repo_still_stamps_do_not_publish_banner_under_multi_root(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        acct_b = fake_config_dir_factory("acct-b")
-        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.cmd_subagents(args)
-        captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
-
-    def test_this_repo_single_root_prints_raw_branch_with_no_account_prefix(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-opus-4-7", branch="feat")])
-        args = _subagents_args(this_repo=True)
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.cmd_subagents(args)
-        out = capsys.readouterr().out
-        assert "feat" in out
-        assert "account-" not in out
 
 
 class TestResolveScanRoots:

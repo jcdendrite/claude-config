@@ -64,6 +64,7 @@ from helpers import (
     assert_cap_engaged,
     bash_input,
     build_path_without,
+    init_git_repo_with_commit,
     run_hook,
     scaled_shim_sleep,
     write_input,
@@ -2692,12 +2693,7 @@ def test_blocks_when_jq_absent_with_valid_payload(hook: Path, _path_without) -> 
 
 
 def _init_repo_with_commit(repo: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "file.txt").write_text("first\n")
-    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    init_git_repo_with_commit(repo, file_name="file.txt", content="first\n")
 
 
 def _sha256sum_case_code_review(tmp_path: Path) -> tuple[Path, Path, dict, str]:

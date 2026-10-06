@@ -18,6 +18,7 @@ from helpers import (
     agent_input,
     architect_consult_latch_path,
     bash_input,
+    init_git_repo_with_commit,
     reviewer_round_state_path,
     reviewer_round_state_value,
     run_hook_advisory,
@@ -40,13 +41,7 @@ _CONCURRENT_DISPATCH_TIMEOUT_SECONDS = 30
 
 
 def _init_repo(repo: Path) -> None:
-    repo.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "f.txt").write_text("first\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    init_git_repo_with_commit(repo, branch="main", content="first\n")
 
 
 def _stage_change(repo: Path, content: str) -> None:

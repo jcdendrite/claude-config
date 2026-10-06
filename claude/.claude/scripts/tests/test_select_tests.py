@@ -2146,8 +2146,8 @@ class TestComputeChangedPathsGitSmoke:
         --name-only output, so a non-ASCII changed path never string-matches
         a domain predicate and falls open to the full suite."""
         local, _bare = _make_repo_with_remote(tmp_path)
-        # Pinned explicitly, matching _init_repo's own --initial-branch=main
-        # precedent, so this depends on core.quotePath's default rather than
+        # Pinned explicitly, matching _init_repo's explicit initial-branch
+        # pin, so this depends on core.quotePath's default rather than
         # the executing machine's ambient git config.
         subprocess.run(["git", "config", "core.quotePath", "true"], cwd=local, check=True)
         scripts_dir = local / "claude" / ".claude" / "scripts"

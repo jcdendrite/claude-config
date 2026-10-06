@@ -15,7 +15,9 @@ test_transcript_cache_rebuild_switch_delta.py,
 test_transcript_cache_rebuild_ttl_rules.py,
 test_transcript_cache_rebuild_ttl_accumulation.py,
 test_transcript_cache_rebuild_ttl_footing.py, test_transcript_audit_routing.py,
-test_transcript_audit_routing_shape.py, test_transcript_audit_routing_samples.py, and
+test_transcript_audit_routing_shape.py, test_transcript_audit_routing_samples.py,
+test_transcript_subagents.py, test_transcript_subagent_mix.py,
+test_transcript_subagent_mix_dollars.py, test_transcript_cost_counts.py, and
 tests/_cache_rebuild_helpers.py (see the extraction rationale on
 _write_jsonl below).
 
@@ -39,6 +41,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from helpers import init_git_repo
 from transcript_analysis import pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
@@ -531,6 +534,24 @@ def _priced(
     return rec
 
 
+def _priced_sidechain_asst(
+    model: str, *, input_tokens: int = 0, output_tokens: int = 0, cache_read_tokens: int = 0,
+    ts: str | None = None, branch: str = "main",
+) -> dict:
+    """Build a sidechain assistant record with explicit, flat-priced usage
+    fields, for subagent-mix's Actual $/Counterfactual $ dollar-column tests
+    -- a sidechain counterpart to TestCost's own _priced (cache-write-split
+    fidelity is irrelevant to these tests' hand-computed input-token math)."""
+    rec = _asst(model, branch=branch, sidechain=True, ts=ts, content=[])
+    rec["message"]["usage"] = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read_tokens,
+        "cache_creation_input_tokens": 0,
+    }
+    return rec
+
+
 def _table_cols(out: str, *, header_contains: str, row_contains: str | list[str],
                 drop_leading_labels: int = 0,
                 max_labels: int | None = None,
@@ -1016,13 +1037,10 @@ def _reset_pricing_format_drift_flags(monkeypatch):
 
 
 def _init_repo(path: Path, initial_branch: str = "main") -> None:
-    """Initialise a git repo with one commit and a remote pointing at itself."""
-    path.mkdir(parents=True, exist_ok=True)
-    # Passing --initial-branch explicitly avoids depending on the system's
+    """Initialise a git repo on `initial_branch` with a test identity and no commit."""
+    # Defaulting the branch to "main" avoids depending on the system's
     # init.defaultBranch setting, which varies across git versions and CI environments.
-    subprocess.run(["git", "init", "-q", f"--initial-branch={initial_branch}"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True)
+    init_git_repo(path, branch=initial_branch)
 
 
 def _commit(repo: Path, message: str = "commit") -> None:

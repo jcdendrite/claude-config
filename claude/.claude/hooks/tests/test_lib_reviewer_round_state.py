@@ -21,6 +21,7 @@ from helpers import (
     bare_remote_with_default_branch,
     build_conflicted_rebase,
     build_conflicted_revert,
+    init_git_repo_with_commit,
     push_conflicting_edit_to_origin,
     staged_diff_hash_at_base,
 )
@@ -31,13 +32,7 @@ LIB_SH = HOOKS_DIR / "_lib.sh"
 
 
 def _init_repo(repo: Path, branch: str = "main") -> None:
-    repo.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", "-b", branch], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "f.txt").write_text("first\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    init_git_repo_with_commit(repo, branch=branch, content="first\n")
 
 
 def _state_key(repo: Path) -> subprocess.CompletedProcess:

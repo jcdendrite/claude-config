@@ -196,7 +196,7 @@ class TestParseSubagentDispatches:
         """A non-string meta.json['model'] (e.g. a list) is real-world
         corruption this harness's own docstring calls out as defended
         against — mirrors
-        test_transcript_analysis.py::test_non_string_meta_model_does_not_crash_the_run.
+        test_transcript_subagent_mix.py::TestSubagentMixModelMix::test_non_string_meta_model_does_not_crash_the_run.
         The dispatch itself is still returned (toolUseId is valid); only the
         requested-model-param read is coerced to None."""
         session_jsonl = _session_jsonl_path(tmp_path)
