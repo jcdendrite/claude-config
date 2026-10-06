@@ -28,6 +28,10 @@ from .conftest import (
 # receives it never prints the stale-rate line whatever the live clock reads.
 _PRE_EXPIRY_TODAY = date(2000, 1, 1)
 
+# Module-level so test_select_tests.py's TestCrossDomainReadCompleteness sees these reads.
+_TRANSCRIPT_ANALYSIS_DOC = REPO_ROOT / "docs" / "transcript-analysis.md"
+_PRIVATE_PROJECT_REDACTION_DOC = REPO_ROOT / "docs" / "private-project-redaction.md"
+
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
 # alone doesn't register it), so it can't shadow the real transcript_analysis package --
@@ -2701,9 +2705,7 @@ class TestCmdReviewRoundCostPooled:
         that corpus and docs/*.md's parametrize list, so only this test
         catches a stale heading here.
         """
-        doc_headings = heading_texts(
-            (REPO_ROOT / "docs" / "private-project-redaction.md").read_text()
-        )
+        doc_headings = heading_texts(_PRIVATE_PROJECT_REDACTION_DOC.read_text())
         for pointer in (
             review_rounds._POOLED_PUBLICATION_POINTER,
             review_rounds._POOLED_REFUSAL_DOC_POINTER,
@@ -2755,7 +2757,7 @@ class TestCmdReviewRoundCostPooled:
         assert "pool is small" in small_pool_clause
         assert "Small-pool residual" in small_pool_clause
         assert "out of the artifact and its citation" in small_pool_clause
-        docs_text = (REPO_ROOT / "docs" / "transcript-analysis.md").read_text()
+        docs_text = _TRANSCRIPT_ANALYSIS_DOC.read_text()
         assert proposer_sentences in docs_text
         review_round_cost_section = docs_text.split("\n## review-round-cost\n", 1)[1].split("\n## ", 1)[0]
         assert "**Small-pool residual" in review_round_cost_section
@@ -2764,7 +2766,7 @@ class TestCmdReviewRoundCostPooled:
         """docs/transcript-analysis.md's sample --pooled output must contain
         both constants verbatim, so a reworded constant cannot drift from
         the documented output."""
-        docs_text = (REPO_ROOT / "docs" / "transcript-analysis.md").read_text()
+        docs_text = _TRANSCRIPT_ANALYSIS_DOC.read_text()
         assert review_rounds._POOLED_PUBLICATION_POINTER in docs_text
         assert review_rounds._POOLED_CAPTION in docs_text
 

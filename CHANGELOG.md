@@ -6,6 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`select-tests.py` now also selects `claude/.claude/scripts/tests/` when `docs/transcript-analysis.md` or `docs/private-project-redaction.md` changes.** `test_transcript_review_rounds.py` reads both docs by path, and the `docs/` blanket alone selected only the hooks and skills tests.
 - **`--projects` now exits 2 when a scan resolves more than one root and the value contains `/` or `**`, or equals `.` or `..`.** The restriction reaches every `transcript-analysis.py` subcommand whose scan resolves more than one root. That includes `cmd_skill_invocation`'s inlined multi-root check and the `error-mode-analysis` skill's `review-trace --projects '<glob>'`. A one-directory-name pattern such as `-home-user-repo*` is unaffected.
 - **`transcript-analysis.py` readers behave differently on unreadable or malformed input.** Consumer-visible changes:
   - With one resolved root, a `..` path component in `--projects` now reads nothing instead of walking out of the scan root.

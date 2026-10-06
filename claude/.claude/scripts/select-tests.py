@@ -266,6 +266,10 @@ CHANGELOG_MD = "CHANGELOG.md"
 # this exact file by path.
 TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD = "docs/transcript-analysis-architecture.md"
 
+# test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads each of these files by path.
+TRANSCRIPT_ANALYSIS_DOC_MD = "docs/transcript-analysis.md"
+PRIVATE_PROJECT_REDACTION_DOC_MD = "docs/private-project-redaction.md"
+
 # Blanket for every file under docs/, rather than one exact-match constant
 # per file: test_hook_alignment.py reads docs/hooks.md, test_doc_counts.py
 # reads docs/design-decisions/specialist-reviewer-roster.md,
@@ -626,6 +630,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD: test_transcript_analysis_architecture_doc.py
 # (SCRIPTS_TESTS_DIR) reads this exact file by path, in addition to the
 # DOCS_DIR blanket below.
+# TRANSCRIPT_ANALYSIS_DOC_MD and PRIVATE_PROJECT_REDACTION_DOC_MD: see their own comment above for citation.
 # DOCS_DIR, README_MD, INSTALL_SH, and CLAUDE_SETTINGS_JSON: see each
 # constant's own comment above for its citation.
 # GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and
@@ -700,6 +705,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p in (TRANSCRIPT_ANALYSIS_DOC_MD, PRIVATE_PROJECT_REDACTION_DOC_MD), (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, DOCS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == README_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == INSTALL_SH, (HOOKS_TESTS_DIR,)),
