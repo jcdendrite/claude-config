@@ -1782,6 +1782,35 @@ class TestScanReviewerTranscripts:
         assert scans["a1"].code_write_tool_use_ids == frozenset()
         assert _mod.reviewer_yield._reviewer_write_tool_use_ids(scans) == frozenset()
 
+    def test_non_utf8_line_is_skipped_and_the_scan_continues_past_it(self, tmp_path):
+        """A non-UTF-8 line between two valid assistant records drops only
+        itself: the scan is not a read error, and last_assistant_text is the
+        record after the bad line, proving the walk continued."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        first_record = _asst(
+            "claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "text before the bad line"}],
+        )
+        second_record = _asst(
+            "claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "text after the bad line"}],
+        )
+        transcript_path.write_bytes(
+            json.dumps(first_record).encode("utf-8")
+            + b"\n\xff\xfe\x00\x01\n"
+            + json.dumps(second_record).encode("utf-8")
+            + b"\n"
+        )
+        scan = _mod.reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.read_error is False
+        assert scan.last_assistant_text == "text after the bad line"
+
+    def test_transcript_of_only_non_utf8_bytes_scans_as_readable_and_empty(self, tmp_path):
+        """A readable file with no decodable line is an empty scan, not a
+        read error, so it is not counted in the "failed to read" line."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        transcript_path.write_bytes(b"\xff\xfe\x00\x01")
+        scan = _mod.reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan == _mod.reviewer_yield._ReviewerTranscriptScan("", [], [], "", False, frozenset())
+
 
 class TestIndexSessionEdits:
     """_index_session_edits(records, since_ts, *, reviewer_write_tool_use_ids)

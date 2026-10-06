@@ -6,6 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`reviewer-yield`, `cost-ledger --record`, and `subagent-mix` now skip a non-UTF-8 line in a dispatched subagent's transcript, as the other transcript readers do.** They previously aborted the run on it. A transcript with no decodable line now reads as empty: `reviewer-yield` scans it as readable with no final text, and `subagent-mix` prices that dispatch as a resolved `other` run at $0.00 instead of a dangling one. `cost-ledger --record` now writes its row from the decodable lines instead of aborting before it.
 - **`select-tests.py` now also selects `claude/.claude/scripts/tests/` when `docs/transcript-analysis.md` or `docs/private-project-redaction.md` changes.** `test_transcript_review_rounds.py` reads both docs by path, and the `docs/` blanket alone selected only the hooks and skills tests.
 - **`--projects` now exits 2 when a scan resolves more than one root and the value contains `/` or `**`, or equals `.` or `..`.** The restriction reaches every `transcript-analysis.py` subcommand whose scan resolves more than one root. That includes `cmd_skill_invocation`'s inlined multi-root check and the `error-mode-analysis` skill's `review-trace --projects '<glob>'`. A one-directory-name pattern such as `-home-user-repo*` is unaffected.
 - **`transcript-analysis.py` readers behave differently on unreadable or malformed input.** Consumer-visible changes:
