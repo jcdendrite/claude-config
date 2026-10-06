@@ -942,8 +942,13 @@ def evaluate_run_validity(
     leak_check_relpaths = tuple(dict.fromkeys((*changed_relpaths, *fix_commit_relpaths)))
     leak_targets = live_checkout_leak_targets(live_checkout_roots, leak_check_relpaths)
     out_of_session: list[str] = []
+    has_unresolvable_read_path = False
     for read_call in read_like_calls:
-        resolved = _resolve(read_call.path, base_dir=fixture_dir)
+        try:
+            resolved = _resolve(read_call.path, base_dir=fixture_dir)
+        except ValueError:  # a path the OS cannot represent, e.g. an embedded NUL
+            has_unresolvable_read_path = True
+            continue
         if is_changed_file_leak(resolved, leak_targets):
             return _fail(
                 VALIDITY_FAIL_LIVE_CHECKOUT_LEAK, observed_model=expected_model_id,
@@ -956,6 +961,13 @@ def evaluate_run_validity(
             )
         if is_out_of_session(resolved, own_dirs):
             out_of_session.append(read_call.path)
+
+    if has_unresolvable_read_path:
+        return _fail(
+            VALIDITY_FAIL_TRANSCRIPT_UNREADABLE, observed_model=expected_model_id,
+            observed_tools=tuple(sorted(dispatch.observed_tools)), prompt_verbatim=True,
+            detail="a read-like call carried a path that cannot be resolved",
+        )
 
     stats = compute_read_stats(
         read_like_calls, tool_results, fixture_dir=fixture_dir, changed_relpaths=frozenset(changed_relpaths)
@@ -1663,13 +1675,14 @@ def arm_snapshot_path(arms_snapshot_root: Path, arm: str, lens: str) -> Path:
 
 
 def _unresolvable_commits(source_repo: Path, commits: Sequence[str]) -> list[str]:
-    """The commits `source_repo` cannot resolve, from one `git cat-file
-    --batch-check` call. Raises HarnessInvalidatedError when git itself fails."""
+    """The commits (or commit-ish revisions such as `<sha>^`) `source_repo`
+    cannot resolve, from one `git cat-file --batch-check` call. Raises
+    HarnessInvalidatedError when git itself fails."""
     try:
         proc = subprocess.run(
             ["git", "cat-file", "--batch-check"], cwd=source_repo,
             input="".join(f"{commit}^{{commit}}\n" for commit in commits),
-            capture_output=True, text=True, check=False, timeout=_ENVIRONMENT_READ_TIMEOUT_S,
+            capture_output=True, encoding="utf-8", errors="replace", check=False, timeout=_ENVIRONMENT_READ_TIMEOUT_S,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise HarnessInvalidatedError(f"preflight: could not check commits in {source_repo}: {exc}") from exc
@@ -1682,16 +1695,21 @@ def preflight_defects(
     defects: Sequence[ConfirmedDefect], *, arm_names: tuple[str, ...], source_repo: Path, arms_snapshot_root: Path,
 ) -> None:
     """Raises HarnessInvalidatedError listing every commit the source repo
-    cannot resolve, every arm snapshot file a defect's lens needs but lacks,
+    cannot resolve, every fix commit with no resolvable first parent (the fix
+    diff compares against it), every arm snapshot file a defect's lens needs but lacks,
     and every defect whose head tree holds project config a session must not
     load, before any billable dispatch: a build failure mid-campaign would
     otherwise repeat on every resume, after earlier blocks' spend."""
     commits = sorted({
         commit for defect in defects for commit in (defect.base_commit, defect.head_commit, defect.fix_commit)
     })
-    unresolvable_commits = _unresolvable_commits(source_repo, commits)
+    fix_parents = sorted({f"{defect.fix_commit}^" for defect in defects})
+    unresolvable_revisions = set(_unresolvable_commits(source_repo, [*commits, *fix_parents]))
+    unresolvable_commits = [commit for commit in commits if commit in unresolvable_revisions]
     problems = [f"commit {commit} does not resolve in {source_repo}" for commit in unresolvable_commits]
     for defect in defects:
+        if defect.fix_commit not in unresolvable_commits and f"{defect.fix_commit}^" in unresolvable_revisions:
+            problems.append(f"{defect.id}: fix commit {defect.fix_commit} has no resolvable first parent in {source_repo}")
         if defect.head_commit not in unresolvable_commits:
             try:
                 refuse_executable_project_config_at_commit(source_repo, defect.head_commit)

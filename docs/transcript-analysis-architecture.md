@@ -15,7 +15,8 @@ Every command-group module moves in leafward first: the shim imports it, never t
 circular import is possible while `cmd_*` functions remain split across both the shim and the
 package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `review_trace.py`,
 `read_scope.py`, `pr_cost.py`, `pr_cost_export.py`, `cache_rebuild.py`, `audit_routing.py`,
-`cost_ledger.py`, `workstream_cost.py`, `subagents.py`, and `subagent_mix.py` are the only modules
+`cost_ledger.py`, `workstream_cost.py`, `subagents.py`, `subagent_mix.py`, `handoff_nudge.py`,
+`rearm_backtest.py`, and `spend_over_threshold.py` are the only modules
 the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. Two
 still-unmigrated friction/command-shape helpers likewise call `denials.py`'s
@@ -41,6 +42,9 @@ package's first two imports from one command-group module into another.
 `cmd_subagent_mix`/`cmd_cost_counts` from the shim.
 The still-unmigrated context-composition code reads `subagents.py`'s `_MCP_TOOL_BUCKET_LABEL` by
 name from the shim.
+`build_parser()` likewise wires up `rearm_backtest.py`'s `cmd_rearm_backtest` and
+`spend_over_threshold.py`'s `cmd_spend_over_threshold` from the shim. The shim also reads
+`handoff_nudge.py` names bare; see the `handoff_nudge.py` section below for which names and consumers.
 
 ## The package
 
@@ -109,7 +113,9 @@ into one record per API call). Self-contained: no dependency on `scope.py` or `r
 
 Small display-formatting and text-normalization helpers with no state of their own: model-family
 labels (`_fam`), markdown/table rendering, `_content_text`, `_fmt_usd`, `_pct_of`,
-`_strip_task_notifications`. Self-contained.
+`_strip_task_notifications`, `_is_fresh_user_prompt`. Self-contained. `_is_fresh_user_prompt` has its
+one definition here; the shim's judgment-pair, `review_rounds.py`'s round-window detection, and
+`rearm_backtest.py`'s boundary detection all read it.
 
 ### `cost.py`
 
@@ -212,7 +218,7 @@ for its own reviewer-spawn detection and `review_rounds._round_skill_name`/
 section above for why these are the package's first cross-command-group imports.
 `_review_trace_session_events` re-expresses its own `_normalize_skill_name` (the emitted display
 label's lighter directory-only strip) locally rather than back-importing the shim's copy — the same
-re-expression pattern `review_rounds.py` uses for `_is_fresh_user_prompt` and `_SLASH_COMMAND_RE`.
+re-expression pattern `review_rounds.py` uses for `_SLASH_COMMAND_RE`.
 `cmd_review_trace` and `REVIEW_TRACE_SKILLS` are the two names reached bare from the shim's own
 still-monolithic `build_parser()` — see the exception noted above. `compute_deny_summary_data` is
 read by `cost_ledger.py`'s own `_cost_ledger_report` as `review_trace.compute_deny_summary_data`, a
@@ -354,6 +360,47 @@ attribute access, per the rule under `scope.py` above, so `fake_projects`' exist
 `scope.config_dir` patch isolates it with no further patch. `cmd_subagent_mix` and `cmd_cost_counts`
 are the two names reached bare from the shim, from `build_parser()`.
 
+### `handoff_nudge.py`
+
+The handoff-nudge family's shared core, with no `cmd_*` of its own: the mirror of the hook's fire
+threshold (`_hook_effective_fire_threshold`, `_HANDOFF_NUDGE_ABS_CAP`, `_HANDOFF_NUDGE_PCT_THRESHOLD`),
+the turn-index ramp curve (`_ramp_curve_turn_index_bucket`, `_ramp_curve_from_corpus`), the single
+dedup-and-price pass over one session (`_extract_rearm_session_turns`) with its whole-session scope
+filter (`_session_matches_rearm_scope`), and the `.handoff-nudge.log` reader, parser,
+operator-response lag join, and diagnostic footer (`_read_bounded_log_lines`,
+`_parse_nudge_log_entries`, `_operator_response_lag_from_log`, `_print_nudge_log_diagnostic`). Its
+consumers are `rearm_backtest.py`, `spend_over_threshold.py`, and the plan-boundary and
+handoff-signal-response code, which still lives in the shim. Imports `corpus`,
+`pricing`, and `scope` all by module (attribute access), matching `cost.py`'s convention.
+`_print_nudge_log_diagnostic` reads `config_dir() / ".handoff-nudge.log"` as
+`scope.config_dir()` by attribute access, per the rule under `scope.py` above, so `fake_projects`'
+existing `scope.config_dir` patch isolates it with no further patch. Seven names are reached bare
+from the shim: `_extract_rearm_session_turns`, `_ramp_curve_from_corpus`,
+`_ramp_curve_turn_index_bucket`, and `_session_matches_rearm_scope` by plan-boundary, and
+`_hook_effective_fire_threshold`, `_operator_response_lag_from_log`, and `_parse_nudge_log_entries` by
+handoff-signal-response — see the exception noted above.
+
+### `rearm_backtest.py`
+
+The rearm-backtest command: `cmd_rearm_backtest` and `_rearm_backtest_report`, plus every helper only
+they use — hook-observable boundary detection (`_hook_observable_boundaries`), per-spacing replay
+(`_simulate_rearm_spacing`), `--spacings` parsing (`_parse_rearm_spacings_arg`), the
+nudge-to-handoff conversion classifier (`_nudge_conversion_from_log`), and the per-root log-size
+disclosure line (`_rearm_backtest_log_size_lines`). Imports `handoff_nudge`, `render`, and `scope` all
+by module (attribute access), matching `cost.py`'s convention. The multi-root `--no-redact` refusal
+stays inline in `_rearm_backtest_report`, ahead of any output, in addition to
+`scope._resolve_cost_roots`' own CLI-level refusal. `cmd_rearm_backtest` is the one name reached bare
+from the shim, from `build_parser()`.
+
+### `spend_over_threshold.py`
+
+The spend-over-threshold command: `cmd_spend_over_threshold` — each ISO week's share of session spend
+earned at or above the hook's fire threshold, followed by the nudge-log diagnostic footer. Reads its
+per-session turns through `handoff_nudge._extract_rearm_session_turns` and prints the footer through
+`handoff_nudge._print_nudge_log_diagnostic`. Imports `corpus`, `handoff_nudge`, `render`, and `scope`
+all by module (attribute access), matching `cost.py`'s convention. `cmd_spend_over_threshold` is the
+one name reached bare from the shim, from `build_parser()`.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -394,8 +441,8 @@ boundary and across every test file (`fake_projects`, `fake_config_dir_factory`,
 `_compact_boundary_rec`, `_cost_ledger_args`, `_cost_ledger_row`, `_two_declared_roots`,
 `_exit_plan_mode`, `_priced_opus`, `_priced_sidechain_asst`, `_read_use`, `_thinking_block`); see its own
 docstrings for why `fake_projects` patches five `config_dir` bindings: `scope.config_dir` and the
-shim's still-independent `config_dir` (for spend-over-threshold and rearm-backtest, not yet moved
-into the package), plus `cost_ledger.config_dir`, `ledger_common.config_dir`, and
+shim's still-independent `config_dir` (for handoff-signal-response, which still lives
+in the shim), plus `cost_ledger.config_dir`, `ledger_common.config_dir`, and
 `pr_cost_ledger.config_dir` (each module's own by-name binding, mirroring `scope.py`'s pattern). `author_outcome.py`'s own tests
 live in `tests/test_author_outcome.py`: most exercise the package module directly
 (`from transcript_analysis import author_outcome`), with a small `spec_from_file_location`-loaded
@@ -463,3 +510,22 @@ family-only helpers local to itself.
 `TestFormatDriftCanary` stays in `tests/test_transcript_analysis.py` rather than moving with the
 family: it spans subagents, skill-pair, and cache-efficiency. `TestSubagentFormatContract` stays
 there too: it pins `corpus.py`'s on-disk subagent-file contract and reads no name from the family.
+
+The handoff-nudge command family splits at module seams:
+
+- `tests/test_transcript_handoff_nudge.py` covers `handoff_nudge.py`: fire threshold, ramp curve,
+  per-session turn extraction and scope, and nudge-log parsing, including a contract test against
+  the real hook
+- `tests/test_transcript_rearm_backtest.py` covers `rearm_backtest.py`'s boundary detection, spacing
+  replay, `--spacings` parsing, and report
+- `tests/test_transcript_rearm_backtest_nudge_log.py` covers its nudge-to-handoff conversion
+  classifier and per-root log-size disclosure line
+- `tests/test_transcript_spend_over_threshold.py` covers `cmd_spend_over_threshold`, including its
+  diagnostic footer
+
+`tests/_handoff_nudge_helpers.py`, a plain module, not a test file itself, holds the three helpers more
+than one file reads: `_spend_over_threshold_args`, `_rearm_backtest_args`, and
+`_ramp_curve_from_records`. `tests/test_transcript_analysis.py` imports all three, for its
+cross-subcommand table and its plan-boundary tests. All consumers import it relatively, as `from ._handoff_nudge_helpers import ...`
+— see `.claude/rules/test-tree-packaging.md` for why. Each file keeps its other family-only helpers
+local to itself.

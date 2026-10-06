@@ -17,7 +17,15 @@ SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
 PACKAGE_DIR = SCRIPTS_DIR / "transcript_analysis"
 TESTS_DIR = SCRIPTS_DIR / "tests"
 
-PRODUCTION_MODULES = ("cost_ledger.py", "workstream_cost.py", "subagents.py", "subagent_mix.py")
+PRODUCTION_MODULES = (
+    "cost_ledger.py",
+    "workstream_cost.py",
+    "subagents.py",
+    "subagent_mix.py",
+    "handoff_nudge.py",
+    "rearm_backtest.py",
+    "spend_over_threshold.py",
+)
 TEST_FILES = (
     "test_transcript_cost_ledger.py",
     "test_transcript_cost_ledger_record_gates.py",
@@ -26,6 +34,10 @@ TEST_FILES = (
     "test_transcript_subagent_mix.py",
     "test_transcript_subagent_mix_dollars.py",
     "test_transcript_cost_counts.py",
+    "test_transcript_handoff_nudge.py",
+    "test_transcript_rearm_backtest.py",
+    "test_transcript_rearm_backtest_nudge_log.py",
+    "test_transcript_spend_over_threshold.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --
@@ -49,13 +61,41 @@ def _assign_target_names(target: ast.expr) -> set[str]:
     return set()
 
 
+def _lazy_module_attrs(tree: ast.Module) -> set[str]:
+    """String literals a module-level `__getattr__` compares its own name parameter against.
+
+    Assumes the allow-list shape (`if name != "X": raise AttributeError`), the
+    one scope.py uses: only `!=` comparisons count, so a deny-list shape
+    (`if name == "X": raise AttributeError`) never adds "X"."""
+    lazy_names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or node.name != "__getattr__":
+            continue
+        parameters = node.args.posonlyargs + node.args.args
+        if not parameters:
+            continue
+        for compare in ast.walk(node):
+            if not isinstance(compare, ast.Compare):
+                continue
+            if not all(isinstance(op, ast.NotEq) for op in compare.ops):
+                continue
+            operands = [compare.left, *compare.comparators]
+            if any(isinstance(operand, ast.Name) and operand.id == parameters[0].arg for operand in operands):
+                lazy_names.update(
+                    operand.value for operand in operands if isinstance(operand, ast.Constant) and isinstance(operand.value, str)
+                )
+    return lazy_names
+
+
 def _top_level_names(module_path: Path) -> set[str]:
     """Every name module_path binds at module level: function/class defs,
     assignment targets (plain, tuple-unpacked, or annotated), and import
     aliases -- the full set a `module.<name>` attribute access from outside
-    the module could legitimately resolve, plus IMPLICIT_MODULE_ATTRS."""
+    the module could legitimately resolve, plus IMPLICIT_MODULE_ATTRS, plus
+    each name a module-level PEP 562 `__getattr__` resolves (the string
+    literals it compares its own parameter against)."""
     tree = ast.parse(module_path.read_text())
-    names: set[str] = set(IMPLICIT_MODULE_ATTRS)
+    names: set[str] = set(IMPLICIT_MODULE_ATTRS) | _lazy_module_attrs(tree)
     for node in tree.body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             names.add(node.name)
@@ -67,6 +107,26 @@ def _top_level_names(module_path: Path) -> set[str]:
         elif isinstance(node, ast.Import | ast.ImportFrom):
             names.update((alias.asname or alias.name) for alias in node.names)
     return names
+
+
+def test_scope_lazy_module_attrs_are_exactly_projects_dir():
+    """scope.py's `__getattr__` resolves PROJECTS_DIR and nothing else, so
+    _lazy_module_attrs derives exactly that -- pins against over-derivation
+    that would let a typo'd `scope.<name>` read pass."""
+    tree = ast.parse((PACKAGE_DIR / "scope.py").read_text())
+    assert _lazy_module_attrs(tree) == {"PROJECTS_DIR"}
+
+
+def test_lazy_module_attrs_ignores_deny_list_shaped_getattr():
+    """A `__getattr__` that raises AttributeError for the name it compares
+    against denies that name rather than resolving it, so it adds nothing."""
+    deny_list_source = (
+        "def __getattr__(name):\n"
+        "    if name == 'DENIED':\n"
+        "        raise AttributeError(name)\n"
+        "    return 1\n"
+    )
+    assert _lazy_module_attrs(ast.parse(deny_list_source)) == set()
 
 
 def test_production_modules_import_package_siblings_by_module_only():

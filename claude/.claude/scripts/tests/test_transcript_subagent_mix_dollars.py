@@ -499,15 +499,17 @@ class TestDispatchUsageSummaryDedupBeforePricing:
 
     def test_file_that_fails_to_open_returns_empty_summary(self, tmp_path, monkeypatch):
         """A file that passes is_file() but raises OSError on open takes the
-        same empty-tuple return as a missing path rather than raising."""
+        same empty-tuple return as a missing path rather than raising. The
+        open happens in corpus._parse_jsonl_records, which maps the OSError
+        to None."""
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, self._two_block_run("claude-sonnet-4-6"))
 
         def _open_failing(*_args, **_kwargs):
             raise PermissionError("denied")
 
-        # Shadows the builtin only inside the module under test.
-        monkeypatch.setattr(_mod.subagent_mix, "open", _open_failing, raising=False)
+        # Shadows the builtin only inside corpus, which opens the transcript.
+        monkeypatch.setattr(_mod.subagent_mix.corpus, "open", _open_failing, raising=False)
         result = _mod.subagent_mix._dispatch_usage_summary(jsonl_path, None, None, None, date(2026, 8, 2))
         assert result == (None, 0.0, {}, None, 0, 0, set())
 
@@ -708,3 +710,52 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         # output), priced in full despite that record's own timestamp
         # falling after until_ts.
         assert actual_dollars == pytest.approx(3.00075)
+
+
+class TestDispatchUsageSummaryUndecodableLines:
+    """_dispatch_usage_summary skips a non-UTF-8 line like a malformed-JSON
+    line instead of aborting, so the valid turns around it are still priced."""
+
+    _two_block_run = TestDispatchUsageSummaryDedupBeforePricing._two_block_run
+
+    def test_non_utf8_line_between_two_runs_prices_the_same_as_without_it(self, tmp_path):
+        """Two distinct-requestId runs around a non-UTF-8 line summarize
+        identically to the same two runs written without it. The dollars
+        also equal 2 x per_dispatch, so two empty summaries cannot satisfy
+        the equality."""
+        first_run = self._two_block_run("claude-sonnet-4-6", request_id="req-1")
+        second_run = self._two_block_run("claude-sonnet-4-6", request_id="req-2")
+        with_bad_line = tmp_path / "with-bad-line.jsonl"
+        with_bad_line.write_bytes(
+            b"".join(json.dumps(rec).encode("utf-8") + b"\n" for rec in first_run)
+            + b"\xff\xfe\x00\x01\n"
+            + b"".join(json.dumps(rec).encode("utf-8") + b"\n" for rec in second_run)
+        )
+        without_bad_line = tmp_path / "without-bad-line.jsonl"
+        _write_jsonl(without_bad_line, first_run + second_run)
+
+        summary_with_bad_line = _mod.subagent_mix._dispatch_usage_summary(
+            with_bad_line, None, None, None, date(2026, 8, 2)
+        )
+        summary_without_bad_line = _mod.subagent_mix._dispatch_usage_summary(
+            without_bad_line, None, None, None, date(2026, 8, 2)
+        )
+
+        assert summary_with_bad_line == summary_without_bad_line
+        # claude-sonnet-4-6: $3.00/MTok input, $15.00/MTok output; each
+        # deduped run prices its last record's usage once.
+        per_dispatch = 1_000_000 / 1_000_000 * 3.00 + 50 / 1_000_000 * 15.00
+        assert summary_with_bad_line[1] == pytest.approx(2 * per_dispatch)
+
+    def test_transcript_of_only_a_non_utf8_line_is_readable_and_empty_not_unreadable(self, tmp_path):
+        """A readable transcript that decodes to nothing returns the
+        "other" bucket with $0.00, not the (None, ...) tuple that marks a
+        dangling dispatch, so the dispatch is not excluded as unreadable."""
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        jsonl_path.write_bytes(b"\xff\xfe\x00\x01\n")
+
+        summary = _mod.subagent_mix._dispatch_usage_summary(
+            jsonl_path, None, None, None, date(2026, 8, 2)
+        )
+
+        assert summary == ("other", 0.0, {}, None, 0, 0, set())

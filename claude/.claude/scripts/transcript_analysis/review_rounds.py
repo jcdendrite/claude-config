@@ -42,28 +42,6 @@ REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-revie
 _REVIEW_SKILL_SET: frozenset[str] = frozenset(REVIEW_SKILLS)
 
 
-def _is_fresh_user_prompt(rec: dict) -> bool:
-    """A genuine new user message, not a tool result or injected record.
-
-    Mirrors transcript-analysis.py:199-223's own _is_fresh_user_prompt —
-    re-expressed here since the package may not import back from the shim.
-    """
-    if rec.get("type") != "user":
-        return False
-    if rec.get("isSidechain"):
-        return False
-    if rec.get("isMeta"):
-        return False
-    if rec.get("isCompactSummary"):
-        return False
-    content = (rec.get("message") or {}).get("content", "")
-    if isinstance(content, list) and any(
-        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
-    ):
-        return False
-    return bool(render._content_text(content).strip())
-
-
 # Mirrors cmd_skill_invocation's own <command-name> regex
 # (transcript-analysis.py:2371) — re-expressed here since the package may
 # not import back from the shim.
@@ -149,7 +127,7 @@ def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
         window_end = n
         for scan_idx in range(idx + 1, n):
             scan_rec = records[scan_idx]
-            if _is_fresh_user_prompt(scan_rec):
+            if render._is_fresh_user_prompt(scan_rec):
                 window_end = scan_idx
                 break
             if _round_open_skill(scan_rec) is not None:
@@ -1148,7 +1126,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
 
     See docs/transcript-analysis.md's review-round-cost section for the
     round/non-round reconciliation-line formula, and for the
-    "Non-round dollars"/"Reviewer-dispatch dollars"/"Dangling dispatches"/
+    "Non-round dollars"/"Subagent-dispatch dollars"/"Dangling dispatches"/
     "Unpriced turns" footer lines.
     Under multi-root scope the footer prints one block per root, never
     blended across roots.
@@ -1360,7 +1338,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             " of branch dollars fell outside every round window"
         )
         print(
-            f"{prefix}Reviewer-dispatch dollars: {render._pct_of(totals['total_agent_dollars'], totals['total_branch_dollars'])}"
+            f"{prefix}Subagent-dispatch dollars: {render._pct_of(totals['total_agent_dollars'], totals['total_branch_dollars'])}"
             " of branch dollars, inside round windows"
         )
         print(f"{prefix}Dangling dispatches inside round windows: {totals['total_dangling']} (no readable meta.json/jsonl pair)")
