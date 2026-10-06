@@ -293,11 +293,11 @@ def _in_ranges(code_point: int, ranges: tuple[tuple[int, int], ...]) -> bool:
 
 
 def is_terminal_unsafe_character(char: str) -> bool:
-    """True for a character no description may hold and no terminal display
-    may print raw: a control, format, separator, surrogate, private-use, or
-    noncharacter code point, a variation selector, or a blank filler. The one
-    definition behind `ConfirmedDefect`'s field checks, a mined comment body, a
-    typed description, and `escape_for_terminal`."""
+    """True for a character in `_UNSAFE_CATEGORIES`, `_INVISIBLE_RANGES`, or
+    `_NONCHARACTER_RANGES`. `escape_for_terminal` and every
+    `first_disallowed_character` check share this one definition. LF and TAB
+    are in the set, so a caller that keeps them, as a stored description does,
+    excuses them through `allowed`."""
     code_point = ord(char)
     return (
         unicodedata.category(char) in _UNSAFE_CATEGORIES
@@ -307,10 +307,9 @@ def is_terminal_unsafe_character(char: str) -> bool:
 
 
 def is_invisible_character(char: str) -> bool:
-    """True for a terminal-unsafe character that renders as nothing: a format
-    character such as a joiner or bidi override, a variation selector, or a
-    blank filler. The rest of the unsafe set is control, separator,
-    private-use, or noncharacter code points."""
+    """True for the part of the terminal-unsafe set that `mine_pr_comments`
+    counts as `invisible-characters` rather than `control-characters`:
+    category Cf and `_INVISIBLE_RANGES`."""
     return unicodedata.category(char) == "Cf" or _in_ranges(ord(char), _INVISIBLE_RANGES)
 
 

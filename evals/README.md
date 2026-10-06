@@ -560,15 +560,15 @@ nothing for that candidate, and the loop continues.
 
 The description policy:
 
-- A description may not hold a control, format, separator, surrogate,
-  private-use, or noncharacter code point, a variation selector, or a blank
-  filler (the Hangul fillers and the Braille blank). Those render as nothing
-  or drive the terminal.
-- Other unassigned code points are accepted, so the interpreter's table of
-  unassigned code points does not decide whether a record loads.
-- `ConfirmedDefect` enforces the policy when a record loads, so `defects.json`
-  edited past `confirm` fails to load in `freeze`, `run`, and `judge`.
-- A mined description may keep LF and TAB. A typed one may keep neither.
+- A description may not hold a character that `is_terminal_unsafe_character`
+  in `review_bench/defects.py` flags, such as ESC, a bidi override, a
+  zero-width joiner, or a variation selector. The three tables that function
+  reads are the one definition of the set.
+- The set includes LF and TAB. A mined description may keep both. A typed
+  one is a single line and may not hold TAB.
+- `ConfirmedDefect` enforces the policy when a record loads, so a
+  `defects.json` edited past `confirm` fails to load in every subcommand that
+  reads its records.
 - `ConfirmedDefect` holds `id`, `path`, and `fix_date` to the same rule, with
   no LF or TAB allowed.
 - A `pr-comment` candidate's mined description counts as public text, so it
