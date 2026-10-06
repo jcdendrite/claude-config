@@ -220,3 +220,19 @@ class TestSpendOverThresholdDiagnosticFooter:
         out = capsys.readouterr().out
         assert "No sessions with a resolvable handoff-nudge threshold" in out
         assert "Diagnostic: 2 schema-drift line(s)" in out
+
+    def test_footer_stays_silent_when_the_log_has_no_schema_drift_lines(self, fake_projects, tmp_path, capsys):
+        """A .handoff-nudge.log holding only nudged lines leaves the report without a
+        diagnostic footer -- a zero schema-drift count prints nothing."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        (tmp_path / ".handoff-nudge.log").write_text(
+            "nudged session=nudged-a est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
+            "nudged session=nudged-b est=120000 model=claude-sonnet-5 window=1000000 event=Stop\n"
+        )
+        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
+        assert cols["Share"] == "100.0%"
+        assert "Diagnostic" not in out

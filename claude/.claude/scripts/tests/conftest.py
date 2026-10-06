@@ -19,7 +19,7 @@ test_transcript_audit_routing_shape.py, test_transcript_audit_routing_samples.py
 test_transcript_subagents.py, test_transcript_subagent_mix.py,
 test_transcript_subagent_mix_dollars.py, test_transcript_cost_counts.py,
 test_transcript_handoff_nudge.py, test_transcript_rearm_backtest.py,
-test_transcript_rearm_backtest_nudge_log.py, test_transcript_spend_over_threshold.py, and
+test_transcript_spend_over_threshold.py, and
 tests/_cache_rebuild_helpers.py (see the extraction rationale on
 _write_jsonl below).
 
