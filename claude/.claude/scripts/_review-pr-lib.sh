@@ -8,6 +8,9 @@
 #
 # Provides:
 #   REVIEW_PR_FILE_NAMES_JQ_FILTER  — the `gh api --jq` filter that prints each file name as one JSON string per line
+#   REVIEW_PR_COMMIT_SHAS_JQ_FILTER — the `gh api --jq` filter that prints each commit SHA on its own line
+#   REVIEW_PR_REVIEWS_JQ_FILTER     — the `gh api --jq` filter that keeps each review with a non-empty body as one {id, author, state, body} object per line
+#   REVIEW_PR_INLINE_COMMENTS_JQ_FILTER — the `gh api --jq` filter that prints each inline comment as one {author, path, line, body} object per line
 #   review_pr_rest_changed_files    — the REST payload's changed_files count, validated as an integer
 #   review_pr_decode_file_names     — the @json stream decoded into one JSON array
 #   review_pr_file_count_matches    — a decoded listing's length equals the expected count
@@ -33,6 +36,17 @@
 # One JSON string per line keeps a name holding a raw newline on a single line.
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_FILE_NAMES_JQ_FILTER='.[].filename | @json'
+
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_COMMIT_SHAS_JQ_FILTER='.[].sha'
+
+# A review with an empty body (inline comments only) is dropped. A deleted account's null `.user` gives a null author.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_REVIEWS_JQ_FILTER='.[] | select(.body != "") | {id, author: .user.login, state, body}'
+
+# A deleted account's null `.user` gives a null author, and a null `line` stays null.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_INLINE_COMMENTS_JQ_FILTER='.[] | {author: .user.login, path, line, body}'
 
 # The audit's `json.dumps({"stop": False, "matches": []})` output, which it prints for a file list with no match.
 REVIEW_PR_AUDIT_CLEAN_DOCUMENT='{"stop": false, "matches": []}'

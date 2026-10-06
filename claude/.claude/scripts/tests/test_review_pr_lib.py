@@ -76,6 +76,59 @@ class TestFileNamesJqFilter:
         assert result.stdout.splitlines() == ['"a.py"', '"docs/notes.txt\\nevil.sh"']
 
 
+def _run_filter(constant_name: str, page: list[dict]) -> list:
+    """Evaluate the named `--jq` filter constant over one REST page with the
+    real jq, returning one decoded value per output line. Production runs the
+    filters under gh's embedded jq; the jq binary stands in for it here."""
+    result = _run_bash(f'printf "%s" "$1" | jq -c "${constant_name}"', json.dumps(page))
+    assert result.returncode == 0, result.stderr
+    return [json.loads(line) for line in result.stdout.splitlines()]
+
+
+class TestReviewsJqFilter:
+    def test_review_with_an_empty_body_is_excluded(self):
+        page = [
+            {"id": 1, "user": {"login": "alice"}, "state": "COMMENTED", "body": ""},
+            {"id": 2, "user": {"login": "bob"}, "state": "APPROVED", "body": "ship it"},
+        ]
+        assert [review["id"] for review in _run_filter("REVIEW_PR_REVIEWS_JQ_FILTER", page)] == [2]
+
+    def test_projection_keys_are_exactly_id_author_state_body(self):
+        page = [{"id": 2, "user": {"login": "bob"}, "state": "APPROVED", "body": "ship it", "html_url": "x", "commit_id": "y"}]
+        (review,) = _run_filter("REVIEW_PR_REVIEWS_JQ_FILTER", page)
+        assert review == {"id": 2, "author": "bob", "state": "APPROVED", "body": "ship it"}
+
+    def test_null_user_gives_a_null_author(self):
+        page = [{"id": 3, "user": None, "state": "COMMENTED", "body": "from a deleted account"}]
+        (review,) = _run_filter("REVIEW_PR_REVIEWS_JQ_FILTER", page)
+        assert review["author"] is None
+
+
+class TestInlineCommentsJqFilter:
+    def test_projection_keys_are_exactly_author_path_line_body(self):
+        page = [{"id": 9, "user": {"login": "alice"}, "path": "a.py", "line": 12, "body": "nit", "diff_hunk": "@@"}]
+        (comment,) = _run_filter("REVIEW_PR_INLINE_COMMENTS_JQ_FILTER", page)
+        assert comment == {"author": "alice", "path": "a.py", "line": 12, "body": "nit"}
+
+    def test_null_user_gives_a_null_author(self):
+        page = [{"user": None, "path": "a.py", "line": 12, "body": "from a deleted account"}]
+        (comment,) = _run_filter("REVIEW_PR_INLINE_COMMENTS_JQ_FILTER", page)
+        assert comment["author"] is None
+
+    def test_null_line_survives(self):
+        page = [{"user": {"login": "alice"}, "path": "a.py", "line": None, "body": "outdated"}]
+        (comment,) = _run_filter("REVIEW_PR_INLINE_COMMENTS_JQ_FILTER", page)
+        assert "line" in comment and comment["line"] is None
+
+
+class TestCommitShasJqFilter:
+    def test_filter_prints_one_raw_sha_per_line(self):
+        page = [{"sha": "a" * 40, "commit": {"message": "one"}}, {"sha": "b" * 40, "commit": {"message": "two"}}]
+        result = _run_bash('printf "%s" "$1" | jq -r "$REVIEW_PR_COMMIT_SHAS_JQ_FILTER"', json.dumps(page))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == ["a" * 40, "b" * 40]
+
+
 class TestRestChangedFiles:
     @pytest.mark.parametrize(
         "payload,expected",

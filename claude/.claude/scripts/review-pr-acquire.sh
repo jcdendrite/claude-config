@@ -168,7 +168,7 @@ REST_COMMITS_TOTAL=$(printf '%s' "$PR_REST_JSON" | _lib_jq -r '.commits // empty
 COMMITS_JSON=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -c '[.commits[].oid]' 2>/dev/null) || COMMITS_JSON="[]"
 if [[ -n "$REST_COMMITS_TOTAL" && "$COMMITS_ARRAY_COUNT" != "$REST_COMMITS_TOTAL" ]]; then
   COMMITS_FETCH_STATUS=0
-  RAW_COMMITS=$(_lib_gh "$GH_PR_PAGINATE_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/commits?per_page=100" --paginate --jq '.[].sha' 2>/dev/null) || COMMITS_FETCH_STATUS=$?
+  RAW_COMMITS=$(_lib_gh "$GH_PR_PAGINATE_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/commits?per_page=100" --paginate --jq "$REVIEW_PR_COMMIT_SHAS_JQ_FILTER" 2>/dev/null) || COMMITS_FETCH_STATUS=$?
   if [[ "$COMMITS_FETCH_STATUS" -ne 0 ]]; then
     echo "review-pr-acquire.sh: PR $OWNER_REPO#$PR_NUMBER's commit counts disagree and the full re-fetch (gh api --paginate) $(review_pr_gh_status_description "$COMMITS_FETCH_STATUS"). Abort -- a partial or failed listing must never be treated as the full, or an empty, commit set." >&2
     exit 2
@@ -193,7 +193,7 @@ fi
 # object on its own line, and a local `jq -s` combines that stream into one
 # JSON array, as in the files/commits re-fetch encoding above.
 REVIEWS_FETCH_STATUS=0
-RAW_REVIEWS=$(_lib_gh "$GH_PR_PAGINATE_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/reviews?per_page=100" --paginate --jq '.[] | select(.body != "") | {id, author: .user.login, state, body}' 2>/dev/null) || REVIEWS_FETCH_STATUS=$?
+RAW_REVIEWS=$(_lib_gh "$GH_PR_PAGINATE_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/reviews?per_page=100" --paginate --jq "$REVIEW_PR_REVIEWS_JQ_FILTER" 2>/dev/null) || REVIEWS_FETCH_STATUS=$?
 if [[ "$REVIEWS_FETCH_STATUS" -ne 0 ]]; then
   echo "review-pr-acquire.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's existing reviews (gh api --paginate $(review_pr_gh_status_description "$REVIEWS_FETCH_STATUS")). Abort." >&2
   exit 2
@@ -211,7 +211,7 @@ fi
 # The endpoint's own listing cap is not established, so no completeness flag
 # is derived for it.
 INLINE_COMMENTS_FETCH_STATUS=0
-RAW_INLINE_COMMENTS=$(_lib_gh "$GH_PR_PAGINATE_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/comments?per_page=100" --paginate --jq '.[] | {author: .user.login, path, line, body}' 2>/dev/null) || INLINE_COMMENTS_FETCH_STATUS=$?
+RAW_INLINE_COMMENTS=$(_lib_gh "$GH_PR_PAGINATE_TIMEOUT_SECONDS" api "repos/$OWNER_REPO/pulls/$PR_NUMBER/comments?per_page=100" --paginate --jq "$REVIEW_PR_INLINE_COMMENTS_JQ_FILTER" 2>/dev/null) || INLINE_COMMENTS_FETCH_STATUS=$?
 if [[ "$INLINE_COMMENTS_FETCH_STATUS" -ne 0 ]]; then
   echo "review-pr-acquire.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's existing inline comments (gh api --paginate $(review_pr_gh_status_description "$INLINE_COMMENTS_FETCH_STATUS")). Abort." >&2
   exit 2
