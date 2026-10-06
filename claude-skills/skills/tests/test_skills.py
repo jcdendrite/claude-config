@@ -5782,6 +5782,9 @@ _PLAN_IT_STEP5_CONTEXT_CHECK_AND_GRAMMAR_LITERALS = (
     "the two digests differ",
     "on every return",
     "(pending: plan-architect)",
+)
+
+_PLAN_HEADINGS_IN_ORDER = (
     "## Approach",
     "## Critical files",
     "## Verification",
@@ -5800,11 +5803,12 @@ _PLAN_IT_CONTEXT_HASH_COMMAND_PATTERN = re.compile(
     r"`(sed -n '1,/\^## Approach\$/p' \"<plan path>\" \| sha256sum)`"
 )
 
-_SCAFFOLDED_PLAN_TEXT = (
-    "# Title\n\n## Context\n\nAsk: x\n\n"
-    "## Approach\n\n(pending: plan-architect)\n\n"
-    "## Critical files\n\n## Verification\n\n## Out of scope\n"
-)
+# Step 5's scaffold, as written in the skill: the backticked span after
+# "exactly these bytes:", with `\n` spelled as two characters.
+_PLAN_IT_SCAFFOLD_SPAN_PATTERN = re.compile(r"exactly these bytes: `([^`]+)`")
+
+# The title and Context a plan holds before its first dispatch.
+_PLAN_TITLE_AND_CONTEXT_TEXT = "# Title\n\n## Context\n\nAsk: x\n\n"
 
 _EMPTY_INPUT_SHA256_PREFIX = "e3b0c442"
 
@@ -5828,6 +5832,20 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
             "in the pinned `sed ... | sha256sum` shape."
         )
         return match.group(1)
+
+    @staticmethod
+    def _step5_scaffold_text() -> str:
+        step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        match = _PLAN_IT_SCAFFOLD_SPAN_PATTERN.search(step5_text)
+        assert match is not None, (
+            "plan-it/SKILL.md Step 5 no longer carries its scaffold bytes in the "
+            "pinned `exactly these bytes: `...`` shape."
+        )
+        return match.group(1).replace("\\n", "\n")
+
+    @classmethod
+    def _scaffolded_plan_text(cls) -> str:
+        return _PLAN_TITLE_AND_CONTEXT_TEXT + cls._step5_scaffold_text()
 
     @classmethod
     def _run_hash_command(cls, plan_path: Path) -> str:
@@ -5854,6 +5872,17 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
             f"plan-it/SKILL.md Step 5 no longer carries these literals: {missing}."
         )
 
+    def test_step5_scaffold_carries_the_four_headings_in_order(self) -> None:
+        scaffold_headings = [
+            line
+            for line in self._step5_scaffold_text().splitlines()
+            if line.startswith("## ")
+        ]
+        assert scaffold_headings == list(_PLAN_HEADINGS_IN_ORDER), (
+            "plan-it/SKILL.md Step 5's scaffold no longer carries the four "
+            "plan headings, in order."
+        )
+
     def test_consult_charter_never_calls_edit_sentence_matches_live_text(self) -> None:
         assert _PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE in _agent_body("plan-architect"), (
             "plan-architect.md's MODE=consult charter no longer carries its "
@@ -5862,12 +5891,13 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
 
     def test_hash_command_ignores_an_edit_to_the_approach_region(self, tmp_path: Path) -> None:
         plan_path = tmp_path / "plan.md"
-        plan_path.write_text(_SCAFFOLDED_PLAN_TEXT)
+        scaffolded_plan_text = self._scaffolded_plan_text()
+        plan_path.write_text(scaffolded_plan_text)
         digest_before = self._run_hash_command(plan_path)
 
-        plan_path.write_text(
-            _SCAFFOLDED_PLAN_TEXT.replace("(pending: plan-architect)", "Approach text.")
-        )
+        edited_plan_text = scaffolded_plan_text.replace("(pending: plan-architect)", "Approach text.")
+        assert edited_plan_text != scaffolded_plan_text
+        plan_path.write_text(edited_plan_text)
 
         assert digest_before
         assert not digest_before.startswith(_EMPTY_INPUT_SHA256_PREFIX)
@@ -5875,10 +5905,11 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
 
     def test_hash_command_changes_on_an_edit_to_the_context(self, tmp_path: Path) -> None:
         plan_path = tmp_path / "plan.md"
-        plan_path.write_text(_SCAFFOLDED_PLAN_TEXT)
+        scaffolded_plan_text = self._scaffolded_plan_text()
+        plan_path.write_text(scaffolded_plan_text)
         digest_before = self._run_hash_command(plan_path)
 
-        plan_path.write_text(_SCAFFOLDED_PLAN_TEXT.replace("Ask: x", "Ask: widened"))
+        plan_path.write_text(scaffolded_plan_text.replace("Ask: x", "Ask: widened"))
 
         assert self._run_hash_command(plan_path) != digest_before
 

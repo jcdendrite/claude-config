@@ -117,6 +117,12 @@ def linked_worktree_with_plan(tmp_path_factory):
     non_plan_suffix_file.write_text("notes\n")
     lexically_inside_plans_file = worktree / ".claude" / "outside.md"
     lexically_inside_plans_file.write_text("outside\n")
+    text_suffix_plan = _write_plan(plans_dir, "t.txt")
+    directory_named_like_a_plan = plans_dir / "directory-plan.md"
+    directory_named_like_a_plan.mkdir()
+    # A symlinked ancestor of the repo root that realpath must resolve through.
+    ancestor_alias = root / "ancestor-alias"
+    ancestor_alias.symlink_to(root, target_is_directory=True)
 
     source_file = worktree / "src" / "x.py"
     source_file.parent.mkdir()
@@ -145,9 +151,10 @@ def linked_worktree_with_plan(tmp_path_factory):
     for path in (
         plan, source_file, loose_ref, main_repo_plan, nested_plan, nested_subdir_plan,
         non_plan_suffix_file, lexically_inside_plans_file, subdirectory_plan, escaped_file,
-        foreign_plan,
+        foreign_plan, text_suffix_plan,
     ):
         assert path.is_file(), f"fixture did not create {path}"
+    assert directory_named_like_a_plan.is_dir()
 
     return {
         "main_repo": main_repo,
@@ -165,6 +172,9 @@ def linked_worktree_with_plan(tmp_path_factory):
         "loose_ref": loose_ref,
         "foreign_repo": foreign_repo,
         "foreign_plan": foreign_plan,
+        "text_suffix_plan": text_suffix_plan,
+        "directory_named_like_a_plan": directory_named_like_a_plan,
+        "ancestor_alias": ancestor_alias,
     }
 
 
@@ -189,6 +199,42 @@ class TestPlanWriterEditAllowed:
         )
         _assert_silent_exit_zero(_run_gate(payload))
 
+    def test_edit_on_plan_allowed_from_plain_checkout_root_cwd(self, linked_worktree_with_plan):
+        fixture = linked_worktree_with_plan
+        payload = edit_input(
+            str(fixture["main_repo_plan"]), agent_type=PLAN_WRITER, cwd=str(fixture["main_repo"])
+        )
+        _assert_silent_exit_zero(_run_gate(payload))
+
+    def test_edit_on_text_suffix_plan_allowed(self, linked_worktree_with_plan):
+        fixture = linked_worktree_with_plan
+        payload = edit_input(
+            str(fixture["text_suffix_plan"]), agent_type=PLAN_WRITER, cwd=str(fixture["worktree"])
+        )
+        _assert_silent_exit_zero(_run_gate(payload))
+
+    def test_payload_with_agent_id_and_agent_type_allowed(self, linked_worktree_with_plan):
+        """A dispatched subagent's payload carries both identity fields."""
+        fixture = linked_worktree_with_plan
+        payload = {
+            **edit_input(str(fixture["plan"]), agent_type=PLAN_WRITER, cwd=str(fixture["worktree"])),
+            "agent_id": "agent-1",
+        }
+        _assert_silent_exit_zero(_run_gate(payload))
+
+    def test_path_reached_through_a_symlinked_ancestor_of_the_repo_root_allowed(
+        self, linked_worktree_with_plan
+    ):
+        fixture = linked_worktree_with_plan
+        aliased_plan = (
+            fixture["ancestor_alias"] / "linked-worktree" / ".claude" / "plans" / "p.md"
+        )
+        assert fixture["ancestor_alias"].is_symlink()
+        assert aliased_plan.is_file()
+        payload = edit_input(
+            str(aliased_plan), agent_type=PLAN_WRITER, cwd=str(fixture["worktree"])
+        )
+        _assert_silent_exit_zero(_run_gate(payload))
 
     def test_dotdot_spelling_that_normalizes_into_plans_allowed(self, linked_worktree_with_plan):
         fixture = linked_worktree_with_plan
@@ -226,6 +272,41 @@ class TestPlanWriterDenied:
         assert not missing_plan.exists()
         payload = edit_input(
             str(missing_plan), agent_type=PLAN_WRITER, cwd=str(fixture["worktree"])
+        )
+        _assert_denied(_run_gate(payload))
+
+    def test_empty_old_string_edit_to_nonexistent_plan_denied(self, linked_worktree_with_plan):
+        """An Edit with an empty old_string creates the file in the real tool, so
+        only the existence check keeps the agent from authoring a new plan."""
+        fixture = linked_worktree_with_plan
+        missing_plan = fixture["worktree"] / ".claude" / "plans" / "created-by-edit.md"
+        assert not missing_plan.exists()
+        payload = edit_input(
+            str(missing_plan),
+            agent_type=PLAN_WRITER,
+            cwd=str(fixture["worktree"]),
+            old_string="",
+            new_string="# New plan\n",
+        )
+        _assert_denied(_run_gate(payload))
+
+    def test_edit_with_empty_file_path_denied(self, linked_worktree_with_plan):
+        fixture = linked_worktree_with_plan
+        payload = edit_input("", agent_type=PLAN_WRITER, cwd=str(fixture["worktree"]))
+        _assert_denied(_run_gate(payload, hook_process_cwd=fixture["worktree"]))
+
+    def test_edit_with_absent_file_path_denied(self, linked_worktree_with_plan):
+        fixture = linked_worktree_with_plan
+        payload = edit_input("unused", agent_type=PLAN_WRITER, cwd=str(fixture["worktree"]))
+        del payload["tool_input"]["file_path"]
+        _assert_denied(_run_gate(payload, hook_process_cwd=fixture["worktree"]))
+
+    def test_edit_to_directory_named_like_a_plan_denied(self, linked_worktree_with_plan):
+        fixture = linked_worktree_with_plan
+        payload = edit_input(
+            str(fixture["directory_named_like_a_plan"]),
+            agent_type=PLAN_WRITER,
+            cwd=str(fixture["worktree"]),
         )
         _assert_denied(_run_gate(payload))
 
@@ -406,6 +487,20 @@ class TestCallersAndToolsOutsideTheGate:
         fixture = linked_worktree_with_plan
         payload = edit_input(str(fixture["source_file"]), cwd=str(fixture["worktree"]))
         assert "agent_type" not in payload
+        _assert_silent_exit_zero(_run_gate(payload))
+
+    @pytest.mark.parametrize("agent_type", [None, "code-writer", "general-purpose"])
+    @pytest.mark.parametrize("tool_input_builder", [write_input, multiedit_input])
+    @pytest.mark.parametrize("target_name", ["source_file", "plan"])
+    def test_write_and_multiedit_from_non_plan_writer_pass(
+        self, linked_worktree_with_plan, agent_type, tool_input_builder, target_name
+    ):
+        """Write and MultiEdit pass the tool-name filter, then the registry check lets
+        every caller outside the plan-writer registry through, plan file or not."""
+        fixture = linked_worktree_with_plan
+        payload = tool_input_builder(
+            str(fixture[target_name]), agent_type=agent_type, cwd=str(fixture["worktree"])
+        )
         _assert_silent_exit_zero(_run_gate(payload))
 
     def test_read_tool_from_plan_writer_passes(self, linked_worktree_with_plan):

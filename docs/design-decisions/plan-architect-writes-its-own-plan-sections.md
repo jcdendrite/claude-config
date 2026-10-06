@@ -12,7 +12,7 @@ A whole-file `Write` reproduces the plan's Context, `Ask:` line included, so a s
 
 ## Why the gate checks the path and `/plan-it` checks Context
 
-`deny-plan-writer-off-plan-writes.sh` allows a plan-writer's `Edit` only to an existing file directly under the repository's `.claude/plans/`, and denies every other `Edit` and every `Write` or `MultiEdit`. A rule that also denied an `Edit` starting above `## Approach` would need byte-offset matching over `old_string` in bash and a test arm per branch. Detection is enough: `/plan-it` Step 5 hashes everything above `## Approach` before every dispatch, after every return, and after any splice, and it stops if the text changed, before `/plan-review` runs against altered Context. The gate's header lists its known gaps, and this entry cites that list rather than repeating it.
+`deny-plan-writer-off-plan-writes.sh` allows a plan-writer's `Edit` only to an existing file directly under the repository's `.claude/plans/`, and denies every other `Edit` and every `Write` or `MultiEdit`. A rule that also denied an `Edit` starting above `## Approach` would need byte-offset matching over `old_string` in bash and a test arm per branch. Detection is enough: `/plan-it` Step 5 (`claude-skills/skills/plan-it/SKILL.md`) hashes the Context and stops on a change, before `/plan-review` runs against altered Context. The gate's header lists its known gaps, and this entry cites that list rather than repeating it.
 
 ## Why a dedicated gate
 
@@ -32,16 +32,19 @@ The gate is `cooperative, untrusted-input, irreversible`. `untrusted-input` is t
 
 ## Fixed headings and the splice
 
-Every plan now ends with the same four headings, in order: `## Approach`, `## Critical files`, `## Verification`, `## Out of scope`. The agent owns everything from `## Approach` to the end of the file. The fixed headings turn the fallback into a parse: the session splices a returned region only when the return carries all four headings, in order, and a successful return carries none, so a summary cannot overwrite edits that landed. The splice is one `Edit` over the region, never a whole-file `Write`, and every byte above `## Approach` stays untouched. Plans committed before this change without an `## Approach` heading, or with extra heading lines in their region, fail the Step 5 Check and go to the engineer.
+Every plan now ends with the same four headings, in order: `## Approach`, `## Critical files`, `## Verification`, `## Out of scope`. The agent owns everything from `## Approach` to the end of the file. The fixed headings turn the fallback into a parse: a successful return carries none, so a summary cannot overwrite edits that landed. Step 5 owns the splice conditions and the handling of plans committed before this change.
 
 ## Notes
 
 - `plan-it/SKILL.md` Step 5 is the single home of `(pending: plan-architect)` and the four heading literals. `plan-architect.md` cites it, and a `test_skills.py` test pins the literals there.
-- The hash command is one statement with none of the worktree guard's trigger shapes, and `sha256sum` is an `install.sh` prerequisite. A digest starting `e3b0c442` means nothing was hashed, because it is the digest of empty input, which an unreadable path also yields.
+- The hash command is one statement with none of the worktree guard's trigger shapes, and `sha256sum` is an `install.sh` prerequisite. Step 5 holds the command and its stop conditions.
 
 ## Accepted residuals
 
-- **Consult mode is limited by its charter only.** A consult-mode `Edit` can reach Context and the `Ask:` line. A consult the engineer asks for mid-planning raises no signal: the plan is already active, so the plan-review gate does not re-arm, and the Context hash covers only plan-sections dispatches.
+- **Consult mode is limited by its charter only.**
+  - A consult-mode `Edit` can reach Context and the `Ask:` line.
+  - A consult the engineer asks for mid-planning raises no signal, because the plan is already active and the plan-review gate does not re-arm.
+  - The Context hash covers only plan-sections dispatches.
 - **A plan path on prompt line 1 classifies as a consult.** A session that puts the plan path there instead of on line 2 makes the dispatch classify as a consult, which writes the per-branch consult latch.
 - **Two windows in which the gate does not run**, both listed in its header.
   - One is an install whose hooks directory is a real directory of per-file links, where a pull leaves the gate file unlinked while `settings.json` names it.

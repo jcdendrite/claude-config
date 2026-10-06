@@ -807,17 +807,10 @@ class TestNoGateReleaseRosterSync:
         )
 
     def test_plan_architect_tools_are_exactly_read_grep_glob_edit(self):
-        """Pins plan-architect.md's tool set: Edit only, no Write, no Bash.
+        """Edit is the only write tool: deny-plan-writer-off-plan-writes.sh confines it.
 
-        Edit is the grant: the agent writes its plan sections itself, and
-        deny-plan-writer-off-plan-writes.sh confines that Edit to existing
-        plan files. Write is excluded because a whole-file write reproduces
-        the plan's Context, `Ask:` line included. Bash is excluded because
-        the forged-anchor residual's Low rating rests on every writer without
-        Bash being confined, and Bash would let the agent run commands that no
-        Edit-path gate sees. A future edit widening the tools would pass every
-        other test here while silently dropping one of those. Skill, Agent
-        and Task stay excluded so the agent cannot delegate a gate release.
+        Write would reproduce the plan's Context. Bash would bypass every Edit-path gate.
+        Skill, Agent and Task stay excluded so it cannot delegate a gate release.
         """
         assert self._declared_tools("plan-architect") == {
             "Read",

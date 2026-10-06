@@ -26,9 +26,11 @@
 #   - The target can be swapped between this check and the tool's write.
 #   - A hard link under .claude/plans/ to a file elsewhere, created
 #     beforehand, passes the path check.
-#   - A symlinked .claude/plans directory causes a false deny, and so does a
-#     nested-worktree plan reached from the main tree's cwd.
-#     In either case the agent returns its sections as text.
+#   - A symlinked .claude/plans directory causes a false deny.
+#     The agent returns its sections as text.
+#   - A nested-worktree plan reached from the main tree's cwd causes a false
+#     deny.
+#     The agent returns its sections as text.
 #   - A payload without `.agent_type` reads as a non-plan-writer and passes.
 #     enforce-marker-script-shape.sh's header records the same dependency on
 #     the harness's identity fields.
@@ -120,7 +122,7 @@ fi
 
 # Existence check: the plan-review gate's own exemption does not need one,
 # but an Edit that names a missing file must not be allowed to proceed.
-# This bare stat follows _lib_realpath_m's capped stat of the same path.
+# The stat is uncapped because the capped realpath above already stat-ed this path.
 if [[ ! -f "$REAL_TARGET" ]]; then
   emit_deny "$PLAN_WRITER_SCOPE_RULE '$FILE_PATH' is not an existing file."
   exit 0
