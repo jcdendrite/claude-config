@@ -113,9 +113,9 @@ into one record per API call). Self-contained: no dependency on `scope.py` or `r
 
 Small display-formatting and text-normalization helpers with no state of their own: model-family
 labels (`_fam`), markdown/table rendering, `_content_text`, `_fmt_usd`, `_pct_of`,
-`_strip_task_notifications`, `_is_fresh_user_prompt`. Self-contained. `_is_fresh_user_prompt` is the
-one genuine-user-message predicate: the shim's judgment-pair, `review_rounds.py`'s round-window
-detection, and `rearm_backtest.py`'s boundary detection all read this copy.
+`_strip_task_notifications`, `_is_fresh_user_prompt`. Self-contained. `_is_fresh_user_prompt` has its
+one definition here; the shim's judgment-pair, `review_rounds.py`'s round-window detection, and
+`rearm_backtest.py`'s boundary detection all read it.
 
 ### `cost.py`
 
@@ -523,9 +523,9 @@ The handoff-nudge command family splits at module seams:
 - `tests/test_transcript_spend_over_threshold.py` covers `cmd_spend_over_threshold`, including its
   diagnostic footer
 
-`tests/_handoff_nudge_helpers.py`, a plain module, not a test file itself, holds the two helpers more
-than one file reads: `_spend_over_threshold_args` and `_ramp_curve_from_records`.
-`tests/test_transcript_analysis.py` imports both, for its cross-subcommand table and its
-plan-boundary tests. All consumers import it relatively, as `from ._handoff_nudge_helpers import ...`
+`tests/_handoff_nudge_helpers.py`, a plain module, not a test file itself, holds the three helpers more
+than one file reads: `_spend_over_threshold_args`, `_rearm_backtest_args`, and
+`_ramp_curve_from_records`. `tests/test_transcript_analysis.py` imports all three, for its
+cross-subcommand table and its plan-boundary tests. All consumers import it relatively, as `from ._handoff_nudge_helpers import ...`
 — see `.claude/rules/test-tree-packaging.md` for why. Each file keeps its other family-only helpers
 local to itself.

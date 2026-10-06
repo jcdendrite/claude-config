@@ -106,8 +106,8 @@ _NUDGE_LOG_LINE_KINDS = ("nudged", "schema-drift", "handoff")
 def _ramp_curve_turn_index_bucket(turn_index: int) -> str:
     """Bucket a 0-indexed main-thread turn position (turns since a real or
     simulated fresh session start) into one of PR #605's seven turn-index
-    bands, via the cascading less-than lookup _RAMP_CURVE_TURN_INDEX_BUCKETS'
-    own docstring explains."""
+    bands, via the cascading less-than lookup described in the comment above
+    _RAMP_CURVE_TURN_INDEX_BUCKETS."""
     for bound, label in _RAMP_CURVE_TURN_INDEX_BUCKETS:
         if turn_index < bound:
             return label

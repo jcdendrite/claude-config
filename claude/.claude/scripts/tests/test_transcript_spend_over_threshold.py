@@ -205,3 +205,18 @@ class TestSpendOverThresholdDiagnosticFooter:
         _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
         assert f"Diagnostic: 3 schema-drift line(s) in {tmp_path / '.handoff-nudge.log'}" in out
+
+    def test_footer_prints_on_the_empty_data_early_return(self, fake_projects, tmp_path, capsys):
+        """A run with no qualifying session takes the early-return path, which still prints
+        the diagnostic footer -- the schema-drift count is what explains an empty report."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _priced("claude-opus-4-7", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
+        ])
+        (tmp_path / ".handoff-nudge.log").write_text(
+            "schema-drift session=drift-a event=Stop\n"
+            "schema-drift session=drift-b event=Stop\n"
+        )
+        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        out = capsys.readouterr().out
+        assert "No sessions with a resolvable handoff-nudge threshold" in out
+        assert "Diagnostic: 2 schema-drift line(s)" in out
