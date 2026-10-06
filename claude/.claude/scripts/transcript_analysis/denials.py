@@ -154,6 +154,7 @@ _DENIAL_HOOK_LABELS: frozenset[str] = frozenset({
     "invisible-commit-content",  # deny-invisible-commit-content.sh
     "no-op-dispatch",  # deny-no-op-dispatch.sh
     "review-orchestrator routing",  # require-review-orchestrator-routing.sh
+    "plan-writer-scope",  # deny-plan-writer-off-plan-writes.sh
     # Legacy-only: no active hook emits this wording. Each member is kept
     # permanently so an older recorded transcript still classifies.
     "marker.sh",  # enforce-marker-script-shape.sh's "<name> invocation denied" wording, kept for legacy transcripts

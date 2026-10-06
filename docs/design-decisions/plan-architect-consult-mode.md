@@ -2,6 +2,8 @@
 
 *2026-08-30. Formerly `docs/design-decisions.md` §37.*
 
+**Partially superseded by [plan-architect-writes-its-own-plan-sections.md](plan-architect-writes-its-own-plan-sections.md) (2026-10-05):** consult dispatches now reach an agent that holds `Edit`, which its consult charter forbids it to use, and the decision to widen one agent rather than add a second stands.
+
 Widen `plan-architect` in place rather than add a second agent for ad hoc mid-session Opus architectural consults, or merely document the existing `general-purpose` + `model: opus` path. A subagent's `description` loads into every session's base context with no flag, plugin-scoping, or lazy-discovery mechanism to avoid it — the only documented mitigation is keeping the description short and pushing detail into the body, which loads only on dispatch (Anthropic, *Sub-agents*, "Subagent Startup Context Loading"). A second agent would add a second such description, unconditionally, forever; widening `plan-architect` adds zero new base-context cost, since its frontmatter is a restructured description of comparable size, not an additional one.
 
 `general-purpose` + `model: opus` is rejected on the same grounds [§30](plan-it-step5-pinned-opus-dispatch.md) already rejected it for Step 5: it carries `Write`/`Bash`/`Skill` unconditionally, none of which a design-consult dispatch should hold, and has no durable charter of its own — every instruction `plan-architect.md`'s body carries once would have to be restated in the dispatch prompt on every call. `plan-architect` already has the right shape for this — read-only, `model: opus`, `effort: xhigh`, no `Agent` tool — it was hard-scoped to one caller and one output grammar, not to a narrower privilege set.

@@ -359,7 +359,7 @@ Relay the return verbatim. A disagreement between the orchestrator and the retur
 
 The return decides what, if anything, follows:
 
-- **Endorsed, plan file exists.** Follow with `plan-it` Step 5's revision re-dispatch against that plan's path, to insert the returned sections.
+- **Endorsed, plan file exists.** Follow with `plan-it` Step 5's revision re-dispatch against that plan's path.
 - **Endorsed, no plan file.** No second dispatch — the endorsed mechanism enters through `/plan-it` on its own terms, not as a review fix.
 - **Rejected.** No second dispatch and no plan edit.
 

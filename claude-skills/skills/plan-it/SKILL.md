@@ -46,23 +46,36 @@ List every underspecified decision (edge cases, error handling, scope boundaries
 
 ## Step 5 — Architecture design
 
-Dispatch `plan-architect` with an explicit `model: "opus"` override to author this section — on every `/plan-it` run, regardless of what model the session itself is anchored to. Pass no `isolation: "worktree"` — the session is already anchored in the implementation branch's worktree, and `plan-architect` writes nothing.
+Dispatch `plan-architect` with an explicit `model: "opus"` override to author this section — on every `/plan-it` run, regardless of what model the session itself is anchored to. Pass no `isolation: "worktree"` — the session is already anchored in the implementation branch's worktree, and `plan-architect`'s edits must land in this worktree's plan file.
 
 The dispatch prompt carries:
 - `MODE=plan-sections` as the prompt's first line, on every Step 5 dispatch including revision re-dispatches. This literal selects the plan-section grammar — `plan-architect` also serves ad hoc consults, so the mode can no longer be inferred from context.
+- The plan file's absolute path as the prompt's second line, on every Step 5 dispatch.
 - The Context paragraph from Step 2 and the answers gathered in Step 4, verbatim. Relay each answer as the selected label or the engineer's typed text; mark any option description you relay as your own proposal (CLAUDE.md §Working Style).
 - Every Step 3 subagent's findings, framed as evidence rather than conclusions, plus the absolute path of every file it flagged.
 
 Do not add a CLAUDE.md path or read instruction — `plan-architect` loads it automatically at startup, like every subagent except `Explore`/`Plan`.
 
-Insert the returned text verbatim into the plan file's Approach, Critical files, Verification, and Out of scope sections — do not rewrite or summarize it further. If the returned design names an open decision it left to the user, ask it via `AskUserQuestion` per Step 4 and re-dispatch with the answer rather than settling it in the main session. Pass the plan file's path on that re-dispatch rather than re-injecting the plan text inline — `plan-architect` holds `Read` and can load its own prior draft.
+**Heading lines.** Every heading test below counts only line-start `## ` lines outside fenced code. Before the first dispatch, the title and Context, `Ask:` line included, are already in the plan file. The hash below cannot see fences, so Context never carries a line reading exactly `## Approach`, fenced or not; quote that heading inline in backticks.
 
-Re-dispatch from scratch, rather than repairing inline, on any of these returns:
-- A context-limit failure or tool error mid-dispatch.
-- A truncated return.
-- A return that ignores the required grammar.
+**Scaffold.** At first authoring the file holds only the title and Context and has no `## Approach` heading line. Append one blank line and then exactly these bytes: `## Approach\n\n(pending: plan-architect)\n\n## Critical files\n\n## Verification\n\n## Out of scope\n`. The placeholder is the first non-blank line under `## Approach`, and it reads exactly `(pending: plan-architect)`.
 
-`plan-architect` is read-only and idempotent, so nothing durable is lost by retrying.
+**Legacy plans.** A file with more than the title and Context but no `## Approach` heading line cannot pass the Check below, and neither can one whose region from `## Approach` on carries a heading line other than the four. Treat either as a failed Check before any dispatch and ask the engineer through `AskUserQuestion`. Do not scaffold, dispatch, or restructure it.
+
+**Context hash.** Run `sed -n '1,/^## Approach$/p' "<plan path>" | sha256sum` immediately before each dispatch, after the scaffold and any Context edit of your own. Run it again on every return, failed and truncated returns included, before any splice or re-dispatch, and again after any splice. Stop and report to the engineer when the two digests differ, when either digest starts `e3b0c442` (the digest of empty input, which an unreadable path also yields), or when either run printed anything besides its digest line.
+
+After every dispatch, `Read` the plan file. `plan-architect` writes its sections itself, so a successful return carries no `##` headings. When the return carries all four headings as heading lines, in order, splice it in with one `Edit` whose `old_string` is the file's region from its `## Approach` heading line to the end, replacing it with the return from its `## Approach` heading line on, verbatim. Every byte above that heading stays untouched; never use a whole-file `Write`. Relay the return's reason line to the engineer.
+
+**Check.** After any splice, re-run the hash command, apply the stop condition to it, and `Read` the plan file. The dispatch is complete when the first non-blank line under `## Approach` is not `(pending: plan-architect)` and the only heading lines from `## Approach` on are the four headings, in order.
+
+If the returned design names an open decision it left to the user, ask it via `AskUserQuestion` per Step 4 and re-dispatch with the answer rather than settling it in the main session. The plan file's path is already on line 2, so do not re-inject the plan text inline — `plan-architect` holds `Read` and can load its own prior draft.
+
+Re-dispatch, rather than repairing inline, on any of these:
+- A return carrying some but not all four headings.
+- A file that fails the Check, legacy plans excepted.
+- A context-limit failure or tool error mid-dispatch, only when the Check then fails.
+
+A near-empty return is the success shape, so never judge it truncated. A re-dispatch is always safe: `plan-architect` reads the plan file as it now stands, so a partial write is revised, not lost.
 
 `claude/.claude/agents/plan-architect.md` § "Design principles" governs how the approach is chosen; the rules below govern what the plan records. Consult `code-review`, `test-conventions`, `verify-sources`, and `ai-instruction-and-memory-files` if their domains are implicated.
 
@@ -107,9 +120,11 @@ Write the plan with these sections:
 2. **Approach** — chosen design with rationale; note alternatives considered and why they were set aside (inline in this section, not a separate block). Lead with the concluded design in one or two plain-language sentences before the assumption ledger — the ledger is supporting detail for diffing against a later revision, not the reader's entry point.
 3. **Critical files** — paths to create/modify, with **reuse opportunities** (existing functions/utilities to call rather than reimplement). When the work changes no repository file — an audit, a status assessment — write `None` plus what the deliverable is instead; that's a real result Step 7 acts on, not a gap to fill with speculative paths. Name every file the diff will touch, tests and docs included: once approved, this list is the change's file limit. A file added after approval needs the engineer's answer first. The session then adds it to the list itself, with its own `[engineer-verified: "<quote>"]` row or, if it widens the Ask, on the Ask line.
 4. **Verification** — name the project's own documented test command scoped to the diff; reach for a whole-suite invocation only where the project documents that as the command for the case
-5. **Out of scope** — only if scope creep was observed
+5. **Out of scope** — always present; `None observed.` when empty
 
-Effort sections optional; if present, describe review surface (file count, domain spread, risk concentration), never hours or days.
+Sections 2-5 sit under `##` headings carrying exactly those names, in order, ending the file.
+
+Effort sections optional; if present, sit above `## Approach` and describe review surface (file count, domain spread, risk concentration), never hours or days.
 
 ## Step 6 — Hand off to /plan-review
 

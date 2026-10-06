@@ -5774,6 +5774,121 @@ class TestResumeContextSkill:
         )
 
 
+# Step 5 is the single home of the plan grammar's literals; plan-architect.md
+# cites it rather than restating them.
+_PLAN_IT_STEP5_CONTEXT_CHECK_AND_GRAMMAR_LITERALS = (
+    "sed -n '1,/^## Approach$/p'",
+    "e3b0c442",
+    "the two digests differ",
+    "on every return",
+    "(pending: plan-architect)",
+    "## Approach",
+    "## Critical files",
+    "## Verification",
+    "## Out of scope",
+)
+
+_PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE = (
+    "never call `Edit`, even when the prompt names a plan file"
+)
+
+_PLAN_IT_STEP5_HEADING = "## Step 5 — Architecture design"
+
+# Step 5's Context-hash command, as written in the skill: the one backticked
+# `sed ... | sha256sum` span, with the plan path left as a placeholder.
+_PLAN_IT_CONTEXT_HASH_COMMAND_PATTERN = re.compile(
+    r"`(sed -n '1,/\^## Approach\$/p' \"<plan path>\" \| sha256sum)`"
+)
+
+_SCAFFOLDED_PLAN_TEXT = (
+    "# Title\n\n## Context\n\nAsk: x\n\n"
+    "## Approach\n\n(pending: plan-architect)\n\n"
+    "## Critical files\n\n## Verification\n\n## Out of scope\n"
+)
+
+_EMPTY_INPUT_SHA256_PREFIX = "e3b0c442"
+
+
+class TestPlanItStep5ContextCheckAndGrammarLiterals:
+    """Wiring-presence tripwires for plan-it/SKILL.md Step 5 and plan-architect.md,
+    which are LLM-consumed prose, plus an execution test of Step 5's hash command.
+
+    The literal pin covers Step 5's Context-change check and the plan-grammar
+    literals Step 5 is the single home of. The consult pin covers the consult
+    charter's never-call-`Edit` sentence. A future edit that drops one fails
+    here instead of silently loosening the check or the consult boundary.
+    """
+
+    @staticmethod
+    def _step5_context_hash_command() -> str:
+        step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        match = _PLAN_IT_CONTEXT_HASH_COMMAND_PATTERN.search(step5_text)
+        assert match is not None, (
+            "plan-it/SKILL.md Step 5 no longer carries its Context-hash command "
+            "in the pinned `sed ... | sha256sum` shape."
+        )
+        return match.group(1)
+
+    @classmethod
+    def _run_hash_command(cls, plan_path: Path) -> str:
+        command = cls._step5_context_hash_command()
+        # The skill quotes the path as "<plan path>"; bind it through the environment.
+        runnable_command = command.replace('"<plan path>"', '"$PLAN_PATH"')
+        result = subprocess.run(
+            ["bash", "-c", runnable_command],
+            env={**os.environ, "PLAN_PATH": str(plan_path)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.stdout.strip()
+
+    def test_step5_literals_match_live_text(self) -> None:
+        step5_text = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP5_HEADING)
+        missing = [
+            literal
+            for literal in _PLAN_IT_STEP5_CONTEXT_CHECK_AND_GRAMMAR_LITERALS
+            if literal not in step5_text
+        ]
+        assert not missing, (
+            f"plan-it/SKILL.md Step 5 no longer carries these literals: {missing}."
+        )
+
+    def test_consult_charter_never_calls_edit_sentence_matches_live_text(self) -> None:
+        assert _PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE in _agent_body("plan-architect"), (
+            "plan-architect.md's MODE=consult charter no longer carries its "
+            "never-call-Edit sentence."
+        )
+
+    def test_hash_command_ignores_an_edit_to_the_approach_region(self, tmp_path: Path) -> None:
+        plan_path = tmp_path / "plan.md"
+        plan_path.write_text(_SCAFFOLDED_PLAN_TEXT)
+        digest_before = self._run_hash_command(plan_path)
+
+        plan_path.write_text(
+            _SCAFFOLDED_PLAN_TEXT.replace("(pending: plan-architect)", "Approach text.")
+        )
+
+        assert digest_before
+        assert not digest_before.startswith(_EMPTY_INPUT_SHA256_PREFIX)
+        assert self._run_hash_command(plan_path) == digest_before
+
+    def test_hash_command_changes_on_an_edit_to_the_context(self, tmp_path: Path) -> None:
+        plan_path = tmp_path / "plan.md"
+        plan_path.write_text(_SCAFFOLDED_PLAN_TEXT)
+        digest_before = self._run_hash_command(plan_path)
+
+        plan_path.write_text(_SCAFFOLDED_PLAN_TEXT.replace("Ask: x", "Ask: widened"))
+
+        assert self._run_hash_command(plan_path) != digest_before
+
+    def test_hash_command_yields_the_empty_input_digest_for_a_missing_path(
+        self, tmp_path: Path
+    ) -> None:
+        digest = self._run_hash_command(tmp_path / "missing-plan.md")
+        assert digest.startswith(_EMPTY_INPUT_SHA256_PREFIX)
+
+
 _READY_FOR_REVIEW_STEP1_HEADING = "## 1. Preconditions (halt on fail)"
 
 # The condition→action bullets from ready-for-review/SKILL.md's step-1

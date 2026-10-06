@@ -309,6 +309,7 @@ _BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
     ("deny-invisible-commit-content.sh", "invisible-commit-content"),
     ("deny-no-op-dispatch.sh", "no-op-dispatch"),
     ("require-review-orchestrator-routing.sh", "review-orchestrator routing"),
+    ("deny-plan-writer-off-plan-writes.sh", "plan-writer-scope"),
 )
 
 

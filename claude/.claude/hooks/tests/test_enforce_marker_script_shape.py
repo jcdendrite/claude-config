@@ -1705,10 +1705,19 @@ class TestGateReleaseAuthorityFileWrites:
     """The path-based arm: marker state is guarded on the file-write surface too.
 
     Gating only Bash leaves the property false — every agent in
-    _LIB_NO_GATE_RELEASE_AGENTS carries the Write tool, so it could fabricate a
+    _LIB_NO_GATE_RELEASE_AGENTS that holds `Write` or `Edit` could fabricate a
     marker file directly and never invoke marker.sh at all. This arm matches on
     the resolved target path, so no shell-level indirection applies to it.
     """
+
+    MARKER_RELATIVE_PATHS = [
+        ".claude/code-review-markers/deadbeef.session",
+        ".claude/plan-review-markers/deadbeef.session",
+        ".claude/skill-review-markers/deadbeef.session",
+        ".claude/ready-for-review-markers/deadbeef.session",
+        ".claude/.plan-review-active.d/session",
+        ".claude/.plan-review-active.d/session.planmode-path",
+    ]
 
     @pytest.fixture
     def marker_home(self, tmp_path):
@@ -1720,22 +1729,24 @@ class TestGateReleaseAuthorityFileWrites:
         return home
 
     @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
-    @pytest.mark.parametrize(
-        "relative_path",
-        [
-            ".claude/code-review-markers/deadbeef.session",
-            ".claude/plan-review-markers/deadbeef.session",
-            ".claude/skill-review-markers/deadbeef.session",
-            ".claude/ready-for-review-markers/deadbeef.session",
-            ".claude/.plan-review-active.d/session",
-            ".claude/.plan-review-active.d/session.planmode-path",
-        ],
-    )
+    @pytest.mark.parametrize("relative_path", MARKER_RELATIVE_PATHS)
     def test_marker_path_write_denied(self, marker_home, agent_type, relative_path):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 write_input(str(marker_home / relative_path), agent_type=agent_type),
+                home=marker_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("relative_path", MARKER_RELATIVE_PATHS)
+    def test_plan_writer_marker_path_edit_denied(self, marker_home, relative_path):
+        """plan-architect holds Edit, not Write, so its marker-state route is an Edit."""
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                edit_input(str(marker_home / relative_path), agent_type="plan-architect"),
                 home=marker_home,
             )
             == "deny"
@@ -2860,6 +2871,19 @@ class TestReviewLedgerStatePaths:
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
                 tool_input_builder(str(target), agent_type=agent_type),
+                home=isolated_home,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("lock_file", [False, True], ids=["ledger-file", "lock-file"])
+    def test_plan_writer_ledger_path_edit_denied(self, isolated_home, ledger_files, lock_file):
+        """plan-architect holds Edit, so its ledger-state route is an Edit."""
+        target = ledger_files[1] if lock_file else ledger_files[0]
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                edit_input(str(target), agent_type="plan-architect"),
                 home=isolated_home,
             )
             == "deny"

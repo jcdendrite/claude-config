@@ -2,6 +2,8 @@
 
 *2026-09-19.*
 
+**Partially superseded by [plan-architect-writes-its-own-plan-sections.md](plan-architect-writes-its-own-plan-sections.md) (2026-10-05):** a third writer without `Bash`, `plan-architect`, now holds `Edit`. Wherever `deny-plan-writer-off-plan-writes.sh` runs, the Low rating also rests on that `untrusted-input`-tier gate confining the writer to existing plan files. Where the gate's file is not linked, or in a session whose hook registrations predate it, `plan-architect` is an unconfined `Edit`-only writer, and the rating's premise that every writer without `Bash` is confined does not hold there. `test_edit_without_bash_agents_are_write_scope_confined` and the gate's forged-anchor test pin the confinement.
+
 `require-plan-review.sh` allows a non-plan `Write`/`Edit` whenever `_lib_active_plan_files` returns an empty set, whether or not a trusted in-progress merge/cherry-pick/revert base was detected. `_lib_active_plan_hash` returns empty stdout for an empty active set and binds no value to the base.
 
 ## The symptom this removes
