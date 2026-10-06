@@ -1,5 +1,5 @@
 """Direct unit tests for marker-clear-stale.py's `pid_alive` and
-`read_no_follow`, isolating them from the sweep loop that calls them.
+`read_file_bytes`, isolating them from the sweep loop that calls them.
 `marker.sh clear-stale`'s aggregate stdout is covered separately by
 claude/.claude/hooks/tests/test_marker_script.py's TestMarkerScriptClearStale.
 """
@@ -22,21 +22,17 @@ _clear_stale = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_clear_stale)
 
 
-class TestReadNoFollow:
+class TestReadFileBytes:
     def test_returns_file_content(self, tmp_path):
         target = tmp_path / "marker"
         target.write_bytes(b"12345\n")
-        assert _clear_stale.read_no_follow(str(target)) == b"12345\n"
+        assert _clear_stale.read_file_bytes(str(target)) == b"12345\n"
 
     def test_returns_none_for_a_missing_file(self, tmp_path):
-        assert _clear_stale.read_no_follow(str(tmp_path / "absent")) is None
+        assert _clear_stale.read_file_bytes(str(tmp_path / "absent")) is None
 
-    def test_returns_none_for_a_symlink_rather_than_following_it(self, tmp_path):
-        real = tmp_path / "real"
-        real.write_bytes(b"secret\n")
-        link = tmp_path / "link"
-        link.symlink_to(real)
-        assert _clear_stale.read_no_follow(str(link)) is None
+    def test_returns_none_for_a_directory(self, tmp_path):
+        assert _clear_stale.read_file_bytes(str(tmp_path)) is None
 
 
 class TestPidAlive:
@@ -347,9 +343,8 @@ class TestSweepReviewPrSuffixBranch:
 
     def test_review_pr_entry_with_an_empty_provenance_file_is_kept(self, tmp_path):
         """An empty provenance file must be kept, not evicted: the writer
-        (_lib_write_no_follow) opens with O_TRUNC before it writes, so a
-        concurrent sweep can observe an empty file for a live review.
-        Keeping it is what makes that window safe. No age bound applies, so
+        truncates before it writes, so a concurrent sweep can observe an empty
+        file for a live review. Keeping it is what makes that window safe. No age bound applies, so
         a writer that crashed mid-write leaves an empty file that pins its
         sibling artifacts until they are removed by hand; the file is aged
         to the epoch here to pin that."""

@@ -449,3 +449,51 @@ class TestGhStatusDescription:
     def test_every_other_status_reads_as_a_failure_naming_the_status(self, status):
         assert _call("review_pr_gh_status_description", status) == (0, f"failed (exit {status})")
 
+
+
+class TestResolveSessionAndPid:
+    """_lib_resolve_claude_pid is stubbed after sourcing, so these rows pin the
+    helper's own wiring without depending on the test process's ancestry."""
+
+    @staticmethod
+    def _resolve(stubbed_resolver_body: str, consequence: str = "", abort_note: str = "Abort before any fetch."):
+        return _run_bash(
+            f"_lib_resolve_claude_pid() {{ {stubbed_resolver_body}; }}\n"
+            'status=0\n'
+            'review_pr_resolve_session_and_pid "demo.sh" "$1" "$2" || status=$?\n'
+            'printf "%s|%s|%s" "$status" "${SESSION_ID:-}" "${CLAUDE_PID:-}"',
+            consequence,
+            abort_note,
+        )
+
+    def test_a_resolved_session_sets_the_session_id_and_the_pid(self):
+        result = self._resolve("printf 'sess-1 4242'")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "0|sess-1|4242"
+        assert result.stderr == ""
+
+    def test_an_unresolvable_session_names_the_missing_hook_and_returns_one(self):
+        result = self._resolve("return 1")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.startswith("1||")
+        assert result.stderr == (
+            "demo.sh: could not resolve this session's id (capture-session-id.sh SessionStart hook did not run). "
+            "Abort before any fetch.\n"
+        )
+
+    def test_a_session_id_that_is_not_a_path_component_names_the_id_and_returns_one(self):
+        result = self._resolve("printf '../escape 4242'")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.startswith("1|")
+        assert result.stderr == (
+            "demo.sh: resolved session id '../escape' is not a valid path component. Abort before any fetch.\n"
+        )
+
+    @pytest.mark.parametrize("stubbed_resolver_body", ["return 1", "printf '../escape 4242'"])
+    def test_the_caller_supplied_consequence_and_abort_note_end_both_failure_messages(self, stubbed_resolver_body):
+        result = self._resolve(
+            stubbed_resolver_body,
+            consequence=" -- cannot name the worktree",
+            abort_note="Abort before creating a worktree.",
+        )
+        assert result.stderr.endswith(" -- cannot name the worktree. Abort before creating a worktree.\n")

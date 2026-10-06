@@ -37,11 +37,6 @@ if [[ ! -r "$FINDINGS_BODY_PATH" ]]; then
   exit 2
 fi
 
-# grep below follows a symlink at this path, not O_NOFOLLOW: marker.sh's
-# `write review-pr` arm runs _lib_sha256_no_follow against this same path
-# after this scan and refuses the whole write on a symlinked target, so
-# that downstream hash check is what actually closes the symlink-follow gap.
-
 # -n prints the line number, not the match itself -- the deny message below
 # names where the hit is, so the finding can be located and scrubbed
 # without the credential value ever reaching this script's own stdout/stderr.

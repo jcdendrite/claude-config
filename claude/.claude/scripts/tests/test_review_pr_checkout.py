@@ -2448,40 +2448,35 @@ class TestSessionArtifactWriteFailure:
         assert result.stdout == ""
         assert _review_worktrees(repo) == []
 
-    def test_a_symlink_where_the_diff_file_belongs_aborts_before_any_worktree(
+    def test_an_unwritable_diff_file_path_aborts_before_any_worktree(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
-        """The diff write refuses a symlink at its predictable destination
-        rather than truncating the symlink's target."""
+        """A directory where the diff file belongs makes the diff write fail."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        symlink_target = tmp_path / "symlink_target"
-        symlink_target.write_text("pre-existing content\n")
         active_dir = isolated_home / ".claude" / ".review-pr-active.d"
         active_dir.mkdir(parents=True)
-        (active_dir / f"{SID}.diff").symlink_to(symlink_target)
+        (active_dir / f"{SID}.diff").mkdir()
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
         )
         assert result.returncode == 2
         assert "could not write diff file" in result.stderr
         assert result.stdout == ""
-        assert symlink_target.read_text() == "pre-existing content\n", "the write must not follow the symlink"
         assert _review_worktrees(repo) == []
 
-    def test_a_symlink_where_the_provenance_file_belongs_aborts_with_exit_two(
+    def test_an_unwritable_provenance_file_path_aborts_with_exit_two(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
-        """The provenance write refuses a symlink at its destination. Under
-        `set -e` an unguarded call would exit with the write pipeline's own
+        """A directory where the provenance file belongs makes its write fail.
+        Under `set -e` an unguarded call would exit with the write's own
         status 1. The worktree already exists by then, and the message names
         finish as the cleanup."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        symlink_target = tmp_path / "symlink_target"
         active_dir = isolated_home / ".claude" / ".review-pr-active.d"
         active_dir.mkdir(parents=True)
-        (active_dir / f"{SID}.provenance").symlink_to(symlink_target)
+        (active_dir / f"{SID}.provenance").mkdir()
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["a.py"],
         )
@@ -2489,7 +2484,6 @@ class TestSessionArtifactWriteFailure:
         assert "could not write provenance file" in result.stderr
         assert "review-pr-finish.sh" in result.stderr
         assert result.stdout == ""
-        assert not symlink_target.exists(), "the write must not follow the symlink"
         assert len(_review_worktrees(repo)) == 1
 
 

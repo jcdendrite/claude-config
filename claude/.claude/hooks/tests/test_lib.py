@@ -6768,120 +6768,6 @@ class TestRedactCredentialShapedStrings:
         assert len(counter_file.read_text().splitlines()) == 1
 
 
-class TestLibSha256NoFollow:
-    """Direct unit coverage for _lib_sha256_no_follow -- otherwise only
-    exercised indirectly through marker.sh's `write review-pr` arm."""
-
-    def test_real_file_digest_matches_hashlib(self, tmp_path: Path) -> None:
-        target = tmp_path / "body.txt"
-        content = b"findings body content\n"
-        target.write_bytes(content)
-        result = _run_lib_call(f'_lib_sha256_no_follow "{target}"', env=dict(os.environ))
-        assert result.returncode == 0
-        assert result.stdout.strip() == hashlib.sha256(content).hexdigest()
-
-    def test_symlink_is_refused(self, tmp_path: Path) -> None:
-        real_target = tmp_path / "real.txt"
-        real_target.write_text("real content\n")
-        link = tmp_path / "link.txt"
-        link.symlink_to(real_target)
-        result = _run_lib_call(f'_lib_sha256_no_follow "{link}"', env=dict(os.environ))
-        assert result.returncode != 0
-        assert result.stdout == ""
-
-    def test_missing_path_is_refused(self, tmp_path: Path) -> None:
-        missing = tmp_path / "does-not-exist.txt"
-        result = _run_lib_call(f'_lib_sha256_no_follow "{missing}"', env=dict(os.environ))
-        assert result.returncode != 0
-        assert result.stdout == ""
-
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
-    def test_permission_denied_path_is_refused(self, tmp_path: Path) -> None:
-        target = tmp_path / "no-read.txt"
-        target.write_text("secret\n")
-        target.chmod(0o000)
-        try:
-            result = _run_lib_call(f'_lib_sha256_no_follow "{target}"', env=dict(os.environ))
-        finally:
-            target.chmod(0o644)
-        assert result.returncode != 0
-        assert result.stdout == ""
-
-
-class TestLibWriteNoFollow:
-    """Direct unit coverage for _lib_write_no_follow -- otherwise only
-    exercised indirectly through marker.sh's `write review-pr` arm and
-    the review-pr scripts' own provenance/context/diff artifact writes."""
-
-    def test_writes_stdin_to_a_fresh_path(self, tmp_path: Path) -> None:
-        target = tmp_path / "marker"
-        result = _run_lib_call(f'printf "hello\\n" | _lib_write_no_follow "{target}"', env=dict(os.environ))
-        assert result.returncode == 0
-        assert target.read_text() == "hello\n"
-
-    def test_truncates_and_overwrites_an_existing_file(self, tmp_path: Path) -> None:
-        target = tmp_path / "marker"
-        target.write_text("stale content that must not survive\n")
-        result = _run_lib_call(f'printf "fresh\\n" | _lib_write_no_follow "{target}"', env=dict(os.environ))
-        assert result.returncode == 0
-        assert target.read_text() == "fresh\n"
-
-    def test_symlink_is_refused_and_its_target_is_untouched(self, tmp_path: Path) -> None:
-        real_target = tmp_path / "real.txt"
-        real_target.write_text("pre-existing content\n")
-        link = tmp_path / "link.txt"
-        link.symlink_to(real_target)
-        result = _run_lib_call(f'printf "attacker-controlled\\n" | _lib_write_no_follow "{link}"', env=dict(os.environ))
-        assert result.returncode != 0
-        assert link.is_symlink(), "the symlink itself must survive, unmodified"
-        assert real_target.read_text() == "pre-existing content\n", (
-            "the write must not follow the symlink and truncate its target"
-        )
-
-
-class TestLibCatNoFollow:
-    """Direct unit coverage for _lib_cat_no_follow -- otherwise only
-    exercised indirectly through review-pr-post.sh's own re-verification of
-    the findings-body file. Mirrors TestLibSha256NoFollow's cases above,
-    since both share the same O_NOFOLLOW-open primitive and differ only in
-    what they do with the bytes."""
-
-    def test_returns_the_full_file_content(self, tmp_path: Path) -> None:
-        target = tmp_path / "body.txt"
-        content = b"findings body content\n"
-        target.write_bytes(content)
-        result = _run_lib_call(f'_lib_cat_no_follow "{target}"', env=dict(os.environ))
-        assert result.returncode == 0
-        assert result.stdout == content.decode()
-
-    def test_symlink_is_refused(self, tmp_path: Path) -> None:
-        real_target = tmp_path / "real.txt"
-        real_target.write_text("real content\n")
-        link = tmp_path / "link.txt"
-        link.symlink_to(real_target)
-        result = _run_lib_call(f'_lib_cat_no_follow "{link}"', env=dict(os.environ))
-        assert result.returncode != 0
-        assert result.stdout == ""
-
-    def test_missing_path_is_refused(self, tmp_path: Path) -> None:
-        missing = tmp_path / "does-not-exist.txt"
-        result = _run_lib_call(f'_lib_cat_no_follow "{missing}"', env=dict(os.environ))
-        assert result.returncode != 0
-        assert result.stdout == ""
-
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
-    def test_permission_denied_path_is_refused(self, tmp_path: Path) -> None:
-        target = tmp_path / "no-read.txt"
-        target.write_text("secret\n")
-        target.chmod(0o000)
-        try:
-            result = _run_lib_call(f'_lib_cat_no_follow "{target}"', env=dict(os.environ))
-        finally:
-            target.chmod(0o644)
-        assert result.returncode != 0
-        assert result.stdout == ""
-
-
 class TestLibReviewPrArtifactPath:
     """Direct unit coverage for _lib_review_pr_artifact_path -- the one
     shared derivation of every review-pr session-scoped artifact path."""
@@ -7009,16 +6895,14 @@ class TestLibReviewPrProvenanceSchema:
         assert absent.returncode != 0
         assert absent.stdout == ""
 
-    def test_writer_refuses_a_symlinked_destination(self, tmp_path: Path) -> None:
-        real = tmp_path / "real.provenance"
-        real.write_text("pre-existing\n")
-        link = tmp_path / "sess.provenance"
-        link.symlink_to(real)
+    def test_writer_returns_non_zero_when_the_destination_cannot_be_written(self, tmp_path: Path) -> None:
+        missing_directory_destination = tmp_path / "absent-directory" / "sess.provenance"
         result = _run_lib_call(
-            f'_lib_write_review_pr_provenance "{link}" pr_identity=foo/bar#42', env=dict(os.environ)
+            f'_lib_write_review_pr_provenance "{missing_directory_destination}" pr_identity=foo/bar#42',
+            env=dict(os.environ),
         )
         assert result.returncode != 0
-        assert real.read_text() == "pre-existing\n", "a symlinked destination must never be followed and truncated"
+        assert not missing_directory_destination.exists()
 
 
 class TestLibReviewPrWorktreeTemplate:
@@ -9463,78 +9347,3 @@ def test_shared_closure_function_is_identical_across_stowed_and_plugin_lib(
     assert _declared_function_body(_LIB_SH, function_name) == _declared_function_body(
         _SKILL_MANAGEMENT_PLUGIN_LIB, function_name
     )
-
-
-# --- The no-follow helpers must not import from the working directory ---------
-
-_POISONED_STDLIB_MODULE_SOURCE = (
-    'import pathlib\n'
-    'pathlib.Path(__file__).with_name("poison-ran").write_text("ran")\n'
-    'raise RuntimeError("the working directory shadowed the standard library")\n'
-)
-
-
-def _poisoned_cwd(tmp_path: Path) -> Path:
-    """A directory holding modules that record their own import and then fail,
-    named for the standard-library module the sha256 helper imports."""
-    poisoned_dir = tmp_path / "pr-checkout"
-    poisoned_dir.mkdir()
-    (poisoned_dir / "hashlib.py").write_text(_POISONED_STDLIB_MODULE_SOURCE)
-    return poisoned_dir
-
-
-def _run_helper_uncapped(helper_call: str, cwd: Path, target: Path) -> subprocess.CompletedProcess:
-    """Runs `helper_call` (target at "$2") with _lib_capped passed through, so its 5s cap cannot fire under load."""
-    return subprocess.run(
-        ["bash", "-c", f'. "$1"; _lib_capped() {{ "$@"; }}; {helper_call}', "bash", str(_LIB_SH), str(target)],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=60,  # Generous harness bound so a hung helper fails this test instead of the suite.
-    )
-
-
-class TestNoFollowHelpersIgnoreTheWorkingDirectory:
-    """`python3 -c` puts the cwd first on sys.path, and a review runs these
-    helpers with a PR checkout as cwd. A PR-planted top-level hashlib.py must
-    not run in the sha256 helper, the only one importing a module outside the
-    already-loaded os and sys, and must not break the other helpers' round
-    trip."""
-
-    def test_sha256_helper_does_not_execute_a_hashlib_planted_in_the_cwd(self, tmp_path):
-        poisoned_dir = _poisoned_cwd(tmp_path)
-        target = tmp_path / "findings-body.txt"
-        target.write_bytes(b"reviewed bytes\n")
-
-        result = _run_helper_uncapped('_lib_sha256_no_follow "$2"', poisoned_dir, target)
-
-        assert result.returncode == 0, f"exit {result.returncode}: {result.stderr}"
-        assert result.stdout.strip() == hashlib.sha256(b"reviewed bytes\n").hexdigest()
-        assert not (poisoned_dir / "poison-ran").exists(), "the planted hashlib.py was imported and executed"
-
-    def test_cat_and_write_helpers_still_round_trip_from_a_cwd_holding_a_hashlib_module(self, tmp_path):
-        """A round trip only: these helpers import os and sys, which are loaded
-        before the cwd joins sys.path, so the cwd cannot show whether -I is
-        present. test_lib_sh_inline_python_starts_carry_isolated_mode does."""
-        poisoned_dir = _poisoned_cwd(tmp_path)
-        destination = tmp_path / "artifact.txt"
-
-        result = _run_helper_uncapped(
-            'printf "%s" "payload" | _lib_write_no_follow "$2" && _lib_cat_no_follow "$2"', poisoned_dir, destination
-        )
-
-        assert result.returncode == 0, f"exit {result.returncode}: {result.stderr}"
-        assert result.stdout == "payload"
-
-
-def test_lib_sh_inline_python_starts_carry_isolated_mode():
-    """A `python3 -c` whose option cluster lacks -I puts the cwd on sys.path."""
-    code_lines = [line.strip() for line in _LIB_SH.read_text().splitlines() if not line.lstrip().startswith("#")]
-    inline_start = re.compile(r"python3 ((?:-\S+ )*-[A-Za-z]*c)\b")
-    inline_starts = [line for line in code_lines if inline_start.search(line)]
-    inline_starts_without_isolated_mode = [
-        line for line in inline_starts if not re.search(r"-[A-Za-z]*I", inline_start.search(line).group(1))
-    ]
-
-    assert inline_starts, "found no `python3 -c` start in _lib.sh, so the isolated-mode check examined nothing"
-    assert inline_starts_without_isolated_mode == []

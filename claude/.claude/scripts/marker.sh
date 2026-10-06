@@ -760,12 +760,10 @@ case "$SUBCOMMAND" in
         # The findings-body path is derived here, never read from provenance,
         # so no path-equality guard is needed before using it.
         FINDINGS_BODY_PATH=$(_review_pr_findings_body_fixed_path "$SESSION_ID")
-        # _lib_sha256_no_follow reads through a single os.open(O_NOFOLLOW) --
-        # a separate `[ -L ]` check followed by `sha256sum` is not atomic, so
-        # an attacker could swap in a symlink between the two. Computed before
-        # writing, same as every arm above.
-        BODY_HASH=$(_lib_sha256_no_follow "$FINDINGS_BODY_PATH" 2>/dev/null)
-        [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s (missing, unreadable, or a symlink). Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
+        # Computed before writing, same as every arm above. A symlink at the
+        # path is followed, matching the Write tool that created the file.
+        BODY_HASH=$(_lib_capped sha256sum -- "$FINDINGS_BODY_PATH" 2>/dev/null | awk '{print $1}')
+        [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s (missing or unreadable). Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
         # The two checks below each read the body by path, so the hash is
         # taken again after them: a body changed in between would otherwise
         # get a marker covering bytes neither check saw.
@@ -787,14 +785,14 @@ case "$SUBCOMMAND" in
           printf 'marker.sh: findings-body secret scan failed. Abort without writing a marker.\n' >&2
           exit 2
         fi
-        BODY_HASH_AFTER_CHECKS=$(_lib_sha256_no_follow "$FINDINGS_BODY_PATH" 2>/dev/null)
+        BODY_HASH_AFTER_CHECKS=$(_lib_capped sha256sum -- "$FINDINGS_BODY_PATH" 2>/dev/null | awk '{print $1}')
         if [ "$BODY_HASH_AFTER_CHECKS" != "$BODY_HASH" ]; then
           printf 'marker.sh: the findings-body file %s changed while it was being checked. Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2
           exit 2
         fi
         mkdir -p "$CONFIG_DIR/review-pr-markers"
-        printf '%s\n%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$BODY_HASH" "$MODE" | _lib_write_no_follow "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID" \
-          || { printf 'marker.sh: could not write the completion marker (symlink at destination, or permission error). Abort.\n' >&2; exit 2; }
+        printf '%s\n%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$BODY_HASH" "$MODE" > "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID" \
+          || { printf 'marker.sh: could not write the completion marker (permission error). Abort.\n' >&2; exit 2; }
         ;;
       verification)
         SESSION_ID=$(_resolve_session_id) || exit 2
@@ -1045,11 +1043,9 @@ case "$SUBCOMMAND" in
     fi
 
     printf '\nActive-bypass markers (this session):\n'
-    _status_report_active_bypass plan-review "$(_active_bypass_dir_for plan-review)" "$SESSION_ID"
-    _status_report_active_bypass ready-for-review "$(_active_bypass_dir_for ready-for-review)" "$SESSION_ID"
-    _status_report_active_bypass respond-pr "$(_active_bypass_dir_for respond-pr)" "$SESSION_ID"
-    _status_report_active_bypass memory-skill "$(_active_bypass_dir_for memory-skill)" "$SESSION_ID"
-    _status_report_active_bypass handoff "$(_active_bypass_dir_for handoff)" "$SESSION_ID"
+    for ACTIVE_BYPASS_SKILL in "${ACTIVE_BYPASS_SKILLS[@]}"; do
+      _status_report_active_bypass "$ACTIVE_BYPASS_SKILL" "$(_active_bypass_dir_for "$ACTIVE_BYPASS_SKILL")" "$SESSION_ID"
+    done
     ;;
   check)
     case "$SKILL" in

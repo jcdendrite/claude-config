@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
 """Sweeps orphaned session markers under $CONFIG_DIR/.*-active.d/, called by
 marker.sh's `clear-stale` arm. One process for the whole sweep, not one per
-entry: a per-file bash loop would pay a fresh python3 spawn per O_NOFOLLOW
-read. Reads use O_NOFOLLOW so a symlink planted at one of these predictable
-<active-dir>/<session-id>[.suffix] paths is never followed, the same hardening
-_lib.sh's _lib_write_no_follow and _lib_cat_no_follow apply per-file elsewhere.
+entry.
 
 Usage: marker-clear-stale.py CONFIG_DIR DRY_RUN
 
@@ -48,15 +45,13 @@ ALREADY_ABSENT = "already absent"
 REMOVAL_FAILED = "removal failed"
 
 
-def read_no_follow(path: str) -> bytes | None:
-    """Read path's full content, or None if it's absent, unreadable, or a
-    symlink (O_NOFOLLOW refuses to open through one)."""
+def read_file_bytes(path: str) -> bytes | None:
+    """Read path's full content, or None if it's absent or unreadable."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with open(path, "rb") as f:
+            return f.read()
     except OSError:
         return None
-    with os.fdopen(fd, "rb") as f:
-        return f.read()
 
 
 def pid_alive(pid_text: str | None) -> bool:
@@ -112,7 +107,7 @@ def live_session_ids(sessions_dir: str) -> set[str]:
     for file_name in file_names:
         if not pid_alive(file_name):
             continue
-        content = read_no_follow(os.path.join(sessions_dir, file_name))
+        content = read_file_bytes(os.path.join(sessions_dir, file_name))
         if content is None:
             continue
         session_id, _, recorded_start = content.decode("utf-8", "replace").partition("\n")
@@ -185,7 +180,7 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str], int]:
                 continue
             if review_pr_suffix is not None:
                 owner_session_id = entry_name[: -len(review_pr_suffix)]
-                provenance_content = read_no_follow(os.path.join(active_dir, owner_session_id + ".provenance"))
+                provenance_content = read_file_bytes(os.path.join(active_dir, owner_session_id + ".provenance"))
                 owner_pid = None
                 # Fails closed the same way _lib.sh's
                 # _lib_review_pr_provenance_field does:
@@ -242,7 +237,7 @@ def sweep(config_dir: str, dry_run: bool) -> tuple[int, int, list[str], int]:
 
             # Equivalent to _lib_active_bypass_marker_live's two-part staleness
             # definition: PID alive AND mtime within the 60-minute idle window.
-            stored_content = read_no_follow(entry)
+            stored_content = read_file_bytes(entry)
             stored_pid = stored_content.decode("utf-8", "replace").strip() if stored_content is not None else ""
             alive = pid_alive(stored_pid)
             fresh = False

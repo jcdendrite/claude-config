@@ -98,16 +98,7 @@ CONFIG_DIR=$(_lib_config_dir) || {
   exit 2
 }
 
-SESSION_AND_PID=$(_lib_resolve_claude_pid) || {
-  echo "review-pr-diff.sh: could not resolve this session's id (capture-session-id.sh SessionStart hook did not run). Abort before any fetch." >&2
-  exit 2
-}
-SESSION_ID="${SESSION_AND_PID%% *}"
-CLAUDE_PID="${SESSION_AND_PID##* }"
-if ! _lib_valid_session_id_component "$SESSION_ID"; then
-  echo "review-pr-diff.sh: resolved session id '$SESSION_ID' is not a valid path component. Abort before any fetch." >&2
-  exit 2
-fi
+review_pr_resolve_session_and_pid "review-pr-diff.sh" "" "Abort before any fetch." || exit 2
 
 REPO_ROOT=$(_lib_capped git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=""
 if [[ -z "$REPO_ROOT" ]]; then
@@ -242,7 +233,7 @@ if ! mkdir -p -- "$ACTIVE_DIR"; then
   exit 2
 fi
 DIFF_FILE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" diff)
-if ! printf '%s\n' "$DIFF_TEXT" | _lib_write_no_follow "$DIFF_FILE"; then
+if ! printf '%s\n' "$DIFF_TEXT" > "$DIFF_FILE"; then
   echo "review-pr-diff.sh: could not write diff file $DIFF_FILE. Abort." >&2
   exit 2
 fi

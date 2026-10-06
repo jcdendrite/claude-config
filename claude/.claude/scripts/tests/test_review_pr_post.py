@@ -375,23 +375,6 @@ class TestBodyHashMismatch:
         assert _read_calls(call_log) == []
         assert review_pr_completion_marker_path(isolated_home, git_repo, SID).exists()
 
-    def test_symlinked_findings_body_fails_closed(self, isolated_home, git_repo, tmp_path):
-        """O_NOFOLLOW read: a pre-planted symlink at the fixed findings-body
-        path must not be followed and hashed, the same TOCTOU class already
-        closed for marker.sh's own read of this file."""
-        _seed_session(isolated_home, SID)
-        real_target = tmp_path / "attacker-chosen-target.md"
-        real_target.write_text("# attacker-chosen content\n")
-        body_path = _findings_body_path(isolated_home)
-        body_path.parent.mkdir(parents=True, exist_ok=True)
-        body_path.symlink_to(real_target)
-        body_hash = hashlib.sha256(real_target.read_bytes()).hexdigest()
-        _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash)
-        result, call_log = _run(git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path)
-        assert result.returncode != 0
-        assert _read_calls(call_log) == []
-        assert review_pr_completion_marker_path(isolated_home, git_repo, SID).exists()
-
 
 class TestMalformedPrIdentity:
     @pytest.mark.parametrize(

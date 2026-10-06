@@ -206,13 +206,9 @@ A spawned review-only subagent carries no Write tool for this path, so requiring
 
 Passing the fixed path as a Bash argument would also put it in the command's argv, which appears in shell history and the process table. The findings-body path comes from `review-pr-findings-path.sh`, not from a value the model transcribes, so nothing needs independent verification against `$CONFIG_DIR`/`$SESSION_ID`.
 
-Accepted gap: the Write tool does not open with `O_NOFOLLOW`, so a pre-planted symlink at the fixed body path would be followed.
+Accepted gap: neither the Write tool nor the review-pr scripts refuse a symlink at the session-scoped paths (`.body`, `.diff`, `.context.json`, `.provenance`, and the completion marker), so a pre-planted symlink there would be followed. Planting one takes same-user write access to the config directory, and any process with that access can already write this skill's own state.
 
-The downstream read path rejects that symlink. `_lib_sha256_no_follow` (`claude/.claude/hooks/_lib.sh`), called from `marker.sh write review-pr`, hashes through an `O_NOFOLLOW` open, so the flow fails closed rather than posting unreviewed content.
-
-The same followed write can also overwrite or create an arbitrary file the Claude Code process has write access to. That risk is wider than the posting-side risk the read-path check mitigates. It rests on the same local-compromise prerequisite as the read-side gap.
-
-Both diff writers, `review-pr-checkout.sh` and `review-pr-diff.sh`, write the `.diff` file through `_lib_write_no_follow`, which refuses a symlink at that path. No script reads `.diff` back: `/code-review` reads it with the agent's `Read`, which follows symlinks, so a symlink planted after the write has no read-side backstop.
+A followed write can overwrite or create an arbitrary file the Claude Code process has write access to. `/code-review` reads `.diff` with the agent's `Read`, which follows symlinks too.
 
 ## Known gaps and operator choices
 

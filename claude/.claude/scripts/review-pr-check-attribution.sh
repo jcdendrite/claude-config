@@ -47,11 +47,6 @@ if [[ ! -r "$FINDINGS_BODY_PATH" ]]; then
   exit 2
 fi
 
-# Read with ordinary redirection below, not O_NOFOLLOW: marker.sh's `write
-# review-pr` arm runs _lib_sha256_no_follow against this same path after
-# this check and refuses the whole write on a symlinked target, so that
-# downstream hash check is what actually closes the symlink-follow gap.
-
 FIRST_LINE=$(head -n 1 -- "$FINDINGS_BODY_PATH")
 # Quoted literal, not bare -- unquoted, [Claude Code] is a glob character
 # class, same as respond-pr-safe-patch.sh's own prefix check.

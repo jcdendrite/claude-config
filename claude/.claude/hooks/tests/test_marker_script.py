@@ -1807,6 +1807,7 @@ class TestMarkerScriptActiveBypassRoster:
 
 
 # Write arms whose failed-write case is its own test rather than the shared plain-redirect one.
+# review-pr's is in TestMarkerScriptReviewPr, because its failed write exits 2 from its own guard, not the redirect's status 1.
 _WRITE_ARMS_WITH_THEIR_OWN_FAILED_WRITE_TEST = ("plan-review", "cumulative-review", "review-pr")
 
 
@@ -5518,23 +5519,20 @@ class TestMarkerScriptStatusUsageBannerCompleteness:
             "wire the difference into both, or drop it from the banner"
         )
 
-    def test_every_active_bypass_marker_named_in_usage_is_checked_in_status_body(
-        self, isolated_home, git_repo
-    ):
-        help_result = _run(["--help"], cwd=git_repo, home=isolated_home)
-        assert help_result.returncode == 0, help_result.stderr
-        banner_match = re.search(r"active-bypass marker \(([^)]+)\)", help_result.stderr)
-        assert banner_match, "usage() banner's active-bypass-marker list not found"
-        named = {name.strip() for name in banner_match.group(1).split(",")}
-
+    def test_status_body_reports_every_active_bypass_skill_by_looping_the_roster(self):
+        """usage()'s active-bypass list and the status report both derive from
+        ACTIVE_BYPASS_SKILLS, so the two cannot drift as long as the status
+        body loops over that array instead of naming skills one by one."""
         text = MARKER_SCRIPT.read_text()
         status_body_match = re.search(r"\n  status\)\n(.*?)\n  check\)", text, re.DOTALL)
         assert status_body_match, "status) case body not found"
         status_body = self._strip_comment_lines(status_body_match.group(1))
-        checked = set(re.findall(r"_status_report_active_bypass (\S+)", status_body))
-        assert named == checked, (
-            f"usage() names {named} but status) body checks {checked} -- "
-            "wire the difference into both, or drop it from the banner"
+        assert re.search(
+            r'for (\w+) in "\$\{ACTIVE_BYPASS_SKILLS\[@\]\}"; do\s+_status_report_active_bypass "\$\1"',
+            status_body,
+        ), "status) body must call _status_report_active_bypass once per ACTIVE_BYPASS_SKILLS entry"
+        assert not re.search(r"_status_report_active_bypass [a-z]", status_body), (
+            "status) body names an active-bypass skill literally instead of looping the roster"
         )
 
 
@@ -6171,30 +6169,6 @@ class TestMarkerScriptReviewPr:
         assert lines[2] == expected_hash
         assert lines[3] == "checkout"
 
-    def test_write_does_not_execute_a_hashlib_planted_in_the_pr_checkout(
-        self, isolated_home, git_repo
-    ):
-        """SKILL.md runs this arm from any tree of the repo, which can be the PR
-        checkout, and `python3 -c` would put the current directory first on
-        sys.path: a PR-planted hashlib.py must neither run nor keep the marker
-        from being written."""
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        findings_body = self._write_findings_body_for_mode(isolated_home, "checkout", sid)
-        self._declare_provenance(isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid)
-        (git_repo / "hashlib.py").write_text(
-            "import pathlib\n"
-            "pathlib.Path(__file__).with_name('poison-ran').write_text('ran')\n"
-            "raise RuntimeError('the PR checkout shadowed the standard library')\n"
-        )
-
-        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
-
-        assert result.returncode == 0, result.stderr
-        assert not (git_repo / "poison-ran").exists(), "the planted hashlib.py was imported and executed"
-        marker = review_pr_completion_marker_path(isolated_home, git_repo, sid)
-        assert marker.read_text().splitlines()[2] == hashlib.sha256(findings_body.read_bytes()).hexdigest()
-
     def test_write_refuses_a_body_that_changes_while_the_checks_read_it(
         self, isolated_home, git_repo, tmp_path
     ):
@@ -6270,17 +6244,16 @@ class TestMarkerScriptReviewPr:
         assert "changed while it was being checked" in result.stderr
         assert not review_pr_completion_marker_path(isolated_home, git_repo, sid).exists()
 
-    def test_write_refuses_a_body_swapped_for_a_symlink_during_the_checks(
+    def test_write_refuses_a_body_that_is_removed_during_the_checks(
         self, isolated_home, git_repo, tmp_path
     ):
-        """A symlink with the same text makes the second hash fail, which must
-        read as a changed body and not as a match."""
+        """A body deleted after the first hash hashes to nothing the second time, which must read as a
+        change, not as a match. The stand-in scan removes the body and then passes, and the real
+        attribution check passes first."""
         sid = self.SID
         _seed_session(isolated_home, sid)
         findings_body = self._write_findings_body_for_mode(isolated_home, "checkout", sid)
         self._declare_provenance(isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid)
-        link_target = tmp_path / "same-text-elsewhere.txt"
-        link_target.write_bytes(findings_body.read_bytes())
 
         result = self._write_with_stand_in_check_siblings(
             tmp_path,
@@ -6288,8 +6261,7 @@ class TestMarkerScriptReviewPr:
             git_repo,
             {
                 "review-pr-scan-findings-body.sh": (
-                    "#!/usr/bin/env bash\n"
-                    f"rm -f {str(findings_body)!r} && ln -s {str(link_target)!r} {str(findings_body)!r}\n"
+                    "#!/usr/bin/env bash\n" f"rm -f {str(findings_body)!r}\n"
                 )
             },
             real_siblings=("review-pr-check-attribution.sh",),
@@ -6298,6 +6270,38 @@ class TestMarkerScriptReviewPr:
         assert result.returncode == 2
         assert "changed while it was being checked" in result.stderr
         assert not review_pr_completion_marker_path(isolated_home, git_repo, sid).exists()
+
+    @pytest.mark.parametrize("body_state", ["absent", "directory"])
+    def test_write_refuses_when_the_findings_body_cannot_be_hashed(
+        self, isolated_home, git_repo, body_state
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid)
+        if body_state == "directory":
+            self._fixed_body_path(isolated_home, sid).mkdir(parents=True)
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "could not hash the findings-body file" in result.stderr
+        assert not review_pr_completion_marker_path(isolated_home, git_repo, sid).exists()
+
+    def test_write_exits_2_naming_the_failed_write_when_the_marker_path_is_a_directory(
+        self, isolated_home, git_repo
+    ):
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        self._write_findings_body_for_mode(isolated_home, "checkout", sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid)
+        marker = review_pr_completion_marker_path(isolated_home, git_repo, sid)
+        marker.mkdir(parents=True)
+
+        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "could not write the completion marker" in result.stderr
+        assert marker.is_dir() and not any(marker.iterdir())
 
     def _write_findings_body_for_mode(self, home, mode, sid=SID):
         """A findings body passing the attribution check for `mode`:
@@ -6580,61 +6584,6 @@ class TestMarkerScriptReviewPr:
         marker_dir = isolated_home / ".claude" / "review-pr-markers"
         stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
         assert stray == [], f"an incomplete provenance file must not write a marker: {stray}"
-
-    def test_write_refuses_a_symlink_at_the_findings_body_location(
-        self, isolated_home, git_repo, tmp_path
-    ):
-        """The findings-body path is derived, never read from provenance. A
-        symlink planted at the derived location must be rejected before
-        hashing."""
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        fixed_path = self._fixed_body_path(isolated_home, sid)
-        fixed_path.parent.mkdir(parents=True, exist_ok=True)
-        real_target = tmp_path / "attacker-chosen-target.md"
-        real_target.write_text(
-            "**[Claude Code]** # attacker-chosen content\n\n"
-            f"{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
-        )
-        fixed_path.symlink_to(real_target)
-        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid)
-
-        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 2, result.stderr
-        marker_dir = isolated_home / ".claude" / "review-pr-markers"
-        stray = list(marker_dir.iterdir()) if marker_dir.exists() else []
-        assert stray == [], f"a symlink at the fixed location must not write a marker: {stray}"
-
-    def test_write_refuses_a_symlink_at_the_completion_marker_destination(
-        self, isolated_home, git_repo, tmp_path
-    ):
-        """TOCTOU regression: the completion marker's own destination path
-        is predictable ($CONFIG_DIR/review-pr-markers/<repo-hash>.<session-id>),
-        so a pre-planted symlink there must not be followed by the write --
-        a plain `>` redirect follows and truncates through a symlink."""
-        sid = self.SID
-        _seed_session(isolated_home, sid)
-        findings_body = self._fixed_body_path(isolated_home, sid)
-        findings_body.parent.mkdir(parents=True, exist_ok=True)
-        findings_body.write_text(
-            f"**[Claude Code]** # findings body\n\n{REVIEW_PR_DIFF_ONLY_DISCLOSURE}\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
-        )
-        self._declare_provenance(isolated_home, "foo/bar#42", "abc123", mode="diff-only", sid=sid)
-
-        repo_hash = hashlib.sha256(git_toplevel(git_repo).encode()).hexdigest()
-        marker_dir = isolated_home / ".claude" / "review-pr-markers"
-        marker_dir.mkdir(parents=True, exist_ok=True)
-        completion_marker = marker_dir / f"{repo_hash}.{sid}"
-        real_target = tmp_path / "attacker-chosen-marker-target.txt"
-        real_target.write_text("pre-existing content\n")
-        completion_marker.symlink_to(real_target)
-
-        result = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
-        assert result.returncode == 2, result.stderr
-        assert completion_marker.is_symlink(), "the symlink itself must survive, unmodified"
-        assert real_target.read_text() == "pre-existing content\n", (
-            "the write must not follow the symlink and truncate its target"
-        )
 
     @pytest.mark.parametrize("suffix", [".body", ".diff", ".context.json"])
     @pytest.mark.parametrize(

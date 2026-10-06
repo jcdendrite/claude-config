@@ -827,8 +827,7 @@ _lib_review_pr_artifact_path() {
 
 # _lib_write_review_pr_provenance PROVENANCE_PATH KEY=VALUE [KEY=VALUE ...]
 # Writes PROVENANCE_PATH as a `schema=1` header line followed by one
-# KEY=VALUE line per remaining argument, through _lib_write_no_follow
-# (refuses a symlink at PROVENANCE_PATH).
+# KEY=VALUE line per remaining argument. Returns non-zero when the write fails.
 # The schema is additive: a caller adding a field passes one more KEY=VALUE
 # argument. This is the schema's only writer, so
 # _lib_review_pr_provenance_field below sees every field the same way
@@ -836,7 +835,7 @@ _lib_review_pr_artifact_path() {
 _lib_write_review_pr_provenance() {
   local path="$1"
   shift
-  { printf 'schema=1\n'; printf '%s\n' "$@"; } | _lib_write_no_follow "$path"
+  { printf 'schema=1\n'; printf '%s\n' "$@"; } > "$path"
 }
 
 # _lib_review_pr_provenance_field PROVENANCE_PATH KEY
@@ -955,80 +954,6 @@ _lib_review_pr_select_session_worktrees() {
     [[ "$remainder" =~ ^${_LIB_REVIEW_PR_WORKTREE_NAME_TAIL_REGEX}$ ]] || continue
     printf '%s\n' "$path"
   done <<< "$porcelain"
-}
-
-# The three `python3 -c` helpers below (_lib_sha256_no_follow,
-# _lib_cat_no_follow, _lib_write_no_follow) run with -I (isolated mode). A plain
-# -c puts the cwd first on sys.path, and the cwd can be a PR checkout whose
-# top-level hashlib.py would then run in place of the standard library's. -I
-# also ignores PYTHON* environment variables and the user site directory, which
-# these helpers never need.
-
-# _lib_sha256_no_follow PATH
-# Prints PATH's sha256 hex digest through a single os.open(O_NOFOLLOW) and
-# returns 0 -- refuses a symlink at the final path component atomically with
-# the read, so a pre-planted symlink at a predictable marker or
-# findings-body destination is never followed and hashed as if it were the
-# real file. A separate `[ -L ]` check followed by sha256sum is not atomic;
-# an attacker can swap in a symlink between the two. Prints nothing and
-# returns 1 on a missing file, a symlink, or a permission error. Called by
-# marker.sh's `write review-pr` arm.
-_lib_sha256_no_follow() {
-  local target="$1"
-  _lib_capped python3 -I -c '
-import hashlib, os, sys
-try:
-    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(1)
-digest = hashlib.sha256()
-with os.fdopen(fd, "rb") as f:
-    for chunk in iter(lambda: f.read(65536), b""):
-        digest.update(chunk)
-print(digest.hexdigest())
-' "$target"
-}
-
-# _lib_cat_no_follow PATH
-# Prints PATH's full raw content through a single os.open(O_NOFOLLOW) and
-# returns 0 -- the same atomic symlink-refusal as _lib_sha256_no_follow,
-# for a caller that needs the verified bytes themselves (to hash AND
-# forward downstream from one read) rather than only their digest.
-# Prints nothing and returns 1 on a missing file, a symlink, or a
-# permission error. Shared with review-pr-post.sh's own use, which hashes
-# and writes out the same captured content rather than re-opening PATH by
-# path a second time.
-_lib_cat_no_follow() {
-  local target="$1"
-  _lib_capped python3 -I -c '
-import os, sys
-try:
-    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
-except OSError:
-    sys.exit(1)
-with os.fdopen(fd, "rb") as f:
-    sys.stdout.buffer.write(f.read())
-' "$target"
-}
-
-# _lib_write_no_follow DEST_PATH
-# Writes stdin to DEST_PATH through a single os.open(O_NOFOLLOW) -- refuses a
-# symlink at the final path component atomically with the write, so a
-# pre-planted symlink at a predictable session-scoped destination is never
-# followed and truncated the way a plain `>` redirect would follow it.
-# Shared by marker.sh's `write review-pr` arm and the review-pr scripts that
-# write session-scoped provenance/context/diff artifacts at an identically
-# predictable, session-ID-keyed path.
-_lib_write_no_follow() {
-  _lib_capped python3 -I -c '
-import os, sys
-try:
-    fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o666)
-except OSError:
-    sys.exit(1)
-with os.fdopen(fd, "wb") as f:
-    f.write(sys.stdin.buffer.read())
-' "$1"
 }
 
 # Enumerate the "active" plan file set in a repo's .claude/plans/ directory:

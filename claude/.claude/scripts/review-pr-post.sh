@@ -16,7 +16,7 @@ to its main tree root, so any tree of it resolves the same marker) and
 session; the marker's recorded mode is checkout or diff-only; the marker's
 recorded PR identity is a valid <owner>/<repo>#<number>; the target argument
 equals both that identity and this repo's origin remote (owner/repo); the
-findings-body file is readable, not a symlink, and its sha256 still equals
+findings-body file is readable and its sha256 still equals
 the marker's recorded hash; and the marker's PR number/owner/repo names a
 real PR whose current headRefOid still matches the marker's recorded HEAD.
 Fails closed (no gh call) on any missing or mismatched piece. The marker is
@@ -122,14 +122,13 @@ fi
 # nowhere else.
 FINDINGS_BODY_PATH=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" body)
 
-# One O_NOFOLLOW read supplies both the hash and the bytes posted below, so a
-# swap of the file after this read cannot change what is posted. A symlink at
-# FINDINGS_BODY_PATH is refused instead of followed.
+# One read supplies both the hash and the bytes posted below, so a change to
+# the file after this read cannot change what is posted.
 # The `x` sentinel keeps trailing newlines through the command substitution.
 # A NUL byte in the file is dropped by the substitution, which makes the hash
 # differ from the marker's and refuses.
-if ! FINDINGS_BODY=$(_lib_cat_no_follow "$FINDINGS_BODY_PATH" 2>/dev/null && printf x); then
-  echo "review-pr-post.sh: findings-body file $FINDINGS_BODY_PATH is missing, unreadable, or a symlink. Abort without posting." >&2
+if ! FINDINGS_BODY=$(_lib_capped cat -- "$FINDINGS_BODY_PATH" 2>/dev/null && printf x); then
+  echo "review-pr-post.sh: findings-body file $FINDINGS_BODY_PATH is missing or unreadable. Abort without posting." >&2
   exit 2
 fi
 FINDINGS_BODY=${FINDINGS_BODY%x}

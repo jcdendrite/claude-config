@@ -1,8 +1,9 @@
 #!/bin/bash
-# _review-pr-lib.sh — shared pure checks for review-pr-acquire.sh,
+# _review-pr-lib.sh — shared checks for review-pr-acquire.sh,
 # review-pr-checkout.sh and review-pr-diff.sh.
 #
-# Sourced by those scripts after hooks/_lib.sh, whose _lib_jq it calls; not
+# Sourced by those scripts after hooks/_lib.sh, whose _lib_jq,
+# _lib_resolve_claude_pid and _lib_valid_session_id_component it calls; not
 # executable on its own.
 #
 # Provides:
@@ -19,11 +20,15 @@
 #   review_pr_audit_match_lines     — the audit's stop document as one escaped, bounded line per match, for a stop message
 #   review_pr_audit_match_report    — review_pr_audit_match_lines, or a fixed line with the match count when the document cannot be formatted
 #   review_pr_gh_status_description — "timed out" for a gh exit status of 124, else "failed (exit N)"
+#   review_pr_resolve_session_and_pid — sets SESSION_ID and CLAUDE_PID for the scripts that record provenance
 #
-# Every function takes its input as an argument, prints its result on stdout
-# where it has one, returns 0 (true) or 1 (false) (a function that only prints
-# returns 0), and performs no gh call and no filesystem access. Error text and
-# exit codes stay with the caller.
+# Every function except review_pr_resolve_session_and_pid takes its input as an
+# argument, prints its result on stdout where it has one, returns 0 (true) or 1
+# (false) (a function that only prints returns 0), and performs no gh call and
+# no filesystem access. Error text and exit codes stay with the caller.
+# review_pr_resolve_session_and_pid is the one exception. It reads the session
+# file under the config dir, spawns ps, prints caller-parameterised text on
+# stderr, and sets SESSION_ID and CLAUDE_PID as globals in the caller.
 
 # One JSON string per line keeps a name holding a raw newline on a single line.
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
@@ -158,5 +163,23 @@ review_pr_gh_status_description() {
     printf 'timed out'
   else
     printf 'failed (exit %s)' "$1"
+  fi
+}
+
+# review_pr_resolve_session_and_pid SCRIPT_NAME CONSEQUENCE ABORT_NOTE
+# Sets the globals SESSION_ID and CLAUDE_PID from _lib_resolve_claude_pid. CLAUDE_PID is this session's own Claude Code process, the same PID every other skill's active-bypass marker stores.
+# Returns 1 after printing one line on stderr when the session id cannot be resolved or is not a valid path component. SCRIPT_NAME opens that line, CONSEQUENCE (empty, or starting with " -- ") follows the reason, and ABORT_NOTE (a full sentence) ends it.
+# Unlike the functions above it walks the process ancestry, so it reads $CONFIG_DIR/sessions/<pid> and spawns ps.
+review_pr_resolve_session_and_pid() {
+  local script_name="$1" consequence="$2" abort_note="$3" session_and_pid
+  session_and_pid=$(_lib_resolve_claude_pid) || {
+    echo "$script_name: could not resolve this session's id (capture-session-id.sh SessionStart hook did not run)$consequence. $abort_note" >&2
+    return 1
+  }
+  SESSION_ID="${session_and_pid%% *}"
+  CLAUDE_PID="${session_and_pid##* }"
+  if ! _lib_valid_session_id_component "$SESSION_ID"; then
+    echo "$script_name: resolved session id '$SESSION_ID' is not a valid path component$consequence. $abort_note" >&2
+    return 1
   fi
 }
