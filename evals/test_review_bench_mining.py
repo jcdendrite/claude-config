@@ -836,6 +836,48 @@ class TestDescriptionPolicy:
         with pytest.raises(ValueError, match="description must be a string"):
             ConfirmedDefect(**_confirmed_defect_data(description=description))
 
+    @pytest.mark.parametrize(
+        ("field_name", "value", "code_point"),
+        [
+            pytest.param("id", "c1\x1b[31m", 0x1B, id="id-escape"),
+            pytest.param("id", "c1\x9b", 0x9B, id="id-c1-control"),
+            pytest.param("path", "app\u202e.py", 0x202E, id="path-bidi-override"),
+            pytest.param("fix_date", "2024-01-01\x1b10:00:00", 0x1B, id="fix-date-escape-as-separator"),
+        ],
+    )
+    def test_a_confirmed_defect_rejects_a_terminal_unsafe_character_in_id_path_and_fix_date(
+        self, field_name, value, code_point,
+    ):
+        with pytest.raises(ValueError, match=rf"{field_name} holds the disallowed character U\+{code_point:04X}"):
+            ConfirmedDefect(**_confirmed_defect_data(**{field_name: value}))
+
+    @pytest.mark.parametrize(
+        ("field_name", "value", "code_point"),
+        [
+            pytest.param("id", "c1\nx", 0x0A, id="id-line-feed"),
+            pytest.param("id", "c1\tx", 0x09, id="id-tab"),
+            pytest.param("path", "app.py\n### Run run-a", 0x0A, id="path-line-feed"),
+            pytest.param("path", "app\t.py", 0x09, id="path-tab"),
+            pytest.param("fix_date", "2024-01-01\n10:00:00", 0x0A, id="fix-date-line-feed-as-separator"),
+            pytest.param("fix_date", "2024-01-01\t10:00:00", 0x09, id="fix-date-tab-as-separator"),
+        ],
+    )
+    def test_a_confirmed_defect_rejects_lf_and_tab_in_id_path_and_fix_date_though_a_description_allows_them(
+        self, field_name, value, code_point,
+    ):
+        with pytest.raises(ValueError, match=rf"{field_name} holds the disallowed character U\+{code_point:04X}"):
+            ConfirmedDefect(**_confirmed_defect_data(**{field_name: value}))
+
+    def test_a_confirmed_defect_accepts_printable_non_ascii_in_id_and_path(self):
+        defect = ConfirmedDefect(**_confirmed_defect_data(id="c\u00e9-1", path="docs/caf\u00e9.md"))
+
+        assert (defect.id, defect.path) == ("c\u00e9-1", "docs/caf\u00e9.md")
+
+    @pytest.mark.parametrize("defect_id", ["", None, 7])
+    def test_a_confirmed_defect_rejects_an_id_that_is_not_a_non_empty_string(self, defect_id):
+        with pytest.raises(ValueError, match="id must be a non-empty string"):
+            ConfirmedDefect(**_confirmed_defect_data(id=defect_id))
+
     @pytest.mark.parametrize("character", _REJECTED_DESCRIPTION_CHARACTERS)
     def test_a_defects_file_holding_a_rejected_character_fails_to_load(self, tmp_path, character):
         defects_path = tmp_path / "defects.json"
@@ -4434,7 +4476,7 @@ class TestConfirmCli:
         for escaped in ("\\x1b", "\\r", "\\u202e"):
             assert escaped in stderr
 
-    def test_escape_carriage_return_and_bidi_override_in_the_id_subject_and_path_show_escaped(
+    def test_escape_carriage_return_and_bidi_override_in_the_commit_subject_show_escaped(
         self, tmp_path, monkeypatch, capsys,
     ):
         repo = _init_repo(tmp_path / "repo")
@@ -4445,9 +4487,8 @@ class TestConfirmCli:
         monkeypatch.setattr(run_review_bench, "REPO_ROOT", repo)
         local_dir = tmp_path / "local"
         defects.save_candidates(local_dir / "szz_candidates.json", [Candidate(**_candidate_kwargs(
-            id=f"c-1{self._HOSTILE}", base_commit=introducing_sha, head_commit=introducing_sha, fix_commit=fix_sha,
-            description="x was left at its stale initial value.",
-            evidence={"path": f"app{self._HOSTILE}.py"},
+            id="c-1", base_commit=introducing_sha, head_commit=introducing_sha, fix_commit=fix_sha,
+            description="x was left at its stale initial value.", evidence={"path": "app.py"},
         ))])
         _feed_answers(monkeypatch, "n")
 
@@ -4455,7 +4496,40 @@ class TestConfirmCli:
 
         stderr = capsys.readouterr().err
         self._assert_hostile_text_only_escaped(stderr)
-        assert "introduce x\\x1b[31m" in stderr  # the subject, not only the id, reached the display
+        assert "introduce x\\x1b[31m" in stderr  # the subject reached the display
+
+    def test_a_candidate_whose_id_or_path_holds_hostile_text_is_rejected_with_the_text_escaped(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        repo, introducing_sha, fix_sha = self._repo_with_two_commits(tmp_path)
+        monkeypatch.setattr(run_review_bench, "REPO_ROOT", repo)
+        local_dir = tmp_path / "local"
+        commits = dict(base_commit=introducing_sha, head_commit=introducing_sha, fix_commit=fix_sha)
+        defects.save_candidates(local_dir / "szz_candidates.json", [
+            Candidate(**_candidate_kwargs(
+                id=f"c-1{self._HOSTILE}", description="x was left at its stale initial value.",
+                evidence={"path": "app.py"}, **commits,
+            )),
+            Candidate(**_candidate_kwargs(
+                id="c-2", description="x was left at its stale initial value.",
+                evidence={"path": f"app{self._HOSTILE}.py"}, **commits,
+            )),
+        ])
+        _feed_answers(monkeypatch)
+        defects_path = tmp_path / "defects.json"
+
+        run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
+
+        stderr = capsys.readouterr().err
+        self._assert_hostile_text_only_escaped(stderr)
+        assert "id holds the disallowed character U+001B" in stderr
+        assert "path holds the disallowed character U+001B" in stderr
+        assert "candidate c-1" not in stderr
+        assert "candidate c-2" not in stderr
+        assert "inclusion fields:" not in stderr
+        assert "[y/N/q]" not in stderr
+        assert "confirm: 0 appended, 0 skipped, 2 rejected" in stderr
+        assert not defects_path.exists()
 
     def test_hostile_text_in_a_rejected_candidates_id_and_word_run_is_escaped_in_the_rejection_line(
         self, tmp_path, monkeypatch, capsys,
@@ -4479,18 +4553,27 @@ class TestConfirmCli:
         self._assert_hostile_text_only_escaped(capsys.readouterr().err)
 
     @pytest.mark.parametrize(
-        "field", ["lens", "source", "fix_date", "description", "lines_exist_at_introducing_head",
+        "field", ["id", "lens", "source", "fix_date", "description", "lines_exist_at_introducing_head",
                   "reviewer_could_have_caught_it", "file_is_markdown"],
     )
     def test_hostile_text_in_any_field_of_the_approval_display_shows_escaped(self, field, capsys):
         candidate = Candidate(**_candidate_kwargs())
-        # Sets the value past the validation `lens`, `source`, `fix_date`, and the mined description get at construction:
+        # Sets the value past the validation `id`, `lens`, `source`, `fix_date`, and the mined description get at construction:
         # the display escapes every field it prints, whatever validation stands upstream.
         object.__setattr__(candidate, field, self._HOSTILE)
 
         run_review_bench._print_candidate_for_approval(candidate, [])
 
         self._assert_hostile_text_only_escaped(capsys.readouterr().err)
+
+    def test_hostile_text_in_the_path_of_the_approval_display_shows_escaped(self, capsys):
+        candidate = Candidate(**_candidate_kwargs(evidence={"path": f"app{self._HOSTILE}.py"}))
+
+        run_review_bench._print_candidate_for_approval(candidate, [])
+
+        stderr = capsys.readouterr().err
+        self._assert_hostile_text_only_escaped(stderr)
+        assert "  path: app\\x1b[31m\\r\\u202e.py" in stderr
 
     def test_the_diff_hunk_shows_one_escaped_line_per_hunk_line(self, capsys):
         hunk = f"@@ -1 +1,2 @@\n line0\n+bad_value{self._HOSTILE}"

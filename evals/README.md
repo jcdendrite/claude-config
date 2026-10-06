@@ -617,12 +617,12 @@ terminal.
   comments, so the recall judge's input shows the fix diff limited to the
   defect's recorded `path`. When the fix commit changes no line of that path,
   the section says so and lists the path and the fix commit's changed paths
-  without their diffs. The limit is the head path, so a fix that changes only
-  the file a blame followed the line into gets the listing. The diff and the
-  listing both compare the fix commit against its first parent. A fix commit
-  with no first parent raises an error. The confirmed description and that
-  listing sit between fence lines in the judge input, as data the judge is
-  told never to follow, like each run's findings.
+  without their diffs. For a `pr-comment` defect that path is the head path, so
+  a fix that changes only the file a blame followed the line into gets the
+  listing. The diff and the listing both compare the fix commit against its
+  first parent. A fix commit with no first parent raises an error. The
+  confirmed description and that listing sit between fence lines in the judge
+  input, as data the judge is told never to follow, like each run's findings.
 
 ### Frozen conditions and invalidation
 

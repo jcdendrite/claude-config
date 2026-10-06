@@ -132,8 +132,8 @@ class Candidate:
 # which is also what a mined comment body may hold.
 STORED_DESCRIPTION_ALLOWED: frozenset[str] = frozenset({"\n", "\t"})
 
-# ConfirmedDefect's exact field set -- no field outside the schema, so
-# description is the only free text field.
+# ConfirmedDefect's exact field set. from_dict rejects a record with a field
+# outside it or missing from it.
 _CONFIRMED_DEFECT_FIELDS: frozenset[str] = frozenset({
     "id", "source", "lens", "base_commit", "head_commit", "fix_commit", "fix_date", "description",
     "path", "file_is_markdown",
@@ -144,12 +144,13 @@ _CONFIRMED_DEFECT_FIELDS: frozenset[str] = frozenset({
 class ConfirmedDefect:
     """One engineer-confirmed defect, committed to evals/review_bench/defects.json.
 
-    `description` is the only free-text field. `confirm` runs it through
+    `description` is the only prose field. `confirm` runs it through
     `check_description_provenance`, which catches a verbatim or
     near-verbatim word run shared with a `.local/` finding excerpt --
     see that function's own docstring for the check's limits. Construction
-    rejects a description holding a character `is_terminal_unsafe_character`
-    flags, LF and TAB aside, so every loader inherits that rule.
+    rejects a character `is_terminal_unsafe_character` flags in `id`, `path`,
+    `fix_date`, or `description`, with LF and TAB allowed in `description`
+    only, so every loader inherits that rule.
 
     `path` is the candidate's `evidence["path"]` -- the head path for a
     `pr-comment` -- and `file_is_markdown` is the engineer-confirmed kind of
@@ -173,14 +174,20 @@ class ConfirmedDefect:
             lens=self.lens, source=self.source, base_commit=self.base_commit,
             head_commit=self.head_commit, fix_commit=self.fix_commit, fix_date=self.fix_date,
         )
+        if not isinstance(self.id, str) or not self.id:
+            raise ValueError(f"id must be a non-empty string, got {self.id!r}")
         if not isinstance(self.path, str) or not self.path:
             raise ValueError(f"path must be a non-empty string, got {self.path!r}")
         if not isinstance(self.description, str):
             raise ValueError(f"description must be a string, got {self.description!r}")
-        # LF and TAB stay legal, since a mined comment body can hold them.
-        disallowed = first_disallowed_character(self.description, allowed=STORED_DESCRIPTION_ALLOWED)
-        if disallowed is not None:
-            raise ValueError(f"description holds the disallowed character U+{ord(disallowed):04X}")
+        # LF and TAB stay legal in a description, since a mined comment body can hold them.
+        for field_name, allowed in (
+            ("id", frozenset()), ("path", frozenset()), ("fix_date", frozenset()),
+            ("description", STORED_DESCRIPTION_ALLOWED),
+        ):
+            disallowed = first_disallowed_character(getattr(self, field_name), allowed=allowed)
+            if disallowed is not None:
+                raise ValueError(f"{field_name} holds the disallowed character U+{ord(disallowed):04X}")
         # isinstance, not truthiness: a JSON string like "false" is truthy.
         if not isinstance(self.file_is_markdown, bool):
             raise ValueError(f"file_is_markdown must be a bool, got {self.file_is_markdown!r}")
