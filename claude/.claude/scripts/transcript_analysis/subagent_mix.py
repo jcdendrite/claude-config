@@ -11,7 +11,6 @@ comment for why.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 from collections import defaultdict
@@ -620,15 +619,8 @@ def _dispatch_usage_summary(
     unpriced_turns = 0
     unpriced_tokens = 0
     stale_models: set[str] = set()
-    records: list[dict] = []
-    try:
-        with open(jsonl_path) as fh:
-            for raw in fh:
-                try:
-                    records.append(json.loads(raw))
-                except json.JSONDecodeError:
-                    continue
-    except OSError:
+    records = corpus._parse_jsonl_records(jsonl_path)
+    if records is None:
         return None, 0.0, {}, None, 0, 0, set()
 
     for rec in pricing.dedup_turns_by_request_id(records):

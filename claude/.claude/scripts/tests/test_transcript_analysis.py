@@ -3655,6 +3655,22 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
             {"type": "user", "n": 2, "text": multibyte_text},
         ]
 
+    def test_parse_jsonl_records_drops_a_record_with_a_truncated_multibyte_character_and_keeps_its_neighbours(
+        self, tmp_path
+    ):
+        """An invalid byte inside an otherwise valid record's JSON string
+        drops that whole record rather than keeping it with a replacement
+        character, so a lossy decode (errors="replace") fails this test."""
+        truncated_multibyte_jsonl = tmp_path / "truncated.jsonl"
+        truncated_multibyte_jsonl.write_bytes(
+            b'{"type": "user", "n": 1}\n'
+            + b'{"type": "user", "n": 2, "text": "caf\xc3"}\n'
+            + b'{"type": "user", "n": 3}\n'
+        )
+        assert _mod.corpus._parse_jsonl_records(truncated_multibyte_jsonl) == [
+            {"type": "user", "n": 1}, {"type": "user", "n": 3},
+        ]
+
     def test_index_subagent_dispatches_reads_a_multibyte_utf8_meta_json_without_a_read_error(self, fake_projects):
         """A meta.json written as raw UTF-8 with non-ASCII text next to a
         valid toolUseId is indexed, not counted under meta_read_errors."""

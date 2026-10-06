@@ -28,6 +28,10 @@ from .conftest import (
 # receives it never prints the stale-rate line whatever the live clock reads.
 _PRE_EXPIRY_TODAY = date(2000, 1, 1)
 
+# Module-level so test_select_tests.py's TestCrossDomainReadCompleteness sees these reads.
+_TRANSCRIPT_ANALYSIS_DOC = REPO_ROOT / "docs" / "transcript-analysis.md"
+_PRIVATE_PROJECT_REDACTION_DOC = REPO_ROOT / "docs" / "private-project-redaction.md"
+
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
 # alone doesn't register it), so it can't shadow the real transcript_analysis package --
@@ -1146,7 +1150,36 @@ class TestCmdReviewRoundCost:
         assert "Totals: 2 branches, 2 rounds (code-review=1  plan-review=1  ready-for-review=0)" in out
         assert "Mean rounds per branch: 1.00" in out
         assert f"Non-round dollars: {expected_pct} of branch dollars fell outside every round window" in out
-        assert f"Reviewer-dispatch dollars: {expected_agent_pct} of branch dollars, inside round windows" in out
+        assert f"Subagent-dispatch dollars: {expected_agent_pct} of branch dollars, inside round windows" in out
+
+    def test_footer_counts_a_non_reviewer_dispatch_inside_a_round_window(self, fake_projects, capsys):
+        """The single-root footer sums every in-window Agent/Task dispatch,
+        whatever its agent type: a code-writer dispatch priced inside the
+        round window shows in the figure. A filter limited to reviewer agent
+        types would print 0.0%, so the nonzero-percent assertion pins that the
+        label's population is every dispatch, not only reviewers."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced(  # round open: $0.20, also spawns dispatch a1
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "code-writer")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:01:00.000Z"),  # closes the window
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:30.000Z")],  # $1.00
+            agent_type="code-writer",
+        )
+
+        agent_dollars = 1.00  # dispatch a1, priced above
+        branch_dollars = 0.20 + agent_dollars
+        expected_agent_pct = render._pct_of(agent_dollars, branch_dollars)
+        assert expected_agent_pct != "0.0%"
+
+        _mod.cmd_review_round_cost(_review_round_cost_args())
+        out = capsys.readouterr().out
+        assert f"Subagent-dispatch dollars: {expected_agent_pct} of branch dollars, inside round windows" in out
 
     def test_footer_is_partitioned_per_root_and_does_not_blend_dollars_or_round_counts_across_roots(
         self, tmp_path, monkeypatch, capsys,
@@ -1156,7 +1189,7 @@ class TestCmdReviewRoundCost:
         own branches. A blended block would let a reader subtract out one
         account's known spend to recover the other's. Root A's round also
         carries a resolved (non-dangling) subagent dispatch, so its
-        Reviewer-dispatch-dollars figure is nonzero while root B's stays at
+        Subagent-dispatch-dollars figure is nonzero while root B's stays at
         0%. A shared accumulator that summed total_agent_dollars across
         roots instead of partitioning it would leak root A's dollars into
         root B's line -- indistinguishable from a correct partition if both
@@ -1209,11 +1242,11 @@ class TestCmdReviewRoundCost:
         assert "account-1 Totals: 2 branches, 2 rounds (code-review=2  plan-review=0  ready-for-review=0)" in out
         assert "account-1 Mean rounds per branch: 1.00" in out
         assert f"account-1 Non-round dollars: {root_a_pct} of branch dollars fell outside every round window" in out
-        assert f"account-1 Reviewer-dispatch dollars: {root_a_agent_pct} of branch dollars, inside round windows" in out
+        assert f"account-1 Subagent-dispatch dollars: {root_a_agent_pct} of branch dollars, inside round windows" in out
         assert "account-2 Totals: 1 branches, 1 rounds (code-review=0  plan-review=1  ready-for-review=0)" in out
         assert "account-2 Mean rounds per branch: 1.00" in out
         assert f"account-2 Non-round dollars: {root_b_pct} of branch dollars fell outside every round window" in out
-        assert f"account-2 Reviewer-dispatch dollars: {root_b_agent_pct} of branch dollars, inside round windows" in out
+        assert f"account-2 Subagent-dispatch dollars: {root_b_agent_pct} of branch dollars, inside round windows" in out
         # Asserts the footer never blends root A's and root B's totals into one combined figure.
         assert "3 branches, 3 rounds" not in out
         assert "code-review=2  plan-review=1" not in out
@@ -1777,7 +1810,7 @@ class TestPooledPricingTrustLines:
     @staticmethod
     def _varied_pool() -> tuple[list[dict], dict]:
         """120 branches across two accounts, each with its own inside-round,
-        reviewer-dispatch, and skill mix, so the dominance floor does not
+        subagent-dispatch, and skill mix, so the dominance floor does not
         withhold the published shares."""
         rounds = []
         branch_totals = {}
@@ -2364,7 +2397,7 @@ class TestCmdReviewRoundCostPooled:
         Stubs `_pooled_dominance_breach` to isolate this test from the
         dominance-precision floor. This fixture's every branch reports 100%
         of its own dollars as inside a round window, and 0% as
-        reviewer-only. The floor's exact-interval formula correctly flags
+        subagent-dispatch-only. The floor's exact-interval formula correctly flags
         both of those degenerate shares as breaches, which is irrelevant to
         what this test checks.
 
@@ -2565,7 +2598,7 @@ class TestCmdReviewRoundCostPooled:
     ):
         """Neither the floor nor the bootstrap is stubbed: 120 hand-built
         branches split evenly across both accounts, each with its own
-        varying inside-round, reviewer-dispatch, and skill mix, print a
+        varying inside-round, subagent-dispatch, and skill mix, print a
         numeric line for every published share under plain --pooled. This is
         the composed behavior every stubbed test in this class skips.
         """
@@ -2701,9 +2734,7 @@ class TestCmdReviewRoundCostPooled:
         that corpus and docs/*.md's parametrize list, so only this test
         catches a stale heading here.
         """
-        doc_headings = heading_texts(
-            (REPO_ROOT / "docs" / "private-project-redaction.md").read_text()
-        )
+        doc_headings = heading_texts(_PRIVATE_PROJECT_REDACTION_DOC.read_text())
         for pointer in (
             review_rounds._POOLED_PUBLICATION_POINTER,
             review_rounds._POOLED_REFUSAL_DOC_POINTER,
@@ -2755,7 +2786,7 @@ class TestCmdReviewRoundCostPooled:
         assert "pool is small" in small_pool_clause
         assert "Small-pool residual" in small_pool_clause
         assert "out of the artifact and its citation" in small_pool_clause
-        docs_text = (REPO_ROOT / "docs" / "transcript-analysis.md").read_text()
+        docs_text = _TRANSCRIPT_ANALYSIS_DOC.read_text()
         assert proposer_sentences in docs_text
         review_round_cost_section = docs_text.split("\n## review-round-cost\n", 1)[1].split("\n## ", 1)[0]
         assert "**Small-pool residual" in review_round_cost_section
@@ -2764,7 +2795,7 @@ class TestCmdReviewRoundCostPooled:
         """docs/transcript-analysis.md's sample --pooled output must contain
         both constants verbatim, so a reworded constant cannot drift from
         the documented output."""
-        docs_text = (REPO_ROOT / "docs" / "transcript-analysis.md").read_text()
+        docs_text = _TRANSCRIPT_ANALYSIS_DOC.read_text()
         assert review_rounds._POOLED_PUBLICATION_POINTER in docs_text
         assert review_rounds._POOLED_CAPTION in docs_text
 

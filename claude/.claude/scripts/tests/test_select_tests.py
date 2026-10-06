@@ -1052,14 +1052,25 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == ()
 
-    def test_transcript_analysis_doc_md_change_selects_hooks_and_skills_tests(self):
-        """No test reads docs/transcript-analysis.md's content by path --
-        every existing reference is a source-code comment citing the doc for
-        human readers -- but it's still covered by the docs/ blanket like
-        every other docs/*.md file."""
+    def test_transcript_analysis_doc_md_change_selects_scripts_hooks_and_skills_tests(self):
+        """test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads
+        docs/transcript-analysis.md's content by path, in addition to the
+        docs/ blanket's HOOKS_TESTS_DIR and SKILLS_TESTS_DIR."""
         result = _mod.select_pytest_targets(["docs/transcript-analysis.md"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR,
+        }
+
+    def test_private_project_redaction_doc_md_change_selects_scripts_hooks_and_skills_tests(self):
+        """test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads
+        docs/private-project-redaction.md's content by path, in addition to
+        the docs/ blanket's HOOKS_TESTS_DIR and SKILLS_TESTS_DIR."""
+        result = _mod.select_pytest_targets(["docs/private-project-redaction.md"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR,
+        }
 
     def test_transcript_analysis_architecture_doc_md_change_selects_scripts_hooks_and_skills_tests(self):
         """test_transcript_analysis_architecture_doc.py (SCRIPTS_TESTS_DIR)
@@ -1872,6 +1883,8 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     *sorted(_mod.SKILL_FILES_READ_BY_HOOK_TESTS),
     _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,
+    _mod.TRANSCRIPT_ANALYSIS_DOC_MD,
+    _mod.PRIVATE_PROJECT_REDACTION_DOC_MD,
     _mod.GLOBAL_CLAUDE_MD,
     _mod.ROOT_CLAUDE_MD,
     _mod.ROOT_SETTINGS_JSON,

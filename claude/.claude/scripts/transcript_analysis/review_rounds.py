@@ -1126,7 +1126,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
 
     See docs/transcript-analysis.md's review-round-cost section for the
     round/non-round reconciliation-line formula, and for the
-    "Non-round dollars"/"Reviewer-dispatch dollars"/"Dangling dispatches"/
+    "Non-round dollars"/"Subagent-dispatch dollars"/"Dangling dispatches"/
     "Unpriced turns" footer lines.
     Under multi-root scope the footer prints one block per root, never
     blended across roots.
@@ -1338,7 +1338,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             " of branch dollars fell outside every round window"
         )
         print(
-            f"{prefix}Reviewer-dispatch dollars: {render._pct_of(totals['total_agent_dollars'], totals['total_branch_dollars'])}"
+            f"{prefix}Subagent-dispatch dollars: {render._pct_of(totals['total_agent_dollars'], totals['total_branch_dollars'])}"
             " of branch dollars, inside round windows"
         )
         print(f"{prefix}Dangling dispatches inside round windows: {totals['total_dangling']} (no readable meta.json/jsonl pair)")
