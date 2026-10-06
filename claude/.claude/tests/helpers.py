@@ -1,4 +1,4 @@
-"""Pure helpers and path constants shared across hook, skill, and script test files.
+"""Pure helpers and path constants shared across the repo's test trees.
 
 No pytest decorators here — this is a plain Python module. Import
 explicitly from each test file that needs these symbols.
@@ -860,6 +860,31 @@ def _run_git(repo: Path, *args: str) -> str:
     ).stdout
 
 
+def init_git_repo(path: Path, *, branch: str | None = None) -> Path:
+    """Create `path` as a git repo with a test identity and no commit. `branch=None` keeps the host's init.defaultBranch."""
+    path.mkdir(parents=True, exist_ok=True)
+    init_args = ["git", "init", "-q"]
+    if branch is not None:
+        init_args += ["-b", branch]
+    subprocess.run(init_args, cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    return path
+
+
+def init_git_repo_with_commit(
+    path: Path, *, branch: str | None = None, file_name: str = "f.txt", content: str = "x\n"
+) -> Path:
+    """`init_git_repo`, then commit one seed file so HEAD resolves."""
+    init_git_repo(path, branch=branch)
+    seed_file = path / file_name
+    seed_file.parent.mkdir(parents=True, exist_ok=True)
+    seed_file.write_text(content)
+    subprocess.run(["git", "add", "--", file_name], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
+    return path
+
+
 def _current_branch(repo: Path) -> str:
     return _run_git(repo, "symbolic-ref", "--short", "HEAD").strip()
 
@@ -906,14 +931,9 @@ def bare_remote_with_default_branch(
     subprocess.run(
         ["git", "init", "-q", "--bare", "-b", branch, str(bare)], check=True, capture_output=True
     )
-    seed = tmp_path / "_bare_remote_seed"
-    seed.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", branch, str(seed)], check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=seed, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=seed, check=True)
-    (seed / file_name).write_text(file_content)
-    subprocess.run(["git", "add", file_name], cwd=seed, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=seed, check=True)
+    seed = init_git_repo_with_commit(
+        tmp_path / "_bare_remote_seed", branch=branch, file_name=file_name, content=file_content
+    )
     subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=seed, check=True)
     subprocess.run(["git", "push", "-q", "origin", branch], cwd=seed, check=True)
 
@@ -971,9 +991,7 @@ def build_conflicted_merge_via_origin_with_upstream_skill_edit(
     _build_conflicted_merge_via_origin_with_upstream_plan_edit in
     test_marker_script.py for the plan-review marker kind, generalized to a
     shared helper since the skill-review gate's tests need the same shape.
-    Neither bare_remote_with_default_branch nor push_conflicting_edit_to_origin
-    creates parent directories, so this builder does its own mkdir -p for the
-    nested skill path."""
+    This builder creates the nested skill path's parent directories itself."""
     bare, clone = bare_remote_with_default_branch(tmp_path)
     skill_rel_path = f"claude-skills/skills/{skill_name}/SKILL.md"
     if not upstream_adds_skill:
@@ -1816,14 +1834,7 @@ def init_ci_detect_step_test_repo(
     tmp_path: Path, second_commit_files: dict[str, str]
 ) -> tuple[Path, str, str]:
     """Build a throwaway two-commit git repo; return (repo, base_sha, head_sha)."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "README.md").write_text("initial\n")
-    subprocess.run(["git", "add", "."], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True)
+    repo = init_git_repo_with_commit(tmp_path / "repo", file_name="README.md", content="initial\n")
     base_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
     ).stdout.strip()

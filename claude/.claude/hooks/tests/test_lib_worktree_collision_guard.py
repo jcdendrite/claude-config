@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR
+from helpers import HOOKS_DIR, init_git_repo_with_commit
 
 from .conftest import _dead_pid, _seed_session, _worktree_lock_reason
 
@@ -49,16 +49,6 @@ _RACER_TIMEOUT_SECONDS = 70
 # cap only bounds a broken-barrier hang, so its exact value isn't
 # load-bearing the way a fixed sleep duration would be.
 _RACER_BARRIER_MAX_WAIT_SECONDS = 40
-
-
-def _init_opted_in_repo(repo: Path) -> None:
-    repo.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "f.txt").write_text("x\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
 
 
 def _add_worktree(repo: Path, wt_path: Path, branch: str) -> None:
@@ -234,7 +224,7 @@ class TestConcurrentLockRace:
         one, so 100% pass across repeated runs is the actual proof the fix
         works — a single pass proves nothing about a race fix."""
         repo = tmp_path / "race-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "race-worktree"
         _add_worktree(repo, wt_path, "race")
         common_dir = _git_common_dir(repo)
@@ -288,7 +278,7 @@ class TestConcurrentLockRace:
         test_20_way_concurrent_lock_race_exactly_one_winner's docstring
         above for why a single pass proves nothing about a race fix."""
         repo = tmp_path / "evict-race-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "evict-race-worktree"
         _add_worktree(repo, wt_path, "evict-race")
         common_dir = _git_common_dir(repo)
@@ -348,7 +338,7 @@ class TestCollisionGuardRereadRace:
         from a full-hook black-box test, which is why this scenario is
         unit-tested here instead of in test_require_worktree_for_git_writes.py."""
         repo = tmp_path / "race-read-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "race-read-worktree"
         _add_worktree(repo, wt_path, "race-read")
         common_dir = _git_common_dir(repo)
@@ -407,7 +397,7 @@ exec "{real_git}" "$@"
         itself succeeds for real, so the reread is what's under test, not
         the write."""
         repo = tmp_path / "verify-reread-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "verify-reread-worktree"
         _add_worktree(repo, wt_path, "verify-reread")
         common_dir = _git_common_dir(repo)
@@ -465,7 +455,7 @@ exec "{real_git}" "$@"
         reached, not skipped via the first read's own self-lock fast
         path."""
         repo = tmp_path / "self-race-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "self-race-worktree"
         _add_worktree(repo, wt_path, "self-race")
         common_dir = _git_common_dir(repo)
@@ -542,7 +532,7 @@ exec "{real_git}" "$@"
         reaching _lib_worktree_acquire_lock's own porcelain-confirmed
         re-acquisition, so the total call count stays at 2."""
         repo = tmp_path / "reclaim-reread-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "reclaim-reread-worktree"
         _add_worktree(repo, wt_path, "reclaim-reread")
         common_dir = _git_common_dir(repo)
@@ -618,7 +608,7 @@ exec "{real_git}" "$@"
         fix closes this window; this test only pins the already-disclosed
         outcome, not a fix."""
         repo = tmp_path / "reclaim-inner-race-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "reclaim-inner-race-worktree"
         _add_worktree(repo, wt_path, "reclaim-inner-race")
         common_dir = _git_common_dir(repo)
@@ -682,7 +672,7 @@ class TestCollisionGuardBranches:
 
     def test_acquires_lock_when_unlocked(self, isolated_home, tmp_path):
         repo = tmp_path / "acquire-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "acquire-worktree"
         _add_worktree(repo, wt_path, "acquire")
         common_dir = _git_common_dir(repo)
@@ -703,7 +693,7 @@ class TestCollisionGuardBranches:
         misdiagnose its own lock as a live foreign one — this would show up
         as a nonzero exit here, not just as a wasted subprocess call."""
         repo = tmp_path / "selflock-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "selflock-worktree"
         _add_worktree(repo, wt_path, "selflock")
         common_dir = _git_common_dir(repo)
@@ -725,7 +715,7 @@ class TestCollisionGuardBranches:
         just with a second worktree in the repo to exercise the porcelain
         parser's cross-record behavior."""
         repo = tmp_path / "notlast-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "notlast-worktree"
         _add_worktree(repo, wt_path, "notlast")
         later_wt_path = tmp_path / "notlast-later-worktree"
@@ -746,7 +736,7 @@ class TestCollisionGuardBranches:
         otherwise report it 'no longer running' and ask for a manual
         unlock -- the exact false deny this fix closes."""
         repo = tmp_path / "resume-dead-pid-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "resume-dead-pid-worktree"
         _add_worktree(repo, wt_path, "resume-dead-pid")
         common_dir = _git_common_dir(repo)
@@ -768,7 +758,7 @@ class TestCollisionGuardBranches:
         live-but-foreign PID as 'already in use by a live Claude Code
         session'."""
         repo = tmp_path / "resume-live-pid-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "resume-live-pid-worktree"
         _add_worktree(repo, wt_path, "resume-live-pid")
         common_dir = _git_common_dir(repo)
@@ -784,7 +774,7 @@ class TestCollisionGuardBranches:
         self-recognizes via PID match -- the fallback this fix must
         preserve for a lock acquired before this fix shipped."""
         repo = tmp_path / "old-format-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "old-format-worktree"
         _add_worktree(repo, wt_path, "old-format")
         common_dir = _git_common_dir(repo)
@@ -803,7 +793,7 @@ class TestCollisionGuardBranches:
         self-match even though the pid field alone matches this
         session's own pid."""
         repo = tmp_path / "truncated-session-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "truncated-session-worktree"
         _add_worktree(repo, wt_path, "truncated-session")
         common_dir = _git_common_dir(repo)
@@ -817,7 +807,7 @@ class TestCollisionGuardBranches:
 
     def test_foreign_live_lock_denies_naming_pid(self, isolated_home, tmp_path, live_pid):
         repo = tmp_path / "foreign-live-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "foreign-live-worktree"
         _add_worktree(repo, wt_path, "foreign-live")
         common_dir = _git_common_dir(repo)
@@ -837,7 +827,7 @@ class TestCollisionGuardBranches:
         equality check doesn't degrade into a presence check that would
         let any session self-match any other session's new-format lock."""
         repo = tmp_path / "foreign-session-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "foreign-session-worktree"
         _add_worktree(repo, wt_path, "foreign-session")
         common_dir = _git_common_dir(repo)
@@ -858,7 +848,7 @@ class TestCollisionGuardBranches:
         and .claude/plans/auto-clear-dead-worktree-locks.md for the
         release-free claim that closes that race now."""
         repo = tmp_path / "foreign-dead-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "foreign-dead-worktree"
         _add_worktree(repo, wt_path, "foreign-dead")
         common_dir = _git_common_dir(repo)
@@ -875,7 +865,7 @@ class TestCollisionGuardBranches:
 
     def test_unparseable_reason_lock_denies_with_manual_remedy(self, isolated_home, tmp_path):
         repo = tmp_path / "unparseable-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "unparseable-worktree"
         _add_worktree(repo, wt_path, "unparseable")
         common_dir = _git_common_dir(repo)
@@ -917,7 +907,7 @@ class TestCollisionGuardResolutionFailures:
         already-verified repository, rather than trusting the caller's
         argument at face value."""
         repo = tmp_path / "foreign-common-dir-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "foreign-common-dir-worktree"
         _add_worktree(repo, wt_path, "foreign-common-dir")
 
@@ -931,7 +921,7 @@ class TestCollisionGuardResolutionFailures:
         with no sessions/ entry) denies rather than proceeding as if no
         session existed to protect."""
         repo = tmp_path / "no-session-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "no-session-worktree"
         _add_worktree(repo, wt_path, "no-session")
         common_dir = _git_common_dir(repo)
@@ -946,7 +936,7 @@ class TestCollisionGuardResolutionFailures:
         denies rather than proceeding with an unconfirmed common-dir. Forced
         via a `git` wrapper that fails only that specific call."""
         repo = tmp_path / "wt-common-dir-fail-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "wt-common-dir-fail-worktree"
         _add_worktree(repo, wt_path, "wt-common-dir-fail")
         common_dir = _git_common_dir(repo)
@@ -986,7 +976,7 @@ exec "{real_git}" "$@"
         it exists as a backstop against a future caller regression, and
         without a direct test it could silently break."""
         repo = tmp_path / "main-tree-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         common_dir = _git_common_dir(repo)
         _seed_session(isolated_home, "main-tree-session")
 
@@ -1001,7 +991,7 @@ exec "{real_git}" "$@"
         proceeding to the noclobber write with an unresolved git-dir.
         Forced via a `git` wrapper that fails only that specific call."""
         repo = tmp_path / "wt-git-dir-fail-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "wt-git-dir-fail-worktree"
         _add_worktree(repo, wt_path, "wt-git-dir-fail")
         common_dir = _git_common_dir(repo)
@@ -1034,7 +1024,7 @@ exec "{real_git}" "$@"
         self-lock check) denies rather than proceeding to attempt a lock
         without knowing the current state."""
         repo = tmp_path / "first-porcelain-fail-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "first-porcelain-fail-worktree"
         _add_worktree(repo, wt_path, "first-porcelain-fail")
         common_dir = _git_common_dir(repo)
@@ -1068,7 +1058,7 @@ exec "{real_git}" "$@"
         state. The lock attempt itself fails for real (genuinely locked by
         a foreign dead pid), so the diagnosis re-read is actually reached."""
         repo = tmp_path / "second-porcelain-fail-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "second-porcelain-fail-worktree"
         _add_worktree(repo, wt_path, "second-porcelain-fail")
         common_dir = _git_common_dir(repo)
@@ -1123,7 +1113,7 @@ class TestDeadLockReclaim:
         is auto-evicted and reclaimed exactly like a new-format one, via
         the `nosession` claim-filename branch."""
         repo = tmp_path / "old-format-dead-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "old-format-dead-worktree"
         _add_worktree(repo, wt_path, "old-format-dead")
         common_dir = _git_common_dir(repo)
@@ -1147,7 +1137,7 @@ class TestDeadLockReclaim:
         noclobber create is what enforces the once-only bound, not
         in-process state carried from a single call."""
         repo = tmp_path / "preclaim-new-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "preclaim-new-worktree"
         _add_worktree(repo, wt_path, "preclaim-new")
         common_dir = _git_common_dir(repo)
@@ -1173,7 +1163,7 @@ class TestDeadLockReclaim:
         with a real session id rather than the `nosession` placeholder an
         old-format lock's claim uses."""
         repo = tmp_path / "preclaim-old-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "preclaim-old-worktree"
         _add_worktree(repo, wt_path, "preclaim-old")
         common_dir = _git_common_dir(repo)
@@ -1201,7 +1191,7 @@ class TestDeadLockReclaim:
         A second guard call must deny, since the once-only right for that
         identity was already spent."""
         repo = tmp_path / "sequential-reclaim-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "sequential-reclaim-worktree"
         _add_worktree(repo, wt_path, "sequential-reclaim")
         common_dir = _git_common_dir(repo)
@@ -1233,7 +1223,7 @@ class TestDeadLockReclaim:
         deny never reaches the claim-gated eviction branch at all, so no
         claim file is ever created for it."""
         repo = tmp_path / "live-noclaim-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "live-noclaim-worktree"
         _add_worktree(repo, wt_path, "live-noclaim")
         common_dir = _git_common_dir(repo)
@@ -1253,7 +1243,7 @@ class TestDeadLockReclaim:
         `prune`, and `remove` all behave identically whether or not one is
         present."""
         repo = tmp_path / "interop-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "interop-worktree"
         _add_worktree(repo, wt_path, "interop")
         wt_git_dir = _git_dir(wt_path)
@@ -1301,7 +1291,7 @@ class TestDeadLockReclaim:
         the real noclobber write (which this wrapper never touches) to
         succeed for real."""
         repo = tmp_path / "confirm-mismatch-repo"
-        _init_opted_in_repo(repo)
+        init_git_repo_with_commit(repo)
         wt_path = tmp_path / "confirm-mismatch-worktree"
         _add_worktree(repo, wt_path, "confirm-mismatch")
         common_dir = _git_common_dir(repo)

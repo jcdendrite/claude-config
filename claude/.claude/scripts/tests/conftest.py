@@ -41,6 +41,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from helpers import init_git_repo
 from transcript_analysis import pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
@@ -1036,13 +1037,10 @@ def _reset_pricing_format_drift_flags(monkeypatch):
 
 
 def _init_repo(path: Path, initial_branch: str = "main") -> None:
-    """Initialise a git repo with one commit and a remote pointing at itself."""
-    path.mkdir(parents=True, exist_ok=True)
-    # Passing --initial-branch explicitly avoids depending on the system's
+    """Initialise a git repo on `initial_branch` with a test identity and no commit."""
+    # Defaulting the branch to "main" avoids depending on the system's
     # init.defaultBranch setting, which varies across git versions and CI environments.
-    subprocess.run(["git", "init", "-q", f"--initial-branch={initial_branch}"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True)
+    init_git_repo(path, branch=initial_branch)
 
 
 def _commit(repo: Path, message: str = "commit") -> None:
