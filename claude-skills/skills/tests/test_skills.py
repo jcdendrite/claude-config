@@ -3917,6 +3917,23 @@ def test_owner_authorized_figure_citation_resolves_to_real_heading() -> None:
     )
 
 
+def test_pr_cost_export_aggregate_citation_resolves_to_real_heading() -> None:
+    """docs/pr-cost.md cites `docs/private-project-redaction.md` § "The
+    owner can authorize one figure, case by case" somewhere — resolves to a
+    real heading there.
+
+    A heading rename would silently orphan the pointer to the per-figure
+    authorization gate, and docs/*.md sits outside the generic skill-citation
+    sweep.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "pr-cost.md",
+        "docs/private-project-redaction.md",
+        "The owner can authorize one figure, case by case",
+        repo_root=REPO_ROOT,
+    )
+
+
 def test_review_round_cost_citation_resolves_to_real_heading() -> None:
     """docs/private-project-redaction.md points to
     `docs/transcript-analysis.md` § "review-round-cost" for
