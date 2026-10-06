@@ -569,6 +569,8 @@ The description policy:
 - `ConfirmedDefect` enforces the policy when a record loads, so `defects.json`
   edited past `confirm` fails to load in `freeze`, `run`, and `judge`.
 - A mined description may keep LF and TAB. A typed one may keep neither.
+- `ConfirmedDefect` holds `id`, `path`, and `fix_date` to the same rule, with
+  no LF or TAB allowed.
 - A `pr-comment` candidate's mined description counts as public text, so it
   passes verbatim.
 - Words typed or edited in are still checked.

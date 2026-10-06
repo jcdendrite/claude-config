@@ -296,7 +296,7 @@ def is_terminal_unsafe_character(char: str) -> bool:
     """True for a character no description may hold and no terminal display
     may print raw: a control, format, separator, surrogate, private-use, or
     noncharacter code point, a variation selector, or a blank filler. The one
-    definition behind `ConfirmedDefect.description`, a mined comment body, a
+    definition behind `ConfirmedDefect`'s field checks, a mined comment body, a
     typed description, and `escape_for_terminal`."""
     code_point = ord(char)
     return (
