@@ -99,13 +99,13 @@ CLAUDE_SKILLS_TOP_LEVEL_DIR = "claude-skills"
 # collected.
 WORKTREES_DIR_NAME = "worktrees"
 
-# test_transcript_analysis.py and its two siblings (matched by the glob
-# below) shell into specific hook scripts and read specific SKILL.md files by
-# path, not by import. Domain-narrowing can't see that dependency, so it's
-# declared here as a cross-domain exception rather than folded into the
-# scripts domain rule. test_transcript_denials.py has the identical
-# dependency shape but isn't glob-matched (its own name doesn't share the
-# "test_transcript_analysis" prefix), so it gets its own exact-path constant.
+# test_transcript_analysis.py (matched by the glob below, with its two
+# siblings) reads specific SKILL.md files by path, not by import.
+# Domain-narrowing can't see that dependency, so it's declared here as a
+# cross-domain exception rather than folded into the scripts domain rule.
+# test_transcript_denials.py shells into specific hook scripts by path. It
+# isn't glob-matched (its own name doesn't share the "test_transcript_analysis"
+# prefix), so it gets its own exact-path constant.
 TRANSCRIPT_ANALYSIS_TEST_GLOB = "claude/.claude/scripts/tests/test_transcript_analysis*.py"
 TRANSCRIPT_DENIALS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_denials.py"
 
@@ -570,9 +570,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # A green run therefore means no known read is unmapped, not that none
 # exists.
 #
-# _is_hooks_or_skills_change: TRANSCRIPT_ANALYSIS_TEST_GLOB and
-# TRANSCRIPT_DENIALS_TEST_PATH shell into hook scripts and read SKILL.md
-# files by path.
+# _is_hooks_or_skills_change: TRANSCRIPT_ANALYSIS_TEST_GLOB reads SKILL.md
+# files by path, and TRANSCRIPT_DENIALS_TEST_PATH shells into hook scripts.
 # _is_skill_management_or_evals_change: SKILLS_TESTS_DIR covers the skill
 # validator scripts and eval runner it exercises.
 # SKILL_AUXILIARY_FILES_MODULE: SKILLS_TESTS_DIR's test_skills.py imports the
@@ -636,6 +635,13 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
 # recursively glob claude/.claude/ for *.sh files, picking up
 # claude/.claude/hooks/ in addition to their own SCRIPTS_DIR.
+# test_transcript_handoff_nudge.py (SCRIPTS_TESTS_DIR) also fires
+# nudge-handoff-near-context-cap.sh, which sources _lib.sh and _config.sh.
+# That read is a class attribute, so TestCrossDomainReadCompleteness can't
+# see it.
+# The hook's read closure is .sh files plus config-keys.psv. This rule and
+# the CONFIG_KEYS_PSV row both map to SCRIPTS_TESTS_DIR, so the test needs no
+# exact-path constant. A read of any other file type would need one.
 # _is_plugin_hooks_change, _is_plugin_skills_change, _is_plugin_agents_change,
 # and _is_plugin_manifest_change match every plugin under plugins/, not only
 # lovable-cloud -- the test globs cited above are plugin-generic, so the

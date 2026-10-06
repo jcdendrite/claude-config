@@ -32,6 +32,33 @@ def _content_text(content) -> str:
     return ""
 
 
+def _is_fresh_user_prompt(rec: dict) -> bool:
+    """Return True iff rec is a genuine new user message (not a tool result or injected record).
+
+    Filters out:
+    - Records that are not type=="user"
+    - Sidechain records (isSidechain=True)
+    - Meta-injected records (isMeta=True)
+    - Compaction summary records (isCompactSummary=True)
+    - Tool-result-bearing records (content is a list with any block whose type=="tool_result")
+    - Records with empty text content
+    """
+    if rec.get("type") != "user":
+        return False
+    if rec.get("isSidechain"):
+        return False
+    if rec.get("isMeta"):
+        return False
+    if rec.get("isCompactSummary"):
+        return False
+    content = (rec.get("message") or {}).get("content", "")
+    if isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+    ):
+        return False
+    return bool(_content_text(content).strip())
+
+
 def _fmt_usd(amount: float) -> str:
     return f"-${-amount:,.2f}" if amount < 0 else f"${amount:,.2f}"
 
