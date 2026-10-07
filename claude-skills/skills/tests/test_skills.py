@@ -3711,7 +3711,9 @@ def test_threat_model_tiers_citation_resolves_to_real_heading(relative_path: str
 
 
 # Tier-disposition clauses that keep the review layers fail-closed.
-# The docs/hooks.md entry pins the regression-judging block in its single home.
+# The `hooks-doc-regression-rule` entry pins the regression-judging block in its single home.
+# The `hooks-doc-debt-admission` entry pins the existing-debt admission rule, the disclosure-gate pointer to it, and the lead.
+# The code-review-layer phrases for the DEFER ban, the ask and the Known-gaps recording pin the ask-and-record path.
 # The layer entries pin the per-vector-gap versus genuinely-lax question.
 # The layer entries pin that a regression stays blocking at every tier.
 # The layer entries pin that a finding the tier section does not explicitly waive or route stays under the base rules.
@@ -3729,6 +3731,13 @@ _TIER_DISPOSITION_SECTIONS = [
             "at every tier",
             "does not explicitly waive or route stays under the base rules.",
             "No recording",
+            "DEFERred under criterion 3 as a waived or routed finding against a gate",
+            "that is not a regression is never DEFERred",
+            "admits it as permanent existing debt",
+            "takes a blocking stop-and-ask",
+            "the engineer's own SETTLED row kept with `--carry-forward`",
+            "Before the engineer answers, that stop also gives the base contradiction-route "
+            "rule's human-keep disclosures.",
         ],
         id="code-review-layer",
     ),
@@ -3768,6 +3777,26 @@ _TIER_DISPOSITION_SECTIONS = [
             "restating it; this section is its only home.",
         ],
         id="hooks-doc-regression-rule",
+    ),
+    pytest.param(
+        "docs/hooks.md",
+        "## Threat-model tiers",
+        [
+            "Except for a gap that needs a shape a cooperative agent would never emit, "
+            "a gap discovered later counts as recorded this way only once the human's answer "
+            "to a blocking stop-and-ask accepts that gap as permanent debt, and the commit "
+            "message or PR body that records it states the rationale.",
+            # The predicate must be "does emit": a broader modal reading would override the
+            # never-emit recordings the section deliberately allows.
+            "Until then no text or pointer records as debt a gap discovered later that needs "
+            "a shape a cooperative agent does emit, wherever it sits, even where another "
+            "sentence of this section treats it as debt or routes it without a blocking finding.",
+            "A routine encoding a cooperative agent emits, such as a base64 credential in a "
+            "Kubernetes Secret manifest, is not a waivable shape, so the **Existing debt** rule "
+            "above decides whether a finding on it may be recorded.",
+            "**Existing debt** is a closed set",
+        ],
+        id="hooks-doc-debt-admission",
     ),
 ]
 
