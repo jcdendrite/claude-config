@@ -88,9 +88,8 @@ argument must still resolve to a `.env`-shaped basename (`--env-file
 shell metacharacter (`; & | < > ( ) $` or a backtick), not swallow past it
 — see `_lib_strip_env_file_flag_args` in `_lib.sh`. Run a specific
 legitimate non-exposing command, or inspect the file's content, in a
-separate terminal window outside this session: `!` does not always avoid the
-exposure, since Claude Code adds shell-mode output to the conversation
-transcript.
+separate terminal window outside this session. `!` is not a safe alternative:
+Claude Code adds shell-mode output to the conversation transcript.
 `redact-credential-values.sh` is the
 different-layer backstop for the two gate hooks: a credential can enter
 context through a path neither one anticipates (a `WebFetch` response, a
@@ -164,7 +163,7 @@ removes a token from the command string.
   token glued directly to the opening quote (`"npm`) would not match, so
   whether a given mention denies would depend on quote adjacency — an
   inconsistency this closes. Workaround for all of the above: asking the user
-  to run the command in a different terminal.
+  to run the command in a separate terminal.
 - Shell indirection this hook family already accepts as a known gap
   elsewhere — `sh -c '...'` with a fully-inline payload, a temp script
   written then executed separately, `eval $(echo … | base64 -d)`, a

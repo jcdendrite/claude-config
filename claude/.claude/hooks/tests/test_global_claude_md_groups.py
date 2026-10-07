@@ -70,7 +70,12 @@ _PLACEMENTS = [
         "ask them to run the command in a separate terminal instead.",
         "core",
     ),
-    ("confirmation-never-lets-agent-run-install", "Confirmation never lets you run the install or restore", "core"),
+    (
+        "confirmation-never-lets-agent-run-install",
+        "Confirmation never lets you run the install or restore.",
+        "core",
+    ),
+    ("restoring-declared-dependencies-unaffected", "Restoring already-declared dependencies is unaffected.", "core"),
     ("secret-commits", "NEVER commit secrets, credentials, API keys", "core"),
     ("user-email", "The `userEmail` context identifies the user to you", "core"),
     ("credential-gate", "NEVER Read or `!`-cat files likely to hold secrets", "core"),

@@ -595,10 +595,9 @@ class TestDenyCredentialBashReads:
     @pytest.mark.parametrize(
         ("command", "branch_marker"),
         [
-            # Credential-shaped-path branch.
-            ("cat ~/.ssh/id_rsa", "a non-template .env/credentials.json path"),
-            # .ssh-directory branch: a custom-named key off the safe-basename allowlist.
-            ("cat ~/.ssh/deploy_key", "safe-basename allowlist"),
+            # Lead-clause markers, independent of each message's credential-family list.
+            ("cat ~/.ssh/id_rsa", "references a credential-shaped path"),
+            ("cat ~/.ssh/deploy_key", "references a file under a .ssh-shaped directory"),
         ],
         ids=["credential-shaped-path-branch", "ssh-directory-branch"],
     )
@@ -607,6 +606,7 @@ class TestDenyCredentialBashReads:
         assert reason is not None
         assert branch_marker in reason
         assert "No bypass valve" in reason
+        # The shell escape's output enters the transcript, so the message must not route recourse there.
         assert "ask the user" in reason
         assert "separate terminal" in reason
         assert "`!`" not in reason
