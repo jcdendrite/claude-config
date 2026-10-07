@@ -22,11 +22,13 @@ from helpers import (
 
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
 
-# About 320 KB in 32 lines. It must be multi-line and large: only a command
-# whose first line matches and whose remainder exceeds the pipe capacity makes
-# a `printf | grep -q` pipeline see SIGPIPE under pipefail.
+# About 320 KB in 32 lines. It must be multi-line and exceed 100 KiB, the size
+# at which the pipe form misses on every run (see
+# .claude/plans/stow-reminder-sigpipe-fix.md row 5), not just pipe capacity:
+# a pipe into `grep -q` returns 141 under pipefail once grep exits on a
+# first-line match before the writer finishes.
 LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
-assert LARGE_MULTILINE_TAIL.count("\n") > 1 and len(LARGE_MULTILINE_TAIL) > 64 * 1024
+assert LARGE_MULTILINE_TAIL.count("\n") > 1 and len(LARGE_MULTILINE_TAIL) > 100 * 1024
 
 
 @pytest.fixture
@@ -380,9 +382,8 @@ class TestRequireStowReminder:
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "allow"
 
     def test_pr_edit_large_multiline_body_without_marker_denied(self, stow_repo):
-        """A first-line match in a large multi-line input must still be seen,
-        because a pipe into `grep -q` returns 141 under `pipefail`: the
-        body-flag check missed `--body` and skipped the gate."""
+        """The `--body` flag check must see `--body` on the first line of a large
+        multi-line command."""
         commit_new_toplevel_dir(stow_repo, "agents")
         cmd = "gh pr edit 42 --body 'rewritten body, no marker'" + LARGE_MULTILINE_TAIL
         reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
@@ -397,9 +398,8 @@ class TestRequireStowReminder:
         ],
     )
     def test_fill_on_first_line_of_large_multiline_command(self, stow_repo, commit_message, expect_allow):
-        """A first-line match in a large multi-line input must still be seen,
-        because a pipe into `grep -q` returns 141 under `pipefail`: the
-        `--fill` check missed and commit messages were left out of the scan."""
+        """The `--fill` flag check must see `--fill` on the first line of a large
+        multi-line command, so commit messages stay in the marker scan."""
         target = stow_repo / "claude" / ".claude" / "agents"
         target.mkdir(parents=True)
         (target / "foo.md").write_text("x")
@@ -425,9 +425,8 @@ class TestRequireStowReminder:
     def test_large_multiline_body_file_with_marker_on_first_line(
         self, stow_repo, tmp_path, first_line, expect_allow
     ):
-        """A first-line match in a large multi-line input must still be seen,
-        because a pipe into `grep -q` returns 141 under `pipefail`: the marker
-        scan missed an early `install.sh` and the gate falsely denied."""
+        """The marker scan must see `install.sh` on the first line of a large
+        multi-line body file."""
         commit_new_toplevel_dir(stow_repo, "agents")
         body = tmp_path / "body.md"
         body.write_text(first_line + LARGE_MULTILINE_TAIL)

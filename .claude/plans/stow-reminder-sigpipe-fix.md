@@ -86,8 +86,16 @@ Alternatives weighed:
    - :140 falls through to `exit 0`, so the escaped backtick is allowed.
 3. These four are the only `grep -q` calls in either hook. The other pipelines (require-stow-reminder.sh:186-189 and :228; deny-escaped-backticks-in-pr-body.sh:89-94) have no reader that exits early, and nothing tests their exit status. [verified: full read of both hooks]
 4. The here-string feeds grep the same bytes as today, plus at most one trailing newline. At :177 and :215 the input is identical, because both already pipe `printf '%s\n'`. At :221 and :140 the input gains one trailing newline. Neither pattern at those two sites anchors on `^`/`$` or can match an empty line. [verified: the four lines cited]
-5. The failure needs multi-line input larger than the pipe capacity (64 KiB on Linux). The 32-line, roughly 320 KB tail is about five times past that, so it fails every run at the merge-base. [verified: plan-review probes, bash 5.2.21, GNU grep 3.11, 150 and 300 iterations per size: pipe form missed 0 of 150 at 4, 16 and 32 KB, 91 of 150 at 64 KB, and every run from 100 KB through 1 MB; here-string form missed 0 of 150 at every size; a single unbroken 320 KB line missed 0 of 50] The tail stays at 320 KB, and a later edit must not shrink it toward the Context paragraph's smaller sizes.
-6. A here-string writer is never a member of the pipeline, so `pipefail` cannot see it, and grep's own exit status is the only status the `if` reads. On bash 5.2.21 a small here-string is written into a pipe by the process that then execs grep, and a large one goes through an unlinked temp file. [verified: plan-review `strace` probe, bash 5.2.21; bash 3.2 not tested, since no binary was available, and a macOS `/bin/bash` run of the probe would close it] Shipped gates already match with `grep … <<<`. [verified: deny-pii-in-commits.sh:584,607,623; deny-private-project-refs.sh:829,835]
+5. The failure needs multi-line input larger than the pipe capacity (64 KiB on Linux). The 32-line, roughly 320 KB tail is about five times past that, so it fails every run at the merge-base.
+   - Probe conditions: plan-review probes, bash 5.2.21, GNU grep 3.11, 150 and 300 iterations per size. [verified: plan-review probes; the three result bullets below come from the same probes]
+   - Pipe form: missed 0 of 150 at 4, 16 and 32 KB, 91 of 150 at 64 KB, and every run from 100 KB through 1 MB.
+   - Here-string form: missed 0 of 150 at every size.
+   - Single-line control: a single unbroken 320 KB line missed 0 of 50.
+   - The tail stays at 320 KB. A later edit must not shrink it toward the Context paragraph's smaller sizes.
+6. A here-string writer is never a member of the pipeline, so `pipefail` cannot see it. Grep's own exit status is the only status the `if` reads.
+   - On bash 5.2.21 a small here-string is written into a pipe by the process that then execs grep, and a large one goes through an unlinked temp file. [verified: plan-review `strace` probe, bash 5.2.21]
+   - Bash 3.2 is not tested, since no binary was available. A macOS `/bin/bash` run of the probe would close it.
+   - Shipped gates already match with `grep … <<<`. [verified: deny-pii-in-commits.sh:584,607,623; deny-private-project-refs.sh:829,835]
 7. If bash cannot create the here-string temp file (`/tmp` full or read-only, or a file-size rlimit), bash prints `cannot create temp file for here-document`, grep never runs, and the site reads no match. An unwritable `TMPDIR` alone does not trigger it, because bash 5.2.21 falls back to `/tmp`. The direction matches today's SIGPIPE miss at each site: :177 fails open, :215 and :221 falsely deny, and :140 allows. [verified: plan-review probe with `ulimit -f` in a scratch subshell, bash 5.2.21]
 8. `_lib_command_invokes_tool_subcmd` (require-stow-reminder.sh:109,173) still recognizes the command on a 320 KB, 32-line input, so the :177 and :215 tests reach their target lines.
    - Its body contains no `grep -q` pipeline. [verified: _lib.sh:2202-2221]
@@ -116,11 +124,11 @@ One `code-writer` dispatch covers the whole change in a single phase. All four s
 - `claude/.claude/hooks/require-stow-reminder.sh`: the comment above line 76, plus the here-string rewrites at lines 177, 215, and 221.
 - `claude/.claude/hooks/deny-escaped-backticks-in-pr-body.sh`: the comment above line 38, plus the here-string rewrite at line 140.
 - `claude/.claude/hooks/tests/test_require_stow_reminder.py`:
-  - Add a module-level `LARGE_MULTILINE_TAIL`, copied from row 11 with a one-line comment that it must be multi-line and large.
+  - Add a module-level `LARGE_MULTILINE_TAIL`, copied from row 11. Its comment states once why it must be multi-line and exceed 100 KiB. A module-level assert enforces both properties with a 100 KiB floor.
   - Add three tests to `TestRequireStowReminder`, two of them parametrized. Reuse the `stow_repo` fixture, `commit_new_toplevel_dir`, `run_hook`, `run_hook_reason`, and `bash_input`.
-  - Every new test gets a one-line docstring naming the hazard, in this form: a first-line match in a large multi-line input must still be seen, because a pipe into `grep -q` returns 141 under `pipefail`.
+  - Every new test gets a present-tense docstring naming the check that must see a first-line match in a large multi-line input. The hazard (a pipe into `grep -q` returns 141 under `pipefail`) is explained once, on the `LARGE_MULTILINE_TAIL` comment.
   - Every deny assertion first asserts `reason is not None`, as `test_require_stow_reminder.py:176-178` does, so a missing deny fails with a readable message and not a `TypeError`.
-  - Every allow assertion is `run_hook_reason(...) is None`, so a failure prints the deny text and an infrastructure deny (for example a jq timeout under load) is distinguishable from the false deny.
+  - Every allow assertion is `run_hook_reason(...) is None`, so a failure prints the deny text and an infrastructure deny (for example a jq timeout under load) is distinguishable from the false deny. Each allow branch also asserts `run_hook(...) == "allow"`, because `run_hook_reason` reads an exit-2 hard block as `None`.
   - **`test_pr_edit_large_multiline_body_without_marker_denied`** covers :177.
     - Setup: `commit_new_toplevel_dir(stow_repo, "agents")`.
     - Command: `"gh pr edit 42 --body 'rewritten body, no marker'" + LARGE_MULTILINE_TAIL`.
@@ -139,8 +147,8 @@ One `code-writer` dispatch covers the whole change in a single phase. All four s
   - Per row 9, no new test name may have `stow` in its first 30 characters, and no body file may go under `stow_repo`.
 - `claude/.claude/hooks/tests/test_deny_escaped_backticks_in_pr_body.py`:
   - Add the same module-level `LARGE_MULTILINE_TAIL`.
-  - Add one test, **`test_large_multiline_body_file_with_escaped_backtick_on_first_line_is_denied`**, which covers :140. It gets the same one-line docstring and `reason is not None` guard as the stow tests.
-    - Setup: write `tmp_path / "body.md"` with the first line from the existing test at `test_deny_escaped_backticks_in_pr_body.py:51-61` followed by `LARGE_MULTILINE_TAIL`.
+  - Add one test, **`test_large_multiline_body_file_with_escaped_backtick_on_first_line_is_denied`**, which covers :140. It gets the same present-tense docstring and `reason is not None` guard as the stow tests.
+    - Setup: write `tmp_path / "body.md"` with the escaped-backtick line from the existing test at `test_deny_escaped_backticks_in_pr_body.py:51-61`, alone as the first line, followed by `LARGE_MULTILINE_TAIL`.
     - Command: `f"gh pr create --body-file {body_file}"`.
     - Assert that the reason contains `"backslash-backtick"`, which pins the content deny rather than a fail-closed body-file deny.
     - At the merge-base: allow.
