@@ -87,11 +87,10 @@ argument must still resolve to a `.env`-shaped basename (`--env-file
 ~/.netrc` still denies) and its own text must terminate at whitespace or a
 shell metacharacter (`; & | < > ( ) $` or a backtick), not swallow past it
 — see `_lib_strip_env_file_flag_args` in `_lib.sh`. Run a specific
-legitimate non-exposing command in a separate terminal instead — its
-output carries no secret content, so it's safe there. To inspect the
-file's actual content, use a separate terminal window outside this
-session: `!` does not avoid this either, since Claude Code adds
-shell-mode output to the conversation transcript.
+legitimate non-exposing command, or inspect the file's content, in a
+separate terminal window outside this session: `!` does not avoid the
+exposure, since Claude Code adds shell-mode output to the conversation
+transcript.
 `redact-credential-values.sh` is the
 different-layer backstop for the two gate hooks: a credential can enter
 context through a path neither one anticipates (a `WebFetch` response, a
