@@ -70,6 +70,8 @@ mode, so under auto mode its read-only diagnostics clear the same
 classifier as the parent's — no extra prompts, no `permissions.allow`
 entries needed.
 
+From a session in plan mode, call `ExitPlanMode` and wait for the plan's approval before delegating execution: a spawned subagent inherits the plan-mode reminder and returns a plan instead of executing.
+
 ## Step 2 — Pick the right subagent
 
 ### Heavy command output — run inline
@@ -142,8 +144,6 @@ schema, scripts — dispatch the `code-writer` subagent, not `general-purpose`.
 It carries `model: sonnet` and self-reviews its own diff against staff-engineer
 reviewer angles before returning, catching review-finding-class defects in its
 own context instead of as a parent round-trip.
-
-From a session in plan mode, call `ExitPlanMode` and wait for the plan's approval before delegating execution: a spawned subagent inherits the plan-mode reminder and returns a plan instead of executing.
 
 **Read-then-edit: decision-made test.** A read-then-edit sequence routes to
 `code-writer` only when both conditions hold: (1) the change is already
