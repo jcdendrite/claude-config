@@ -3736,6 +3736,8 @@ _TIER_DISPOSITION_SECTIONS = [
             "admits it as permanent existing debt",
             "takes a blocking stop-and-ask",
             "the engineer's own SETTLED row kept with `--carry-forward`",
+            "Before the engineer answers, that stop also gives the base contradiction-route "
+            "rule's human-keep disclosures.",
         ],
         id="code-review-layer",
     ),
@@ -3784,14 +3786,15 @@ _TIER_DISPOSITION_SECTIONS = [
             "a gap discovered later counts as recorded this way only once the human's answer "
             "to a blocking stop-and-ask accepts that gap as permanent debt, and the commit "
             "message or PR body that records it states the rationale.",
-            # "does emit", not "could emit": a modal reading would override the never-emit
-            # recordings the section deliberately allows.
+            # The predicate must be "does emit": a broader modal reading would override the
+            # never-emit recordings the section deliberately allows.
             "Until then no text or pointer records as debt a gap discovered later that needs "
             "a shape a cooperative agent does emit, wherever it sits, even where another "
             "sentence of this section treats it as debt or routes it without a blocking finding.",
             "A routine encoding a cooperative agent emits, such as a base64 credential in a "
             "Kubernetes Secret manifest, is not a waivable shape, so the **Existing debt** rule "
             "above decides whether a finding on it may be recorded.",
+            "**Existing debt** is a closed set",
         ],
         id="hooks-doc-debt-admission",
     ),
