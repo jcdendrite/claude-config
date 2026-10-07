@@ -26,6 +26,12 @@ from .conftest import _real_timeout_is_gnu_coreutils, _write_conditional_sleep_s
 
 DENY_ESCAPED_BACKTICKS_HOOK = HOOKS_DIR / "deny-escaped-backticks-in-pr-body.sh"
 
+# About 320 KB in 32 lines. It must be multi-line and large: only a body
+# whose first line matches and whose remainder exceeds the pipe capacity makes
+# a `printf | grep -q` pipeline see SIGPIPE under pipefail.
+LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
+assert LARGE_MULTILINE_TAIL.count("\n") > 1 and len(LARGE_MULTILINE_TAIL) > 64 * 1024
+
 
 class TestDenyEscapedBackticksInPrBody:
     def test_non_pr_command_is_allowed(self):
@@ -53,6 +59,17 @@ class TestDenyEscapedBackticksInPrBody:
         body_file.write_text("## Summary\n\nUse `\\`grep\\`` to search.\n")
         cmd = f"gh pr create --body-file {body_file}"
         assert run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd)) == "deny"
+
+    def test_large_multiline_body_file_with_escaped_backtick_on_first_line_is_denied(self, tmp_path):
+        """A first-line match in a large multi-line input must still be seen,
+        because a pipe into `grep -q` returns 141 under `pipefail`: the
+        escaped-backtick scan missed and the body was allowed."""
+        body_file = tmp_path / "body.md"
+        body_file.write_text("## Summary\n\nUse `\\`grep\\`` to search." + LARGE_MULTILINE_TAIL)
+        cmd = f"gh pr create --body-file {body_file}"
+        reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd))
+        assert reason is not None
+        assert "backslash-backtick" in reason
 
     def test_clean_body_file_is_allowed(self, tmp_path):
         body_file = tmp_path / "body.md"

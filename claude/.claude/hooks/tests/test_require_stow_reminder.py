@@ -22,6 +22,12 @@ from helpers import (
 
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
 
+# About 320 KB in 32 lines. It must be multi-line and large: only a command
+# whose first line matches and whose remainder exceeds the pipe capacity makes
+# a `printf | grep -q` pipeline see SIGPIPE under pipefail.
+LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
+assert LARGE_MULTILINE_TAIL.count("\n") > 1 and len(LARGE_MULTILINE_TAIL) > 64 * 1024
+
 
 @pytest.fixture
 def stow_repo(tmp_path):
@@ -372,6 +378,68 @@ class TestRequireStowReminder:
         commit_new_toplevel_dir(stow_repo, "agents")
         cmd = "gh pr edit 42 --body 'updated: post-merge run ./install.sh'"
         assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "allow"
+
+    def test_pr_edit_large_multiline_body_without_marker_denied(self, stow_repo):
+        """A first-line match in a large multi-line input must still be seen,
+        because a pipe into `grep -q` returns 141 under `pipefail`: the
+        body-flag check missed `--body` and skipped the gate."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        cmd = "gh pr edit 42 --body 'rewritten body, no marker'" + LARGE_MULTILINE_TAIL
+        reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
+        assert reason is not None
+        assert "adds new files" in reason
+
+    @pytest.mark.parametrize(
+        ("commit_message", "expect_allow"),
+        [
+            pytest.param("add agents (post-merge: run install.sh)", True, id="marker-in-commit-message"),
+            pytest.param("add agents", False, id="control-no-marker"),
+        ],
+    )
+    def test_fill_on_first_line_of_large_multiline_command(self, stow_repo, commit_message, expect_allow):
+        """A first-line match in a large multi-line input must still be seen,
+        because a pipe into `grep -q` returns 141 under `pipefail`: the
+        `--fill` check missed and commit messages were left out of the scan."""
+        target = stow_repo / "claude" / ".claude" / "agents"
+        target.mkdir(parents=True)
+        (target / "foo.md").write_text("x")
+        subprocess.run(["git", "add", "."], cwd=stow_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", commit_message], cwd=stow_repo, check=True)
+        cmd = "gh pr create --fill" + LARGE_MULTILINE_TAIL
+        reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
+        if expect_allow:
+            assert reason is None, reason
+            # run_hook_reason reads an exit-2 hard block (empty stdout) as None.
+            assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "allow"
+        else:
+            assert reason is not None
+            assert "adds new files" in reason
+
+    @pytest.mark.parametrize(
+        ("first_line", "expect_allow"),
+        [
+            pytest.param("Post-merge: run ./install.sh.", True, id="marker-on-first-line"),
+            pytest.param("Adds the agents directory.", False, id="control-no-marker"),
+        ],
+    )
+    def test_large_multiline_body_file_with_marker_on_first_line(
+        self, stow_repo, tmp_path, first_line, expect_allow
+    ):
+        """A first-line match in a large multi-line input must still be seen,
+        because a pipe into `grep -q` returns 141 under `pipefail`: the marker
+        scan missed an early `install.sh` and the gate falsely denied."""
+        commit_new_toplevel_dir(stow_repo, "agents")
+        body = tmp_path / "body.md"
+        body.write_text(first_line + LARGE_MULTILINE_TAIL)
+        cmd = f"gh pr create --title T --body-file {body}"
+        reason = run_hook_reason(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo)
+        if expect_allow:
+            assert reason is None, reason
+            # run_hook_reason reads an exit-2 hard block (empty stdout) as None.
+            assert run_hook(STOW_REMINDER_HOOK, bash_input(cmd), cwd=stow_repo) == "allow"
+        else:
+            assert reason is not None
+            assert "adds new files" in reason
 
     def test_no_main_ref_fails_open(self, tmp_path):
         """Fresh-clone state without a local `main` ref: hook must not
