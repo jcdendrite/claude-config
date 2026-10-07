@@ -1335,9 +1335,9 @@ class TestAnalyzeAndSpotCheckIgnoreAMissingJudgePairSupersededByAResume:
 
 
 class TestAnalyzeAndSpotCheckDropADefectWhoseOnlyJudgePairOfAKindIsMissing:
-    """One judge kind (recall, then precision) is missing for d1 with no later ok record of that kind, the
-    state a judge run leaves when it marks d1 complete with one judge missing. d2 is fully ok. Only the
-    record's status keeps the missing record out, so it still carries a well-formed answer text."""
+    """d1 is missing one judge kind, recall in one test and precision in the other, and has no later ok
+    record of that kind. A judge run leaves this state when it marks d1 complete with one judge missing.
+    d2 is fully ok. The missing record keeps its well-formed answer text, so only its status excludes it."""
 
     def _stderr_and_spot_check_item_ids(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], *, missing_judge_arm: str,

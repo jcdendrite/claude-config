@@ -2081,7 +2081,7 @@ class TestCmdJudgeMissingJudgeOutcomes:
         assert f"judge: missing runs by reason per judge kind = {missing_counts}" in stderr
 
     def test_a_stop_then_resume_under_the_same_campaign_id_reruns_both_judges(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
         args, judge_records_path, run_store = _cmd_judge_args(tmp_path, ["d1", "d2"], campaign_id="stop-then-resume")
         both_missing = (
@@ -2090,12 +2090,14 @@ class TestCmdJudgeMissingJudgeOutcomes:
         )
         monkeypatch.setattr(adjudicate, "run_defect_judges", _judge_stub({"d1": both_missing}, {}))
         assert run_review_bench.cmd_judge(args) == 2
+        capsys.readouterr()
 
         existing_recall_by_defect: dict[str, runner.RunRecord | None] = {}
         monkeypatch.setattr(adjudicate, "run_defect_judges", _judge_stub({}, existing_recall_by_defect))
         exit_code = run_review_bench.cmd_judge(args)
 
         assert exit_code == 0
+        assert "judge: missing runs by reason per judge kind = {}" in capsys.readouterr().err  # printed even with none missing
         assert existing_recall_by_defect["d1"] is None  # the stopped defect's missing recall was not reused
         assert run_store.completed_block_ids() == {"d1", "d2"}
         # The append-only file keeps the missing pair, then the ok pair. A reader sees the ok pair only.
