@@ -118,6 +118,11 @@ class TestDenyEnvReads:
         assert reason is not None
         assert ".env.example" in reason
 
+    def test_deny_message_routes_template_rename_to_the_user(self):
+        reason = run_hook_reason(DENY_ENV_READS_HOOK, read_input("/foo/.env.local"))
+        assert reason is not None
+        assert "ask the user to rename it to .env.example" in reason
+
     def test_deny_message_names_path(self):
         reason = run_hook_reason(DENY_ENV_READS_HOOK, read_input("/project/.env.production"))
         assert reason is not None

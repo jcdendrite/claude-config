@@ -65,7 +65,7 @@ case "$BASENAME" in
   .env.example|.env.template|.env.sample)
     : ;;  # allowlist candidate — fall through to symlink-target check
   .env|.env.*)
-    emit_deny "Read of '${FILE_PATH}' — Dotenv files commonly hold secrets; reading pulls them into Claude's conversation context. If this is a non-secret template, rename it to .env.example, .env.template, or .env.sample. Otherwise ask the user to inspect it in a separate terminal instead of using the Read tool. (Allowlist: ~/.claude/hooks/deny-env-reads.sh)"
+    emit_deny "Read of '${FILE_PATH}' — Dotenv files commonly hold secrets; reading pulls them into Claude's conversation context. If this is a non-secret template, ask the user to rename it to .env.example, .env.template, or .env.sample. Otherwise ask the user to inspect it in a separate terminal instead of using the Read tool. (Allowlist: ~/.claude/hooks/deny-env-reads.sh)"
     exit 0
     ;;
   *)
