@@ -592,12 +592,25 @@ class TestDenyCredentialBashReads:
     # Deny message content                                                #
     # ------------------------------------------------------------------ #
 
-    @pytest.mark.parametrize("command", ["cat ~/.ssh/id_rsa", "cat ~/.ssh/deploy_key"])
-    def test_deny_message_names_separate_terminal_not_shell_escape(self, isolated_home, command):
+    @pytest.mark.parametrize(
+        ("command", "branch_marker"),
+        [
+            # Credential-shaped-path branch.
+            ("cat ~/.ssh/id_rsa", "a non-template .env/credentials.json path"),
+            # .ssh-directory branch: a custom-named key off the safe-basename allowlist.
+            ("cat ~/.ssh/deploy_key", "safe-basename allowlist"),
+        ],
+        ids=["credential-shaped-path-branch", "ssh-directory-branch"],
+    )
+    def test_deny_message_names_separate_terminal_not_shell_escape(self, isolated_home, command, branch_marker):
         reason = run_hook_reason(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home)
         assert reason is not None
+        assert branch_marker in reason
         assert "No bypass valve" in reason
+        assert "ask the user" in reason
         assert "separate terminal" in reason
+        assert "`!`" not in reason
+        assert "! cat" not in reason
         assert "shell escape" not in reason
 
     # ------------------------------------------------------------------ #

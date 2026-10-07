@@ -578,7 +578,10 @@ class TestDenyNetworkInstalls:
     def test_deny_message_names_separate_terminal_alternative(self, isolated_home):
         reason = run_hook_reason(DENY_NETWORK_INSTALLS_HOOK, bash_input("npm install lodash"), home=isolated_home)
         assert reason is not None
+        assert "ask the user" in reason
         assert "separate terminal" in reason
+        assert "`!`" not in reason
+        assert "! cat" not in reason
         assert "shell escape" not in reason
 
     def test_deny_message_names_the_package_naming_requirement(self, isolated_home):

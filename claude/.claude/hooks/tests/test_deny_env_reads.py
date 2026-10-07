@@ -126,8 +126,11 @@ class TestDenyEnvReads:
     def test_deny_message_routes_inspection_to_separate_terminal_not_shell_escape(self):
         reason = run_hook_reason(DENY_ENV_READS_HOOK, read_input("/project/.env.production"))
         assert reason is not None
+        assert "ask the user" in reason
         assert "separate terminal" in reason
-        assert "!" not in reason
+        assert "`!`" not in reason
+        assert "! cat" not in reason
+        assert "shell escape" not in reason
 
     # ------------------------------------------------------------------ #
     # Symlink cases (require real filesystem symlinks)                    #

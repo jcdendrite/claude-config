@@ -329,13 +329,13 @@ class TestDenyCredentialFileReads:
         assert reason is not None
         assert "/home/user/.ssh/id_rsa" in reason
 
-    def test_deny_message_routes_inspection_to_separate_terminal_and_rejects_shell_escape(self, isolated_home):
+    def test_deny_message_routes_inspection_to_separate_terminal(self, isolated_home):
         reason = run_hook_reason(
             DENY_CREDENTIAL_FILE_READS_HOOK, read_input("/home/user/.ssh/id_rsa"), home=isolated_home
         )
         assert reason is not None
+        assert "ask them to run a command" in reason
         assert "separate terminal" in reason
-        assert "does not avoid this either" in reason
 
     # ------------------------------------------------------------------ #
     # Defense-in-depth: non-Read tool names pass through                  #
