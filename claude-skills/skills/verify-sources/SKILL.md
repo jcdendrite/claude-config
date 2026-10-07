@@ -4,10 +4,9 @@ description: >
   Confirm claims at the primary source — fetch the official docs, spec, or
   source directly. TRIGGER when: researching a library, API, framework, or
   architecture/design decision; or acting on a documentation claim from a
-  subagent, blog post, or other secondary source. DO NOT TRIGGER when: you
-  want a multi-source research synthesis (that is a research-harness job, not
-  source verification); quick syntax lookups; error decoding; or when the
-  cited URL is already the primary source.
+  subagent, blog post, or other secondary source. DO NOT TRIGGER when: quick
+  syntax lookups; error decoding; or when the cited URL is already the
+  primary source.
 user-invocable: true
 ---
 

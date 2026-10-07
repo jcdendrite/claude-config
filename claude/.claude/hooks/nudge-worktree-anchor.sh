@@ -2,7 +2,7 @@
 # hook-class: informational
 # UserPromptSubmit hook: report when the session is working from the main
 # working tree of a repo that requires worktrees, while a linked worktree
-# exists on disk.
+# other than a review-pr checkout exists on disk.
 #
 # Audience: Claude (the agent), not humans. Output is a JSON payload with
 # hookSpecificOutput.additionalContext — the harness injects it into the
@@ -23,7 +23,8 @@
 # Emits only when all three hold:
 #   1. worktree enforcement is active for the resolved repo
 #   2. the session's working directory is the repo's MAIN working tree
-#   3. at least one linked worktree exists on disk
+#   3. at least one linked worktree exists on disk, other than a review-pr
+#      checkout (_lib_first_live_linked_worktree defines which those are)
 # Condition 3 keeps a solo main-tree repo (opted in, no worktree yet) quiet,
 # which is the normal state right before `git worktree add`.
 #
@@ -143,8 +144,9 @@ if [ "$SESSION_GIT_DIR" != "$COMMON_GIT_DIR" ]; then
   exit 0
 fi
 
-# Does a linked worktree actually exist on disk? Shared with marker.sh's
-# fail-closed check, so both features answer this question the same way.
+# Does a linked worktree other than a review-pr checkout actually exist on
+# disk? Shared with marker.sh's fail-closed check, so both features answer
+# this question the same way.
 LINKED_WORKTREE=$(_lib_first_live_linked_worktree "$REPO_ROOT" 2>/dev/null)
 
 if [ -z "$LINKED_WORKTREE" ]; then

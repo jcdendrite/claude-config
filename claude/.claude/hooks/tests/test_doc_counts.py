@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import pytest
+import yaml
 from helpers import CLAUDE_DIR, SCRIPTS_DIR
 
 from .test_agent_roster import REVIEWER_AGENTS
@@ -144,6 +145,40 @@ def _count_name_only_skills() -> int:
         for name, value in settings.get("skillOverrides", {}).items()
         if value == "name-only" and name not in _BUILTIN_NAME_ONLY_SKILLS
     )
+
+
+def _name_only_skills_carrying_trigger_blocks() -> list[bool]:
+    """Per name-only repo skill (builtins excluded), whether its SKILL.md
+    description carries a TRIGGER block. A skill listed in skillOverrides without
+    a repo SKILL.md raises, so the roster cannot drift silently."""
+    settings = json.loads((CLAUDE_DIR / "settings.json").read_text())
+    names = [
+        name
+        for name, value in settings.get("skillOverrides", {}).items()
+        if value == "name-only" and name not in _BUILTIN_NAME_ONLY_SKILLS
+    ]
+    flags = []
+    for name in names:
+        skill_md = REPO_ROOT / "claude-skills" / "skills" / name / "SKILL.md"
+        flags.append(_description_carries_trigger_block(skill_md))
+    return flags
+
+
+def _description_carries_trigger_block(skill_md: Path) -> bool:
+    """Whether the frontmatter `description` field holds a `TRIGGER when:` block.
+    A `DO NOT TRIGGER when:` block alone does not count."""
+    frontmatter_match = re.match(r"---\n(.*?)\n---\n", skill_md.read_text(), re.DOTALL)
+    assert frontmatter_match, f"{skill_md} has no frontmatter block"
+    description = yaml.safe_load(frontmatter_match.group(1)).get("description", "")
+    return re.search(r"(?<!NOT )TRIGGER when:", description) is not None
+
+
+def _count_name_only_skills_without_trigger_blocks() -> int:
+    return _name_only_skills_carrying_trigger_blocks().count(False)
+
+
+def _count_name_only_skills_with_trigger_blocks() -> int:
+    return _name_only_skills_carrying_trigger_blocks().count(True)
 
 
 _GROUND_EVERY_CHOICE_BULLET = "- **Ground every choice.**"
@@ -483,6 +518,28 @@ _REGISTERED_FACTS: list[DocCountFact] = [
                 rel_path="docs/skills.md",
                 pattern=r"(\w+) skills in this repo use `skillOverrides: name-only`",
                 description="docs/skills.md: N skills use skillOverrides: name-only",
+            ),
+        ],
+    ),
+    DocCountFact(
+        ground_truth_fn=_count_name_only_skills_without_trigger_blocks,
+        label="count of name-only repo skills whose SKILL.md frontmatter has no TRIGGER text",
+        occurrences=[
+            Occurrence(
+                rel_path="docs/skills.md",
+                pattern=r"(\w+) skills carry no TRIGGER blocks",
+                description="docs/skills.md: N skills carry no TRIGGER blocks",
+            ),
+        ],
+    ),
+    DocCountFact(
+        ground_truth_fn=_count_name_only_skills_with_trigger_blocks,
+        label="count of name-only repo skills whose SKILL.md frontmatter has TRIGGER text",
+        occurrences=[
+            Occurrence(
+                rel_path="docs/skills.md",
+                pattern=r"The other (\w+) carry TRIGGER blocks",
+                description="docs/skills.md: the other N carry TRIGGER blocks",
             ),
         ],
     ),

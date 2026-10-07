@@ -54,7 +54,11 @@ from helpers import (
     write_scaled_timeout_shim,
 )
 
-from .conftest import _worktree_lock_reason
+from .conftest import (
+    REVIEW_WORKTREE_NAME,
+    _add_worktree_under_worktrees_dir,
+    _worktree_lock_reason,
+)
 from .test_config_lib import _isolated_hooks_dir_missing_key_row, _locale_that_widens_ascii_ranges
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
@@ -1443,6 +1447,330 @@ def test_marker_value_present_restores_nullglob_state() -> None:
     assert result.stdout.strip() == "RESTORED", repr(result.stdout)
 
 
+# --- _lib_review_pr_completion_marker_fields -------------------------------
+#
+# review-pr-post.sh's only read of the completion marker /review-pr's
+# `write review-pr` arm writes -- session-scoped (never a cross-session
+# glob, unlike _lib_marker_value_present above), since this authorizes a
+# `gh pr review` POST rather than releasing a gate for a read.
+
+
+def _review_pr_completion_marker_fields(
+    config_dir: Path, repo_hash: str, session_id: str
+) -> subprocess.CompletedProcess:
+    argv = [
+        "bash", "-c", f'. {_LIB_SH}; _lib_review_pr_completion_marker_fields "$@"', "bash",
+        str(config_dir), repo_hash, session_id,
+    ]
+    return subprocess.run(argv, capture_output=True, text=True, check=False)
+
+
+def _write_review_pr_marker(config_dir: Path, repo_hash: str, session_id: str, content: str) -> None:
+    marker_dir = config_dir / "review-pr-markers"
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    (marker_dir / f"{repo_hash}.{session_id}").write_text(content)
+
+
+def test_review_pr_completion_marker_fields_returns_the_four_stored_lines(tmp_path: Path) -> None:
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout\n")
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "foo/bar#42\nabc123\ndef456\ncheckout\n"
+
+
+def test_review_pr_completion_marker_fields_tolerates_missing_trailing_newline(tmp_path: Path) -> None:
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout")
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "foo/bar#42\nabc123\ndef456\ncheckout\n"
+
+
+def test_review_pr_completion_marker_fields_absent_marker_returns_1_with_no_output(
+    tmp_path: Path,
+) -> None:
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("foo/bar#42\nabc123\ndef456\n", id="only_three_lines"),
+        pytest.param("foo/bar#42\n\ndef456\ncheckout\n", id="empty_middle_line"),
+        pytest.param("\nabc123\ndef456\ncheckout\n", id="empty_first_line"),
+        pytest.param("foo/bar#42\nabc123\n\ncheckout\n", id="empty_third_line"),
+        pytest.param("foo/bar#42\nabc123\ndef456\n\n", id="empty_fourth_line"),
+        pytest.param("", id="empty_file"),
+    ],
+)
+def test_review_pr_completion_marker_fields_malformed_content_returns_1_with_no_output(
+    tmp_path: Path, content: str
+) -> None:
+    """A marker that doesn't parse into exactly four non-empty lines must
+    never authorize a post on partial data -- each malformed shape below
+    fails closed the same way an absent marker does."""
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", content)
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_review_pr_completion_marker_fields_wrong_session_returns_1(tmp_path: Path) -> None:
+    """Session-scoped, unlike _lib_marker_value_present's cross-session glob
+    above: a marker written under one session must not authorize a read from
+    another -- see test_other_sessions_marker_does_not_leak_bypass for the
+    equivalent property on the active-bypass marker."""
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout\n")
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-b")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_review_pr_completion_marker_fields_wrong_repo_hash_returns_1(tmp_path: Path) -> None:
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout\n")
+    result = _review_pr_completion_marker_fields(tmp_path, "otherrepohash", "session-a")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_review_pr_completion_marker_fields_rejects_traversal_session_id(tmp_path: Path) -> None:
+    """Routed through _lib_valid_session_id_component before ever building
+    the marker path -- a '../' session id must not escape review-pr-markers/.
+    The canary is a valid marker the traversing id reaches, so only the guard
+    can produce the refusal."""
+    (tmp_path / "review-pr-markers" / "repohash.x").mkdir(parents=True)
+    (tmp_path / "canary").write_text("foo/bar#42\nabc123\ndef456\ncheckout\n")
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "x/../../canary")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+# --- _lib_parse_pr_identity -------------------------------------------------
+#
+# Every review-pr script that takes a PR identity calls this helper for its
+# split and validation, so none carries its own copy.
+
+
+def _parse_pr_identity(pr_identity: str) -> subprocess.CompletedProcess:
+    argv = [
+        "bash", "-c", f'. {_LIB_SH}; _lib_parse_pr_identity "$@"', "bash", pr_identity,
+    ]
+    return subprocess.run(argv, capture_output=True, text=True, check=False)
+
+
+def test_parse_pr_identity_returns_owner_repo_and_number(tmp_path: Path) -> None:
+    result = _parse_pr_identity("foo/bar#42")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "foo/bar\n42\n"
+
+
+@pytest.mark.parametrize(
+    "pr_identity",
+    [
+        pytest.param("no-hash-or-slash", id="no_hash_or_slash"),
+        pytest.param("foo/bar#NOTANUMBER", id="non_numeric_number"),
+        pytest.param("#42", id="empty_owner_repo"),
+        # A segment made entirely of '.'/'-' characters is a valid, nonempty
+        # run under a naive [A-Za-z0-9._-]+ class, and turns a
+        # `repos/$OWNER_REPO/...` gh api interpolation into a
+        # path-traversal shape.
+        pytest.param("../..#5", id="traversal_segments"),
+        pytest.param("..#5", id="single_dot_segment"),
+        # Each half independently: "../..#5" above has both halves bad, which
+        # doesn't distinguish a regex that validates each half from one that
+        # only checks the owner-side (or the whole string) loosely. A
+        # legitimate owner paired with a traversal repo, and vice versa, pin
+        # that both '/'-delimited segments are checked on their own.
+        pytest.param("foo/..#5", id="repo_half_traversal_only"),
+        pytest.param("../foo#5", id="owner_half_traversal_only"),
+    ],
+)
+def test_parse_pr_identity_rejects_malformed_shapes(tmp_path: Path, pr_identity: str) -> None:
+    result = _parse_pr_identity(pr_identity)
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_parse_pr_identity_accepts_dot_and_hyphen_alongside_alnum(tmp_path: Path) -> None:
+    """Bounds the owner/repo regex from the other side of the
+    traversal-rejection cases above: a segment mixing '.'/'-' with at least
+    one alphanumeric character (an ordinary GitHub owner/repo shape) must
+    still pass."""
+    result = _parse_pr_identity("my-org/my.repo#5")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "my-org/my.repo\n5\n"
+
+
+# --- _lib_gh -----------------------------------------------------------
+
+
+def _gh_shim_dir(tmp_path: Path, call_log: Path, exit_code: int = 0) -> Path:
+    """PATH dir holding a fake `gh` that records argv and
+    GH_HOST/GH_ENTERPRISE_TOKEN to call_log (one JSON object) and exits
+    exit_code."""
+    shim_dir = tmp_path / "gh-shim"
+    shim_dir.mkdir()
+    gh_shim = shim_dir / "gh"
+    gh_shim.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json
+        import os
+        import sys
+        record = {{
+            "args": sys.argv[1:],
+            "GH_HOST": os.environ.get("GH_HOST"),
+            "GH_ENTERPRISE_TOKEN": os.environ.get("GH_ENTERPRISE_TOKEN"),
+        }}
+        with open({str(call_log)!r}, "a") as f:
+            f.write(json.dumps(record) + chr(10))
+        sys.exit({exit_code})
+    """))
+    gh_shim.chmod(0o755)
+    return shim_dir
+
+
+class TestLibGh:
+    """Direct unit coverage for _lib_gh -- the one call every review-pr
+    script routes its own `gh` invocations through."""
+
+    def test_forwards_argv_and_ambient_gh_host_and_enterprise_token_unchanged(self, tmp_path: Path) -> None:
+        call_log = tmp_path / "calls.jsonl"
+        shim_dir = _gh_shim_dir(tmp_path, call_log)
+        env = {
+            **os.environ,
+            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+            "GH_HOST": "ghe.example.com",
+            "GH_ENTERPRISE_TOKEN": "enterprise-token",
+        }
+        result = _run_lib_call('_lib_gh 5 pr view 42 -R foo/bar --json headRefOid', env=env)
+        assert result.returncode == 0, result.stderr
+        record = json.loads(call_log.read_text())
+        assert record["args"] == ["pr", "view", "42", "-R", "foo/bar", "--json", "headRefOid"]
+        assert record["GH_HOST"] == "ghe.example.com"
+        assert record["GH_ENTERPRISE_TOKEN"] == "enterprise-token"
+
+    def test_propagates_gh_own_nonzero_exit_status(self, tmp_path: Path) -> None:
+        call_log = tmp_path / "calls.jsonl"
+        shim_dir = _gh_shim_dir(tmp_path, call_log, exit_code=1)
+        env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+        result = _run_lib_call('_lib_gh 5 pr view 42', env=env)
+        assert result.returncode == 1
+
+
+# --- _lib_origin_owner_repo ----------------------------------------------
+
+
+class TestLibOriginOwnerRepo:
+    """Direct unit coverage for _lib_origin_owner_repo -- the one shared
+    extraction review-pr-checkout.sh and review-pr-diff.sh (REPO_ROOT form)
+    and review-pr-post.sh and require-respond-pr.sh's own cross-repo check
+    (cwd form) all call."""
+
+    @staticmethod
+    def _origin_owner_repo(repo: Path, resolution_form: str) -> subprocess.CompletedProcess:
+        """Run the function against repo in one of its two resolution forms.
+        The ambient git config is isolated so a contributor's own `insteadOf`
+        rules cannot change either form's answer."""
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        if resolution_form == "repo_root":
+            return _run_lib_call(f'_lib_origin_owner_repo "{repo}"', env=env)
+        return subprocess.run(
+            ["bash", "-c", f'. "{_LIB_SH}"; _lib_origin_owner_repo'],
+            cwd=repo, capture_output=True, text=True, env=env,
+        )
+
+    @pytest.mark.parametrize("resolution_form", ["repo_root", "cwd"])
+    @pytest.mark.parametrize(
+        "origin_url",
+        [
+            "https://github.com/foo/bar.git",
+            "https://github.com/foo/bar",
+            "git@github.com:foo/bar.git",
+            "ssh://git@github.com:22/foo/bar.git",
+            "https://user:token@github.com/foo/bar.git",
+            "/srv/remotes/foo/bar.git",
+        ],
+        ids=["https_dot_git", "https_no_suffix", "scp_like", "ssh_with_port", "https_with_userinfo", "local_path"],
+    )
+    def test_extracts_owner_repo_from_each_url_shape_in_both_resolution_forms(
+        self, tmp_path: Path, origin_url: str, resolution_form: str
+    ) -> None:
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo)
+        subprocess.run(["git", "remote", "add", "origin", origin_url], cwd=repo, check=True)
+        result = self._origin_owner_repo(repo, resolution_form)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "foo/bar"
+
+    @pytest.mark.parametrize("resolution_form", ["repo_root", "cwd"])
+    @pytest.mark.parametrize(
+        "origin_url",
+        ["https://github.com/foo/bar/", "https://github.com/foo/bar.git/"],
+        ids=["trailing_slash", "dot_git_trailing_slash"],
+    )
+    def test_a_trailing_slash_fails_closed_in_both_resolution_forms(
+        self, tmp_path: Path, origin_url: str, resolution_form: str
+    ) -> None:
+        """A URL ending in `/` does not parse to an owner/repo shape, so a
+        caller denies rather than comparing a wrong slug."""
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo)
+        subprocess.run(["git", "remote", "add", "origin", origin_url], cwd=repo, check=True)
+        result = self._origin_owner_repo(repo, resolution_form)
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("resolution_form", ["repo_root", "cwd"])
+    def test_an_instead_of_rewrite_yields_the_same_owner_repo_in_both_resolution_forms(
+        self, tmp_path: Path, resolution_form: str
+    ) -> None:
+        """`git remote get-url` applies a `url.<base>.insteadOf` rewrite and
+        `git config --get` does not, so the two forms read different URLs here
+        and must still agree on the slug."""
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo)
+        subprocess.run(["git", "remote", "add", "origin", "alias:foo/bar.git"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "url.https://github.com/.insteadOf", "alias:"], cwd=repo, check=True)
+        result = self._origin_owner_repo(repo, resolution_form)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "foo/bar"
+
+    def test_fails_closed_with_no_origin_remote(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo)
+        result = _run_lib_call(f'_lib_origin_owner_repo "{repo}"', env=dict(os.environ))
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+
+class TestLibCaseInsensitiveNe:
+    """Direct unit coverage for _lib_case_insensitive_ne -- the shared
+    nocasematch comparison for owner/repo slugs, since GitHub treats them
+    case-insensitively."""
+
+    def test_exact_match_returns_false(self) -> None:
+        result = _run_lib_call('_lib_case_insensitive_ne "foo/bar" "foo/bar"', env=dict(os.environ))
+        assert result.returncode == 1
+
+    def test_case_differing_match_returns_false(self) -> None:
+        result = _run_lib_call('_lib_case_insensitive_ne "Foo/Bar" "foo/bar"', env=dict(os.environ))
+        assert result.returncode == 1
+
+    def test_genuine_mismatch_returns_true(self) -> None:
+        result = _run_lib_call('_lib_case_insensitive_ne "foo/bar" "foo/baz"', env=dict(os.environ))
+        assert result.returncode == 0
+
+    @pytest.mark.parametrize("initial_option_state", ["-s", "-u"], ids=["caller_set", "caller_unset"])
+    def test_leaves_the_callers_nocasematch_setting_as_it_found_it(self, initial_option_state: str) -> None:
+        result = _run_lib_call(
+            f'shopt {initial_option_state} nocasematch; _lib_case_insensitive_ne "foo/bar" "foo/baz"; '
+            "shopt -p nocasematch",
+            env=dict(os.environ),
+        )
+        assert result.stdout == f"shopt {initial_option_state} nocasematch\n"
+
+
 # --- _lib_is_no_gate_release_agent ---------------------------------------
 
 
@@ -1639,12 +1967,15 @@ def test_valid_session_id_component_accepts_uuid_shaped_ids(session_id: str) -> 
         "session;rm -rf /",
         ".",
         "..",
+        "abc\n",  # trailing newline: `$` must not stop matching before it
+        "\nabc",
+        "ab\ncd",
     ],
 )
 def test_valid_session_id_component_rejects_path_escaping_ids(session_id: str) -> None:
     """Each of these, concatenated into "$DIR/$SESSION_ID", would either
-    escape DIR (`../`, an absolute path) or otherwise fail to name a single
-    safe path component."""
+    escape DIR (`../`, an absolute path), carry a newline, or otherwise fail
+    to name a single safe path component."""
     assert not _valid_session_id_component(session_id)
 
 
@@ -2136,12 +2467,15 @@ def test_every_hook_that_paths_a_session_id_validates_it() -> None:
 # --- _lib_first_live_linked_worktree --------------------------------------
 
 
-def _first_live_linked_worktree(repo_root: Path) -> subprocess.CompletedProcess:
+def _first_live_linked_worktree(
+    repo_root: Path, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", "-c", f'. {_LIB_SH}; _lib_first_live_linked_worktree "$1"', "bash", str(repo_root)],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
 
 
@@ -2187,6 +2521,262 @@ def test_first_live_linked_worktree_returns_not_found_with_no_worktree_at_all(
 
     assert result.returncode != 0
     assert result.stdout == ""
+
+
+def _add_review_worktree(repo: Path, name: str) -> Path:
+    return _add_worktree_under_worktrees_dir(repo, name)
+
+
+def test_first_live_linked_worktree_skips_a_review_worktree(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    _add_review_worktree(repo, REVIEW_WORKTREE_NAME)
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def _env_with_git_shim_printing_worktree_list(tmp_path: Path, porcelain_text: str) -> dict[str, str]:
+    """An environment whose `git worktree list --porcelain` prints
+    `porcelain_text` verbatim, so a test controls record order and the missing
+    trailing blank line that real git always emits."""
+    porcelain_file = tmp_path / "porcelain.txt"
+    porcelain_file.write_text(porcelain_text)
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    git_shim = shim_dir / "git"
+    git_shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'case " $* " in\n'
+        "  *' worktree list --porcelain '*)\n"
+        f"    cat {shlex.quote(str(porcelain_file))}\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "esac\n"
+        'echo "unexpected git call: $*" >&2\n'
+        "exit 1\n"
+    )
+    git_shim.chmod(0o755)
+    return {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
+@pytest.mark.parametrize("review_entry_first", [True, False], ids=["review-first", "branch-first"])
+def test_first_live_linked_worktree_returns_the_branch_worktree_in_either_listing_order(
+    tmp_path: Path, review_entry_first: bool
+) -> None:
+    """`git worktree list` does not promise an order, so a skipped review entry
+    must not end the scan whichever side of the branch worktree it lands on.
+    A `git` shim prints the porcelain text in a fixed order over real
+    directories. The last record has no trailing blank line, which pins the
+    end-of-input flush."""
+    repo = tmp_path / "repo"
+    worktrees_dir = repo / ".claude" / "worktrees"
+    review_worktree = worktrees_dir / REVIEW_WORKTREE_NAME
+    branch_worktree = worktrees_dir / "feature"
+    review_worktree.mkdir(parents=True)
+    branch_worktree.mkdir()
+    main_record = f"worktree {repo}\nbranch refs/heads/main\n"
+    review_record = f"worktree {review_worktree}\ndetached\n"
+    branch_record = f"worktree {branch_worktree}\nbranch refs/heads/feature\n"
+    linked_records = [review_record, branch_record] if review_entry_first else [branch_record, review_record]
+
+    result = _first_live_linked_worktree(
+        repo, env=_env_with_git_shim_printing_worktree_list(tmp_path, "\n".join([main_record, *linked_records]))
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+    assert result.stderr == ""
+
+
+def test_first_live_linked_worktree_returns_the_whole_path_of_a_worktree_whose_directories_contain_a_space(
+    tmp_path: Path,
+) -> None:
+    """The porcelain record is one line, `worktree <path>`, so a path with a
+    space must come back whole rather than cut at the first space."""
+    repo = tmp_path / "my repo"
+    branch_worktree = repo / ".claude" / "worktrees" / "my feature"
+    branch_worktree.mkdir(parents=True)
+    main_record = f"worktree {repo}\nbranch refs/heads/main\n"
+    branch_record = f"worktree {branch_worktree}\nbranch refs/heads/feature\n"
+
+    result = _first_live_linked_worktree(
+        repo, env=_env_with_git_shim_printing_worktree_list(tmp_path, "\n".join([main_record, branch_record]))
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_skips_a_review_record_under_a_repo_path_containing_a_space_but_keeps_the_branch_record(
+    tmp_path: Path,
+) -> None:
+    """The review-shape comparison matches the entry's path against
+    `<repo>/.claude/worktrees`, so a space in the repo path must not defeat the
+    skip. The review record alone is not-found; a branch record after it is
+    returned whole."""
+    repo = tmp_path / "my repo"
+    worktrees_dir = repo / ".claude" / "worktrees"
+    review_worktree = worktrees_dir / REVIEW_WORKTREE_NAME
+    branch_worktree = worktrees_dir / "feature"
+    review_worktree.mkdir(parents=True)
+    branch_worktree.mkdir()
+    main_record = f"worktree {repo}\nbranch refs/heads/main\n"
+    review_record = f"worktree {review_worktree}\ndetached\n"
+    branch_record = f"worktree {branch_worktree}\nbranch refs/heads/feature\n"
+
+    # The shim helper owns a fixed layout under its directory, so each listing gets its own.
+    review_alone_dir, review_then_branch_dir = tmp_path / "review-alone", tmp_path / "review-then-branch"
+    review_alone_dir.mkdir()
+    review_then_branch_dir.mkdir()
+    review_alone = _first_live_linked_worktree(
+        repo,
+        env=_env_with_git_shim_printing_worktree_list(review_alone_dir, "\n".join([main_record, review_record])),
+    )
+    review_then_branch = _first_live_linked_worktree(
+        repo,
+        env=_env_with_git_shim_printing_worktree_list(
+            review_then_branch_dir, "\n".join([main_record, review_record, branch_record])
+        ),
+    )
+
+    assert review_alone.returncode != 0
+    assert review_alone.stdout == ""
+    assert review_then_branch.returncode == 0
+    assert review_then_branch.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_does_not_carry_a_detached_record_over_to_the_next_record(
+    tmp_path: Path,
+) -> None:
+    """A detached main checkout, common in CI, must not mark the record after
+    it detached: a review-shaped worktree on a branch still counts."""
+    repo = tmp_path / "repo"
+    review_named_branch_worktree = repo / ".claude" / "worktrees" / REVIEW_WORKTREE_NAME
+    review_named_branch_worktree.mkdir(parents=True)
+    detached_main_record = f"worktree {repo}\ndetached\n"
+    branch_record = f"worktree {review_named_branch_worktree}\nbranch refs/heads/feature\n"
+
+    result = _first_live_linked_worktree(
+        repo, env=_env_with_git_shim_printing_worktree_list(tmp_path, "\n".join([detached_main_record, branch_record]))
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == str(review_named_branch_worktree)
+
+
+def test_first_live_linked_worktree_counts_a_review_named_directory_outside_the_worktrees_dir(
+    tmp_path: Path,
+) -> None:
+    """Only a directory directly under .claude/worktrees is a review worktree,
+    so a detached worktree elsewhere that merely shares the name stays live."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    lookalike = tmp_path / REVIEW_WORKTREE_NAME
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(lookalike)],
+        cwd=repo, check=True, capture_output=True,
+    )
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(lookalike)
+
+
+def test_first_live_linked_worktree_returns_a_branch_worktree_directly_under_the_worktrees_dir(
+    tmp_path: Path,
+) -> None:
+    """The repo's own layout is .claude/worktrees/<branch>; that worktree is
+    the one a main-tree session should be told to enter."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    branch_worktree = _add_worktree_under_worktrees_dir(repo, "feature", branch="feature")
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_skips_a_review_sibling_but_returns_the_branch_worktree(
+    tmp_path: Path,
+) -> None:
+    """Real git porcelain output; the listing order is not pinned here (the
+    shim test above pins both orders)."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    _add_review_worktree(repo, REVIEW_WORKTREE_NAME)
+    branch_worktree = _add_worktree_under_worktrees_dir(repo, "feature", branch="feature")
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_counts_a_user_named_review_prefixed_detached_worktree(
+    tmp_path: Path,
+) -> None:
+    """A name that only starts with review-pr- is not the shape
+    review-pr-checkout.sh creates, so it stays live even when detached."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    user_worktree = _add_review_worktree(repo, "review-pr-hardening")
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(user_worktree)
+
+
+def test_first_live_linked_worktree_counts_a_review_named_directory_nested_one_level_deeper(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    nested = _add_review_worktree(repo, f"nested/{REVIEW_WORKTREE_NAME}")
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(nested)
+
+
+def test_first_live_linked_worktree_counts_a_review_shaped_worktree_that_is_on_a_branch(
+    tmp_path: Path,
+) -> None:
+    """Review checkouts are always detached, so a branch worktree with the
+    review-shaped name is someone's real work tree."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    branch_worktree = _add_worktree_under_worktrees_dir(
+        repo, REVIEW_WORKTREE_NAME, branch="review-branch"
+    )
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_counts_a_review_shaped_worktree_under_another_trees_worktrees_dir(
+    tmp_path: Path,
+) -> None:
+    """Only the repo's own .claude/worktrees directory qualifies, not any
+    directory with that tail."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    elsewhere = _add_worktree_under_worktrees_dir(
+        repo, REVIEW_WORKTREE_NAME, worktrees_root=tmp_path / "other-tree"
+    )
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(elsewhere)
 
 
 # --- _lib_default_branch_from_origin_head / _lib_default_branch_or_guess --
@@ -6157,6 +6747,413 @@ class TestRedactCredentialShapedStrings:
         assert "xyz_12345678" not in result.stdout
         assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED} c={_REDACTED}")
         assert len(counter_file.read_text().splitlines()) == 1
+
+
+class TestLibReviewPrArtifactPath:
+    """Direct unit coverage for _lib_review_pr_artifact_path -- the one
+    shared derivation of every review-pr session-scoped artifact path."""
+
+    def test_builds_the_dotted_active_dir_path(self) -> None:
+        result = _run_lib_call(
+            '_lib_review_pr_artifact_path "/home/u/.claude" "sess-1" provenance', env=dict(os.environ)
+        )
+        assert result.returncode == 0
+        assert result.stdout == "/home/u/.claude/.review-pr-active.d/sess-1.provenance"
+
+    def test_suffix_carrying_its_own_dot_is_passed_through_unmodified(self) -> None:
+        """SUFFIX carries no leading dot by convention, but "context.json"
+        (an already-dotted suffix) must still round-trip unchanged -- this
+        function does no dot-stripping or validation of its own."""
+        result = _run_lib_call(
+            '_lib_review_pr_artifact_path "/home/u/.claude" "sess-1" context.json', env=dict(os.environ)
+        )
+        assert result.returncode == 0
+        assert result.stdout == "/home/u/.claude/.review-pr-active.d/sess-1.context.json"
+
+
+class TestLibReviewPrProvenanceSchema:
+    """Direct unit coverage for _lib_write_review_pr_provenance and
+    _lib_review_pr_provenance_field -- the one writer and reader of the
+    provenance schema. marker-clear-stale.py's own "pid=" read (Python, not
+    this lib) follows the same schema."""
+
+    def test_round_trips_every_written_field(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "sess.provenance"
+        write = _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" '
+            'pr_identity=foo/bar#42 head_ref_oid=abc123 pid=999 mode=checkout',
+            env=dict(os.environ),
+        )
+        assert write.returncode == 0, write.stderr
+        assert provenance.read_text().splitlines()[0] == "schema=1"
+
+        for key, expected in (
+            ("pr_identity", "foo/bar#42"),
+            ("head_ref_oid", "abc123"),
+            ("pid", "999"),
+            ("mode", "checkout"),
+        ):
+            read = _run_lib_call(
+                f'_lib_review_pr_provenance_field "{provenance}" {key}', env=dict(os.environ)
+            )
+            assert read.returncode == 0, read.stderr
+            assert read.stdout == expected
+
+    def test_unknown_key_returns_one_with_no_output(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "sess.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" pr_identity=foo/bar#42',
+            env=dict(os.environ),
+        )
+        result = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" nonexistent_key', env=dict(os.environ)
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_a_file_with_no_schema_header_is_rejected_even_with_a_matching_key_value_line(
+        self, tmp_path: Path
+    ) -> None:
+        """A file without the `schema=1` header must fail closed rather than
+        being partially read -- even when a line happens to look like a valid
+        key=value pair."""
+        provenance = tmp_path / "sess.provenance"
+        provenance.write_text("pr_identity=foo/bar#42\nhead_ref_oid=abc123\n")
+        result = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" pr_identity', env=dict(os.environ)
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_a_field_unknown_to_this_reader_does_not_break_reading_the_known_fields(
+        self, tmp_path: Path
+    ) -> None:
+        """The schema is additive: a file carrying a key this call never asks
+        for (e.g. fetched_sha) must not disturb any other field's read."""
+        provenance = tmp_path / "sess.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" '
+            'pr_identity=foo/bar#42 head_ref_oid=abc123 pid=999 mode=checkout fetched_sha=deadbeef',
+            env=dict(os.environ),
+        )
+        result = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" mode', env=dict(os.environ)
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "checkout"
+
+    def test_a_value_containing_equals_signs_round_trips_whole(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "sess.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" pr_identity=foo/bar#42 head_ref_oid=a=b=c',
+            env=dict(os.environ),
+        )
+        result = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" head_ref_oid', env=dict(os.environ)
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "a=b=c"
+
+    def test_a_key_that_is_a_prefix_of_another_key_reads_only_its_own_line(self, tmp_path: Path) -> None:
+        """`pid` must not match the `pid_extra=` line that precedes its own."""
+        provenance = tmp_path / "sess.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" pid_extra=111 pid=999', env=dict(os.environ)
+        )
+        present = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" pid', env=dict(os.environ)
+        )
+        assert present.returncode == 0, present.stderr
+        assert present.stdout == "999"
+
+        only_longer_key = tmp_path / "only-longer-key.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{only_longer_key}" pid_extra=111', env=dict(os.environ)
+        )
+        absent = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{only_longer_key}" pid', env=dict(os.environ)
+        )
+        assert absent.returncode != 0
+        assert absent.stdout == ""
+
+    def test_writer_returns_non_zero_when_the_destination_cannot_be_written(self, tmp_path: Path) -> None:
+        missing_directory_destination = tmp_path / "absent-directory" / "sess.provenance"
+        result = _run_lib_call(
+            f'_lib_write_review_pr_provenance "{missing_directory_destination}" pr_identity=foo/bar#42',
+            env=dict(os.environ),
+        )
+        assert result.returncode != 0
+        assert not missing_directory_destination.exists()
+
+
+class TestLibReviewPrWorktreeTemplate:
+    """Direct unit coverage for _lib_review_pr_worktree_template -- the
+    naming convention review-pr-checkout.sh creates worktrees under and
+    _lib_review_pr_select_session_worktrees (below) discovers them by."""
+
+    def test_builds_the_mktemp_template_from_session_and_pr_number(self) -> None:
+        result = _run_lib_call(
+            '_lib_review_pr_worktree_template "/repo" "sess-1" "42"', env=dict(os.environ)
+        )
+        assert result.returncode == 0
+        assert result.stdout == "/repo/.claude/worktrees/review-pr-sess-1-42-XXXXXX"
+
+
+_PORCELAIN_HEAD = "HEAD " + "a" * 40
+
+
+def _porcelain_record(path: str, *extra_lines: str) -> str:
+    """One `git worktree list --porcelain` record: a path line, then a HEAD
+    line and `detached` unless `extra_lines` replaces them."""
+    tail = extra_lines or (_PORCELAIN_HEAD, "detached")
+    return "\n".join([f"worktree {path}", *tail]) + "\n"
+
+
+# mktemp's random suffix differs per draw, so several draws make a selector
+# class narrower than [A-Za-z0-9] fail with near certainty. A class of only
+# lowercase letters and digits passes one draw with probability (36/62)^6,
+# about 4%.
+_TEMPLATE_CONTRACT_DRAWS = 20
+
+# Every character class _lib_valid_session_id_component allows (upper, lower,
+# digit, underscore, hyphen), with a hyphen at the end so the template's
+# `-<number>-` joint follows a hyphen.
+_WIDEST_VALID_SESSION_ID = "Az09_-Zz_09-"
+_TEMPLATE_CONTRACT_SESSION_IDS = ["sess-1", _WIDEST_VALID_SESSION_ID]
+
+
+class TestLibReviewPrSelectSessionWorktrees:
+    """Direct unit coverage for _lib_review_pr_select_session_worktrees --
+    the discovery function review-pr-finish.sh's sweep relies on. Fed
+    synthetic porcelain text, so shapes real git cannot be coerced into
+    emitting (a record missing HEAD, a truncated record) stay reachable."""
+
+    MAIN = "/repo"
+    SESSION = "sess-1"
+    WORKTREES_DIR = "/repo/.claude/worktrees"
+
+    def _select(self, porcelain: str, session_id: str | None = None) -> subprocess.CompletedProcess:
+        session = self.SESSION if session_id is None else session_id
+        return subprocess.run(
+            [
+                "bash", "-c",
+                f'. {_LIB_SH}; _lib_review_pr_select_session_worktrees "$1" "$2" "$3"',
+                "select", porcelain, self.MAIN, session,
+            ],
+            capture_output=True, text=True, check=False,
+        )
+
+    def test_selects_only_this_sessions_worktrees_from_a_mixed_listing(self) -> None:
+        own_first = f"{self.WORKTREES_DIR}/review-pr-sess-1-42-aB3dE9"
+        own_second = f"{self.WORKTREES_DIR}/review-pr-sess-1-7-Zz09Qq"
+        porcelain = "\n".join([
+            _porcelain_record(self.MAIN, _PORCELAIN_HEAD, "branch refs/heads/main"),
+            _porcelain_record(own_first),
+            _porcelain_record(f"{self.WORKTREES_DIR}/review-pr-sess-2-42-aB3dE9"),
+            _porcelain_record(f"{self.WORKTREES_DIR}/review-pr-sess-1-extra-42-aB3dE9"),
+            _porcelain_record(f"{self.WORKTREES_DIR}/review-pr-sess-1-42"),
+            _porcelain_record(f"{self.WORKTREES_DIR}/feature-branch"),
+            _porcelain_record("/elsewhere/review-pr-sess-1-42-aB3dE9"),
+            _porcelain_record(f"{self.WORKTREES_DIR}/nested/review-pr-sess-1-42-aB3dE9"),
+            _porcelain_record(own_second),
+        ])
+        result = self._select(porcelain)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [own_first, own_second]
+
+    def test_no_matching_worktree_prints_nothing_and_succeeds(self) -> None:
+        result = self._select(_porcelain_record(self.MAIN, _PORCELAIN_HEAD, "branch refs/heads/main"))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_malformed_porcelain_neither_crashes_nor_hides_the_well_formed_matches(self) -> None:
+        """A record missing its HEAD/detached lines, a `worktree` line with
+        no path, a truncated `worktre` line, and a final record cut off
+        mid-line must each be skipped or tolerated without disturbing the
+        matches around them."""
+        missing_tail = f"{self.WORKTREES_DIR}/review-pr-sess-1-1-AAAAAA"
+        well_formed = f"{self.WORKTREES_DIR}/review-pr-sess-1-2-BBBBBB"
+        porcelain = (
+            f"worktree {missing_tail}\n\n"
+            "worktree \n" f"{_PORCELAIN_HEAD}\n\n"
+            f"worktre {self.WORKTREES_DIR}/review-pr-sess-1-3-CCCCCC\n\n"
+            + _porcelain_record(well_formed)
+            + "\n"
+            f"worktree {self.WORKTREES_DIR}/review-pr-sess-1-4-DD"
+        )
+        result = self._select(porcelain)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [missing_tail, well_formed]
+
+    def test_a_session_whose_id_extends_this_ones_with_a_digit_led_segment_is_not_selected(self) -> None:
+        """`sess-1-2`'s worktree, `review-pr-sess-1-2-42-aB3dE9`, leaves the
+        remainder `2-42-aB3dE9` after `sess-1`'s prefix. Only the strict
+        six-alphanumeric tail stops that reading as digits `2`, then a
+        suffix."""
+        extended_session_worktree = f"{self.WORKTREES_DIR}/review-pr-sess-1-2-42-aB3dE9"
+        porcelain = _porcelain_record(extended_session_worktree)
+
+        for_sess_1 = self._select(porcelain, "sess-1")
+        for_sess_1_2 = self._select(porcelain, "sess-1-2")
+
+        assert for_sess_1.returncode == 0, for_sess_1.stderr
+        assert for_sess_1.stdout == ""
+        assert for_sess_1_2.returncode == 0, for_sess_1_2.stderr
+        assert for_sess_1_2.stdout.splitlines() == [extended_session_worktree]
+
+    @pytest.mark.parametrize(
+        "worktree_name",
+        [
+            "review-pr-sess-1-42-aB3dE",
+            "review-pr-sess-1-42-aB3dE9x",
+            "review-pr-sess-1-42-aB3d_9",
+            "review-pr-sess-1-42-aB3d.9",
+            "review-pr-sess-1-42-aB3d 9",
+            "review-pr-sess-1--aB3dE9",
+        ],
+        ids=["suffix-5", "suffix-7", "underscore-in-suffix", "dot-in-suffix", "space-in-suffix", "empty-number"],
+    )
+    def test_a_name_outside_the_strict_tail_shape_is_not_selected(self, worktree_name: str) -> None:
+        result = self._select(_porcelain_record(f"{self.WORKTREES_DIR}/{worktree_name}"))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/repo/.claude/worktrees/../review-pr-sess-1-42-aB3dE9",
+            "/repo/.claude/worktrees/review-pr-sess-1-42-aB3dE9/..",
+            "/repo/.claude/worktrees/review-pr-sess-1-42-aB3dE9/../review-pr-sess-1-42-Zz09Qq",
+        ],
+        ids=["parent-first", "trailing-dotdot", "sibling-via-dotdot"],
+    )
+    def test_a_path_with_a_dotdot_segment_is_not_selected(self, path: str) -> None:
+        result = self._select(_porcelain_record(path))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("session_id", _TEMPLATE_CONTRACT_SESSION_IDS)
+    def test_every_directory_the_checkout_template_creates_is_selected(
+        self, tmp_path: Path, session_id: str
+    ) -> None:
+        """Creator/discoverer contract: a real `mktemp -d` expansion of
+        _lib_review_pr_worktree_template must match the selector's tail
+        shape, so changing one side alone cannot orphan review worktrees."""
+        main_root = tmp_path / "main"
+        (main_root / ".claude" / "worktrees").mkdir(parents=True)
+        script = textwrap.dedent(f"""\
+            . {shlex.quote(str(_LIB_SH))}
+            _lib_valid_session_id_component "$2" || exit 9
+            draws=0
+            for attempt in {{1..{_TEMPLATE_CONTRACT_DRAWS}}}; do
+              created=$(mktemp -d "$(_lib_review_pr_worktree_template "$1" "$2" "$3")") || exit 10
+              selected=$(_lib_review_pr_select_session_worktrees "worktree $created" "$1" "$2") || exit 11
+              if [ "$selected" != "$created" ]; then
+                printf 'created %s, selected [%s]\\n' "$created" "$selected" >&2
+                exit 12
+              fi
+              draws=$((draws + 1))
+            done
+            printf '%s' "$draws"
+        """)
+        result = subprocess.run(
+            ["bash", "-c", script, "contract", str(main_root), session_id, "42"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == str(_TEMPLATE_CONTRACT_DRAWS), "the loop must run every draw, not vacuously"
+
+    @pytest.mark.parametrize("session_id", ["", "../evil", "a/b", "has space"])
+    def test_invalid_session_id_fails_without_output(self, session_id: str) -> None:
+        result = self._select(
+            _porcelain_record(f"{self.WORKTREES_DIR}/review-pr-sess-1-42-aB3dE9"), session_id
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+
+class TestLibReviewPrWorktreeNameIsReviewShaped:
+    """_lib_review_pr_worktree_name_is_review_shaped decides which worktree
+    directory names _lib_first_live_linked_worktree may skip, so it must accept
+    every name the checkout template creates and nothing looser."""
+
+    @staticmethod
+    def _is_review_shaped(name: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_review_pr_worktree_name_is_review_shaped "$1"', "bash", name],
+            capture_output=True, text=True, check=False,
+        )
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "review-pr-sess-1-42-abc123",
+            "review-pr-0b5e0f6a-0a0d-4a39-9d7e-1f2f3a4b5c6d-7-aB3dE9",
+            "review-pr-sess_1-1234-ABCDEF",
+        ],
+    )
+    def test_accepts_a_name_the_checkout_template_can_create(self, name: str) -> None:
+        assert self._is_review_shaped(name).returncode == 0
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "review-pr-hardening",
+            "review-pr-sess-1-42",
+            "review-pr-sess-1-42-abc12",
+            "review-pr-sess-1-42-abc1234",
+            "review-pr-sess-1-x-abc123",
+            "review-pr--42-abc123",
+            "review-pr-sess-1-42-abc12!",
+            "review-pr-sess.x-123-AbC123",  # '.' is outside the session-id class
+            "xreview-pr-sess-1-42-abc123",
+            "review-pr-sess-1-42-abc123-extra",
+            "feature",
+            "",
+        ],
+    )
+    def test_rejects_a_name_the_checkout_template_never_creates(self, name: str) -> None:
+        assert self._is_review_shaped(name).returncode != 0
+
+    def test_rejects_a_non_ascii_letter_in_the_session_id_under_a_widening_locale(self) -> None:
+        """Mirrors the session-id validator's locale test: a bracket range in
+        the shared character class would accept `sess<e-acute>` where the
+        collation puts accented letters inside `[A-Za-z]`."""
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_review_pr_worktree_name_is_review_shaped "$1"', "bash",
+             "review-pr-sessé-42-abc123"],
+            env={**os.environ, "LC_ALL": _locale_that_widens_ascii_ranges()},
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode != 0
+
+    @pytest.mark.parametrize("session_id", _TEMPLATE_CONTRACT_SESSION_IDS)
+    def test_accepts_every_directory_the_checkout_template_creates(
+        self, tmp_path: Path, session_id: str
+    ) -> None:
+        """Creator/skip contract: a real `mktemp -d` expansion of
+        _lib_review_pr_worktree_template satisfies the predicate, for the
+        widest session id _lib_valid_session_id_component accepts as well as
+        a typical one."""
+        main_root = tmp_path / "main"
+        (main_root / ".claude" / "worktrees").mkdir(parents=True)
+        script = textwrap.dedent(f"""\
+            . {shlex.quote(str(_LIB_SH))}
+            _lib_valid_session_id_component "$2" || exit 9
+            draws=0
+            for attempt in {{1..{_TEMPLATE_CONTRACT_DRAWS}}}; do
+              created=$(mktemp -d "$(_lib_review_pr_worktree_template "$1" "$2" "$3")") || exit 10
+              _lib_review_pr_worktree_name_is_review_shaped "${{created##*/}}" || {{ printf '%s\\n' "$created" >&2; exit 12; }}
+              draws=$((draws + 1))
+            done
+            printf '%s' "$draws"
+        """)
+        result = subprocess.run(
+            ["bash", "-c", script, "contract", str(main_root), session_id, "42"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == str(_TEMPLATE_CONTRACT_DRAWS), "the loop must run every draw, not vacuously"
 
 
 # --- _lib_config_lines -------------------------------------------------

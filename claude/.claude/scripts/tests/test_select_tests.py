@@ -142,11 +142,13 @@ def _resolve_module_level_repo_paths(source: str, *, test_file_relpath: str) -> 
 def _test_corpus(repo_root: Path) -> list[str]:
     """Repo-relative paths of every test_*.py file the completeness scanner
     parses: claude/.claude/hooks/tests/, claude/.claude/scripts/tests/,
-    claude-skills/skills/tests/, claude/.claude/tests/, and plugins/*/tests/."""
+    claude-skills/skills/tests/, claude-skills/skills/*/tests/ (nested
+    per-skill test trees), claude/.claude/tests/, and plugins/*/tests/."""
     patterns = (
         "claude/.claude/hooks/tests/test_*.py",
         "claude/.claude/scripts/tests/test_*.py",
         "claude-skills/skills/tests/test_*.py",
+        "claude-skills/skills/*/tests/test_*.py",
         "claude/.claude/tests/test_*.py",
         "plugins/*/tests/test_*.py",
     )
@@ -491,11 +493,14 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
 
-    def test_skill_md_change_selects_skills_tests_and_transcript_analysis(self):
+    def test_skill_md_change_selects_skills_tests_transcript_analysis_and_doc_counts(self):
+        """test_doc_counts.py reads every name-only skill's SKILL.md frontmatter
+        (_name_only_skills_carrying_trigger_blocks), so any SKILL.md edit selects it."""
         result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/SKILL.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+            _mod.DOC_COUNTS_TEST_PATH,
         }
 
     def test_skill_auxiliary_md_change_selects_skills_tests(self):
@@ -815,7 +820,33 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.DOC_COUNTS_TEST_PATH,
+        }
+
+    def test_marker_clear_stale_py_change_also_selects_hooks_tests(self):
+        """TestMarkerScriptClearStale (HOOKS_TESTS_DIR's test_marker_script.py)
+        exercises marker-clear-stale.py end-to-end only via `marker.sh
+        clear-stale`'s subprocess call, never by import or by-path read.
+        Without this cross-domain exception, the scripts domain rule claims
+        the path first and that HOOKS_TESTS_DIR coverage goes unrun."""
+        result = _mod.select_pytest_targets([_mod.MARKER_CLEAR_STALE_PY])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
             _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR,
+            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+        }
+
+    def test_review_pr_audit_script_change_also_selects_scripts_tests(self):
+        """test_review_pr_lib.py (SCRIPTS_TESTS_DIR) runs the audit script and
+        compares its stdout byte-for-byte to the clean-document constant, by a
+        function-local path read. Without this cross-domain exception, the
+        review-pr domain rule claims the path first and that coverage goes
+        unrun."""
+        result = _mod.select_pytest_targets([_mod.REVIEW_PR_AUDIT_SCRIPT])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_PR_SKILL_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR,
+            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
         }
 
     def test_skill_files_read_by_hook_tests_each_also_select_hooks_tests(self):
@@ -1171,12 +1202,26 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
-    def test_root_settings_json_change_selects_hooks_tests(self):
+    def test_root_settings_json_change_selects_hooks_and_scripts_tests(self):
         """test_claude_md_excludes.py (HOOKS_TESTS_DIR) reads the repo-root
-        .claude/settings.json's claudeMdExcludes entry by path."""
+        .claude/settings.json's claudeMdExcludes entry by path, and
+        test_review_pr_post.py (SCRIPTS_TESTS_DIR) reads its permissions.allow
+        entries."""
         result = _mod.select_pytest_targets([_mod.ROOT_SETTINGS_JSON])
         assert result.is_full_suite is False
-        assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR}
+
+    def test_review_pr_skill_md_change_also_selects_scripts_tests(self):
+        """test_review_pr_post.py (SCRIPTS_TESTS_DIR) reads review-pr/SKILL.md
+        by path. Without this cross-domain exception, a SKILL.md change
+        selects none of SCRIPTS_TESTS_DIR, so that coverage goes unrun. A
+        different skill's SKILL.md is the contrast case."""
+        review_pr_result = _mod.select_pytest_targets([_mod.REVIEW_PR_SKILL_MD])
+        other_skill_result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/SKILL.md"])
+        assert review_pr_result.is_full_suite is False
+        assert other_skill_result.is_full_suite is False
+        assert {_mod.SCRIPTS_TESTS_DIR, _mod.REVIEW_PR_SKILL_TESTS_DIR} <= set(review_pr_result.target_paths)
+        assert _mod.SCRIPTS_TESTS_DIR not in other_skill_result.target_paths
 
     def test_skills_test_tree_change_selects_skills_tests(self):
         """`_is_under(p, SKILLS_TESTS_DIR)` mirrors the hooks and scripts
@@ -1880,6 +1925,9 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.INSTALL_SH,
     _mod.CLAUDE_SETTINGS_JSON,
     _mod.HANDOFF_SKILL_MD,
+    _mod.MARKER_CLEAR_STALE_PY,
+    _mod.REVIEW_PR_AUDIT_SCRIPT,
+    _mod.REVIEW_PR_SKILL_MD,
     *sorted(_mod.SKILL_FILES_READ_BY_HOOK_TESTS),
     _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,
@@ -1904,6 +1952,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
     _mod.SELECT_TESTS_TEST_PATH,
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+    _mod.DOC_COUNTS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
     *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
