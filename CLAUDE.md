@@ -113,11 +113,13 @@ not landing it.
 
 ## Redact private-project-identifying content
 
+The `userEmail` context identifies the user to you. Never use it as contact copy in anything published.
+
 Never commit anything that identifies a specific private project,
 engagement, or codebase. Three enforcement tiers apply:
 
 **Always caught by hook:** tracker IDs matching `[A-Z]{2,}-\d+` not on
-the OSS allowlist (`CVE-`, `RFC-`, `GH-`, and similar), plus six
+the OSS allowlist (e.g. `CVE-`, `GH-`), plus six
 always-on structural detectors — see `docs/private-project-redaction.md`
 for the full detector list and non-matching illustrative shapes. For
 tracker-ID-shaped placeholders in examples, use `PROJ-<digits>` or
