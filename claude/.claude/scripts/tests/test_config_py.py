@@ -74,6 +74,31 @@ class TestSchema:
         assert row.type == "enum:dollars"
         assert row.legacy_polarity == "content-matches"
 
+    def test_keys_with_no_legacy_polarity_and_their_defaults_are_exactly_the_known_set(self):
+        """Hand-typed literals, deliberately not derived from schema(): flipping
+        a default here (e.g. the architect_fix_plan_pilot opt-in) or blanking a
+        legacy-bearing key's polarity must fail this test, not silently
+        re-derive."""
+        no_legacy_polarity_defaults = {
+            key: row.default for key, row in schema().items() if row.legacy_polarity == ""
+        }
+        assert no_legacy_polarity_defaults == {
+            "test_selection_tracking": "false",
+            "architect_fix_plan_pilot": "false",
+        }
+        # The pilot is per-account: a widening to config-dir-or-home would make
+        # a home-level file enable it for every account.
+        assert schema()["architect_fix_plan_pilot"].resolution == "config-dir"
+
+    def test_legacy_filename_is_empty_iff_legacy_polarity_is_empty(self):
+        """A row's legacy-filename is empty if and only if its legacy-polarity
+        is empty. Guards against a row gaining a legacy file path without a
+        polarity, or the reverse, which the scaffold would then mis-handle."""
+        for key, row in schema().items():
+            assert (row.legacy_filename == "") == (row.legacy_polarity == ""), (
+                f"{key}: legacy_filename={row.legacy_filename!r} legacy_polarity={row.legacy_polarity!r}"
+            )
+
     def test_every_config_dir_or_home_row_is_bool_typed(self):
         """config_value()'s union branch (and _config.sh's own _config_value
         copy) compares a location's resolved value against the literal

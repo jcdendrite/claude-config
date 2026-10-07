@@ -74,6 +74,7 @@ over any paraphrase here.
 | `round_consult_round2_pilot` | bool | `false` | config-dir | no | [hooks.md § Gate hooks](hooks.md#gate-hooks) |
 | `authorization_boundary_restore` | bool | `true` | config-dir | no | [hooks.md § Utility hooks](hooks.md#utility-hooks) |
 | `test_selection_tracking` | bool | `false` | config-dir | no | [README § Tests](../README.md#tests) |
+| `architect_fix_plan_pilot` | bool | `false` | config-dir | no | [architect-authored-fix-plan-pilot.md](design-decisions/architect-authored-fix-plan-pilot.md) |
 
 `worktree_required`, `autonomous_shipping`, `round_consult_gate`,
 `commit_stall_block`, and `authorization_boundary_restore` are the five
@@ -140,7 +141,7 @@ installer on failure.
 It runs two phases, always in this order:
 
 1. **Non-interactive import, then schema-default scaffold.** For each of
-   the 17 keys:
+   the 18 keys:
    - Checks for a legacy value at the location(s) `legacy-import-locations`
      names — the resolved config dir alone, or (for the six keys
      `install.sh`'s pre-migration writer always wrote to `$HOME/.claude`
@@ -172,9 +173,10 @@ It runs two phases, always in this order:
      abort the run; the remaining keys still import normally.
    - After every key has been processed, a schema-default scaffold fills in
      a default row only for a key with no legacy fallback mechanism at
-     all. None exist among today's 17 keys besides `test_selection_tracking`,
-     whose `legacy-filename` and `legacy-polarity` are both empty. Scaffold
-     therefore currently writes only that one key's default row. A key with
+     all. None exist among today's 18 keys besides `test_selection_tracking`
+     and `architect_fix_plan_pilot`, whose `legacy-filename` and
+     `legacy-polarity` are both empty. Scaffold therefore currently writes
+     both keys' default rows. A key with
      a legacy-polarity
      (`presence-enables`/`presence-disables`/`content-matches`) stays
      absent from the state file unless this run's import path already
@@ -251,7 +253,7 @@ internal format (`pr-description/SKILL.md`, `transcript-analysis/SKILL.md`).
 ## Per-account isolation
 
 Because every key now lives in one file, symlinking `claude-config.toml`
-itself from one Claude account's config dir to another's merges *all 17
+itself from one Claude account's config dir to another's merges *all 18
 keys* between the two accounts at once — a wider blast radius than the
 single-sentinel symlink risk this repo already warned about for
 `pr-cost.md`'s `.pr-cost-enabled` file. A symlinked `claude-config.toml`

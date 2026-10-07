@@ -165,10 +165,10 @@ class TestMigrationMatrixStateFileAbsent:
 
         state = _read_state(config_dir)
         if not row.legacy_polarity:
-            # test_selection_tracking has no legacy predecessor (empty
-            # legacy-filename/legacy-polarity), so legacy_present is moot here.
-            # Scaffold backfills its schema default unconditionally, unlike
-            # every other key below.
+            # A key with no legacy predecessor (empty legacy-filename/
+            # legacy-polarity) makes legacy_present moot here. Scaffold
+            # backfills its schema default unconditionally, unlike every
+            # key below.
             assert state.get(key) == row.default
         elif not legacy_present:
             # Every other key here carries a legacy-polarity value, so
@@ -215,9 +215,8 @@ class TestMigrationMatrixStateFilePresentKeyRowAbsent:
         state = _read_state(config_dir)
         assert state.get(other_key) == _SCHEMA[other_key].default, "an unrelated pre-existing row must survive"
         if not row.legacy_polarity:
-            # Same reasoning as TestMigrationMatrixStateFileAbsent:
-            # test_selection_tracking has no legacy predecessor, so
-            # legacy_present is moot here.
+            # Same reasoning as TestMigrationMatrixStateFileAbsent: a key
+            # with no legacy predecessor makes legacy_present moot here.
             # Scaffold backfills its default unconditionally, even
             # alongside a sibling row.
             assert state.get(key) == row.default
