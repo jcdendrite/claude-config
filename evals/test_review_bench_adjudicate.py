@@ -2326,6 +2326,51 @@ class TestRunDefectJudgesRecallPersistence:
         # run_defect_judges never re-persists an already-recorded recall record.
         assert [record.arm for record in runner.read_run_records(judge_records_path)] == [adjudicate.JUDGE_ARM_RECALL]
 
+    def test_a_missing_recall_is_persisted_and_returned_and_the_precision_judge_still_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A missing recall is still recorded and returned, and it never skips the precision judge.
+        # cmd_judge's both-missing stop is unreachable otherwise.
+        source_repo = tmp_path / "source"
+        defect = _build_two_commit_source_repo(source_repo)
+        judge_records_path = tmp_path / "judge.jsonl"
+        missing_recall = _judge_record(
+            defect.id, adjudicate.JUDGE_ARM_RECALL, missing_reason=runner.MISSING_REASON_TIMEOUT,
+        )
+        missing_precision = _judge_record(
+            defect.id, adjudicate.JUDGE_ARM_PRECISION, missing_reason=runner.MISSING_REASON_INVALID_ANSWER,
+        )
+        missing_record_by_judge_kind = {
+            adjudicate.JUDGE_ARM_RECALL: missing_recall, adjudicate.JUDGE_ARM_PRECISION: missing_precision,
+        }
+        dispatched_judge_kinds: list[str] = []
+
+        def fake_run_judge_with_retry(ctx, *, launch=None, run_store=None):
+            dispatched_judge_kinds.append(ctx.judge_kind)
+            return adjudicate.JudgeRunAttempt(record=missing_record_by_judge_kind[ctx.judge_kind], session_id="fake-session")
+
+        monkeypatch.setattr(runner, "read_environment_record", lambda: runner.EnvironmentRecord("v1", "sha1"))
+        monkeypatch.setattr(runner, "session_store_dir_for", lambda projects_root, session_id: None)
+        monkeypatch.setattr(runner.msmr, "_resolved_temp_project_dir", lambda prefix: tmp_path / f"fixture-{prefix}")
+        monkeypatch.setattr(
+            adjudicate, "install_recall_judge_fixture", lambda *a, **k: adjudicate.JudgeInput(text="", order=("r1",)),
+        )
+        monkeypatch.setattr(
+            adjudicate, "install_precision_judge_fixture",
+            lambda *a, **k: adjudicate.JudgeInput(text="", order=("r1",)),
+        )
+        monkeypatch.setattr(adjudicate, "run_judge_with_retry", fake_run_judge_with_retry)
+
+        recall_record, precision_record = adjudicate.run_defect_judges(
+            defect, [], source_repo=source_repo, campaign_id="c1", seed=0, live_checkout_roots=(),
+            judge_records_path=judge_records_path,
+        )
+
+        assert (recall_record, precision_record) == (missing_recall, missing_precision)
+        assert dispatched_judge_kinds == [adjudicate.JUDGE_ARM_RECALL, adjudicate.JUDGE_ARM_PRECISION]
+        # cmd_judge appends the precision record itself, so only the recall record is on disk here.
+        assert runner.read_run_records(judge_records_path) == [missing_recall]
+
 
 class TestRunDefectJudgesEnvironmentChecks:
     """Readings at a defect's start, after its recall run, and at its end must
