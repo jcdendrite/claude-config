@@ -830,8 +830,9 @@ skipped store stays silently. The judge's cleanup is not in a `finally`, so an
 exception out of a judge run skips it. Only a resume under the same
 `--campaign-id` sweeps what a `run`, `smoke`, or `judge` exit left: its own
 sweep deletes exactly what its own abandoned attempt recorded, then reruns that
-block. A resumed `judge` block reuses a kept recall record and reruns only the
-precision judge.
+block. A resumed `judge` block reuses a kept recall record whose status is ok and
+reruns only the precision judge. It reruns a kept missing recall record, which
+holds no labels.
 The sweep deletes only a `review-bench-` directory directly under the system
 temp dir, and a session store directly under the projects root; any other
 logged path aborts the sweep with nothing deleted. Resume with the `TMPDIR`
@@ -873,7 +874,16 @@ preflight, fails closed on that case (see "Out-of-session reads"). After each
 block, `smoke` and `run` print its ok and missing counts by reason. A block whose runs are all missing stops the
 campaign with exit 2 and is left un-marked, so resuming under the same
 `--campaign-id` reruns it; `smoke --inject-fault` never stops this way, since
-it forces every run to fail. `smoke` takes its harness closure manifest hash
+it forces every run to fail. `judge` prints its missing judge runs by reason
+per judge kind once per invocation, and one line per defect with a missing judge
+run. A defect whose recall and precision judge runs are both missing stops
+`judge` the same way: exit 2, with the defect left un-marked, so resuming under
+the same `--campaign-id` reruns both judges. A defect with one missing judge run
+is marked complete and is never retried. A missing recall judge drops the defect
+from both recall and precision, and a missing precision judge drops it from
+precision only. When the printed reasons point at one defect rather than a
+shared cause, resume with `--defect-id` listing the other pending defects.
+`smoke` takes its harness closure manifest hash
 once per process, before its first dispatch. A smoke campaign resumed after any
 edit to the harness closure therefore prints a hash for code the earlier blocks
 did not run. `freeze` compares only that hash with the current manifest, so it

@@ -1589,10 +1589,15 @@ def format_outcome_counts(counts: OutcomeCounts) -> str:
     return f"{counts.ok} ok, {missing}, {counts.retried} retried"
 
 
+def all_runs_missing(records: Sequence[RunRecord]) -> bool:
+    """True when `records` is non-empty and none of its runs completed."""
+    return bool(records) and count_outcomes(records).ok == 0
+
+
 _MAX_DISTINCT_MISSING_DETAILS_SHOWN = 3
 
 
-def _systemic_failure_message(defect_id: str, records: Sequence[RunRecord]) -> str:
+def systemic_failure_message(defect_id: str, records: Sequence[RunRecord]) -> str:
     counts = count_outcomes(records)
     details = sorted({record.missing_detail for record in records if record.missing_detail})
     shown = "; ".join(details[:_MAX_DISTINCT_MISSING_DETAILS_SHOWN])
@@ -1655,8 +1660,8 @@ def run_campaign(
             print(f"run: {defect_id}: {format_outcome_counts(count_outcomes(result.records))}", file=sys.stderr)
             # An injected fault makes every run missing by design, so only an
             # unfaulted campaign treats an all-missing block as systemic.
-            if fault is None and result.records and count_outcomes(result.records).ok == 0:
-                raise SystemicFailureError(_systemic_failure_message(defect_id, result.records))
+            if fault is None and all_runs_missing(result.records):
+                raise SystemicFailureError(systemic_failure_message(defect_id, result.records))
             run_store.mark_block_complete(defect_id)
             block_results[defect_id] = result
         return CampaignResult(campaign_id=campaign_id, block_results=block_results)

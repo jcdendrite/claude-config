@@ -2352,6 +2352,22 @@ class TestCountOutcomes:
         assert text == "1 ok, 2 missing (result-error x2), 2 retried"
 
 
+class TestAllRunsMissing:
+    def test_an_empty_record_list_is_not_all_missing(self) -> None:
+        assert runner.all_runs_missing([]) is False
+
+    def test_one_ok_run_among_missing_runs_is_not_all_missing(self) -> None:
+        assert runner.all_runs_missing([_outcome_record("d1", run_index=0), _missing_outcome_record("d1", 1)]) is False
+
+    def test_only_missing_runs_is_all_missing(self) -> None:
+        assert runner.all_runs_missing([_missing_outcome_record("d1", 0), _missing_outcome_record("d1", 1)]) is True
+
+    def test_a_missing_run_with_no_reason_still_counts_as_missing(self) -> None:
+        reasonless_missing = _outcome_record("d1", run_index=0, status=runner.STATUS_MISSING, missing_reason=None)
+
+        assert runner.all_runs_missing([reasonless_missing]) is True
+
+
 class TestRunCampaignSystemicFailure:
     def _campaign(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocks: dict[str, tuple[runner.RunRecord, ...]],
