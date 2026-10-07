@@ -143,6 +143,8 @@ It carries `model: sonnet` and self-reviews its own diff against staff-engineer
 reviewer angles before returning, catching review-finding-class defects in its
 own context instead of as a parent round-trip.
 
+From a session in plan mode, call `ExitPlanMode` and wait for the plan's approval before delegating execution: a spawned subagent inherits the plan-mode reminder and returns a plan instead of executing.
+
 **Read-then-edit: decision-made test.** A read-then-edit sequence routes to
 `code-writer` only when both conditions hold: (1) the change is already
 decided before you read — you read only to *locate* a known target and apply

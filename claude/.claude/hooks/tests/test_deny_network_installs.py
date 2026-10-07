@@ -568,21 +568,22 @@ class TestDenyNetworkInstalls:
         others denied depending on whether the token was glued to the
         opening quote) — every text argument that merely mentions an
         install shape now denies uniformly. Accepted over-deny; the
-        workaround is the ! shell escape."""
+        workaround is a separate terminal."""
         assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "deny"
 
     # ------------------------------------------------------------------ #
     # Deny message content                                                #
     # ------------------------------------------------------------------ #
 
-    def test_deny_message_names_shell_escape_alternative(self, isolated_home):
+    def test_deny_message_names_separate_terminal_alternative(self, isolated_home):
         reason = run_hook_reason(DENY_NETWORK_INSTALLS_HOOK, bash_input("npm install lodash"), home=isolated_home)
         assert reason is not None
-        assert "shell escape" in reason
+        assert "separate terminal" in reason
+        assert "shell escape" not in reason
 
     def test_deny_message_names_the_package_naming_requirement(self, isolated_home):
-        """The `!`-handoff must demand package, version, and rationale before
-        the user runs the install — not just point at the shell escape.
+        """The user handoff must demand package, version, and rationale before
+        the user runs the install — not just point at a separate terminal.
         See claude/.claude/CLAUDE.md's "Name every new package before it is
         fetched" duty, which this message's naming requirement backs."""
         reason = run_hook_reason(DENY_NETWORK_INSTALLS_HOOK, bash_input("npm install lodash"), home=isolated_home)

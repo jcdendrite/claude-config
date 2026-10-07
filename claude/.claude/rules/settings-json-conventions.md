@@ -18,3 +18,4 @@ paths:
   chaining, and shell-expansion attacks — see
   `~/.claude/skills/review-permissions/SKILL.md` checklist items 1–9.
   Use exact-match rules (`Bash(pytest)`, `Bash(npm run verify)`) instead.
+- A `permissions.deny` rule blocks only the tool-call route it names; confirm the other routes to the same capability (e.g. plan mode versus a plain session) before treating it as closed.

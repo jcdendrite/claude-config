@@ -87,7 +87,7 @@ argument must still resolve to a `.env`-shaped basename (`--env-file
 ~/.netrc` still denies) and its own text must terminate at whitespace or a
 shell metacharacter (`; & | < > ( ) $` or a backtick), not swallow past it
 — see `_lib_strip_env_file_flag_args` in `_lib.sh`. Run a specific
-legitimate non-exposing command via the `!` shell escape instead — its
+legitimate non-exposing command in a separate terminal instead — its
 output carries no secret content, so it's safe there. To inspect the
 file's actual content, use a separate terminal window outside this
 session: `!` does not avoid this either, since Claude Code adds

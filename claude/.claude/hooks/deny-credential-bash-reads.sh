@@ -2,7 +2,7 @@
 # hook-class: gate
 # tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: deny Claude's Bash tool whenever the raw command text contains a credential-path token (SSH private key basename, .netrc/_netrc, .git-credentials, a cloud credential-store path, a non-template .env variant, credentials.json). Always on, no arming file, no bypass valve — closes the Bash-based read gap that deny-env-reads.sh and deny-data-file-reads.sh leave open by only gating the Read tool.
-# Matches the path token alone, with no verb condition: the set of commands that can expose file content (vim, tee, dd, openssl, curl --upload-file, ...) is unbounded, so a verb allowlist would trade a bounded false-positive cost for an unbounded bypass surface. Also denies non-exposing commands like ssh-add/chmod/ssh -i — run those via the `!` shell escape instead.
+# Matches the path token alone, with no verb condition: the set of commands that can expose file content (vim, tee, dd, openssl, curl --upload-file, ...) is unbounded, so a verb allowlist would trade a bounded false-positive cost for an unbounded bypass surface. Also denies non-exposing commands like ssh-add/chmod/ssh -i — run those in a separate terminal instead.
 # One exemption: a `.env`-shaped argument to a documented env-file loader flag (`--env-file`, `--env-file-if-exists`, `--envfile`) is stripped before the re-scan below, since that flag loads the file into a subprocess environment rather than printing it. See _lib_strip_env_file_flag_args in _lib.sh for the argument-shape and metacharacter-termination conditions that keep every other credential family denied in flag position.
 #
 # Documented residuals, each pinned by a regression test rather than solved:
@@ -83,7 +83,7 @@ if printf '%s' "$COMMAND_UNQUOTED" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; th
   # catch) alongside an exempted env-file flag still reaches them.
   COMMAND_ENV_FILE_STRIPPED=$(_lib_strip_env_file_flag_args "$COMMAND_UNQUOTED")
   if printf '%s' "$COMMAND_ENV_FILE_STRIPPED" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
-    emit_deny "the command references a credential-shaped path (an SSH private key, .netrc/_netrc, .git-credentials, a cloud credential store, or a non-template .env/credentials.json path). Reading, copying, or otherwise touching a credential file through Bash pulls its content toward Claude's conversation context. No bypass valve — if this command is legitimate and does not expose file content (e.g. ssh-add, chmod, ssh -i), run it yourself via the ! shell escape instead of through Claude's Bash tool."
+    emit_deny "the command references a credential-shaped path (an SSH private key, .netrc/_netrc, .git-credentials, a cloud credential store, or a non-template .env/credentials.json path). Reading, copying, or otherwise touching a credential file through Bash pulls its content toward Claude's conversation context. No bypass valve — if this command is legitimate and does not expose file content (e.g. ssh-add, chmod, ssh -i), ask the user to run it in a separate terminal instead of through Claude's Bash tool."
     exit 0
   fi
 fi
@@ -91,7 +91,7 @@ fi
 # Custom-named SSH keys (deploy_key, github_actions_key, ...) have no fixed
 # basename to enumerate above -- deny-by-default under .ssh instead.
 if _lib_has_unsafe_ssh_dir_reference "$COMMAND_UNQUOTED"; then
-  emit_deny "the command references a file under a .ssh-shaped directory that isn't on the safe-basename allowlist (authorized_keys, known_hosts, config, *.pub) -- likely a private key with a custom name. Reading, copying, or otherwise touching a credential file through Bash pulls its content toward Claude's conversation context. No bypass valve — if this command is legitimate and does not expose file content, run it yourself via the ! shell escape instead of through Claude's Bash tool."
+  emit_deny "the command references a file under a .ssh-shaped directory that isn't on the safe-basename allowlist (authorized_keys, known_hosts, config, *.pub) -- likely a private key with a custom name. Reading, copying, or otherwise touching a credential file through Bash pulls its content toward Claude's conversation context. No bypass valve — if this command is legitimate and does not expose file content, ask the user to run it in a separate terminal instead of through Claude's Bash tool."
   exit 0
 fi
 
