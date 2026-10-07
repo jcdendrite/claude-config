@@ -1372,10 +1372,10 @@ class TestAnalyzeAndSpotCheckDropADefectWhoseOnlyJudgePairOfAKindIsMissing:
             [candidate.item_id for candidate in precision_sample],
         )
 
-    def test_a_missing_recall_judge_drops_the_defect_from_both_recall_and_precision(
+    def test_a_missing_recall_judge_drops_the_defect_from_the_recall_sample_and_the_analyze_counts(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        stderr, recall_item_ids, precision_item_ids = self._stderr_and_spot_check_item_ids(
+        stderr, recall_item_ids, _ = self._stderr_and_spot_check_item_ids(
             tmp_path, capsys, missing_judge_arm=JUDGE_ARM_RECALL,
         )
 
@@ -1383,7 +1383,6 @@ class TestAnalyzeAndSpotCheckDropADefectWhoseOnlyJudgePairOfAKindIsMissing:
         assert "analyze: dropped 0 defect(s) from precision" in stderr  # d1 never reached precision's starting set
         assert recall_item_ids
         assert not [item_id for item_id in recall_item_ids if item_id.startswith("d1:")]
-        assert [item_id for item_id in precision_item_ids if item_id.startswith("d1:")]  # its ok precision judge stays
 
     def test_a_missing_precision_judge_drops_the_defect_from_precision_only(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],

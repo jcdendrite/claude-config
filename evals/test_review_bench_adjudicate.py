@@ -586,15 +586,24 @@ class TestRecallJudgeInputToleratesNonUtf8Diffs:
         assert "+head_marker = 'caf\ufffd'" in head_section
         assert "+fix_marker = 'caf\ufffd'" in fix_section
 
-    def test_a_changed_path_listing_decodes_an_undecodable_name_to_a_replacement_character_without_a_filesystem(
-        self,
+    @pytest.mark.parametrize(
+        ("raw_path", "expected_listing"),
+        [
+            pytest.param("naïve.py".encode(), "naïve.py", id="valid-non-ascii-name-is-kept"),
+            pytest.param(b"caf\xe9.py", "caf\ufffd.py", id="lone-latin1-byte"),
+            pytest.param(b"a\xe9\x80b", "a\ufffdb", id="truncated-three-byte-sequence-then-ascii"),
+            pytest.param(b"x\xf0\x9f", "x\ufffd", id="truncated-four-byte-sequence"),
+            pytest.param(b"\xff\xfe", "\ufffd\ufffd", id="bytes-never-valid-in-utf8"),
+        ],
+    )
+    def test_a_changed_path_listing_decodes_an_undecodable_name_to_replacement_characters_without_a_filesystem(
+        self, raw_path: bytes, expected_listing: str,
     ) -> None:
-        undecodable_path = os.fsdecode(b"caf\xe9.py")  # the lone surrogate fix_commit_paths hands back
+        path_from_fix_commit = os.fsdecode(raw_path)  # undecodable bytes stay lone surrogates, as fix_commit_paths hands back
 
-        listing = adjudicate._changed_paths_listing([undecodable_path, "naïve.py"])
+        listing = adjudicate._changed_paths_listing([path_from_fix_commit])
 
-        assert listing.splitlines() == ["caf\ufffd.py", "naïve.py"]
-        listing.encode("utf-8")  # a lone surrogate would raise UnicodeEncodeError here
+        assert listing == expected_listing
 
     def test_a_non_utf8_changed_path_is_listed_with_a_replacement_character_and_the_data_file_writes(
         self, tmp_path: Path,

@@ -2622,6 +2622,27 @@ class TestRunStoreResume:
         assert len(swept) == 1
         assert not recorded_dir.exists()
 
+    def test_a_pending_entry_whose_directory_and_session_store_are_gone_is_returned_and_nothing_else_is_deleted(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A crash can leave a write-ahead entry whose targets were already
+        removed, and the sweep must still report the defect for a rerun
+        without raising or touching unrelated session files."""
+        store = runner.RunStore(tmp_path / "run-store", fixture_root=tmp_path)
+        gone_dir = tmp_path / "review-bench-gone"
+        store.record_directory("defect-1", gone_dir, runner._NO_SESSION_ID_YET)
+        store.record_directory("defect-1", gone_dir, str(uuid.uuid4()))
+        projects_root = tmp_path / "projects"
+        unrelated_session_file = projects_root / "other-project" / ".jsonl"  # what an empty session id would glob
+        unrelated_session_file.parent.mkdir(parents=True)
+        unrelated_session_file.write_text("{}\n")
+
+        swept = store.sweep_abandoned(projects_root)
+
+        assert [entry.defect_id for entry in swept] == ["defect-1", "defect-1"]
+        assert unrelated_session_file.exists()
+        assert "could not remove" not in capsys.readouterr().err
+
     def test_completed_block_is_not_swept(self, tmp_path: Path) -> None:
         store = runner.RunStore(tmp_path / "run-store", fixture_root=tmp_path)
         recorded_dir = tmp_path / "review-bench-done"
