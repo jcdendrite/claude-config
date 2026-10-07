@@ -3712,7 +3712,7 @@ def test_threat_model_tiers_citation_resolves_to_real_heading(relative_path: str
 
 # Tier-disposition clauses that keep the review layers fail-closed.
 # The `hooks-doc-regression-rule` entry pins the regression-judging block in its single home.
-# The `hooks-doc-debt-admission` entry pins the existing-debt admission rule and the disclosure-gate pointer to it.
+# The `hooks-doc-debt-admission` entry pins the existing-debt admission rule, the disclosure-gate pointer to it, and the lead.
 # The code-review-layer phrases for the DEFER ban, the ask and the Known-gaps recording pin the ask-and-record path.
 # The layer entries pin the per-vector-gap versus genuinely-lax question.
 # The layer entries pin that a regression stays blocking at every tier.
