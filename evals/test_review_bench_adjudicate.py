@@ -629,6 +629,38 @@ class TestRecallJudgeInputToleratesNonUtf8Diffs:
         # The source keeps the byte-faithful form every other changed-path consumer needs.
         assert non_utf8_path in fixture_repo.fix_commit_paths(source_repo, defect)
 
+    def test_a_defect_whose_own_path_is_the_undecodable_file_the_fix_changes_shows_no_fix_diff(
+        self, tmp_path: Path,
+    ) -> None:
+        non_utf8_path = os.fsdecode(b"caf\xe9.py")
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "other.py", "value = 1\n")
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "other.py", "value = 2\n")
+        head_commit = _commit(source_repo, "introduce")
+        try:
+            _write(source_repo, non_utf8_path, "fix_marker = 1\n")
+        except OSError:
+            pytest.skip("this filesystem rejects an undecodable file name")
+        fix_commit = _commit(source_repo, "fix")
+        defect = ConfirmedDefect(
+            id="d1", source="review-round", lens="staff-backend-engineer", base_commit=base_commit,
+            head_commit=head_commit, fix_commit=fix_commit, fix_date="2024-01-01",
+            description="test defect", path="caf\ufffd.py", file_is_markdown=False,
+        )
+
+        text = adjudicate.build_recall_judge_input(
+            defect, [_run_record("d1", "current-rule", "run-a", "Real finding.")], source_repo=source_repo, seed=1,
+        ).text
+
+        fix_section = text.split("\n\n## Fix diff\n\n", 1)[1].split("\n\n## Runs to label", 1)[0]
+        # Known limitation: ConfirmedDefect rejects a lone surrogate in `path`, so a stored path never equals the
+        # surrogate form fix_commit_paths returns. Fixing that would change defects.json's path representation,
+        # which is an input to the frozen conditions.
+        assert "The fix commit changes no line of the defect's path." in fix_section
+        assert "fix_marker" not in fix_section
+        assert "defect path: caf\ufffd.py\nchanged paths:\ncaf\ufffd.py" in fix_section
+
 
 class TestFindingsTextIsFramedAsData:
     HOSTILE_FINDINGS = (
@@ -2022,6 +2054,31 @@ class TestCmdJudgeMissingJudgeOutcomes:
         assert "judge: d1: all 2 run(s) are missing" in stderr
         assert "resuming under the same --campaign-id reruns it" in stderr
         assert "resume with --defect-id listing the other pending defects" in stderr
+
+    def test_a_both_missing_defect_after_an_ok_defect_stops_on_its_own_pair_not_the_cumulative_records(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        args, _, run_store = _cmd_judge_args(tmp_path, ["d1", "d2", "d3"], campaign_id="ok-then-both-missing")
+        d2_both_missing = (
+            _judge_record("d2", adjudicate.JUDGE_ARM_RECALL, missing_reason=runner.MISSING_REASON_TIMEOUT),
+            _judge_record("d2", adjudicate.JUDGE_ARM_PRECISION, missing_reason=runner.MISSING_REASON_INVALID_ANSWER),
+        )
+        dispatched_defect_ids: list[str] = []
+        monkeypatch.setattr(
+            adjudicate, "run_defect_judges", _judge_stub({"d2": d2_both_missing}, {}, dispatched_defect_ids),
+        )
+
+        exit_code = run_review_bench.cmd_judge(args)
+
+        assert exit_code == 2
+        assert dispatched_defect_ids == ["d1", "d2"]  # d3 never started
+        assert run_store.completed_block_ids() == {"d1"}  # d2 stays unmarked, so a resume reruns it
+        missing_counts = analysis.missing_run_counts_by_reason(list(d2_both_missing))
+        stderr = capsys.readouterr().err
+        assert "judged 1 defect(s)" in stderr
+        assert "judge: d2: 0 ok, 2 missing (invalid-answer x1, timeout x1), 2 retried" in stderr
+        assert "judge: d2: all 2 run(s) are missing" in stderr
+        assert f"judge: missing runs by reason per judge kind = {missing_counts}" in stderr
 
     def test_a_stop_then_resume_under_the_same_campaign_id_reruns_both_judges(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

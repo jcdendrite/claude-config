@@ -2,7 +2,7 @@
 
 ## Context
 
-Goal: make `judge` report and stop on missing judge runs, and keep a non-UTF-8 changed path from crashing the recall judge's input write, before the smoke campaign runs the judges and before freeze (GH-1114, follow-up to the merged defect-set PR; the multi-phase plan is `.claude/plans/measure-review-quality.md`).
+Goal: make `judge` report and stop on missing judge runs. Also keep a non-UTF-8 changed path from crashing the recall judge's input write. Both land before the smoke campaign runs the judges and before freeze. This is GH-1114, a follow-up to the merged defect-set PR. The multi-phase plan is `.claude/plans/measure-review-quality.md`.
 
 Ask: the scope list carried in the session handoff (an agent-authored file, so `[verified: handoff]`, not engineer words): `cmd_judge` outcome reporting plus a systemic-failure stop; U+FFFD for undecodable changed paths; a test that puts the default fence marker in the changed-path listing and the defect path. Asked which behavior a both-missing judge pair should have, the engineer answered: "Ask the architect". The architect consult recommended the stop (see ledger row 1).
 

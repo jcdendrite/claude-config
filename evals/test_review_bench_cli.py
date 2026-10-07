@@ -1297,7 +1297,7 @@ class TestAnalyzeAndSpotCheckIgnoreAMissingJudgePairSupersededByAResume:
         defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
         reviewer_records_path, judge_records_path = _judged_records(tmp_path)
         if with_stopped_missing_pair:
-            # A `judge` stop leaves d1's missing pair first in the append-only file; the resume appends the ok pair.
+            # A `judge` stop leaves d1's missing pair first in the append-only file. The resume appends the ok pair after it.
             ok_pair = runner.read_run_records(judge_records_path)
             judge_records_path.unlink()
             missing_pair = [
