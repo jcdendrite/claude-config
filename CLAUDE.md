@@ -113,8 +113,6 @@ not landing it.
 
 ## Redact private-project-identifying content
 
-The `userEmail` context identifies the user to you. Never use it as contact copy in anything published.
-
 Never commit anything that identifies a specific private project,
 engagement, or codebase. Three enforcement tiers apply:
 
