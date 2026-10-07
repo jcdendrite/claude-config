@@ -459,9 +459,9 @@ class TestDescriptionAndPathsAreFramedAsData:
     def test_a_defect_path_holding_the_default_fence_marker_changes_the_marker_in_use_when_the_fix_shows_no_diff(
         self, tmp_path: Path,
     ) -> None:
-        # An input-presence tripwire, not a fence-close check: `defect.path` renders on one line after
-        # `defect path: `, so it cannot form a line equal to the marker's END line. Fails when `defect.path`
-        # is dropped from the marker inputs and the default marker stays in use.
+        # This is an input-presence tripwire, not a fence-close check.
+        # `defect.path` renders on one line after `defect path: `, so it cannot form the marker's END line.
+        # The test fails when `defect.path` is dropped from the marker inputs and the default marker stays in use.
         default_marker = adjudicate._data_fence_marker([], seed=1)
         hostile_path = f"{default_marker} END"
 
@@ -2041,7 +2041,7 @@ class TestCmdJudgeMissingJudgeOutcomes:
         assert exit_code == 0
         assert existing_recall_by_defect["d1"] is None  # the stopped defect's missing recall was not reused
         assert run_store.completed_block_ids() == {"d1", "d2"}
-        # The append-only file keeps the missing pair, then the ok pair; a reader sees the ok pair only.
+        # The append-only file keeps the missing pair, then the ok pair. A reader sees the ok pair only.
         appended_statuses = [json.loads(line)["status"] for line in judge_records_path.read_text().splitlines()]
         assert appended_statuses[:4] == [
             runner.STATUS_MISSING, runner.STATUS_MISSING, runner.STATUS_OK, runner.STATUS_OK,
@@ -2119,6 +2119,7 @@ class TestCmdJudgeMissingJudgeOutcomes:
         missing_runs_line = "judge: missing runs by reason per judge kind = "
         assert stderr.count(missing_runs_line) == 1
         assert f"{missing_runs_line}{{{adjudicate.JUDGE_ARM_RECALL!r}: {{{runner.MISSING_REASON_TIMEOUT!r}: 1}}}}" in stderr
+        assert "judge: d2:" not in stderr
 
 
 class TestResolveJudgeRunStoreDir:

@@ -874,7 +874,9 @@ preflight, fails closed on that case (see "Out-of-session reads"). After each
 block, `smoke` and `run` print its ok and missing counts by reason. A block whose runs are all missing stops the
 campaign with exit 2 and is left un-marked, so resuming under the same
 `--campaign-id` reruns it; `smoke --inject-fault` never stops this way, since
-it forces every run to fail. `judge` prints its missing judge runs by reason
+it forces every run to fail.
+
+`judge` prints its missing judge runs by reason
 per judge kind once per invocation, and one line per defect with a missing judge
 run. A defect whose recall and precision judge runs are both missing stops
 `judge` the same way: exit 2, with the defect left un-marked, so resuming under
@@ -883,6 +885,7 @@ is marked complete and is never retried. A missing recall judge drops the defect
 from both recall and precision, and a missing precision judge drops it from
 precision only. When the printed reasons point at one defect rather than a
 shared cause, resume with `--defect-id` listing the other pending defects.
+
 `smoke` takes its harness closure manifest hash
 once per process, before its first dispatch. A smoke campaign resumed after any
 edit to the harness closure therefore prints a hash for code the earlier blocks
