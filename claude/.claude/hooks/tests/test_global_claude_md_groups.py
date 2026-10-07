@@ -53,9 +53,9 @@ _PLACEMENTS = [
     # Core rules that rest at least partly on prose; some also have a hook backstop.
     ("no-autonomous-installs", "Installing new software autonomously is strictly prohibited", "core"),
     ("package-naming", "**Name every new package before it is fetched.**", "core"),
-    ("secret-commits", "Never commit secrets, credentials, API keys", "core"),
+    ("secret-commits", "NEVER commit secrets, credentials, API keys", "core"),
     ("user-email", "The `userEmail` context identifies the user to you", "core"),
-    ("credential-gate", "Never Read or `!`-cat files likely to hold secrets", "core"),
+    ("credential-gate", "NEVER Read or `!`-cat files likely to hold secrets", "core"),
     ("least-privilege", "Apply the **principle of least privilege**", "core"),
     ("discover-the-target", "In destructive paths, discover the target", "core"),
     ("marker-hand-writes", "Never write `<config-dir>/*-markers/*` by hand", "core"),
