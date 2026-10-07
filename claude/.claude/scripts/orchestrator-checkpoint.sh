@@ -28,7 +28,7 @@ _CHECKPOINT_ATTEMPT_MAX_CHARS=20
 # repo-hash prefix and 6-byte .jsonl suffix.
 _CHECKPOINT_RUN_ID_MAX_CHARS=128
 # Small and fixed: this runs synchronously inside review-orchestrator's own
-# turn, mirroring review-ledger.sh's _LEDGER_LOCK_RETRIES rationale.
+# turn, mirroring _lib.sh's _LIB_APPEND_LOCK_RETRIES rationale.
 _CHECKPOINT_LOCK_RETRIES=5
 
 usage() {

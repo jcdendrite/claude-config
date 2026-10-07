@@ -39,7 +39,7 @@
 set -uo pipefail
 
 # Small and fixed: this runs synchronously inside a PostToolUse hook,
-# mirroring review-ledger.sh's _LEDGER_LOCK_RETRIES rationale.
+# mirroring _lib.sh's _LIB_APPEND_LOCK_RETRIES rationale.
 _ROUND_STATE_LOCK_RETRIES=5
 
 INPUT=$(cat 2>/dev/null)

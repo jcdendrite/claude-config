@@ -11,6 +11,12 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 - **transcript** — one session log file under `<config-dir>/projects/<project-dir>/*.jsonl`. A session's subagent records are merged into their parent's file by `read_session_file`, never counted as their own transcript.
 - **transcripts scanned** — files matched by the run's `--projects`/`--this-repo` scope, counted before any `--branches`/`--since` record filter narrows what is priced. It is legitimately far larger than the priced counts.
 - **unreadable** — the subset of scanned transcripts that failed an open probe. A subset, never an addition.
+- **project directory that fails to resolve** (an unreadable ancestor on an existing entry) — how a scan treats it depends on the scan path:
+  - `--this-repo` and multi-root scans of every subcommand except `review-round-cost --pooled` abort the whole invocation with an uncaught error, with the path stripped from the message.
+  - `review-round-cost --pooled` records it as a scan gap instead.
+  - A single-root glob scan (any `--projects` value, including the default, on a one-root scan) skips it silently, because `Path.glob` swallows the error.
+  - `cost`'s per-root scan diagnostic also skips it silently.
+  - A project directory or transcript that is a symlink loop reads as absent and is skipped without aborting.
 - **turn** — one assistant reply record.
 - **priced turn** — a turn whose `message.model` has a pricing-table rate and survives the run's record filters.
 - **priced session** — a transcript with at least one priced turn. Always ≤ transcripts scanned.
@@ -20,6 +26,8 @@ For question-driven routing ("which subcommand answers X?"), use the `/transcrip
 ## Scoping to this repo: `--this-repo`
 
 Every subcommand below accepts `--this-repo` as a mutually exclusive alternative to `--projects GLOB`. It resolves *this checkout's* worktrees by identity — `git worktree list`, matched as exact project-directory names — the same minimization control `skill-invocation` has used by default since it shipped, now available everywhere. Every subcommand that accepts it prints a one-line resolved-scope header (`<NAME> SOURCES (...)`) before its output, so a run is never ambiguous about whether it read one repo or the whole machine.
+
+**`--projects` under more than one root.** When the invocation resolves more than one root (a populated `~/.claude/transcript-config-dirs`, or an explicit `--config-dir` extra), `--projects` must match one project-directory name: a value containing `/` or `**`, or equal to `.` or `..`, exits 2. A single-root invocation has no such restriction — `--projects` there supports `Path.glob`'s full nested-directory syntax, except that a `..` component reads nothing. A single-root invocation keeps a project directory or transcript symlinked outside the scan root in scope. Under more than one root, one symlinked outside every declared root makes any run that attributes sessions to a root abort. Under `review-round-cost --pooled`, that surfaces as the generic unexpected-error refusal.
 
 The default differs by subcommand: `skill-invocation` defaults to repo-scoped (safe-by-default) and treats `--this-repo` as a no-op; every other subcommand defaults to machine-wide (unsafe-by-default) and requires `--this-repo` to opt into repo scoping.
 
@@ -63,7 +71,7 @@ Setting both `TRANSCRIPT_CONFIG_DIRS_FILE` and `CLAUDE_CONFIG_DIR` fully **repla
 
 Both env vars are required together, not either alone. If only `CLAUDE_CONFIG_DIR` is set while a real `~/.claude/transcript-config-dirs` file is still present and unoverridden, `declared_transcript_roots()` unions in the real declared accounts' real roots alongside the synthetic one. A "synthetic" run can therefore silently mix in real account data.
 
-This is the safe way to smoke-test any of these subcommands against synthetic data. It is not a `--config-dir` alternative for a real run, and a run made this way must never be treated as reporting on this machine's actual accounts. `pr-cost-export`'s own provenance line states this explicitly: `corpus_override=1` flags an export built from an overridden root set rather than this machine's real declared accounts. That flag is computed by `_config_dir.py`'s `declared_roots_file_is_overridden()` — see that function's own docstring for exactly which env vars it checks. See `docs/pr-cost.md`'s "Redacted cross-account export" section for what a `corpus_override=1` export means for publication.
+This is the safe way to smoke-test any of these subcommands against synthetic data. It is not a `--config-dir` alternative for a real run, and a run made this way must never be treated as reporting on this machine's actual accounts. `pr-cost-export`'s own provenance line states this explicitly: `corpus_override=1` flags an export built from an overridden root set rather than this machine's real declared accounts. That flag is computed by `_config_dir.py`'s `declared_roots_file_is_overridden()` — see that function's own docstring for exactly which env vars it checks. `review-round-cost --pooled` prints its own `OVERRIDDEN ROOTS` line from the same predicate. See `docs/pr-cost.md`'s "Redacted cross-account export" section for what a `corpus_override=1` export means for publication.
 
 ---
 
@@ -166,10 +174,14 @@ Text inside a `<task-notification>` envelope is excluded from matching, because 
 
 **Sample output.**
 ```
-Branch                                    Span(min) Active(min)  Idle(min)  Sessions  GapMin
+Branch                                    Span(min) Active(min)  Idle(min)    Bursts  GapMin
 -----------------------------------------------------------------------------------------------
 GH-333/audit-routing-samples-subcommand        1553         112       1442         5      30
 ```
+
+**What `Bursts` counts.** It is `len(idle_gaps) + 1` — the number of contiguous activity bursts separated by an idle gap longer than `--gap-minutes`:
+- One burst can span several session files (a continuation with no idle gap between consecutive files' timestamps).
+- One session file can itself span several bursts (a long idle pause mid-session).
 
 **When to reach for it.** Estimate how many hours were actually spent on a branch, stripping calendar time. Use `Active(min)`, not `Span(min)` — the span is wall-clock dominated by idle gaps.
 
@@ -208,6 +220,8 @@ GH-333/audit-routing-samples-subcommand  main       Read                        
 ```
 
 Byte totals are aggregate-only: no tool-result content, file paths, session IDs, or cwd are ever printed. There is no per-byte dollar model — this is an un-dollar-weighted signal for where verbose tool output accumulates, not a cost figure.
+
+**Turn counts here and in `cost` use different denominators.** `subagents` counts every dedup-surviving assistant record, while `cost` additionally requires a `usage` block, so `subagents`'s total can legitimately exceed `cost`'s for the same scope without either being a bug.
 
 **When to reach for it.** Understand how much work was delegated versus inline. Compare against `subagent-mix` for a breakdown of what *kind* of subagents were spawned.
 
@@ -1058,7 +1072,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 
 **Default (read) output.** Every row currently in the ledger file, followed by any ISO week present in the live corpus that no row (for any machine) has captured yet — the gap between "recorded" and "still recoverable."
 
-**`--record`'s row.** `usd`/`context_pct`/`opus_pct`/`ge200k_pct` reuse `_compute_cost_trend_data`, the per-week accumulation behind `cost-trend`'s own report. `context_pct` and `ge200k_pct` are two distinct metrics, not one under two names: `context_pct` is the context-class (cache read plus both cache-write tiers) dollar share of the week's spend, while `ge200k_pct` is the dollar share of turns whose context crossed the >=200k bucket — the same figure `cost-trend`'s own printed "Context%" column has always shown. `denials` and `reviewer_gap_pp` are windowed to the current ISO week's Monday-through-next-Monday UTC boundary via `review-trace --deny-summary`'s and `reviewer-yield`'s own accumulation, scoped to that one week rather than corpus lifetime. See `docs/cost-ledger.md`'s schema table for `reviewer_gap_pp`'s empty and `insufficient` cell values.
+**`--record`'s row.** `usd`/`context_pct`/`opus_pct`/`ge200k_pct` reuse `cost.compute_cost_trend_data`, the per-week accumulation behind `cost-trend`'s own report. `context_pct` and `ge200k_pct` are two distinct metrics, not one under two names: `context_pct` is the context-class (cache read plus both cache-write tiers) dollar share of the week's spend, while `ge200k_pct` is the dollar share of turns whose context crossed the >=200k bucket — the same figure `cost-trend`'s own printed "Context%" column has always shown. `denials` and `reviewer_gap_pp` are windowed to the current ISO week's Monday-through-next-Monday UTC boundary via `review-trace --deny-summary`'s and `reviewer-yield`'s own accumulation, scoped to that one week rather than corpus lifetime. See `docs/cost-ledger.md`'s schema table for `reviewer_gap_pp`'s empty and `insufficient` cell values.
 
 **Error paths.** `--record` refuses (non-zero exit, writes nothing) on: an empty corpus or a current week with zero priced turns; a malformed ledger file (wrong column count, non-ISO week label, non-numeric cell, an embedded `|`, or an unresolved git merge-conflict marker); an unreadable or malformed `<config-dir>/machine-id` (see `docs/pr-cost.md`'s "Machine identity"); an existing row for the same (week, machine) without `--force`; and a clock-skew mismatch between the corpus's most recent activity and the week the machine's clock resolves as current. The final read-check-write step (re-read the ledger, check for an existing (week, machine) row, write) holds an exclusive lock on a sibling `.lock` file, so two racing `--record` invocations can't both pass the duplicate-row check; the corpus scan that computes the row's values runs unlocked beforehand. Every write goes through a temp-file-then-atomic-replace step with a parse-back verification.
 
@@ -1132,6 +1146,8 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 - `--branches B1,B2,...` -- filter to specific branches (default: all)
 - `--since DATE` / `--until DATE` -- inclusive absolute date bounds (`YYYY-MM-DD`) on each round's own opening timestamp, matching `judgment-pair`'s convention. These narrow which *rounds* are counted, not which turns are priced -- a branch's "branch $" denominator in the reconciliation line below is always its full, unwindowed corpus total, so a `--since`-narrowed run compares in-window round dollars against all-time branch spend.
 - `--skill NAME` -- an output filter over already-detected rounds to one of `code-review`/`plan-review`/`ready-for-review` (default: all three), applied after detection exactly like `--branches`/`--since`/`--until`. It never narrows round-window detection itself, so a round's own `main $`/`agent $`/`agents` figures are invariant to which `--skill` value is passed -- only which rounds are printed and aggregated changes. `branch_totals` (the reconciliation line's denominator, below) is likewise never narrowed by `--skill`, so a filtered run's lower round-share percentage reflects an unchanged denominator against a smaller numerator, not a regression.
+- `--pooled` -- render a pooled cross-account share block instead of the per-branch table and footer, publishable only under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case". See "Pooled mode" below.
+- `--show-withheld` -- requires `--pooled`; also prints the figures the dominance-precision floor would otherwise withhold, plus the two data-quality-gap lines plain `--pooled` never prints, under a `DO NOT PUBLISH` banner on both stdout and stderr. Never publishable -- see "Pooled mode" below.
 
 **Round detection caveats.**
 - **Main-thread only.** A review skill invoked *inside* a dispatched subagent is already priced as that dispatch's own cost; counting it as its own round would double-count its dollars. That subagent's own review-skill spend, if reached from outside any round window, lands in the branch's non-round remainder below -- visible, not silently dropped.
@@ -1139,7 +1155,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 - **A mid-review user interjection closes the window early.** The window closes at the first fresh user prompt *or* the next round-open, whichever comes first -- a user message sent partway through a review (before the reviewer's own output lands) ends the round there, and everything after it belongs to whatever comes next, not to the interrupted round.
 - **A round open at session end is priced through the last record.** No closing fresh user prompt and no next invocation before EOF still prices every turn and dispatch through the transcript's end -- never dropped or thrown on.
 
-**Reconciliation line.** `round $ X of Y branch $ (Z%)`, printed per branch: `X` is that branch's own rounds' summed dollars (main + subagent), `Y` is the branch's full corpus total (main + subagent, round or not). The gap between them is real work the review loop's own windows don't capture -- everything from ordinary implementation turns to a review-skill dispatch reached only from inside a subagent (see above). The "Non-round dollars" footer is the same ratio summed across every branch with at least one round in scope; a branch with zero rounds is not reported at all, so it never enters either sum. The "Reviewer-dispatch dollars" footer is the subagent-only component of round dollars (`agent $`, summed across every round in scope), expressed as a share of that same branch-dollars denominator. It is narrower than "round $" above, which also includes each round's own main-thread turns. Under more than one scan root the footer prints one `account-<K>`-prefixed block per root, summed only from that root's own branches, never blended across roots. Under a single root it prints one unprefixed block, as shown below. "Dangling dispatches"/"Unpriced turns" sum, across every round, a dispatch with no readable `meta.json`/`.jsonl` pair and a turn on an unrecognized model ID, respectively -- both are counted, never silently dropped or priced at `$0`.
+**Reconciliation line.** `round $ X of Y branch $ (Z%)`, printed per branch: `X` is that branch's own rounds' summed dollars (main + subagent), `Y` is the branch's full corpus total (main + subagent, round or not). The gap between them is real work the review loop's own windows don't capture -- everything from ordinary implementation turns to a review-skill dispatch reached only from inside a subagent (see above). The "Non-round dollars" footer is the same ratio summed across every branch with at least one round in scope; a branch with zero rounds is not reported at all, so it never enters either sum. The "Subagent-dispatch dollars" footer is the subagent-only component of round dollars (`agent $`, summed across every round in scope), expressed as a share of that same branch-dollars denominator. It counts every Agent/Task dispatch spawned in a round window, nested dispatches included, whatever the agent type. It is narrower than "round $" above, which also includes each round's own main-thread turns. Under more than one scan root the footer prints one `account-<K>`-prefixed block per root, summed only from that root's own branches, never blended across roots. Under a single root it prints one unprefixed block, as shown below. "Dangling dispatches"/"Unpriced turns" sum, across every round, a dispatch with no readable `meta.json`/`.jsonl` pair and a turn on an unrecognized model ID, respectively -- both are counted inside round windows only. What falls outside them is listed under "Coverage the scan-gap refusal does not give" in "Pooled mode" below.
 
 **PR numbers.** This subcommand prints branch names only, never a PR number -- compose with `pr-link --branches B1,B2,...` (against this command's own `--this-repo` output) to map a reported branch to its GitHub PR, rather than embedding a `gh` join here (see the architecture doc's package/shim import-direction note for why).
 
@@ -1160,12 +1176,136 @@ Totals: 4 branches, 19 rounds (code-review=11  plan-review=4  ready-for-review=4
 Mean rounds per branch: 4.75
 Mean $ per round — code-review 2.41  plan-review 1.90  ready-for-review 1.12
 Non-round dollars: 61.2% of branch dollars fell outside every round window
-Reviewer-dispatch dollars: 24.7% of branch dollars, inside round windows
+Subagent-dispatch dollars: 24.7% of branch dollars, inside round windows
 Dangling dispatches inside round windows: 2 (no readable meta.json/jsonl pair)
 Unpriced turns inside round windows: 0
 ```
 
 `#` is the branch-wide round ordinal; `n` is that skill's own ordinal within the branch (the sub-breakdown). A skill with zero rounds anywhere in scope prints `no data` for its own "Mean $ per round" entry, never a computed `0.00` or a division-by-zero.
+
+**Pooled mode.** `--pooled` renders a fixed cross-account block of dimensionless shares with bootstrap confidence intervals, in place of every per-branch row and the footer above.
+
+- It never directly prints a dollar amount, a raw count, or a per-account/per-project/per-branch split.
+- A small pool can still reveal its round count through the shares (see "Small-pool residual" below).
+- Each dollar share is a share of list-price compute, never billed spend, and each "Rounds by skill" line is a share of round count, all over branches with at least one review round in scope.
+- A branch with priced spend and no round never enters the pool.
+- Rerun with `--show-withheld` to also see the figures the dominance-precision floor withholds and the two data-quality-gap lines.
+- `--show-withheld` output is never publishable, even when the figures it shows would not have breached the floor.
+- Plain `--pooled` never prints the two gap lines, because a gap-free corpus has an exact 0% share on both and the dominance-precision floor, which does not otherwise weigh them, would withhold every healthy corpus.
+- See `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case" for the approval gate a pooled figure must satisfy; nothing in this command checks it.
+- When today is past the earliest re-verify-by date in the rate table, or the transcript-usage drift canary has fired, the block prints a `STALE PRICING` or `PRICING INTEGRITY` line above the shares, under `--show-withheld` too.
+- The stale-rate line warns that the dollar shares may be wrong and states that the "Rounds by skill" shares do not depend on the rates.
+- A dominance breach on a dollar share still blanks every printed share, the "Rounds by skill" shares included.
+- The drift line warns that every figure may be wrong.
+- Neither line refuses.
+- A third conditional line, `OVERRIDDEN ROOTS`, prints after the publication pointer (after the `DO NOT PUBLISH` banner under `--show-withheld`) and above the caption, when `_config_dir.py`'s `declared_roots_file_is_overridden()` is true. It is not a pricing-trust line.
+- The overridden-roots line says the corpus came from an overridden roots set rather than this machine's declared accounts, so the block is not publishable. A block that carries it must never be published, as `docs/pr-cost.md` states for the same predicate.
+- The overridden-roots line never refuses. A synthetic-corpus run is the safe smoke-test route (see "Testing against a synthetic corpus" above), so the override stays runnable.
+- The overridden-roots line depends only on the environment, so it adds no data-dependent bit.
+- The drift line is the one data-dependent exception to the fixed line set.
+- Its trigger is a contiguous multi-record requestId run whose records disagree on an invariant input/cache usage class, merged by `dedup_turns_by_request_id`; a disagreeing non-contiguous group is rejected before the canary and never sets it.
+- Every main transcript and every spawn's dispatched-subagent transcript the scan reads or prices counts, whether or not a round window contains it, so the bit is scan-wide.
+- The subagent-format canary has no caller on this command, so its absence says nothing about the subagent layout.
+- The stderr withheld notice fires on drift and on any unrecognized line, so it is a superset.
+- Any further data-dependent bit needs its own review.
+
+**Withholding floors.** A breach of either floor degrades every printed share to `(95% CI not computed — too few branches in scope)`, not one share, because a single blank would itself reveal which share breached:
+
+- Count floor: fewer than four branches in scope, or fewer than two contributing accounts, withholds the block. The root-count refusal below does not guarantee two accounts actually contributed a branch.
+- Dominance-precision floor: for each printed share, the dominant account's weight in that share's denominator is compared with the share's 95% CI. When the CI contains every value that account's own share could take, with the other accounts' combined share anywhere in 0-100%, the figure is functionally a single-account disclosure at the CI's stated precision. An exact 0% or 100% share always trips this floor, at any weight. Its CI collapses to that single point, and so does the set of values the dominant account's own share could take. A corpus with no subagent dispatch inside any round window (0% on "subagent dispatches only") is therefore withheld whole.
+  The floor weighs each account's share of the denominator the printed share divides by. It does not weigh how much of the share's own numerator one account supplies. A printed per-skill share can therefore still be drawn mostly from one account, for example when that skill ran in only one account.
+
+**Small-pool residual (not a floor or a refusal).** A branch unit is one branch in one account with at least one review round in scope. The only pool-size floor is four branch units and two accounts, so a block that clears it can still describe a small pool.
+
+- The four-unit floor is sized for bootstrap validity.
+- The two-account floor bounds single-account disclosure.
+- In a small pool the printed CI endpoints can approximate the spread of per-branch shares.
+- The three "Rounds by skill" shares can also reveal the round count itself. A three-way split printed at one decimal stops identifying the total somewhere past roughly 100-200 rounds. Below that, the smallest total consistent with the printed triple is usually the exact count.
+- A small-pool claim is a bounded range on a private-corpus count, which `docs/private-project-redaction.md` bars from any artifact.
+- The block does not print pool size, so the proposer reads it from a non-pooled `review-round-cost` run over the same scope. That footer is per account: each account with rounds in scope prints its own block, prefixed with an account label and starting "Totals: N branches, M rounds", and an account with no rounds prints none. Pool size is the sum across the printed blocks.
+- Treat the pool as small below about 200 rounds (the round-count path) or about 8 branch units (the CI-spread path).
+- Both thresholds are rough and not measured on a corpus.
+- When in doubt, call the pool small.
+
+`--pooled` refuses each of these, exiting 2 with a message that names the cause:
+
+- `--branches` -- names branches; a branch-scoped figure is a per-deliverable figure
+- a non-default `--projects` glob -- a named glob is a per-project dimension
+- `--skill` -- narrows the numerator against an un-narrowed denominator and degenerates the per-skill lines
+- `--since` / `--until` -- whole period only, never a time series
+- the top-level `--config-dir` -- collapses the pool to one named account
+- `--this-repo` -- not implemented as a pooled scope (a product decision, not a policy bar)
+- exactly one resolved scan root -- a single-account figure is a per-account figure. The refusal names `~/.claude/transcript-config-dirs`
+- a resolved scan root, a project directory, or a main-thread transcript that exists but cannot be read -- that part of the corpus would silently drop out of the pool. Checked only after the full scan. The refusal names neither the path nor a count
+- an unexpected error interrupts the corpus scan or the pooled render -- a generic abort distinct from the scan-gap refusal above, since the scan-gap accounting didn't anticipate it. The run produced no valid pooled figure. Rerun without `--pooled`: if that run succeeds, the failure was transient or is in the pooled render itself. The message is followed by the exception's class name alone, never its message text, which may embed a path
+
+**Coverage the scan-gap refusal does not give.**
+
+- An unreadable `subagents/` directory, `*.meta.json`, or dispatch transcript counts as a dangling dispatch instead of refusing.
+- Inside a round window, that shows in the dangling-dispatch share, which prints only under `--show-withheld`.
+- Outside every round window, those dollars drop out of the branch-spend denominator. Dollars of turns on an unpriced model drop out the same way. Both inflate the inside-round share.
+- A declared account skipped as invalid or unreadable is a stderr-only notice, not a refusal. This fail-open behavior is deliberate: `declared_roots_matching`'s own docstring makes a stale `~/.claude/transcript-config-dirs` line non-fatal, since a config-file problem must never break every invocation. The notice names neither the entry nor a count. A pool missing an account still prints, and the missing account changes the dominance weights.
+- Lines that fail UTF-8 or JSON decoding are dropped individually. A transcript with no decodable line reads as empty, and a dispatch transcript with none prices as a resolved $0 dispatch rather than a dangling one. A dropped record can move spend between rounds and branches, so the skew has no fixed direction.
+- A dangling symlink at the project-directory or transcript level reads as absent, not as a gap. The same holds under the invoking profile's own `projects/` root, where it also prints no skipped-account notice.
+- A `*.jsonl` symlink to another transcript inside a scanned root is read twice. The main-thread dollars and the round count double for that transcript. Its subagent dispatches price as dangling because the alias copy's subagent directory derives from the alias name, so the dangling-dispatch share rises instead.
+- Pool membership is the invoking profile's own `projects/` plus the declared roots. The same cited command run from a different profile, or against a different declared-roots file, can resolve a different pool.
+- A run whose roots set is overridden (see "Testing against a synthetic corpus" above) prints the `OVERRIDDEN ROOTS` line and is not publishable. The line does not refuse, and it does not tell the reader which environment variable set the override.
+- Under `--pooled`, any stderr diagnostic the command doesn't recognize is withheld behind one fixed notice. Rerun without `--pooled` to read it.
+
+Each share gets a 95% CI from a fixed-seed, 2,000-resample percentile bootstrap resampled over branches, since every statistic is a ratio of two branch-level sums. The digits reproduce only for the same corpus, resolved root paths, and interpreter version, since CPython does not pin `Random.choices`' mapping from the stream to indices. The resampling unit is an account plus a branch name, so same-named branches in different projects of one account merge into one unit. The 95% level is nominal, and actual coverage is lower when few branches are in scope.
+
+**Sample output** (every figure below is illustrative filler, not derived from any real run):
+```
+REVIEW ROUND COST SOURCES (*; pooled)
+
+POOLED — publishable only under docs/private-project-redaction.md
+§ "The owner can authorize one figure, case by case". Propose the figure, this exact
+command, and the destination artifact to the owner, then cite the owner's
+approval in that artifact. Nothing here checks that for you. Before citing
+this alongside any rate or count already published elsewhere (e.g. a $/PR
+rate or a branch count), name that composition in the proposal — these
+shares were not designed to be composed with a figure outside this block.
+Before proposing a plain --pooled figure, run the same command with
+--show-withheld first and check the two data-quality gap shares, which
+plain --pooled never prints. In the proposal, state without digits
+whether either gap share or its upper bound prints above zero and
+whether a skipped-account notice appeared on stderr. Keep that
+statement out of the artifact and its citation. The proposal must also say,
+without digits, whether the pool is small (few branch units or few rounds;
+docs/transcript-analysis.md § review-round-cost, Small-pool residual, says
+how to judge). Keep the small-pool statement out of the artifact and its
+citation as well.
+
+Pooled across the scan roots resolved for this run, whole period. Every
+dollar share below is a share of list-price compute, never of billed
+spend; the Rounds by skill lines are shares of round count. Every figure
+covers only branches with at least one review round. No dollar amount, no
+raw count, and no per-account, per-project, or per-branch split is
+emitted directly. In a small pool, the Rounds by skill shares can still
+reveal the round count, and the interval endpoints can approximate the
+per-branch spread.
+Each interval is a 2,000-resample percentile bootstrap resampled over
+branches, so it reflects branch-to-branch variation, treating the branches
+in scope as a sample of ongoing work. The 95% level is nominal. Actual
+coverage is lower when few branches are in scope.
+
+[optional: STALE PRICING line, then PRICING INTEGRITY line, each followed by a blank line; printed only when its condition holds]
+
+  Share of branch spend
+    inside round windows          40.0% (95% CI 35.0-45.0%)
+    outside every round window    60.0% (95% CI 55.0-65.0%)
+    subagent dispatches only      22.0% (95% CI 17.0-27.0%)
+  Round-window spend by skill
+    code-review                   50.0% (95% CI 45.0-55.0%)
+    plan-review                   30.0% (95% CI 25.0-35.0%)
+    ready-for-review              20.0% (95% CI 15.0-25.0%)
+  Rounds by skill
+    code-review                   55.0% (95% CI 50.0-60.0%)
+    plan-review                   25.0% (95% CI 20.0-30.0%)
+    ready-for-review              20.0% (95% CI 15.0-25.0%)
+```
+
+A withheld block prints `(95% CI not computed — too few branches in scope)` for every share. A share with a zero-dollar denominator (a branch with a round but no priced spend) prints `(95% CI not computed — no priced branch spend)` for that share alone. Neither wording's own reason clause contains a digit. Under `--show-withheld`, a "Rounds affected by a data-quality gap" section with `dangling dispatch` and `unpriced turn` lines follows the last section above.
 
 **When to reach for it.** Answer "what did the review loop on this branch actually cost, and how many rounds did it take" -- `reviewer-yield` has no dollar column or per-branch axis, `review-trace` numbers and prices nothing, and `pr-cost` collapses a whole branch to one figure with no round-level breakdown. Compose with `pr-link --branches` for PR numbers, and with `pr-cost`/`workstream-cost` for the branch's other cost angles.
 
@@ -1173,38 +1313,56 @@ Unpriced turns inside round windows: 0
 
 ## author-outcome
 
-**Purpose.** For each `--agent`-typed dispatch (default `code-writer`), did the `code-review` round that judged its diff record a must-fix (`ADDRESS`) finding -- the numerator GitHub issue #800 asks for, so a later measurement can compute what share of `code-writer` dispatches fail their own downstream `/code-review` check. Reads the transcript for round/dispatch structure and each session's own review-narrative-ledger file for disposition; no `gh` calls.
+**Purpose.** For each `--agent`-typed dispatch (default `code-writer`), did the `code-review` round that judged its diff record a must-fix (`ADDRESS`) finding -- the numerator GitHub issue #800 asks for, so a later measurement can compute what share of `code-writer` dispatches fail their own downstream `/code-review` check. Reads the transcript for round/dispatch structure and the review-narrative-ledger rows each session wrote for disposition; no `gh` calls.
 
 **Flags.**
-- `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above). Each in-scope transcript's own ledger file is located by session-id glob, so this flag governs the transcript side; the ledger side follows automatically, one file per session.
+- `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above). Each in-scope transcript's own ledger rows are looked up by its session id, so this flag governs the transcript side; the ledger side follows automatically.
 - `--agent NAME` -- the `subagent_type` to join dispatches against (default: `code-writer`). The mechanism is not hardcoded to `code-writer`; every other reviewer-agent type is a legal (if less meaningful) value. `inline`, `mixed`, and `unknown` are reserved `authoring_agent` sentinels, not real `subagent_type` values -- passing one exits with an error instead of joining against zero dispatches.
 - `--since Nd` -- limit to dispatches with a timestamp in the last N days (e.g. `30d`); default: all time.
   - Compares against the dispatch's own `Agent`/`Task` tool_use record (its *start* position), not its completion -- distinct from the completion index the failure definition below uses for round attribution.
   - Filters which *dispatches* enter "Dispatches in scope" and the reported outcome buckets.
   - Does not filter which rounds are detected or which ledger rows are read -- a round's own signals are evaluated without regard to `--since` at all (see the `authoring_agent inconsistent` counter below for why this distinction matters).
 
-**Ledger lookup.** Each transcript's own session id (the same id its filename is stem-named after) is globbed against `<config_dir_root>/review-narrative-ledger/*.<session_id>.jsonl`; every matching file is read and merged, sorted by each row's own `event_time`, so a session that appended from more than one git worktree of the same repo has all of its rows joined rather than only one worktree's. A session with no matching ledger file reads as zero rows, and every round in that session falls straight to the marker-write fallback below. A session has no matching ledger file when:
+**Ledger lookup.** Ledger files under `<config_dir_root>/review-narrative-ledger/` are branch-keyed (`<repo-hash>.<branch-hash>.jsonl`) or, on a detached HEAD or the default branch, session-keyed (`<repo-hash>.<session-id>.jsonl`). One index per config-dir root reads all of them. It re-lists the directory on every session lookup and re-parses only files whose `(mtime_ns, size)` changed, so a file that appears or grows mid-run is seen and an unchanged file is parsed once.
 
-- the kill switch was on for its whole lifetime
+A row belongs to a session when its `session_id` field equals the transcript's own session id (the same id its filename is stem-named after). A row with no `session_id` field belongs to the session named in its own filename. A row whose `session_id` is not a valid session-id component is ignored. A session's rows are concatenated in filename order, then stable-sorted by each row's own `event_time`.
+
+A session with no attributed rows reads as zero rows, and every round in that session falls straight to the marker-write fallback below. A session has none when:
+
 - the session predates `review-ledger.sh`
-- every one of its ledger files was already swept
+- every ledger file holding its rows was already swept
+- every append for its rounds failed
 
-**Failure definition.** A dispatch's completion index is the position of its paired `tool_result` record, not its `Agent`/`Task` tool_use's own start position. This is because the `code-writer` dispatch being classified can legitimately still be running when a round opens. A round that opened before the dispatch's own output existed cannot have reviewed that output, so only the completion-keyed attribution can be correct. A dispatch's **attributed round** is the `code-review` round with the smallest `open_idx` strictly greater than that completion index. That round's own **round ordinal** is its 1-indexed position in the transcript's own code-review-open sequence for that session. A ledger row is **matched** to a round when its `round` field equals that round's ordinal exactly. A row with no `round` key -- one predating this field -- never matches, since `None` can't equal an int.
+**Failure definition.** A dispatch's completion index is the position of its paired `tool_result` record, not its `Agent`/`Task` tool_use's own start position. This is because the `code-writer` dispatch being classified can legitimately still be running when a round opens. A round that opened before the dispatch's own output existed cannot have reviewed that output, so only the completion-keyed attribution can be correct. A dispatch's **attributed round** is the `code-review` round with the smallest `open_idx` strictly greater than that completion index. That round's own **round ordinal** is its 1-indexed position in the transcript's own code-review-open sequence for that session. A session's ledger rows that carry an integer `round` (not a JSON boolean) group into **blocks**: each maximal run of one (file, round) pair is one block. The round's **matching rows** are the block at its own rank: the k-th round-open takes the k-th block. Rounds are branch-scoped, so a later session on a branch starts above round 1, and the mapping is by rank rather than by `round` value. A row with no `round` key -- one predating this field -- belongs to no block.
 
 Each dispatch classifies by walking three tests against its attributed round, in order:
 
 1. No attributed round exists -> **UNRESOLVED**.
 2. The round has >=1 matching ledger row with `disposition: ADDRESS` -> **FAILURE**. ADDRESS presence decides this regardless of whether a marker write or another matching row also exists -- the finding was raised against that diff, and a same-round fix does not undo that.
-3. Otherwise, the dispatch is a **PASS** iff the round has >=1 matching row (necessarily all `DEFER`/`CLEAN`) or a `marker.sh write code-review` Bash call inside its own outcome span; **UNATTRIBUTED** if it has neither.
+3. Otherwise, the dispatch is a **PASS** iff the round has >=1 matching row (necessarily all `DEFER`/`SETTLED`/`CLEAN`) or a `marker.sh write code-review` Bash call inside its own outcome span; **UNATTRIBUTED** if it has neither.
 
-A round with zero matching ledger rows but a marker-write call is inferred clean rather than treated as a genuine ledger-backed PASS. This covers two cases: the kill switch was on for that round, or an append attempt errored before landing. It is counted separately under "rounds with a marker write but no ledger row (kill-switch inferred clean)".
+A round with zero matching ledger rows but a marker-write call is inferred clean rather than treated as a genuine ledger-backed PASS. The cause can be an append that errored, a swept ledger file, or rows that predate round keys, and the data cannot tell them apart. It is counted separately under "rounds with a clean marker write but no round-keyed ledger rows". "Round-number-sequence check" below states which sessions are not classified.
+
+**Truth table for a round's matching rows.** A carry row (`decided_by: carry`) counts by its own disposition.
+
+| Matching rows | Classification | Counted under "rounds classified PASS with at least one SETTLED row" |
+|---|---|---|
+| `SETTLED` alone, `SETTLED` beside `DEFER` or `CLEAN`, or only `SETTLED` carries | PASS | yes |
+| `DEFER` alone, only `DEFER` carries, or `CLEAN` alone | PASS | no |
+| Any `ADDRESS` row, an `ADDRESS --ref` that reopens a decision included | FAILURE | no |
+
+The classification rule is unchanged, and an `ADDRESS` row still makes a round a `FAILURE`. The review skill now logs a consult's keep as `SETTLED`, which counts as a PASS, and rows from this schema onward carry `schema_version` 4. A failure share can therefore step down at the first corpus session holding a `SETTLED` row, because of how the keep is logged and not a change in `code-writer` quality. Re-running the analysis over a window before that row shows no step.
+
+A reopen is a `FAILURE` on purpose, because the engineer now requires the fix. An `ADDRESS --ref` that retracts published text (see the ledger runbook in `docs/scripts.md`'s `review-ledger.sh` entry) also classifies as `FAILURE`. That rare over-count is accepted.
+
+The "rounds classified PASS with at least one SETTLED row" counter counts every classified round in the scanned corpus. It ignores `--since` and the agent type, so it is not a slice of "Dispatches in scope". A consult's keep logged as `ADDRESS` classifies `FAILURE`, and one logged as `SETTLED` classifies `PASS`.
 
 A dispatch whose paired `tool_result` record is absent has no completion index, so it's classified **UNDECIDABLE** before the three-test walk runs. It counts only under Data quality, never in "Dispatches in scope".
 
 Two non-failure buckets, each of which would bias the share if collapsed into PASS:
 
 - **UNRESOLVED** -- no `code-review` round after the dispatch at all (typically the last dispatch of a session). Excluded from the failure-share denominator.
-- **UNATTRIBUTED** -- a round ran and left neither a matching ledger row nor a marker write. Excluded from the denominator and reported, so the operator sees the compliance rate rather than absorbing it as a passing grade. A round that both had the ledger kill switch on and raised a genuine `ADDRESS` finding is indistinguishable from this bucket, since the kill switch suppresses the row a real finding would otherwise have left; accepted as narrow, since the kill switch is a manual, rare operator toggle.
+- **UNATTRIBUTED** -- a round ran and left neither a matching ledger row nor a marker write. Excluded from the denominator and reported, so the operator sees the compliance rate rather than absorbing it as a passing grade. A round that raised a genuine `ADDRESS` finding but whose every append failed is indistinguishable from this bucket, since the failed append leaves no row; accepted as narrow, since an append fails only on a script or filesystem error.
 
 **Accepted risk: a project-level `cleanupPeriodDays` override is not honored.** `_ledger_sweep_window_days` reads only `$CONFIG_DIR/settings.json` (the global/user-level file), deliberately skipping Claude Code's full settings-precedence resolution. A project-level override that Claude Code's real precedence would honor -- one raising the value above the global default -- is invisible to it, so a session under that project sweeps against the global default instead of its own project's wider window.
 
@@ -1214,26 +1372,31 @@ Two non-failure buckets, each of which would bias the share if collapsed into PA
 
 **Co-authored rounds.** When several dispatches precede one round, the round's outcome fans out to each -- each contributed bytes to a diff that failed or passed together. The count of such rounds prints as its own Data quality counter. This counter deliberately uses the `--since`-filtered dispatch count, unlike the `authoring_agent inconsistent` counter below, which reads the unfiltered count instead: co-authored measures fan-in to the headline in-scope aggregate, so a dispatch outside the `--since` window shouldn't make an otherwise-single-dispatch round look co-authored.
 
-**Round-number-sequence check.** Every ledger row carrying a `round` key, from every one of the session's matching files merged and ordered as above, must resolve to the exact `1..N` sequence for `N` code-review rounds the transcript's own detector found in that session. Each of the following counts under "sessions whose ledger round sequence doesn't match the transcript's round-opens":
+**Round-number-sequence check.** A session's round-open count and its ledger blocks (see "Failure definition") must map one-to-one by rank. A session counts under "sessions whose ledger round sequence doesn't match the transcript's round-opens" when it has a round-keyed row and either:
 
-- a gap (a round-open with no ledger row)
-- a ledger round number with no corresponding round-open
-- rows recorded out of sequence
-- the same round number independently claimed by two different source files -- a worktree-subagent race with no safe way to pick one file's row as authoritative -- which the same `1..N` equality check already catches, since one round value split across two files necessarily duplicates in the merged sequence
+- the block count differs from the round-open count -- a gap (a round-open with no ledger row) or a ledger round with no round-open
+- the blocks' `round` values are not strictly increasing -- rows recorded out of sequence, a round value reappearing after a different one, or the same round number independently claimed by two different source files (a worktree-subagent race with no safe way to pick one file's row as authoritative), since one round value split across two files necessarily repeats
 
-A session whose ledger is entirely legacy rows (no row carries a `round` key) or has no ledger file at all is not evaluated by this check. A session that fails this check has every one of its dispatches excluded from the headline outcomes/"Dispatches in scope" numerator-denominator -- the ledger-to-round join for that session can't be trusted, so its dispatches count toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED.
+A session whose ledger rows are entirely legacy (no row carries a `round` key) or that has no rows at all is not evaluated by this check. A session that fails it has every one of its dispatches excluded from the headline outcomes/"Dispatches in scope" numerator-denominator -- the ledger-to-round join for that session can't be trusted, so its dispatches count toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED.
 
-This still excludes, fail-closed rather than detected, a single round genuinely split across two worktrees at the same round number with rows that individually look consistent, and a round-counter restart following a mid-session worktree switch combined with compaction. A narrower gap also remains: a subagent dispatched into a different worktree under the same session id merges in by the same session-id glob, so if this session's own primary ledger file is missing and the subagent's file alone happens to form a complete matching `1..N` sequence, the check passes even though those rows track the subagent's own review activity rather than rounds this session's own transcript opened.
+A mismatched session's rounds are not classified, and its rows are not read by the counters below. The counters "rounds with a clean marker write but no round-keyed ledger rows" and "authoring_agent inconsistent with the transcript join" therefore skip it. Both read the round-to-row join that the mismatch marks untrusted, and classifying its rounds as row-less would count every marker-write round as having no row, whether or not it had rows. The other counters -- co-authored rounds, undecidable dispatches, malformed dispatch ids -- are transcript-side and unchanged.
 
-`show`'s merged output tags each row with its source file's own repo-hash, display-time only, for an operator debugging a flagged collision.
+These residuals remain:
 
-**Ledger-possibly-swept check.** A session counts under "sessions with a code-review round but no ledger file, cold enough to be swept" when all three hold:
+- **A stray block that makes up for a missing round.** If one round's rows are missing and a stray block with a higher round value appears, the count and order still match. The join then misattributes silently.
+- **A session that reviews on two branches.** A session whose round values fall when it moves to a second branch (for example round 5, then round 1) is excluded. A round-counter restart following a mid-session worktree switch combined with compaction can be excluded the same way.
+
+A narrower gap also remains: a subagent dispatched into a different worktree under the same session id has its rows attributed by the same `session_id` match, so if this session's own primary rows are missing and the subagent's rows alone happen to form a matching sequence, the check passes even though those rows track the subagent's own review activity rather than rounds this session's own transcript opened.
+
+`review-ledger.sh show`'s stderr header, whose shape `review-ledger.sh --help` states, names the files it read, the row count, and the max round, for an operator debugging a flagged session. In branch scope `show` also reads this worktree's own session file, so its `max_round` can include rows from the default branch (see `docs/scripts.md`'s `review-ledger.sh` entry).
+
+**Ledger-possibly-swept check.** A session counts under "sessions with a code-review round, no attributed ledger row, no opened session-keyed ledger file, and a first round older than the sweep floor" when all of these hold:
 
 - It opened >=1 `code-review` round.
-- Every one of its matching ledger files, if any matched the session-id glob at all, failed to open -- indistinguishable from zero files matching, since a file evicted by a concurrent `clear-stale` sweep between the glob and the read counts the same as never having matched.
-- The record at its earliest code-review round's own open position is older than the fixed 30-day `_LEDGER_SWEEP_FLOOR_DAYS` (GH-973). That's the same floor `review-ledger.sh`'s `append` command passes on its dominant eviction path, not `clear-stale`'s dynamically-resolved `cleanupPeriodDays`-driven window. The earliest round's own open, not the session's newest record, is what's compared. A swept file's last successful append is always at or before that round's own open, so keying there never misses a truly-swept file. This also avoids a bias a ledger file's own mtime -- which only advances on `append` -- would otherwise introduce against a transcript's mtime, which advances for the life of the session: a session that reviews early then keeps working past the sweep window would otherwise misread as kill-switch-clean rather than swept. Only that one record's own timestamp is checked, with no fallback to any other record in the session, accepted because Claude Code transcript records reliably carry a `timestamp` field.
+- No ledger rows are attributed to it, and no session-keyed ledger file for it (`*.<session_id>.jsonl`) opened -- a file evicted by a concurrent `clear-stale` sweep between the directory listing and the read counts the same as never having been listed.
+- The record at its earliest code-review round's own open position is older than the fixed 30-day `_LEDGER_SWEEP_FLOOR_DAYS` (GH-973). That's the same floor `review-ledger.sh`'s `append` command passes on its dominant eviction path, not `clear-stale`'s dynamically-resolved `cleanupPeriodDays`-driven window. The earliest round's own open, not the session's newest record, is what's compared. A swept file's last successful append is always at or before that round's own open, so keying there never misses a truly-swept file. This also avoids a bias a ledger file's own mtime -- which only advances on `append` -- would otherwise introduce against a transcript's mtime, which advances for the life of the session: a session that reviews early then keeps working past the sweep window would otherwise misread as clean rather than swept. Only that one record's own timestamp is checked, with no fallback to any other record in the session, accepted because Claude Code transcript records reliably carry a `timestamp` field.
 
-This can't tell a genuinely swept ledger apart from a session the kill switch simply ran clean for its entire (now-cold) lifetime, since both leave the identical no-file signature. It excludes both alike, exactly as the round-number-mismatch exclusion does for its own untrustworthy-join case. Every dispatch in a flagged session counts toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED. A session with no parseable timestamp on that one record is not evaluated by this check.
+This can't tell a swept ledger apart from a session that never landed a row, since both leave the identical no-rows signature. It excludes both alike, exactly as the round-number-mismatch exclusion does for its own untrustworthy-join case. Every dispatch in a flagged session counts toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED. A session with no parseable timestamp on that one record is not evaluated by this check.
 
 **The `authoring_agent inconsistent` counter's own denominator.** Rows with an empty or `unknown` `authoring_agent` are skipped rather than miscounted -- either a pre-migration row, or one that simply never declared the flag. Every other matching row's `authoring_agent` is compared against the transcript-derived determination for that round: whether a `code-writer` dispatch is attributed to the span at all. That comparison deliberately uses an **unfiltered** dispatch count, distinct from the `--since`-filtered count that gates "Dispatches in scope": a round whose authoring dispatch falls just outside a `--since` cutoff still produced its ledger rows without regard to `--since`, so scoping the cross-check to the same filtered count would report every such round as spuriously inconsistent.
 
@@ -1254,12 +1417,13 @@ Dispatches in scope                                 20
 Failure share: 10 of 16 resolved dispatches (62.5%)
 
 Data quality
-  rounds co-authored by >1 dispatch                                                 3
-  rounds with a marker write but no ledger row (kill-switch inferred clean)         0
-  sessions whose ledger round sequence doesn't match the transcript's round-opens   0
-  sessions with a code-review round but no ledger file, cold enough to be swept     0
-  dispatches with no paired tool_result (undecidable)                               0
-  authoring_agent inconsistent with the transcript join                             1
+  rounds co-authored by >1 dispatch                                                                                                               3
+  rounds with a clean marker write but no round-keyed ledger rows                                                                                 0
+  sessions whose ledger round sequence doesn't match the transcript's round-opens                                                                 0
+  sessions with a code-review round, no attributed ledger row, no opened session-keyed ledger file, and a first round older than the sweep floor  0
+  dispatches with no paired tool_result (undecidable)                                                                                             0
+  authoring_agent inconsistent with the transcript join                                                                                           1
+  rounds classified PASS with at least one SETTLED row                                                                                            2
 ```
 
 `Failure share` is `FAILURE / (FAILURE + PASS)` -- UNRESOLVED and UNATTRIBUTED are excluded from both the numerator and the denominator, since neither one is evidence the dispatch's diff was reviewed and judged. The aggregate table and Data-quality counters carry no per-project, per-branch, or per-session dimension by construction, so neither has anything for redaction to pseudonymize. The scope header printed above them is a separate case -- see "Scoping to this repo: `--this-repo`" above for its `--projects` glob echo caveat.

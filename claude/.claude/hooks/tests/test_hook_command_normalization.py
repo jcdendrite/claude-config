@@ -107,22 +107,18 @@ class TestSplitFragmentsCallSitesQuoteStripped:
 
     def test_scan_finds_call_sites(self):
         """Sanity check the regex itself still matches real call sites, at
-        the exact count (12) rather than a slack floor — a future call site
+        the exact count (13) rather than a slack floor — a future call site
         regressing to an entirely-unquoted-variable form (invisible to
         _SPLIT_FRAGMENTS_CALL_RE, which only recognizes the
         "$VAR"/"${VAR}" double-quoted-expansion call shape) must drop this
         count and fail loudly rather than pass silently under a >= floor.
-
-        The count is 12: _lib_command_invokes_git_subcmd,
+        The count is 13: _lib_command_invokes_git_subcmd,
         _lib_command_invokes_tool_subcmd, and
         _lib_command_concludes_commit_shape each add one compliant call site
-        inside _lib.sh itself. Update this count when a call site is added
-        or removed."""
-        sites = _split_fragments_call_sites()
-        assert len(sites) == 12, (
-            f"expected 12 call sites, found {len(sites)}: "
-            f"{[f'{path.name}:{variable}' for path, variable in sites]}"
-        )
+        inside _lib.sh itself (the predicate's second pass reuses the first
+        pass's split rather than calling the splitter again), and
+        require-review-orchestrator-bash.sh adds one."""
+        assert len(_split_fragments_call_sites()) == 13
 
     def test_every_call_site_reads_an_unquoted_variable_or_named_exception(self):
         violations = _split_fragments_violations(RAW_SPLIT_BY_DESIGN)

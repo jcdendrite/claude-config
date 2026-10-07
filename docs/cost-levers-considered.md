@@ -651,3 +651,12 @@ Full detail, evidence, and the pre-registered gates: [`.claude/plans/handoff-nud
 | Two-tier nudge | Declined, not deferred | No retrospective price exists — today's log carries one advisory severity, so no historical fire can be classified tier-1 vs. tier-2. The named benefit (reduced dismissal-as-noise) is a human-behavior effect no instrument here observes. A lighter copy-only design already exists in the hook (the re-arm condition already distinguishes first-fire from re-arm). Reopens only if the phrasing gate below fails, a phrasing pilot is run, and that pilot itself fails to move the conversion rate. |
 | Nudge phrasing | Decline a phrasing change | All three of the phrasing lever's pre-registered thresholds — conversion, block-reach, and re-arms-tolerated at compliance — held on the pooled figures; see the plan for the individual numbers. |
 | Nudge→handoff conversion report | Built, not deferred | `_nudge_conversion_from_log` and a new `rearm-backtest` report section compute the conversion rate the phrasing lever's gate needs, as a permanent, rerunnable instrument. |
+
+## From `pr-cost-forensics.md` — "Per-PR cost forensics: dissecting a disproportionately expensive pull request"
+
+Full empirical record: [`case-studies/review-loop-cost-forensics.md`](case-studies/review-loop-cost-forensics.md).
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Cache-TTL selection (5-minute vs. 1-hour), re-examined against one disproportionately expensive private-project branch | Not pursued — secondary on this branch | The one-hour tier is selectable by config via `promptCacheTtl`/`ENABLE_PROMPT_CACHING_1H`, not structurally blocked. Idle-gap rebuilds are a real but secondary contributor to this branch's own spend, behind the subagent thread's own review-loop dispatch volume. This study leaves the standing "Cache-TTL selection" verdict above unchanged. Whether the one-hour tier would net-save is a `cache-rebuild --ttl-verdict` question this study did not run. |
+| Idle-gap rebuild cause: concurrent-session switching vs. operator breaks, re-examined on the same branch | **Departs from the corpus-wide finding** | The branch's idle-gap rebuilds show no evidence of a concurrent session — the opposite of the corpus-wide concurrent-session-driven finding in the "Context cost root cause" section above. This branch's idle gaps read as genuine operator breaks, not session-switching; recorded as a named exception to the corpus-wide pattern, not a refutation of it. |

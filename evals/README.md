@@ -431,3 +431,610 @@ live sessions.
 not reproduce interactive Shift+Tab plan mode's escalation to Opus — see
 [`docs/case-studies/plan-mode-model-resolution.md`](../docs/case-studies/plan-mode-model-resolution.md)
 for the measured discrepancy and what a valid re-verification requires.
+
+## Review bench
+
+The review bench (`evals/review_bench/`) measures whether a reviewer read-rule change
+preserves review quality — recall and adjudicated precision on a curated set
+of this repo's own known-defect PRs — before that change is allowed to
+merge. This file's own "Why local only — never CI" section above applies
+here too, with one addition: `smoke`, `run`, and `judge` each price out a
+real reviewer or judge dispatch per sample, not one classification call, so
+the cost scales faster (see "Runtime cost" below). The harness needs Python
+3.12 or newer, since `review_bench/runner.py` calls `shutil.rmtree(onexc=...)`;
+the repository's floor elsewhere is 3.11. It also needs Git 2.32 or newer; see
+`review_bench/local_git.py`.
+
+### Usage
+
+```bash
+# Mine defect candidates (mine-rounds first -- transcripts age out):
+python evals/run_review_bench.py mine-rounds
+python evals/run_review_bench.py mine-pr-comments
+python evals/run_review_bench.py mine-szz
+
+# Triage every candidate at the [y/N/q] prompt (needs a terminal):
+python evals/run_review_bench.py confirm
+
+# Snapshot both frozen arms from production at the freeze commit:
+python evals/run_review_bench.py snapshot-arms
+
+# Dry-run one defect against the real CLI, with optional fault injection:
+python evals/run_review_bench.py smoke --defect-id <id> --k 2 --inject-fault wrong-agent
+
+# The real campaign (baseline or a later arm's rerun):
+python evals/run_review_bench.py run --k 10 --records-dir evals/review_bench/.local/runs
+
+# Judge a completed reviewer campaign:
+python evals/run_review_bench.py judge --reviewer-records-path evals/review_bench/.local/runs/<campaign>.jsonl
+
+# Export, then import, the human spot-check:
+python evals/run_review_bench.py spot-check export \
+  --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl>
+python evals/run_review_bench.py spot-check import \
+  --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl> --labels-path <labels.json>
+
+# Freeze the harness (run once, after a passing smoke campaign):
+python evals/run_review_bench.py freeze --k 10 --campaign-seed 0 \
+  --last-smoke-manifest-hash <hash from smoke's own output> --smoke-full-k 10
+
+# Compute a campaign's verdicts:
+python evals/run_review_bench.py analyze \
+  --reviewer-records-path <reviewer.jsonl> --judge-records-path <judge.jsonl> --k 10
+```
+
+`mine-pr-comments` needs an authenticated `gh` for github.com. The ambient
+token needs only read access to public data, plus `GET /user`.
+
+### Mining
+
+Three miners write candidate shortlists under `evals/review_bench/.local/`.
+Run them in this order:
+
+- **`mine-rounds`** (source `review-round`) reads this account's own session
+  transcripts for a finding in a later `/code-review` round about a file an
+  earlier round on the same branch had read. Run it first, because
+  transcripts age out. A rerun keeps every prior shortlist entry it can no
+  longer regenerate. For an entry it does regenerate, it keeps the prior
+  description (when it is non-empty), excerpts, and round pairs too. It
+  exits 2 without writing when the existing file cannot be loaded.
+- **`mine-pr-comments`** (source `pr-comment`) reads the inline review
+  comments of the authenticated `gh` login on merged pull requests of this
+  repository, and nothing else: no review bodies, no PR conversation comments,
+  no other repository. A comment qualifies when the thread holds a
+  `respond-pr` reply marked fixed with a commit SHA. The head is the blame of
+  the commented line, and the fix is that SHA. The miner is a script with no
+  prompt. It resolves `owner/repo` once from `origin` and exits 2 unless
+  `origin` is exactly `github.com` and the provider reports the repository
+  public, so it publishes only public text. It prints the mined login and a
+  count of skipped comments by reason. A PR head that could not be fetched
+  makes the run exit 2, name the PR numbers, and write nothing, so a fetch
+  failure never replaces a shortlist with a partial one. A rerun repeats a
+  fetch that exceeds the fetch timeout, which scales with the head's size.
+  Edit a candidate's description in `.local/` only after the last
+  `mine-pr-comments` run, because every completed run rewrites that file.
+- **`mine-szz`** (source `szz`) blames the removed or modified non-markdown
+  lines of each `fix|bug|regression` commit on first-parent `origin/main`.
+
+Markdown files (skills, rules, `CLAUDE.md`, docs) are eligible through
+`review-round` and `pr-comment`. `defects.is_markdown_path` is the one
+markdown predicate. `mine-szz` skips markdown paths.
+
+`evals/review_bench/.local/*_candidates.json` is gitignored: `mine-rounds`'
+output can carry real session or finding-excerpt text, so never copy its
+content into a committed file or another private-project-adjacent surface.
+`pr_comment_candidates.json` holds public comment text only.
+
+`confirm` is the engineer's approval step. It reads every `.local/`
+candidate that is not yet in `defects.json`, ordered by source (`review-round`,
+then `pr-comment`, then `szz`) and then by the miner's own order, so an early
+`q` never starves the source whose transcripts age out. It suppresses no
+candidate. For each one it checks the schema and, when the candidate has a
+description, the description-provenance check against every `.local/`
+excerpt. It then prompts `[y/N/q]`. The prompt shows:
+
+- the candidate's ID, source, short SHAs, `fix_date`, path, and commit
+  subjects;
+- for a `pr-comment`, the comment's `diff_hunk`, bounded in length with the
+  end kept because the commented line is its last, and the head path, labeled
+  "(head is outside the PR branch)" when the head is not among the PR's own
+  commits, or "(PR branch membership unknown)" when the candidate does not
+  record that;
+- the description, or a note that none exists yet. It prints in full with no
+  length cut, one indented line per line of text, ahead of the path;
+- the four inclusion fields the engineer's answer accepts: `lens`,
+  `lines_exist_at_introducing_head`, `reviewer_could_have_caught_it`, and
+  `file_is_markdown`. A field the miner hard-coded rather than computed is
+  labeled "unchecked default".
+
+A candidate that shares its head, fix, and path with a candidate from another
+source is annotated with that candidate's ID, source, and status (confirmed,
+accepted this run, skipped this run, rejected by checks, or pending). The
+annotation never suppresses either candidate, and the engineer's `y` or `N`
+decides.
+
+A candidate with no description is triaged first and described after `y`: `y`
+prompts for a one-line description, which runs through the same provenance
+check. An empty line, a rejected character, or a provenance rejection accepts
+nothing for that candidate, and the loop continues.
+
+The description policy:
+
+- A description may not hold a character that `is_terminal_unsafe_character`
+  in `review_bench/defects.py` flags, such as ESC, a bidi override, a
+  zero-width joiner, or a variation selector. The three tables that function
+  reads are the one definition of the set.
+- The set includes LF and TAB. A mined description may keep both. A typed
+  one is a single line and may not hold TAB.
+- `ConfirmedDefect` enforces the policy when a record loads, so a
+  `defects.json` edited past `confirm` fails to load in every subcommand that
+  reads its records.
+- `ConfirmedDefect` holds `id`, `path`, and `fix_date` to the same rule, with
+  no LF or TAB allowed.
+- A `pr-comment` candidate's mined description counts as public text, so it
+  passes verbatim.
+- Words typed or edited in are still checked.
+
+`y` promotes the candidate. Any other answer, `Y` and `yes` included, skips
+it, and it stays in `.local/`. `q` or end of input stops the loop and writes
+the candidates accepted so far. Ctrl-C during the prompts writes and pins
+nothing. After the last prompt, `confirm` pins each accepted candidate's fix
+commit under `refs/review-bench/`, then appends the candidates to
+`defects.json`, each with `file_is_markdown` and the candidate's own path (the
+head path for a `pr-comment`). An interrupt in that pin-and-write phase can
+leave earlier pins in place and writes no defect. `confirm` aborts, exiting 1,
+when `defects.json` differs from what it loaded once the prompts end. It
+prints model-derived text with control characters as backslash escapes.
+
+`confirm` needs a terminal on stdin. Without one it runs every check that
+needs no typed input, prints the rejections, writes and pins nothing, prints
+how many candidates await the engineer at a terminal, and exits 2 when any do.
+A candidate with no description that passes the schema checks counts as
+awaiting. No flag or environment variable supplies an answer in place of a
+terminal.
+
+### Fixtures and judge input
+
+- **Markdown function context.** Arm 2 reads `.bench/change-function-context.diff`,
+  which is `git diff -W`. For `*.md` and `*.markdown` files, the function
+  context is the enclosing heading section. `review_bench/fixture_repo.py`
+  holds the mechanism and its limits.
+- **Local git isolation.** Each of these calls ignores the engineer's global
+  and system git config, global and system attributes files, and `GIT_*`
+  environment variables, and a call that produces diff text also passes
+  `--no-ext-diff --no-textconv --no-color`:
+  - every local git call in `review_bench/fixture_repo.py`;
+  - the recall judge's `git show` and `git diff`;
+  - the `git show` that `confirm`'s provenance check runs.
+
+  Calls that run in your own checkout, such as the recall judge's `git show`
+  and `git diff` and the provenance check's `git show`, still read that
+  checkout's local config and attributes.
+
+  The miners' git calls, the environment and preflight reads in
+  `review_bench/runner.py`, and `defects.py`'s `pin_defect_commits` and
+  `commit_subjects` read the engineer's setup. `review_bench/local_git.py`
+  holds the mechanism.
+- **Recall judge's fix diff.** One fix commit can hold fixes for many
+  comments, so the recall judge's input shows the fix diff limited to the
+  defect's recorded `path`. When the fix commit changes no line of that path,
+  the section says so and lists the path and the fix commit's changed paths
+  without their diffs. For a `pr-comment` defect that path is the head path, so
+  a fix that changes only the file a blame followed the line into gets the
+  listing. The diff and the listing both compare the fix commit against its
+  first parent. A fix commit with no first parent raises an error. The
+  confirmed description and that listing sit between fence lines in the judge
+  input, as data the judge is told never to follow, like each run's findings.
+
+### Frozen conditions and invalidation
+
+`freeze` writes `evals/review_bench/conditions.json`: the reviewer and judge
+model IDs, K, delta, alpha, N_min, the planning variance, the bootstrap's
+resample count and seed, the campaign seed, the kappa floor, the retry and
+missing-run rule, the later-arm certification rule, the gating rule as a
+record (which `(source, file_is_markdown)` cells land in the code gate, the
+markdown gate, and the secondary stratum, and the fixture cluster key
+`(base_commit, head_commit)`), each gate's distinct-fixture and defect counts,
+the environment (CLI version and ambient config commit at freeze), main's
+commit SHA (for reference only), the confirmed defect IDs, and sha256 hashes of the
+harness's own import closure, both arm directories, the judge agent files,
+`defects.json`, and the prompt templates.
+The import closure is walked from `runner`, `adjudicate` and `analysis`, so
+edits to `run_review_bench.py` and the `mine_*.py` miners after freeze go
+undetected. `analysis.GATING_RULE` is in the closure and is the authority for
+gate membership, so editing it after freeze changes the manifest. `freeze`
+prints each gate's fixture and defect counts, and names any gate below
+N_min(K), because a later arm's verdict is then capped at `inconclusive`.
+
+`freeze` fails, exiting 2, on a missing or empty arm directory. It refuses to
+overwrite an existing `conditions.json`; delete the file deliberately to freeze
+again.
+
+Given `--baseline-conditions-path`, as a later arm's analysis is, `analyze`
+recomputes every one of those hashes through the same `compute_frozen_fields`
+function `freeze` records them with. It reads each gate's baseline sensitivity
+verdict from the baseline-mode report at `--baseline-report-path` (default
+`evals/review_bench/results/baseline.json`). In that mode `analyze` exits 2 when:
+
+- a recomputed hash differs from the frozen manifest, naming the changed,
+  added, or removed file or field;
+- `--k` differs from the frozen K;
+- the reviewer records and the frozen defect IDs disagree in either direction;
+- the baseline report is missing or unreadable;
+- a verdict key is missing from the baseline report;
+- a null verdict sits beside two or more fixtures;
+- the report's `freeze_identity` is missing or differs from `conditions.json`
+  in the harness closure hash, any other frozen digest, K, or the campaign
+  environment, naming the differing fields.
+
+A null verdict is valid only for a gate of fewer than two fixtures, which is
+short. No case reads a missing verdict as sensitive. After a re-freeze, rerun
+all arms under the new freeze, then regenerate the baseline report. Without
+`--baseline-conditions-path`, the baseline's own `analyze` checks that its
+records carry one environment and name only defects in `defects.json`, and
+checks no frozen field. `analyze` and `judge` exit 2 when a reviewer or judge
+records path they read does not exist; only `judge`'s own output file may be
+absent. `run` and `judge` recompute the same hashes and compare the CLI
+version and ambient config commit before their first dispatch, and `run` also
+compares `--k` and holds `--seed` to the frozen campaign seed. `run` exits 2 when `conditions.json` does not exist. `judge`
+prints a note and proceeds, because the smoke campaign's judges run before the
+freeze. `smoke` never checks, since it precedes the freeze. Two further checks
+sit alongside the hash comparison, and either can exit 2 without a single hash
+differing — this section is their canonical home:
+
+- **Within one campaign, across its blocks.** Each block records the CLI
+  version and the ambient config's own commit at its start and at its end.
+  Every block's start and end readings must equal one reference environment:
+  the environment frozen in `conditions.json` for `run` and `judge`, and the
+  campaign's first reading for `smoke` and for `judge` before any freeze. Any
+  mismatch halts the campaign with exit 2. Nothing reruns, and the halted
+  block writes no records, except the `judge` case below. A `judge` block is
+  one defect's two judge runs, read at its start, after its recall run, and
+  at its end. The recall record is written after the second reading, so a
+  halt at the end keeps that record, which two matching readings bracket, and
+  writes no precision record. Recovery takes one of two paths:
+  restore the environment and resume with the same `--campaign-id`, which
+  reruns the partial block after the resume sweep; or, if the
+  environment cannot be restored, as after a CLI update, re-freeze and rerun
+  all arms in one campaign. The re-freeze path never sweeps the halted
+  campaign. That campaign's write-ahead log, `write-ahead.jsonl` in its run
+  store, lists what it left behind, so delete those `review-bench-`
+  directories and session stores from it, checking each first, not by name
+  prefix. `analyze` then checks the whole campaign as a
+  backstop: every record must carry one CLI version and one ambient config
+  commit, and a campaign whose blocks disagree makes `analyze` exit 2, naming
+  each environment and the defect IDs of the blocks recorded under it.
+- **Between campaigns.** A later arm's own campaign environment must match
+  the frozen baseline's exactly. A mismatch exits 2 as "invalidated — rerun
+  all arms", even when every hash still matches — an environment drift is a
+  threat to validity a content hash cannot see.
+
+Operating rule: the ambient config checkout stays at the frozen commit from
+`freeze` through the last `judge` run, with no uncommitted edits. Merging the
+PR that adds `conditions.json` does not require pulling that checkout. Add no
+`git worktree add`, in either repository, while a campaign runs. Likewise
+`arms/`, `judges/` and `defects.json` stay unchanged from `freeze` through the
+last `judge` run and any `analyze` that follows. Each block and each judge run
+re-reads `arms/` and `judges/` after the one-time check, and `analyze`
+re-reads `defects.json`. `snapshot-arms`, `confirm` (which writes
+`defects.json`), and a `git pull` or `git checkout` in the harness worktree
+are the ways they change.
+
+`freeze` itself refuses, exiting 2 and naming the failing precondition,
+unless the current harness closure manifest matches the last smoke campaign
+that passed, K matches that smoke campaign's own full-K fixture (its judge
+caps were sized at that K), every `defects.json` record still passes the
+description-provenance check against the `.local/` excerpts, and `.local/`
+holds a non-empty excerpt for every record whose `source` is `review-round`.
+A shortlist file alone does not satisfy that last check: an SZZ shortlist
+carries no excerpt. A `pr-comment` record's description is checked against
+those excerpts too, with its stored comment text counted as public.
+
+### Building a later arm
+
+A later arm (#1115's own draft rule, for example) is built by applying its
+read-rule change to the frozen `arms/current-rule/` snapshot, allowlist
+included — never by copying whatever the live production agent bodies have
+drifted to since the freeze. `snapshot-arms` only ever writes the two frozen
+arms; a later arm's own snapshot is a hand-applied diff of
+`current-rule/bench-<lens>.md`.
+
+### Reading the report
+
+`analyze` computes every figure per gate. The code gate holds non-markdown
+`szz` and `review-round` defects, and the markdown gate holds markdown
+`review-round` and `pr-comment` defects. The two remaining cells, a
+non-markdown `pr-comment` and a markdown `szz`, form the secondary stratum,
+which is reported and never gates. `analysis.GATING_RULE` and
+`analysis.certify_later_arm` are the authority for membership and for how the
+gates combine into a certification. The intervals are a paired cluster
+bootstrap that resamples fixtures, the `(base_commit, head_commit)` pair, so
+two defects on one fixture do not narrow an interval. A gate is short when its
+kept defects span fewer than N_min distinct fixtures.
+
+The `--out` report holds:
+
+- `gates.code` and `gates.markdown`: per-arm recall and pooled precision with
+  intervals, the arm differences with intervals, the effective N as a defect
+  count and a fixture count beside the largest fixture's defect count, whether
+  the kept sets meet N_min, and the dropped counts. In baseline mode (no
+  `--baseline-conditions-path`) each gate also holds `baseline_sensitivity`,
+  the verdict with its interval limits. In a later arm's mode it holds
+  `baseline_sensitivity.verdict` (read from the baseline report),
+  `recall_noninferiority`, `precision_noninferiority`, and the gate's
+  `outcome`.
+- `per_source` and `secondary_stratum`: the same figures per `source` and for
+  the secondary stratum, with no verdict key.
+- `n_min`, and in a later arm's mode `certification` (`certified`,
+  `not-certified`, or `inconclusive`).
+- In baseline mode, `freeze_identity` (the harness closure hash, every frozen
+  digest, K, and the campaign environment, which a later arm's analysis checks
+  against `conditions.json`), `detection_rate_per_defect`, and the
+  `dropped_defects_recall` and `dropped_defects_precision` counts. Computing
+  the identity needs `--arms-root` to hold both arm snapshots.
+- The secondary columns: Read tokens per run, `PARTIAL view` and paged-read
+  counts, whole-file-read adherence, missing-run counts by reason,
+  out-of-session read counts, recall by fix-date half per gate and arm, the
+  recall difference in the code gate's over-read-cap stratum, and the observed
+  standard deviation of the per-defect difference per gate.
+
+A figure that is undefined on its set is null: an empty set, or an interval or
+standard deviation over fewer than two fixtures. An arm that finds nothing in
+a non-empty set has a real recall of 0.0. A gate with no kept defect reports a
+null baseline verdict, and its later-arm verdict is `inconclusive`. A
+bootstrap resample in which either arm has no adjudicated finding has no
+precision difference, so it is dropped, and the count of drops prints beside
+the interval.
+
+Every `--out` report carries `confirmed_defects`, the size of the confirmed
+set. The recall drop count is taken against that set, so a defect with no
+valid recall label counts as dropped. `analyze` exits 2, printing a message and
+writing no report, when no defect is kept for recall, and in a later arm's mode
+also when none is kept for precision. Arm 1 is `current-rule`, arm 2 is
+`function-context`, and X is any later arm. Two caveats govern how to read it:
+
+- **Pairing protects the difference, not the absolute figures.** The
+  reviewer model may have already seen this public repo's later fixes.
+  Pairing within each defect cancels a shared memorization boost out of
+  every arm-vs-arm difference the gates use, but it does nothing for an
+  arm's own absolute recall or precision. Read the absolute per-arm numbers
+  with that caveat, and read recall by fix-date half — a secondary column,
+  never gating — as the closest observable proxy this harness has for that
+  exposure.
+- **The precision verdict assumes arm-independent judge segmentation.** A
+  merge of two findings, or a split of one, moves an arm's pooled precision.
+  That cancels out of `precision_X - precision_1` only if the judge's own
+  segmentation error rate, and the labels the error touches, are the same
+  for both arms. Split agreement per arm, printed by `spot-check import`,
+  is where a violation would show; it never gates on its own.
+
+### Interruption and cleanup
+
+`smoke`, `run`, and `judge` each write ahead to their own local run store:
+one entry per directory as soon as it exists, and one per session ID before
+that run launches. Each also holds an exclusive advisory lock (`flock`) on
+its run store's lock file while it runs, and writes its own PID into that
+file for the refusal message. For `run` and `smoke`, end-of-block cleanup
+runs once the block's runs finish, its end-of-block environment reading
+matches, and its records are appended. That is before a systemic-failure stop
+and before the block is marked complete. It does not run on Ctrl-C, SIGHUP or
+SIGTERM, an environment halt, an error in a run or a record write, a kill, or
+a crash, and those exits leave that block's fixture directories and session
+stores in place. For `judge`, cleanup runs inline after each judge run, before
+the environment checks, so a judge environment halt leaves nothing behind
+unless a delete fails or a store is skipped. The judge's store lookup uses only
+the final attempt's session ID, so a store is skipped when that attempt has no
+`<id>.jsonl`. That inline delete ignores errors and reports none, and a defect
+marked complete is outside a resume sweep, so a failed judge delete or a
+skipped store stays silently. The judge's cleanup is not in a `finally`, so an
+exception out of a judge run skips it. Only a resume under the same
+`--campaign-id` sweeps what a `run`, `smoke`, or `judge` exit left: its own
+sweep deletes exactly what its own abandoned attempt recorded, then reruns that
+block. A resumed `judge` block reuses a kept recall record and reruns only the
+precision judge.
+The sweep deletes only a `review-bench-` directory directly under the system
+temp dir, and a session store directly under the projects root; any other
+logged path aborts the sweep with nothing deleted. Resume with the `TMPDIR`
+the interrupted attempt ran under, since the sweep compares each logged
+directory against the current system temp dir. While
+another process holds a run store's lock, a resuming attempt refuses to start
+rather than racing the run still in progress. The kernel drops the lock when
+its holder dies, so no stale lock file needs clearing by hand. The lock does
+not cover the killed run's `claude -p` children, which can keep running after
+the lock drops. Nothing enforces the timeout on such a child once its runner is
+dead, so waiting before resuming is a heuristic, not a guarantee. After any exit that skips the
+child-kill path (see below), wait at least the command's own timeout before resuming: `REVIEWER_TIMEOUT_S`
+in `review_bench/runner.py` for `smoke` and `run`, and the judge's own
+timeout (`RECALL_JUDGE_TIMEOUT_S` or `PRECISION_JUDGE_TIMEOUT_S`) for `judge`.
+A resumed sweep that runs first deletes the directories such a child is still
+using, and the child's output is never recorded.
+
+Each `claude -p` child leads its own session, so a terminal hangup never
+reaches it. The CLI's `main()` therefore routes SIGHUP and SIGTERM into
+`KeyboardInterrupt`, the same path Ctrl-C takes: `abort_launches()` and a kill
+of each child's whole process group. Every exit that bypasses those handlers
+skips this child-kill path: SIGKILL, SIGQUIT and any other unhandled signal,
+and an interpreter or machine crash. A SIGHUP that was already ignored when
+the command started, as under `nohup`, stays ignored, so a detached campaign
+survives a logout. An interrupted `run_review_bench.py` command prints its
+campaign ID with `resume with --campaign-id <id>` and exits 128 plus the
+signal number: 130 for Ctrl-C, 143 for SIGTERM, and 129 for SIGHUP.
+`measure_subagent_model_resolution.py` routes SIGHUP and SIGTERM the same way
+and honors an ignored SIGHUP.
+
+Before its first dispatch, `smoke` and `run` check that every pending
+defect's three commits resolve in the source repo, that its head tree holds no
+project config a session must not load (see "Out-of-session reads"), and that
+both arms have a snapshot file for its lens, then print the run count and the
+nominal cost cap product; any problem exits 2 with the full list. That preflight
+reads the commit's git tree (`git ls-tree`), which does not traverse a
+symlinked parent such as a symlinked `.claude` directory. The build, not the
+preflight, fails closed on that case (see "Out-of-session reads"). After each
+block, `smoke` and `run` print its ok and missing counts by reason. A block whose runs are all missing stops the
+campaign with exit 2 and is left un-marked, so resuming under the same
+`--campaign-id` reruns it; `smoke --inject-fault` never stops this way, since
+it forces every run to fail. `smoke` takes its harness closure manifest hash
+once per process, before its first dispatch. A smoke campaign resumed after any
+edit to the harness closure therefore prints a hash for code the earlier blocks
+did not run. `freeze` compares only that hash with the current manifest, so it
+accepts the hash and does not detect the gap: rerun the smoke under a fresh
+campaign ID.
+`smoke` requires `--defect-id`, and `judge`
+skips a defect that has no completed reviewer run.
+
+Each campaign gets its own run store, nested under its `--campaign-id`, so
+`smoke` followed by `run` under distinct campaign IDs never shares completion
+state. A reused campaign ID shares one store, so `run` skips defects that
+`smoke` already completed. A reused ID also shares the `<campaign_id>.jsonl`
+records file. A resume passes the
+same `--campaign-id`; each command prints the ID and store path before it
+takes the lock. A campaign ID is 1–64 characters from `[A-Za-z0-9_.-]`,
+starting with a letter or digit.
+
+Five residuals remain.
+- A directory can be created in the instant before its own write-ahead record
+  is written. List such directories by their `review-bench-` prefix, while no
+  lock is held, and inspect each one before deleting it.
+- A halted or interrupted `run` or `smoke` campaign that is never resumed
+  keeps its fixture directories and session stores until someone deletes them,
+  and its write-ahead log names them.
+- `judge` catches a `CalledProcessError` or `TimeoutExpired` from one
+  defect's judging, prints `skipped`, and continues. A judge directory recorded
+  before its fixture install raised stays until a later `judge` resume under the
+  same `--campaign-id` sweeps it, and the skip line and exit 0 give no cue to
+  resume.
+- An arm's representative session that has no `<id>.jsonl` leaves the arm's
+  shared session store in place, and the completed block is never swept.
+- A `claude -p` child of a hard-killed runner can outlive the lock (see above).
+
+A leftover session store holds raw dispatcher and reviewer transcripts,
+including the tool results of out-of-session reads. The re-freeze recovery path
+(see "Frozen conditions and invalidation") leaves a halted campaign's
+leftovers by design. Nothing bounds their retention except
+whatever bounds `projects/`, and `/tmp` fixture retention is unverified.
+
+A crash between a block's records being appended and the block being marked
+complete reruns that block on resume, and `read_run_records` deduplicates the
+repeated records, keeping the later one. See `runner.read_run_records`.
+
+### Out-of-session reads
+
+A run's own Read, Grep, or Glob outside its own fixture (or judge) directory
+and its own session transcript and `<session-id>/` directory is recorded in
+that run's `out_of_session_paths` and does not fail the run on its own. Only a read of a live checkout's own
+copy of a file the introducing commit or the fix commit changed, or of the
+ambient config's `projects/` root (a run's own transcript and its own
+`<session-id>/` directory excepted), fails the run. The live checkouts are the
+top level of every worktree of this repository, from `git worktree list`, and
+of every worktree of the repository the ambient config resolves into, read
+once when the command starts. `git worktree list -z` needs Git 2.36 or newer;
+an older git fails the command, and the run exits 2 before dispatch. A read
+through a stowed `~/.claude` symlink resolves into one of them. A read of a
+plugin cache copy under `<config-dir>/plugins/cache/` resolves into none, so
+it is only recorded, and the path-list review is what catches it. The adherence diagnostic
+counts whole-file reads of the introducing commit's files alone. `smoke`, `run`, `judge`, and `analyze` all print every recorded
+path to the terminal, once per run it was recorded against, for the
+engineer's own review — the engineer reviews the smoke campaign's list
+before the go/no-go and the baseline campaign's before shipping it.
+Committed results — `analyze`'s own JSON report, `conditions.json`,
+`results/baseline.json` — carry only the per-arm count, never a path,
+because a path can name a private project.
+
+A Glob is checked at the directory its pattern names before any wildcard,
+joined onto its `path` (an absolute pattern overrides `path`). A leading `~`
+or `$VAR` in a path is expanded before the check. Printed paths show control
+characters as backslash escapes, since the path is model output.
+
+A run's transcript and subagent sidecar are checked once no file's size has
+changed across two consecutive polls. If the sizes are still changing after
+`SESSION_FLUSH_TIMEOUT_S` (10 seconds), the transcript as it stands on disk is
+classified, so a still-growing transcript can be classified partly written and
+miss a later read. A fixture tree (a reviewer arm's or the precision judge's)
+is built only when its head tree's `.claude/settings.json` holds no top-level
+key outside those this repository's own history has held and the tree holds
+neither `.mcp.json` nor `.claude/settings.local.json`; otherwise the build
+refuses. `smoke` and `run` apply the same check to every pending defect's head
+commit in their preflight, so a refusal exits 2 before any dispatch. The
+preflight reads git's tree while the build reads the archive extraction, so a
+symlinked `.claude/settings.json` or an `export-ignore` or `export-subst`
+attribute can make the two verdicts differ. The build refuses a link at or
+under `.claude` and any member under `.bench` (the harness's own artifact
+directory) before it writes anything, and re-checks the extracted tree. Other
+links extract. The bench supports case-sensitive volumes. On a case-insensitive
+volume a differently-named parent link can map onto `.bench` or `.claude`,
+which these refusals do not cover.
+
+This check is not a trust boundary. It does not check the values of an allowed
+key, such as `permissions` or `claudeMdExcludes`, and it does not read the
+tree's `CLAUDE.md`, which the dispatcher loads. The dispatcher holds the CLI's
+default tools, Bash included, so a tree can steer it into running commands as
+you, with your credentials. The run-validity check fails such a run only after
+the command has run.
+
+The dispatcher is not the only place the bench processes the tree. Mining
+runs git over its content, and each fixture build in `smoke` or `run` runs
+`git archive` and `git add` on it and extracts it before that block's first
+dispatch. The preflight's git reads are `git ls-tree`, `git show`, and
+`git cat-file --batch-check`, all in your own checkout, and none of them
+extracts.
+Extraction relies on tarfile's `data` filter, whose soundness follows the
+interpreter's security patches. The harness neither pins nor checks an
+interpreter patch level.
+
+Run the bench only on a repository whose pull-request branches were all
+written by you or by someone you trust.
+
+`main()` runs with an owner-only umask, so run records and everything under
+`evals/review_bench/.local/` are created without group or other bits. A
+`.local/` directory that predates that and carries group or other bits is
+restricted to 0700 at startup, and the command exits 2 if it cannot be.
+
+### Runtime cost
+
+- **Reviewer runs:** `2 x N x K`, where N counts every confirmed defect, the
+  secondary stratum's included. A baseline that can certify a later arm needs
+  each gate at N_min fixtures, so at K = 10 that is at least 252 fixtures and
+  5,040 runs. One gate at N_min is 2,520 runs, the floor of a baseline that
+  cannot certify. The expected cost is that count times
+  `measure_subagent_model_resolution.REPRESENTATIVE_DISPATCH_COST_USD`. A
+  ceiling exists only if `--max-budget-usd` bounds the subagent's spend, and not
+  only the dispatcher's own overhead. If it does, the ceiling is that count times
+  `measure_subagent_model_resolution.PER_RUN_BUDGET_CAP_USD`, doubled if every
+  run retried once at the cap. A block that halts or is interrupted reruns whole
+  on resume, and its earlier spend is not recorded. If the flag bounds only the
+  dispatcher, no ceiling exists, and each run's timeout is its only spend
+  bound. `smoke` and `run` print the run count and the nominal cap product
+  (runs times the per-run cap, unverified as a bound on spend) before their
+  first dispatch. The cost totals `smoke`, `run`, `judge`, and `analyze` print
+  leave out every run with no recorded cost, a timed-out run among them, and
+  may omit subagent spend, so the invoice can exceed them. This README states
+  no dollar figure:
+  `REPRESENTATIVE_DISPATCH_COST_USD` was derived with a command that does not
+  refuse a wider corpus, so it is not a publication instrument (`docs/private-project-redaction.md` § "This repository, one account").
+  `analyze` prints dollar totals, per reviewer arm and per judge kind, to
+  stderr for the engineer. Its `--out` report, which is committed, carries
+  none. Only the gitignored run records hold per-run costs.
+- **Judge runs:** one recall and one precision judge run per defect. Their caps
+  and timeouts equal the reviewer's. Change the `RECALL_JUDGE_BUDGET_CAP_USD` and
+  `PRECISION_JUDGE_BUDGET_CAP_USD` constants in `review_bench/runner.py` once a
+  judge has its own measured values.
+- **Wall-clock:** blocks run one at a time, `ceil(2K / workers)` run-slots
+  each, at `run_skill_evals.DEFAULT_WORKERS`'s default of 4 — 5 slots at
+  K = 10, so 1,260 slots at 252 fixtures. Each minute of median run duration
+  adds 21 hours.
+- **Judge wall-clock:** `judge` dispatches one recall and one precision judge
+  run per defect, fully serially with no worker pool, so wall-clock is
+  `2 x N` run-slots with no division by a worker count — 504 at 252 fixtures.
+  Each minute of median judge-run duration adds 8.4 hours.
+
+### Publication
+
+The `source` breakdown (`szz`, `review-round`, and `pr-comment`, in a published
+defect-set summary) is an own-history count: its whole scope is this
+repository's own git history and this account's own session transcripts, on
+one account, via `mine-rounds`, which itself refuses to run against more than
+one config-dir root. Publish it beside that command and its own scope
+refusal, per
+`docs/private-project-redaction.md` § "This repository, one account" —
+never beside a wider corpus. A `pr-comment` figure is published beside
+`mine-pr-comments` and its public-repository refusal.

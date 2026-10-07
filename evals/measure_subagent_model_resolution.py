@@ -18,23 +18,31 @@ config_dir(), compute_session_store_dir() (transcripts live outside the
 launched project dir; shutil.rmtree(project_dir) alone does not remove
 them), and detect_dispatch_in_lines() for the attempted-dispatch signal.
 The meta.json/jsonl join mirrors (does not import) _index_subagent_dispatches
-and _dispatch_usage_summary's observed-model walk in
-claude/.claude/scripts/transcript-analysis.py — this harness only
+in claude/.claude/scripts/transcript_analysis/corpus.py and
+_dispatch_usage_summary's observed-model walk in
+claude/.claude/scripts/transcript_analysis/subagent_mix.py — this harness only
 ever has one dispatch per run to join, so the multi-root/pricing generality
 those functions carry for the full corpus tool doesn't apply here.
+
+evals/review_bench/runner.py and evals/review_bench/adjudicate.py read this
+module's names, underscore-private ones included, as msmr.<name> (adjudicate.py
+through runner), so grep for `msmr.` before renaming one.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
 import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -49,6 +57,26 @@ AGENTS_DIR = REPO_ROOT / "claude" / ".claude" / "agents"
 # <session_jsonl.parent>/<session_jsonl.stem>/<SUBAGENT_SUBDIR>/ — matches
 # transcript-analysis.py's SUBAGENT_SUBDIR ("subagents").
 SUBAGENT_SUBDIR = "subagents"
+
+# message.model on a transcript record Claude Code synthesizes itself (an API
+# error or placeholder turn) rather than receives from a model.
+SYNTHETIC_MODEL_ID = "<synthetic>"
+
+# The variables `git rev-parse --local-env-vars` lists (git-rev-parse(1)).
+_GIT_LOCAL_ENV_VARS = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+)
+
+
+def environment_without_git_local_vars() -> dict[str, str]:
+    """A copy of the process environment without the `_GIT_LOCAL_ENV_VARS`
+    entries, so git's normal discovery applies to the child's working
+    directory."""
+    return {name: value for name, value in os.environ.items() if name not in _GIT_LOCAL_ENV_VARS}
+
 
 # --- M8: per-run spend cap -------------------------------------------------
 # Derived 2026-08-13 via `.venv/bin/python3
@@ -221,7 +249,7 @@ def build_run_command(run: MatrixRun, *, session_id: str, budget_cap_usd: float)
 
 # --- Agent frontmatter reading ----------------------------------------------
 # Mirrors _agent_frontmatter_model's leading-YAML-block scoping in
-# claude/.claude/scripts/transcript-analysis.py (never matches a
+# claude/.claude/scripts/transcript_analysis/subagent_mix.py (never matches a
 # "model:"/"tools:" mention inside the agent's prose body).
 
 _AGENT_FRONTMATTER_MODEL_RE = re.compile(r"(?m)^model:\s*(\S+)\s*$")
@@ -383,9 +411,8 @@ def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
     from one subagent's own transcript.
 
     Mirrors _dispatch_usage_summary's observed-model walk
-    (claude/.claude/scripts/transcript-analysis.py) — every assistant
-    record's message.model, excluding the literal "<synthetic>" placeholder
-    — and collects tool_use block names in the same pass for M3's
+    (claude/.claude/scripts/transcript_analysis/subagent_mix.py) — every assistant
+    record's message.model, excluding SYNTHETIC_MODEL_ID — and collects tool_use block names in the same pass for M3's
     discriminator. Returns two empty frozensets on any read error, matching
     that function's "dangling" convention: absence of data, not a crash.
     """
@@ -402,7 +429,7 @@ def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
                     continue
                 msg = rec.get("message") or {}
                 model = msg.get("model")
-                if model and model != "<synthetic>":
+                if model and model != SYNTHETIC_MODEL_ID:
                     model_ids.add(model)
                 for block in msg.get("content") or []:
                     if isinstance(block, dict) and block.get("type") == "tool_use":
@@ -426,7 +453,7 @@ def parse_subagent_dispatches(
     dispatch.
 
     Mirrors _index_subagent_dispatches's meta.json read
-    (claude/.claude/scripts/transcript-analysis.py) — toolUseId,
+    (claude/.claude/scripts/transcript_analysis/corpus.py) — toolUseId,
     requested model, and (unlike that function, which doesn't need it since
     it joins agentType from the parent's own tool_use block) agentType read
     directly from meta.json, which carries it as its own field. A meta.json
@@ -556,6 +583,37 @@ def gather_environment_report() -> dict:
 # --- Subprocess execution -----------------------------------------------------
 
 
+# How long a child that already closed its stdout gets to exit on its own
+# before its whole process group is killed.
+_CHILD_EXIT_WAIT_S = 5
+
+# Upper bound on how long a worker thread takes to notice an abort request.
+_ABORT_POLL_INTERVAL_S = 1.0
+
+_launches_aborted = threading.Event()
+
+
+class LaunchAbortedError(RuntimeError):
+    """Raised by _run_claude_to_completion once abort_launches() was called."""
+
+
+def abort_launches() -> None:
+    """Make every in-flight _run_claude_to_completion kill its child and raise
+    LaunchAbortedError, and every later call raise before spawning. A
+    coordinating thread calls this when interrupted: each child leads its own
+    session, so the terminal's Ctrl-C no longer reaches it, and worker threads
+    never see KeyboardInterrupt themselves. The flag is process-wide and
+    never cleared; the interrupted process is expected to exit."""
+    _launches_aborted.set()
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """The child leads its own session (start_new_session), so its pid is its
+    process group ID and this reaches every descendant it spawned."""
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
 def _run_claude_to_completion(cmd: list[str], cwd: Path, timeout_s: int) -> tuple[list[bytes], bool]:
     """Run cmd to completion (or timeout_s), returning (raw stdout lines,
     timed_out).
@@ -565,39 +623,57 @@ def _run_claude_to_completion(cmd: list[str], cwd: Path, timeout_s: int) -> tupl
     model resolution is only observable after the parent process has run
     the dispatch to completion and written its subagents/ sidecar, so the
     process must be allowed to finish (or hit the timeout) before parsing.
+
+    timeout_s holds however few bytes the child has emitted, and the
+    child's whole process group is killed on timeout or on any exception,
+    including KeyboardInterrupt. abort_launches() ends it the same way from
+    another thread.
     """
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    if _launches_aborted.is_set():
+        raise LaunchAbortedError("launch aborted before spawning")
+    env = environment_without_git_local_vars()
+    env.pop("CLAUDECODE", None)
     proc = subprocess.Popen(
         cmd, cwd=str(cwd), env=env,
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
+    stdout_fd = proc.stdout.fileno()
     buf = b""
     all_lines: list[bytes] = []
     deadline = time.monotonic() + timeout_s
     timed_out = False
+    reached_eof = False
     try:
         while True:
-            if time.monotonic() > deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 timed_out = True
                 break
-            remaining = max(0.1, deadline - time.monotonic())
-            rlist, _, _ = select.select([proc.stdout], [], [], remaining)
+            rlist, _, _ = select.select([stdout_fd], [], [], min(remaining, _ABORT_POLL_INTERVAL_S))
+            if _launches_aborted.is_set():
+                raise LaunchAbortedError("launch aborted while the child was running")
             if not rlist:
                 continue
-            chunk = proc.stdout.read(4096)
+            # os.read returns what is available; a buffered read(n) would
+            # block until n bytes or EOF and never reach the deadline check.
+            chunk = os.read(stdout_fd, 4096)
             if not chunk:
+                reached_eof = True
                 break
             buf += chunk
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 all_lines.append(line)
     finally:
+        if timed_out or not reached_eof:
+            _kill_process_group(proc)
         try:
-            if timed_out:
-                proc.kill()
-            proc.wait(timeout=5)
-        except Exception:
-            pass
+            proc.wait(timeout=_CHILD_EXIT_WAIT_S)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+            proc.wait()
+        proc.stdout.close()
     return all_lines, timed_out
 
 
@@ -830,6 +906,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    # A `claude -p` child leads its own session, so a terminal hangup never
+    # reaches it. Raising KeyboardInterrupt for SIGHUP and SIGTERM sends them
+    # down Ctrl-C's path: abort_launches() and the child's process-group kill.
+    # `nohup` starts the process with SIGHUP ignored, and that must stand, or a
+    # detached run would abort at logout.
+    if signal.getsignal(signal.SIGHUP) is not signal.SIG_IGN:
+        signal.signal(signal.SIGHUP, signal.default_int_handler)
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     args = build_arg_parser().parse_args()
 
     if args.list:

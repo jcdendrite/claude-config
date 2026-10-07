@@ -4,8 +4,24 @@ plus suite-wide transcript-corpus isolation (see the autouse fixture below),
 plus the transcript-record fixture builders shared across
 test_transcript_analysis.py, test_transcript_cost.py, test_token_analyzer.py,
 test_context_composition.py, test_transcript_denials.py,
-test_transcript_review_trace.py, and test_transcript_read_scope.py (see the
-extraction rationale on _write_jsonl below).
+test_transcript_review_trace.py, test_transcript_read_scope.py,
+test_transcript_ledger_common.py, test_transcript_cost_ledger.py,
+test_transcript_cost_ledger_record_gates.py, test_transcript_gh_cli.py,
+test_transcript_pr_cost_ledger.py, test_transcript_pr_cost.py,
+test_transcript_pr_cost_gh.py, test_transcript_pr_cost_export.py,
+test_transcript_pr_cost_export_accounts.py, test_transcript_cache_rebuild.py,
+test_transcript_cache_rebuild_attribution.py,
+test_transcript_cache_rebuild_switch_delta.py,
+test_transcript_cache_rebuild_ttl_rules.py,
+test_transcript_cache_rebuild_ttl_accumulation.py,
+test_transcript_cache_rebuild_ttl_footing.py, test_transcript_audit_routing.py,
+test_transcript_audit_routing_shape.py, test_transcript_audit_routing_samples.py,
+test_transcript_subagents.py, test_transcript_subagent_mix.py,
+test_transcript_subagent_mix_dollars.py, test_transcript_cost_counts.py,
+test_transcript_handoff_nudge.py, test_transcript_rearm_backtest.py,
+test_transcript_spend_over_threshold.py, and
+tests/_cache_rebuild_helpers.py (see the extraction rationale on
+_write_jsonl below).
 
 The scaffolding helpers are plain functions, not pytest fixtures — they take
 `tmp_path` (or a repo built from it) as an explicit argument rather than
@@ -27,7 +43,8 @@ import uuid
 from pathlib import Path
 
 import pytest
-from transcript_analysis import pricing
+from helpers import init_git_repo
+from transcript_analysis import pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 
@@ -366,12 +383,17 @@ def _ledger_row(
     authoring_agent: str = "",
     authoring_effort: str = "",
     schema_version: int = 2,
-    event_time: str = "2026-08-01T10:00:00Z",
+    event_time: object = "2026-08-01T10:00:00Z",
+    session_id: str | None = None,
 ) -> dict:
-    """One review-narrative-ledger row, review-ledger.sh's own schema v2
-    shape. round=None omits the `round` key entirely rather than setting it
-    null, modeling a pre-schema-v2 legacy row. review-ledger.sh itself
-    never writes a null round."""
+    """One review-narrative-ledger row, review-ledger.sh's own row shape.
+    round=None omits the `round` key entirely rather than setting it null,
+    modeling a pre-schema-v2 legacy row. review-ledger.sh itself never
+    writes a null round. session_id=None omits the `session_id` key, the
+    shape of a row written before rows carried one (schema v2). Pass
+    schema_version=3 alongside a session_id for a row that carries one.
+    review-ledger.sh's _LEDGER_SCHEMA_VERSION is the writer's own version, and
+    the readers read no version field."""
     row = {
         "schema_version": schema_version,
         "finding": finding,
@@ -384,25 +406,42 @@ def _ledger_row(
     }
     if round is not None:
         row["round"] = round
+    if session_id is not None:
+        row["session_id"] = session_id
     return row
+
+
+def _write_named_ledger_file(
+    config_dir_root: Path, repo_hash: str, name_slot: str, rows: list[dict],
+) -> Path:
+    ledger_dir = config_dir_root / "review-narrative-ledger"
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    path = ledger_dir / f"{repo_hash}.{name_slot}.jsonl"
+    _write_jsonl(path, rows)
+    return path
 
 
 def _write_ledger_file(
     config_dir_root: Path, session_id: str, rows: list[dict], *, repo_hash: str = "0" * 64,
 ) -> Path:
-    """Write one review-narrative-ledger file for a synthetic session.
-
-    author_outcome.py's own ledger read path locates it by session-id glob
-    under <config_dir_root>/review-narrative-ledger/, mirroring
-    review-ledger.sh's own $LEDGER_DIR/$REPO_HASH.$SESSION_ID.jsonl naming
-    -- the repo-hash prefix is irrelevant to that glob, so a fixed
-    placeholder is fine here.
+    """Write one session-keyed review-narrative-ledger file for a synthetic
+    session, mirroring review-ledger.sh's own
+    $LEDGER_DIR/$REPO_HASH.$SESSION_ID.jsonl naming under
+    <config_dir_root>/review-narrative-ledger/. author_outcome.py attributes
+    a row without a `session_id` to the session in this filename, so a
+    legacy-shaped row needs no session_id here. The repo-hash prefix is
+    irrelevant to that attribution, so a fixed placeholder is fine.
     """
-    ledger_dir = config_dir_root / "review-narrative-ledger"
-    ledger_dir.mkdir(parents=True, exist_ok=True)
-    path = ledger_dir / f"{repo_hash}.{session_id}.jsonl"
-    _write_jsonl(path, rows)
-    return path
+    return _write_named_ledger_file(config_dir_root, repo_hash, session_id, rows)
+
+
+def _write_branch_ledger_file(
+    config_dir_root: Path, branch_hash: str, rows: list[dict], *, repo_hash: str = "0" * 64,
+) -> Path:
+    """Write one branch-keyed review-narrative-ledger file,
+    $LEDGER_DIR/$REPO_HASH.$BRANCH_HASH.jsonl. Its rows must carry their own
+    `session_id`: nothing in the filename says which session wrote them."""
+    return _write_named_ledger_file(config_dir_root, repo_hash, branch_hash, rows)
 
 
 def _opus(
@@ -418,6 +457,23 @@ def _opus(
         content=content,
         request_id=request_id,
     )
+    rec["message"]["usage"] = {
+        "input_tokens": 50,
+        "output_tokens": out,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": cr,
+    }
+    return rec
+
+
+def _priced_opus(
+    content: list, *, out: int = 100, cr: int = 0, ts: str = "2026-05-19T10:00:00.000Z",
+    model: str = "claude-opus-5", request_id: str | None = None,
+) -> dict:
+    """Build a priced-Opus assistant record (default claude-opus-5, in
+    _MODEL_BASE_INPUT_RATES) for audit-routing's dollar-headline tests —
+    _opus()'s claude-opus-4-7 is deliberately unpriced."""
+    rec = _asst(model, branch="main", ts=ts, content=content, request_id=request_id)
     rec["message"]["usage"] = {
         "input_tokens": 50,
         "output_tokens": out,
@@ -477,6 +533,24 @@ def _priced(
     if inference_geo is not None:
         usage["inference_geo"] = inference_geo
     rec["message"]["usage"] = usage
+    return rec
+
+
+def _priced_sidechain_asst(
+    model: str, *, input_tokens: int = 0, output_tokens: int = 0, cache_read_tokens: int = 0,
+    ts: str | None = None, branch: str = "main",
+) -> dict:
+    """Build a sidechain assistant record with explicit, flat-priced usage
+    fields, for subagent-mix's Actual $/Counterfactual $ dollar-column tests
+    -- a sidechain counterpart to TestCost's own _priced (cache-write-split
+    fidelity is irrelevant to these tests' hand-computed input-token math)."""
+    rec = _asst(model, branch=branch, sidechain=True, ts=ts, content=[])
+    rec["message"]["usage"] = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": cache_read_tokens,
+        "cache_creation_input_tokens": 0,
+    }
     return rec
 
 
@@ -601,6 +675,56 @@ def _cost_args(
         "summary": summary,
         "share_only": share_only,
     })()
+
+
+def _cost_ledger_args(
+    *,
+    projects: str = "*",
+    this_repo: bool = False,
+    record: bool = False,
+    force: bool = False,
+    note: str = "",
+) -> object:
+    return type("A", (), {
+        "projects": projects,
+        "this_repo": this_repo,
+        "record": record,
+        "force": force,
+        "note": note,
+    })()
+
+
+def _cost_ledger_row(**overrides) -> dict:
+    """A complete, valid row dict with sensible defaults, overridden per test."""
+    row = {
+        "week": "2026-W20", "machine": "m1", "rates": "2026-08-02", "usd": 12.5,
+        "context_pct": 10.0, "opus_pct": 5.0, "ge200k_pct": 10.0,
+        "denials": 2, "reviewer_gap_pp": 3.5, "note": "baseline",
+    }
+    row.update(overrides)
+    return row
+
+
+def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
+    """Active profile (acct-a) plus one declared root (acct-b, via
+    TRANSCRIPT_CONFIG_DIRS_FILE) -- the minimal multi-root setup where a call
+    site that forgot to thread `roots` is distinguishable from one that
+    threaded it correctly (both look identical at one root, since
+    _resolve_project_scope's own internal default is also (PROJECTS_DIR,)).
+    Pins both PROJECTS_DIR (_resolve_scan_roots' base, used by 18 of the 19
+    funnel subcommands) and CLAUDE_CONFIG_DIR (config_dir(), which
+    _resolve_cost_roots reads independently for cost/context-distribution) at
+    the same acct-a, so every subcommand agrees on the same two-root list."""
+    acct_a = tmp_path / "acct-a"
+    (acct_a / "projects").mkdir(parents=True)
+    acct_b = tmp_path / "acct-b"
+    (acct_b / "projects").mkdir(parents=True)
+    monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
+    roots_file = tmp_path / "roots"
+    roots_file.write_text(f"{acct_b}\n")
+    monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+    return [acct_a / "projects", acct_b / "projects"]
 
 
 def _cost_trend_args(
@@ -756,6 +880,19 @@ def _skill_use(tool_id: str, skill: str) -> dict:
     return {"type": "tool_use", "id": tool_id, "name": "Skill", "input": {"skill": skill}}
 
 
+def _read_use(tool_id: str, file_path: str) -> dict:
+    """Build a Read tool_use block with the given file_path."""
+    return {"type": "tool_use", "id": tool_id, "name": "Read", "input": {"file_path": file_path}}
+
+
+def _exit_plan_mode(tool_id: str = "epm1") -> dict:
+    return {"type": "tool_use", "id": tool_id, "name": "ExitPlanMode", "input": {}}
+
+
+def _thinking_block() -> dict:
+    return {"type": "thinking", "thinking": "some thought"}
+
+
 @pytest.fixture()
 def fake_projects(tmp_path, monkeypatch, request):
     """Isolated single-account corpus: patches scope.PROJECTS_DIR and
@@ -770,11 +907,12 @@ def fake_projects(tmp_path, monkeypatch, request):
     derives its default root from a fresh config_dir() call, not from the
     PROJECTS_DIR patch above — without this, a subcommand routed through
     _resolve_cost_roots would silently fall back to this machine's real
-    config dir instead of this fixture's isolated tmp_path. cost-ledger,
-    spend-over-threshold, and rearm-backtest stay in the shim (not yet moved into
-    the package) and call config_dir() via their own separate import, so
-    mod.config_dir is patched too -- two bindings of the same initial value,
-    each the sole read path for its own still-independent call sites.
+    config dir instead of this fixture's isolated tmp_path. handoff-signal-response
+    still lives in the shim and calls config_dir() via its own
+    separate import, so mod.config_dir is patched too. cost_ledger,
+    ledger_common, and pr_cost_ledger each bind config_dir by name from _config_dir, mirroring
+    scope.py's own binding, so all three are patched too -- five bindings of the same initial
+    value, each the sole read path for its own still-independent call sites.
     """
     mod = request.module._mod
     projects = tmp_path / "projects"
@@ -783,6 +921,9 @@ def fake_projects(tmp_path, monkeypatch, request):
     monkeypatch.setattr(mod.scope, "PROJECTS_DIR", projects)
     monkeypatch.setattr(mod.scope, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(mod, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(mod.cost_ledger, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(mod.ledger_common, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(mod.pr_cost_ledger, "config_dir", lambda: tmp_path)
     return proj
 
 
@@ -804,18 +945,52 @@ def cost_ledger_file(tmp_path, monkeypatch, request):
     """Isolated docs/cost-ledger.md: a fresh file with the canonical header/
     separator and zero data rows, matching the real committed file's own
     shape. _cost_ledger_path is monkeypatched (on the calling test file's own
-    `_mod` -- see fake_projects above for why `request.module._mod`) so every
-    test in this section reads/writes this file, never this repo's own
-    tracked ledger."""
+    `_mod.cost_ledger` -- see fake_projects above for why `request.module._mod`)
+    so every test in this section reads/writes this file, never this repo's
+    own tracked ledger."""
     mod = request.module._mod
     ledger_path = tmp_path / "cost-ledger.md"
     ledger_path.write_text(
         "# Cost-trend ledger\n\n"
-        + mod._COST_LEDGER_HEADER_LINE + "\n"
-        + mod._COST_LEDGER_SEPARATOR_LINE + "\n"
+        + mod.cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
+        + mod.cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
     )
-    monkeypatch.setattr(mod, "_cost_ledger_path", lambda: ledger_path)
+    monkeypatch.setattr(mod.cost_ledger, "_cost_ledger_path", lambda: ledger_path)
     return ledger_path
+
+
+@pytest.fixture()
+def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects, request):
+    """Isolated config dir carrying the cost-ledger opt-in sentinel and a
+    seeded machine identity. Shared by test_transcript_cost_ledger.py's and
+    test_transcript_cost_ledger_record_gates.py's own cost-ledger tests and
+    test_transcript_ledger_common.py's TestMachineIdentity (see fake_projects
+    above for why `request.module._mod`).
+
+    - Sets `CLAUDE_CONFIG_DIR` explicitly rather than relying on
+      `_isolate_transcript_corpus_lookups`'s coincidental tmp-path match.
+      `_cost_ledger_report`'s sentinel check resolves `config_dir` through
+      `_config.py`'s own binding, not `_mod`'s, so patching
+      `_mod.cost_ledger.config_dir` alone has no effect on it.
+    - The env var alone is not sufficient either. `fake_projects`
+      monkeypatches `_mod.cost_ledger.config_dir` to its own `tmp_path`,
+      which wins over the env var since it never re-reads the environment.
+    - Declaring `fake_projects` as this fixture's own parameter (not just
+      requested alongside it) makes pytest's fixture graph run it first,
+      regardless of a test's own parameter order.
+    - `mod.cost_ledger.config_dir` and `mod.ledger_common.config_dir` are
+      both patched again here so they and `_config.config_enabled()`'s
+      env-var-based resolution all agree on the same directory.
+    """
+    mod = request.module._mod
+    cfg_dir = tmp_path / "isolated-claude-config"
+    cfg_dir.mkdir()
+    (cfg_dir / ".cost-ledger-enabled").touch()
+    (cfg_dir / mod.ledger_common._MACHINE_IDENTITY_FILENAME).write_text("7e57c0de")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setattr(mod.cost_ledger, "config_dir", lambda: cfg_dir)
+    monkeypatch.setattr(mod.ledger_common, "config_dir", lambda: cfg_dir)
+    return cfg_dir
 
 
 @pytest.fixture(autouse=True)
@@ -864,13 +1039,10 @@ def _reset_pricing_format_drift_flags(monkeypatch):
 
 
 def _init_repo(path: Path, initial_branch: str = "main") -> None:
-    """Initialise a git repo with one commit and a remote pointing at itself."""
-    path.mkdir(parents=True, exist_ok=True)
-    # Passing --initial-branch explicitly avoids depending on the system's
+    """Initialise a git repo on `initial_branch` with a test identity and no commit."""
+    # Defaulting the branch to "main" avoids depending on the system's
     # init.defaultBranch setting, which varies across git versions and CI environments.
-    subprocess.run(["git", "init", "-q", f"--initial-branch={initial_branch}"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True)
+    init_git_repo(path, branch=initial_branch)
 
 
 def _commit(repo: Path, message: str = "commit") -> None:

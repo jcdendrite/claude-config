@@ -16,9 +16,12 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from helpers import REPO_ROOT
+
+from .conftest import _table_cols
 
 SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
 
@@ -231,6 +234,13 @@ def test_transcript_analysis_cost_trend_subprocess_finds_seeded_session(tmp_path
 
     assert result.returncode == 0, result.stderr
     assert "2026-W21" in result.stdout  # ISO week of the seeded 2026-05-19 timestamp
+
+
+def test_transcript_analysis_pr_cost_help_exits_zero():
+    result = _run("transcript-analysis.py", "pr-cost", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--asof-window-days" in result.stdout
+    assert "default: 3" in result.stdout
 
 
 def _seed_pr_cost_export_account(config_dir: Path) -> None:
@@ -488,3 +498,298 @@ def test_transcript_analysis_read_scope_subprocess_finds_seeded_read(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "Read calls: 1" in result.stdout
+
+
+def test_transcript_analysis_cache_rebuild_help_exits_zero():
+    result = _run("transcript-analysis.py", "cache-rebuild", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "30d" in result.stdout
+    assert "100,000" in result.stdout
+
+
+def _seed_cache_rebuild_account(tmp_path: Path) -> Path:
+    """Build a single-account config dir with one priced main-thread call
+    timestamped an hour before now -- falls inside the default --since 30d
+    window without depending on a fixed calendar date."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    proj.mkdir(parents=True)
+    ts = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    record = {
+        "type": "assistant",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "timestamp": ts,
+        "message": {
+            "model": "claude-sonnet-5",
+            "content": [],
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
+        },
+    }
+    (proj / "s.jsonl").write_text(json.dumps(record) + "\n")
+    return config_dir
+
+
+def test_transcript_analysis_cache_rebuild_subprocess_finds_seeded_call(tmp_path):
+    """Proves `from transcript_analysis.cache_rebuild import cmd_cache_rebuild`
+    resolves under a real subprocess -- no in-process `_mod.cmd_cache_rebuild(...)`
+    test can see a broken re-export in the real shim entrypoint. Uses
+    _isolated_config_env rather than a top-level --config-dir: cache-rebuild is a
+    member of _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR."""
+    config_dir = _seed_cache_rebuild_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "cache-rebuild", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "Calls scanned: 1" in result.stdout
+
+
+def test_transcript_analysis_audit_routing_help_exits_zero():
+    result = _run("transcript-analysis.py", "audit-routing", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--redact" in result.stdout
+
+
+def _seed_audit_routing_account(tmp_path: Path) -> Path:
+    """Build a single-account config dir with one priced (claude-opus-5) Read
+    turn -- the seed shared by audit-routing's and audit-routing-samples' own
+    subprocess tests below."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    proj.mkdir(parents=True)
+    record = {
+        "type": "assistant",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "message": {
+            "model": "claude-opus-5",
+            "content": [{"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": "/a.py"}}],
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 4321,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            },
+        },
+    }
+    (proj / "s.jsonl").write_text(json.dumps(record) + "\n")
+    return config_dir
+
+
+def test_transcript_analysis_audit_routing_subprocess_finds_seeded_turn(tmp_path):
+    """Proves `from transcript_analysis.audit_routing import cmd_audit_routing`
+    resolves under a real subprocess -- no in-process `_mod.cmd_audit_routing(...)`
+    test can see a broken re-export in the real shim entrypoint."""
+    config_dir = _seed_audit_routing_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "audit-routing")
+
+    assert result.returncode == 0, result.stderr
+    assert "Corpus aggregate" in result.stdout
+    assert "4,321" in result.stdout
+
+
+def test_transcript_analysis_audit_routing_shape_help_exits_zero():
+    result = _run("transcript-analysis.py", "audit-routing-shape", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--since" in result.stdout
+
+
+def test_transcript_analysis_audit_routing_shape_subprocess_finds_seeded_session(tmp_path):
+    """A representative audit-routing-shape run under a real subprocess, mirroring
+    the turn-shape smoke test above's minimal session shape. cmd_audit_routing_shape's
+    header prints unconditionally, before any D1/D2/D3 bucket is populated, so this
+    needs no turn matching the D1/D2/D3 classifiers to prove the subprocess bootstrap
+    resolved."""
+    config_dir = tmp_path / "account"
+    proj = config_dir / "projects" / "-home-user-bootstraprepo"
+    proj.mkdir(parents=True)
+    session = {
+        "type": "assistant",
+        "gitBranch": "main",
+        "isSidechain": False,
+        "message": {
+            "model": "claude-sonnet-5",
+            "content": [{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "ls"}}],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 0},
+        },
+    }
+    (proj / "s.jsonl").write_text(json.dumps(session) + "\n")
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "audit-routing-shape")
+
+    assert result.returncode == 0, result.stderr
+    assert "Opus code-read turn-shape distributions" in result.stdout
+
+
+def test_transcript_analysis_audit_routing_samples_help_exits_zero():
+    result = _run("transcript-analysis.py", "audit-routing-samples", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--seed" in result.stdout
+
+
+def test_transcript_analysis_audit_routing_samples_subprocess_finds_seeded_turn(tmp_path):
+    """Proves `from transcript_analysis.audit_routing import cmd_audit_routing_samples`
+    resolves under a real subprocess. Asserts the JSON stream parses rather than
+    asserting on `candidates`' contents -- the minimal seed's non-empty `candidates`
+    list is not itself the bootstrap fact this test proves."""
+    config_dir = _seed_audit_routing_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "audit-routing-samples")
+
+    assert result.returncode == 0, result.stderr
+    json.loads(result.stdout)
+
+
+def test_transcript_analysis_cost_ledger_help_exits_zero():
+    result = _run("transcript-analysis.py", "cost-ledger", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--record" in result.stdout
+
+
+def test_transcript_analysis_cost_ledger_subprocess_finds_seeded_session(tmp_path):
+    """Proves `from transcript_analysis.cost_ledger import cmd_cost_ledger`
+    resolves under a real subprocess -- no in-process `_mod.cmd_cost_ledger(...)`
+    test can see a broken re-export in the real shim entrypoint. Read mode needs
+    no sentinel and no wall clock, so a ledger file holding only the canonical
+    header and separator (no data rows) is enough to exercise it."""
+    config_dir = _seed_priced_account(tmp_path)
+    ledger_path = tmp_path / "cost-ledger.md"
+    ledger_path.write_text(
+        "| week | machine | rates | usd | context_pct | opus_pct | ge200k_pct | denials | reviewer_gap_pp | note |\n"
+        "|---|---|---|---|---|---|---|---|---|---|\n"
+    )
+    env = {
+        **_isolated_config_env(config_dir, tmp_path),
+        # Explicit, so a contributor's own shell value for this var can't leak in.
+        "COST_LEDGER_PATH": str(ledger_path),
+    }
+
+    result = _run("transcript-analysis.py", "cost-ledger", env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert "2026-W21" in result.stdout  # the seed's unrecorded week
+
+
+def test_transcript_analysis_workstream_cost_help_exits_zero():
+    result = _run("transcript-analysis.py", "workstream-cost", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--check-pr-status" in result.stdout
+
+
+def test_transcript_analysis_workstream_cost_subprocess_finds_seeded_session(tmp_path):
+    """Proves `from transcript_analysis.workstream_cost import cmd_workstream_cost`
+    resolves under a real subprocess -- no in-process `_mod.cmd_workstream_cost(...)`
+    test can see a broken re-export in the real shim entrypoint."""
+    config_dir = _seed_priced_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "workstream-cost", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "WORKSTREAM COST SOURCES (" in result.stdout
+
+
+def test_transcript_analysis_subagents_help_exits_zero():
+    result = _run("transcript-analysis.py", "subagents", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--since" in result.stdout
+
+
+def test_transcript_analysis_subagents_subprocess_finds_seeded_sidechain(tmp_path):
+    """Proves `from transcript_analysis.subagents import cmd_subagents` resolves
+    under a real subprocess -- no in-process `_mod.cmd_subagents(...)` test can
+    see a broken re-export in the real shim entrypoint. "sidechain" appearing in
+    stdout proves the paired subagent file was read, not only the main session."""
+    config_dir = _seed_reviewer_dispatch_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "subagents", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "sidechain" in result.stdout
+
+
+def test_transcript_analysis_subagent_mix_help_exits_zero():
+    result = _run("transcript-analysis.py", "subagent-mix", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--reprice-as" in result.stdout
+
+
+def test_transcript_analysis_subagent_mix_subprocess_finds_seeded_dispatch(tmp_path):
+    """Proves `from transcript_analysis.subagent_mix import cmd_subagent_mix`
+    resolves under a real subprocess -- no in-process `_mod.cmd_subagent_mix(...)`
+    test can see a broken re-export in the real shim entrypoint. The per-agent-type
+    row's Runs and Observed cells prove the paired subagent file was read: the
+    main-thread spawn table alone carries only the spawn count."""
+    config_dir = _seed_reviewer_dispatch_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "subagent-mix", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "staff-backend-engineer(1)" in result.stdout
+    agent_type_cols = _table_cols(
+        result.stdout, header_contains="AgentType", row_contains="staff-backend-engineer", row_startswith=True
+    )
+    assert agent_type_cols.get("Runs") == "1", agent_type_cols
+    assert agent_type_cols.get("Observed") == "sonnet(1)", agent_type_cols
+
+
+def test_transcript_analysis_cost_counts_help_exits_zero():
+    result = _run("transcript-analysis.py", "cost-counts", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--branches" in result.stdout
+
+
+def test_transcript_analysis_cost_counts_subprocess_refuses_without_branches(tmp_path):
+    """Proves `from transcript_analysis.subagent_mix import cmd_cost_counts`
+    resolves under a real subprocess -- no in-process `_mod.cmd_cost_counts(...)`
+    test can see a broken re-export in the real shim entrypoint. The refusal path
+    is the bootstrap proof: cost-counts' success path needs `--this-repo`, which
+    resolves project slugs from `git worktree list` in the working directory, so
+    a seeded success run would depend on the checkout this suite happens to run in."""
+    config_dir = _seed_reviewer_dispatch_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "cost-counts", "--this-repo", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 2
+    assert "--branches is required" in result.stderr
+
+
+def test_transcript_analysis_rearm_backtest_help_exits_zero():
+    result = _run("transcript-analysis.py", "rearm-backtest", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--spacings" in result.stdout
+
+
+def test_transcript_analysis_rearm_backtest_subprocess_finds_seeded_session(tmp_path):
+    """Proves, in a fresh interpreter, that rearm_backtest.py resolves through sys.path[0] alone and
+    that real argparse dispatches rearm-backtest to cmd_rearm_backtest through set_defaults(func=...).
+    "Sessions in scope: 1" shows the seeded session was read and priced."""
+    config_dir = _seed_priced_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "rearm-backtest", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "Sessions in scope: 1" in result.stdout
+
+
+def test_transcript_analysis_spend_over_threshold_help_exits_zero():
+    result = _run("transcript-analysis.py", "spend-over-threshold", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--since DATE" in result.stdout
+
+
+def test_transcript_analysis_spend_over_threshold_subprocess_finds_seeded_session(tmp_path):
+    """Proves, in a fresh interpreter, that spend_over_threshold.py resolves through sys.path[0] alone
+    and that real argparse dispatches spend-over-threshold to cmd_spend_over_threshold through
+    set_defaults(func=...). The 2026-W21 row shows the seeded session was read and priced."""
+    config_dir = _seed_priced_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "spend-over-threshold", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "2026-W21" in result.stdout

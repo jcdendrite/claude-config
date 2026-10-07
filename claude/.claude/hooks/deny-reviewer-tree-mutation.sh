@@ -22,12 +22,13 @@
 # agent's cwd is never a legitimate git-write or in-place-format target.
 #
 # Fast common-path exit: the hook reads .agent_type before any tool-specific
-# work and returns immediately for every non-review-only caller (the main
-# session, code-writer, general-purpose, or any agent not in the closed
-# set) — this keeps it off the latency budget for the overwhelmingly common
-# call. `.agent_type` is a documented PreToolUse field
-# (code.claude.com/docs/en/hooks) already consumed by
-# nudge-error-mode-analysis.sh / nudge-handoff-near-context-cap.sh.
+# work and returns immediately for every non-review-only caller (a main
+# session started without a review-only `--agent`, code-writer,
+# general-purpose, or any agent not in the closed set) — this keeps it off the
+# latency budget for the overwhelmingly common call. `.agent_type` names a
+# subagent's type, or the `--agent` name of a main session started with one.
+# It is a documented PreToolUse field (code.claude.com/docs/en/hooks) already
+# consumed by nudge-error-mode-analysis.sh / nudge-handoff-near-context-cap.sh.
 #
 # Grounding — the in-place-edit family splits into two tiers:
 #
@@ -75,6 +76,15 @@
 #     residual gaps (relative paths, symlinks, fd-numbered redirects,
 #     `&>`, `cp -t DIR`, and `tee -`/`tee -- -file`).
 #     Its symlinks entry is the /tmp link gap below.
+#   - A write can pass through either of two mechanisms. Each covers every
+#     shape it produces, so a new shape is not a new gap. Both are accepted
+#     cooperative-tier debt, tracked by GH-811 and GH-1208:
+#       - A fragment holding a `git` word anywhere, a trailing comment
+#         included, gets only the git checks. Every later check in the Bash
+#         arm is skipped for it, the raw write-target check included, so
+#         `git diff > src/x` passes.
+#       - The splitter does not split on a bare `&` and splits `|&` only at
+#         its `|`. A command after either one is not reliably checked.
 #   - A symlink or hard link under /tmp launders the /tmp exemption.
 #     GH-1103 tracks the structural fix. The facts of this one gap:
 #       - Both arms match the literal `/tmp/*` text without resolving links.
@@ -109,8 +119,8 @@
 #     undecidable, same class of gap as require-worktree-for-git-writes.sh.
 #   - A git-write or in-place-edit reached through a command name quoted
 #     directly in the Bash arm's own command text (`'sed' -i file`) IS
-#     caught: each fragment's quote characters are stripped before the word
-#     scan runs against it, so the word scan sees the bare token. A
+#     caught: the Bash arm strips quote characters from $COMMAND before
+#     splitting into fragments, so the word scan sees the bare token. A
 #     command name reached only through a nested shell boundary this scan
 #     never executes (`bash -c "git checkout"`) is still undecidable — same
 #     indirection class as the alias/wrapper gap above.
@@ -129,7 +139,7 @@
 #     denies rather than allows (fail-closed friction on an unusual
 #     environment, not a missed mutation).
 #   - The Bash arm's quote-strip/split failures (top-level segments,
-#     per-fragment quote-stripping, fragment splitting) all fail closed:
+#     COMMAND_UNQUOTED, fragment splitting) all fail closed:
 #     each exit status is checked and denies with an explicit message
 #     rather than falling through to this hook's normal "no gated fragment
 #     matched" allow path.
@@ -165,9 +175,10 @@ _lib_parse_tool_input_or_deny "could not parse tool-input JSON. Refusing to eval
 # jq failure before returning), so AGENT_TYPE is never empty here as a
 # silent read failure — only as a genuinely absent field.
 
-# Fast common-path exit, BEFORE any tool-specific work: the main session,
-# code-writer, general-purpose, and every agent outside the closed
-# review-only set pass through unconditionally regardless of tool or command.
+# Fast common-path exit, BEFORE any tool-specific work: a main session started
+# without a review-only `--agent`, code-writer, general-purpose, and every
+# agent outside the closed review-only set pass through unconditionally
+# regardless of tool or command.
 _lib_is_review_only_agent "$AGENT_TYPE" || exit 0
 
 SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. Treat a hook denial as final. Use Read, Grep, or Glob for a read the hook misjudges. Do not retry any other denied action through a script, another command form, or another tool. Confirm a claim by reading and tracing the code before running anything. Scratch work belongs only in a fresh directory you created under /tmp, holding only files you create there. Spell a /tmp path out literally, because this hook matches write targets as written. Never overwrite or replace an existing path, even one you created; write a new file under a new name instead. A write through a symlink or hard link changes the linked file, wherever it lives, so a /tmp path can still change a file outside /tmp. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
@@ -185,9 +196,10 @@ _fragment_has_token_prefix() {
 # Prints, one per line, every destination a `cp`/`mv`/`tee` invocation or a
 # bare `>`/`>>` shell redirect in $1 writes to.
 # Catches the target only when the cp/mv/tee/redirect is the fragment's
-# sole or first command. `_lib_split_fragments` splits a fragment on a
-# bare `&` background operator, so a target hidden behind one (GH-811)
-# resolves from its own fragment like any other.
+# sole or first command — a target hidden behind a bare `&` background
+# operator in the same fragment is invisible (GH-811 tracks the underlying
+# _lib_split_fragments limitation this depends on; see the header's "Known
+# gaps" section).
 # Does not resolve relative paths, symlinks, fd-numbered redirects
 # (`2>file`), or `&>`.
 # Does not resolve a `cp -t DIR` target-directory flag, whose destination
@@ -257,7 +269,8 @@ _fragment_raw_write_targets() {
 # Splits $1 on the true command-chaining operators only (;, &&, ||, |, |&, a
 # bare &), keeping $(...)/backtick bytes intact -- unlike _lib_split_fragments,
 # which sub-splits on them -- because the git-invoking-fragment check below
-# needs those bytes still present. Its sed/tr calls, like _lib_split_fragments's
+# needs those bytes still present. It also splits on a bare &, which
+# _lib_split_fragments leaves unsplit. Its sed/tr calls, like _lib_split_fragments's
 # and _lib_strip_shell_quotes's, run unbounded (no _lib_capped wrapper):
 # input arrives via an EOF-terminated pipe over an in-memory string, not a
 # filesystem or network resource those calls could stall on.
@@ -435,29 +448,31 @@ case "$TOOL_NAME" in
     # Fine-grained split driving every other check below: _lib_split_fragments's
     # $(...)/backtick sub-splitting lets a nested command (e.g. `echo $(sed -i
     # ...)`) get scanned as its own fragment, which the coarse split above
-    # deliberately does not do. Each fragment's quote-stripped form is
-    # derived from that fragment's own raw text below, not from a
-    # whole-command strip computed upfront.
+    # deliberately does not do.
+    # Quote-stripped so an adjacent-quote split (`'sed' -i file`, `"git"
+    # checkout`) can't dodge the word-walk detectors below — same helper
+    # as deny-network-installs.sh. Checked and fail-closed, matching
+    # deny-invisible-commit-content.sh's own COMMAND_UNQUOTED computation.
     # Accepted over-deny: this split is quote-blind, so a shell metacharacter
     # embedded inside a quoted argument value (e.g. a --grep pattern
-    # literally containing "&sed -i ...") still splits the command and can
+    # literally containing ";sed -i ...") still splits the command and can
     # land in its own fragment that matches a denied pattern, even though
     # the real shell would never execute that quoted text as a command.
-    FRAGMENTS_RAW=$(_lib_split_fragments "$COMMAND")
-    FRAGMENTS_RAW_EXIT=$?
-    if [ "$FRAGMENTS_RAW_EXIT" -ne 0 ]; then
-      emit_deny "could not split the command into fragments (exit ${FRAGMENTS_RAW_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+    COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
+    COMMAND_UNQUOTED_EXIT=$?
+    if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
+      emit_deny "could not quote-strip the command text (exit ${COMMAND_UNQUOTED_EXIT}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
       exit 0
     fi
 
-    while IFS= read -r raw_fragment; do
-      [ -z "$raw_fragment" ] && continue
-      fragment=$(_lib_strip_shell_quotes "$raw_fragment")
-      fragment_exit=$?
-      if [ "$fragment_exit" -ne 0 ]; then
-        emit_deny "could not quote-strip a fragment (exit ${fragment_exit}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
-        exit 0
-      fi
+    FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
+    FRAGMENTS_SPLIT_EXIT=$?
+    if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
+      emit_deny "could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
+      exit 0
+    fi
+
+    while IFS= read -r fragment; do
       [ -z "$fragment" ] && continue
 
       if _lib_fragment_is_bare_env_assignment "$fragment"; then
@@ -584,7 +599,7 @@ case "$TOOL_NAME" in
     # the last fragment is newline-terminated. Mirrors deny-pii-in-commits.sh
     # and deny-private-project-refs.sh's identical assign-then-`<<<
     # "$VAR"`-here-string pattern.
-    done <<< "$FRAGMENTS_RAW"
+    done <<< "$FRAGMENTS"
     exit 0
     ;;
   *)

@@ -46,6 +46,11 @@ list gains, loses, renames, or reorders an angle. It lives here because
 this module already carries the REPO_ROOT/CLAUDE_DIR resolution and
 pure-function violations idiom the check needs.
 
+Assertion 8 checks that each name in `_SCOPE_CITED_ANGLE_NAMES` appears in
+comment-discipline-reviewer.md's Scope section and resolves to a
+core-review-angle header. It lives here because it reuses assertion 7's
+angle-header parser.
+
 Why hooks/tests/ instead of tests/ or skills/tests/:
   This module imports helpers.CLAUDE_DIR from the sibling helpers path. It
   lives in hooks/tests/ to match the co-location of test_doc_counts.py,
@@ -574,6 +579,14 @@ def _core_review_angle_headers(agent_text: str) -> list[str]:
     return _CORE_REVIEW_ANGLE_HEADER_RE.findall(match.group(1))
 
 
+_NO_ANGLE_HEADERS_VIOLATION = (
+    "comment-discipline-reviewer.md: 'Core review angles' section "
+    "not found, or it holds no '**Name** — ' angle headers -- update "
+    "_CORE_REVIEW_ANGLES_SECTION_RE/_CORE_REVIEW_ANGLE_HEADER_RE to "
+    "match the current heading and header shape."
+)
+
+
 def _item_12a_index_violations(skill_text: str, agent_text: str) -> list[str]:
     bullets = _item_12a_bullets(skill_text)
     headers = _core_review_angle_headers(agent_text)
@@ -584,12 +597,7 @@ def _item_12a_index_violations(skill_text: str, agent_text: str) -> list[str]:
             "match its current phrasing."
         ]
     if not headers:
-        return [
-            "comment-discipline-reviewer.md: 'Core review angles' section "
-            "not found, or it holds no '**Name** — ' angle headers -- update "
-            "_CORE_REVIEW_ANGLES_SECTION_RE/_CORE_REVIEW_ANGLE_HEADER_RE to "
-            "match the current heading and header shape."
-        ]
+        return [_NO_ANGLE_HEADERS_VIOLATION]
     violations: list[str] = []
     # Checked independently because duplicate headers plus matching duplicate bullets satisfy sequence equality.
     duplicated_headers = sorted({header for header in headers if headers.count(header) > 1})
@@ -624,6 +632,63 @@ def test_item_12a_index_matches_agent_angle_headers() -> None:
         skill_path.read_text(encoding="utf-8"),
         agent_path.read_text(encoding="utf-8"),
     )
+    assert not violations, "\n".join(violations)
+
+
+_SCOPE_SECTION_RE = re.compile(r"^## Scope$\n(.*?)(?=^## |\Z)", re.DOTALL | re.MULTILINE)
+# The angle names the agent's Scope section cites.
+# This tuple is maintained by hand.
+# Update it whenever the Scope section cites a new angle.
+# The check runs only from the tuple to the file, so an angle the Scope section cites but the tuple omits goes unchecked.
+_SCOPE_CITED_ANGLE_NAMES = ("Multi-fact comment structure", "PR-defined terminology")
+
+
+def _scope_cited_angle_violations(
+    agent_text: str,
+    cited_angle_names: tuple[str, ...] = _SCOPE_CITED_ANGLE_NAMES,
+) -> list[str]:
+    scope_match = _SCOPE_SECTION_RE.search(agent_text)
+    if not scope_match:
+        return [
+            "comment-discipline-reviewer.md: 'Scope' section not found -- "
+            "update _SCOPE_SECTION_RE to match the current heading."
+        ]
+    headers = _core_review_angle_headers(agent_text)
+    if not headers:
+        return [_NO_ANGLE_HEADERS_VIOLATION]
+    scope_text = " ".join(scope_match.group(1).split())
+    violations: list[str] = []
+    for angle_name in cited_angle_names:
+        if angle_name not in headers:
+            violations.append(
+                f"comment-discipline-reviewer.md: cited angle "
+                f"'{angle_name}' is not a header in 'Core review "
+                f"angles' (found {headers}) -- if the angle was renamed, "
+                "update the Scope section and _SCOPE_CITED_ANGLE_NAMES; if "
+                "it was removed, drop the name from _SCOPE_CITED_ANGLE_NAMES."
+            )
+        if angle_name not in scope_text:
+            violations.append(
+                f"comment-discipline-reviewer.md's Scope section does not "
+                f"cite angle '{angle_name}' -- restore the reference or drop "
+                "the name from _SCOPE_CITED_ANGLE_NAMES."
+            )
+    return violations
+
+
+def test_scope_cited_angle_names_resolve_to_angle_headers() -> None:
+    """Guards each angle name in _SCOPE_CITED_ANGLE_NAMES.
+    An angle rename would otherwise leave the Scope section citing a name
+    that no longer exists.
+    The item 12a lockstep test cannot see that, because it parses only
+    'Core review angles'.
+    A name counts as cited when it appears anywhere in the Scope text, in any
+    clause."""
+    assert _SCOPE_CITED_ANGLE_NAMES, (
+        "no Scope-cited angle names configured -- _SCOPE_CITED_ANGLE_NAMES may be misconfigured"
+    )
+    agent_path = CLAUDE_DIR / "agents" / "comment-discipline-reviewer.md"
+    violations = _scope_cited_angle_violations(agent_path.read_text(encoding="utf-8"))
     assert not violations, "\n".join(violations)
 
 
@@ -693,8 +758,10 @@ class TestFaultInjection:
     fault its paired assertion exists to catch, and asserts the checking
     function itself flags it -- proving the check's own logic, not just
     today's clean corpus, would catch a regression. The item-12a-index
-    cross-file-index-consistency checks below deviate from that shape: they
-    parse two unrelated doc files' text directly, so their fixtures are
+    cross-file-index-consistency checks and the scope-cited-angle checks
+    below deviate from that shape: the item-12a-index checks parse two
+    unrelated doc files' text directly, and the scope-cited-angle checks
+    parse one agent file's text directly, so both groups' fixtures are
     plain strings with no tmp_path directory built."""
 
     def test_filename_grammar_rejects_leading_digit(self, tmp_path: Path) -> None:
@@ -1398,3 +1465,139 @@ class TestFaultInjection:
             bullet_names=["Comment verbosity", "Restated canonical rule"],
             headers=["Comment verbosity"],
         ) in violations[0]
+
+    def test_scope_cited_angles_rejects_renamed_angle_header(self) -> None:
+        """Renaming a cited angle's header leaves the Scope section citing a
+        name that no longer resolves."""
+        agent_text = (
+            "## Scope\n\n"
+            "Plan files are in scope for Multi-fact comment structure only;\n"
+            "PR-defined terminology still applies elsewhere.\n\n"
+            "## Core review angles\n\n"
+            "**Multi-fact comment structure, renamed** — several facts.\n\n"
+            "**PR-defined terminology** — a label defined in the PR.\n\n"
+            "## How to work\n"
+        )
+        violations = _scope_cited_angle_violations(
+            agent_text,
+            cited_angle_names=("Multi-fact comment structure", "PR-defined terminology"),
+        )
+        assert len(violations) == 1
+        assert "cited angle 'Multi-fact comment structure' is not a header" in violations[0]
+
+    def test_scope_cited_angles_rejects_name_removed_from_scope(self) -> None:
+        """Deleting a cited name from the Scope section fails even though the
+        angle header still exists."""
+        agent_text = (
+            "## Scope\n\n"
+            "Plan files are in scope for Multi-fact comment structure only.\n\n"
+            "## Core review angles\n\n"
+            "**Multi-fact comment structure** — several facts.\n\n"
+            "**PR-defined terminology** — a label defined in the PR.\n\n"
+            "## How to work\n"
+        )
+        violations = _scope_cited_angle_violations(
+            agent_text,
+            cited_angle_names=("Multi-fact comment structure", "PR-defined terminology"),
+        )
+        assert len(violations) == 1
+        assert "does not cite angle 'PR-defined terminology'" in violations[0]
+
+    def test_scope_cited_angles_accepts_cited_name_split_across_lines(self) -> None:
+        """A line reflow that splits a cited name between words does not fail."""
+        agent_text = (
+            "## Scope\n\n"
+            "Plan files are in scope for Multi-fact\ncomment structure only;\n"
+            "PR-defined\nterminology still applies elsewhere.\n\n"
+            "## Core review angles\n\n"
+            "**Multi-fact comment structure** — several facts.\n\n"
+            "**PR-defined terminology** — a label defined in the PR.\n\n"
+            "## How to work\n"
+        )
+        assert (
+            _scope_cited_angle_violations(
+                agent_text,
+                cited_angle_names=("Multi-fact comment structure", "PR-defined terminology"),
+            )
+            == []
+        )
+
+    def test_scope_cited_angles_ignores_decoy_heading_and_spans_subheadings(self) -> None:
+        """A '### Scope' heading before the real '## Scope' is not parsed as
+        the section start.
+        A '### ' subheading inside '## Scope' does not end the section, so
+        names cited after it still count."""
+        agent_text = (
+            "## Overview\n\n"
+            "### Scope\n\n"
+            "A decoy subheading that cites no angle names.\n\n"
+            "## Scope\n\n"
+            "### Plan files\n\n"
+            "Plan files are in scope for Multi-fact comment structure only;\n"
+            "PR-defined terminology still applies elsewhere.\n\n"
+            "## Core review angles\n\n"
+            "**Multi-fact comment structure** — several facts.\n\n"
+            "**PR-defined terminology** — a label defined in the PR.\n\n"
+            "## How to work\n"
+        )
+        assert (
+            _scope_cited_angle_violations(
+                agent_text,
+                cited_angle_names=("Multi-fact comment structure", "PR-defined terminology"),
+            )
+            == []
+        )
+
+    def test_scope_cited_angles_rejects_missing_scope_section(self) -> None:
+        """A future rewording of the 'Scope' heading must fail loud instead of
+        the Scope text silently reading as empty."""
+        agent_text = (
+            "## Review scope, renamed\n\n"
+            "Multi-fact comment structure and PR-defined terminology.\n\n"
+            "## Core review angles\n\n"
+            "**Multi-fact comment structure** — several facts.\n\n"
+            "**PR-defined terminology** — a label defined in the PR.\n\n"
+            "## How to work\n"
+        )
+        violations = _scope_cited_angle_violations(
+            agent_text,
+            cited_angle_names=("Multi-fact comment structure", "PR-defined terminology"),
+        )
+        assert len(violations) == 1
+        assert "'Scope' section not found" in violations[0]
+
+    def test_scope_cited_angles_rejects_missing_angles_section(self) -> None:
+        """A future rewording of the 'Core review angles' heading must fail
+        loud through this guard, instead of every cited name reading as
+        unresolved."""
+        agent_text = (
+            "## Scope\n\n"
+            "Multi-fact comment structure and PR-defined terminology.\n\n"
+            "## Review angles, renamed\n\n"
+            "**Multi-fact comment structure** — several facts.\n\n"
+            "## How to work\n"
+        )
+        violations = _scope_cited_angle_violations(
+            agent_text,
+            cited_angle_names=("Multi-fact comment structure", "PR-defined terminology"),
+        )
+        assert len(violations) == 1
+        assert "'Core review angles' section not found" in violations[0]
+
+    def test_scope_cited_angles_rejects_name_missing_from_headers_and_scope(self) -> None:
+        """A cited name absent from both the angle headers and the Scope text
+        yields one violation per failed check."""
+        agent_text = (
+            "## Scope\n\n"
+            "Plan files are in scope for Multi-fact comment structure only.\n\n"
+            "## Core review angles\n\n"
+            "**Multi-fact comment structure** — several facts.\n\n"
+            "## How to work\n"
+        )
+        violations = _scope_cited_angle_violations(
+            agent_text,
+            cited_angle_names=("Multi-fact comment structure", "PR-defined terminology"),
+        )
+        assert len(violations) == 2
+        assert "cited angle 'PR-defined terminology' is not a header" in violations[0]
+        assert "does not cite angle 'PR-defined terminology'" in violations[1]

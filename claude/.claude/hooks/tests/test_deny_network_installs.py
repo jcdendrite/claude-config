@@ -50,6 +50,19 @@ class TestDenyNetworkInstalls:
     def test_npm_family_named_install_denied(self, isolated_home, command):
         assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "deny"
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'npm --prefix "&" install evil-pkg',
+            "npm --prefix=\\& install evil-pkg",
+        ],
+        ids=["quoted-ampersand-prefix-value", "escaped-ampersand-prefix-value"],
+    )
+    def test_ampersand_as_a_flag_value_does_not_hide_a_named_install(self, isolated_home, command):
+        """A `&` standing in for a flag's value is one word, so it must not cut
+        the manager from its install verb."""
+        assert run_hook(DENY_NETWORK_INSTALLS_HOOK, bash_input(command), home=isolated_home) == "deny"
+
     def test_unrecognized_value_taking_flag_denies_a_bare_restore_is_a_named_residual(self, isolated_home):
         """`--registry <url>` is not in the restore-marker set, so its value
         survives the leftover-token scan and denies even though this is a

@@ -433,7 +433,9 @@ if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
   exit 0
 fi
 
-SPLIT_FRAGMENTS="$(_lib_split_fragments "$COMMAND_UNQUOTED")"
+# Every `&` is a boundary here: an over-split only adds fragments this allowlist must also pass.
+AMP_SPLIT_COMMAND_UNQUOTED=${COMMAND_UNQUOTED//&/;}
+SPLIT_FRAGMENTS="$(_lib_split_fragments "$AMP_SPLIT_COMMAND_UNQUOTED")"
 SPLIT_FRAGMENTS_EXIT=$?
 if [ "$SPLIT_FRAGMENTS_EXIT" -ne 0 ]; then
   emit_deny "Blocked by review-orchestrator Bash gate: could not split the command into fragments (exit ${SPLIT_FRAGMENTS_EXIT}) -- sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned git/marker/checkpoint command. $SANCTIONED_ALTERNATIVE"

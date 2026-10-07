@@ -1,4 +1,4 @@
-"""Pure helpers and path constants shared across hook, skill, and script test files.
+"""Pure helpers and path constants shared across the repo's test trees.
 
 No pytest decorators here — this is a plain Python module. Import
 explicitly from each test file that needs these symbols.
@@ -29,6 +29,22 @@ SKILLS_DIR = REPO_ROOT / "claude-skills" / "skills"
 SCRIPTS_DIR = CLAUDE_DIR / "scripts"
 
 _CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
+
+_LIB_SH = HOOKS_DIR / "_lib.sh"
+
+
+def _sourced_value(var_name: str) -> str:
+    """Return `var_name`'s value after sourcing _lib.sh in a bash subprocess
+    -- reads the shell's own definition rather than a hand-copied Python
+    literal that could drift from it."""
+    result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; printf "%s" "${var_name}"'],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
 
 # SKILL.md fences may be indented when the fixture sits inside a
 # numbered list (e.g. respond-pr's "0. **Enable hook bypass.**"). The
@@ -67,6 +83,47 @@ def extract_skill_command(skill_path: Path, fixture_id: str) -> str:
             "intended block."
         )
     return matches[0].group("body").strip()
+
+
+_HEADING_LINE_RE = re.compile(r"^#{1,6}\s+.+$")
+_HEADING_STRIP_CHARS_RE = re.compile(r"[`*_]")
+
+
+def normalize_heading(text: str) -> str:
+    """Normalize a heading for citation comparison.
+
+    Strips leading/trailing `#`, strips every backtick/`*`/`_` character
+    anywhere in the text (so a heading containing inline code or emphasis is
+    citable in plain text), collapses whitespace runs, then strips the ends.
+    Both sides of a comparison run through this before the exact-equality
+    check, so `### Debug-investigation probe → \\`general-purpose\\` or
+    \\`Explore\\`` is citable as "Debug-investigation probe → general-purpose
+    or Explore".
+    """
+    text = text.strip("#")
+    text = _HEADING_STRIP_CHARS_RE.sub("", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def heading_texts(markdown_text: str) -> set[str]:
+    """Every normalized ATX heading in a markdown document.
+
+    Skips lines inside a fenced code block (toggled on each ``` line) -- a
+    fenced shell comment or sample-output line can otherwise coincidentally
+    match the heading regex despite citing nothing real.
+    """
+    headings: set[str] = set()
+    in_fence = False
+    for line in markdown_text.split("\n"):
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if _HEADING_LINE_RE.match(line):
+            headings.add(normalize_heading(line))
+    return headings
 
 
 def _build_subprocess_env(
@@ -803,6 +860,31 @@ def _run_git(repo: Path, *args: str) -> str:
     ).stdout
 
 
+def init_git_repo(path: Path, *, branch: str | None = None) -> Path:
+    """Create `path` as a git repo with a test identity and no commit. `branch=None` keeps the host's init.defaultBranch."""
+    path.mkdir(parents=True, exist_ok=True)
+    init_args = ["git", "init", "-q"]
+    if branch is not None:
+        init_args += ["-b", branch]
+    subprocess.run(init_args, cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=path, check=True)
+    return path
+
+
+def init_git_repo_with_commit(
+    path: Path, *, branch: str | None = None, file_name: str = "f.txt", content: str = "x\n"
+) -> Path:
+    """`init_git_repo`, then commit one seed file so HEAD resolves."""
+    init_git_repo(path, branch=branch)
+    seed_file = path / file_name
+    seed_file.parent.mkdir(parents=True, exist_ok=True)
+    seed_file.write_text(content)
+    subprocess.run(["git", "add", "--", file_name], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=path, check=True)
+    return path
+
+
 def _current_branch(repo: Path) -> str:
     return _run_git(repo, "symbolic-ref", "--short", "HEAD").strip()
 
@@ -849,14 +931,9 @@ def bare_remote_with_default_branch(
     subprocess.run(
         ["git", "init", "-q", "--bare", "-b", branch, str(bare)], check=True, capture_output=True
     )
-    seed = tmp_path / "_bare_remote_seed"
-    seed.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", branch, str(seed)], check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=seed, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=seed, check=True)
-    (seed / file_name).write_text(file_content)
-    subprocess.run(["git", "add", file_name], cwd=seed, check=True)
-    subprocess.run(["git", "commit", "-qm", "init"], cwd=seed, check=True)
+    seed = init_git_repo_with_commit(
+        tmp_path / "_bare_remote_seed", branch=branch, file_name=file_name, content=file_content
+    )
     subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=seed, check=True)
     subprocess.run(["git", "push", "-q", "origin", branch], cwd=seed, check=True)
 
@@ -914,9 +991,7 @@ def build_conflicted_merge_via_origin_with_upstream_skill_edit(
     _build_conflicted_merge_via_origin_with_upstream_plan_edit in
     test_marker_script.py for the plan-review marker kind, generalized to a
     shared helper since the skill-review gate's tests need the same shape.
-    Neither bare_remote_with_default_branch nor push_conflicting_edit_to_origin
-    creates parent directories, so this builder does its own mkdir -p for the
-    nested skill path."""
+    This builder creates the nested skill path's parent directories itself."""
     bare, clone = bare_remote_with_default_branch(tmp_path)
     skill_rel_path = f"claude-skills/skills/{skill_name}/SKILL.md"
     if not upstream_adds_skill:
@@ -959,13 +1034,22 @@ def build_conflicted_merge_via_origin_with_upstream_skill_edit(
     return clone
 
 
-def build_conflicted_merge(repo: Path, *, file_name: str = "f") -> str:
+def build_conflicted_merge(
+    repo: Path, *, file_name: str = "f", resolve_to_head: bool = False
+) -> str:
     """Build a real conflicted two-way merge inside `repo`: branch "theirs"
     off the checked-out branch, edit `file_name` differently on each side,
     then `git merge theirs` on the original branch. Leaves MERGE_HEAD and
     unresolved conflict markers staged. `repo` must already have a
     configured user.email/user.name. Returns the merged-in branch's tip
-    oid -- MERGE_HEAD's expected content."""
+    oid -- MERGE_HEAD's expected content.
+
+    resolve_to_head=True (opt-in; default False) additionally resolves the
+    conflict by writing `file_name` back to HEAD's own pre-merge content
+    and staging it, leaving MERGE_HEAD present but the index clean (`git
+    diff --cached` empty against HEAD), so require-code-review.sh takes its
+    empty-staged-diff early exit. Matches build_conflicted_cherry_pick's own
+    resolve_to_head."""
     base_branch = _current_branch(repo)
     target = _seed_tracked_file(repo, file_name)
     _run_git(repo, "checkout", "-qb", "theirs")
@@ -984,16 +1068,87 @@ def build_conflicted_merge(repo: Path, *, file_name: str = "f") -> str:
         f"expected merge conflict, got: {result.stdout}{result.stderr}"
     )
     assert (absolute_git_dir(repo) / "MERGE_HEAD").exists(), "merge did not leave MERGE_HEAD"
+    if resolve_to_head:
+        target.write_text("ours-edit\n")
+        _run_git(repo, "add", file_name)
     return theirs_oid
 
 
-def build_conflicted_cherry_pick(repo: Path, *, file_name: str = "f") -> str:
+def build_conflicted_merge_with_clean_addition(
+    tmp_path: Path,
+    *,
+    conflict_file: str = "f",
+    clean_file: str = "clean.txt",
+    clean_content: str = "clean\n",
+) -> Path:
+    """Build a conflicted merge of origin's default branch into a clone, where
+    upstream edits `conflict_file` and separately adds `clean_file`. The local
+    side never touches `clean_file`, so it merges in unchanged and its content
+    is contributed entirely by MERGE_HEAD, not by any novel resolution.
+    MERGE_HEAD is reachable from refs/remotes/origin/<default>, so
+    _lib_gate_diff_base resolves a non-empty base whose diff omits
+    `clean_file` while the HEAD-relative diff contains it. The conflict is
+    left unresolved. Returns the clone's path.
+
+    Callers resolve `conflict_file`, stage it, and call
+    assert_brought_in_file_hidden_from_gate_base before relying on that
+    base/HEAD split."""
+    bare, clone = bare_remote_with_default_branch(tmp_path, file_name=conflict_file)
+    push_conflicting_edit_to_origin(tmp_path, bare, conflict_file, "origin-edit\n")
+    push_conflicting_edit_to_origin(tmp_path, bare, clean_file, clean_content)
+    (clone / conflict_file).write_text("ours-edit\n")
+    _run_git(clone, "add", conflict_file)
+    _run_git(clone, "commit", "-qm", f"ours edits {conflict_file}")
+    _run_git(clone, "fetch", "-q", "origin")
+    result = subprocess.run(
+        ["git", "merge", "-q", "origin/main"], cwd=clone, capture_output=True, text=True
+    )
+    assert result.returncode != 0, (
+        f"expected merge conflict, got: {result.stdout}{result.stderr}"
+    )
+    assert (absolute_git_dir(clone) / "MERGE_HEAD").exists(), "merge did not leave MERGE_HEAD"
+    return clone
+
+
+def assert_brought_in_file_hidden_from_gate_base(repo: Path, file_name: str) -> None:
+    """Precondition for a test that a commit scanner does not narrow to the
+    novel-content base: `_lib_gate_diff_base` resolves a non-empty base, the
+    base-relative staged diff omits `file_name`, and the HEAD-relative staged
+    diff contains it. A scanner diffing against that base would therefore
+    miss anything present only in `file_name`."""
+    base_result = subprocess.run(
+        ["bash", "-c", f'. {_LIB_SH}; _lib_gate_diff_base "$1"', "bash", str(repo)],
+        capture_output=True, text=True, check=False,
+    )
+    base = base_result.stdout.strip()
+    assert base_result.returncode == 0 and base, (
+        f"precondition failed: _lib_gate_diff_base returned no base: {base_result.stderr}"
+    )
+    base_relative = _run_git(repo, "diff", "--cached", "--name-only", base).split()
+    head_relative = _run_git(repo, "diff", "--cached", "--name-only").split()
+    assert file_name not in base_relative, (
+        f"precondition failed: {file_name} is in the base-relative diff: {base_relative}"
+    )
+    assert file_name in head_relative, (
+        f"precondition failed: {file_name} is missing from the HEAD-relative diff: {head_relative}"
+    )
+
+
+def build_conflicted_cherry_pick(
+    repo: Path, *, file_name: str = "f", resolve_to_head: bool = False
+) -> str:
     """Build a real conflicted cherry-pick inside `repo`: branch "source"
     off the checked-out branch, commit a conflicting edit to `file_name` on
     each side, then `git cherry-pick` the source commit back onto the
     original branch. Leaves CHERRY_PICK_HEAD and unresolved conflict
     markers staged. Returns the cherry-picked commit's oid -- CHERRY_PICK_HEAD's
-    expected content."""
+    expected content.
+
+    resolve_to_head=True (opt-in; default False) additionally resolves the
+    conflict by writing `file_name` back to HEAD's own pre-cherry-pick
+    content and staging it, leaving CHERRY_PICK_HEAD present but the index
+    clean (`git diff --cached` empty against HEAD), so require-code-review.sh
+    takes its empty-staged-diff early exit."""
     base_branch = _current_branch(repo)
     target = _seed_tracked_file(repo, file_name)
     _run_git(repo, "checkout", "-qb", "source")
@@ -1012,6 +1167,9 @@ def build_conflicted_cherry_pick(repo: Path, *, file_name: str = "f") -> str:
         f"expected cherry-pick conflict, got: {result.stdout}{result.stderr}"
     )
     assert (absolute_git_dir(repo) / "CHERRY_PICK_HEAD").exists(), "cherry-pick did not leave CHERRY_PICK_HEAD"
+    if resolve_to_head:
+        target.write_text("base-edit\n")
+        _run_git(repo, "add", file_name)
     return source_oid
 
 
@@ -1021,7 +1179,12 @@ def build_conflicted_revert(repo: Path, *, file_name: str = "f") -> str:
     `git revert A`. Reverting the tip essentially never conflicts, so this
     three-commit shape is required to exercise the conflicting case. Leaves
     REVERT_HEAD and unresolved conflict markers staged. Returns commit A's
-    oid -- REVERT_HEAD's expected content."""
+    oid -- REVERT_HEAD's expected content. Commit A is an ancestor of HEAD
+    by construction here (a genuine revert always reverts its own history),
+    so REVERT_HEAD reaches the HEAD trust anchor -- unlike
+    build_conflicted_cherry_pick's/build_conflicted_merge's own default
+    fork-branch shape. See build_conflicted_revert_of_unmerged_commit for
+    the unreached-anchor counterpart."""
     target = _seed_tracked_file(repo, file_name)
     target.write_text("A-edit\n")
     _run_git(repo, "add", file_name)
@@ -1038,6 +1201,50 @@ def build_conflicted_revert(repo: Path, *, file_name: str = "f") -> str:
     )
     assert (absolute_git_dir(repo) / "REVERT_HEAD").exists(), "revert did not leave REVERT_HEAD"
     return commit_a
+
+
+def build_conflicted_revert_of_unmerged_commit(
+    repo: Path, *, file_name: str = "f", resolve_to_head: bool = False
+) -> str:
+    """Build a real conflicted revert of a commit that never merged into
+    `repo`'s checked-out branch: branch "source" off the checked-out
+    branch, commit a conflicting edit to `file_name` on each side, then
+    `git revert` the source commit's oid from the checked-out branch.
+    Unlike build_conflicted_revert's own linear-history shape (where the
+    reverted commit is always an ancestor of HEAD), REVERT_HEAD here
+    reaches no trusted anchor -- the same property
+    build_conflicted_cherry_pick's default shape gives CHERRY_PICK_HEAD.
+    Leaves REVERT_HEAD and unresolved conflict markers staged. Returns the
+    source commit's oid -- REVERT_HEAD's expected content.
+
+    resolve_to_head=True additionally resolves the conflict by writing
+    `file_name` back to HEAD's own pre-revert content and staging it,
+    leaving REVERT_HEAD present but the index clean (`git diff --cached`
+    empty against HEAD), so require-code-review.sh takes its empty-staged-diff
+    early exit. Matches build_conflicted_merge's and
+    build_conflicted_cherry_pick's own resolve_to_head."""
+    base_branch = _current_branch(repo)
+    target = _seed_tracked_file(repo, file_name)
+    _run_git(repo, "checkout", "-qb", "source")
+    target.write_text("source-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"source edits {file_name}")
+    source_oid = _run_git(repo, "rev-parse", "HEAD").strip()
+    _run_git(repo, "checkout", "-q", base_branch)
+    target.write_text("base-edit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"base edits {file_name}")
+    result = subprocess.run(
+        ["git", "revert", "--no-edit", source_oid], cwd=repo, capture_output=True, text=True
+    )
+    assert result.returncode != 0, (
+        f"expected revert conflict, got: {result.stdout}{result.stderr}"
+    )
+    assert (absolute_git_dir(repo) / "REVERT_HEAD").exists(), "revert did not leave REVERT_HEAD"
+    if resolve_to_head:
+        target.write_text("base-edit\n")
+        _run_git(repo, "add", file_name)
+    return source_oid
 
 
 def build_conflicted_revert_with_clean_gated_removal(
@@ -1157,6 +1364,43 @@ def resolve_conflicted_rebase(
     `git rebase --continue`."""
     (repo / file_name).write_text(resolution)
     _run_git(repo, "add", file_name)
+
+
+def build_noconflict_rebase_edit_stop(repo: Path, *, file_name: str = "f") -> None:
+    """Build a real, conflict-free interactive rebase paused at an `edit`
+    step: mark the tip commit `edit` via GIT_SEQUENCE_EDITOR (no
+    interactivity, fully agent-controlled), stopping at rebase-merge/ with
+    REBASE_HEAD set and no conflict at all. The rebase carve-out's command-
+    shape exemption covers this pause point too: staging an unrelated file
+    here and running `git rebase --continue` with no separate `git commit`
+    silently folds it into the replayed commit, invisible to any check
+    keyed on a literal `git commit` match. Returns control with the rebase
+    paused and nothing staged -- the caller decides what to stage before
+    continuing."""
+    _seed_tracked_file(repo, file_name)
+    target = repo / file_name
+    target.write_text("tip-commit\n")
+    _run_git(repo, "add", file_name)
+    _run_git(repo, "commit", "-qm", f"tip commit on {file_name}")
+    env = dict(os.environ)
+    # Rewrites the todo list's sole "pick" line to "edit" -- one commit is
+    # being replayed (HEAD onto its own immediate parent), so line 1 is the
+    # only line. `-i.bak` is portable across BSD and GNU sed (both accept a
+    # suffix with no space before it).
+    env["GIT_SEQUENCE_EDITOR"] = "sed -i.bak -e '1s/^pick/edit/'"
+    result = subprocess.run(
+        ["git", "rebase", "-i", "HEAD~1"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, (
+        f"expected the edit stop to pause cleanly (no conflict), got: {result.stdout}{result.stderr}"
+    )
+    gitdir = repo / ".git"
+    assert (gitdir / "rebase-merge").is_dir(), "rebase did not leave rebase-merge/"
+    assert (gitdir / "REBASE_HEAD").exists(), "rebase did not leave REBASE_HEAD"
 
 
 def build_octopus_merge_conflict(repo: Path, *, file_name: str = "f") -> None:
@@ -1590,14 +1834,7 @@ def init_ci_detect_step_test_repo(
     tmp_path: Path, second_commit_files: dict[str, str]
 ) -> tuple[Path, str, str]:
     """Build a throwaway two-commit git repo; return (repo, base_sha, head_sha)."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "README.md").write_text("initial\n")
-    subprocess.run(["git", "add", "."], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repo, check=True)
+    repo = init_git_repo_with_commit(tmp_path / "repo", file_name="README.md", content="initial\n")
     base_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
     ).stdout.strip()
@@ -1729,12 +1966,16 @@ def build_path_without(binary: str, farm_dir: Path) -> str:
     return path_str
 
 
-# Shims out `realpath -m` and `grealpath -m` so _lib_realpath_m falls back to
-# its walked-ancestor loop -- shared by every hook test that needs to force
-# that fallback path, prepended to the real PATH rather than replacing it so
-# the hook's other tool lookups (jq, git, timeout, etc.) still resolve
-# normally.
-FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
+# -- Forced-fallback realpath shim -------------------------------------------
+#
+# Forces _lib_realpath_m's native `-m` fast path to fail (so a call falls
+# through to the manual ancestor-walk fallback) by shadowing `realpath` on
+# PATH. A non-`-m` invocation still execs the real binary, so the fallback
+# loop's own `realpath --` lookups keep working. Shared by test_lib.py's
+# TestLibRealpathM and test_ask_review_permissions.py, both of which force
+# the same fast-path failure for the same reason.
+
+_FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
     #!/bin/bash
     if [ "$1" = "-m" ]; then
       echo "realpath: illegal option -- m" >&2
@@ -1742,7 +1983,7 @@ FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
     fi
     exec /bin/realpath "$@"
 """)
-FORCED_FALLBACK_GREALPATH_SHIM = textwrap.dedent("""\
+_FORCED_FALLBACK_GREALPATH_SHIM = textwrap.dedent("""\
     #!/bin/bash
     echo "grealpath: illegal option -- m" >&2
     exit 1
@@ -1753,11 +1994,27 @@ def build_no_realpath_m_path_env(tmp_path: Path) -> str:
     """Build a PATH value with realpath -m and grealpath -m shimmed out."""
     shim_dir = tmp_path / "realpath_shim"
     shim_dir.mkdir(exist_ok=True)
-    (shim_dir / "realpath").write_text(FORCED_FALLBACK_REALPATH_SHIM)
+    (shim_dir / "realpath").write_text(_FORCED_FALLBACK_REALPATH_SHIM)
     (shim_dir / "realpath").chmod(0o755)
-    (shim_dir / "grealpath").write_text(FORCED_FALLBACK_GREALPATH_SHIM)
+    (shim_dir / "grealpath").write_text(_FORCED_FALLBACK_GREALPATH_SHIM)
     (shim_dir / "grealpath").chmod(0o755)
     return f"{shim_dir}:{os.environ['PATH']}"
+
+
+def _forced_fallback_path_env(tmp_path: Path) -> str:
+    """Build a PATH whose `realpath` is the forced-fallback shim
+    (`_FORCED_FALLBACK_REALPATH_SHIM`), ahead of /usr/bin:/bin. The shim dir
+    is placed first specifically to exclude any `grealpath` the host might
+    also have on a wider PATH -- `command -v grealpath` succeeding would
+    skip the fallback branch this exists to force. Shared by
+    test_ask_review_permissions.py and test_lib.py's `_run_realpath_m`,
+    both of which force the same fast-path failure for the same reason."""
+    shim_dir = tmp_path / "realpath_shim"
+    shim_dir.mkdir(exist_ok=True)
+    shim = shim_dir / "realpath"
+    shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
+    shim.chmod(0o755)
+    return f"{shim_dir}:/usr/bin:/bin"
 
 
 # -- Scaled timeout(1) shim for cap-boundary tests ---------------------------

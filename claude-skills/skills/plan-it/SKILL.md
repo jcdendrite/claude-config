@@ -26,7 +26,7 @@ If `.claude/plans/<topic-slug>.md` already exists, open it for revision in place
 
 ## Step 2 — Discovery
 
-Restate the problem, why now, and the intended outcome in one short paragraph. If any of the three is unclear, ask the user before moving on. This becomes the lead of the plan's **Context** section, with the first sentence stating the goal.
+Restate the problem, why now, and the intended outcome in one short paragraph. If any of the three is unclear, ask the user before moving on. This becomes the lead of the plan's **Context** section, with the first sentence stating the goal. Under the goal sentence, add an `Ask:` line: what the engineer asked for, quoted under Step 5's `[engineer-verified]` rules, or cited to the ticket it came from. Wording the session drafted and the engineer accepted goes in as `Ask: "<wording>" — accepted via label "<label>"`. When the engineer widens the request later, append their words to that line as a further quote. `/plan-review` measures the plan against this line.
 
 ## Step 2.5 — Load project-specific layer
 
@@ -107,9 +107,9 @@ See `plan-it/REFERENCES.md` for a worked example and the full grammar rationale.
 
 Write the plan with these sections:
 
-1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal)
+1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal, then Step 2's `Ask:` line)
 2. **Approach** — chosen design with rationale; note alternatives considered and why they were set aside (inline in this section, not a separate block). Lead with the concluded design in one or two plain-language sentences before the assumption ledger — the ledger is supporting detail for diffing against a later revision, not the reader's entry point.
-3. **Critical files** — paths to create/modify, with **reuse opportunities** (existing functions/utilities to call rather than reimplement). When the work changes no repository file — an audit, a status assessment — write `None` plus what the deliverable is instead; that's a real result Step 7 acts on, not a gap to fill with speculative paths.
+3. **Critical files** — paths to create/modify, with **reuse opportunities** (existing functions/utilities to call rather than reimplement). When the work changes no repository file — an audit, a status assessment — write `None` plus what the deliverable is instead; that's a real result Step 7 acts on, not a gap to fill with speculative paths. Name every file the diff will touch, tests and docs included: once approved, this list is the change's file limit. A file added after approval needs the engineer's answer first. The session then adds it to the list itself, with its own `[engineer-verified: "<quote>"]` row or, if it widens the Ask, on the Ask line.
 4. **Verification** — name the project's own documented test command scoped to the diff; reach for a whole-suite invocation only where the project documents that as the command for the case
 5. **Out of scope** — only if scope creep was observed
 
@@ -120,8 +120,6 @@ Effort sections optional; if present, describe review surface (file count, domai
 Invoke `/plan-review` against the written plan file. Address any findings before presenting the plan to the user.
 
 **If plan mode is active:** after `/plan-review` is clean and findings are addressed, call `ExitPlanMode` to request approval. The harness shows the plan file's contents in the approval UI; do not also ask conversationally.
-
-**Draft-PR handoff for design-doc or cross-team contract changes.** If the plan introduces a new design document (e.g., a new file under `docs/design/`) or defines a cross-team data contract (a schema shape, enum, or API surface that downstream teams or analytical pipelines depend on), after `ExitPlanMode` is approved and the plan + doc are committed on the implementation branch, push the branch and open a **draft** PR before starting implementation. Async comments on the rendered diff are easier to thread than prose in a plan file, and downstream reviewers may need lead time. Skip this for plans that are implementation-only (no new design doc, no cross-team contract).
 
 ## Step 7 — Commit or unwind the plan, then choose where implementation runs
 
@@ -136,8 +134,23 @@ out of `.claude/plans/`, remove the branch and worktree created for
 it, and route the narrative through the project's own tracker or
 documentation tool (see that project's `CLAUDE.md`, or ask the
 engineer if undocumented) — the review still counts, it just ships as
-findings rather than a commit. Stop here — the choice below is about
+findings rather than a commit. Tell the engineer where the plan file moved,
+because the path /plan-review gave no longer resolves. Stop here — the choice below is about
 where implementation runs, and there is none.
+
+**Sharing the plan.** This applies only on the branch where the plan file was committed above. Share the plan with the engineer by the plan file's own absolute path. Never open a PR, draft or ready, at plan time. When the plan adds a design document or defines a cross-team contract (a schema shape, enum, or API surface other teams or pipelines depend on), readers outside this session may need lead time, so offer to push the branch with no PR:
+
+- Ask the engineer through `AskUserQuestion`, not a closing chat question.
+- Resolve `gh pr view`, the visibility check, and `gh browse` against the repository that the push URL names (`--repo OWNER/REPO`).
+- Ask only when the branch is not the default branch and `gh pr view` finds no PR for it (a non-zero exit counts as no PR), since a push to a branch with a PR needs `/ready-for-review` first.
+- The question names that remote's push URL from `git remote get-url --push <remote>` with any userinfo (`user:token@`) stripped.
+- The question also names the commits that push would publish to that remote, and whether the repository is public.
+- State the visibility as unknown, and treat it as public, when the host cannot confirm it.
+- No answer means no push.
+- Push only after a yes, with an explicit `git push --no-follow-tags <remote> <branch>`.
+- A yes covers only that remote, that branch, and those commits.
+- Autonomous shipping does not waive the question.
+- After a yes and the push, give the plan file's URL from `gh browse <repo-relative plan path> --branch <branch> --no-browser`, and give other readers that URL, not the local path.
 
 Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`, following `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for how to read its result: hand off when it says the session is past its threshold. When the check can't resolve a measurement (`"status":"cannot-resolve"` or `"status":"schema-drift"`), say the estimate is unavailable, name the `reason`, and fall back to judgment: the plan boundary is itself a natural seam, weighed against how much of the plan remains.
 

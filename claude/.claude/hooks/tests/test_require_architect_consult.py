@@ -13,6 +13,7 @@ from helpers import (
     architect_consult_latch_path,
     assert_cap_engaged,
     bash_input,
+    init_git_repo_with_commit,
     reviewer_round_state_value,
     run_hook,
     run_hook_reason,
@@ -27,13 +28,7 @@ REVIEWER_PERSONA = "staff-backend-engineer"
 
 
 def _init_repo(repo: Path) -> None:
-    repo.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "f.txt").write_text("first\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    init_git_repo_with_commit(repo, branch="main", content="first\n")
 
 
 def _stage_change(repo: Path, content: str) -> None:
@@ -167,7 +162,7 @@ class TestRequireArchitectConsult:
         failures — the property under test is bounded latency, not a
         decision flip.
 
-        The hook's first jq call (_lib_parse_tool_input_or_deny's six-field
+        The hook's first jq call (_lib_parse_tool_input_or_deny's shared
         extraction) is already _lib_jq-wrapped and would itself resolve
         within budget on an always-hung jq, which would pass this test even
         if the second call (subagent_type, this test's actual target) were

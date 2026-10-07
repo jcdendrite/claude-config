@@ -45,6 +45,8 @@ from .conftest import _seed_session
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 PR_DIFF_SCRIPT = SCRIPTS_DIR / "pr-diff-against-base.sh"
+# Paired literal: PLAN_REVIEW_COVERED_PATH_PREFIX in marker.sh.
+PLAN_REVIEW_COVERED_PATH_PREFIX = "plan-review marker covers: "
 # A plugin hook cannot source the stowed claude/.claude/hooks/_lib.sh, so
 # require-skill-review.sh lives under plugins/, not claude/.claude/hooks/,
 # unlike every other hook this file references.
@@ -519,6 +521,25 @@ class TestMarkerScriptSessionIdValidation:
         assert canary.read_text() == CANARY_CONTENT
 
 
+def _skip_unless_en_us_collation_differs_from_c() -> None:
+    """Without a working en_US.UTF-8 locale the runner sorts in C order anyway,
+    so the locale-sort test could not catch a dropped LC_ALL=C pin."""
+    probe = subprocess.run(
+        ["sort"],
+        input="B\na\n",
+        capture_output=True,
+        text=True,
+        env={**os.environ, "LC_ALL": "en_US.UTF-8", "LC_COLLATE": "en_US.UTF-8"},
+        check=False,
+    )
+    assert probe.returncode == 0, probe.stderr
+    if probe.stdout.splitlines() != ["a", "B"]:
+        pytest.skip(
+            "LC_ALL=en_US.UTF-8 did not change `sort` order on this runner, "
+            "so the LC_ALL=C pin is invisible here."
+        )
+
+
 class TestMarkerScriptHappyPath:
     """Smoke-test that each subcommand writes/removes the expected file when
     the session file is present."""
@@ -552,6 +573,137 @@ class TestMarkerScriptHappyPath:
         assert content != "reviewed"
         assert re.fullmatch(r"[0-9a-f]{64}", content), (
             f"expected a sha256 hex digest, got {content!r}"
+        )
+
+    def test_write_plan_review_prints_absolute_path_of_untracked_plan(
+        self, isolated_home, git_repo
+    ):
+        _seed_session(isolated_home, self.SID)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+
+        result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == (
+            f"{PLAN_REVIEW_COVERED_PATH_PREFIX}{git_toplevel(git_repo)}/.claude/plans/p.md\n"
+        )
+
+    def test_write_plan_review_prints_paths_in_c_locale_sort_order(
+        self, isolated_home, git_repo
+    ):
+        """`B.md` sorts before `a.md` under LC_ALL=C but after it under most
+        locales, so a locale-dependent sort would flip the two lines."""
+        _skip_unless_en_us_collation_differs_from_c()
+        _seed_session(isolated_home, self.SID)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "B.md").write_text("# upper\n")
+        (plans_dir / "a.md").write_text("# lower\n")
+
+        result = _run(
+            ["write", "plan-review"],
+            cwd=git_repo,
+            home=isolated_home,
+            extra_env={"LC_ALL": "en_US.UTF-8", "LC_COLLATE": "en_US.UTF-8"},
+        )
+
+        assert result.returncode == 0, result.stderr
+        toplevel = git_toplevel(git_repo)
+        assert result.stdout.splitlines() == [
+            f"{PLAN_REVIEW_COVERED_PATH_PREFIX}{toplevel}/.claude/plans/B.md",
+            f"{PLAN_REVIEW_COVERED_PATH_PREFIX}{toplevel}/.claude/plans/a.md",
+        ]
+
+    def test_write_plan_review_prints_nothing_without_plans_directory(
+        self, isolated_home, git_repo
+    ):
+        _seed_session(isolated_home, self.SID)
+
+        result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_write_plan_review_prints_nothing_for_committed_unmodified_plan(
+        self, isolated_home, git_repo
+    ):
+        _seed_session(isolated_home, self.SID)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+        subprocess.run(["git", "add", ".claude/plans/p.md"], cwd=git_repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "ship the plan"], cwd=git_repo, check=True)
+
+        result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_write_plan_review_prints_nothing_in_plan_mode(self, isolated_home, git_repo):
+        """The plan-mode arm hashes the declared target and never announces a
+        repo plan that the marker does not cover."""
+        _seed_session(isolated_home, self.SID)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+        planmode_target = git_repo.parent / "planmode-target.md"
+        planmode_target.write_text("# harness plan\n")
+        planmode_sibling = (
+            isolated_home / ".claude" / ".plan-review-active.d" / f"{self.SID}.planmode-path"
+        )
+        planmode_sibling.parent.mkdir(parents=True)
+        planmode_sibling.write_text(str(planmode_target))
+
+        result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_write_plan_review_prints_nothing_when_marker_write_fails(
+        self, isolated_home, git_repo
+    ):
+        """A failed redirect must keep its non-zero status and must not
+        announce a path for a marker that was never recorded."""
+        _seed_session(isolated_home, self.SID)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "p.md").write_text("# plan\n")
+        marker_dir = isolated_home / ".claude" / "plan-review-markers"
+        marker_dir.mkdir(parents=True)
+        marker_dir.chmod(0o500)
+        try:
+            result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+        finally:
+            marker_dir.chmod(0o755)
+
+        assert result.returncode != 0
+        assert PLAN_REVIEW_COVERED_PATH_PREFIX not in result.stdout
+
+    def test_write_plan_review_printed_paths_reproduce_the_marker_hash(
+        self, isolated_home, git_repo
+    ):
+        """The announced set is the set the marker hashed, not a separately
+        derived list."""
+        _seed_session(isolated_home, self.SID)
+        plans_dir = git_repo / ".claude" / "plans"
+        plans_dir.mkdir(parents=True)
+        (plans_dir / "one.md").write_text("# one\n")
+        (plans_dir / "two.md").write_text("# two\n")
+
+        result = _run(["write", "plan-review"], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        toplevel = git_toplevel(git_repo)
+        printed_relative_paths = [
+            line.removeprefix(PLAN_REVIEW_COVERED_PATH_PREFIX).removeprefix(f"{toplevel}/")
+            for line in result.stdout.splitlines()
+        ]
+        marker = plan_review_marker_path(isolated_home, git_repo, self.SID)
+        assert marker.read_text().strip() == _active_plan_hash_oracle(
+            git_repo, printed_relative_paths
         )
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
@@ -588,6 +740,7 @@ class TestMarkerScriptHappyPath:
         assert marker.read_text() == good_content, (
             "a failed write must not truncate or alter the existing marker"
         )
+        assert PLAN_REVIEW_COVERED_PATH_PREFIX not in result.stdout
 
     def test_activate_creates_active_marker_with_pid(self, isolated_home, git_repo):
         """activate must write the Claude session PID to the active.d file body
@@ -1998,6 +2151,12 @@ class TestMarkerScriptMergeAwarePlanReviewBase:
         result = _run(["write", "plan-review"], cwd=repo, home=isolated_home)
         assert result.returncode == 0, result.stderr
 
+        # The printed set is the hashed set: one line naming the local-edit plan.
+        printed_lines = result.stdout.splitlines()
+        assert printed_lines == [
+            f"{PLAN_REVIEW_COVERED_PATH_PREFIX}{git_toplevel(repo)}/.claude/plans/p.md"
+        ]
+
         assert (
             run_hook(
                 HOOKS_DIR / "require-plan-review.sh",
@@ -2028,6 +2187,9 @@ class TestMarkerScriptMergeAwarePlanReviewBase:
             "an empty active set must leave no non-empty or base-bound marker "
             f"value for this session/repo, got {held_value!r}"
         )
+        # The print re-enumerates with the hash's own base, so no path is
+        # announced for a plan the marker did not hash.
+        assert result.stdout == ""
         # No run_hook allow-check here: with an empty active set the hook
         # exits before reading any marker (require-plan-review.sh ~:241), so
         # such a check observes nothing about this test's write side and is

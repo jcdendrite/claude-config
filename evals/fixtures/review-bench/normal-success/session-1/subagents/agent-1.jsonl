@@ -1,0 +1,2 @@
+{"type": "assistant", "message": {"model": "claude-sonnet-5", "content": [{"type": "tool_use", "id": "toolu_read_1", "name": "Read", "input": {"file_path": "changed_file.py"}}, {"type": "text", "text": "Finding: file:1 looks fine."}]}}
+{"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_read_1", "content": "def f():\n    return 1\n"}]}}

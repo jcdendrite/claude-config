@@ -49,7 +49,7 @@ _LOCK_HOLD_SECONDS = 3
 _EARLY_RETURN_CEILING_SECONDS = 1.5
 
 
-# RETRIES=5 mirrors review-ledger.sh's _LEDGER_LOCK_RETRIES and
+# RETRIES=5 mirrors _lib.sh's _LIB_APPEND_LOCK_RETRIES and
 # orchestrator-checkpoint.sh's _CHECKPOINT_LOCK_RETRIES -- the shared
 # function takes RETRIES as its 4th, caller-supplied argument rather than
 # defaulting it internally.

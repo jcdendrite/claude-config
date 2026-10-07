@@ -64,6 +64,7 @@ from helpers import (
     assert_cap_engaged,
     bash_input,
     build_path_without,
+    init_git_repo_with_commit,
     run_hook,
     scaled_shim_sleep,
     write_input,
@@ -909,6 +910,13 @@ _SELF_FILTERING_BASH_GATES: tuple[str, ...] = (
     "deny-pii-in-commits.sh",
     "require-ready-for-review.sh",
     "enforce-marker-script-shape.sh",
+    "deny-invisible-commit-content.sh",
+    # Carry no "Bash(git commit *)" `if`; each self-filters on its own
+    # in-body commit-shape matcher.
+    "require-code-review.sh",
+    "guard-settings-session-keys.sh",
+    "check-skill-length.sh",
+    "check-claude-md-length.sh",
 )
 
 
@@ -935,6 +943,43 @@ def test_self_filtering_bash_gate_has_no_if_matcher(hook_name: str) -> None:
         )
 
 
+def test_skill_management_gate_has_no_if_matcher() -> None:
+    """The plugin's skill-review gate self-filters on its in-body
+    commit-shape predicate, so its hooks.json entry carries no `if` key.
+    Declared-config check only, same limit as
+    test_self_filtering_bash_gate_has_no_if_matcher."""
+    hook = _REPO_ROOT / "plugins" / "skill-management" / "hooks" / "require-skill-review.sh"
+    entries = _pretooluse_entries_for(hook)
+    assert entries, f"{hook.name}: expected at least one PreToolUse entry"
+    for entry in entries:
+        assert "if" not in entry, (
+            f"{hook.name}: PreToolUse entry carries an 'if' key "
+            f"({entry.get('if')!r}) — this gate's header declares "
+            f"unconditional dispatch"
+        )
+
+
+@pytest.mark.parametrize(
+    ("plugin_name", "hook_name"),
+    [
+        ("plugin-semver", "require-plugin-version-bump.sh"),
+        ("npm-semver", "require-npm-version-bump.sh"),
+    ],
+)
+def test_version_bump_plugin_gate_keeps_its_commit_if_matcher(
+    plugin_name: str, hook_name: str
+) -> None:
+    """The version-bump plugins' gates dispatch on a literal `Bash(git commit *)` `if` filter."""
+    hook = _REPO_ROOT / "plugins" / plugin_name / "hooks" / hook_name
+    entries = _pretooluse_entries_for(hook)
+    assert entries, f"{hook_name}: expected at least one PreToolUse entry"
+    for entry in entries:
+        assert entry.get("if") == "Bash(git commit *)", (
+            f"{hook_name}: expected its `Bash(git commit *)` `if` filter, "
+            f"got {entry.get('if')!r}"
+        )
+
+
 # ------------------------------------------------------------------ #
 # Layer 1 — Static checks                                            #
 # ------------------------------------------------------------------ #
@@ -955,10 +1000,6 @@ _BARE_JQ_EXEMPT_HOOKS: dict[str, str] = {
 # at this hook stays unconverted rather than routed through
 # _lib_command_invokes_tool_subcmd / _lib_fragment_invokes_git.
 _INLINE_COMMAND_MATCHER_EXEMPT_HOOKS: dict[str, str] = {
-    "enforce-marker-script-shape.sh": (
-        "raw-text arm OR-combined with _lib_command_invokes_tool_subcmd per "
-        "that hook's own dual-detection design"
-    ),
     "require-ready-for-review.sh": (
         "whole-fragment scan retained so a bash -c/eval wrapper stays "
         "covered, matching the git arm above. Cost: a flag interposed "
@@ -2588,12 +2629,7 @@ def test_blocks_when_jq_absent_with_valid_payload(hook: Path, _path_without) -> 
 
 
 def _init_repo_with_commit(repo: Path) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
-    (repo / "file.txt").write_text("first\n")
-    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    init_git_repo_with_commit(repo, file_name="file.txt", content="first\n")
 
 
 def _sha256sum_case_code_review(tmp_path: Path) -> tuple[Path, Path, dict, str]:

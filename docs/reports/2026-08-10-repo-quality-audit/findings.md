@@ -44,6 +44,41 @@ acting on any of them.
 - Finding 4's subject has grown since the baseline: `transcript-analysis.py` is
   now 9,434 lines across 26 subcommands, against 7,823 and 25 at `eb5eae2`; its
   test file is 15,360 lines, against 12,673.
+- As of 2026-09-27:
+  - **Findings 2 and 3 are Fixed**, superseding this section's own "no other
+    finding had been actioned as of `293ccf3`" claim above, per
+    `docs/reports/2026-08-22-discovery-audit/findings.md` § "Baseline reconciliation — prior report's 8 findings (27 sub-units) at `6291b343`".
+    Backlog phase 6, which findings 2 and 3 cover, landed incidentally in a CI
+    workflow restructuring with no dedicated PR.
+  - **Finding 7's 7c, 7e, and 7h sub-items are Fixed**, per
+    `docs/reports/2026-08-22-discovery-audit/findings.md` § "Baseline reconciliation — prior report's 8 findings (27 sub-units) at `6291b343`".
+  - **Finding 4's guard-message residual is Fixed**:
+    `claude/.claude/scripts/tests/test_transcript_analysis.py:335` now pins the literal
+    `"use that instead: transcript-analysis.py cost --config-dir PATH"`.
+  - **The eleven sub-units still open at the 2026-08-22 reconciliation are now
+    tracked across eight issues.**
+    - Finding 4: #1116 (phase 4a folded into #1116's co-move design, not
+      tracked standalone)
+    - Finding 7b: #1117
+    - Finding 7a: #1137
+    - Finding 7d: #1138
+    - Findings 5a, 5b, and 5c: #1139
+    - Finding 6: #1140
+    - Findings 7f and 7g: #1141
+    - Finding 7i: #1142
+  - **#619 is retired**: its body was rewritten as a pointer list to the eight
+    tracking issues above, and it was closed as "not planned" on 2026-09-27.
+  - **2026-09-27 re-check against `origin/main` at `0d155589`** (newer than the
+    2026-08-22 reconciliation's `6291b343` baseline) found epic #1113 ("Review
+    quality: reviewer read methodology and oversized code files"), filed
+    2026-09-26. #1116 and #1117, two of its children, already covered finding 4
+    and finding 7b before #1137–#1142 were filed.
+  - **That re-check also found partial progress on two sub-units**, reflected
+    in the narrower scope of #1137 and #1139 above rather than in a corrected
+    reconciliation table. 7a's `_lib_repo_root()` helper now exists in
+    `_lib.sh` (added in #867), but no hook yet routes through it. 5c's
+    `docs/hooks.md` tier table now covers two of the three previously
+    undocumented hooks, leaving `consume-migration-token.sh` undocumented.
 
 ## Why this audit ran
 

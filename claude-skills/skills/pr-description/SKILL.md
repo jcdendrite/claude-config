@@ -36,7 +36,13 @@ not something you can resolve. If none match, proceed without a layer.
 
 - **What and why.** What change is being made — summarized so the reviewer
   gets its shape without reading the whole diff — and why: the context you
-  had as the author, and decisions that are not visible in the source.
+  had as the author, and decisions that are not visible in the source. When a
+  change that reads as routine — a rename, a version bump, anything
+  cosmetic-looking — closes a real bug or risk, lead the first line of prose
+  with that risk, or a reviewer discounts the change as a nit. Never attach a
+  risk that a genuinely routine change does not close. When the why spans
+  several distinct gaps, give each gap its own line or bullet — a paragraph
+  folding them together hides how many separate problems are being closed.
 - **A first line of prose that stands alone.** The first line of prose, read after the attribution trailer below, is what a reader skimming a list of PRs sees; it has to carry the change by itself.
 - **No list of commit subjects.** A bulleted `git log` of the branch is
   chronology, not a summary: it re-narrates how the work arrived instead of
@@ -76,7 +82,7 @@ not something you can resolve. If none match, proceed without a layer.
 
 ## Cost section
 
-Machine-managed, delimited by `<!-- pr-cost:start -->` / `<!-- pr-cost:end -->` — regenerated fresh every sync, never reinserted verbatim (contrast `## Deferred review findings` below).
+Machine-managed, delimited by `<!-- pr-cost:start -->` / `<!-- pr-cost:end -->` — regenerated fresh every sync, never reinserted verbatim (contrast the review-findings block below).
 
 When the script below exits 0, its block is pre-cleared for publication (the account's `pr-cost-disclosure` sentinel is the standing approval), so embed it without asking for per-PR approval — see `docs/private-project-redaction.md` § "Publishing a tooling measurement".
 
@@ -115,15 +121,15 @@ The `Scope:` caption also prints the local branch name. See `docs/transcript-ana
 
 ## Prose tightening pass
 
-Gate: run `~/.claude/scripts/config-get.sh pr_description_tighten_prose`. On exit 0, dispatch `tighten-prose` by name against the drafted body file, leaving the cost block (`<!-- pr-cost:start -->` / `<!-- pr-cost:end -->`), the `## Deferred review findings` block, and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Exit 1 (disabled), exit 2 (unknown key), and exit 3 (config dir unresolvable) all skip the pass, failing toward off like every other config-dir-only key's resolution-failure behavior (see `docs/config-file.md`). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
+Gate: run `~/.claude/scripts/config-get.sh pr_description_tighten_prose`. On exit 0, dispatch `tighten-prose` by name against the drafted body file, leaving the cost block (`<!-- pr-cost:start -->` / `<!-- pr-cost:end -->`), the block delimited by `<!-- code-review:deferred:start -->` / `<!-- code-review:deferred:end -->`, and the attribution trailer untouched (its own carve-out rule already protects code spans, headings, identifiers, and file paths). Exit 1 (disabled), exit 2 (unknown key), and exit 3 (config dir unresolvable) all skip the pass, failing toward off like every other config-dir-only key's resolution-failure behavior (see `docs/config-file.md`). Run it after `$ARGUMENTS` is folded in and before `## Checks`, so `## Checks` validates the final tightened bytes, not pre-rewrite text.
 
 ## Checks
 
 Run every check below in both modes — against the draft in author mode,
 against the fetched body in sync mode.
 
-**Machine-managed blocks come out first.** A `## Deferred review findings`
-section delimited by `<!-- code-review:deferred:start -->` /
+**Machine-managed blocks come out first.** The review-findings block
+delimited by `<!-- code-review:deferred:start -->` /
 `<!-- code-review:deferred:end -->` is located mechanically by later
 `/code-review` runs and must survive byte-identical, delimiters included.
 Lift the delimited span out before the coherence pass and reinsert it
@@ -153,6 +159,8 @@ Markers, illustrative rather than exhaustive:
   **Current state, not branch history** above.
 - Two sections saying the same thing — a Summary bullet restating a list in
   Context. Keep it in the section where the reader looks for it.
+- A first line or Summary that leads with, or states only, the mechanical
+  change when the change closes a real bug or gap; see **What and why** above.
 - Any span a reader arriving cold would stop on and ask "what is this?"
 
 If nothing fires after a careful read, say so — naming the sections

@@ -1,9 +1,9 @@
 """Unit tests for evals/measure_subagent_model_resolution.py.
 
-All deterministic — no `claude -p` call. Fixture-based, using synthetic
+Fixture-based, using synthetic
 `subagents/*.meta.json` + paired `*.jsonl` pairs written under `tmp_path`,
 mirroring the real on-disk shape confirmed in
-claude/.claude/scripts/tests/test_transcript_analysis.py's
+claude/.claude/scripts/tests/conftest.py's
 `_write_subagent_dispatch` helper. Lives beside the harness rather than in
 claude/.claude/tests/ — that directory is stowed to every consumer of this
 repo, and this harness imports a module (measure_subagent_model_resolution)
@@ -18,7 +18,13 @@ measure_subagent_model_resolution` resolves correctly.
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import signal
 import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import measure_subagent_model_resolution as msmr
@@ -190,7 +196,7 @@ class TestParseSubagentDispatches:
         """A non-string meta.json['model'] (e.g. a list) is real-world
         corruption this harness's own docstring calls out as defended
         against — mirrors
-        test_transcript_analysis.py::test_non_string_meta_model_does_not_crash_the_run.
+        test_transcript_subagent_mix.py::TestSubagentMixModelMix::test_non_string_meta_model_does_not_crash_the_run.
         The dispatch itself is still returned (toolUseId is valid); only the
         requested-model-param read is coerced to None."""
         session_jsonl = _session_jsonl_path(tmp_path)
@@ -410,6 +416,161 @@ class TestExecuteMatrixCell:
         assert not msmr.run_skill_evals.compute_session_store_dir(launched_cwd).exists(), (
             "cleanup must remove the session store keyed on the same resolved path used for launch"
         )
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+class TestEnvironmentWithoutGitLocalVars:
+    def test_removes_every_variable_git_lists_as_repository_binding(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        listed = subprocess.run(
+            ["git", "rev-parse", "--local-env-vars"], capture_output=True, text=True, check=True,
+        ).stdout.split()
+        assert listed, "git listed no repository-binding variables"
+        for name in listed:
+            monkeypatch.setenv(name, "/decoy")
+
+        environment = msmr.environment_without_git_local_vars()
+
+        assert [name for name in listed if name in environment] == []
+
+    def test_keeps_unrelated_variables_and_git_config_that_does_not_bind_a_repository(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("GIT_DIR", "/decoy")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+        monkeypatch.setenv("UNRELATED_MARKER", "kept")
+
+        environment = msmr.environment_without_git_local_vars()
+
+        assert environment["GIT_CONFIG_GLOBAL"] == "/dev/null"
+        assert environment["UNRELATED_MARKER"] == "kept"
+        assert environment["PATH"] == os.environ["PATH"]
+        assert "GIT_DIR" not in environment
+
+
+class TestRunClaudeToCompletion:
+    """_run_claude_to_completion's timeout and cancellation contract, driven
+    against real `sh` children -- the pipe-read and process-group behavior
+    under test cannot be stubbed."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_abort_flag(self) -> None:
+        yield
+        msmr._launches_aborted.clear()
+
+    @staticmethod
+    def _is_running(pid: int) -> bool:
+        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        return bool(stat) and not stat.startswith("Z")
+
+    @staticmethod
+    def _wait_for_pid_file(pid_file: Path, *, timeout_s: float = 5.0) -> int:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if pid_file.exists() and pid_file.read_text().strip():
+                return int(pid_file.read_text())
+            time.sleep(0.02)
+        raise AssertionError(f"{pid_file} never written")
+
+    def _assert_stops_running(self, pid: int) -> None:
+        deadline = time.monotonic() + 5.0
+        while self._is_running(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not self._is_running(pid), f"pid {pid} is still running"
+
+    @staticmethod
+    def _sleeping_grandchild_command(pid_file: Path) -> list[str]:
+        """Starts a background `sleep` in the child's process group and records its pid."""
+        return ["sh", "-c", 'sleep 60 & echo $! > "$0"; wait', str(pid_file)]
+
+    def test_returns_lines_and_not_timed_out_for_a_child_that_exits(self, tmp_path: Path) -> None:
+        lines, timed_out = msmr._run_claude_to_completion(["sh", "-c", "printf 'a\\nb\\n'"], tmp_path, 10)
+        assert lines == [b"a", b"b"]
+        assert timed_out is False
+
+    def test_child_environment_drops_claudecode_and_repository_redirecting_git_variables_and_keeps_the_rest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDECODE", "1")
+        monkeypatch.setenv("GIT_DIR", str(tmp_path / "decoy.git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "decoy-work-tree"))
+        monkeypatch.setenv("GIT_INDEX_FILE", str(tmp_path / "decoy-index"))
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+        monkeypatch.setenv("LAUNCHER_ENV_UNRELATED_MARKER", "kept")
+
+        lines, _ = msmr._run_claude_to_completion(
+            ["sh", "-c", 'echo "claudecode=${CLAUDECODE-unset}"; for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE; do '
+             'if env | grep -q "^$v="; then echo "$v=present"; else echo "$v=unset"; fi; done; '
+             'echo "git_config_global=$GIT_CONFIG_GLOBAL"; echo "marker=$LAUNCHER_ENV_UNRELATED_MARKER"; '
+             'echo "path=$PATH"'],
+            tmp_path, 10,
+        )
+
+        assert lines == [
+            b"claudecode=unset", b"GIT_DIR=unset", b"GIT_WORK_TREE=unset", b"GIT_INDEX_FILE=unset",
+            b"git_config_global=/dev/null", b"marker=kept", b"path=" + os.environ["PATH"].encode(),
+        ]
+
+    def test_deadline_holds_for_a_child_that_goes_silent_below_one_read_buffer(self, tmp_path: Path) -> None:
+        start = time.monotonic()
+        lines, timed_out = msmr._run_claude_to_completion(["sh", "-c", "printf abc; sleep 30"], tmp_path, 1)
+        elapsed = time.monotonic() - start
+
+        assert timed_out is True
+        assert elapsed < 10
+        assert lines == []
+
+    def test_timeout_kills_descendants_of_the_child(self, tmp_path: Path) -> None:
+        pid_file = tmp_path / "grandchild.pid"
+
+        _, timed_out = msmr._run_claude_to_completion(self._sleeping_grandchild_command(pid_file), tmp_path, 1)
+
+        assert timed_out is True
+        self._assert_stops_running(int(pid_file.read_text()))
+
+    def test_keyboard_interrupt_kills_the_childs_process_group_and_propagates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pid_file = tmp_path / "grandchild.pid"
+
+        def interrupt_once_child_is_running(*_args: object, **_kwargs: object) -> None:
+            self._wait_for_pid_file(pid_file)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(msmr.select, "select", interrupt_once_child_is_running)
+
+        with pytest.raises(KeyboardInterrupt):
+            msmr._run_claude_to_completion(self._sleeping_grandchild_command(pid_file), tmp_path, 60)
+
+        self._assert_stops_running(int(pid_file.read_text()))
+
+    def test_abort_launches_stops_a_running_child_from_another_thread(self, tmp_path: Path) -> None:
+        pid_file = tmp_path / "grandchild.pid"
+        outcome: dict[str, msmr.LaunchAbortedError | None] = {"error": None}
+
+        def launch() -> None:
+            try:
+                msmr._run_claude_to_completion(self._sleeping_grandchild_command(pid_file), tmp_path, 60)
+            except msmr.LaunchAbortedError as exc:
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=launch)
+        worker.start()
+        grandchild_pid = self._wait_for_pid_file(pid_file)
+        msmr.abort_launches()
+        worker.join(timeout=10)
+
+        assert not worker.is_alive()
+        assert isinstance(outcome["error"], msmr.LaunchAbortedError)
+        self._assert_stops_running(grandchild_pid)
+
+    def test_launch_after_abort_raises_without_spawning(self, tmp_path: Path) -> None:
+        marker = tmp_path / "spawned"
+        msmr.abort_launches()
+
+        with pytest.raises(msmr.LaunchAbortedError):
+            msmr._run_claude_to_completion(["sh", "-c", 'touch "$0"', str(marker)], tmp_path, 10)
+
+        assert not marker.exists()
 
 
 class TestModelFamily:
@@ -874,3 +1035,30 @@ class TestBuildArgParser:
         assert args.all is True
         assert args.budget_cap_usd == 5.0
         assert args.timeout_s == 30
+
+
+class TestMainRoutesTerminationSignalsToKeyboardInterrupt:
+    """A `claude -p` child leads its own session, so a hangup never reaches it.
+    `main()` sends SIGHUP and SIGTERM down the KeyboardInterrupt path that
+    kills the child's process group."""
+
+    @pytest.mark.parametrize("signum", [signal.SIGHUP, signal.SIGTERM])
+    def test_the_signal_raises_keyboard_interrupt_once_main_has_run(self, signum, monkeypatch) -> None:
+        signal.signal(signum, signal.SIG_DFL)
+        monkeypatch.setattr(sys, "argv", ["measure_subagent_model_resolution.py", "--list"])
+
+        assert msmr.main() == 0
+
+        # Raising the signal with no handler installed would kill the pytest process.
+        assert signal.getsignal(signum) not in (signal.SIG_DFL, signal.SIG_IGN)
+        with pytest.raises(KeyboardInterrupt):
+            signal.raise_signal(signum)
+
+    def test_a_hangup_ignored_at_startup_stays_ignored_so_nohup_survives_logout(self, monkeypatch) -> None:
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        monkeypatch.setattr(sys, "argv", ["measure_subagent_model_resolution.py", "--list"])
+
+        assert msmr.main() == 0
+
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+        signal.raise_signal(signal.SIGHUP)  # a handler installed over SIG_IGN would raise here
