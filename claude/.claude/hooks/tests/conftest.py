@@ -331,8 +331,13 @@ def sed_call_counting_shim(tmp_path):
 
     Each invocation claims one of the first `fail_after` call numbers by
     creating the lowest unused numbered directory under tmp_path. `mkdir` is
-    atomic, so concurrent pipeline stages never claim the same number and
-    the first failing call is the (fail_after + 1)th sed call to claim a number.
+    atomic, so concurrent pipeline stages never claim the same number.
+
+    Calls after the first `fail_after` find no unused number and exit 1.
+
+    The failure is deterministic per call number, not per pipeline stage:
+    which of two concurrent stages gets a given number is not fixed. Use
+    `sed_split_stage_shim` to fail a specific stage.
     """
     real_sed = shutil.which("sed")
     if not real_sed:
