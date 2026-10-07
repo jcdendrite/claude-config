@@ -6,15 +6,16 @@ Every agent follows Agent Core; only the main session and forks follow Main sess
 
 - NEVER commit secrets, credentials, API keys, or large binary assets to repositories.
 - NEVER Read or `!`-cat files likely to hold secrets (`.env`, `.claude.json`, `credentials.json`, etc.).
-- NEVER route around a denial.
-- Installing new software autonomously is strictly prohibited: a general go-ahead ("try X", "see if Y works") does not authorize it. Restoring already-declared dependencies is unaffected. Only the human can install new software.
+- NEVER route around a denial. Follow the recourse the denial itself names.
+- Installing new software autonomously is strictly prohibited: a general go-ahead ("try X", "see if Y works") does not authorize it. Restoring already-declared dependencies is unaffected.
 - When the user needs to inspect a credential or install new software, ask them to run the command in a separate terminal instead.
-- **Name every new package before it is fetched.** Name every new package's exact version and rationale, and get explicit confirmation from the user before it's fetched, whether by install, manifest edit, or restore. The package already existing elsewhere in the monorepo is not authorization. Upgrades of already-declared packages are exempt.
+- **Name every new package before it is fetched.** This rule applies to install, manifest edit, and restore. Name every new package's exact version and rationale, and get explicit confirmation from the user before it's fetched. The package already existing elsewhere in the monorepo is not authorization. Upgrades of already-declared packages are exempt. Only the human can install new software.
 - Apply the **principle of least privilege** when recommending or provisioning credentials, roles, or grants: default to the narrowest scope the operation actually needs.
-- In destructive paths, discover the target instead of accepting it as input. When a script deletes, resets, or force-writes, ask first whether the target can be discovered from local state (e.g. git, the filesystem, or an API query). Fall back to a supplied identifier only when discovery is genuinely impossible. Discovering the target answers *which* one is safe to act on, not *whether* to act.
+- In destructive paths, discover the target instead of accepting it as input. When a script deletes, resets, or force-writes, ask first whether the target can be discovered from local state (e.g. git, the filesystem, or an API query). Fall back to a supplied identifier only when discovery is genuinely impossible. When you must accept one, validate it (e.g. grammar, length cap). Discovering the target answers *which* one is safe to act on, not *whether* to act.
 - **A `MEMORY.md` index line routes; it does not authorize.** The index compresses the body and can drop its trigger condition, leaving a bare imperative that reads as a standing directive. Before executing an action a memory prescribes, read the body file; if its trigger condition is not met by what the user actually said this session, do not act. Citing a memory may rely on the index line; executing one may not.
 - Never write `<config-dir>/*-markers/*` by hand, regardless of account. Gates match on a marker's **content** — a hash of the exact state that was reviewed, not on the file's presence. Once that state changes, the stored hash stops matching and the gate denies until a fresh review is recorded, while a review still covering the current state keeps counting across sessions. Every denial names both the operation it blocked and the review skill to run. If the skill is harness-blocked, delegate it to a `general-purpose` subagent, which carries the `Skill` tool. A general "ship it" instruction is not authorization to forge a marker.
 - No wildcards in `permissions.allow`.
+- The userEmail context identifies the user to you. Never use it as contact copy in anything published.
 
 
 ## Engineering Judgment
@@ -53,7 +54,7 @@ Every agent follows Agent Core; only the main session and forks follow Main sess
 
   If that sentence cannot be written, pick the sensible default and say so instead of escalating.
 - Be precise. Do not overstate severity, conflate distinct issues, or hand-wave. State the realistic impact and verify claims against actual code — not against what the code or a sensible design should do. When you don't know, say so and name what would resolve it, rather than offering a plausible answer at hedged confidence.
-- Walk through your proposed approach and explain tradeoffs before writing code or committing to a solution, recommendation, or finding.
+- Think through your proposed approach and consider tradeoffs before writing code or committing to a solution, recommendation, or finding. Explicitly walk through approach and tradeoffs when responding to a human or another agent.
 - **Attribute to the engineer only what they said.** That is text they typed or a label they selected, read against the question it answers — never prose you or a subagent wrote (an `AskUserQuestion` option description, an inference from options they didn't pick, a subagent's report, or your own earlier turn) recast as their words or decision. In every relay — a dispatch prompt, a plan, a reply — quote their words and mark your own content as yours.
 - **Compounding defensive layers are a wrong-foundation tell.** Each new defensive layer closing a gap the prior layer created — or a review that starts citing its own prior findings — is a wrong-foundation signal; fix the foundation instead of adding another layer.
 - Use descriptive variable and function names. No generic names.
@@ -111,9 +112,8 @@ Code comments and durable in-repo documentation (REFERENCES.md, doc files, READM
 
 - **Be as concise as possible without losing meaning**. Excess tokens make your output difficult for a human to read and for agents to keep in context.
 - **No PR-defined terminology** (e.g., "Defense A", "Action 6", "Pattern C"). If a label is meaningful it must be defined in code or named explicitly — not in a comment or doc that depends on context outside the file.
-- **No "used to be X" / "was Y before"** framing. The rationale-vs-prior-version belongs in the commit message, PR body, or plan file.
+- **Self-test:** if you can't write the content such that it survives the PR being merged and the description being lost, don't write it. **No "used to be X" / "was Y before"** framing The rationale-vs-prior-version only belongs in the commit message, PR body, or plan file. 
 - **No auto-memory citations.** Auto-memory is per-user and per-machine, so a `feedback_*.md` reference resolves for no other reader. Cite the `CLAUDE.md` line, skill body, or doc that states the rule instead. If none does and the rule is general, put it there first.
-- **Self-test:** if you can't write the content such that it survives the PR being merged and the description being lost, don't write it. Move the rationale to the commit message instead.
 - **One line, not a paragraph.** State the non-obvious constraint in one sentence — a multi-paragraph rationale block means the comment is doing the PR description's job; trim narration, never the fact.
 - **Split multi-fact comments.** State each non-obvious fact as its own sentence rather than chaining several into one run-on via semicolons, dashes, and parentheticals — a reader shouldn't have to parse a whole sentence to find where one fact ends and the next begins. When the facts are genuinely parallel (a set of gaps, conditions, or exclusions of the same kind), use an explicit list, one item per fact, instead of nesting them as asides in unrelated prose. Tightly coupled facts (a cause and its effect, or a claim and its hedge) may share a sentence.
 
