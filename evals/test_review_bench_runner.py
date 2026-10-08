@@ -2352,6 +2352,22 @@ class TestCountOutcomes:
         assert text == "1 ok, 2 missing (result-error x2), 2 retried"
 
 
+class TestAllRunsMissing:
+    def test_an_empty_record_list_is_not_all_missing(self) -> None:
+        assert runner.all_runs_missing([]) is False
+
+    def test_one_ok_run_among_missing_runs_is_not_all_missing(self) -> None:
+        assert runner.all_runs_missing([_outcome_record("d1", run_index=0), _missing_outcome_record("d1", 1)]) is False
+
+    def test_only_missing_runs_is_all_missing(self) -> None:
+        assert runner.all_runs_missing([_missing_outcome_record("d1", 0), _missing_outcome_record("d1", 1)]) is True
+
+    def test_a_missing_run_with_no_reason_still_counts_as_missing(self) -> None:
+        reasonless_missing = _outcome_record("d1", run_index=0, status=runner.STATUS_MISSING, missing_reason=None)
+
+        assert runner.all_runs_missing([reasonless_missing]) is True
+
+
 class TestRunCampaignSystemicFailure:
     def _campaign(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocks: dict[str, tuple[runner.RunRecord, ...]],
@@ -2605,6 +2621,27 @@ class TestRunStoreResume:
 
         assert len(swept) == 1
         assert not recorded_dir.exists()
+
+    def test_a_pending_entry_whose_directory_and_session_store_are_gone_is_returned_and_nothing_else_is_deleted(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A crash can leave a write-ahead entry whose targets were already
+        removed, and the sweep must still report the defect for a rerun
+        without raising or touching unrelated session files."""
+        store = runner.RunStore(tmp_path / "run-store", fixture_root=tmp_path)
+        gone_dir = tmp_path / "review-bench-gone"
+        store.record_directory("defect-1", gone_dir, runner._NO_SESSION_ID_YET)
+        store.record_directory("defect-1", gone_dir, str(uuid.uuid4()))
+        projects_root = tmp_path / "projects"
+        unrelated_session_file = projects_root / "other-project" / ".jsonl"  # what an empty session id would glob
+        unrelated_session_file.parent.mkdir(parents=True)
+        unrelated_session_file.write_text("{}\n")
+
+        swept = store.sweep_abandoned(projects_root)
+
+        assert [entry.defect_id for entry in swept] == ["defect-1", "defect-1"]
+        assert unrelated_session_file.exists()
+        assert "could not remove" not in capsys.readouterr().err
 
     def test_completed_block_is_not_swept(self, tmp_path: Path) -> None:
         store = runner.RunStore(tmp_path / "run-store", fixture_root=tmp_path)

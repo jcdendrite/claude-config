@@ -19,7 +19,7 @@ Columns, in ledger order (`_PR_COST_LEDGER_COLUMNS` in `transcript-analysis.py`)
 | `supersedes` | Empty, or the `captured_at` of the prior row this one corrects. |
 | `status` | `ok` / `degraded_rate_limit` / `degraded_network` — see "Row status" below. |
 | `cache_read_usd`, `cache_write_5m_usd`, `cache_write_1h_usd`, `output_usd`, `input_usd` | Dollars by token class. |
-| `cache_read_tokens`, `cache_write_5m_tokens`, `cache_write_1h_tokens`, `output_tokens`, `input_tokens` | Token counts by class — the retained figures "Comparing rows across rate stamps" re-derives dollars from. |
+| `cache_read_tokens`, `cache_write_5m_tokens`, `cache_write_1h_tokens`, `output_tokens`, `input_tokens` | Token counts by class — the retained figures behind the token-total comparison in "Comparing rows across rate stamps". |
 | `unpriced_turns`, `unpriced_tokens` | Turns whose model ID wasn't recognized by the price table, and their token count. An unrecognized model is excluded from pricing, not priced at $0 — a nonzero value here means the dollar columns understate this row's true cost. |
 | `turn_count`, `session_count` | Priced-turn count and distinct session count attributed to this branch. |
 | `opus_dollars`, `opus_dollar_share_pct` | Opus-family spend, in dollars and as a share of this row's total. |
@@ -75,7 +75,7 @@ The `machine` cell is generated once per config directory, persisted at `<config
 
 `<config-dir>/machine-id` shares its trust boundary with the ledger files themselves: anyone with write access to the config directory already has equivalent control over both. Symlink-adoption therefore grants no stronger integrity guarantee than this tool's other local file handling already assumes.
 
-**Upgrading from an operator-chosen `--machine-label`.** A ledger may contain rows for the same physical machine under two different `machine` values — one a hand-chosen `--machine-label` string, one the newer generated identity. Treat differing values as distinct machines, not duplicates — summing both is correct (see "The grain" under "Redacted cross-account export" below).
+**Upgrading from an operator-chosen `--machine-label`.** A ledger may hold rows for one physical machine under two `machine` values: a hand-chosen `--machine-label` string and the newer generated identity. Captures are append-only, so both values persist (see "The re-record contract" and "Legacy rows" elsewhere in this doc). Two such rows for one PR in one account's ledger are two captures of one corpus. Keep only the latest and never sum them. Rows from two distinct physical machines are a different case and are summed (see "The grain" under "Redacted cross-account export" below).
 
 **The as-of window.** A branch keeps accruing local transcript activity for a while after its PR merges, so capturing immediately after merge understates the PR's true cost. `--asof-window-days` (default `3`, per `_PR_COST_ASOF_WINDOW_DAYS_DEFAULT`) is the close-out window a PR must clear before it's eligible for capture. This default is a **provisional placeholder**, not a validated figure: the real close-out window is meant to be set as a measured percentile of (last priced turn − `mergedAt`) across the surviving corpus, and the default may change once that measurement lands.
 
@@ -83,7 +83,24 @@ The `machine` cell is generated once per config directory, persisted at `<config
 
 ### Comparing rows across rate stamps
 
-Two rows with different `rate_stamp` values were priced under different vendor rate tables. **Never compare their `usd` columns directly** — a change in `usd` between them can be a real cost difference, a pricing change, or both, and the columns alone can't distinguish which. A cross-rate-stamp comparison must re-derive dollars from the retained per-class token counts under **one** rate table instead. A row whose `unpriced_tokens` includes Fable-attributable tokens can't be re-derived this way: those tokens landed in the scalar `unpriced_tokens` field, never split into the per-class columns the re-derivation reads from.
+Two rows with different `rate_stamp` values were priced under different vendor rate tables. **Never compare their `usd` columns directly** — a change in `usd` between them can be a real cost difference, a pricing change, or both, and the columns alone can't distinguish which. The per-class token columns cover every priced model, so no single conversion table can be applied to them to normalize one stamp's dollars onto another stamp's rates. Two rows' dollars are comparable only in one of two cases:
+
+- A check of the pricing code's git history shows their two stamps carried identical pricing.
+- One stamp is addition-only relative to the other, and the earlier-stamped row's `unpriced_tokens` is 0.
+
+Addition-only means that, across every commit carrying either stamp, these are unchanged:
+
+- `_model_rates` output for every model the earlier stamp priced
+- `_price_turn`
+- `_token_counts`
+- `_cache_write_split`
+- the model-independent multipliers
+
+An `unpriced_tokens` of 0 means every one of the earlier row's turns was priced at a rate the later stamp still shares. If the pricing code's git history shows no commit carrying a stamp, rows under that stamp are not comparable to any other row.
+
+The comparison that never depends on the rate table is the token total: the sum of the per-class token columns plus `unpriced_tokens`. A row whose `unpriced_tokens` includes Fable-attributable tokens still fits this sum correctly, since those tokens land only in the scalar `unpriced_tokens` field, never split into the per-class columns.
+
+A pooled total may sum dollars as recorded across differing `rate_stamp` values, carrying a label that states whether every contributing row meets the comparability rule above. The rule extends from a pair to a pool of any size by comparing every row against a single fixed reference, the most recent pricing state among them, rather than against each other pairwise. A dollar comparison across eras, groups, or any other split is made only when every row on every side of that split meets that rule.
 
 ## Refusals
 
@@ -131,7 +148,7 @@ Every other column is byte-identical to the source ledger's own cell.
 
 **Account order and atomicity.** Accounts are visited in a fixed ordinal order, not the resolved roots' own order, so two exports of the same declared-roots file under different active profiles produce byte-identical row order. Every account's ledger is fully read and validated before `--out` is created, so a malformed ledger on any account aborts before any file is written and no partial export can exist.
 
-**The grain: one row per `(host, repo, pr_number, machine)`, current state only.** All four key parts matter — a consumer grouping without `host_token` merges two distinct PRs sharing an `owner/repo` string across a GHE host and github.com. Summing one PR across two machines is correct, not a duplicate; that's why `machine` is part of the key rather than being collapsed away. `machine` itself is a tool-generated, opaque identifier (see "Machine identity" above), but it plays the same key role either way.
+**The grain: one row per `(host, repo, pr_number, machine)`, current state only.** All four key parts matter — a consumer grouping without `host_token` merges two distinct PRs sharing an `owner/repo` string across a GHE host and github.com. Summing one PR across two physical machines is correct, not a duplicate; that's why `machine` is part of the key rather than being collapsed away. Two `machine` values for one PR in one account's ledger are the exception (see "Upgrading from an operator-chosen `--machine-label`" above). `machine` itself is a tool-generated, opaque identifier (see "Machine identity" above), but it plays the same key role either way.
 
 **`correction_count`** is the number of other rows sharing this row's key in the account's raw ledger, counted regardless of `status` (total captures minus one). `0` means this is the only capture ever recorded under that key. A corrected row is exactly as current and authoritative as an uncorrected one. A nonzero value is **not** on its own a trust or quality signal: the count conflates three unrelated causes with no reason code: rate-table refreshes, data-quality fixes, and unexplained operator iteration.
 
@@ -143,9 +160,9 @@ Every other column is byte-identical to the source ledger's own cell.
 - Recapture does not retire it: a later recapture of the same PR under a new machine identity (`--record --force --pr N`) does not retire that earlier row — `machine` is part of `_collapse_pr_cost_rows_to_current`'s grouping key, so the recapture survives as its own separate row instead of superseding the legacy one. This count is a heuristic, not exhaustive: a legacy hand-chosen `--machine-label` that happens to match the hex shape (e.g. `deadbeef`) is not flagged, even though it is also a legacy, potentially operator-identifying value.
 - No safe column subset to drop instead: the six-decimal `*_usd` floats and per-class token counts are higher-entropy per-PR fingerprints than the `gh`-sourced integers, so joinability against outside data is the mechanism, not any single column's entropy.
 
-Export rows are subject to CLAUDE.md's publication-boundary rule (see "Also redact structural fingerprints and provenance") — an export row, or any per-row figure derived from one, is not publishable except under the narrow aggregate exception defined there: PR counts, token counts, cost, and models used, reported in one bucket. Sending the raw row-level file to anyone at all is a decision of the same class as publishing an aggregate: it must be made deliberately, not fall out as a side effect of an analysis session.
+Export rows are subject to CLAUDE.md's publication-boundary rule (see "Also redact structural fingerprints and provenance") — an export row, or any per-row figure derived from one, is not publishable. The one exception is an aggregate of PR counts, token counts, cost, and models used, reported in one bucket. Even that publishes only with the owner's per-figure yes under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case". That section also holds the composition check and the bars that stay in force alongside an authorization. Sending the raw row-level file to anyone at all is a decision of the same class as publishing an aggregate: it must be made deliberately, not fall out as a side effect of an analysis session.
 
-**Rate stamps still apply.** See "Comparing rows across rate stamps" above — this export's whole reason to exist is that comparison, so dollars must be re-derived from the retained per-class token columns under one rate table whenever two rows' `rate_stamp` differs. Likewise, `opus_dollar_share_pct` must be recomputed from a summed numerator and denominator across whatever rows are being aggregated, never row-averaged — the same caution `mean_context_at_turn` already carries elsewhere in this doc.
+**Rate stamps still apply.** See "Comparing rows across rate stamps" above for when two rows' dollars are comparable at all — this export's whole reason to exist is that comparison, and it governs here exactly as stated there. Likewise, `opus_dollar_share_pct` must be recomputed from a summed numerator and denominator across whatever rows are being aggregated, never row-averaged — the same caution `mean_context_at_turn` already carries elsewhere in this doc.
 
 A PR merged on the same day a cost-affecting change deployed needs manual resolution against the source account's own ledger, where `merged_at` still carries full precision — this export's truncated date alone can't disambiguate which side of the change the PR actually landed on.
 
@@ -158,6 +175,49 @@ A PR merged on the same day a cost-affecting change deployed needs manual resolu
 **The legacy-header `host` backfill carries through unchanged.** A ledger row parsed under the pre-host-column header (see "Schema" above) has its `host` backfilled to `github.com` before this export ever sees it — a validated historical fact (every such row predates GHE support), not a guess, so it tokenizes identically to a row that recorded `github.com` explicitly rather than reading as lower-confidence.
 
 **Re-running.** `--out` never overwrites, so each run needs a fresh, distinctly-named path (a timestamped filename is a reasonable convention). A `--out` on a non-POSIX mount (SMB/CIFS without ACL mapping, exFAT) can silently ignore the file's `0600` creation mode; this is accepted, not re-checked at runtime. Finally: inspecting the resulting file inside a Claude Code session — reading it with the `Read` tool, or `cat`-ing it in a `Bash` call — copies its rows into that session's own transcript, the identical leak this command's own `--out`-required, no-stdout design exists to close. Inspect it in a separate terminal instead.
+
+### Combining exports
+
+Concatenating two or more `pr-cost-export` outputs directly double-counts: the same corpus can appear in more than one export, the same real PR can appear in more than one row, and an export's own tokens are unique only within the run that produced them (see "`head_branch_label` is not a join key" above). Combining them into one cross-account aggregate needs a validation pass, a namespacing step, and a two-layer clustering pass, in that order. Combine one export per physical machine, and only when no account's ledger is synced between machines. The `corpus=` check below catches only two inputs with identical account sets. An account present in two inputs whose account sets otherwise differ passes that check and is double-counted.
+
+**Validate every input before reading its rows.** Accept an input only when line 1 is the export's `# pr-cost-export` provenance line, carrying the `DO-NOT-PUBLISH` marker and `corpus_override=0`. Run this check on the raw file, before stripping that line for parsing (see "Parsing" above). Each condition below is either a refusal of the whole input or a skip of one row:
+
+- Refuse the input when its provenance line is missing, misplaced, or unparseable, because the duplicate-corpus check below has no `corpus=` digest without it.
+- Refuse the input when it carries `corpus_override=1`, because its provenance is unverified, so it cannot be combined with anything (see "`corpus_override=1` flags a root set..." above).
+- Refuse every input that shares a `corpus=` digest with another input, keeping none of them, because the same corpus was fed in twice, which would double every figure it contributes.
+- Refuse every input that is byte-identical to another input, keeping none of them, for the same reason: the same corpus was fed in twice.
+- Refuse the input when it is missing a column the procedure needs. Read every column by its header name, rather than assuming column position or count.
+- Skip the row, and count it in a diagnostics tally, when a numeric column (a token or dollar count) fails to parse as a number.
+- Skip the row, and count it in the same diagnostics tally, when `captured_at` or `merged_at` fails to parse as a date.
+
+A row skipped under the two bullets above is not grounds to refuse the whole input: one malformed row elsewhere in a large export shouldn't discard every other row's data.
+
+**Namespace every token by its source input.** Prefix every `account`, `host`, `repo`, `pr_number`, and `machine` token with a label naming the input file it came from, before comparing anything across inputs. A token is unique only within the export run that produced it, so once two exports are combined, a PR's true identity is the tuple of its input, account, host, repo, and PR number. The plain (account, host, repo, PR number) tuple is not enough, because two separately-run exports can each reuse the same tokens for different PRs.
+
+**Cluster namespaced rows into real PRs in two layers.** The first layer resolves recaptures within one input and account.
+
+Layer 1: rows that share host, repo, and PR-number tokens are two captures of the same corpus (see "Upgrading from an operator-chosen `--machine-label`" above). Keep the row with the later `captured_at` date. On a same-date tie, keep the row with the larger token total and count the tie as ambiguous.
+
+Layer 2 resolves the same real PR appearing under different accounts or different input files. Take two first-layer rows from different input/account groups. If both carry `ok` status and agree on every field of this fingerprint, treat them as one real PR:
+
+- merged date
+- `additions`
+- `deletions`
+- `changed_files`
+- `commit_count`
+- `distinct_top_level_dirs`
+- `distinct_file_extensions`
+- `tests_changed`
+
+Three kinds of column or row stay out of the fingerprint:
+
+- `review_comment_count`, because review comments can still arrive after merge.
+- `plan_file_added` and `risk_surface_flag`, because both depend on that run's own `--plan-file-glob`/`--risk-surface-glob` values, which can differ between captures.
+- A degraded row (`status` other than `ok`), which never matches this way because its zeroed `gh`-sourced columns would otherwise collide with any other degraded row's zeros.
+
+Count a matched PR once, and sum its dollar and token columns across every matching row. A fingerprint shared by more than one row within a single group is a collision, and every row carrying it is excluded from merging rather than guessed at. A fingerprint merges across groups when every group holding it holds it exactly once. When that holds, every row carrying it unions into one PR, however many groups are involved. The fingerprint is not unique, so the layer-1+2 PR count is an estimate that can be off in either direction: a false cross-group merge lowers it, an unmatched duplicate raises it. It never exceeds the layer-1 count.
+
+Whether the combined rows' dollars — including the numerator and denominator behind the Opus-family share of dollars — are comparable across differing `rate_stamp` values follows "Comparing rows across rate stamps" above. What may be done with the combined result once computed follows the same rule as any other export figure: see "Export rows are subject to CLAUDE.md's publication-boundary rule..." above. Every input copy on the combining machine, and every file the procedure writes, gets the export's own handling. That covers combined row-level data, the diagnostics tally, per-input subtotals, and any split output. Each such file sits outside any git working tree and any cloud-sync folder, sits in an owner-only directory, opens with a `DO-NOT-PUBLISH` provenance line, and is never read inside a Claude Code session. No `--out` check applies to any of these files. The procedure writes its own outputs directly, and the owner copies each input in by hand. The procedure's stdout and stderr go to a file the session never reads, so only a single pooled summary reaches the session. Before relying on or proposing a pooled figure, the owner checks the diagnostics skip tally outside the session, and a nonzero skip count means the figure can be off in either direction.
 
 ## Residual replication paths the git-tree check doesn't close
 

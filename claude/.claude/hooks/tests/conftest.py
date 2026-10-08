@@ -168,6 +168,27 @@ def _worktree_lock_reason(worktree: Path) -> str | None:
     return None
 
 
+# A name review-pr-checkout.sh's worktree template could expand to.
+REVIEW_WORKTREE_NAME = "review-pr-sess-1-42-abc123"
+
+
+def _add_worktree_under_worktrees_dir(
+    repo: Path, name: str, branch: str | None = None, worktrees_root: Path | None = None
+) -> Path:
+    """A worktree at <worktrees_root or repo>/.claude/worktrees/<name>: detached
+    by default, as review-pr-checkout.sh creates one, or on a new branch."""
+    worktree = (worktrees_root or repo) / ".claude" / "worktrees" / name
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    mode_args = ["-b", branch] if branch else ["--detach"]
+    subprocess.run(
+        ["git", "worktree", "add", *mode_args, str(worktree)],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    return worktree
+
+
 def _write_conditional_sleep_shim(
     bin_dir: Path,
     binary_name: str,
@@ -305,24 +326,34 @@ def git_timeout_shim(tmp_path):
 @pytest.fixture
 def sed_call_counting_shim(tmp_path):
     """`install(fail_after)` writes a `sed` shim that execs the real binary
-    for the first `fail_after` invocations (tracked via a counter file in
-    tmp_path) and fails (exit 1, no output) on every invocation after that.
+    for the first `fail_after` invocations and fails (exit 1, no output) on
+    every invocation after that.
 
-    The counter file is unlocked, so concurrent pipeline stages race on it
-    and the failing invocation is not deterministic.
+    Each invocation claims one of the first `fail_after` call numbers by
+    creating the lowest unused numbered directory under tmp_path. `mkdir` is
+    atomic, so concurrent pipeline stages never claim the same number.
+
+    Calls after the first `fail_after` find no unused number and exit 1.
+
+    The failure is deterministic per call number, not per pipeline stage:
+    which of two concurrent stages gets a given number is not fixed. Use
+    `sed_split_stage_shim` to fail a specific stage.
     """
     real_sed = shutil.which("sed")
     if not real_sed:
         pytest.skip("sed not found in PATH")
 
     def install(fail_after: int) -> dict[str, str]:
-        counter_file = tmp_path / "sed-call-count"
-        counter_file.write_text("0")
+        counter_dir = tmp_path / "sed-call-count"
+        shutil.rmtree(counter_dir, ignore_errors=True)
+        counter_dir.mkdir()
         fake_binary = tmp_path / "sed"
         fake_binary.write_text(
             "#!/bin/bash\n"
-            f"count=$(( $(cat {shlex.quote(str(counter_file))}) + 1 ))\n"
-            f"printf '%s' \"$count\" > {shlex.quote(str(counter_file))}\n"
+            "count=1\n"
+            f'while [ "$count" -le {fail_after} ] && ! mkdir {shlex.quote(str(counter_dir))}/"$count" 2>/dev/null; do\n'
+            "  count=$((count + 1))\n"
+            "done\n"
             f"if [ \"$count\" -gt {fail_after} ]; then\n"
             "  exit 1\n"
             "fi\n"

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
 import shutil
@@ -218,7 +219,10 @@ def _fenced_git_text(text: str) -> str:
 
 
 def _changed_paths_listing(fix_commit_paths: Sequence[str]) -> str:
-    return "\n".join(fix_commit_paths) if fix_commit_paths else "(none)"
+    """The changed paths, one per line. Each path's bytes are decoded with replacement, like the diff text,
+    since a changed path keeps `os.fsdecode`'s lone surrogates for filesystem use."""
+    decoded_paths = [os.fsencode(path).decode("utf-8", errors="replace") for path in fix_commit_paths]
+    return "\n".join(decoded_paths) if decoded_paths else "(none)"
 
 
 def _fix_diff_section_body(

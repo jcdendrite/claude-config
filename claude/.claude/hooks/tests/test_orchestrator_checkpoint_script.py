@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPTS_DIR, build_path_without, git_toplevel
+from helpers import CANARY_CONTENT, SCRIPTS_DIR, build_path_without, git_toplevel, plant_traversal_canary
 
 ORCHESTRATOR_CHECKPOINT_SCRIPT = SCRIPTS_DIR / "orchestrator-checkpoint.sh"
 
@@ -345,24 +345,49 @@ class TestOrchestratorCheckpointNoCheckpointYet:
 class TestOrchestratorCheckpointRunIdTraversalGuard:
     """_validate_run_id reuses _lib_valid_session_id_component to reject a
     traversal-shaped orchestrator_run_id before it is concatenated into
-    CHECKPOINT_FILE -- end-to-end regression coverage for that guard, since
-    test_lib.py's convention test only proves the guard is called, not that
-    it actually blocks a traversal payload here."""
+    CHECKPOINT_FILE. This class is the only automated enforcement of that
+    guard: test_lib.py's session-id convention test globs hook files, not
+    scripts/."""
+
+    # The script builds "$CHECKPOINT_DIR/<repo-hash>.<RUN_ID>.jsonl". The
+    # <repo-hash>.<segment> directory must exist for the path walk to reach the
+    # '..' components, so the traversal resolves to "$HOME/.claude/<name>.jsonl"
+    # (live) rather than failing with ENOENT on the missing first component
+    # (inert).
+    TRAVERSAL_SEGMENT = "segment"
+    ESCAPED_NAME = "escaped"
+    TRAVERSAL_RUN_ID = f"{TRAVERSAL_SEGMENT}/../../{ESCAPED_NAME}"
+
+    def _plant_live_traversal_target(self, isolated_home, git_repo):
+        """Pre-create the directory the traversal walks through and plant a
+        canary at the file it resolves to; return the canary path."""
+        segment_dir = _checkpoint_path(isolated_home, git_repo, self.TRAVERSAL_SEGMENT).with_suffix("")
+        segment_dir.mkdir(parents=True)
+        canary = plant_traversal_canary(isolated_home, f"{self.ESCAPED_NAME}.jsonl")
+        # The script prefixes the run id with "<repo-hash>.", so a "../canary"-style id
+        # such as helpers.TRAVERSAL_SESSION_ID is inert here; this asserts the id is live.
+        assert (segment_dir / ".." / ".." / f"{self.ESCAPED_NAME}.jsonl").samefile(canary)
+        return canary
+
+    def _assert_rejected_by_guard(self, result):
+        assert result.returncode == 2, result.stderr
+        assert "not a valid path component" in result.stderr
 
     def test_traversal_run_id_rejected_on_append(self, isolated_home, git_repo):
-        result = _run(_append_args(run_id="../../etc/passwd"), cwd=git_repo, home=isolated_home)
-        assert result.returncode != 0
-        checkpoint_dir = isolated_home / ".claude" / "orchestrator-checkpoints"
-        stray = list(checkpoint_dir.rglob("*")) if checkpoint_dir.exists() else []
-        assert stray == [], f"a traversal-shaped run id must not write outside CHECKPOINT_DIR: {stray}"
-        assert not (isolated_home / "etc" / "passwd").exists()
+        canary = self._plant_live_traversal_target(isolated_home, git_repo)
+
+        result = _run(_append_args(run_id=self.TRAVERSAL_RUN_ID), cwd=git_repo, home=isolated_home)
+
+        self._assert_rejected_by_guard(result)
+        assert canary.read_text() == CANARY_CONTENT
 
     def test_traversal_run_id_rejected_on_read(self, isolated_home, git_repo):
-        result = _run(["read", "../../etc/passwd"], cwd=git_repo, home=isolated_home)
-        assert result.returncode != 0
-        checkpoint_dir = isolated_home / ".claude" / "orchestrator-checkpoints"
-        stray = list(checkpoint_dir.rglob("*")) if checkpoint_dir.exists() else []
-        assert stray == [], f"a traversal-shaped run id must not write outside CHECKPOINT_DIR: {stray}"
+        self._plant_live_traversal_target(isolated_home, git_repo)
+
+        result = _run(["read", self.TRAVERSAL_RUN_ID], cwd=git_repo, home=isolated_home)
+
+        self._assert_rejected_by_guard(result)
+        assert result.stdout == "", "read must not print a file outside CHECKPOINT_DIR"
 
 
 class TestOrchestratorCheckpointDuplicateStepRetry:

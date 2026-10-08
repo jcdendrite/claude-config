@@ -150,6 +150,16 @@ _lib_status_consistent_with_cap_kill() {
   return 1
 }
 
+# _lib_gh SECONDS ARGS...
+# Runs `gh ARGS...` capped at SECONDS via _lib_capped_for, returning its exit status unchanged (124/137/143 on a cap kill, gh's own status otherwise).
+# Prints nothing of its own and leaves gh's stderr to the caller.
+# A caller that words the status for the operator uses review_pr_gh_status_description (_review-pr-lib.sh), which owns why only 124 is named.
+_lib_gh() {
+  local seconds="${1:?_lib_gh requires a seconds argument}"
+  shift
+  _lib_capped_for "$seconds" gh "$@"
+}
+
 # Caps the fallback loop, which takes one iteration per not-yet-existing trailing component of the target plus one for the existing ancestor it stops at.
 # A target with 64 or more missing components therefore fails closed.
 # 64 is an arbitrary ceiling far above the few missing components a legitimate target has, not a value derived from a latency budget or an external spec.
@@ -603,6 +613,29 @@ _lib_repo_root() {
   printf '%s' "$root"
 }
 
+# Main-tree root: dirname of --git-common-dir, which points at the shared .git
+# directory from any linked worktree (git-worktree(1), "Details").
+# review-pr-checkout.sh, review-pr-finish.sh, and
+# _lib_review_pr_marker_repo_hash all anchor here, so they agree from any tree.
+# git before 2.31 echoes the unknown --path-format flag as an output line and
+# exits 0, so the result is accepted only when it is a single absolute path.
+# Exit 1, empty stdout: not inside a git repository, git is absent, the call
+# timed out, or git is older than 2.31.
+_lib_main_repo_root() {
+  local common_git_dir root
+  common_git_dir=$(_lib_capped git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  case "$common_git_dir" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  case "$common_git_dir" in
+    *$'\n'*) return 1 ;;
+  esac
+  root=$(dirname "$common_git_dir")
+  [ -n "$root" ] || return 1
+  printf '%s' "$root"
+}
+
 # Compute the marker repo-hash for an absolute repo-toplevel path.
 # Input must have no trailing newline -- printf '%s' omits one, so the SHA
 # covers exactly the bytes of $1.
@@ -620,6 +653,21 @@ _marker_lib_repo_hash() {
   local digest
   digest=$(_lib_hash_diff_text "$1") || return 1
   printf '%s\n' "$digest"
+}
+
+# _lib_review_pr_marker_repo_hash
+# Prints the repo hash keying review-pr's completion marker
+# ($CONFIG_DIR/review-pr-markers/<hash>.<session-id>). It hashes the MAIN
+# tree's root (_lib_main_repo_root), not the current tree's, so `marker.sh
+# write review-pr`, `marker.sh status`, review-pr-post.sh, and
+# review-pr-finish.sh all resolve the same key from any tree of the repo.
+# See marker.sh's `status` arm for where `status` is reachable.
+# Exit 1, empty stdout: not inside a git repository, git is absent, the call
+# timed out, or hashing failed.
+_lib_review_pr_marker_repo_hash() {
+  local main_repo_root
+  main_repo_root=$(_lib_main_repo_root) || return 1
+  _marker_lib_repo_hash "$main_repo_root"
 }
 
 # _lib_marker_value_present MARKERS_DIR EXPECTED_VALUE GLOB_PREFIX...
@@ -680,7 +728,7 @@ _lib_marker_value_present() {
   # stack rlimit) makes grep fail to exec with E2BIG. That is a nonzero exit,
   # which every call site reads as "no matching marker" — so it fails CLOSED,
   # denying rather than releasing. Completion markers are never pruned today
-  # (marker.sh clear-stale only evicts active-bypass markers), so the ceiling
+  # (marker.sh clear-stale never evicts completion markers), so the ceiling
   # is reachable by unattended growth. Whoever adds marker retention should
   # remove this note; until then a wedged gate at that scale is a deny with no
   # diagnostic, and manual pruning of ~/.claude/*-markers/ is the workaround.
@@ -692,6 +740,252 @@ _lib_marker_value_present() {
   # subdirectory under MARKERS_DIR ("Is a directory") triggers even under -q.
   # Both are correctly false here; an exact-code check would not be.
   grep -qFx -e "$expected_value" -- "${marker_files[@]}" 2>/dev/null
+}
+
+# _lib_review_pr_completion_marker_fields CONFIG_DIR REPO_HASH SESSION_ID
+# Prints four fields, one per line: PR identity, headRefOid, body hash,
+# mode. Returns 0 when THIS session's own marker file exists and the first
+# four lines are all non-empty; returns 1 with no output otherwise (marker
+# absent, wrong session, malformed content).
+# A fifth line, if present, is silently ignored -- the marker is entirely
+# script-generated with no append operation, so a trailing line can only
+# appear via direct tampering.
+# mode is "checkout" or "diff-only", carried through from the provenance
+# file `marker.sh write review-pr` read when it wrote this marker.
+# review-pr-post.sh accepts only those two values.
+#
+# Deliberately session-scoped, unlike _lib_marker_value_present's
+# cross-session glob above: this authorization is bound to the session that
+# wrote the marker, so this reads exactly
+# "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID", never a glob over
+# every session's marker under the repo hash. A cross-session glob here
+# would let a stale marker written by an unrelated session authorize this
+# session's post -- see test_other_sessions_marker_does_not_leak_bypass for
+# the equivalent property on the active-bypass marker.
+_lib_review_pr_completion_marker_fields() {
+  local config_dir="$1" repo_hash="$2" session_id="$3"
+  [ -n "$config_dir" ] && [ -n "$repo_hash" ] || return 1
+  _lib_valid_session_id_component "$session_id" || return 1
+  local marker="$config_dir/review-pr-markers/$repo_hash.$session_id"
+  [ -f "$marker" ] || return 1
+  local content pr_identity head_ref_oid body_hash mode
+  content=$(_lib_capped cat "$marker" 2>/dev/null) || return 1
+  pr_identity=$(printf '%s\n' "$content" | sed -n '1p')
+  head_ref_oid=$(printf '%s\n' "$content" | sed -n '2p')
+  body_hash=$(printf '%s\n' "$content" | sed -n '3p')
+  mode=$(printf '%s\n' "$content" | sed -n '4p')
+  [ -n "$pr_identity" ] && [ -n "$head_ref_oid" ] && [ -n "$body_hash" ] && [ -n "$mode" ] || return 1
+  printf '%s\n%s\n%s\n%s\n' "$pr_identity" "$head_ref_oid" "$body_hash" "$mode"
+}
+
+# _lib_origin_owner_repo [REPO_ROOT]
+# Prints the origin remote's own owner/repo, parsed as the last two ':'- or
+# '/'-delimited path segments of its URL with a trailing '.git' stripped.
+# REPO_ROOT, when given, resolves origin via `git -C REPO_ROOT remote
+# get-url origin`; omitted, resolves it via `git config --get
+# remote.origin.url` against the caller's own cwd (a PreToolUse hook has no
+# independently-resolved REPO_ROOT to pass).
+# Returns 1 with no output when origin is unset or its URL doesn't parse to
+# an owner/repo shape.
+# A GitHub owner/repo comparison must be case-insensitive (GitHub treats
+# slugs case-insensitively) -- this function only extracts the value, so
+# each caller compares its result with _lib_case_insensitive_ne (below).
+_lib_origin_owner_repo() {
+  local repo_root="${1-}" url owner_repo
+  if [ -n "$repo_root" ]; then
+    url=$(_lib_capped git -C "$repo_root" remote get-url origin 2>/dev/null) || url=""
+  else
+    url=$(_lib_capped git config --get remote.origin.url 2>/dev/null) || url=""
+  fi
+  [ -n "$url" ] || return 1
+  owner_repo=$(printf '%s\n' "$url" | sed -nE 's|.*[:/]([^/:]+/[^/]+)$|\1|p' | sed 's|\.git$||')
+  [ -n "$owner_repo" ] || return 1
+  printf '%s' "$owner_repo"
+}
+
+# _lib_case_insensitive_ne A B
+# Returns 0 (true) when A and B differ case-insensitively, 1 (false) when
+# they match -- GitHub treats owner/repo slugs case-insensitively, so every
+# caller comparing two _lib_origin_owner_repo results (or one against a
+# PR-identity-derived owner/repo) must compare that way too.
+# Restores the caller's own `nocasematch` setting on return.
+_lib_case_insensitive_ne() {
+  local a="$1" b="$2" result had_nocasematch=0
+  shopt -q nocasematch && had_nocasematch=1
+  shopt -s nocasematch
+  if [[ "$a" != "$b" ]]; then
+    result=0
+  else
+    result=1
+  fi
+  [ "$had_nocasematch" -eq 1 ] || shopt -u nocasematch
+  return "$result"
+}
+
+# _lib_parse_pr_identity PR_IDENTITY
+# Splits a <owner>/<repo>#<number> PR identity into owner/repo and number,
+# printing owner/repo then number on two lines, and returns 0. Returns 1
+# with no output when the number segment is not purely numeric, or the
+# owner/repo segment doesn't match the shape below. Shared by
+# review-pr-acquire.sh, review-pr-checkout.sh, review-pr-diff.sh, and
+# review-pr-post.sh, so none of them carries its own copy of this split and
+# its validation.
+#
+# Rejects a bare `.`/`..` segment, which a naive [A-Za-z0-9._-]+ class would
+# otherwise accept and turn into a path-traversal shape.
+#
+# Error text is deliberately NOT produced here -- it stays at each call
+# site, which names its own script and its own abort phrasing.
+_lib_parse_pr_identity() {
+  local pr_identity="$1"
+  local pr_number="${pr_identity##*#}"
+  local owner_repo="${pr_identity%#*}"
+  [[ "$pr_number" =~ ^[0-9]+$ ]] || return 1
+  [[ "$owner_repo" =~ ^[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]*[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  printf '%s\n%s\n' "$owner_repo" "$pr_number"
+}
+
+# _lib_review_pr_artifact_path CONFIG_DIR SESSION_ID SUFFIX
+# Prints $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.$SUFFIX -- the one
+# shared derivation for every review-pr session-scoped artifact path
+# (provenance, body, diff, context.json), so the review-pr scripts that touch
+# those artifacts and marker.sh's `write review-pr` arm agree on it by
+# construction. marker-clear-stale.py keeps its own suffix list.
+# SUFFIX carries no leading dot (e.g. "body", "provenance", "diff",
+# "context.json").
+_lib_review_pr_artifact_path() {
+  printf '%s/.review-pr-active.d/%s.%s' "$1" "$2" "$3"
+}
+
+# _lib_write_review_pr_provenance PROVENANCE_PATH KEY=VALUE [KEY=VALUE ...]
+# Writes PROVENANCE_PATH as a `schema=1` header line followed by one
+# KEY=VALUE line per remaining argument. Returns non-zero when the write fails.
+# The schema is additive: a caller adding a field passes one more KEY=VALUE
+# argument. This is the schema's only writer, so
+# _lib_review_pr_provenance_field below sees every field the same way
+# regardless of which caller added it.
+_lib_write_review_pr_provenance() {
+  local path="$1"
+  shift
+  { printf 'schema=1\n'; printf '%s\n' "$@"; } > "$path"
+}
+
+# _lib_review_pr_provenance_field PROVENANCE_PATH KEY
+# Prints KEY's value from PROVENANCE_PATH's key=value lines and returns 0,
+# or returns 1 with no output if the file is unreadable, its first line
+# isn't exactly `schema=1`, or KEY is absent or holds an empty value.
+# Matches each line against "KEY=" as a fixed prefix (no globbing, no
+# regex), so a value that itself contains '=' still round-trips correctly.
+# Unknown keys are ignored, so a caller reads only the keys it names.
+_lib_review_pr_provenance_field() {
+  local path="$1" key="$2"
+  [ -n "$path" ] && [ -n "$key" ] || return 1
+  local content
+  content=$(_lib_capped cat "$path" 2>/dev/null) || return 1
+  local first_line
+  first_line=$(printf '%s\n' "$content" | sed -n '1p')
+  [ "$first_line" = "schema=1" ] || return 1
+  local line value=""
+  while IFS= read -r line; do
+    case "$line" in
+      "$key="*)
+        value="${line#"$key"=}"
+        break
+        ;;
+    esac
+  done <<< "$content"
+  [ -n "$value" ] || return 1
+  printf '%s' "$value"
+}
+
+# Cap for each local git or rm call that creates or removes a review worktree:
+# review-pr-checkout.sh's `worktree add` and its failure-path rm -rf and
+# prune, and review-pr-finish.sh's list, remove, rm -rf, and prune.
+# It is a hang backstop for a stalled filesystem or git, not a latency budget,
+# following _lib_jq's 5s backstop. 30s is a chosen ceiling, not a measured or
+# documented figure.
+# Cost scales with the checked-out tree's size and disk speed, plus any
+# clean/smudge filters git runs while populating the tree.
+# A cap kill can strand a worktree registration or lock file, because a
+# SIGKILLed git cannot clean up after itself.
+_LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS=30
+
+# One character of a session id that is safe as a path component, as an
+# extended-regex bracket expression. Shared by _lib_valid_session_id_component
+# and _lib_review_pr_worktree_name_is_review_shaped, so the ids the creator
+# accepts are exactly the ids the review-shape check recognizes.
+# Spells out each allowed character instead of using ranges, so a locale whose
+# collation puts non-ASCII letters inside a range does not widen the class.
+_LIB_SESSION_ID_COMPONENT_CHAR_REGEX='[-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]'
+
+# Leading part of every review worktree directory name, whatever the session.
+_LIB_REVIEW_PR_WORKTREE_NAME_ROOT="review-pr-"
+
+# Trailing part of every review worktree directory name: the PR number, then
+# the six alphanumerics `mktemp -d` substitutes for the template's XXXXXX.
+# Extended regex, shared by _lib_review_pr_select_session_worktrees and
+# _lib_review_pr_worktree_name_is_review_shaped.
+_LIB_REVIEW_PR_WORKTREE_NAME_TAIL_REGEX='[0-9]+-[A-Za-z0-9]{6}'
+
+# _lib_review_pr_worktree_name_prefix SESSION_ID
+# Prints review-pr-<session-id>-, the leading part of every worktree
+# directory name review-pr-checkout.sh creates for that session. Shared by
+# the template below and the discovery helper after it, so creation and
+# cleanup cannot derive the naming convention differently from each other.
+_lib_review_pr_worktree_name_prefix() {
+  printf '%s%s-' "$_LIB_REVIEW_PR_WORKTREE_NAME_ROOT" "$1"
+}
+
+# _lib_review_pr_worktree_template MAIN_REPO_ROOT SESSION_ID PR_NUMBER
+# Prints the `mktemp -d` template for one review-pr checkout:
+# $MAIN_REPO_ROOT/.claude/worktrees/review-pr-<session-id>-<number>-XXXXXX.
+# The six-character random suffix makes every invocation's path unique, and
+# _LIB_REVIEW_PR_WORKTREE_NAME_TAIL_REGEX describes exactly that shape.
+_lib_review_pr_worktree_template() {
+  local main_repo_root="$1" session_id="$2" pr_number="$3"
+  printf '%s/.claude/worktrees/%s%s-XXXXXX' "$main_repo_root" "$(_lib_review_pr_worktree_name_prefix "$session_id")" "$pr_number"
+}
+
+# _lib_review_pr_worktree_name_is_review_shaped NAME
+# Returns 0 iff NAME is a directory name review-pr-checkout.sh could have
+# created for some session:
+# review-pr-<session-id characters>-<digits>-<six alphanumerics>.
+_lib_review_pr_worktree_name_is_review_shaped() {
+  [[ "$1" =~ ^${_LIB_REVIEW_PR_WORKTREE_NAME_ROOT}${_LIB_SESSION_ID_COMPONENT_CHAR_REGEX}+-${_LIB_REVIEW_PR_WORKTREE_NAME_TAIL_REGEX}$ ]]
+}
+
+# _lib_review_pr_select_session_worktrees PORCELAIN MAIN_REPO_ROOT SESSION_ID
+# Prints, one per line, the path of every worktree in PORCELAIN (the text of
+# `git worktree list --porcelain`) that a review-pr-checkout.sh run for
+# SESSION_ID created. Prints nothing when none match. Returns 1 only when
+# SESSION_ID is not a valid path component.
+# A path matches only when it sits directly under
+# $MAIN_REPO_ROOT/.claude/worktrees and its name is
+# review-pr-<session-id>-<digits>-<six alphanumerics>. The strict tail keeps
+# a session whose id is a hyphen-extended prefix of another's from matching
+# that other session's worktrees.
+# Only `worktree <path>` lines are read, so a record missing its HEAD or
+# branch line, or a truncated trailing record, cannot disturb the records
+# around it. A `worktree` line with no path is skipped.
+_lib_review_pr_select_session_worktrees() {
+  local porcelain="$1" main_repo_root="$2" session_id="$3"
+  _lib_valid_session_id_component "$session_id" || return 1
+  local worktrees_dir="$main_repo_root/.claude/worktrees"
+  local name_prefix
+  name_prefix=$(_lib_review_pr_worktree_name_prefix "$session_id")
+  local line path name remainder
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "?*) path="${line#worktree }" ;;
+      *) continue ;;
+    esac
+    [[ "$path" == "$worktrees_dir/"* ]] || continue
+    name="${path#"$worktrees_dir"/}"
+    [[ "$name" != */* && "$name" == "$name_prefix"* ]] || continue
+    remainder="${name#"$name_prefix"}"
+    [[ "$remainder" =~ ^${_LIB_REVIEW_PR_WORKTREE_NAME_TAIL_REGEX}$ ]] || continue
+    printf '%s\n' "$path"
+  done <<< "$porcelain"
 }
 
 # Enumerate the "active" plan file set in a repo's .claude/plans/ directory:
@@ -884,6 +1178,10 @@ _lib_active_plan_hash() {
   fi
   printf '%s' "$digest"
 }
+
+# Prefix marker.sh's `write plan-review` prints before each covered plan path, one line per path.
+# announce-approved-plan-path.sh relays only stdout lines that start with it.
+_LIB_PLAN_REVIEW_COVERED_PATH_PREFIX='plan-review marker covers: '
 
 # _lib_hash_diff_text TEXT
 # Hashes TEXT via the shared sha256 recipe every cumulative-review value must
@@ -2492,14 +2790,12 @@ _lib_permission_prompt_tracking_active() {
 # (letters, digits, underscore, hyphen) has ample room without ever needing
 # '.' or '/'. Empty input is rejected — callers must not fall through to an
 # unvalidated empty SESSION_ID.
-# The class spells out each allowed character instead of using ranges, so a
-# locale whose collation puts non-ASCII letters inside a range does not widen
-# the allow-list, and the check forks no subshell.
+# The allowed characters are _LIB_SESSION_ID_COMPONENT_CHAR_REGEX; see it for
+# why they are spelled out. The `[[ =~ ]]` match overwrites BASH_REMATCH in the
+# caller and assumes `nocasematch` is off (no caller sets it). It forks no subshell.
 # author_outcome.py's _SESSION_ID_PATTERN is the ASCII-only mirror of it.
 _lib_valid_session_id_component() {
-  case "${1-}" in
-    '' | *[!-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) return 1 ;;
-  esac
+  [[ "${1-}" =~ ^${_LIB_SESSION_ID_COMPONENT_CHAR_REGEX}+$ ]]
 }
 
 # _lib_active_bypass_marker_live MARKER_DIR_NAME SESSION_ID
@@ -2604,27 +2900,51 @@ _lib_active_bypass_marker_live_and_touch() {
 # _lib_first_live_linked_worktree REPO_ROOT
 # Prints the path of the first linked worktree of REPO_ROOT whose directory is
 # present on disk and returns 0; prints nothing and returns 1 when there is
-# none. `git worktree list` still reports entries whose directory was deleted
-# but not pruned, so each candidate is tested rather than trusting the entry
-# count. Callers use this to distinguish "session is in the main tree while the
+# none.
+# A review worktree never counts, since a session has no reason to enter it.
+# A review worktree is one that sits directly under REPO_ROOT/.claude/worktrees,
+# has a name _lib_review_pr_worktree_name_is_review_shaped accepts, and is
+# detached, as review-pr-checkout.sh creates it for a PR the session does not
+# own. A branch worktree, a nested directory, and a user-named directory all
+# still count, so a wrong-tree session is never silenced by a name alone.
+# The skip identifies a review worktree by that shape, not by a record written
+# at creation.
+# `docs/hooks.md` § "Marker keying and gate-release authority", "Why that refusal
+# skips review checkouts", owns the assumption that makes the skip safe.
+# `git worktree list` still reports entries whose directory was deleted but not
+# pruned, so each candidate is tested rather than trusting the entry count.
+# Callers use this to distinguish "session is in the main tree while the
 # work belongs in a worktree" from "this repo has no worktree at all" — the
 # latter is the ordinary state just before `git worktree add`, and carries no
 # wrong-tree risk because there is no second tree to confuse the first with.
 # Parses newline-delimited output, so a worktree path containing a literal
 # newline (pathological, and unhandled here) would be split across two lines
 # and matched incorrectly; git's own docs recommend `-z` for that case.
+# The awk step prefixes each path with `d` when its porcelain record carries a
+# `detached` line and `-` otherwise.
 _lib_first_live_linked_worktree() {
-  local repo_root="$1" worktree_path
+  local repo_root="$1" entry worktree_path
   [ -n "$repo_root" ] || return 1
-  while IFS= read -r worktree_path; do
+  while IFS= read -r entry; do
+    worktree_path="${entry:1}"
     [ -n "$worktree_path" ] || continue
     [ "$worktree_path" = "$repo_root" ] && continue
+    if [ "${entry:0:1}" = "d" ] \
+      && [ "${worktree_path%/*}" = "$repo_root/.claude/worktrees" ] \
+      && _lib_review_pr_worktree_name_is_review_shaped "${worktree_path##*/}"; then
+      continue
+    fi
     if [ -d "$worktree_path" ]; then
       printf '%s' "$worktree_path"
       return 0
     fi
   done < <(_lib_capped git -C "$repo_root" worktree list --porcelain 2>/dev/null \
-    | awk '/^worktree /{print substr($0, 10)}')
+    | awk '
+      function flush(flag) { if (path != "") { flag = detached ? "d" : "-"; print flag path }; path = ""; detached = 0 }
+      /^worktree / { flush(); path = substr($0, 10); next }
+      /^detached$/ { detached = 1; next }
+      /^$/ { flush() }
+      END { flush() }')
   return 1
 }
 
@@ -3448,7 +3768,7 @@ _lib_has_unsafe_ssh_dir_reference() {
   return 1
 }
 
-# Credential-shaped VALUE patterns, sourced by redact-credential-values.sh (jq gsub) and deny-pii-in-commits.sh's credential-value sub-check (grep -E). Must compile under both POSIX ERE and jq's Oniguruma engine, so only dialect-neutral syntax is used.
+# Credential-shaped VALUE patterns, sourced by _lib_redact_credential_shaped_strings below (jq gsub), deny-pii-in-commits.sh's credential-value sub-check (grep -E), and review-pr-scan-findings-body.sh (grep -E). Must compile under both POSIX ERE and jq's Oniguruma engine, so only dialect-neutral syntax is used.
 # Token prefixes (ghp_/gho_/ghu_/ghs_/ghr_ classic and github_pat_ fine-grained) per GitHub's "About authentication to GitHub" docs. The {20,} length floor is NOT vendor-grounded — chosen low enough that a genuine token is never missed, not a verified minimum.
 # AKIA (long-term access key) and ASIA (temporary/STS access key) prefixes per AWS's "IAM identifiers" doc (Understanding unique ID prefixes table). The 16-character suffix length is the widely-observed convention for these IDs, not independently vendor-confirmed for this exact length — same non-verified-minimum caveat as the GitHub {20,} floor above.
 # The PEM alternative matches only the BEGIN header line: grep -E is line-oriented and can't match across a newline, so a header-only form is what lets deny-pii-in-commits.sh detect a PEM key at commit time at all. See _LIB_PEM_PRIVATE_KEY_BLOCK_REGEX below for the full-block counterpart.

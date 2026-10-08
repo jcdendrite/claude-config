@@ -1531,6 +1531,89 @@ def stage_settings(repo: Path, settings_file: Path, content: str) -> None:
     )
 
 
+def git_main_tree_root(repo: Path) -> str:
+    """The main working tree's root for any tree of `repo`'s repository:
+    the parent of `git rev-parse --path-format=absolute --git-common-dir`.
+    This is the same formula as `_lib_main_repo_root`, not an independent
+    oracle, and every caller passes a main tree, where it agrees with
+    `git_toplevel`. TestLibReviewPrMarkerRepoHash anchors the production key
+    against `--show-toplevel` separately."""
+    common_git_dir = _run_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir").strip()
+    return str(Path(common_git_dir).parent)
+
+
+def review_pr_completion_marker_path(
+    home: Path, repo: Path, session_id: str, config_dir: Path | None = None
+) -> Path:
+    """`repo` may be any tree of the repository: the key hashes the main
+    tree's root, which is what every review-pr script derives."""
+    repo_hash = hashlib.sha256(git_main_tree_root(repo).encode()).hexdigest()
+    config_dir = config_dir if config_dir is not None else home / ".claude"
+    return config_dir / "review-pr-markers" / f"{repo_hash}.{session_id}"
+
+
+def write_review_pr_completion_marker(
+    home: Path,
+    repo: Path,
+    pr_identity: str,
+    head_ref_oid: str,
+    body_hash: str,
+    session_id: str = DEFAULT_TEST_SESSION_ID,
+    config_dir: Path | None = None,
+    mode: str = "checkout",
+) -> Path:
+    """Write review-pr's four-line completion marker directly (PR identity,
+    headRefOid, body hash, mode) -- the shape `marker.sh write review-pr`
+    produces and `_lib_review_pr_completion_marker_fields` (_lib.sh) reads.
+    Written independently of the real write arm (unlike
+    write_plan_review_marker, which shells out to the production hash
+    function) so a test seeding a marker here checks the readers
+    (review-pr-post.sh and marker.sh's `status` arm, through
+    `_lib_review_pr_completion_marker_fields`) against known-correct content,
+    not against marker.sh's own output. `repo` may be any tree of the repository, since the marker path
+    hashes the main tree's root. mode defaults to "checkout"."""
+    marker = review_pr_completion_marker_path(home, repo, session_id, config_dir)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"{pr_identity}\n{head_ref_oid}\n{body_hash}\n{mode}\n")
+    return marker
+
+
+def review_pr_provenance_path(
+    home: Path, session_id: str = DEFAULT_TEST_SESSION_ID, config_dir: Path | None = None
+) -> Path:
+    config_dir = config_dir if config_dir is not None else home / ".claude"
+    return config_dir / ".review-pr-active.d" / f"{session_id}.provenance"
+
+
+def write_review_pr_provenance(
+    home: Path,
+    pr_identity: str,
+    head_ref_oid: str,
+    pid: int | str,
+    mode: str = "checkout",
+    session_id: str = DEFAULT_TEST_SESSION_ID,
+    config_dir: Path | None = None,
+    **extra_fields: str,
+) -> Path:
+    """Write review-pr's `.provenance` sibling file directly, in
+    `_lib_write_review_pr_provenance`'s key=value schema (a `schema=1`
+    header line, then one `key=value` line per field) --
+    `_lib_review_pr_provenance_field` (_lib.sh) and marker-clear-stale.py's
+    own `pid=` read both read this shape. Written independently of the real
+    writer (matching write_review_pr_completion_marker's own precedent
+    above) so a test seeding provenance here checks marker.sh's/
+    marker-clear-stale.py's read side against known-correct content, not
+    against the production writer's own output. `extra_fields` adds keys
+    beyond the four standard ones."""
+    provenance = review_pr_provenance_path(home, session_id, config_dir)
+    provenance.parent.mkdir(parents=True, exist_ok=True)
+    fields = {"pr_identity": pr_identity, "head_ref_oid": head_ref_oid, "pid": str(pid), "mode": mode}
+    fields.update(extra_fields)
+    lines = ["schema=1"] + [f"{key}={value}" for key, value in fields.items()]
+    provenance.write_text("\n".join(lines) + "\n")
+    return provenance
+
+
 def plan_review_marker_path(
     home: Path, repo: Path, session_id: str, config_dir: Path | None = None
 ) -> Path:

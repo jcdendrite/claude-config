@@ -2531,11 +2531,13 @@ class TestCorpusBudgetWarning:
         fake_python = fake_bin / "python3"
         fake_python.write_text("#!/bin/bash\nexit 0\n")
         fake_python.chmod(0o755)
-        monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
         monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
 
         _stage_oversized_corpus(git_repo)
         write_skill_review_marker(isolated_home, git_repo)
+        # Shadow python3 only after the marker write: marker.sh writes through
+        # a python3 helper, so a stub on PATH earlier would leave no marker.
+        monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
         result = _run_hook_with_stderr(
             SKILL_REVIEW_HOOK,
             bash_input("git commit -m foo", session_id=DEFAULT_TEST_SESSION_ID),

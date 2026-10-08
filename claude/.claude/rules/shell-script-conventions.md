@@ -59,3 +59,9 @@ tied to a specific citation.
   `claude/.claude/scripts/_worktree-lib.sh` +
   `claude/.claude/scripts/tests/test_worktree_lib.py` in the claude-config
   repo.
+- **Embedded `python3 -c`/heredoc Python is for syscalls bash cannot
+  express** (`flock`) — anything with control
+  flow or data structures of its own is a `.py` file with its own test
+  file instead. `marker-clear-stale.py` is the worked case on the far side
+  of that line: it sweeps a directory tree and applies per-entry eviction
+  rules, so it is a script, not an inline snippet.

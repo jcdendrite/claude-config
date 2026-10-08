@@ -1,8 +1,8 @@
 """Tests for nudge-worktree-anchor.sh.
 
 The hook reports one condition: this session is working from the MAIN working
-tree of a repo that requires worktrees, while a linked worktree exists on
-disk. Everything else must be silent, and every path must exit 0 — a non-zero
+tree of a repo that requires worktrees, while a linked worktree other than a
+review-pr checkout exists on disk. Everything else must be silent, and every path must exit 0 — a non-zero
 exit from a UserPromptSubmit hook risks disrupting prompt submission.
 """
 from __future__ import annotations
@@ -19,6 +19,8 @@ from helpers import (
     TRAVERSAL_SESSION_ID,
     plant_traversal_canary,
 )
+
+from .conftest import REVIEW_WORKTREE_NAME, _add_worktree_under_worktrees_dir
 
 NUDGE_HOOK = HOOKS_DIR / "nudge-worktree-anchor.sh"
 
@@ -111,6 +113,87 @@ class TestEmitsOnlyInTheDriftedState:
 
         assert result.returncode == 0
         assert _context(result) is None
+
+    def test_silent_when_the_only_linked_worktree_is_a_review_worktree(
+        self, isolated_home, opted_in_repo
+    ):
+        """A review-pr checkout is someone else's detached PR tree, so it is
+        not a worktree this session should be anchored in."""
+        _add_worktree_under_worktrees_dir(opted_in_repo, REVIEW_WORKTREE_NAME)
+
+        result = _run(opted_in_repo, isolated_home)
+
+        assert result.returncode == 0
+        assert _context(result) is None
+
+    def test_emits_for_a_branch_worktree_directly_under_the_worktrees_dir(
+        self, isolated_home, opted_in_repo
+    ):
+        """The repo's own layout is .claude/worktrees/<branch>, the case the
+        nudge exists for."""
+        branch_worktree = _add_worktree_under_worktrees_dir(
+            opted_in_repo, "feature", branch="feature"
+        )
+
+        result = _run(opted_in_repo, isolated_home)
+
+        assert result.returncode == 0
+        context = _context(result)
+        assert context is not None, "a branch worktree must still be nudged toward"
+        assert str(branch_worktree) in context
+
+    def test_names_the_branch_worktree_not_the_review_one_when_both_exist(
+        self, isolated_home, opted_in_repo
+    ):
+        """Holds whichever order git lists the two; the lib tests pin both
+        orders of the skip."""
+        review_worktree = _add_worktree_under_worktrees_dir(opted_in_repo, REVIEW_WORKTREE_NAME)
+        branch_worktree = _add_worktree_under_worktrees_dir(
+            opted_in_repo, "feature", branch="feature"
+        )
+
+        context = _context(_run(opted_in_repo, isolated_home))
+
+        assert context is not None
+        assert str(branch_worktree) in context
+        assert str(review_worktree) not in context
+
+    def test_emits_for_a_branch_worktree_that_has_a_review_shaped_name(
+        self, isolated_home, opted_in_repo
+    ):
+        """Review checkouts are detached, so a branch worktree is never one."""
+        branch_worktree = _add_worktree_under_worktrees_dir(
+            opted_in_repo, REVIEW_WORKTREE_NAME, branch="review-branch"
+        )
+
+        context = _context(_run(opted_in_repo, isolated_home))
+
+        assert context is not None
+        assert str(branch_worktree) in context
+
+    def test_emits_for_a_user_named_review_prefixed_worktree(
+        self, isolated_home, opted_in_repo
+    ):
+        """A name that only starts with review-pr- is not the shape the
+        checkout script creates."""
+        user_worktree = _add_worktree_under_worktrees_dir(opted_in_repo, "review-pr-hardening")
+
+        context = _context(_run(opted_in_repo, isolated_home))
+
+        assert context is not None
+        assert str(user_worktree) in context
+
+    def test_emits_for_a_review_named_directory_nested_one_level_deeper(
+        self, isolated_home, opted_in_repo
+    ):
+        nested = _add_worktree_under_worktrees_dir(
+            opted_in_repo, f"nested/{REVIEW_WORKTREE_NAME}"
+        )
+
+        context = _context(_run(opted_in_repo, isolated_home))
+
+        assert context is not None
+        assert str(nested) in context
 
     def test_silent_when_the_recorded_worktree_no_longer_exists_on_disk(
         self, isolated_home, opted_in_with_worktree

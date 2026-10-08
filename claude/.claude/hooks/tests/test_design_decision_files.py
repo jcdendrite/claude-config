@@ -693,9 +693,9 @@ def test_scope_cited_angle_names_resolve_to_angle_headers() -> None:
 
 
 def test_item_12a_bullets_parse_annotated_bare_and_quoted_names() -> None:
-    """Pins the parsed bullet names, in order, for the real SKILL.md shape:
-    annotated and bare bullets, a name containing quotes, and a trailing
-    paragraph that isn't part of the list."""
+    """Pins the parsed bullet names, in order, for the real SKILL.md bullet
+    shape (annotated and bare bullets, a name containing quotes), plus a
+    trailing paragraph that isn't part of the list."""
     skill_text = (
         "12a. **Comment/prose discipline on added or modified text** — "
         "Does a new or modified comment violate CLAUDE.md?\n"

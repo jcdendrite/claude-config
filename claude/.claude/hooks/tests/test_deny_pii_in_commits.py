@@ -1678,8 +1678,10 @@ class TestDenyPiiInCommits:
         _lib_command_concludes_commit, the predicate this hook calls when
         its own fragment loop finds no literal `git commit`. This hook is
         fail-closed, so an undetermined match must still deny rather than
-        silently reaching an unscanned allow. See sed_call_counting_shim's
-        docstring for why the failing sed call is not deterministic."""
+        silently reaching an unscanned allow. `sed_call_counting_shim(3)`
+        lets the hook's own fragment split (2 sed calls) and per-fragment
+        quote-strip (1 sed call) succeed, so the quote-strip inside the
+        predicate is the first failing sed call."""
         extra_env = sed_call_counting_shim(3)
         reason = run_hook_reason(
             DENY_PII_IN_COMMITS_HOOK,

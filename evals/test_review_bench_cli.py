@@ -10,6 +10,7 @@ throwaway tmp-path repo, never this repo's own history. No test launches
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import math
@@ -1287,6 +1288,114 @@ class TestCmdAnalyzeOutOfSessionReport:
         # carries only the count.
         stderr = capsys.readouterr().err
         assert f"analyze: out-of-session read in {JUDGE_ARM_RECALL} run j-recall: secret/path.txt" in stderr
+
+
+class TestAnalyzeAndSpotCheckIgnoreAMissingJudgePairSupersededByAResume:
+    def _analyze_report_and_spot_check_item_ids(self, tmp_path: Path, *, with_stopped_missing_pair: bool):
+        tmp_path.mkdir()
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(defects_path, [_confirmed_single_defect()])
+        reviewer_records_path, judge_records_path = _judged_records(tmp_path)
+        if with_stopped_missing_pair:
+            # A `judge` stop leaves d1's missing pair first in the append-only file. The resume appends the ok pair after it.
+            ok_pair = runner.read_run_records(judge_records_path)
+            judge_records_path.unlink()
+            missing_pair = [
+                dataclasses.replace(
+                    record, status=runner.STATUS_MISSING, missing_reason=runner.MISSING_REASON_TIMEOUT,
+                    findings_text=None, attempts=runner.ATTEMPTS_PER_RUN,
+                )
+                for record in ok_pair
+            ]
+            runner.append_run_records(judge_records_path, [*missing_pair, *ok_pair])
+        out_path = tmp_path / "report.json"
+        args = argparse.Namespace(
+            defects_path=str(defects_path), reviewer_records_path=str(reviewer_records_path),
+            judge_records_path=str(judge_records_path), k=1, arm_x=None, baseline_conditions_path=None,
+            out=str(out_path), arms_root=str(_arms_root_with_both_arm_snapshots(tmp_path)), seed=0,
+        )
+        assert run_review_bench.cmd_analyze(args) == 0
+        recall_sample, precision_sample = run_review_bench._build_spot_check_samples(args)
+        item_ids = sorted(candidate.item_id for candidate in (*recall_sample, *precision_sample))
+        return json.loads(out_path.read_text()), item_ids
+
+    def test_a_missing_pair_followed_by_an_ok_pair_yields_the_same_report_and_spot_check_sample_as_the_ok_pair_alone(
+        self, tmp_path: Path,
+    ) -> None:
+        ok_only_report, ok_only_item_ids = self._analyze_report_and_spot_check_item_ids(
+            tmp_path / "ok-only", with_stopped_missing_pair=False,
+        )
+        resumed_report, resumed_item_ids = self._analyze_report_and_spot_check_item_ids(
+            tmp_path / "resumed", with_stopped_missing_pair=True,
+        )
+
+        assert resumed_report == ok_only_report
+        assert resumed_item_ids == ok_only_item_ids
+        assert ok_only_item_ids  # a vacuous empty sample would equal itself
+
+
+class TestAnalyzeAndSpotCheckDropADefectWhoseOnlyJudgePairOfAKindIsMissing:
+    """d1 is missing one judge kind, recall in one test and precision in the other, and has no later ok
+    record of that kind. A judge run leaves this state when it marks d1 complete with one judge missing.
+    d2 is fully ok. The missing record keeps its well-formed answer text, so only its status excludes it."""
+
+    def _stderr_and_spot_check_item_ids(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], *, missing_judge_arm: str,
+    ) -> tuple[str, list[str], list[str]]:
+        defects_path = tmp_path / "defects.json"
+        defects.save_confirmed_defects(
+            defects_path, [_confirmed_single_defect("d1"), _confirmed_single_defect("d2")],
+        )
+        reviewer_records_path, judge_records_path = _judged_records(tmp_path, defect_ids=("d1", "d2"))
+        judge_records = [
+            dataclasses.replace(
+                record, status=runner.STATUS_MISSING, missing_reason=runner.MISSING_REASON_TIMEOUT,
+                attempts=runner.ATTEMPTS_PER_RUN,
+            )
+            if record.defect_id == "d1" and record.arm == missing_judge_arm else record
+            for record in runner.read_run_records(judge_records_path)
+        ]
+        judge_records_path.unlink()
+        runner.append_run_records(judge_records_path, judge_records)
+        args = argparse.Namespace(
+            defects_path=str(defects_path), reviewer_records_path=str(reviewer_records_path),
+            judge_records_path=str(judge_records_path), k=1, arm_x=None, baseline_conditions_path=None,
+            out=str(tmp_path / "report.json"), arms_root=str(_arms_root_with_both_arm_snapshots(tmp_path)), seed=0,
+        )
+
+        assert run_review_bench.cmd_analyze(args) == 0
+        recall_sample, precision_sample = run_review_bench._build_spot_check_samples(args)
+
+        return (
+            capsys.readouterr().err,
+            [candidate.item_id for candidate in recall_sample],
+            [candidate.item_id for candidate in precision_sample],
+        )
+
+    def test_a_missing_recall_judge_drops_the_defect_from_the_recall_sample_and_the_analyze_counts(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        stderr, recall_item_ids, _ = self._stderr_and_spot_check_item_ids(
+            tmp_path, capsys, missing_judge_arm=JUDGE_ARM_RECALL,
+        )
+
+        assert "analyze: 2 confirmed defect(s), 1 kept for recall" in stderr
+        assert "analyze: dropped 0 defect(s) from precision" in stderr  # d1 never reached precision's starting set
+        assert recall_item_ids
+        assert not [item_id for item_id in recall_item_ids if item_id.startswith("d1:")]
+
+    def test_a_missing_precision_judge_drops_the_defect_from_precision_only(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        stderr, recall_item_ids, precision_item_ids = self._stderr_and_spot_check_item_ids(
+            tmp_path, capsys, missing_judge_arm=JUDGE_ARM_PRECISION,
+        )
+
+        assert "analyze: 2 confirmed defect(s), 2 kept for recall" in stderr
+        assert "analyze: dropped 1 defect(s) from precision" in stderr
+        assert [item_id for item_id in recall_item_ids if item_id.startswith("d1:")]  # its ok recall judge stays
+        assert precision_item_ids
+        assert not [item_id for item_id in precision_item_ids if item_id.startswith("d1:")]
 
 
 class TestCmdAnalyzeMalformedBaselineConditions:

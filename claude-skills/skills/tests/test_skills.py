@@ -3809,7 +3809,9 @@ def test_threat_model_tiers_citation_resolves_to_real_heading(relative_path: str
 
 
 # Tier-disposition clauses that keep the review layers fail-closed.
-# The docs/hooks.md entry pins the regression-judging block in its single home.
+# The `hooks-doc-regression-rule` entry pins the regression-judging block in its single home.
+# The `hooks-doc-debt-admission` entry pins the existing-debt admission rule, the disclosure-gate pointer to it, and the lead.
+# The code-review-layer phrases for the DEFER ban, the ask and the Known-gaps recording pin the ask-and-record path.
 # The layer entries pin the per-vector-gap versus genuinely-lax question.
 # The layer entries pin that a regression stays blocking at every tier.
 # The layer entries pin that a finding the tier section does not explicitly waive or route stays under the base rules.
@@ -3827,6 +3829,13 @@ _TIER_DISPOSITION_SECTIONS = [
             "at every tier",
             "does not explicitly waive or route stays under the base rules.",
             "No recording",
+            "DEFERred under criterion 3 as a waived or routed finding against a gate",
+            "that is not a regression is never DEFERred",
+            "admits it as permanent existing debt",
+            "takes a blocking stop-and-ask",
+            "the engineer's own SETTLED row kept with `--carry-forward`",
+            "Before the engineer answers, that stop also gives the base contradiction-route "
+            "rule's human-keep disclosures.",
         ],
         id="code-review-layer",
     ),
@@ -3866,6 +3875,26 @@ _TIER_DISPOSITION_SECTIONS = [
             "restating it; this section is its only home.",
         ],
         id="hooks-doc-regression-rule",
+    ),
+    pytest.param(
+        "docs/hooks.md",
+        "## Threat-model tiers",
+        [
+            "Except for a gap that needs a shape a cooperative agent would never emit, "
+            "a gap discovered later counts as recorded this way only once the human's answer "
+            "to a blocking stop-and-ask accepts that gap as permanent debt, and the commit "
+            "message or PR body that records it states the rationale.",
+            # The predicate must be "does emit": a broader modal reading would override the
+            # never-emit recordings the section deliberately allows.
+            "Until then no text or pointer records as debt a gap discovered later that needs "
+            "a shape a cooperative agent does emit, wherever it sits, even where another "
+            "sentence of this section treats it as debt or routes it without a blocking finding.",
+            "A routine encoding a cooperative agent emits, such as a base64 credential in a "
+            "Kubernetes Secret manifest, is not a waivable shape, so the **Existing debt** rule "
+            "above decides whether a finding on it may be recorded.",
+            "**Existing debt** is a closed set",
+        ],
+        id="hooks-doc-debt-admission",
     ),
 ]
 
@@ -4009,6 +4038,23 @@ def test_owner_authorized_figure_citation_resolves_to_real_heading() -> None:
     """
     _assert_citation_resolves_to_heading(
         REPO_ROOT / "docs" / "cost-levers-considered.md",
+        "docs/private-project-redaction.md",
+        "The owner can authorize one figure, case by case",
+        repo_root=REPO_ROOT,
+    )
+
+
+def test_pr_cost_export_aggregate_citation_resolves_to_real_heading() -> None:
+    """docs/pr-cost.md cites `docs/private-project-redaction.md` § "The
+    owner can authorize one figure, case by case" somewhere — resolves to a
+    real heading there.
+
+    A heading rename would silently orphan the pointer to the per-figure
+    authorization gate, and docs/*.md sits outside the generic skill-citation
+    sweep.
+    """
+    _assert_citation_resolves_to_heading(
+        REPO_ROOT / "docs" / "pr-cost.md",
         "docs/private-project-redaction.md",
         "The owner can authorize one figure, case by case",
         repo_root=REPO_ROOT,
@@ -5860,7 +5906,8 @@ _CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR = "DISPOSITION_RULE:code-review-contradi
 # no-explicit-verdict blocking stop, and how a keep is logged and carried. It
 # is pinned whole so removing or weakening any sentence fails a test. The whole
 # region is compared by exact equality, so any added, removed, or reworded text
-# inside the anchors fails.
+# inside the anchors fails. The mid-sentence "- " tokens are SKILL.md's
+# verdict bullets after whitespace collapse, not typos.
 _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "**A finding whose fix would undo a fix an earlier round applied "
     "is also a design question, in every round, staged commit-gate "
@@ -5892,13 +5939,13 @@ _PINNED_CONTRADICTION_ROUTE_CLAUSE = (
     "standard is that the current text wins unless the finding names a "
     "defect, under a stated rule, that the current text actually has. "
     "One consult carries every such finding in the round and returns "
-    "exactly one of the three verdicts per finding. *Keep current "
+    "exactly one of the three verdicts per finding: - *Keep current "
     "text* resolves it with nothing dispatched, logged as "
     "`--disposition SETTLED --decided-by plan-architect` with the "
     "verdict in `--rationale` and a range-form `--source` naming the "
     "whole block, and is never available to a finding the "
-    "enforcement-invariant rule below covers. *Apply this round's fix* "
-    "is an ordinary ADDRESS row on the `code-writer` route. *Cannot "
+    "enforcement-invariant rule below covers. - *Apply this round's fix* "
+    "is an ordinary ADDRESS row on the `code-writer` route. - *Cannot "
     "choose* is a blocking stop-and-ask to the human. A finding with "
     "no explicit per-finding verdict from the consult (failed "
     "dispatch, empty, hedged, or partial coverage) is likewise a "

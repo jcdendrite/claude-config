@@ -5,14 +5,26 @@
 # _marker_lib_repo_hash is defined in the sourced library so the hash recipe
 # stays in sync with the read side (require-*.sh hooks) automatically.
 # shellcheck source=../hooks/_lib.sh
-. "$(dirname "$0")/../hooks/_lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_lib.sh"
 
 set -u
 
 # Sibling script, same directory as marker.sh itself -- used by the `status`
 # arm below via _lib_cumulative_diff_hash. The `write cumulative-review` arm
 # reads a recorded subject instead of calling this script directly.
-PR_DIFF_SCRIPT="$(dirname "$0")/pr-diff-against-base.sh"
+PR_DIFF_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/pr-diff-against-base.sh"
+
+# Sibling script, invoked by the `write review-pr` arm below to mechanically
+# backstop SKILL.md's synthesize-and-record step's own prose scrubbing
+# instruction before the completion marker is written -- see that script's
+# own header for what it scans for.
+REVIEW_PR_SCAN_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/review-pr-scan-findings-body.sh"
+
+# Sibling script, invoked by the `write review-pr` arm below to mechanically
+# backstop SKILL.md's synthesize-and-record step's own attribution-prefix/
+# trailer/disclosure instruction before the completion marker is written --
+# see that script's own header for what it checks.
+REVIEW_PR_ATTRIBUTION_SCRIPT="$(dirname "${BASH_SOURCE[0]}")/review-pr-check-attribution.sh"
 
 # The pathspecs are load-bearing: scope the hash to SKILL.md diffs (stowed,
 # plugin, plugin-root-equals-repo-root, and this repo's own project-layer
@@ -20,9 +32,54 @@ PR_DIFF_SCRIPT="$(dirname "$0")/pr-diff-against-base.sh"
 # checks at commit time.
 SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/SKILL.md' 'skills/**/SKILL.md' '.claude/skills/**/SKILL.md' 'claude-skills/skills/plan-review/ROUTING.md')
 
-# Paired literal: announce-approved-plan-path.sh matches this exact prefix on the
-# `write plan-review` output lines.
-PLAN_REVIEW_COVERED_PATH_PREFIX='plan-review marker covers: '
+# Single registry for every `write <skill>` target: usage()'s two enum lines
+# (the "status" description and the "Valid combinations" write line) and the
+# `write)` case's *) rejection message all read this array.
+WRITE_SKILLS=(code-review skill-review plan-review ready-for-review cumulative-review review-pr verification)
+
+# Parallel indexed arrays (bash 3.2 has no associative arrays) holding each
+# skill's own active-bypass directory name. review-pr has no
+# activate/deactivate arm, so it has no directory entry here.
+ACTIVE_BYPASS_SKILLS=(plan-review ready-for-review respond-pr memory-skill handoff)
+ACTIVE_BYPASS_DIRS=(.plan-review-active.d .ready-for-review-active.d .respond-pr-active.d .memory-skill-active.d .handoff-active.d)
+
+# _join_words SEPARATOR WORD...
+# Prints WORDs joined by SEPARATOR (which may be multiple characters, e.g.
+# " | " -- IFS-based joining only supports a single-character separator).
+_join_words() {
+  local sep="$1"; shift
+  local first=1 word
+  for word in "$@"; do
+    if [ "$first" -eq 1 ]; then
+      printf '%s' "$word"
+      first=0
+    else
+      printf '%s%s' "$sep" "$word"
+    fi
+  done
+}
+
+# _active_bypass_dir_for SKILL
+# Prints SKILL's active-bypass directory name (e.g. ".plan-review-active.d")
+# and returns 0, or returns 1 with no output when SKILL is not in
+# ACTIVE_BYPASS_SKILLS.
+_active_bypass_dir_for() {
+  local skill="$1" i
+  for i in "${!ACTIVE_BYPASS_SKILLS[@]}"; do
+    if [ "${ACTIVE_BYPASS_SKILLS[$i]}" = "$skill" ]; then
+      printf '%s' "${ACTIVE_BYPASS_DIRS[$i]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# _active_bypass_skill_list
+# Prints ACTIVE_BYPASS_SKILLS as a comma-and-space-separated list, for the
+# `activate`/`deactivate` rejection messages.
+_active_bypass_skill_list() {
+  _join_words ', ' "${ACTIVE_BYPASS_SKILLS[@]}"
+}
 
 usage() {
   cat >&2 <<'EOF'
@@ -31,32 +88,43 @@ Usage: ~/.claude/scripts/marker.sh <subcommand> [<skill>|--dry-run]
 Subcommands:
   write      Write a completion marker for the given skill
   activate   Write an active-bypass marker for the given skill
-  deactivate Remove the active-bypass marker for the given skill
+  deactivate Remove the active-bypass marker for the given skill. Exits 1
+             when the active-bypass marker or, for plan-review, its
+             .planmode-path file cannot be removed, after running the other
+             cleanups. Those other cleanups are best-effort and never
+             change the exit status.
   clear-stale [--dry-run]
              Evict active-bypass markers whose originating session is no
              longer alive, or whose mtime has aged past the 60-minute idle
-             window. --dry-run reports without removing.
+             window. Also removes the review-pr artifacts (.body,
+             .provenance, .diff, .context.json under .review-pr-active.d)
+             whose owning session is dead. --dry-run reports without
+             removing. Prints the sweeper's output, then exits with its
+             status: 0 when the sweep completed, 1 when an entry or an
+             active directory could not be processed (--dry-run also exits
+             1 on an unlistable directory), and 2 or 127 when the sweeper
+             or python3 is missing. A re-run retries.
   resolve-session-id
              Print this session's canonically-resolved session id. Takes no
              skill argument.
-  status     Report every completion marker (code-review, skill-review,
-             plan-review, ready-for-review, verification, cumulative-review)
-             for this repo and every active-bypass marker (plan-review,
-             ready-for-review, respond-pr, memory-skill, handoff) for this
-             session, each as live, historical, or absent. Takes no skill
-             argument. Evicts a stale (dead-PID) active-bypass marker for
-             this session as a side effect of classifying it.
+EOF
+  printf '  status     Report every completion marker (%s) for\n' "$(_join_words ', ' "${WRITE_SKILLS[@]}")" >&2
+  printf '             this repo and every active-bypass marker (%s)\n' "$(_active_bypass_skill_list)" >&2
+  cat >&2 <<'EOF'
+             for this session, each as live, historical, or absent. Takes no
+             skill argument. Evicts a stale (dead-PID) active-bypass marker
+             for this session as a side effect of classifying it.
   check      Report whether a completion marker already matches the
              current state, without writing anything. Exit 0 and print
              "match" if it does, exit 1 and print "no-match" if it
              doesn't.
 
 Valid (subcommand, skill) combinations:
-  write       code-review | skill-review | plan-review | ready-for-review | cumulative-review | verification
-  activate    plan-review | ready-for-review | respond-pr | memory-skill | handoff
-  deactivate  plan-review | ready-for-review | respond-pr | memory-skill | handoff
-  check       code-review | verification
 EOF
+  printf '  write       %s\n' "$(_join_words ' | ' "${WRITE_SKILLS[@]}")" >&2
+  printf '  activate    %s\n' "$(_join_words ' | ' "${ACTIVE_BYPASS_SKILLS[@]}")" >&2
+  printf '  deactivate  %s\n' "$(_join_words ' | ' "${ACTIVE_BYPASS_SKILLS[@]}")" >&2
+  printf '  check       code-review | verification\n' >&2
 }
 
 _walk_session() {
@@ -72,7 +140,10 @@ _walk_session() {
   printf '%s' "$out"
 }
 
-_resolve_session_id() {
+# _resolve_session_and_pid
+# Resolves session id and Claude PID from one _walk_session call and sets
+# both as the globals SESSION_ID and CLAUDE_PID.
+_resolve_session_and_pid() {
   local out sid
   out=$(_walk_session) || return 2
   sid="${out%% *}"
@@ -85,18 +156,14 @@ _resolve_session_id() {
     printf 'marker.sh: SESSION_ID %s is not a valid path component. Abort without writing a marker.\n' "$sid" >&2
     return 2
   fi
-  printf '%s' "$sid"
+  SESSION_ID="$sid"
+  CLAUDE_PID="${out##* }"
 }
 
-_resolve_claude_pid() {
-  # The live Claude main-process PID for this session — the ancestor whose
-  # session file the walk matched. Written into the active-bypass marker so
-  # require-*.sh hooks can liveness-check it with kill -0. Resolving it from
-  # the ancestor walk (not by content-scanning ~/.claude/sessions/) keeps it
-  # immune to stale per-session files left behind after a crash.
-  local out
-  out=$(_walk_session) || return 2
-  printf '%s' "${out##* }"
+# Prints this session's validated session id, for `$(...)` capture.
+_resolve_session_id() {
+  _resolve_session_and_pid || return 2
+  printf '%s' "$SESSION_ID"
 }
 
 _refuse_main_tree_under_enforcement() {
@@ -120,13 +187,13 @@ _refuse_main_tree_under_enforcement() {
     return 2
   fi
   [ "$session_git_dir" != "$common_git_dir" ] && return 0
-  # Main tree, but no linked worktree exists: there is no second tree for this
-  # marker to be confused with, so it correctly describes the only tree there
-  # is. Refusing here would wedge a repo whose staged state was produced
-  # outside Claude Code's gated tool calls — a hand-staged edit in a terminal
-  # or editor, a CI checkout, or work staged before the repo opted in. The
-  # worktree hooks gate tool calls, not ambient git state, so that condition is
-  # reachable and legitimate.
+  # Main tree, but no linked worktree other than a review-pr checkout exists:
+  # there is no second tree for this marker to be confused with, so it
+  # correctly describes the only tree there is. Refusing here would wedge a
+  # repo whose staged state was produced outside Claude Code's gated tool
+  # calls — a hand-staged edit in a terminal or editor, a CI checkout, or work
+  # staged before the repo opted in. The worktree hooks gate tool calls, not
+  # ambient git state, so that condition is reachable and legitimate.
   worktree=$(_lib_first_live_linked_worktree "$root") || return 0
   printf 'marker.sh: refusing to write a marker from the main working tree (%s) while worktree enforcement is active and a linked worktree exists (%s).\n' "$root" "$worktree" >&2
   printf 'Markers are keyed to the tree they are written from, so this would record the review against the wrong tree.\n' >&2
@@ -201,6 +268,30 @@ _status_report_completion_marker() {
     printf '  %s: absent (no marker for this repo)\n' "$label"
   fi
   return 1
+}
+
+# _status_report_review_pr_marker CONFIG_DIR REPO_HASH SESSION_ID CURRENT_HEAD_REF_OID
+# Prints "  review-pr: live|historical|absent (...)" for `status`. Reads only this
+# session's own marker, through _lib_review_pr_completion_marker_fields (the
+# reader review-pr-post.sh uses), never a glob over the repo hash's prefix:
+# another session's marker must not read as this session's. Live means the
+# marker's second line, the reviewed headRefOid, equals CURRENT_HEAD_REF_OID
+# (this session's provenance value). No local HEAD is involved, since no
+# reviewed tree need be the current one. A marker the reader rejects as
+# malformed reads as absent.
+_status_report_review_pr_marker() {
+  local config_dir="$1" repo_hash="$2" session_id="$3" current_head_ref_oid="$4"
+  local marker_fields marker_head_ref_oid
+  if ! marker_fields=$(_lib_review_pr_completion_marker_fields "$config_dir" "$repo_hash" "$session_id"); then
+    printf '  review-pr: absent (no readable marker for this session)\n'
+    return 0
+  fi
+  marker_head_ref_oid=$(printf '%s\n' "$marker_fields" | sed -n '2p')
+  if [ -n "$current_head_ref_oid" ] && [ "$marker_head_ref_oid" = "$current_head_ref_oid" ]; then
+    printf '  review-pr: live (the marker for this session matches the reviewed headRefOid)\n'
+  else
+    printf '  review-pr: historical (marker for this session present, headRefOid does not match the current review)\n'
+  fi
 }
 
 # _status_reconciliation_flag LABEL REPO_ROOT [PATHSPEC...]
@@ -336,6 +427,14 @@ _marker_fresh_age() {
   printf '%s' "$best_age"
 }
 
+# Guards the two top-level dispatch `case` statements below (the arg-count
+# validation and the main SUBCOMMAND case) so a test can `. marker.sh` to
+# call a function directly (e.g. _hash_staged_diff) without also triggering
+# the CLI dispatch, which would fail on a missing $1. BASH_SOURCE[0] (the
+# file currently executing) differs from $0 (the top-level script or
+# interpreter) only when this file is sourced rather than run directly.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
   exit 0
@@ -355,6 +454,15 @@ CONFIG_DIR=$(_lib_config_dir) || {
   # and $CLAUDE_CONFIG_DIR name the env vars in the message, not shell expansions.
   printf 'marker.sh: could not resolve the Claude Code config directory (CLAUDE_CONFIG_DIR is set to a relative path, or $HOME is unset/empty). Abort without writing a marker.\n' >&2
   exit 2
+}
+
+# Wraps _lib.sh's shared _lib_review_pr_artifact_path helper at the fixed
+# findings-body suffix, so this script's `write review-pr` arm and
+# review-pr-post.sh both resolve the same path through one definition.
+# SKILL.md's synthesize-and-record step writes the findings body here and
+# nowhere else.
+_review_pr_findings_body_fixed_path() {
+  _lib_review_pr_artifact_path "$CONFIG_DIR" "$1" body
 }
 
 SUBCOMMAND="$1"
@@ -532,7 +640,7 @@ case "$SUBCOMMAND" in
           > "$CONFIG_DIR/plan-review-markers/$REPO_HASH.$SESSION_ID" || exit
         while IFS= read -r COVERED_PLAN_PATH; do
           [ -n "$COVERED_PLAN_PATH" ] || continue
-          printf '%s%s\n' "$PLAN_REVIEW_COVERED_PATH_PREFIX" "$COVERED_PLAN_PATH"
+          printf '%s%s\n' "$_LIB_PLAN_REVIEW_COVERED_PATH_PREFIX" "$COVERED_PLAN_PATH"
         done <<< "$COVERED_PLAN_PATHS"
         ;;
       ready-for-review)
@@ -599,6 +707,89 @@ case "$SUBCOMMAND" in
             > "$CONFIG_DIR/cumulative-review-markers/$REPO_HASH.$SESSION_ID" \
           && rm -f "$SUBJECT_FILE"
         ;;
+      review-pr)
+        SESSION_ID=$(_resolve_session_id) || exit 2
+        # Provenance file written by review-pr-acquire.sh (mode acquired)
+        # and rewritten by review-pr-checkout.sh/review-pr-diff.sh (mode
+        # checkout/diff-only): PR identity, the reviewed headRefOid, the
+        # session's Claude PID, and the mode. It never holds the findings-body
+        # text, so the findings never land in argv, shell history, or the
+        # process table. Fields are read by key, not by line position, so an
+        # added field cannot shift another field's read.
+        PROVENANCE=$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)
+        PR_IDENTITY=$(_lib_review_pr_provenance_field "$PROVENANCE" pr_identity) || PR_IDENTITY=""
+        HEAD_REF_OID=$(_lib_review_pr_provenance_field "$PROVENANCE" head_ref_oid) || HEAD_REF_OID=""
+        PROVENANCE_PID=$(_lib_review_pr_provenance_field "$PROVENANCE" pid) || PROVENANCE_PID=""
+        MODE=$(_lib_review_pr_provenance_field "$PROVENANCE" mode) || MODE=""
+        if [ -z "$PR_IDENTITY" ] || [ -z "$HEAD_REF_OID" ] || [ -z "$MODE" ] || [ -z "$PROVENANCE_PID" ]; then
+          printf 'marker.sh: %s is missing, unreadable, or missing PR identity, headRefOid, mode, or PID. Abort without writing a marker.\n' "$PROVENANCE" >&2
+          exit 2
+        fi
+        case "$PROVENANCE_PID" in
+          ''|*[!0-9]*)
+            printf 'marker.sh: %s has a non-numeric PID field. Abort without writing a marker.\n' "$PROVENANCE" >&2
+            exit 2
+            ;;
+        esac
+        # An acquire-only session (mode "acquired") has run neither the
+        # checkout audit nor the no-checkout diff path, so it can never
+        # write a completion marker -- and any other value is a corrupted
+        # or hand-written provenance (any process that can write files can
+        # write this skill's own state, an accepted residual risk). Refuse
+        # rather than falling through to either known branch by default.
+        case "$MODE" in
+          checkout | diff-only) ;;
+          *)
+            printf 'marker.sh: %s has mode %s, which is neither checkout nor diff-only. Abort without writing a marker.\n' "$PROVENANCE" "$MODE" >&2
+            exit 2
+            ;;
+        esac
+        # Keyed to the main tree's root, not the current tree's, in both
+        # modes: the marker binds a session to a PR review, not to a tree,
+        # so it needs no _resolve_repo_root main-tree refusal and can be
+        # written from wherever the session stands. The remote headRefOid
+        # re-check in review-pr-post.sh is the freshness binding.
+        REPO_HASH=$(_lib_review_pr_marker_repo_hash) || {
+          printf 'marker.sh: not inside a git repository, git is older than 2.31 (which lacks rev-parse --path-format), or the repo hash could not be computed\n' >&2
+          exit 2
+        }
+        # The findings-body path is derived here, never read from provenance,
+        # so no path-equality guard is needed before using it.
+        FINDINGS_BODY_PATH=$(_review_pr_findings_body_fixed_path "$SESSION_ID")
+        # Computed before writing, same as every arm above. A symlink at the
+        # path is followed, matching the Write tool that created the file.
+        BODY_HASH=$(_lib_capped sha256sum -- "$FINDINGS_BODY_PATH" 2>/dev/null | awk '{print $1}')
+        [ -n "$BODY_HASH" ] || { printf 'marker.sh: could not hash the findings-body file %s (missing or unreadable). Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2; exit 2; }
+        # The two checks below each read the body by path, so the hash is
+        # taken again after them: a body changed in between would otherwise
+        # get a marker covering bytes neither check saw.
+        # Attribution prefix, trailer, and (diff-only mode) disclosure line
+        # check, run before the marker is written so a failure refuses the
+        # whole write (see review-pr-check-attribution.sh's header for why it
+        # is mechanical). _lib_capped's 5s default bounds a local read of a
+        # session-owned text file.
+        if ! ATTRIBUTION_OUTPUT=$(_lib_capped "$REVIEW_PR_ATTRIBUTION_SCRIPT" "$FINDINGS_BODY_PATH" "$MODE" 2>&1); then
+          printf '%s\n' "$ATTRIBUTION_OUTPUT" >&2
+          printf 'marker.sh: findings-body attribution check failed. Abort without writing a marker.\n' >&2
+          exit 2
+        fi
+        # Credential-shape scan, run before the marker is written so a hit
+        # refuses the whole write (see review-pr-scan-findings-body.sh's header
+        # for why it is mechanical).
+        if ! SCAN_OUTPUT=$(_lib_capped "$REVIEW_PR_SCAN_SCRIPT" "$FINDINGS_BODY_PATH" 2>&1); then
+          printf '%s\n' "$SCAN_OUTPUT" >&2
+          printf 'marker.sh: findings-body secret scan failed. Abort without writing a marker.\n' >&2
+          exit 2
+        fi
+        BODY_HASH_AFTER_CHECKS=$(_lib_capped sha256sum -- "$FINDINGS_BODY_PATH" 2>/dev/null | awk '{print $1}')
+        if [ "$BODY_HASH_AFTER_CHECKS" != "$BODY_HASH" ]; then
+          printf 'marker.sh: the findings-body file %s changed while it was being checked. Abort without writing a marker.\n' "$FINDINGS_BODY_PATH" >&2
+          exit 2
+        fi
+        mkdir -p "$CONFIG_DIR/review-pr-markers"
+        printf '%s\n%s\n%s\n%s\n' "$PR_IDENTITY" "$HEAD_REF_OID" "$BODY_HASH" "$MODE" > "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID" \
+          || { printf 'marker.sh: could not write the completion marker (permission error). Abort.\n' >&2; exit 2; }
+        ;;
       verification)
         SESSION_ID=$(_resolve_session_id) || exit 2
         REPO_ROOT=$(_resolve_repo_root) || exit 2
@@ -638,103 +829,72 @@ case "$SUBCOMMAND" in
           > "$CONFIG_DIR/verification-markers/$REPO_HASH.$SESSION_ID"
         ;;
       *)
-        printf "marker.sh: 'write %s' is not valid. 'write' supports: code-review, skill-review, plan-review, ready-for-review, cumulative-review, verification\n" "$SKILL" >&2
+        printf "marker.sh: 'write %s' is not valid. 'write' supports: %s\n" "$SKILL" "$(_join_words ', ' "${WRITE_SKILLS[@]}")" >&2
         exit 2
         ;;
     esac
     ;;
   activate)
-    case "$SKILL" in
-      plan-review)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
-        mkdir -p "$CONFIG_DIR/.plan-review-active.d"
-        printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID"
-        # Backfill: a ROUTING.md Read landing just before this activate still
-        # counts, via log-routing-read.sh's pending-read record. 5 minutes
-        # covers a same-turn re-read while staying well inside
-        # require-routing-read.sh's 60-minute freshness window, so a stale
-        # Read from earlier in the session can't falsely backfill.
-        PENDING_READ="$CONFIG_DIR/.plan-review-pending-read.d/$SESSION_ID"
-        if [ -f "$PENDING_READ" ] && [ -n "$(find "$PENDING_READ" -mmin -5 2>/dev/null)" ]; then
-          mkdir -p "$CONFIG_DIR/.plan-review-routing-read.d"
-          touch "$CONFIG_DIR/.plan-review-routing-read.d/$SESSION_ID"
-        fi
-        ;;
-      ready-for-review)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
-        mkdir -p "$CONFIG_DIR/.ready-for-review-active.d"
-        printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.ready-for-review-active.d/$SESSION_ID"
-        ;;
-      respond-pr)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
-        mkdir -p "$CONFIG_DIR/.respond-pr-active.d"
-        printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.respond-pr-active.d/$SESSION_ID"
-        ;;
-      memory-skill)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
-        mkdir -p "$CONFIG_DIR/.memory-skill-active.d"
-        printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.memory-skill-active.d/$SESSION_ID"
-        ;;
-      handoff)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        CLAUDE_PID=$(_resolve_claude_pid) || exit 2
-        mkdir -p "$CONFIG_DIR/.handoff-active.d"
-        printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/.handoff-active.d/$SESSION_ID"
-        ;;
-      *)
-        printf "marker.sh: 'activate %s' is not valid. 'activate' supports: plan-review, ready-for-review, respond-pr, memory-skill, handoff\n" "$SKILL" >&2
-        exit 2
-        ;;
-    esac
+    if ! ACTIVE_BYPASS_DIR=$(_active_bypass_dir_for "$SKILL"); then
+      printf "marker.sh: 'activate %s' is not valid. 'activate' supports: %s\n" "$SKILL" "$(_active_bypass_skill_list)" >&2
+      exit 2
+    fi
+    _resolve_session_and_pid || exit 2
+    mkdir -p "$CONFIG_DIR/$ACTIVE_BYPASS_DIR"
+    # `|| exit` carries the failed write's status past the plan-review `if`
+    # below, whose false condition would otherwise end the script with 0.
+    printf '%s\n' "$CLAUDE_PID" > "$CONFIG_DIR/$ACTIVE_BYPASS_DIR/$SESSION_ID" || exit
+    if [ "$SKILL" = "plan-review" ]; then
+      # Backfill: a ROUTING.md Read landing just before this activate
+      # still counts, via log-routing-read.sh's pending-read record. 5
+      # minutes covers a same-turn re-read while staying well inside
+      # require-routing-read.sh's 60-minute freshness window, so a stale
+      # Read from earlier in the session can't falsely backfill.
+      PENDING_READ="$CONFIG_DIR/.plan-review-pending-read.d/$SESSION_ID"
+      if [ -f "$PENDING_READ" ] && [ -n "$(find "$PENDING_READ" -mmin -5 2>/dev/null)" ]; then
+        mkdir -p "$CONFIG_DIR/.plan-review-routing-read.d"
+        touch "$CONFIG_DIR/.plan-review-routing-read.d/$SESSION_ID"
+      fi
+    fi
     ;;
   deactivate)
-    case "$SKILL" in
-      plan-review)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        rm -f "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID"
-        rm -f "$CONFIG_DIR/.plan-review-active.d/$SESSION_ID.planmode-path"
-        rm -f "$CONFIG_DIR/.plan-review-routing-read.d/$SESSION_ID"
-        rm -f "$CONFIG_DIR/.plan-review-pending-read.d/$SESSION_ID"
-        ;;
-      ready-for-review)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        rm -f "$CONFIG_DIR/.ready-for-review-active.d/$SESSION_ID"
-        # Best-effort: bounds this session's own recorded-but-unwritten
-        # cumulative-review subject, and its step-4 diff-file artifact, to
-        # this gate run. Session-suffixed so this only ever removes this
-        # session's own artifacts, never another session's still-pending
-        # ones. Repo-root resolution is unrelated to the session-scoped
-        # removal above, so a failure here must not abort it -- skip the
-        # artifact cleanup instead.
-        if REPO_ROOT=$(_resolve_repo_root 2>/dev/null); then
-          REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
-          rm -f "$CONFIG_DIR/cumulative-review-subject-markers/$REPO_HASH.$SESSION_ID"
-          rm -f "$CONFIG_DIR/cumulative-review-diff-markers/$REPO_HASH.$SESSION_ID"
-        else
-          printf 'marker.sh: could not resolve repo root; skipping cumulative-review subject and diff-file cleanup.\n' >&2
-        fi
-        ;;
-      respond-pr)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        rm -f "$CONFIG_DIR/.respond-pr-active.d/$SESSION_ID"
-        ;;
-      memory-skill)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        rm -f "$CONFIG_DIR/.memory-skill-active.d/$SESSION_ID"
-        ;;
-      handoff)
-        SESSION_ID=$(_resolve_session_id) || exit 2
-        rm -f "$CONFIG_DIR/.handoff-active.d/$SESSION_ID"
-        ;;
-      *)
-        printf "marker.sh: 'deactivate %s' is not valid. 'deactivate' supports: plan-review, ready-for-review, respond-pr, memory-skill, handoff\n" "$SKILL" >&2
-        exit 2
-        ;;
-    esac
+    if ! ACTIVE_BYPASS_DIR=$(_active_bypass_dir_for "$SKILL"); then
+      printf "marker.sh: 'deactivate %s' is not valid. 'deactivate' supports: %s\n" "$SKILL" "$(_active_bypass_skill_list)" >&2
+      exit 2
+    fi
+    SESSION_ID=$(_resolve_session_id) || exit 2
+    # A failed removal leaves a live bypass marker, or a plan-mode path file
+    # that steers the next `write plan-review`, so either status is the arm's
+    # exit status. The other cleanups are best-effort, and every cleanup runs.
+    MARKER_REMOVAL_STATUS=0
+    if ! rm -f "$CONFIG_DIR/$ACTIVE_BYPASS_DIR/$SESSION_ID"; then
+      MARKER_REMOVAL_STATUS=1
+      printf 'marker.sh: could not remove %s; gates that check only its presence never expire it. Retry marker.sh deactivate %s after fixing the directory; marker.sh clear-stale reclaims the marker only once the session has ended or idled 60 minutes.\n' "$CONFIG_DIR/$ACTIVE_BYPASS_DIR/$SESSION_ID" "$SKILL" >&2
+    fi
+    if [ "$SKILL" = "plan-review" ]; then
+      if ! rm -f "$CONFIG_DIR/$ACTIVE_BYPASS_DIR/$SESSION_ID.planmode-path"; then
+        MARKER_REMOVAL_STATUS=1
+        printf 'marker.sh: could not remove %s; the next write plan-review hashes the plan target it declares.\n' "$CONFIG_DIR/$ACTIVE_BYPASS_DIR/$SESSION_ID.planmode-path" >&2
+      fi
+      rm -f "$CONFIG_DIR/.plan-review-routing-read.d/$SESSION_ID"
+      rm -f "$CONFIG_DIR/.plan-review-pending-read.d/$SESSION_ID"
+    elif [ "$SKILL" = "ready-for-review" ]; then
+      # Best-effort: bounds this session's own recorded-but-unwritten
+      # cumulative-review subject, and its step-4 diff-file artifact, to
+      # this gate run. Session-suffixed so this only ever removes this
+      # session's own artifacts, never another session's still-pending
+      # ones. Repo-root resolution is unrelated to the session-scoped
+      # removal above, so a failure here must not abort it -- skip the
+      # artifact cleanup instead.
+      if REPO_ROOT=$(_resolve_repo_root 2>/dev/null); then
+        REPO_HASH=$(_marker_lib_repo_hash "$REPO_ROOT")
+        rm -f "$CONFIG_DIR/cumulative-review-subject-markers/$REPO_HASH.$SESSION_ID"
+        rm -f "$CONFIG_DIR/cumulative-review-diff-markers/$REPO_HASH.$SESSION_ID"
+      else
+        printf 'marker.sh: could not resolve repo root; skipping cumulative-review subject and diff-file cleanup.\n' >&2
+      fi
+    fi
+    exit "$MARKER_REMOVAL_STATUS"
     ;;
   clear-stale)
     # Sweeps only .*-active.d/ below. cumulative-review-subject-markers/ and
@@ -744,53 +904,23 @@ case "$SUBCOMMAND" in
     #   - each artifact is bounded to one session
     #   - overwritten on the next gate pass
     #   - revisit only if unbounded accumulation shows up in practice
+    #
+    # .review-pr-active.d keeps the `-active.d` suffix although review-pr has
+    # no activate/deactivate arm: the sweep globs "$CONFIG_DIR"/.*-active.d,
+    # so a renamed directory would never be swept.
+    #
+    # The sweep runs in marker-clear-stale.py (see shell-script-conventions.md)
+    # because it has its own control flow and data structures.
     DRY_RUN=0
     [ "$ARG2" = "--dry-run" ] && DRY_RUN=1
-    EVICTED=0
-    KEPT=0
-    for active_dir in "$CONFIG_DIR"/.*-active.d; do
-      [ -d "$active_dir" ] || continue
-      dir_name=$(basename "$active_dir")
-      for entry in "$active_dir"/*; do
-        [ -f "$entry" ] || continue
-        # Name-based exemption, not a PID-liveness question: this sibling
-        # holds a declared plan-mode path, never a PID, so the ^[0-9]+$ test
-        # below would always misread it as a dead marker and evict it.
-        case "$entry" in
-          *.planmode-path) continue ;;
-        esac
-        stored_pid=$(cat "$entry" 2>/dev/null | tr -d '[:space:]')
-        entry_name=$(basename "$entry")
-        # Same two-part staleness definition _lib_active_bypass_marker_live
-        # uses: PID alive AND mtime within the 60-minute idle window. Kept
-        # as its own loop rather than delegating to that predicate, which
-        # has no dry-run mode and doesn't report which of the two triggers
-        # fired.
-        pid_alive=0
-        [[ "$stored_pid" =~ ^[0-9]+$ ]] && kill -0 "$stored_pid" 2>/dev/null && pid_alive=1
-        if [ "$pid_alive" -eq 1 ] && [ -n "$(find "$entry" -mmin -60 2>/dev/null)" ]; then
-          KEPT=$((KEPT + 1))
-          [ "$DRY_RUN" -eq 1 ] && printf '  keep: %s/%s (PID %s alive)\n' "$dir_name" "$entry_name" "$stored_pid"
-        else
-          EVICTED=$((EVICTED + 1))
-          if [ "$pid_alive" -eq 1 ]; then
-            reason="idle timeout, PID ${stored_pid} alive"
-          else
-            reason="PID ${stored_pid:-empty} dead"
-          fi
-          if [ "$DRY_RUN" -eq 0 ]; then
-            rm -f "$entry"
-            printf '  evict: %s/%s (%s)\n' "$dir_name" "$entry_name" "$reason"
-          else
-            printf '  evict (dry-run): %s/%s (%s)\n' "$dir_name" "$entry_name" "$reason"
-          fi
-        fi
-      done
-    done
-    if [ "$DRY_RUN" -eq 1 ]; then
-      printf 'clear-stale: would evict %d orphan(s), keep %d active\n' "$EVICTED" "$KEPT"
-    else
-      printf 'clear-stale: evicted %d orphan(s), kept %d active\n' "$EVICTED" "$KEPT"
+    # The sweeper's exit status is the arm's exit status. A missing python3 or
+    # sibling file prints nothing on stdout, so an empty capture adds no line.
+    CLEAR_STALE_STATUS=0
+    CLEAR_STALE_OUTPUT=$(python3 -I "$(dirname "$0")/marker-clear-stale.py" "$CONFIG_DIR" "$DRY_RUN") || CLEAR_STALE_STATUS=$?
+    [ -z "$CLEAR_STALE_OUTPUT" ] || printf '%s\n' "$CLEAR_STALE_OUTPUT"
+    if [ "$CLEAR_STALE_STATUS" -ne 0 ]; then
+      printf 'marker.sh: clear-stale did not complete (sweeper exit status %s); stale markers may remain. See any "failed:" lines above, and re-run to retry them.\n' "$CLEAR_STALE_STATUS" >&2
+      exit "$CLEAR_STALE_STATUS"
     fi
     ;;
   resolve-session-id)
@@ -894,12 +1024,24 @@ case "$SUBCOMMAND" in
       printf '  cumulative-review: could not verify (pr-diff-against-base.sh failed, the diff is empty -- often because this branch already has a merged PR -- or resolution timed out -- the state above reflects marker presence only, not a confirmed hash comparison)\n' >&2
     fi
 
+    # review-pr: keyed to the main tree's root (_lib_review_pr_marker_repo_hash),
+    # not REPO_HASH above, so every tree of the repo reads the same marker.
+    # This report is reachable only where the lines above are, because the
+    # `status` arm's _resolve_repo_root exits first from the main tree of a
+    # worktree-enforced repo that has a linked worktree other than a review-pr
+    # checkout. The else branch runs only when the main-root lookup or its
+    # hash fails after that succeeded.
+    if REVIEW_PR_REPO_HASH=$(_lib_review_pr_marker_repo_hash); then
+      REVIEW_PR_VALUE=$(_lib_review_pr_provenance_field "$(_lib_review_pr_artifact_path "$CONFIG_DIR" "$SESSION_ID" provenance)" head_ref_oid) || REVIEW_PR_VALUE=""
+      _status_report_review_pr_marker "$CONFIG_DIR" "$REVIEW_PR_REPO_HASH" "$SESSION_ID" "$REVIEW_PR_VALUE"
+    else
+      printf '  review-pr: could not verify (the main tree root or its repo hash could not be resolved)\n' >&2
+    fi
+
     printf '\nActive-bypass markers (this session):\n'
-    _status_report_active_bypass plan-review ".plan-review-active.d" "$SESSION_ID"
-    _status_report_active_bypass ready-for-review ".ready-for-review-active.d" "$SESSION_ID"
-    _status_report_active_bypass respond-pr ".respond-pr-active.d" "$SESSION_ID"
-    _status_report_active_bypass memory-skill ".memory-skill-active.d" "$SESSION_ID"
-    _status_report_active_bypass handoff ".handoff-active.d" "$SESSION_ID"
+    for ACTIVE_BYPASS_SKILL in "${ACTIVE_BYPASS_SKILLS[@]}"; do
+      _status_report_active_bypass "$ACTIVE_BYPASS_SKILL" "$(_active_bypass_dir_for "$ACTIVE_BYPASS_SKILL")" "$SESSION_ID"
+    done
     ;;
   check)
     case "$SKILL" in
@@ -1007,3 +1149,5 @@ case "$SUBCOMMAND" in
     esac
     ;;
 esac
+
+fi

@@ -52,6 +52,30 @@
 # an unrelated neighboring command can be denied alongside a gated one; and
 # the gate cannot see inside a query body sourced from a file, so it denies
 # those wholesale rather than inspecting them.
+#
+# Read side: /review-pr's reads need no bypass marker. Step 1's fetch,
+# including the `gh api .../pulls/N/reviews` and `.../pulls/N/comments` calls
+# the REST arm below would otherwise gate, runs inside
+# ~/.claude/scripts/review-pr-acquire.sh.
+# This hook matches only the literal Bash-tool command text
+# (`~/.claude/scripts/review-pr-acquire.sh <owner>/<repo>#<N>`), which carries
+# no gated pattern, and never inspects a subprocess the script spawns.
+# require-worktree-for-git-writes.sh has the same gap (see its header).
+#
+# Write side: a matched WRITE is denied unless this session's respond-pr bypass
+# marker is live, which releases every gated command, `gh pr review --approve`
+# included. Without that marker every `gh pr review`/`reviews` write is denied,
+# redirecting to
+# `~/.claude/scripts/review-pr-post.sh <comment|request-changes> <owner>/<repo>#<N>`.
+# That script's usage text lists every check it makes before it posts with
+# `gh pr review` (see _lib_review_pr_completion_marker_fields in _lib.sh for
+# the marker read it shares with marker.sh's `status` arm). `--approve` is not
+# a reachable code path in it.
+#
+# Named accepted gap: this gate decides per whole command, like every other
+# arm in this file, so a released read or bypass chained (`&&`/`;`/`|`)
+# with an unrelated command executes atomically. An attacker able to inject
+# that chain already has direct Bash access with no gate at all.
 
 set -uo pipefail
 
@@ -270,21 +294,9 @@ if [[ "$COMMAND_FLAT" =~ $PATTERN_MUTATING_METHOD ]]; then
 fi
 shopt -u nocasematch
 
-# The cross-repo bypass below releases reads only. It exists so that research
-# on an external repo is not mistaken for a PR response here, and research is
-# a read; there is no legitimate cross-repo write it needs to permit, because
-# the attribution the gate protects is owed to readers of any public PR, not
-# only this repo's.
-#
-# Confining it to reads is also what makes it safe to decide on substring
-# evidence. Both extractions below scan the whole command for a repo-shaped
-# token, so any text in the call — including a comment body the model was
-# induced to write — can supply one. While a write can be released that way,
-# a decoy reference to another repo anywhere in the command hands back an
-# unattributed write to this one; a decoy that only releases a read costs
-# nothing, since the read was never the thing being protected.
+# Every gated write that reaches this point is denied.
 if [ "$GATED_WRITE" -eq 1 ]; then
-  emit_deny "PR/issue comment write — Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. Stop and ask the user how they want to proceed."
+  emit_deny "PR/issue comment write — Writes are denied for every repo, not only the current one, because the [Claude Code] attribution prefix that discloses AI authorship is owed to readers of any public thread. For a comment on the CURRENT branch's PR: run the /respond-pr skill, which applies that prefix — do not ask the user for permission, just run it. For a comment on any OTHER repo or on an unrelated PR: /respond-pr cannot service that; it scopes to the current branch's PR. For posting a /review-pr review: never hand-construct the gh call — run ~/.claude/scripts/review-pr-post.sh <comment|request-changes> <owner>/<repo>#<N> instead, which re-verifies the completion marker before posting and can never emit --approve. Stop and ask the user how they want to proceed."
   exit 0
 fi
 
@@ -303,33 +315,37 @@ fi
 # release is a read. (3) the -R/--repo form is reachable only if a future
 # arm gates a read issued through `gh pr`; every `gh pr` form gated today is
 # a write and stops above.
-# Both extractions read COMMAND_FLAT, not COMMAND. `sed` is per-line exactly as
-# grep is, so a wrapped cross-repo URL would otherwise be invisible here while
-# the arm chain above already saw it — the two would disagree about the same
-# command. That direction fails closed (the repo goes unrecognized and the
-# command denies), but a gate whose two halves read different text is a gate
-# whose behaviour cannot be reasoned about from either half alone.
-COMMAND_REPO=$(printf '%s\n' "$COMMAND_FLAT" | sed -nE 's#.*repos/([^/]+/[^/]+)/(pulls|issues)/[0-9]+/(comments|reviews).*#\1#p;s#.*repos/([^/]+/[^/]+)/(pulls|issues)/comments/[0-9]+.*#\1#p' | head -1)
-if [ -z "$COMMAND_REPO" ]; then
-  COMMAND_REPO=$(printf '%s\n' "$COMMAND_FLAT" | sed -nE 's#.*[[:space:]](-R|--repo)[[:space:]=]+([^[:space:]=]+/[^[:space:]]+).*#\2#p' | head -1)
-fi
-
-# `gh api repos/{owner}/{repo}/...` is documented gh syntax: gh substitutes
-# the current repo at call time. The placeholder is literal text, so it reads
-# as a repo name unlike any origin and would otherwise release the very
-# same-repo access this gate exists to catch.
-if [[ "$COMMAND_REPO" == *[{}]* ]]; then
-  COMMAND_REPO=""
-fi
+#
+# Repo the gated command targets: the explicit -R/--repo flag or a
+# repos/OWNER/REPO/... path. Reads COMMAND_FLAT, not COMMAND: `sed` is
+# per-line exactly as grep is, so a wrapped cross-repo URL would otherwise
+# be invisible here while the arm chain above already saw it. That
+# direction fails closed (the repo goes unrecognized and the command
+# denies).
+_extract_command_repo() {
+  local repo
+  repo=$(printf '%s\n' "$COMMAND_FLAT" | sed -nE 's,.*repos/([^/]+/[^/]+)/(pulls|issues)/[0-9]+/(comments|reviews).*,\1,p;s,.*repos/([^/]+/[^/]+)/(pulls|issues)/comments/[0-9]+.*,\1,p' | head -1)
+  if [ -z "$repo" ]; then
+    repo=$(printf '%s\n' "$COMMAND_FLAT" | sed -nE 's,.*[[:space:]](-R|--repo)[[:space:]=]+([^[:space:]=]+/[^[:space:]]+).*,\2,p' | head -1)
+  fi
+  # `gh api repos/{owner}/{repo}/...` is documented gh syntax: gh
+  # substitutes the current repo at call time. The placeholder is literal
+  # text, so it reads as a repo name unlike any origin and would otherwise
+  # release the very same-repo access this gate exists to catch.
+  if [[ "$repo" == *[{}]* ]]; then
+    repo=""
+  fi
+  printf '%s' "$repo"
+}
+COMMAND_REPO=$(_extract_command_repo)
 
 if [ -n "$COMMAND_REPO" ]; then
-  # _lib_capped, not bare git: a stale index lock or a network-mounted .git
-  # would otherwise block this call — and with it every gated Bash tool call
-  # in the session — for as long as the filesystem takes to answer.
-  CURRENT_URL=$(_lib_capped git config --get remote.origin.url 2>/dev/null)
-  if [ -n "$CURRENT_URL" ]; then
-    CURRENT_REPO=$(printf '%s\n' "$CURRENT_URL" | sed -nE 's#.*[:/]([^/:]+/[^/]+)$#\1#p' | sed 's#\.git$##')
-    if [ -n "$CURRENT_REPO" ] && [ "$COMMAND_REPO" != "$CURRENT_REPO" ]; then
+  # _lib_origin_owner_repo runs its git call under _lib_capped, so a stale
+  # index lock or a network-mounted .git cannot block every gated Bash tool
+  # call in the session for as long as the filesystem takes to answer.
+  CURRENT_REPO=$(_lib_origin_owner_repo) || CURRENT_REPO=""
+  if [ -n "$CURRENT_REPO" ]; then
+    if _lib_case_insensitive_ne "$COMMAND_REPO" "$CURRENT_REPO"; then
       exit 0
     fi
   fi

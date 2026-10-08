@@ -43,7 +43,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from helpers import init_git_repo
+from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo
 from transcript_analysis import pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
@@ -264,6 +264,306 @@ def _direnv_shim_source_stalls_without_reading_stdin(seconds: int) -> str:
             time.sleep({seconds})
         sys.exit(0)
     """)
+
+
+# ---------------------------------------------------------------------------
+# review-pr scaffolding shared across its own gh-shimmed test files
+# (test_review_pr_checkout.py, test_review_pr_diff.py,
+# test_review_pr_acquire.py, test_review_pr_finish.py, test_review_pr_post.py,
+# test_review_pr_findings_path.py). They live here, matching _shimmed_env's own
+# precedent above.
+# ---------------------------------------------------------------------------
+
+
+def _provenance_fields(path: Path) -> dict:
+    """Parse a `.provenance` file's key=value lines into a dict, skipping
+    the `schema=1` header line -- the shape review-pr-acquire.sh/
+    -checkout.sh/-diff.sh write via _lib_write_review_pr_provenance
+    (_lib.sh) and marker.sh/marker-clear-stale.py read back by key. Shared
+    by every review-pr test file that asserts on written provenance
+    content, so none carries its own line-index-based parse that could
+    drift from the production key=value shape. Requires the first line to
+    be exactly `schema=1`, matching _lib_review_pr_provenance_field's own
+    fail-closed read, so a writer regression that drops the header fails
+    this parse instead of silently falling through to a fields dict missing
+    nothing the caller checks."""
+    lines = path.read_text().splitlines()
+    assert lines and lines[0] == "schema=1", (
+        f"provenance file {path} missing required 'schema=1' header line: {lines[:1]!r}"
+    )
+    fields: dict = {}
+    for line in lines[1:]:
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        fields[key] = value
+    return fields
+
+
+# One line of shim source defining `sanitize_like_gh(name)`, for the review-pr
+# scripts' gh shims. Models gh 2.100.0's behavior: a JSON-escaped C0 control
+# character other than tab, LF, VT and CR reaches `--jq` as caret notation (ESC
+# as `^[`, NUL as `^@`), so it never reaches a script raw.
+# `gh api --help` documents the sanitizing itself, which `--allow-escape-sequences`
+# turns off. The caret notation and the four exempt characters are not
+# documented there and are not independently re-verified.
+# The shims' `pulls/<N>` payloads model GitHub's "Get a pull request" response
+# (the pulls page of the GitHub REST reference, https://docs.github.com/en/rest/pulls/pulls).
+GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE = (
+    "sanitize_like_gh = lambda name: ''.join("
+    "'^' + chr(ord(c) ^ 0x40) if ord(c) < 32 and c not in '\\t\\n\\x0b\\r' else c for c in name)"
+)
+
+
+def _assert_gh_calls_are_read_only(
+    calls: list[list[str]],
+    *,
+    known_api_endpoint: re.Pattern,
+    allowed_pr_subcommands: tuple[str, ...] = ("view",),
+) -> None:
+    """Allowlists the `gh` call shapes a review-pr script makes. A `gh pr`
+    call must use one of `allowed_pr_subcommands`, name its repo with `-R`, and
+    for `view` carry `--json`; the guard does not check its other tokens. A
+    `gh api <endpoint>` call must use an endpoint matching `known_api_endpoint`,
+    followed by nothing or by exactly `--paginate --jq <filter>`, so a method,
+    field or input flag in any spelling is rejected without being enumerated.
+    Any other `gh` command fails, as does an unanticipated write shape a
+    suite's fixtures never modeled.
+
+    Covers only the `gh` invocations the shimmed code paths a suite drives
+    actually make; it says nothing about a non-`gh` network write a script
+    might issue.
+    """
+    for args in calls:
+        if args[:1] == ["pr"] and len(args) > 1 and args[1] in allowed_pr_subcommands:
+            assert "-R" in args, f"gh pr {args[1]} missing -R: {args}"
+            if args[1] == "view":
+                assert "--json" in args, f"gh pr view missing --json: {args}"
+            continue
+        if args[:1] == ["api"]:
+            endpoint = args[1] if len(args) > 1 else ""
+            assert known_api_endpoint.fullmatch(endpoint), f"unexpected gh api endpoint: {args}"
+            trailing_tokens = args[2:]
+            assert trailing_tokens == [] or (
+                len(trailing_tokens) == 3 and trailing_tokens[:2] == ["--paginate", "--jq"]
+            ), f"gh api call carries a token outside `--paginate --jq <filter>`: {args}"
+            continue
+        pytest.fail(f"gh invocation outside the allowlist: {args}")
+
+
+def _pythonpath_env_that_forges_a_clean_audit(poison_dir: Path, sentinel: Path) -> dict[str, str]:
+    """Environment whose PYTHONPATH holds a `json` module that, when the audit
+    script is the running program, writes `sentinel` and prints the audit's
+    clean document, so an audit not run under `python3 -I` reports "clean" for
+    any file list. Any other program (the tests' python `gh` shim) gets the
+    standard library's own json."""
+    poison_dir.mkdir(parents=True, exist_ok=True)
+    (poison_dir / "json.py").write_text(
+        "import importlib.util, os, sys, sysconfig\n"
+        "if os.path.basename(sys.argv[0]) == 'audit-execution-surface.py':\n"
+        f"    open({str(sentinel)!r}, 'w').write('ran')\n"
+        "    print('{\"stop\": false, \"matches\": []}')\n"
+        "    sys.exit(0)\n"
+        "real_init = os.path.join(sysconfig.get_paths()['stdlib'], 'json', '__init__.py')\n"
+        "spec = importlib.util.spec_from_file_location(\n"
+        "    'json', real_init, submodule_search_locations=[os.path.dirname(real_init)])\n"
+        "real_json = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['json'] = real_json\n"
+        "spec.loader.exec_module(real_json)\n"
+    )
+    return {"PYTHONPATH": str(poison_dir)}
+
+
+def _review_pr_audit_limit(name: str) -> int:
+    """The display bound `name` (REVIEW_PR_AUDIT_MATCH_LINE_LIMIT or
+    REVIEW_PR_AUDIT_PATH_ECHO_LIMIT) as _review-pr-lib.sh defines it, so a
+    test sizes its input from the production constant."""
+    result = subprocess.run(
+        ["bash", "-c", f'. "{SCRIPTS_DIR / "_review-pr-lib.sh"}"; printf "%s" "${name}"'],
+        capture_output=True, text=True, check=True, timeout=60,
+    )
+    return int(result.stdout)
+
+
+def _review_pr_findings_body_path(home: Path, session_id: str) -> Path:
+    """The findings-body path the agent's Write tool targets, resolved through
+    the production path helper (`_lib_review_pr_artifact_path`) rather than a
+    suffix the test spells out."""
+    result = subprocess.run(
+        [
+            "bash", "-c",
+            f'. "{HOOKS_DIR / "_lib.sh"}"; _lib_review_pr_artifact_path "$1" "$2" body',
+            "bash", str(home / ".claude"), session_id,
+        ],
+        capture_output=True, text=True, check=True, timeout=60,
+    )
+    return Path(result.stdout)
+
+
+def _assert_finish_and_clear_stale_each_empty_the_active_directory(home: Path, repo: Path, session_id: str) -> None:
+    """After a real review-pr flow has left its artifacts under
+    `.review-pr-active.d`, both `review-pr-finish.sh` and `marker.sh
+    clear-stale` (once the provenance's PID is dead and no live session names
+    the session id) leave that directory empty. The directory's contents, not
+    a list of suffixes, are the invariant, so an artifact a writer adds that
+    neither cleanup knows about fails here. `repo` is the working directory
+    the cleanups run from. The findings body is written here because the
+    agent's Write tool, not a script, creates it."""
+    active_dir = home / ".claude" / ".review-pr-active.d"
+    _review_pr_findings_body_path(home, session_id).write_text("findings\n")
+    assert len(list(active_dir.iterdir())) >= 3, "control: the flow left its artifacts behind"
+    snapshot_dir = home / "active-dir-snapshot"
+    shutil.copytree(active_dir, snapshot_dir)
+    env = {"HOME": str(home), "PATH": os.environ["PATH"]}
+
+    finish = subprocess.run(
+        ["bash", str(SCRIPTS_DIR / "review-pr-finish.sh")],
+        cwd=repo, env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert finish.returncode == 0, finish.stderr
+    assert list(active_dir.iterdir()) == []
+
+    shutil.rmtree(active_dir)
+    shutil.copytree(snapshot_dir, active_dir)
+    ended_process = subprocess.Popen(["true"])
+    ended_process.wait()
+    provenance = active_dir / f"{session_id}.provenance"
+    provenance.write_text(re.sub(r"(?m)^pid=.*$", f"pid={ended_process.pid}", provenance.read_text()))
+    shutil.rmtree(home / ".claude" / "sessions")
+    clear_stale = subprocess.run(
+        ["bash", str(SCRIPTS_DIR / "marker.sh"), "clear-stale"],
+        cwd=repo, env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert clear_stale.returncode == 0, clear_stale.stderr
+    assert list(active_dir.iterdir()) == []
+
+
+def _install_audit_script(home: Path, audit_script_source: Path | None = None) -> None:
+    """Symlink the real audit-execution-surface.py into the isolated
+    $HOME/.claude/skills/review-pr/ -- the installed-layout path
+    review-pr-checkout.sh/review-pr-diff.sh resolve via
+    $CONFIG_DIR/skills/review-pr/ (stow-packages.sh: claude-skills/ stows to
+    ~/.claude/). Exercises the real predicate rather than a stand-in copy
+    that could drift from it. `audit_script_source` redirects the link for a
+    test whose own failure could write through it."""
+    skill_dir = home / ".claude" / "skills" / "review-pr"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    target = skill_dir / "audit-execution-surface.py"
+    # Unlink first so an earlier stand-in in this home never survives as the "real" audit.
+    target.unlink(missing_ok=True)
+    target.symlink_to(audit_script_source or SKILLS_DIR / "review-pr" / "audit-execution-surface.py")
+
+
+def _install_audit_script_that_runs(home: Path, script_body: str) -> None:
+    """Install a stand-in audit-execution-surface.py at the installed-layout
+    path, for a run whose audit must end a way the real one never does."""
+    skill_dir = home / ".claude" / "skills" / "review-pr"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    target = skill_dir / "audit-execution-surface.py"
+    # Unlink first: writing through the symlink _install_audit_script creates would overwrite the tracked audit script.
+    target.unlink(missing_ok=True)
+    target.write_text(script_body)
+
+
+def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
+    """Write $HOME/.claude/sessions/<pid> in the two-line format
+    capture-session-id.sh writes -- every review-pr script under test here
+    resolves its own session id (and, for the provenance-writing scripts,
+    its own Claude PID) by walking process ancestors via
+    _lib_resolve_claude_pid, so a test exercising a success path needs a
+    live session file for that walk to find.
+
+    pid defaults to this test process's own pid: marker.sh (invoked by
+    several of these scripts) resolves its session id by walking process
+    ancestors, and when it runs as a subprocess of pytest, that walk
+    reaches the pytest process itself.
+    """
+    target_pid = os.getpid() if pid is None else pid
+    sessions_dir = home / ".claude" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    start_time = subprocess.run(
+        ["ps", "-o", "lstart=", "-p", str(target_pid)],
+        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,  # same bound as the _SUBPROCESS_TIMEOUT_SECONDS the review-pr test modules declare
+    ).stdout.rstrip("\n")
+    (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
+
+
+def _git_shim_that_fails_on_worktree_subcommand(
+    tmp_path: Path, *subcommands: str, exit_status: int = 1
+) -> Path:
+    """A `git` PATH shim that fails only "git ... worktree <subcommand>"
+    for each named subcommand (e.g. `add`, `remove`, `prune`) with
+    `exit_status`, delegating every other invocation to the real git
+    binary -- shared by the review-pr checkout and finish tests, each
+    proving a failed worktree operation surfaces through that script's own
+    exit code and stderr message. At least one subcommand is required: an
+    empty list would emit a syntactically invalid shim."""
+    if not subcommands:
+        raise ValueError("name at least one worktree subcommand for the shim to fail")
+    real_git = shutil.which("git")
+    failing_conditions = " || ".join(
+        f'[[ "$*" == *{shlex.quote(f"worktree {subcommand}")}* ]]' for subcommand in subcommands
+    )
+    shim_dir = tmp_path / f"git_shim_{uuid.uuid4().hex}"
+    shim_dir.mkdir()
+    git_shim = shim_dir / "git"
+    git_shim.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env bash
+        if {failing_conditions}; then
+          echo "synthetic worktree failure" >&2
+          exit {exit_status}
+        fi
+        exec {shlex.quote(real_git)} "$@"
+    """))
+    git_shim.chmod(0o755)
+    return shim_dir
+
+
+def _build_repo_with_pr_ref(
+    tmp_path: Path, owner_repo: str = "foo/bar", pr_number: str = "42",
+) -> tuple[Path, str]:
+    """A local repo with an `origin` remote and a PR ref pushed directly to
+    it under `refs/pull/<N>/head` -- mirrors GitHub's synthetic per-PR ref,
+    which is never a normal branch on the base repo. Returns (repo, pr_sha)
+    with the working copy left checked out at the pre-PR commit, so a
+    successful checkout's own worktree content is what proves the PR
+    commit landed, not the main checkout's.
+
+    The bare remote's own path embeds owner_repo's two path segments (e.g.
+    `.../remote/foo/bar`), so review-pr-checkout.sh's/review-pr-diff.sh's own
+    origin-identity check (comparing $1's owner/repo against the worktree's
+    actual origin) sees the same value callers pass as $1 -- the same
+    last-two-path-segments shape a real `https://github.com/<owner>/<repo>.git`
+    origin parses to.
+    """
+    bare = tmp_path / "remote" / owner_repo
+    bare.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "--bare"], cwd=bare, check=True)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    (repo / "file.txt").write_text("main\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=repo, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"], cwd=repo, check=True)
+    main_sha = head_sha(repo)
+
+    (repo / "pr_file.txt").write_text("pr change\n")
+    subprocess.run(["git", "add", "pr_file.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "pr commit"], cwd=repo, check=True)
+    pr_sha = head_sha(repo)
+    subprocess.run(["git", "push", "-q", "origin", f"HEAD:refs/pull/{pr_number}/head"], cwd=repo, check=True)
+    subprocess.run(["git", "reset", "-q", "--hard", main_sha], cwd=repo, check=True)
+
+    return repo, pr_sha
 
 
 def _write_subagent_jsonl(
