@@ -141,7 +141,7 @@ Two conditions look like givens but aren't. This repo owns each one, so each is 
   - In `fake_projects`' docstring, delete the "handoff-signal-response still lives in the shim … so mod.config_dir is patched too." sentence (:1210–1212), and change "five bindings" (:1214) to "four bindings".
   - Add the three new test files and `tests/_handoff_nudge_helpers.py` to the module docstring's consumer list (:4–24).
 - **M9: Four bootstrap tests, following every package-moved command since read-scope.** `anchors: G3, row19, row20`
-  - `plan-boundary --help` asserts `--config-dir DIR`.
+  - `plan-boundary --help` asserts the whitespace-collapsed marker `no plan text` (from its `--no-redact` help; `--config-dir DIR` is shared by many subcommands).
   - `handoff-signal-response --help` asserts `--context-turns N`.
   - Two seeded runs with `_seed_priced_account` and `_isolated_config_env`:
     - plan-boundary: exit 0 and `Sessions scanned: 1`.

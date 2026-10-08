@@ -405,7 +405,7 @@ they use — boundary-turn location (`_plan_boundary_turn_index`), the three arm
 (`_arm_b_boundary_plus_one_dollars`, `_arm_b_later_turn_dollars`, `_arm_c_turn_dollars`), and the
 pairwise work-inflation breakeven (`_plan_boundary_work_inflation_breakeven`). Imports
 `handoff_nudge`, `pricing`, `render`, and `scope` all by module (attribute access), matching
-`cost.py`'s convention. The multi-root `--no-redact` refusal stays inline in `_plan_boundary_report`,
+`cost.py`'s convention. The multi-root `--no-redact` refusal is inline in `_plan_boundary_report`,
 ahead of any output, in addition to `scope._resolve_cost_roots`' own CLI-level refusal.
 `cmd_plan_boundary` is the one name reached bare from the shim, from `build_parser()`.
 
