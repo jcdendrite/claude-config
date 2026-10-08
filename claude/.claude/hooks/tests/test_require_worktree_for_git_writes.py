@@ -945,6 +945,23 @@ class TestRequireWorktreeForGitWrites:
 
         assert run_hook(WORKTREE_HOOK, bash_input(recipe), cwd=main_root) == "allow"
 
+    @pytest.mark.parametrize("route", ["direct", "cd_to_main_first"])
+    def test_main_tree_deny_recipe_is_allowed_from_linked_worktree(self, isolated_home, opted_in_with_worktree, route):
+        """GH-1234: the deny's own recipe, plus the trailing `git worktree list`
+        the skill appends, is allowed from a linked-worktree session both
+        directly and behind the `cd <main> &&` prefix that reached the deny.
+        The `cd` route is where the `fetch`/`worktree` allowlist is
+        load-bearing."""
+        main_root, worktree = opted_in_with_worktree
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=main_root)
+        assert reason is not None
+        recipe = self._recipe_from_reason(reason).replace("<default-branch>", "main").replace("<branch>", "GH-1/new")
+        command = f"{recipe} && git worktree list"
+        if route == "cd_to_main_first":
+            command = f"cd {main_root} && {command}"
+
+        assert run_hook(WORKTREE_HOOK, bash_input(command), cwd=worktree) == "allow"
+
     @pytest.mark.parametrize(
         "route",
         [
@@ -956,8 +973,8 @@ class TestRequireWorktreeForGitWrites:
     )
     def test_main_tree_deny_suggests_main_root_path(self, isolated_home, opted_in_repo, tmp_path, route):
         """GH-1234: the suggested `worktree add` target and the cd hint are the
-        main checkout's absolute path from every route into the main-tree
-        deny, never a cwd-relative path that would nest inside the session's
+        main checkout's absolute path from each route parametrized here into
+        the main-tree deny, never a cwd-relative path that would nest inside the session's
         worktree."""
         main_root = opted_in_repo
         command = "git commit -m foo"

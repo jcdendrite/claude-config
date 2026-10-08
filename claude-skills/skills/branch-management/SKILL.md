@@ -98,15 +98,18 @@ Rules that go with the recipe:
   separate literal calls: `git fetch`, `git worktree add`,
   `git worktree list`.
 - A refused split call, a failed `fetch`, or an "already exists" error
-  is reported, or resolved by entering the existing worktree from
-  `git worktree list`. It never licenses the relative form or a form
-  with no start point.
+  is reported, or resolved by entering the worktree that step 1's
+  output lists for `<branch>`. A failed `git worktree add` can still
+  create `<branch>`, so a retry can hit "already exists" with no
+  worktree listed. Report that the branch exists with no worktree, and
+  leave attaching or deleting the branch to the engineer. None of these
+  errors licenses the relative form or a form with no start point.
 
-Run no other command before `EnterWorktree`, read-only ones included —
-it resolves relative paths against cwd (not repo root) and has no
-idempotent "already there" case, so a prior `cd` silently leaves the
-session unanchored, with none of `EnterWorktree`'s other effects
-(subagent inheritance, `ExitWorktree` tracking).
+Run no other command before `EnterWorktree`, read-only ones included.
+`EnterWorktree` resolves relative paths against cwd, not the repo root.
+It has no idempotent "already there" case. A prior `cd` therefore
+silently leaves the session unanchored, with none of `EnterWorktree`'s
+other effects (subagent inheritance, `ExitWorktree` tracking).
 
 Entering the worktree resets the session's cd-anchor to it; until
 then, a stray `cd` out (including one through a symlink that resolves
