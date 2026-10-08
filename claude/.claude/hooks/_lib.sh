@@ -1143,6 +1143,10 @@ _lib_active_plan_hash() {
   printf '%s' "$digest"
 }
 
+# Prefix marker.sh's `write plan-review` prints before each covered plan path, one line per path.
+# announce-approved-plan-path.sh relays only stdout lines that start with it.
+_LIB_PLAN_REVIEW_COVERED_PATH_PREFIX='plan-review marker covers: '
+
 # _lib_hash_diff_text TEXT
 # Hashes TEXT via the shared sha256 recipe every cumulative-review value must
 # use: _lib_cumulative_diff_hash's own post-hash step below, and marker.sh's

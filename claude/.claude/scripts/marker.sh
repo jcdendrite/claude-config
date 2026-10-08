@@ -81,10 +81,6 @@ _active_bypass_skill_list() {
   _join_words ', ' "${ACTIVE_BYPASS_SKILLS[@]}"
 }
 
-# Paired literal: announce-approved-plan-path.sh matches this exact prefix on the
-# `write plan-review` output lines.
-PLAN_REVIEW_COVERED_PATH_PREFIX='plan-review marker covers: '
-
 usage() {
   cat >&2 <<'EOF'
 Usage: ~/.claude/scripts/marker.sh <subcommand> [<skill>|--dry-run]
@@ -644,7 +640,7 @@ case "$SUBCOMMAND" in
           > "$CONFIG_DIR/plan-review-markers/$REPO_HASH.$SESSION_ID" || exit
         while IFS= read -r COVERED_PLAN_PATH; do
           [ -n "$COVERED_PLAN_PATH" ] || continue
-          printf '%s%s\n' "$PLAN_REVIEW_COVERED_PATH_PREFIX" "$COVERED_PLAN_PATH"
+          printf '%s%s\n' "$_LIB_PLAN_REVIEW_COVERED_PATH_PREFIX" "$COVERED_PLAN_PATH"
         done <<< "$COVERED_PLAN_PATHS"
         ;;
       ready-for-review)
