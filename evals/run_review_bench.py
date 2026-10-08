@@ -753,13 +753,15 @@ def cmd_judge(args: argparse.Namespace) -> int:
         # A prior invocation may have run and persisted a defect's recall
         # judge, then failed to build the precision fixture. That already-
         # paid recall run must not be redispatched on resume.
+        # A missing recall record holds no labels, so only an ok one is reused.
         recorded_recall_by_defect = {
             record.defect_id: record
             for record in runner.read_run_records(judge_records_path)
-            if record.arm == adjudicate.JUDGE_ARM_RECALL
+            if record.arm == adjudicate.JUDGE_ARM_RECALL and record.status == runner.STATUS_OK
         }
         judged = 0
         judge_records: list = []
+        stop_message: str | None = None
         for defect in selected:
             if defect.id in completed:
                 continue
@@ -789,6 +791,7 @@ def cmd_judge(args: argparse.Namespace) -> int:
                 # before any judge was dispatched.
                 recall_now_recorded = had_recorded_recall or any(
                     record.defect_id == defect.id and record.arm == adjudicate.JUDGE_ARM_RECALL
+                    and record.status == runner.STATUS_OK
                     for record in runner.read_run_records(judge_records_path)
                 )
                 if recall_now_recorded:
@@ -805,7 +808,17 @@ def cmd_judge(args: argparse.Namespace) -> int:
             # precision once more for this defect on resume (evals/README.md's
             # "Interruption and cleanup" section).
             runner.append_run_records(judge_records_path, (precision_record,))
-            judge_records.extend((recall_record, precision_record))
+            judge_pair = (recall_record, precision_record)
+            judge_records.extend(judge_pair)
+            if any(record.status != runner.STATUS_OK for record in judge_pair):
+                print(
+                    f"judge: {defect.id}: {runner.format_outcome_counts(runner.count_outcomes(judge_pair))}",
+                    file=sys.stderr,
+                )
+            # Both judges missing stops the campaign with the block unmarked, as run_campaign does for an all-missing block.
+            if runner.all_runs_missing(judge_pair):
+                stop_message = runner.systemic_failure_message(defect.id, judge_pair)
+                break
             run_store.mark_block_complete(defect.id)
             judged += 1
     finally:
@@ -818,8 +831,20 @@ def cmd_judge(args: argparse.Namespace) -> int:
         f"judge: out-of-session read counts per judge kind = {analysis.out_of_session_counts_by_arm(judge_records)}",
         file=sys.stderr,
     )
+    print(
+        f"judge: missing runs by reason per judge kind = {analysis.missing_run_counts_by_reason(judge_records)}",
+        file=sys.stderr,
+    )
     print(f"judge: cost per judge kind = {analysis.cost_totals_by_arm(judge_records)}", file=sys.stderr)
     print(f"judge: campaign {campaign_id} judged {judged} defect(s), wrote {judge_records_path}", file=sys.stderr)
+    if stop_message is not None:
+        print(f"judge: {stop_message}", file=sys.stderr)
+        print(
+            "judge: if the reasons point at this defect rather than a shared cause, "
+            "resume with --defect-id listing the other pending defects",
+            file=sys.stderr,
+        )
+        return 2
     return 0
 
 
