@@ -433,7 +433,7 @@ _lib_emit_deny() {
     # before any command filtering, so a missing jq denies every tool call
     # with the parse-failure reason below — which names the wrong cause.
     # Without this line the session has no in-agent route to a fix.
-    printf 'Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, which runs outside the tool-call path these hooks gate; in a headless or non-interactive run, ensure jq is installed in the execution environment beforehand. A timeout or gtimeout that rejects -k (GNU coreutils, or BusyBox 1.35.0 or newer, accepts it) causes the same block; see docs/hooks.md \"Gate deadlock recovery\" in the claude-config repository. Underlying gate reason follows.\n%s\n' \
+    printf 'Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an interactive session, ask the user to install jq (and GNU coreutils timeout) in a separate terminal, which runs outside the tool-call path these hooks gate; in a headless or non-interactive run, ensure jq is installed in the execution environment beforehand. A timeout or gtimeout that rejects -k (GNU coreutils, or BusyBox 1.35.0 or newer, accepts it) causes the same block; see docs/hooks.md \"Gate deadlock recovery\" in the claude-config repository. Underlying gate reason follows.\n%s\n' \
       "$prefixed_reason" >&2
     exit 2
   fi

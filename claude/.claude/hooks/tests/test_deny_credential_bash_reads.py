@@ -607,10 +607,9 @@ class TestDenyCredentialBashReads:
         assert branch_marker in reason
         assert "No bypass valve" in reason
         # The shell escape's output enters the transcript, so the message must not route recourse there.
-        assert "ask the user" in reason
-        assert "separate terminal" in reason
-        assert "`!`" not in reason
-        assert "! cat" not in reason
+        assert "ask the user to run it in a separate terminal" in reason
+        assert "`!" not in reason
+        assert " ! " not in reason
         assert "shell escape" not in reason
 
     # ------------------------------------------------------------------ #

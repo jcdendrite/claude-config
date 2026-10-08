@@ -88,8 +88,9 @@ argument must still resolve to a `.env`-shaped basename (`--env-file
 shell metacharacter (`; & | < > ( ) $` or a backtick), not swallow past it
 — see `_lib_strip_env_file_flag_args` in `_lib.sh`. Run a specific
 legitimate non-exposing command, or inspect the file's content, in a
-separate terminal window outside this session. `!` is not a safe alternative:
-Claude Code adds shell-mode output to the conversation transcript.
+separate terminal window outside this session. For content inspection, `!`
+is not a safe alternative: Claude Code adds shell-mode output to the
+conversation transcript.
 `redact-credential-values.sh` is the
 different-layer backstop for the two gate hooks: a credential can enter
 context through a path neither one anticipates (a `WebFetch` response, a

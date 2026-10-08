@@ -18,4 +18,6 @@ paths:
   chaining, and shell-expansion attacks — see
   `~/.claude/skills/review-permissions/SKILL.md` checklist items 1–9.
   Use exact-match rules (`Bash(pytest)`, `Bash(npm run verify)`) instead.
-- A `permissions.deny` rule blocks only the tool-call route it names; confirm the other routes to the same capability (e.g. a `Bash(cat X)` deny leaves `Read(X)` open) before treating it as closed.
+- A `permissions.deny` rule blocks only the command or tool-call shape it names; confirm the other routes to the same capability (e.g. a `Bash(cat X)` deny leaves `Read(X)`, `head X`, and `cat ./X` open) before treating it as closed. Pair a bare deny with prose naming the
+  alternative — see `~/.claude/skills/review-permissions/SKILL.md`
+  checklist item 23.

@@ -133,8 +133,8 @@ class TestDenyEnvReads:
         assert reason is not None
         # The shell escape's output enters the transcript, so the message must not route recourse there.
         assert "ask the user to inspect it in a separate terminal" in reason
-        assert "`!`" not in reason
-        assert "! cat" not in reason
+        assert "`!" not in reason
+        assert " ! " not in reason
         assert "shell escape" not in reason
 
     # ------------------------------------------------------------------ #
