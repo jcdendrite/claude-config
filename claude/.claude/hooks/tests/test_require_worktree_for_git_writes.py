@@ -84,6 +84,8 @@ class TestRequireWorktreeForGitWrites:
         a committed marker must not trigger it."""
         reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=opted_in_repo)
         assert reason is not None
+        # The reason embeds the main checkout's path, under pytest's tmp path, which carries a
+        # truncated copy of the test name. These absence checks assume that copy holds neither word.
         assert "untracked" not in reason
         assert "spawn an agent" not in reason
         assert "isolation" not in reason
@@ -972,9 +974,9 @@ class TestRequireWorktreeForGitWrites:
         ],
     )
     def test_main_tree_deny_suggests_main_root_path(self, isolated_home, opted_in_repo, tmp_path, route):
-        """GH-1234: the suggested `worktree add` target and the cd hint are the
-        main checkout's absolute path from each route parametrized here into
-        the main-tree deny, never a cwd-relative path that would nest inside the session's
+        """GH-1234: each route into the main-tree deny yields a suggested
+        `worktree add` target and cd hint under the main checkout's absolute
+        path. Neither is cwd-relative, which could nest inside the session's
         worktree."""
         main_root = opted_in_repo
         command = "git commit -m foo"

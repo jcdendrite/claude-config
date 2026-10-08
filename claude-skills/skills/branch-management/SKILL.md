@@ -59,8 +59,8 @@ because the worktree recipe below fetches and starts from the default
 tip itself.
 
 If the repo's default branch is `master`, `trunk`, `develop`, or
-anything other than `main`, substitute accordingly. Check with
-`git symbolic-ref refs/remotes/origin/HEAD`.
+anything other than `main`, substitute accordingly. Step 2 of the
+worktree recipe below gives the lookup.
 
 ## Anchor the session in the worktree
 
@@ -105,9 +105,9 @@ Rules that go with the recipe:
   leave attaching or deleting the branch to the engineer. None of these
   errors licenses the relative form or a form with no start point.
 
-Run no other command before `EnterWorktree`, read-only ones included.
-`EnterWorktree` resolves relative paths against cwd, not the repo root.
-It has no idempotent "already there" case. A prior `cd` therefore
+Once the worktree's path is known, run no other command before
+`EnterWorktree`, read-only ones included. `EnterWorktree` resolves
+relative paths against cwd, not the repo root. It has no idempotent "already there" case. A prior `cd` therefore
 silently leaves the session unanchored, with none of `EnterWorktree`'s
 other effects (subagent inheritance, `ExitWorktree` tracking).
 
