@@ -89,6 +89,12 @@ class TestSchema:
         # The pilot is per-account: a widening to config-dir-or-home would make
         # a home-level file enable it for every account.
         assert schema()["architect_fix_plan_pilot"].resolution == "config-dir"
+        # config-get.sh's exit-0 gate compares against the literal "false",
+        # which holds for a bool only.
+        assert schema()["architect_fix_plan_pilot"].type == "bool"
+        # A non-empty prompt_description would offer the pilot in install.sh's
+        # opt-in prompt to every consumer.
+        assert schema()["architect_fix_plan_pilot"].prompt_description == ""
 
     def test_legacy_filename_is_empty_iff_legacy_polarity_is_empty(self):
         """A row's legacy-filename is empty if and only if its legacy-polarity

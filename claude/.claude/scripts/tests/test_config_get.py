@@ -29,14 +29,19 @@ def _isolated_scripts_dir(tmp_path: Path, schema_content: str) -> Path:
     return scripts_dir
 
 
-def _run(scripts_dir: Path, key: str, tmp_path: Path) -> subprocess.CompletedProcess:
+def _run(
+    scripts_dir: Path, key: str, tmp_path: Path, claude_config_dir: Path | None = None
+) -> subprocess.CompletedProcess:
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
+    env = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
+    if claude_config_dir is not None:
+        env["CLAUDE_CONFIG_DIR"] = str(claude_config_dir)
     return subprocess.run(
         [str(scripts_dir / "config-get.sh"), key],
         capture_output=True,
         text=True,
-        env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
+        env=env,
         check=False,
     )
 
@@ -75,3 +80,75 @@ class TestExitCodeContract:
         scripts_dir = _isolated_scripts_dir(tmp_path, _CONFIG_KEYS_PSV.read_text())
         result = _run(scripts_dir, "not_a_real_key", tmp_path)
         assert result.returncode == 2
+
+
+class TestArchitectFixPlanPilotGate:
+    """code-review/SKILL.md enables the architect fix-plan pilot only on a
+    config-get.sh exit 0, so the exit code is the contract these pin against
+    the real schema."""
+
+    _KEY = "architect_fix_plan_pilot"
+
+    def _config_dir(self, tmp_path: Path) -> Path:
+        config_dir = tmp_path / "home" / ".claude"
+        config_dir.mkdir(parents=True)
+        return config_dir
+
+    def test_fresh_home_with_no_state_file_exits_1(self, tmp_path: Path) -> None:
+        scripts_dir = _isolated_scripts_dir(tmp_path, _CONFIG_KEYS_PSV.read_text())
+        result = _run(scripts_dir, self._KEY, tmp_path)
+        assert result.returncode == 1
+        assert result.stdout == "false\n"
+
+    def test_hand_written_true_row_exits_0(self, tmp_path: Path) -> None:
+        scripts_dir = _isolated_scripts_dir(tmp_path, _CONFIG_KEYS_PSV.read_text())
+        (self._config_dir(tmp_path) / "claude-config.toml").write_text(f"{self._KEY} = true\n")
+        result = _run(scripts_dir, self._KEY, tmp_path)
+        assert result.returncode == 0
+        assert result.stdout == "true\n"
+
+    def test_scaffolded_false_row_exits_1(self, tmp_path: Path) -> None:
+        scripts_dir = _isolated_scripts_dir(tmp_path, _CONFIG_KEYS_PSV.read_text())
+        config_dir = self._config_dir(tmp_path)
+        # Explicit config-dir argument and a scrubbed env keep the scaffold
+        # from writing to the invoking account's own config dir.
+        scaffold = subprocess.run(
+            ["bash", "-c", f'set -uo pipefail; . "{_CONFIG_SH}"; _config_scaffold "" "{config_dir}"'],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(tmp_path / "home"), "PATH": "/usr/bin:/bin"},
+            check=False,
+        )
+        assert scaffold.returncode == 0, scaffold.stderr
+        assert f"{self._KEY} = false" in (config_dir / "claude-config.toml").read_text().splitlines()
+
+        result = _run(scripts_dir, self._KEY, tmp_path)
+
+        assert result.returncode == 1
+        assert result.stdout == "false\n"
+
+    def test_true_only_in_home_claude_dir_exits_1_when_claude_config_dir_is_another_account(
+        self, tmp_path: Path
+    ) -> None:
+        """The pilot is per-account: a home-level file must not enable it for an
+        account whose CLAUDE_CONFIG_DIR points elsewhere."""
+        scripts_dir = _isolated_scripts_dir(tmp_path, _CONFIG_KEYS_PSV.read_text())
+        (self._config_dir(tmp_path) / "claude-config.toml").write_text(f"{self._KEY} = true\n")
+        account_dir = tmp_path / "acct"
+        account_dir.mkdir()
+
+        result = _run(scripts_dir, self._KEY, tmp_path, claude_config_dir=account_dir)
+
+        assert result.returncode == 1
+        assert result.stdout == "false\n"
+
+    def test_true_in_claude_config_dir_exits_0(self, tmp_path: Path) -> None:
+        scripts_dir = _isolated_scripts_dir(tmp_path, _CONFIG_KEYS_PSV.read_text())
+        account_dir = tmp_path / "acct"
+        account_dir.mkdir()
+        (account_dir / "claude-config.toml").write_text(f"{self._KEY} = true\n")
+
+        result = _run(scripts_dir, self._KEY, tmp_path, claude_config_dir=account_dir)
+
+        assert result.returncode == 0
+        assert result.stdout == "true\n"

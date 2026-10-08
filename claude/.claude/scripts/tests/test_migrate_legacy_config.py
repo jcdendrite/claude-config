@@ -122,7 +122,12 @@ def _distinguishing_existing_value(row: SchemaRow) -> str:
     survives untouched can tell "left alone" apart from "re-imported to
     the same value" -- a bool key's default and its own legacy-derived
     value are always each other's complement, so "opposite of default"
-    would not distinguish; "opposite of legacy-derived" always does."""
+    would not distinguish; "opposite of legacy-derived" always does. A key
+    with no legacy predecessor has nothing to derive from, so its value is
+    the opposite of its schema default: the scaffold's own default row is
+    what a surviving hand-edit must be told apart from."""
+    if not row.legacy_polarity and row.type == "bool":
+        return "false" if row.default == "true" else "true"
     legacy_value = _legacy_derived_value(row)
     if row.type == "bool":
         return "false" if legacy_value == "true" else "true"
@@ -262,6 +267,10 @@ class TestMigrationMatrixStateFilePresentKeyRowPresent:
         new_lines = _state_file(config_dir).read_text().splitlines()
         assert authored_line in new_lines, (
             f"a pre-existing row for {key!r} must survive untouched regardless of a legacy file: {new_lines!r}"
+        )
+        key_rows = [line for line in new_lines if line.startswith(f"{key} =")]
+        assert key_rows == [authored_line], (
+            f"{key!r} must appear exactly once, with no default row appended: {new_lines!r}"
         )
 
     def test_existing_row_survives_when_schema_unreadable(self, tmp_path: Path) -> None:

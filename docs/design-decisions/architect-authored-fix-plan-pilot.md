@@ -58,23 +58,18 @@ apply, because the grammar and its reader sit in the same pinned region of
 one file, so they cannot drift apart without a test failing.
 
 **A hedged KEEP row stays valid, deliberately.** The contradiction route
-treats a failed, empty, hedged, or partial consult as a blocking stop. The
-pilot reads only the rows and the single `foundation:` line, so prose around
-a row, including a hedge, is relayed verbatim and decides nothing. A KEEP row
-with a hedge in the surrounding text is therefore a valid row. The pilot
-diverges here on purpose: numbered rows turn row-to-finding matching into a
-number comparison, where judging whether prose is hedged would be a fresh
-judgment each round. A finding the architect cannot commit to gets no row,
-which stops the round.
+treats a hedged consult as a blocking stop. The pilot diverges on purpose:
+numbered rows turn row-to-finding matching into a number comparison, where
+judging whether prose is hedged would be a fresh judgment each round.
+`DISPOSITION_RULE:code-review-fix-plan-pilot` in
+`claude-skills/skills/code-review/SKILL.md` states what text outside the rows
+does.
 
 ## Why every return that is not a valid table stops
 
-A valid table is three mechanical checks: the row numbers match the payload
-numbers, each row carries a valid verdict word and that verdict's required
-parts, and exactly one `foundation:` line reads `foundation: sound`. Every
-other return, a failed dispatch included, is a blocking stop-and-ask before
-any fix is dispatched. The one judgment left is the barred-row check, which
-is the same classification the default procedure makes for the same finding.
+`DISPOSITION_RULE:code-review-fix-plan-pilot` in
+`claude-skills/skills/code-review/SKILL.md` defines the valid table and the
+stop. This section records only why the stop has no fallback and no retry.
 
 Falling back to the default procedure on a malformed return was rejected: it
 leaves unknown, for any given PR, whether the architect ran consistently.
@@ -106,19 +101,18 @@ runtime by the config key.
   barred-row item names the layer as a source beside the enforcement-invariant
   rule. Without that, the control arm's orchestrator applies the layer's
   rules and the pilot's architect never sees them, so the evaluation would
-  measure the architect plus a loosened rule. The pilot stays in the base
-  file.
+  measure the architect plus a loosened rule. The dispatch also carries the
+  base file's DEFER criteria and invalid DEFER rationales, so the architect
+  applies the same rulebook the control arm's orchestrator applies from its
+  own skill body. The pilot stays in the base file.
 
 ## Cost to every stow consumer
 
-- **Bytes.** The region adds 3,429 bytes and 8 lines to
-  `claude-skills/skills/code-review/SKILL.md`, which `wc -c` measured at
-  78,118 bytes before and 81,547 after (`awk 'END{print NR}'`: 488 lines
-  before, 496 after). Every stow consumer loads them on every `/code-review`.
-- **The loaded-layer rule.** The clauses carrying it measure, with `wc -c` on
-  the clause strings: `and the project layer's path when Step 0.5 loaded one`
-  is 53 bytes, `or a loaded project layer` is 25, and the logging clause
-  `and a loaded project layer` is 26.
+- **Load.** Every stow consumer loads the region on every `/code-review`.
+  `_PINNED_FIX_PLAN_PILOT_CLAUSE` in
+  `claude-skills/skills/tests/test_skills.py` holds its exact text.
+- **Line-gate headroom.** The region spends most of the headroom under
+  `check-skill-length.sh`'s 500-line cap on `code-review/SKILL.md`.
 - **One `config-get.sh` call per round with a reviewer-spawned finding**,
   which may prompt for permission, because neither `config-get.sh` nor
   `review-ledger.sh` has a `permissions.allow` entry. `/code-review` already
@@ -155,8 +149,10 @@ not reach any scaffolded account.
   foundation verdict can latch the branch. Whether a dispatch that ends in a
   tool error writes it depends on whether `PostToolUse` fires on an Agent
   call that errors, which is unverified. The latch cannot carry narrower
-  content without reversing the round-3 decision. The engineer accepted the
-  interaction. The stop makes it visible and does not prevent it.
+  content without reversing the round-3 decision. Every `MODE=consult`
+  dispatch writes the latch the same way, including consults that ask no
+  foundation question. The engineer accepted the interaction. The stop makes
+  it visible and does not prevent it.
 - **A resume between the dispatch's return and the ledger append** can
   re-dispatch.
 - **The round-cap consult's "stop escalating" verdict** has no pilot
@@ -166,13 +162,18 @@ not reach any scaffolded account.
   later round's foundation line asks its re-plan question again.
 - **Overlap with `ready-for-review`'s Cap consult.** At most one extra consult
   per `ready-for-review` run overlaps with the pilot.
+- **A DEFER row's criterion is checked by name, not by its conditions.** The
+  dispatch carries the closed list and the invalid DEFER rationales, but the
+  shape check does not judge a row against them. A DEFER row that names a
+  closed-list criterion with a barred rationale, such as "pre-existing gap",
+  is a valid row and logs as DEFER.
 - **Measurement contamination.** Key-on dispatches write the round-3 latch
   and count as consults in `review-trace`, so measurements of either must
   exclude key-on accounts.
 
 ## Measurement and enabling
 
-The key stays off on every account until all three exist:
+The key stays off on every account until all four exist:
 
 - A baseline from #1211 steps 1-3.
 - A pre-registered adopt/revert rule with a stop-rate threshold. It names the
@@ -181,6 +182,8 @@ The key stays off on every account until all three exist:
 - The evaluation's reader for the `fix-plan:` prefix and outcome tags, run on
   a synthetic fixture before any account enables the key, because ledger
   rows and transcripts roll over at 30 days.
+- A deny fixture: an enforcement-invariant finding plus a DEFER or KEEP row
+  yields a stop. The region's barred-row stop is pinned as text only.
 
 **Enable, check, disable.** Hand-edit `architect_fix_plan_pilot = true` in
 `<config-dir>/claude-config.toml`. Check with
@@ -206,10 +209,8 @@ Set the key `false` on any account that enabled it.
 [§59](code-reviews-fix-route-unifies-42s.md) routes. A default-off pilot
 overturns neither, so no supersession edit is made now.
 
-**Post-merge key-off check.** The first `/code-review` in this repository
-after merge whose round has a reviewer-spawned finding must show one
-`config-get.sh architect_fix_plan_pilot` call that reads off, the default
-procedure, and no `fix-plan:` tag.
+**Key-off check.** A key-off round with a reviewer-spawned finding shows one
+`config-get.sh architect_fix_plan_pilot` read and no `fix-plan:` tag.
 
 ## Sources
 

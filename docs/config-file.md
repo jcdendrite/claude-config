@@ -176,7 +176,9 @@ It runs two phases, always in this order:
      all. None exist among today's 18 keys besides `test_selection_tracking`
      and `architect_fix_plan_pilot`, whose `legacy-filename` and
      `legacy-polarity` are both empty. Scaffold therefore currently writes
-     both keys' default rows. A key with
+     both keys' default rows. A scaffolded explicit row shadows the schema
+     default, so changing such a key's `default` column needs a row
+     migration. A key with
      a legacy-polarity
      (`presence-enables`/`presence-disables`/`content-matches`) stays
      absent from the state file unless this run's import path already

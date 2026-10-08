@@ -1301,6 +1301,21 @@ class TestConfigScaffold:
             ["handoff_nudge = false", *_no_legacy_polarity_default_rows()]
         ) + "\n"
 
+    @pytest.mark.parametrize("key", [row.key for row in schema().values() if not row.legacy_polarity and row.type == "bool"])
+    def test_hand_written_non_default_row_for_a_no_legacy_key_survives_unchanged(self, isolated_home, key):
+        """The non-default value is spelled out, not derived from a legacy
+        file the key does not have, so the row stays distinguishable from the
+        default row scaffold would otherwise write. Bool keys only, like
+        _no_legacy_polarity_default_rows."""
+        non_default_value = "true" if schema()[key].default == "false" else "false"
+        _write_state_file(isolated_home, f"{key} = {non_default_value}\n")
+        result = _run("_config_scaffold")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert f"{key} = {non_default_value}" in state_file.read_text().splitlines()
+        assert f"{key} = {schema()[key].default}" not in state_file.read_text().splitlines()
+
     def test_presence_and_content_matches_polarity_keys_stay_absent(self, isolated_home):
         """Every key with a legacy-polarity value stays absent (backfilling
         would shadow its legacy file); every key with none gets its default

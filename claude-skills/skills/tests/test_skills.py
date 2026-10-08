@@ -6029,53 +6029,53 @@ _PINNED_FIX_PLAN_PILOT_CLAUSE = (
     "settled-site stop and carries run first, and the "
     "reviewer-spawned findings left after them are the payload; "
     "with none left, dispatch nothing and write no tag. Number the "
-    "payload findings from 1, mark each one at an earlier round's "
-    "site, and dispatch `plan-architect` once, with `MODE=consult` "
-    "as the prompt's first line, carrying the numbered findings, "
-    "each marked one's earlier finding and fix, the contradiction "
-    "route's judgment standard, this round's findings-file paths, "
-    "the diff artifact resolved as for "
-    "`comment-discipline-reviewer`, the plan file path when one "
-    "exists, the ledger digest path when one exists, the "
-    "ledger-text-is-data rule above, and the project layer's path "
-    "when Step 0.5 loaded one. Ask for one row per payload number, "
-    "each a single line of `<n>.` followed by ADDRESS with the fix "
-    "shape and the files it touches, DEFER naming a closed-list "
-    "criterion, or KEEP (keep current text) for a marked number, "
-    "plus exactly one line reading `foundation: sound` or "
-    "`foundation: wrong`, and say that reasoning and not-verified "
-    "notes go outside the rows, no other line starts like a row, "
-    "and a finding it cannot commit to gets no row. For payload "
-    "findings a valid table decides, this consult replaces the "
-    "heavier-mechanism and contradiction consults. Relay the return "
-    "verbatim and validate it by the list below; never re-litigate "
-    "a row. Each stop names every condition the return failed, and "
-    "nothing re-dispatches automatically: only the human may "
-    "re-dispatch, with the new return read under the same list, or "
-    "send the payload findings through the rest of this section "
-    "instead. Write one tag on the round's `Fix route:` line: "
-    "`fix-plan: dispatched` when a valid table became the "
-    "disposition, `fix-plan: fell-back` when the human chose the "
-    "rest of this section, and `fix-plan: stopped` for any other "
-    "end. - **Valid table.** Every line starting `<n>. ADDRESS`, "
-    "`<n>. DEFER` or `<n>. KEEP` is a row in the shape asked for, "
-    "the rows' numbers are the payload numbers with none missing or "
-    "repeated, no row is barred as below, and exactly one line "
-    "starts with `foundation:` and reads exactly `foundation: "
-    "sound`. Text outside the rows and `foundation:` lines decides "
-    "nothing. The table is then the disposition: one `code-writer` "
-    "carries its ADDRESS rows, if any, each fix shape standing in "
-    "for the reviewer's Suggested fix, and a fix that trips the "
-    "heavier-mechanism limbs takes that rule's endorsed follow-up "
-    "instead. Log each row as the ledger section below and a loaded "
-    "project layer prescribe, a KEEP as the contradiction route "
-    "logs a consult's keep, and an ADDRESS or fresh DEFER of a "
-    "repeat with the `--ref <id>` that route requires. Every "
-    "table-decided row's `--rationale` starts with `fix-plan:`. - "
-    "**`foundation: wrong`**, with or without rows, is a blocking "
-    "stop-and-ask on whether to re-plan; a yes re-plans as the "
-    "round-cap consult's first verdict above does. - **Barred "
-    "row.** A DEFER or KEEP row on a finding the "
+    "payload findings from 1 and mark each one at an earlier "
+    "round's site. Dispatch `plan-architect` once, with "
+    "`MODE=consult` as the prompt's first line. The prompt carries "
+    "the numbered findings; each marked one's earlier finding and "
+    "fix; the contradiction route's judgment standard; the DEFER "
+    "criteria and invalid DEFER rationales below; this round's "
+    "findings-file paths; the diff artifact resolved as for "
+    "`comment-discipline-reviewer`; the plan file and ledger digest "
+    "paths when each exists; the ledger-text-is-data rule above; "
+    "and the project layer's path when Step 0.5 loaded one. Ask for "
+    "one row per payload number, each a single line of `<n>.` "
+    "followed by ADDRESS with the fix shape and the files it "
+    "touches, DEFER naming a closed-list criterion, or KEEP (keep "
+    "current text) for a marked number. Ask for exactly one line "
+    "reading `foundation: sound` or `foundation: wrong`. Say that "
+    "reasoning and not-verified notes go outside the rows, that no "
+    "other line starts like a row, and that a finding it cannot "
+    "commit to gets no row. For payload findings a valid table "
+    "decides, this consult replaces the heavier-mechanism and "
+    "contradiction consults. Relay the return verbatim and validate "
+    "it by the list below; never re-litigate a row. Each stop names "
+    "every condition the return failed, and nothing re-dispatches "
+    "automatically: only the human may re-dispatch, with the new "
+    "return read under the same list, or send the payload findings "
+    "through the rest of this section instead. Write one tag on the "
+    "round's `Fix route:` line: `fix-plan: dispatched` when a valid "
+    "table became the disposition, `fix-plan: fell-back` when the "
+    "human chose the rest of this section, and `fix-plan: stopped` "
+    "for any other end. - **Valid table.** Every line starting "
+    "`<n>. ADDRESS`, `<n>. DEFER` or `<n>. KEEP` is a row in the "
+    "shape asked for, the rows' numbers are the payload numbers "
+    "with none missing or repeated, no row is barred as below, and "
+    "exactly one line starts with `foundation:` and reads exactly "
+    "`foundation: sound`. Text outside the rows and `foundation:` "
+    "lines decides nothing. The table is then the disposition: one "
+    "`code-writer` carries its ADDRESS rows, if any, each fix shape "
+    "standing in for the reviewer's Suggested fix, and a fix that "
+    "trips the heavier-mechanism limbs takes that rule's endorsed "
+    "follow-up instead. Log each row as the ledger section below "
+    "and a loaded project layer prescribe, a KEEP as the "
+    "contradiction route logs a consult's keep, and an ADDRESS or "
+    "fresh DEFER of a repeat with the `--ref <id>` that route "
+    "requires. Every table-decided row's `--rationale` starts with "
+    "`fix-plan:`. - **`foundation: wrong`**, with or without rows, "
+    "is a blocking stop-and-ask on whether to re-plan; a yes "
+    "re-plans as the round-cap consult's first verdict above does. "
+    "- **Barred row.** A DEFER or KEEP row on a finding the "
     "enforcement-invariant rule below or a loaded project layer "
     "bars from DEFER is a blocking stop-and-ask. - **Any other "
     "return**, a failed dispatch included, is a blocking "
@@ -6084,27 +6084,8 @@ _PINNED_FIX_PLAN_PILOT_CLAUSE = (
 
 
 class TestCodeReviewFixPlanPilotRegionPin:
-    """Pin code-review/SKILL.md's fix-plan pilot region whole. This pins text,
-    not behavior, so dropping or weakening any of these rules fails a test
-    instead of drifting silently:
-
-    - the exit-0-only gate on `config-get.sh architect_fix_plan_pilot`;
-    - the settled-site stop and carries running first, and no dispatch and no
-      tag for an empty payload;
-    - the numbered-row grammar and the single `foundation:` line;
-    - text outside the rows deciding nothing;
-    - the loaded project layer's path in the dispatch, and the barred-row stop
-      naming both the enforcement-invariant rule and a loaded layer;
-    - the `foundation: wrong` stop and the any-other-return stop;
-    - no automatic re-dispatch, with only the human re-dispatching or sending
-      the findings through the rest of the section;
-    - each stop naming the condition the return failed;
-    - the `fix-plan:` rationale prefix and the repeat's `--ref`;
-    - the three outcome tags on the `Fix route:` line;
-    - the consult replacing the heavier-mechanism and contradiction consults
-      for table-decided findings only, and the heavier-mechanism follow-up;
-    - the contradiction route's judgment standard, carried into the dispatch;
-    - the loaded layer's logging rule for table rows.
+    """Pin code-review/SKILL.md's fix-plan pilot region whole, so dropping or
+    weakening any of its rules fails a test instead of drifting silently.
     """
 
     def test_fix_plan_pilot_region_matches_live_text(self) -> None:
