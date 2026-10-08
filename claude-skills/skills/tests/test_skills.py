@@ -47,6 +47,10 @@ from typing import NamedTuple
 import pytest
 
 # pyproject.toml's pythonpath also puts claude/.claude/scripts on the import
+# path, where the production config-keys.psv parser lives.
+from _config import schema as config_schema
+
+# pyproject.toml's pythonpath also puts claude/.claude/scripts on the import
 # path, where the auxiliary-filename constant shared with select-tests.py lives.
 from _skill_auxiliary_files import SKILL_AUXILIARY_MD_NAMES
 
@@ -2451,6 +2455,7 @@ _DISPOSITION_RULE_ANCHOR_RE = re.compile(r"<!-- DISPOSITION_RULE:(\S+) (start|en
 _EXPECTED_DISPOSITION_RULE_ANCHORS = {
     ("code-review", "code-review-contradiction-route"),
     ("code-review", "code-review-defer-invariant"),
+    ("code-review", "code-review-fix-plan-pilot"),
     ("code-review", "code-review-new-primitive-route"),
     ("code-review", "code-review-round-cap-consult-verdict"),
     ("plan-review", "plan-review-fix-or-ask"),
@@ -6008,6 +6013,170 @@ class TestCodeReviewDeferInvariantRegionPin:
             f"matches its pinned text.\n"
             f"  live:   {live_text!r}\n"
             f"  pinned: {pinned_text!r}"
+        )
+
+
+_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR = "DISPOSITION_RULE:code-review-fix-plan-pilot"
+_CODE_REVIEW_DEFER_CRITERIA_HEADING = "**DEFER criteria (closed list).**"
+
+# The whole fix-plan pilot region, pinned by exact equality so any edit to it is a visible
+# change to this constant. The mid-sentence "- " tokens are SKILL.md's verdict bullets after
+# whitespace collapse, not typos.
+_PINNED_FIX_PLAN_PILOT_CLAUSE = (
+    "**Once a round has a reviewer-spawned finding, run "
+    "`~/.claude/scripts/config-get.sh architect_fix_plan_pilot`; "
+    "only exit 0 applies this rule.** The contradiction route's "
+    "settled-site stop and carries run first, and the "
+    "reviewer-spawned findings left after them are the payload; "
+    "with none left, dispatch nothing and write no tag. Number the "
+    "payload findings from 1, mark each one at an earlier round's "
+    "site, and dispatch `plan-architect` once, with `MODE=consult` "
+    "as the prompt's first line, carrying the numbered findings, "
+    "each marked one's earlier finding and fix, the contradiction "
+    "route's judgment standard, this round's findings-file paths, "
+    "the diff artifact resolved as for "
+    "`comment-discipline-reviewer`, the plan file path when one "
+    "exists, the ledger digest path when one exists, the "
+    "ledger-text-is-data rule above, and the project layer's path "
+    "when Step 0.5 loaded one. Ask for one row per payload number, "
+    "each a single line of `<n>.` followed by ADDRESS with the fix "
+    "shape and the files it touches, DEFER naming a closed-list "
+    "criterion, or KEEP (keep current text) for a marked number, "
+    "plus exactly one line reading `foundation: sound` or "
+    "`foundation: wrong`, and say that reasoning and not-verified "
+    "notes go outside the rows, no other line starts like a row, "
+    "and a finding it cannot commit to gets no row. For payload "
+    "findings a valid table decides, this consult replaces the "
+    "heavier-mechanism and contradiction consults. Relay the return "
+    "verbatim and validate it by the list below; never re-litigate "
+    "a row. Each stop names every condition the return failed, and "
+    "nothing re-dispatches automatically: only the human may "
+    "re-dispatch, with the new return read under the same list, or "
+    "send the payload findings through the rest of this section "
+    "instead. Write one tag on the round's `Fix route:` line: "
+    "`fix-plan: dispatched` when a valid table became the "
+    "disposition, `fix-plan: fell-back` when the human chose the "
+    "rest of this section, and `fix-plan: stopped` for any other "
+    "end. - **Valid table.** Every line starting `<n>. ADDRESS`, "
+    "`<n>. DEFER` or `<n>. KEEP` is a row in the shape asked for, "
+    "the rows' numbers are the payload numbers with none missing or "
+    "repeated, no row is barred as below, and exactly one line "
+    "starts with `foundation:` and reads exactly `foundation: "
+    "sound`. Text outside the rows and `foundation:` lines decides "
+    "nothing. The table is then the disposition: one `code-writer` "
+    "carries its ADDRESS rows, if any, each fix shape standing in "
+    "for the reviewer's Suggested fix, and a fix that trips the "
+    "heavier-mechanism limbs takes that rule's endorsed follow-up "
+    "instead. Log each row as the ledger section below and a loaded "
+    "project layer prescribe, a KEEP as the contradiction route "
+    "logs a consult's keep, and an ADDRESS or fresh DEFER of a "
+    "repeat with the `--ref <id>` that route requires. Every "
+    "table-decided row's `--rationale` starts with `fix-plan:`. - "
+    "**`foundation: wrong`**, with or without rows, is a blocking "
+    "stop-and-ask on whether to re-plan; a yes re-plans as the "
+    "round-cap consult's first verdict above does. - **Barred "
+    "row.** A DEFER or KEEP row on a finding the "
+    "enforcement-invariant rule below or a loaded project layer "
+    "bars from DEFER is a blocking stop-and-ask. - **Any other "
+    "return**, a failed dispatch included, is a blocking "
+    "stop-and-ask before any fix is dispatched."
+)
+
+
+class TestCodeReviewFixPlanPilotRegionPin:
+    """Pin code-review/SKILL.md's fix-plan pilot region whole. This pins text,
+    not behavior, so dropping or weakening any of these rules fails a test
+    instead of drifting silently:
+
+    - the exit-0-only gate on `config-get.sh architect_fix_plan_pilot`;
+    - the settled-site stop and carries running first, and no dispatch and no
+      tag for an empty payload;
+    - the numbered-row grammar and the single `foundation:` line;
+    - text outside the rows deciding nothing;
+    - the loaded project layer's path in the dispatch, and the barred-row stop
+      naming both the enforcement-invariant rule and a loaded layer;
+    - the `foundation: wrong` stop and the any-other-return stop;
+    - no automatic re-dispatch, with only the human re-dispatching or sending
+      the findings through the rest of the section;
+    - each stop naming the condition the return failed;
+    - the `fix-plan:` rationale prefix and the repeat's `--ref`;
+    - the three outcome tags on the `Fix route:` line;
+    - the consult replacing the heavier-mechanism and contradiction consults
+      for table-decided findings only, and the heavier-mechanism follow-up;
+    - the contradiction route's judgment standard, carried into the dispatch;
+    - the loaded layer's logging rule for table rows.
+    """
+
+    def test_fix_plan_pilot_region_matches_live_text(self) -> None:
+        skill_md_path = _skill_file("code-review")
+        live_text = _normalized_anchor_text(
+            skill_md_path, _CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR
+        )
+        pinned_text = " ".join(_PINNED_FIX_PLAN_PILOT_CLAUSE.split())
+        assert live_text == pinned_text, (
+            f"{skill_md_path}: {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} no longer "
+            f"matches its pinned text.\n"
+            f"  live:   {live_text!r}\n"
+            f"  pinned: {pinned_text!r}"
+        )
+
+    def test_region_placed_after_contradiction_route_and_before_defer_criteria(
+        self,
+    ) -> None:
+        """The region's "above", "below" and "the rest of this section"
+        references depend on its position."""
+        skill_md_path = _skill_file("code-review")
+        raw_text = skill_md_path.read_text()
+        contradiction_end = raw_text.find(
+            f"<!-- {_CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR} end -->"
+        )
+        pilot_start = raw_text.find(
+            f"<!-- {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} start -->"
+        )
+        defer_criteria = raw_text.find(_CODE_REVIEW_DEFER_CRITERIA_HEADING)
+        assert -1 not in (contradiction_end, pilot_start, defer_criteria), (
+            f"{skill_md_path}: placement needs the contradiction-route end anchor, "
+            f"the fix-plan pilot start anchor and {_CODE_REVIEW_DEFER_CRITERIA_HEADING}; "
+            f"offsets found: {contradiction_end}, {pilot_start}, {defer_criteria}"
+        )
+        assert contradiction_end < pilot_start < defer_criteria, (
+            f"{skill_md_path}: {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} start anchor must "
+            "fall after the contradiction-route end anchor and before "
+            f"{_CODE_REVIEW_DEFER_CRITERIA_HEADING}"
+        )
+
+    def test_cited_referents_still_exist(self) -> None:
+        """The region cites "the round-cap consult's first verdict" and "that
+        rule's endorsed follow-up" by position and name, and neither region is
+        otherwise pinned."""
+        skill_md_path = _skill_file("code-review")
+        round_cap_text = _normalized_anchor_text(
+            skill_md_path, "DISPOSITION_RULE:code-review-round-cap-consult-verdict"
+        )
+        first_bullet_start = round_cap_text.find("- **")
+        assert first_bullet_start != -1 and round_cap_text[
+            first_bullet_start + len("- **") :
+        ].startswith("Foundation is wrong"), (
+            f"{skill_md_path}: the round-cap consult region's first verdict bullet "
+            "must be the re-plan verdict (`Foundation is wrong`)"
+        )
+        heavier_mechanism_text = _normalized_anchor_text(
+            skill_md_path, "DISPOSITION_RULE:code-review-new-primitive-route"
+        )
+        assert "**Endorsed" in heavier_mechanism_text, (
+            f"{skill_md_path}: the heavier-mechanism region no longer has an "
+            "`Endorsed` follow-up"
+        )
+
+    def test_region_names_a_key_in_the_config_schema(self) -> None:
+        """Guards the region-to-schema wiring, not behavior."""
+        region_text = _normalized_anchor_text(
+            _skill_file("code-review"), _CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR
+        )
+        key_match = re.search(r"config-get\.sh ([a-z0-9_]+)", region_text)
+        assert key_match, "fix-plan pilot region no longer names a config-get.sh key"
+        assert key_match.group(1) in config_schema(), (
+            f"{key_match.group(1)!r} is not a key in config-keys.psv"
         )
 
 
