@@ -15,6 +15,7 @@ import subprocess
 import pytest
 from helpers import (
     HOOKS_DIR,
+    LARGE_MULTILINE_TAIL,
     assert_cap_engaged,
     bash_input,
     build_path_without,
@@ -25,14 +26,6 @@ from helpers import (
 from .conftest import _real_timeout_is_gnu_coreutils, _write_conditional_sleep_shim
 
 DENY_ESCAPED_BACKTICKS_HOOK = HOOKS_DIR / "deny-escaped-backticks-in-pr-body.sh"
-
-# About 320 KB in 32 lines. It must be multi-line and exceed 100 KiB, the size
-# at which the pipe form misses on every run (see
-# .claude/plans/stow-reminder-sigpipe-fix.md row 5), not just pipe capacity:
-# a pipe into `grep -q` returns 141 under pipefail once grep exits on a
-# first-line match before the writer finishes.
-LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
-assert LARGE_MULTILINE_TAIL.count("\n") > 1 and len(LARGE_MULTILINE_TAIL) > 100 * 1024
 
 
 class TestDenyEscapedBackticksInPrBody:
