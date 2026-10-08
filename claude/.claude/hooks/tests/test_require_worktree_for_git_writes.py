@@ -987,7 +987,7 @@ class TestRequireWorktreeForGitWrites:
 
     def test_main_tree_deny_quotes_spaced_main_path(self, isolated_home, spaced_main_root):
         """GH-1234: a main checkout whose path contains a space still yields a
-        suggested `worktree add` whose target is a single shell argument."""
+        suggested `worktree add` whose target is quoted so whitespace in the path survives."""
         reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=spaced_main_root)
 
         assert reason is not None

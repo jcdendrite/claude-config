@@ -66,8 +66,7 @@ anything other than `main`, substitute accordingly. Check with
 
 When the branch lives in a linked worktree, creating the worktree is
 only half the step — the session must also enter it. These three steps
-work the same from the main checkout or from a linked worktree, and the
-last one is the very next call after the add:
+work the same from the main checkout or from a linked worktree:
 
 1. Run `git worktree list --porcelain`. The path on its first `worktree`
    line is the main checkout; call it `<main-checkout>`.
