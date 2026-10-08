@@ -19,7 +19,10 @@ test_transcript_audit_routing_shape.py, test_transcript_audit_routing_samples.py
 test_transcript_subagents.py, test_transcript_subagent_mix.py,
 test_transcript_subagent_mix_dollars.py, test_transcript_cost_counts.py,
 test_transcript_handoff_nudge.py, test_transcript_rearm_backtest.py,
-test_transcript_spend_over_threshold.py, and
+test_transcript_spend_over_threshold.py, test_transcript_plan_boundary.py,
+test_transcript_handoff_signal_response_detection.py,
+test_transcript_handoff_signal_response.py,
+tests/_handoff_nudge_helpers.py, and
 tests/_cache_rebuild_helpers.py (see the extraction rationale on
 _write_jsonl below).
 
@@ -1207,11 +1210,9 @@ def fake_projects(tmp_path, monkeypatch, request):
     derives its default root from a fresh config_dir() call, not from the
     PROJECTS_DIR patch above — without this, a subcommand routed through
     _resolve_cost_roots would silently fall back to this machine's real
-    config dir instead of this fixture's isolated tmp_path. handoff-signal-response
-    still lives in the shim and calls config_dir() via its own
-    separate import, so mod.config_dir is patched too. cost_ledger,
+    config dir instead of this fixture's isolated tmp_path. cost_ledger,
     ledger_common, and pr_cost_ledger each bind config_dir by name from _config_dir, mirroring
-    scope.py's own binding, so all three are patched too -- five bindings of the same initial
+    scope.py's own binding, so all three are patched too -- four bindings of the same initial
     value, each the sole read path for its own still-independent call sites.
     """
     mod = request.module._mod
@@ -1220,7 +1221,6 @@ def fake_projects(tmp_path, monkeypatch, request):
     proj.mkdir(parents=True)
     monkeypatch.setattr(mod.scope, "PROJECTS_DIR", projects)
     monkeypatch.setattr(mod.scope, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(mod, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(mod.cost_ledger, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(mod.ledger_common, "config_dir", lambda: tmp_path)
     monkeypatch.setattr(mod.pr_cost_ledger, "config_dir", lambda: tmp_path)

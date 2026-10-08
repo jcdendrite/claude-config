@@ -25,6 +25,8 @@ PRODUCTION_MODULES = (
     "handoff_nudge.py",
     "rearm_backtest.py",
     "spend_over_threshold.py",
+    "plan_boundary.py",
+    "handoff_signal_response.py",
 )
 TEST_FILES = (
     "test_transcript_cost_ledger.py",
@@ -38,6 +40,9 @@ TEST_FILES = (
     "test_transcript_rearm_backtest.py",
     "test_transcript_rearm_backtest_nudge_log.py",
     "test_transcript_spend_over_threshold.py",
+    "test_transcript_plan_boundary.py",
+    "test_transcript_handoff_signal_response_detection.py",
+    "test_transcript_handoff_signal_response.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --

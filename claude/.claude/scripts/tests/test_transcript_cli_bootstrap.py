@@ -793,3 +793,42 @@ def test_transcript_analysis_spend_over_threshold_subprocess_finds_seeded_sessio
 
     assert result.returncode == 0, result.stderr
     assert "2026-W21" in result.stdout
+
+
+def test_transcript_analysis_plan_boundary_help_exits_zero():
+    result = _run("transcript-analysis.py", "plan-boundary", "--help")
+    assert result.returncode == 0, result.stderr
+    # Only plan-boundary's --no-redact help says "no plan text". Whitespace is
+    # collapsed because argparse wraps help by terminal width.
+    assert "no plan text" in " ".join(result.stdout.split())
+
+
+def test_transcript_analysis_plan_boundary_subprocess_finds_seeded_session(tmp_path):
+    """Proves, in a fresh interpreter, that plan_boundary.py resolves through sys.path[0] alone and
+    that real argparse dispatches plan-boundary to cmd_plan_boundary through set_defaults(func=...).
+    "Sessions scanned: 1" shows the seeded session was read."""
+    config_dir = _seed_priced_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "plan-boundary", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "Sessions scanned: 1" in result.stdout
+
+
+def test_transcript_analysis_handoff_signal_response_help_exits_zero():
+    result = _run("transcript-analysis.py", "handoff-signal-response", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--context-turns N" in result.stdout
+
+
+def test_transcript_analysis_handoff_signal_response_subprocess_dispatches_on_seeded_account(tmp_path):
+    """Proves, in a fresh interpreter, that handoff_signal_response.py resolves through sys.path[0] alone
+    and that real argparse dispatches handoff-signal-response to cmd_handoff_signal_response through
+    set_defaults(func=...). The seeded session carries no signal, so the zero-signal heading claims only
+    resolution and dispatch."""
+    config_dir = _seed_priced_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "handoff-signal-response", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "## Handoff signal response (0 signal(s) in scope)" in result.stdout
