@@ -961,7 +961,6 @@ class TestRequireWorktreeForGitWrites:
         worktree."""
         main_root = opted_in_repo
         command = "git commit -m foo"
-        worktree = None
         if route == "cwd_is_main_root":
             cwd = main_root
         elif route == "cwd_is_main_subdirectory":
@@ -977,8 +976,6 @@ class TestRequireWorktreeForGitWrites:
             subprocess.run(["git", "worktree", "add", "-b", "GH-1/x", str(worktree)], cwd=main_root, check=True)
             cwd = worktree
             command = f"cd {main_root} && {command}"
-        if worktree is not None:
-            _seed_session(isolated_home, "main-tree-deny-route-session")
 
         reason = run_hook_reason(WORKTREE_HOOK, bash_input(command), cwd=cwd)
 

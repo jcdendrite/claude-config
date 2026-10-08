@@ -90,16 +90,17 @@ Rules that go with the recipe:
   branch's upstream.
 - Never pass a cwd-relative path. Run from inside a linked worktree, it
   nests the new worktree inside that one.
-- Type `<main-checkout>` as literal text, with no `$(...)` — the harness
-  refuses command substitution in an anchored session.
-- A refused call, a failed `fetch`, or an "already exists" error is
-  reported, or resolved by entering the existing worktree from
+- Type `<main-checkout>`, `<default-branch>`, and `<branch>` as literal
+  text, with no `$(...)` — the harness refuses command substitution in
+  an anchored session. Look `<default-branch>` up in its own earlier
+  call and paste the result.
+- If the harness refuses the chained call, run its three statements as
+  separate literal calls: `git fetch`, `git worktree add`,
+  `git worktree list`.
+- A refused split call, a failed `fetch`, or an "already exists" error
+  is reported, or resolved by entering the existing worktree from
   `git worktree list`. It never licenses the relative form or a form
   with no start point.
-
-If the harness refuses the chained call, run its three statements as
-separate literal calls: `git fetch`, `git worktree add`,
-`git worktree list`.
 
 Run no other command before `EnterWorktree`, read-only ones included —
 it resolves relative paths against cwd (not repo root) and has no
