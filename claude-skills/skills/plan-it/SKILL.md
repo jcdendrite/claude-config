@@ -141,16 +141,25 @@ where implementation runs, and there is none.
 **Sharing the plan.** This applies only on the branch where the plan file was committed above. Share the plan with the engineer by the plan file's own absolute path. Never open a PR, draft or ready, at plan time. When the plan adds a design document or defines a cross-team contract (a schema shape, enum, or API surface other teams or pipelines depend on), readers outside this session may need lead time, so offer to push the branch with no PR:
 
 - Ask the engineer through `AskUserQuestion`, not a closing chat question.
-- Resolve `gh pr view`, the visibility check, and `gh browse` against the repository that the push URL names (`--repo OWNER/REPO`).
-- Ask only when the branch is not the default branch and `gh pr view` finds no PR for it (a non-zero exit counts as no PR), since a push to a branch with a PR needs `/ready-for-review` first.
-- The question names that remote's push URL from `git remote get-url --push <remote>` with any userinfo (`user:token@`) stripped.
-- The question also names the commits that push would publish to that remote, and whether the repository is public.
-- State the visibility as unknown, and treat it as public, when the host cannot confirm it.
+- `<remote>` is the first of `branch.<branch>.pushRemote`, `remote.pushDefault`, and `branch.<branch>.remote` that is set, else `origin`.
+- `<default-branch>` is the text after `refs/remotes/<remote>/` in what `git symbolic-ref refs/remotes/<remote>/HEAD` prints. When that command fails, `<default-branch>` cannot be determined, and that alone does not stop the offer.
+- Ask only when `git remote get-url --push --all <remote>` prints exactly one URL, since `git push <remote>` publishes to every URL it prints.
+- Take `OWNER/REPO` only from a push-URL path of exactly two segments after removing a trailing `.git`. Resolve `gh pr view` and `gh browse` with `--repo OWNER/REPO`, which `gh` resolves on its default host. Check visibility only when that URL's host, without scheme, userinfo, or port, is exactly `github.com`, with `gh repo view github.com/OWNER/REPO --json visibility`, so no host named by the push URL other than `github.com` receives a `gh` request before the engineer answers.
+- Ask only when the branch is not `<default-branch>` and `gh pr view <branch>` finds no PR for it (a non-zero exit counts as no PR), since a push to a branch with a PR needs `/ready-for-review` first.
+- When the push URL count, a push URL path that is not exactly two segments, the default branch, an existing PR, or a failed tip resolution stops the offer, say which one in the reply instead of skipping the offer silently.
+- The question names that URL with any userinfo (`user:token@`) stripped.
+- Before asking, resolve the branch tip once with `git rev-parse --verify refs/heads/<branch>`, and name that `<sha>` and the remote branch `refs/heads/<branch>` in the question.
+- The question names the baseline `refs/remotes/<remote>/<default-branch>` as of this clone's last fetch, gives the commit count from `git rev-list --count refs/remotes/<remote>/HEAD..<sha>`, and lists at most 10 subjects from `git log --oneline -n 10` over the same range, followed by "N more" when there are more. The range uses the symbolic ref `refs/remotes/<remote>/HEAD` so that `<default-branch>`, which the remote chose, never reaches the shell.
+- When `<default-branch>` cannot be determined or that range does not resolve, the question says the list is unknown and may be the branch's whole history. When `<default-branch>` cannot be determined, it also says the default-branch check did not run, so `refs/heads/<branch>` may be the remote's default branch.
+- The question gives the visibility `gh repo view` returns, verbatim.
+- State the visibility as unknown, and treat it as public, when that URL's host is not `github.com`, or `gh repo view` exits non-zero or returns no visibility.
 - No answer means no push.
-- Push only after a yes, with an explicit `git push --no-follow-tags <remote> <branch>`.
-- A yes covers only that remote, that branch, and those commits.
+- Push only after a yes, with exactly `git -c push.pushOption= push --no-follow-tags --no-recurse-submodules <remote> <sha>:refs/heads/<branch>`, where `<sha>` is the literal hex named in the question, never a command substitution. Escape every substituted value so the shell sees one literal word, in this command and in every other command in this list.
+- A yes covers only that remote, that remote branch, and that SHA.
 - Autonomous shipping does not waive the question.
 - After a yes and the push, give the plan file's URL from `gh browse <repo-relative plan path> --branch <branch> --no-browser`, and give other readers that URL, not the local path.
+- If the push fails or a hook denies it, report the error or denial, give no URL, and make no further push attempt.
+- If `gh browse` fails, say the push landed on `refs/heads/<branch>` at `<remote>` and report gh's error in place of the URL.
 
 Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`, following `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for how to read its result: hand off when it says the session is past its threshold. When the check can't resolve a measurement (`"status":"cannot-resolve"` or `"status":"schema-drift"`), say the estimate is unavailable, name the `reason`, and fall back to judgment: the plan boundary is itself a natural seam, weighed against how much of the plan remains.
 
