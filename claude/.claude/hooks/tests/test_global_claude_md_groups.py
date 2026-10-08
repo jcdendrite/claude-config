@@ -320,12 +320,12 @@ def test_proceed_clause_is_absent_from_agent_core():
     )
 
 
-@pytest.mark.parametrize("retired_fragment", ["shell escape", "via `!`"])
+@pytest.mark.parametrize("retired_fragment", ["shell escape", "via `!`", "via the `!` escape"])
 def test_agent_core_does_not_route_recourse_through_shell_escape(retired_fragment):
     """Shell-mode output enters the transcript, so Agent Core hands inspection and installs to a separate terminal."""
     lines = _lines()
-    core_text = "\n".join(lines[: _main_heading_index(lines)])
-    assert retired_fragment not in core_text, (
+    core_text = " ".join("\n".join(lines[: _main_heading_index(lines)]).split()).casefold()
+    assert " ".join(retired_fragment.split()).casefold() not in core_text, (
         f"{_GLOBAL_CLAUDE_MD}: {retired_fragment!r} appears in {_CORE_HEADING}; "
         "the convention is to ask the user to run the command in a separate terminal."
     )

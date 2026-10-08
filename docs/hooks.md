@@ -288,7 +288,6 @@ With `jq` unavailable (missing from `PATH`, failing, or hung past its 5s timeout
 A `timeout` or `gtimeout` that rejects `-k` is the same kind of hard-block, because `jq` runs under it: `jq` is healthy, yet every gated tool call denies. README.md's Requirements section states which implementations accept `-k`.
 Diagnose with `command -v timeout gtimeout` and `timeout -k 1 1 true; echo $?`, which must print 0. The hooks probe `timeout` first and `gtimeout` only when no `timeout` is on `PATH`, so installing GNU coreutils behind a BusyBox `timeout` that still wins on `PATH` changes nothing.
 Recovery is one route: put a `-k`-capable `timeout` ahead of the rejecting one on the harness's `PATH`, then restart the harness.
-A `PATH` change without that restart is not a recovery route.
 
 A SIGKILL after the grace can strand a git lock file. The symptom is git's "Unable to create '<path>/index.lock': File exists" error. Confirm no git process is running for that repository, then remove the lock path git names in its error message. In a linked worktree it lives under `.git/worktrees/<name>/`.
 
