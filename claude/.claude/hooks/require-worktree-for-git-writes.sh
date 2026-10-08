@@ -435,7 +435,7 @@ while IFS=$'\x1f' read -r rec_type field1 field2 field3 field4 field5; do
         continue
       fi
 
-      emit_deny_folding_fresh_lock_context "'git $subcmd' is not on the read-only allowlist, and this write targets the MAIN working tree of a repo where worktree discipline is active ${_LIB_WORKTREE_REQUIRED_UNION_EXPLANATION}. To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under .claude/worktrees/, or create one with 'git worktree add .claude/worktrees/<branch> -b <branch>' (that specific command is allowed on the main tree). See claude-config README 'Worktree enforcement' for details.$(_lib_stray_marker_hint "$REPO_ROOT")"
+      emit_deny_folding_fresh_lock_context "'git $subcmd' is not on the read-only allowlist, and this write targets the MAIN working tree of a repo where worktree discipline is active ${_LIB_WORKTREE_REQUIRED_UNION_EXPLANATION}. To exempt this repo from machine-level enforcement, add .claude/worktree-optout. Run git write operations from inside a linked worktree — cd into an existing worktree under ${REPO_GIT_COMMON_DIR%/*}/.claude/worktrees/, or create one with 'git fetch origin <default-branch> && git worktree add --no-track -b <branch> \"${REPO_GIT_COMMON_DIR%/*}/.claude/worktrees/<branch>\" origin/<default-branch>' (allowed from any tree). See claude-config README 'Worktree enforcement' for details.$(_lib_stray_marker_hint "$REPO_ROOT")"
       exit 0
       ;;
     *)

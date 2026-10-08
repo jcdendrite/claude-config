@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 
@@ -11,6 +12,8 @@ from helpers import (
     HOOKS_DIR,
     bash_input,
     edit_input,
+    git_toplevel,
+    init_git_repo_with_commit,
     run_hook,
     run_hook_context,
     run_hook_payload,
@@ -894,6 +897,101 @@ class TestRequireWorktreeForGitWrites:
             )
             == "allow"
         )
+
+    # The main-tree deny message teaches the worktree-creation recipe, and a
+    # cwd-relative path in it nests the new worktree inside whichever
+    # worktree the session sits in (GH-1234).
+
+    @pytest.fixture
+    def spaced_main_root(self, tmp_path):
+        return init_git_repo_with_commit(
+            tmp_path / "dir with space" / "opted-in", file_name=".claude/worktree-required", content="# sentinel\n"
+        )
+
+    @staticmethod
+    def _recipe_from_reason(reason):
+        """The single-quoted worktree-creation command embedded in the main-tree deny reason."""
+        opener = "create one with '"
+        opener_at = reason.find(opener)
+        assert opener_at != -1, f"deny reason has no single-quoted recipe after {opener!r}: {reason!r}"
+        recipe_start = opener_at + len(opener)
+        recipe_end = reason.find("'", recipe_start)
+        assert recipe_end != -1, f"deny reason recipe has no closing single quote: {reason!r}"
+        return reason[recipe_start:recipe_end]
+
+    @classmethod
+    def _assert_hint_targets_main_checkout(cls, reason, main_root):
+        """Pin the exact recipe tokens and the cd hint to the main checkout's absolute path."""
+        main_checkout = git_toplevel(main_root)
+        worktrees_dir = f"{main_checkout}/.claude/worktrees/"
+
+        assert f"cd into an existing worktree under {worktrees_dir}," in reason
+        assert shlex.split(cls._recipe_from_reason(reason)) == [
+            *("git", "fetch", "origin", "<default-branch>", "&&"),
+            *("git", "worktree", "add", "--no-track", "-b", "<branch>"),
+            f"{worktrees_dir}<branch>",
+            "origin/<default-branch>",
+        ]
+
+    @pytest.mark.parametrize("main_checkout", ["opted_in_repo", "spaced_main_root"])
+    def test_main_tree_deny_recipe_is_allowed_on_main_tree(self, isolated_home, request, main_checkout):
+        """GH-1234: the recipe the main-tree deny teaches, with placeholders
+        filled, is itself allowed from the main root, so following the hint
+        never strands the session."""
+        main_root = request.getfixturevalue(main_checkout)
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=main_root)
+        assert reason is not None
+        recipe = self._recipe_from_reason(reason).replace("<default-branch>", "main").replace("<branch>", "GH-1/new")
+
+        assert run_hook(WORKTREE_HOOK, bash_input(recipe), cwd=main_root) == "allow"
+
+    @pytest.mark.parametrize(
+        "route",
+        [
+            "cwd_is_main_root",
+            "cwd_is_main_subdirectory",
+            "worktree_session_cd_to_main",
+            "worktree_nested_under_main",
+        ],
+    )
+    def test_main_tree_deny_suggests_main_root_path(self, isolated_home, opted_in_repo, tmp_path, route):
+        """GH-1234: the suggested `worktree add` target and the cd hint are the
+        main checkout's absolute path from every route into the main-tree
+        deny, never a cwd-relative path that would nest inside the session's
+        worktree."""
+        main_root = opted_in_repo
+        command = "git commit -m foo"
+        worktree = None
+        if route == "cwd_is_main_root":
+            cwd = main_root
+        elif route == "cwd_is_main_subdirectory":
+            cwd = main_root / "subdir"
+            cwd.mkdir()
+        elif route == "worktree_session_cd_to_main":
+            worktree = tmp_path / "feature-tree"
+            subprocess.run(["git", "worktree", "add", "-b", "feature", str(worktree)], cwd=main_root, check=True)
+            cwd = worktree
+            command = f"cd {main_root} && {command}"
+        else:
+            worktree = main_root / ".claude" / "worktrees" / "GH-1" / "x"
+            subprocess.run(["git", "worktree", "add", "-b", "GH-1/x", str(worktree)], cwd=main_root, check=True)
+            cwd = worktree
+            command = f"cd {main_root} && {command}"
+        if worktree is not None:
+            _seed_session(isolated_home, "main-tree-deny-route-session")
+
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input(command), cwd=cwd)
+
+        assert reason is not None
+        self._assert_hint_targets_main_checkout(reason, main_root)
+
+    def test_main_tree_deny_quotes_spaced_main_path(self, isolated_home, spaced_main_root):
+        """GH-1234: a main checkout whose path contains a space still yields a
+        suggested `worktree add` whose target is a single shell argument."""
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=spaced_main_root)
+
+        assert reason is not None
+        self._assert_hint_targets_main_checkout(reason, spaced_main_root)
 
 
 class TestMachineLevelMarker:

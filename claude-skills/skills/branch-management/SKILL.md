@@ -53,7 +53,10 @@ not from whatever happens to be checked out:
 Branching off a stale or unrelated branch carries baggage (extra
 commits, dirty state) that doesn't belong in the PR. Repos that route
 branch creation through a worktree helper (`EnterWorktree`, custom
-scripts) usually handle this automatically — verify once, then trust.
+scripts) usually handle this automatically — verify once, then trust. A
+branch for a linked worktree skips the `checkout`/`pull` commands above,
+because the worktree recipe below fetches and starts from the default
+tip itself.
 
 If the repo's default branch is `master`, `trunk`, `develop`, or
 anything other than `main`, substitute accordingly. Check with
@@ -62,18 +65,48 @@ anything other than `main`, substitute accordingly. Check with
 ## Anchor the session in the worktree
 
 When the branch lives in a linked worktree, creating the worktree is
-only half the step — the session must also enter it, as the very next
-call, before any other command touches the new path:
+only half the step — the session must also enter it. These three steps
+work the same from the main checkout or from a linked worktree, and the
+last one is the very next call after the add:
 
-    git worktree add .claude/worktrees/<branch> -b <branch>
+1. Run `git worktree list --porcelain`. The path on its first `worktree`
+   line is the main checkout; call it `<main-checkout>`.
+2. In one call, run:
 
-then `EnterWorktree{path: "<absolute path to the worktree>"}`.
+       git fetch origin <default-branch> && git worktree add --no-track -b <branch> "<main-checkout>/.claude/worktrees/<branch>" origin/<default-branch> && git worktree list
 
-Call `EnterWorktree` with an absolute path before any other command,
-including read-only ones — it resolves relative paths against cwd (not
-repo root) and has no idempotent "already there" case, so a prior `cd`
-silently leaves the session unanchored, with none of `EnterWorktree`'s
-other effects (subagent inheritance, `ExitWorktree` tracking).
+   Confirm the new entry's path starts with
+   `<main-checkout>/.claude/worktrees/`. `<default-branch>` is what
+   `git symbolic-ref --short refs/remotes/origin/HEAD` prints after its
+   `origin/` prefix; if `origin/HEAD` is unset, ask the engineer.
+3. Run `EnterWorktree{path: "<main-checkout>/.claude/worktrees/<branch>"}`,
+   the same literal path, as the very next call.
+
+Rules that go with the recipe:
+
+- `origin/<default-branch>` starts the branch at the fresh default tip,
+  not at the current `HEAD`. Inside a linked worktree, `HEAD` is that
+  worktree's branch.
+- `--no-track` keeps `origin/<default-branch>` from becoming the new
+  branch's upstream.
+- Never pass a cwd-relative path. Run from inside a linked worktree, it
+  nests the new worktree inside that one.
+- Type `<main-checkout>` as literal text, with no `$(...)` — the harness
+  refuses command substitution in an anchored session.
+- A refused call, a failed `fetch`, or an "already exists" error is
+  reported, or resolved by entering the existing worktree from
+  `git worktree list`. It never licenses the relative form or a form
+  with no start point.
+
+If the harness refuses the chained call, run its three statements as
+separate literal calls: `git fetch`, `git worktree add`,
+`git worktree list`.
+
+Run no other command before `EnterWorktree`, read-only ones included —
+it resolves relative paths against cwd (not repo root) and has no
+idempotent "already there" case, so a prior `cd` silently leaves the
+session unanchored, with none of `EnterWorktree`'s other effects
+(subagent inheritance, `ExitWorktree` tracking).
 
 Entering the worktree resets the session's cd-anchor to it; until
 then, a stray `cd` out (including one through a symlink that resolves

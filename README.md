@@ -304,7 +304,7 @@ cd .claude/worktrees/my-feature
 
 The contributor `.venv` is gitignored and lives only in the main worktree root — linked worktrees never inherit it. See [Tests](#tests) for cross-worktree invocation.
 
-Agent dispatches with `isolation: worktree` follow a separate rule, scoped to whether the agent's input or output touches the parent's working tree. See `claude/.claude/CLAUDE.md`'s Agent Briefing section for that rule. For PR-bound work that needs a meaningful branch name, create the worktree yourself with `git worktree add .claude/worktrees/<slug> -b <slug>` first, then dispatch the agent into that path.
+Agent dispatches with `isolation: worktree` follow a separate rule, scoped to whether the agent's input or output touches the parent's working tree. See `claude/.claude/CLAUDE.md`'s Agent Briefing section for that rule. For PR-bound work that needs a meaningful branch name, create the worktree yourself first per the `branch-management` skill, then dispatch the agent into the new worktree.
 
 To opt out, delete `.claude/worktree-required`.
 
