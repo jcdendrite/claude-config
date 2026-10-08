@@ -15,9 +15,6 @@
 # command that starts with the marker.sh path, and it filters tool_name and the
 # command itself rather than relying solely on the settings.json matcher.
 #
-# Paired literal: the `plan-review marker covers: ` prefix below is copied from
-# PLAN_REVIEW_COVERED_PATH_PREFIX in marker.sh.
-#
 # Fail posture: fail-silent, never blocks. Every path exits 0, and a failed
 # jq call or a missing _lib.sh produces no output.
 #
@@ -40,6 +37,9 @@
 #   - An approval whose active plan set is empty (the plan is committed and
 #     unmodified, or lives outside .claude/plans/) announces nothing.
 #   - An approval recorded in harness plan mode announces nothing.
+#   - If marker.sh's second _lib_active_plan_files call, which lists the paths
+#     to print, fails after the hash succeeded, the marker is recorded and
+#     nothing is announced.
 #   - A delegated review shows the line only in the subagent's window.
 #   - A withheld path is never shown, and any withheld path suppresses the
 #     whole list.
@@ -50,18 +50,19 @@
 #     outside the trigger's path class announces nothing.
 #   - A repo path containing a space or other character outside the path
 #     allowlist yields the withheld line.
-#   - A raw payload containing both marker.sh and plan-review anywhere (command,
-#     cwd, transcript path, or output) passes the raw-stdin prefilter. It then
-#     pays the _lib.sh sourcing cost before the trigger rejects it.
+#   - A raw payload whose text contains `marker.sh` and, after it, `plan-review`
+#     (in the command, cwd, transcript path, or output) passes the raw-stdin
+#     prefilter. It then pays the _lib.sh sourcing cost and up to two jq spawns
+#     before the trigger rejects it.
 #   - The trigger and the shape gate accept any absolute `.../.claude/scripts/marker.sh`,
 #     so a different script of that name can print a prefixed line and produce a
 #     "recorded for" line with no approval behind it.
-#   - Unverified: whether the harness fires PostToolUse when the Bash command
-#     exits non-zero.
-#   - marker.sh prints paths only after a successful write, so a failed write
-#     never announces a path either way.
-#   - If the harness does fire on failure with a non-object tool_response, the
-#     drift line may also appear on a failed write.
+#   - A Bash command that exits non-zero fires PostToolUseFailure, not
+#     PostToolUse (observed for exit status 1), so this hook never sees it.
+#   - A chain the shape gate allows, such as
+#     `marker.sh write plan-review && git commit`, should therefore record the
+#     marker and announce nothing when a later command in it fails (inferred,
+#     not run).
 #
 # Timeout: the settings.json registration sets no `timeout`, matching sibling
 # informational hooks, so a hung jq is bounded only by the harness default when
@@ -109,7 +110,6 @@ fi
 
 TOOL_STDOUT=$(printf '%s\n' "$INPUT" | _lib_jq -r '.tool_response.stdout' 2>/dev/null) || exit 0
 
-PLAN_REVIEW_COVERED_PATH_PREFIX='plan-review marker covers: '
 PREFIXED_LINE_COUNT=0
 PATH_WITHHELD=false
 PATHS_JOINED=""
@@ -117,11 +117,11 @@ PATHS_JOINED=""
 # String concatenation, not an array: an empty "${arr[@]}" aborts under `set -u` on bash 3.2.
 while IFS= read -r OUTPUT_LINE; do
   case "$OUTPUT_LINE" in
-    "$PLAN_REVIEW_COVERED_PATH_PREFIX"*) ;;
+    "$_LIB_PLAN_REVIEW_COVERED_PATH_PREFIX"*) ;;
     *) continue ;;
   esac
   PREFIXED_LINE_COUNT=$((PREFIXED_LINE_COUNT + 1))
-  PLAN_PATH="${OUTPUT_LINE#"$PLAN_REVIEW_COVERED_PATH_PREFIX"}"
+  PLAN_PATH="${OUTPUT_LINE#"$_LIB_PLAN_REVIEW_COVERED_PATH_PREFIX"}"
   if ! _lib_passes_path_char_allowlist "$PLAN_PATH"; then
     PATH_WITHHELD=true
     continue

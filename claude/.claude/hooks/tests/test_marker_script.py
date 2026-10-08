@@ -48,7 +48,7 @@ from .conftest import _seed_session
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 PR_DIFF_SCRIPT = SCRIPTS_DIR / "pr-diff-against-base.sh"
-# Paired literal: PLAN_REVIEW_COVERED_PATH_PREFIX in marker.sh.
+# A literal rather than _lib.sh's _LIB_PLAN_REVIEW_COVERED_PATH_PREFIX, so a changed prefix fails here.
 PLAN_REVIEW_COVERED_PATH_PREFIX = "plan-review marker covers: "
 # A plugin hook cannot source the stowed claude/.claude/hooks/_lib.sh, so
 # require-skill-review.sh lives under plugins/, not claude/.claude/hooks/,

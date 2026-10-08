@@ -1,12 +1,13 @@
 """Unit tests for _lib.sh's _lib_passes_path_char_allowlist, the pure-bash
-byte-class gate announce-resume-command.sh runs on FILE_PATH and a resolved
-worktree root before interpolating either into its emitted resume-context
-command.
+byte-class gate its callers run on a path before putting it in their output:
+- announce-resume-command.sh, on FILE_PATH and a resolved worktree root,
+  before interpolating either into its emitted resume-context command.
+- announce-approved-plan-path.sh, on each plan path it relays.
 
 These source _lib.sh directly and call the function through /bin/bash -- no
 hook invocation, no JSON payload -- mirroring test_lib_mask_shell_quotes.py.
-The hook's own test file keeps one subprocess case per branch; the byte-class
-matrix lives here instead.
+Each caller's own test file keeps subprocess cases for its emission behavior;
+the byte-class matrix lives here instead.
 """
 from __future__ import annotations
 

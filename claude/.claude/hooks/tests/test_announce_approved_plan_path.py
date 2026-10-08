@@ -29,7 +29,7 @@ ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
 _SETTINGS_PATH = HOOKS_DIR.parent / "settings.json"
 _PLAN_REVIEW_SKILL = SKILLS_DIR / "plan-review" / "SKILL.md"
 
-# Paired literal: PLAN_REVIEW_COVERED_PATH_PREFIX in marker.sh.
+# A literal rather than _lib.sh's _LIB_PLAN_REVIEW_COVERED_PATH_PREFIX, so a changed prefix fails here.
 COVERED_PATH_PREFIX = "plan-review marker covers: "
 
 PLAN_PATH = "/work/repo/.claude/plans/p.md"
@@ -141,7 +141,7 @@ def _run_real_marker_write(
 
 
 class TestRegistration:
-    def test_settings_registers_hook_under_post_tool_use_with_exact_bash_matcher(self):
+    def test_settings_registers_hook_only_under_post_tool_use_with_exact_bash_matcher(self):
         settings = json.loads(_SETTINGS_PATH.read_text())
 
         def matchers_registering(event_name: str) -> list[str | None]:
@@ -154,6 +154,7 @@ class TestRegistration:
 
         assert matchers_registering("PostToolUse") == ["Bash"]
         assert matchers_registering("PreToolUse") == []
+        assert matchers_registering("PostToolUseFailure") == []
 
     def test_settings_entry_has_no_if_condition(self):
         settings = json.loads(_SETTINGS_PATH.read_text())
@@ -262,8 +263,6 @@ class TestTrigger:
         assert _announce(isolated_home, command, _covered_stdout(PLAN_PATH)) is None
 
 
-# The hook's bash 3.2 empty-array constraint is verified only on a developer
-# macOS run, not on Linux CI.
 class TestRelay:
     def test_ignores_lines_without_the_exact_prefix_at_line_start(self, isolated_home):
         stdout = (
@@ -358,8 +357,7 @@ class TestWithheldPath:
         self, isolated_home, hostile_path
     ):
         payload = _payload(
-            _record_completion_command(),
-            {"stdout": _covered_stdout(hostile_path), "stderr": "", "exit_code": 0},
+            _record_completion_command(), _observed_tool_response(_covered_stdout(hostile_path))
         )
 
         result = _run_hook_raw(payload, isolated_home)
@@ -390,7 +388,14 @@ class TestPayloadDriftAndSilence:
     @pytest.mark.parametrize(
         "tool_response",
         [
-            pytest.param({"stderr": "", "exit_code": 0}, id="object_without_stdout"),
+            pytest.param(
+                {
+                    key: value
+                    for key, value in _observed_tool_response("").items()
+                    if key != "stdout"
+                },
+                id="object_without_stdout",
+            ),
             pytest.param(None, id="null_tool_response"),
             pytest.param("plain text result", id="bare_string_tool_response"),
             pytest.param(["stdout"], id="array_tool_response"),
@@ -410,14 +415,9 @@ class TestPayloadDriftAndSilence:
 
         assert _message(_run_hook_raw(payload, isolated_home)) is None
 
-    def test_stays_silent_when_the_marker_write_failed(self, isolated_home):
-        # A prefixed line in stderr pins that the hook reads stdout only.
-        failed_write = {
-            "stdout": "",
-            "stderr": _covered_stdout(PLAN_PATH),
-            "exit_code": 1,
-        }
-        payload = _payload(_record_completion_command(), failed_write)
+    def test_reads_stdout_only_ignoring_a_prefixed_line_in_stderr(self, isolated_home):
+        tool_response = {**_observed_tool_response(""), "stderr": _covered_stdout(PLAN_PATH)}
+        payload = _payload(_record_completion_command(), tool_response)
 
         assert _message(_run_hook_raw(payload, isolated_home)) is None
 
@@ -426,14 +426,32 @@ class TestPairingWithMarkerScript:
     def test_announces_the_absolute_plan_path_marker_sh_really_prints(
         self, isolated_home, git_repo
     ):
-        """Pins the paired prefix literal: marker.sh's real output, not a
-        hand-built line, must be what the hook relays."""
+        """Pins wiring (both scripts resolve the shared prefix constant) and the
+        path shape marker.sh really prints. The Python COVERED_PATH_PREFIX
+        literal is what pins the wire format."""
         marker_stdout = _run_real_marker_write(git_repo, isolated_home)
 
         message = _announce(isolated_home, _record_completion_command(), marker_stdout)
 
         assert message == (
             f"plan-review marker recorded for: {git_toplevel(git_repo)}/.claude/plans/p.md"
+        )
+
+    def test_announces_the_plan_path_marker_sh_really_prints_from_a_nested_linked_worktree(
+        self, isolated_home, git_repo
+    ):
+        """marker.sh roots the plan path it prints at a linked worktree's own
+        toplevel, and the hook relays that path unwithheld."""
+        worktree = git_repo / ".claude" / "worktrees" / "feature"
+        subprocess.run(
+            ["git", "worktree", "add", "-q", "-b", "feature", str(worktree)], cwd=git_repo, check=True
+        )
+        marker_stdout = _run_real_marker_write(worktree, isolated_home)
+
+        message = _announce(isolated_home, _record_completion_command(), marker_stdout)
+
+        assert message == (
+            f"plan-review marker recorded for: {git_toplevel(worktree)}/.claude/plans/p.md"
         )
 
     def test_announces_both_paths_when_the_marker_really_prints_two_md_plans(
@@ -507,7 +525,7 @@ class TestPrefilterPosition:
 
     def test_an_ordinary_bash_call_never_spawns_jq(self, isolated_home, tmp_path):
         stub_bin, spawned_marker = self._stub_jq_dir(tmp_path)
-        payload = _payload("ls -la", {"stdout": "total 0\n", "stderr": "", "exit_code": 0})
+        payload = _payload("ls -la", _observed_tool_response("total 0\n"))
 
         result = _run_hook_raw(
             payload, isolated_home, extra_env={"PATH": f"{stub_bin}:{os.environ['PATH']}"}
@@ -519,8 +537,7 @@ class TestPrefilterPosition:
     def test_a_write_of_another_skill_never_spawns_jq(self, isolated_home, tmp_path):
         stub_bin, spawned_marker = self._stub_jq_dir(tmp_path)
         payload = _payload(
-            "~/.claude/scripts/marker.sh write code-review",
-            {"stdout": "", "stderr": "", "exit_code": 0},
+            "~/.claude/scripts/marker.sh write code-review", _observed_tool_response("")
         )
 
         result = _run_hook_raw(
