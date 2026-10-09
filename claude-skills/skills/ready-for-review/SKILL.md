@@ -39,7 +39,7 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 - Continue silently in every other case — `"status":"ok"` under threshold, or any other status including `cannot-resolve`/`schema-drift`. This gate's outcome never depends on the tool's own success.
 - Do not quote the raw `session_id` into prose that may reach the PR body.
 - See `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for the remaining fields.
-- If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`. Then launch the CI watch now (see "CI watch (out-of-band)" below).
+- If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`.
 - If no PR exists, step 5 authors the body and step 8 opens the PR from it, after verification and review.
 - **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 7's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
 
@@ -122,6 +122,8 @@ Steps 3–5 may have produced new commits or body writes. Reconfirm:
 - The PR body landed, when step 5 edited an already-open PR — re-fetch with `gh pr view` and confirm. With a PR open, edited or not, then run the PR-open path in `code-review/SKILL.md` § "Review-findings persistence": `unchanged` is expected, and `changed:` publishes the ledger's block over the body's copy. A failed `render` or `gh pr edit` halts this step.
 - Branch is not behind the base branch — if steps 3–5 produced new commits, re-run the divergence detection recipe (`git-feature-branch-sync/SKILL.md` § "Detecting divergence") before handing off.
 
+With a PR open, launch the CI watch now (see "CI watch (out-of-band)" below), whether or not this step pushed.
+
 ## 7. Record gate completion
 
 **Do NOT write the completion marker if:**
@@ -171,13 +173,13 @@ Summarize for the user, then (and only then) signal that the branch is ready for
 
 ## CI watch (out-of-band)
 
-Steps 1 and 8 launch this; it resolves after the gate has finished, possibly hours later. Not a gate step — never wait on it.
+Steps 6 and 8 launch this; it resolves after the gate has finished, possibly hours later. Not a gate step — never wait on it.
 
 **Launch.** Run `~/.claude/scripts/ci-watch.sh <pr-number>` via `Bash` with `run_in_background: true` and continue the gate immediately. The script prints `LAUNCH_SHA: <oid>` when it starts and one terminal line the harness returns with its completion notification:
 
 | Terminal line | Do this |
 |---|---|
-| `CI_RESULT: none` | Report "no CI checks configured for this PR." Stop. |
+| `CI_RESULT: none` | Report "no CI checks had registered for PR `<n>` when `gh` last polled — check `gh pr checks <n>` yourself." Stop. |
 | `CI_RESULT: error <reason>` | Report "couldn't determine CI status for PR `<n>` — check `gh pr checks <n>` yourself." Stop. |
 | `CI_RESULT: checks <json>` | Resolve below. |
 
@@ -191,7 +193,7 @@ Steps 1 and 8 launch this; it resolves after the gate has finished, possibly hou
    | `pending` | "Still pending, re-check" — a check registered after the watch saw a terminal state. |
    | `pass` | One-line success confirmation. Done. |
    | `skipping` / `cancel` only | Nothing ran: report neutrally — no diagnosis, no "passed" claim. Done. |
-   | *(none — empty array)* | All checks were removed or reconfigured mid-watch: report "no CI checks remain configured for this PR" — same as `CI_RESULT: none`, not a failure. Done. |
+   | *(none — empty array)* | All checks were removed or reconfigured mid-watch: report "no CI checks remain configured for this PR" — not a failure. Done. |
 
 3. **Diagnose.** Per `subagent-delegation/REFERENCES.md` § "Diagnosis-delegation: two variants, not one", dispatch `general-purpose` (`model: sonnet`) to run `/root-cause-analysis` on the failing checks, instructed to check first whether step 2's local run of the same suite passed — a local-pass/CI-fail split is that skill's Stage C asymmetry signal — and to obey step 2's "Test-to-fit is forbidden." If the dispatch fails or never returns, report that and name the failing checks; no retry.
 4. **Offer, don't act.** Report the diagnosis and offer a fix. Dispatch `code-writer` (`model: sonnet`) only on explicit user confirmation; without it, stop and do not re-offer — the diagnosis stays available if the user raises it again. That dispatch carries step 2's "Test-to-fit is forbidden" — a make-the-check-green prompt is the shape most likely to produce a weakened assertion.

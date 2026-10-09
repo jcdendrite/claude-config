@@ -3,13 +3,14 @@
 # single machine-parseable terminal result line.
 #
 # Invoked by ready-for-review/SKILL.md's "CI watch (out-of-band)" section via
-# `Bash` `run_in_background`, once the PR number is known. Never run in the
-# foreground for a real PR: `gh pr checks --watch` blocks until every check
-# reaches a terminal state, which can take hours.
+# `Bash` `run_in_background`, once the branch's commits are pushed to the PR.
+# Never run in the foreground for a real PR: `gh pr checks --watch` blocks
+# until every check reaches a terminal state, which can take hours.
 #
 # Output contract (stdout):
 #   LAUNCH_SHA: <oid>          -- printed once, at start, before the watch
-#   CI_RESULT: none            -- zero checks were ever configured on this PR
+#   CI_RESULT: none            -- no checks had registered on this PR when
+#                                  gh last polled
 #   CI_RESULT: error <reason>  -- couldn't determine CI status
 #   CI_RESULT: checks <json>   -- structured snapshot; `bucket` per check is
 #                                  the pass/fail source of truth
