@@ -1,555 +1,299 @@
-# Review-pipeline orchestrator subagent
+# Review-pipeline orchestrator subagent (minimal)
 
 ## Context
 
-**Goal:** stop `/code-review`, `/plan-review`, and `/ready-for-review` from
-running inline in the main session, so their reviewer findings and
-fix/re-review churn land in a disposable subagent's context instead of the
-long-lived one — and stop the main session from writing code inline
-post-handoff instead of delegating to `code-writer`.
+**Goal:** ship a minimal dedicated `review-orchestrator` subagent that runs one `/code-review` round per dispatch in its own context, so a dirty round's skill body, findings read-back, and fix churn stay out of the main session.
 
-Both failure modes were observed in the same real session (the user's own
-transcript, quoted in this plan's originating request): the main session
-misdescribed its own review pipeline's context-isolation behavior, then,
-once corrected, confirmed that a reviewer's *file* still gets `Read` back
-into the invoking session's context whenever it reports findings — so even
-the existing `findings_path` mechanism only reduces the cost of a clean
-review, not a dirty one. Separately, the same class of session tends to
-write implementation code directly after a plan is approved rather than
-dispatching `code-writer`, which `docs/design-decisions.md` §11 already
-names as a known, deliberately-unenforced gap ("Routing is substitute-only
-and advisory... it does not change how often the parent delegates versus
-writes inline").
+Ask: "I think the solution is to still have a dedicated agent but not care about the guardrails being perfect because our fallback is a non-constrained general purpose agent." Narrowed by the engineer's later selections, each recorded as a ledger row below: model pin, marker owner, `/plan-review` inline-only, the decision-record rewrite, the sibling-plan deletion, and the decisions in rows 24 and 26. On rollout the engineer typed "I think it's better to use a config key for this feature", then selected the label "Follow-on PR (Recommended)", whose option text was the session's and the architect's. So the key lands in the follow-on PR (Out of scope), and this PR stays explicit-request-only (row 14). On the dispatch-target hook the engineer typed "Ask the architect", which delegated the call and accepted no option; row 9 records the architect's recommendation. In round 2 the engineer selected "Drop fingerprint (Recommended)" (rows 5 and 7). In round 3 they selected "Fable: thin shell, protocol in skill (Recommended)" (row 15) and "Accept D3 (Recommended)", the option that staged a reported fix without a marker check and accepted, as a gap, a fix the agent stages before writing the marker; it superseded their round-2 "Accept explicitly (Recommended)" for that gap, and round 4 replaces it (row 7). On whether the return keeps a `Counts:` item they typed "Ask the architect", which accepted no option; Dispatch 2 records the architect's recommendation. On dogfood timing they selected "Yes, post-merge (Recommended)" (row 23). In round 4 they selected "Yes, end the loop and continue inline (Recommended)" (row 7), "Accept the verdicts, I will reconcile the file list first (Recommended)" (rows 27-34) and "Leave it, reword Row 2 only (Recommended)" (row 2). They also typed "I think always check but ask the architect" (row 7), "I think the skill edit makes sense but have the architect take a look" (row 15) and, on Row 22, "Ask the architect" (row 22); each of those rows records the architect's recommendation. In round 5 they selected "Confirm 1 and 2, redo 3 (Recommended)" (rows 7, 22 and 27-34). They typed "Keep all I think but check with the architect" on this PR's scope items (rows 9 and 12, Dispatch 2), "That seems paranoid so yes I lean accept and record. Ask the architect" on the nested `claude -p` route (row 10), and "Ask the architect" on the branch cleanup (rows 27-34); each of those rows records the architect's recommendation. In round 6 they selected "Keep all (Recommended)" on this PR's scope items (rows 9, 12, 30, 31 and 32, and Dispatch 2's comment fix). They typed "Ask the architect" on row 7's stop for a `HALT:` return with a `check` match, and "Im not sure. Remember we don't need to make this stricter than a general purpose agent guardrails if it's too complicated. What does the architect think?" on row 10's routes; each of those rows records the architect's recommendation. The option text of every label quoted in this paragraph was the session's and the architect's, not the engineer's words.
 
-Why now: this repo's own review infrastructure (`findings_path`,
-content-addressed markers, the `general-purpose` gate-release escape hatch)
-already has almost everything this needs — the gap is that nothing
-dedicates or enforces it, so sessions fall back to running the skills
-inline under context pressure exactly the way `docs/design-decisions.md` §1
-predicts advisory rules do.
+Why now: repeated `/plan-review` rounds on an earlier, heavily guarded design kept finding defects in its dispatcher's decision table rather than in the agent. The cost premise is the plan's own: a subagent-wrapped round saves main-session context, so the agent pays for itself on non-`HALT:` rounds and costs one extra round on `HALT:` rounds, because that review then continues inline (row 7). [unverified: the plan's own assumption] The wrapper's own cost is unmeasured, and the dogfood does not measure it (Verification).
 
-Intended outcome: a new dedicated `review-orchestrator` subagent runs
-`code-review` and `plan-review` to completion — including the fix→re-verify
-loop, which it performs by nested-dispatching `code-writer` rather than
-editing directly — and a new hook makes dispatching it the only path,
-instead of an optional convention. The main session's context receives only
-a synthesized summary, never raw findings or fix-loop churn. `ready-for-review`
-is deferred (see Approach) pending a design for its push/PR-creation
-boundary.
+Intended outcome: a thin dedicated agent with a prose-only charter, backed only by hooks that already fail loudly, with the parent following one protocol in `subagent-delegation` and checking the marker itself after every round.
+
+This plan replaces the earlier 1821-line plan of the same slug.
 
 ## Approach
 
-A new `review-orchestrator` agent invokes the **existing, unmodified**
-`code-review`/`plan-review` `SKILL.md` files via the `Skill` tool and follows
-their instructions to completion inside its own disposable context; a new
-hook denies the top-level session from invoking those two skills directly,
-forcing the dispatch. (`ready-for-review` is deferred — it pushes and opens
-a PR, which conflicts with this agent's zero-mutation/zero-egress invariant
-until that boundary has its own design; see
-`docs/design-decisions.md` §40.) The orchestrator gets no
-`Edit`/`Write` tool, and — because `Bash` alone can mutate the tree just as
-well as `Edit` can (`echo > file`, `sed -i`, `git commit`) — a second new
-hook restricts its `Bash` calls to a narrow allowlist (read-only git
-subcommands, the handful of named helper scripts, and verification/test
-commands), so any step in a skill's instructions that calls for changing
-repository content is genuinely, not just nominally, satisfied by a nested
-`code-writer` dispatch instead. A new small checkpoint script gives the
-orchestrator crash-resilience: if it's killed mid-run, the parent confirms
-it's actually terminated, then re-dispatches a fresh instance with the same
-run id, which resumes from the last recorded step instead of restarting.
+Ship `review-orchestrator` as a Sonnet agent that runs exactly one `/code-review` round per dispatch. It follows the skill verbatim, sends every fix to `code-writer`, reports the files the fix touched, and writes the code-review marker only on a clean round in which it dispatched no fix. The agent file is a thin shell: its description says what the agent does, when to use it, and where the dispatching session's protocol lives. That protocol has one home, `subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven" (row 15). After each dispatch the parent relays the return to the user verbatim, stages any `Fix paths:` and runs `marker.sh check code-review`. Any `HALT:` entry ends the agent loop: the review continues inline, unless a marker already covers the staged state, in which case the parent stops for the user. Otherwise a staged fix goes to the next round, and a return with no fix is done only on a `check` match (row 7). No new script ships. Everything built to make the agent's own restrictions airtight is deleted: the Bash allowlist hook, the dispatch-target hook, the checkpoint store, and the helpers only they used.
 
-Three decisions were escalated to the user before this design was fixed,
-because each genuinely changed the plan's shape: (1) hook-enforced
-delegation vs. advisory-only — **hook-enforced**, since this repo's own §1
-precedent is that advisory rules get silently skipped under context
-pressure, which is the exact failure mode reported, and (unlike
-`code-writer`'s Edit/Write boundary, which §11 says can't be
-hook-enforced) a `Skill`-tool call naming one of these three skills *is* a
-distinguishable tool-call boundary; (2) reuse the existing `general-purpose`
-escape hatch vs. build a dedicated agent now — **dedicated agent**, trading
-the smaller footprint of reuse for a stable identity with its own
-model/effort pin and hook-enforced tool scoping, mirroring why `code-writer`
-itself was built instead of leaving code-writing on ad hoc `general-purpose`
-dispatch (§11); (3) hand-rolled checkpoint file vs. a Workflow script for
-native `resumeFromRunId` resumability — **hand-rolled**, because Workflow
-scripts have no `Skill`-tool hook, so a Workflow-based version would have to
-reimplement both skills' dispatch/reconciliation/disposition logic as
-JavaScript running in parallel with the `SKILL.md` prose, which is the
-single-source-of-truth violation CLAUDE.md's first Engineering Judgment
-bullet warns against, and nothing would mechanically catch the two
-drifting apart over time.
-
-**What the hook changes, and what it doesn't.** The gate's actual
-invariant — commit/PR blocked until a content-addressed marker matches
-current reviewed state — is unchanged by this plan; no new verification is
-added that a marker reflects genuine review completion. That trust
-currently rests on whichever session runs the skill doing so honestly; this
-plan relocates where that trust is placed (from the top-level session to
-`review-orchestrator`, or to `general-purpose` via the residual gap below)
-without strengthening it. Read "hook-enforced" here as ergonomics — the
-skill is harder to skip — not as a new cryptographic or verification
-guarantee on the marker itself.
-
-**Accepted residual: prompt injection from reviewed content.** Content
-`review-orchestrator` reads *during* a review (a malicious comment in the
-diff it's reviewing) is a threat class this repo already accepts for the
-top-level session running these skills today. What changes is blast
-radius: `review-orchestrator` can nest-dispatch `code-writer` (and only
-`code-writer` or a reviewer persona — row 7b closes the path to an
-unrestricted `general-purpose`/`claude` dispatch) and release the commit
-gate with no human turn in between, surfacing only a synthesized summary —
-so a successful injection now reaches "diff written by `code-writer`,
-under its own self-review pass, + gate released," not just "diff written."
-No new control beyond rows 7a/7b is proposed given this repo's stated
-local-tooling, cooperative-agent threat model (`docs/design-decisions.md`'s
-own scoping); named here so it isn't rediscovered as a surprise later.
+The bar is the engineer's: the agent need only be no weaker than an unconstrained `general-purpose` dispatch. So its tree and marker rules are a prose contract. The parent acts on what the return reports and checks the marker itself after every dispatch; it does not fingerprint the tree. Alternatives set aside:
+- running `/code-review` inline: this is the cost the plan removes;
+- `general-purpose`: no tools cap, and it inherits the parent's model;
+- `context: fork` on `code-review`: Out of scope;
+- a marker written by the parent: the engineer chose agent-writes (row 5);
+- the parent's protocol in the agent description: row 15;
+- a pre-dispatch marker check: row 8;
+- a script that fingerprints the tree before and after each dispatch: row 7.
 
 ### Assumption ledger
 
-```
-Root: The main/top-level session running /code-review, /plan-review, or
-/ready-for-review inline pulls reviewer findings and fix/re-review churn
-into its own long-lived context, which then goes stale after subsequent
-edits; separately, sessions post-handoff tend to write code inline rather
-than delegate to code-writer. Both are heavy work landing in a persistent
-context instead of a disposable one.
+Root: a dirty `/code-review` round's skill body, findings read-back and fix churn land in the main session's long-lived context. Move one round per dispatch into a dedicated agent whose guardrails need not beat an unconstrained `general-purpose` agent. [engineer-verified: "I think the solution is to still have a dedicated agent but not care about the guardrails being perfect because our fallback is a non-constrained general purpose agent."]
 
-Given 1: Claude Code's harness provides no built-in crash/resume for a
-killed subagent — only a completed subagent can be resumed, conversationally,
-via SendMessage [verified: code.claude.com/docs/en/sub-agents, fetched this
-session — "The documentation provides no mechanism for resuming a subagent
-that crashed or was interrupted mid-task. Resume functionality only applies
-to subagents that completed their work."] — reason: vendor/harness-controlled,
-outside this repo's reach.
+Givens:
+- G1: The harness discovers agent definitions in this order: managed settings; `--agents`, which is session-only and set at launch; a project `.claude/agents/`, found by walking up from the working directory and live-reloaded only if that directory existed at session start; `~/.claude/agents/`; plugin agents. [unverified: relayed, model-summarized docs] Stow links `~/.claude/agents/` into the main checkout, so that path reaches this branch's agent only after merge and pull. [verified: `~/.claude/agents/` has no `review-orchestrator.md` this session] Out of scope says why the dogfood uses neither the project directory nor `--agents`.
+- G2: At the spawn-depth limit, a default nesting depth of 3, the harness withholds `Agent` from a subagent, which then does the delegated work itself. The vendor imposes this. [unverified: relayed, model-summarized docs, and the replaced plan's quote of code.claude.com/docs/en/sub-agents § "Let subagents spawn their own subagents"]
 
-Given 2: A dispatched subagent's tool grants come from its agents/*.md
-frontmatter (or the built-in type's own registry); this repo cannot grant a
-tool the harness itself doesn't support for that agent shape — reason:
-vendor/harness-controlled.
+Row 1 [mechanism]: Dedicated agent `claude/.claude/agents/review-orchestrator.md`. anchors: root. Lighter options and why each fails:
+- (a) Running `/code-review` inline is the cost the root names.
+- (b) `general-purpose` with `model: sonnet`: a dispatch prompt cannot impose a tools cap or a model pin that holds when the parent runs on another model. [verified: claude-skills/skills/agent-review/SKILL.md:116-120]
+- (c) `context: fork` applies to every `/code-review` call and forfeits `AskUserQuestion`. [verified: docs/skills.md, the "A skill that must ask the user cannot fork" bullet]
 
-Given 3: Custom agent frontmatter's `model:` field accepts only
-sonnet/opus/haiku/fable/a full model ID/inherit — no finer-grained routing
-exists [verified: docs/design-decisions.md §3, citing Anthropic's *Create
-custom subagents* docs] — reason: vendor-imposed.
+Row 2 [mechanism]: Frontmatter `tools: Skill, Agent, Read, Grep, Glob, Bash`, `model: sonnet`, `effort: high`. anchors: row 1. Model: [engineer-verified: "Sonnet. Full stop. Orchestration doesn't need Opus judgment."]. Effort stays `high`: the work spans a range of difficulty, and the next round reviews it. [verified: claude/.claude/CLAUDE.md Model & Effort Routing, `high` tier] Leaving out `Edit`/`Write` steers fixes to `code-writer`. `Bash` can still write, which row 10 accepts. The protocol has the parent pass `model: sonnet` on every dispatch (row 15), as CLAUDE.md Model & Effort Routing's Sonnet bullet asks of every dispatch. [verified: claude/.claude/CLAUDE.md:179] That section's Opus line names "parent-dispatcher orchestration" [verified: claude/.claude/CLAUDE.md:178], and this PR leaves it as written [engineer-verified: "Leave it, reword Row 2 only (Recommended)"]. The follow-on rewiring PR reconciles it with this pin (Out of scope). [unverified: the plan's own commitment] The decision record says why an agent named for orchestration runs on Sonnet (Dispatch 3).
 
-Row 1 [mechanism]: new `review-orchestrator` agent (tools: Skill, Agent,
-Read, Grep, Glob, Bash — no Edit, no Write; model: opus; effort: high) —
-anchors: root. It invokes the Skill tool for the named review skill and lets
-the existing SKILL.md content execute verbatim inside its own disposable
-context — zero duplication of any skill's dispatch, reconciliation, or
-disposition logic.
-  Lighter primitives rejected:
-  (a) Stronger CLAUDE.md prose only, no new agent — rejected: this is the
-      status quo's own advisory mechanism, and it already failed in the
-      reported transcript; docs/design-decisions.md §1 names exactly this
-      failure mode ("The model decides advisory rules don't apply... it
-      happens reliably, not occasionally").
-  (b) Dispatch the existing `general-purpose` escape hatch ad hoc instead of
-      a new agent — genuinely lighter, and the initial recommendation;
-      engineer chose the dedicated agent instead for the same reason
-      `code-writer` itself was built rather than left on ad hoc
-      `general-purpose` dispatch (§11): a stable identity gets a model/effort
-      pin and hook-enforced tool scoping that ad hoc dispatch prose doesn't
-      reliably produce. [engineer-verified]
-  (c) A Workflow script instead of a subagent — rejected: no Skill-tool hook
-      inside Workflow scripts, so it would force reimplementing three
-      skills' logic as JS in parallel with the SKILL.md prose.
-      [engineer-verified]
+Row 3 [mechanism]: One round per dispatch, and the parent sequences the rounds. anchors: root. [verified: `subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven", "split it into separate bounded per-step dispatches the orchestrator sequences between"] A fix is never re-reviewed in the dispatch that made it; the next dispatch reviews it. Nothing in this design bounds the parent's stage-and-dispatch loop. The round-cap consult fires once per branch and has a machine-wide kill switch [verified: claude/.claude/hooks/require-architect-consult.sh:28-29, :71-72], so the parent, or the human, stops the loop, as with inline `/code-review`. The consult's gate fires on any reviewer spawn and never checks the caller, so it can still fire from inside the agent. [verified: require-architect-consult.sh:68-69]
 
-Row 2 [mechanism]: new hook `require-review-orchestrator-dispatch.sh`
-(PreToolUse on Skill-tool calls naming code-review/plan-review, firing only
-when `agent_type` is absent from the payload — the true top-level session) —
-anchors: root. `ready-for-review` is not named by this hook — it is out of
-`review-orchestrator`'s scope (see Approach) and stays reachable inline as
-today. A nested Skill(code-review)
-call made by review-orchestrator itself (agent_type=review-orchestrator) is
-unaffected, and so is any other subagent's ad hoc use of the existing
-general-purpose escape hatch — this hook narrows only the top-level
-session's own direct path.
-  Lighter primitives rejected:
-  (a) Advisory CLAUDE.md guidance only, no hook — rejected for the same
-      reason as row 1(a).
-  (b) A .claude/rules/ path-scoped rule — rejected: mirrors
-      subagent-dispatch-authorization's own row 1(c) rejection — the
-      decision point (about to invoke a Skill) isn't reliably tied to any
-      single file-glob match. [verified:
-      .claude/plans/subagent-dispatch-authorization.md:90-92]
+Row 4 [assumption]: The agent covers `/code-review` only; `/plan-review` stays inline. [engineer-verified: "Accept inline-only (Recommended)"]
 
-Row 3 [mechanism]: new checkpoint script `orchestrator-checkpoint.sh`
-(append/read subcommands; JSONL keyed by
-`<repo-hash>.<orchestrator_run_id>.jsonl` under
-`<config-dir>/orchestrator-checkpoints/`; `orchestrator_run_id` is minted
-and remembered by the dispatching parent, not derived from a
-harness-assigned session id; entries bounded to step id, status, and
-marker-hash only — never raw findings or diff text, see row 3b) — anchors:
-root, row 1.
-  Lighter primitives rejected:
-  (a) Reuse review-ledger.sh's existing session-id-keyed store directly —
-      rejected: [unverified] whether `_resolve_session_id`'s capture
-      mechanism (a SessionStart hook) fires the same way for a dispatched
-      subagent as for a top-level session; and even if it does, a fresh
-      review-orchestrator re-dispatched after a crash gets a new session
-      identity, so the old key isn't independently discoverable without the
-      parent separately remembering it — at which point a parent-minted
-      stable id is simpler than plumbing a harness-assigned one.
-  (b) No checkpoint at all, restart from scratch on crash — rejected:
-      wastes already-completed reviewer dispatches and fixes; this was the
-      specific gap flagged mid-session. [engineer-verified]
+Row 5 [mechanism]: The agent writes its own code-review marker, and only on a clean round in which it dispatched no `code-writer` and has no `HALT:` entry. anchors: row 3. Agent writes the marker: [engineer-verified: "A: agent writes, parent fingerprints (Recommended)"]. The parent does not fingerprint: [engineer-verified: "Drop fingerprint (Recommended)"], which withdrew the second half of that earlier selection; row 7 replaces the fingerprint. Neither option's text is the engineer's words. The no-fix condition is this plan's own addition [engineer-verified: "Row 5: marker only when no fix"], for three reasons:
+- `code-writer` leaves its fixes unstaged. [verified: claude/.claude/agents/code-writer.md:21-22]
+- So the staged-diff hash the marker keys on still matches after a fix. [verified: `code-review/SKILL.md` § "Step — Record review completion"]
+- So the skill's own "reviewed a different state than what is currently staged" check, in that section's "Do NOT write the marker if" list, never fires.
 
-Row 3a [mechanism]: `orchestrator_run_id` is minted by the parent as
-`<skill>-<branch-slug>-<epoch>-<4 bytes from /dev/urandom, hex>` — anchors:
-row 3. The random suffix exists so two concurrent runs against the same
-skill and branch (a real scenario: re-running `/code-review` on the same
-branch twice in one sitting) don't collide on one checkpoint key; epoch
-alone isn't collision-resistant at 1-second granularity.
+The no-`HALT:` condition is the architect's addition: after a `HALT:` the review continues inline (row 7), and inline Step 0.1 would skip on a marker that round left. [unverified: architect's proposal]
 
-Row 3b [mechanism]: checkpoint entries never carry review findings text,
-diff content, or file paths beyond what's needed to name a step — anchors:
-row 3. Without this bound, the checkpoint file becomes a second durable
-copy of exactly the content this plan exists to keep ephemeral, just
-relocated from the main session's context to `<config-dir>/orchestrator-
-checkpoints/`, outside repo scope, with no redaction discipline of its own.
-  Lighter primitives rejected:
-  (a) Let the checkpoint carry whatever content makes resume easiest to
-      implement — rejected: reintroduces the exact durability problem this
-      plan is built to avoid, just under a different directory.
+Row 6 [assumption]: A marker the agent writes releases the parent's commit gate. The stored staged-diff hash is the authorization whichever session wrote it. [verified: `code-review/SKILL.md` § "Step — Record review completion"] A dispatch without isolation keeps the same repo hash. `enforce-marker-script-shape.sh` denies `marker.sh write` to agent types in `_LIB_NO_GATE_RELEASE_AGENTS`, and the agent may write only because it is absent from that roster. That absence is skill-agnostic: the hook's deny covers every `marker.sh write` and `activate` for roster members and none for anyone else, so the agent can run, with no prompt, each one `permissions.allow` pre-approves, plan-review, ready-for-review and the memory-skill and handoff bypasses among them. Only its charter holds it to the code-review marker, as with a `general-purpose` dispatch. [verified: enforce-marker-script-shape.sh's gate-release block and claude/.claude/settings.json `permissions.allow`, per the code-review consult] `test_absent_from_no_gate_release_agents` in test_agent_roster.py and the `GATE_RELEASE_ALLOWED_AGENTS` list in test_enforce_marker_script_shape.py pin that absence. [verified: the hook's header comment and both tests] Whether `marker.sh`'s session-id walk succeeds from inside a subagent is [unverified; dogfood observes it]. That walk is `_walk_session` in claude/.claude/scripts/marker.sh, a thin wrapper over `_lib_resolve_claude_pid` in claude/.claude/hooks/_lib.sh.
 
-Row 3c [mechanism]: the noclobber-lock + PID-liveness-eviction + single
-EXIT-trap primitive `review-ledger.sh` already implements
-(`_append_ledger_line_locked`) is extracted into `_lib.sh` as a shared
-helper, and both `review-ledger.sh` and the new `orchestrator-checkpoint.sh`
-call it — anchors: row 3. CLAUDE.md's "a small duplicated value can beat a
-bad abstraction" exception doesn't fit what's being copied here: a
-correctness-sensitive concurrency algorithm, not a value, and one this repo
-would then hold in three near-identical copies (`_lib.sh`'s own
-`_lib_worktree_collision_guard`, `review-ledger.sh`'s, and the new script's)
-— exactly the drift CLAUDE.md's single-source-of-truth principle warns
-against, made worse by both callers already loading `_lib.sh`. `_lib.sh` is
-this repo's existing home for cross-script shared bash helpers (distinct
-from the barred "shared skill partials" pattern, which is about SKILL.md
-content, not shell library functions), so this is the correct DRY
-placement, not a new abstraction built to house one caller.
-  Lighter primitives rejected:
-  (a) Duplicate the locking helper into the new script, as originally
-      drafted — rejected per the paragraph above.
-  (b) Leave `review-ledger.sh` untouched and only newly-write
-      `orchestrator-checkpoint.sh` with its own copy — rejected: still
-      leaves the correctness-sensitive algorithm duplicated twice
-      (`_lib_worktree_collision_guard` and the new copy), and this task
-      already has a live reason to touch `review-ledger.sh` (extracting a
-      function it already contains), unlike the "separately-owned
-      mechanism I have no other reason to touch" framing the original
-      draft relied on.
+Row 7 [mechanism]: After each dispatch the parent relays, stages, checks and then decides, in that order, and `subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven" states these steps as the protocol's one home (row 15). No new script ships. anchors: row 5. Acting on the return with no fingerprint: [engineer-verified: "Drop fingerprint (Recommended)"]. Ending the agent loop at any `HALT:` entry: [engineer-verified: "Yes, end the loop and continue inline (Recommended)"]. When `check` then prints `match`, the parent stops for the user instead of continuing inline, because inline Step 0.1 would skip on that marker. The engineer typed "Ask the architect" on that case, and the architect keeps the stop. The engineer then selected "Keep the stop (Recommended)" [engineer-verified: "Keep the stop (Recommended)"], an option whose text was the session's. Running `check` after every dispatch, a staged fix included: the engineer typed "I think always check but ask the architect", the architect recommended it, and the engineer then confirmed that reading [engineer-verified: "Confirm 1 and 2, redo 3 (Recommended)"]. It replaces D3, the round-3 option selected as "Accept D3 (Recommended)", which staged a reported fix without a `check` and ran `check` only when `Fix paths:` was none. The option text of every label here was the session's and the architect's.
+- Relay: first, on every path, relay the agent's return to the user verbatim, which keeps the `Spawn decisions:` line, and any reviewer it records as skipped, as visible as in an inline round. Before a PR exists a deferred finding reaches the human only this way, and the skill admits a pre-existing-debt DEFER only when a ticket is filed for the remediation and the issue is surfaced to the human. [verified: `code-review/SKILL.md` § "Finding disposition", DEFER criterion 2, and § "Review-findings persistence", "If no PR is open yet"] A return that lacks a `Fix paths:` or a `HALT:` item, or no return at all, then stops: relay what arrived and tell the user to check `git status` for unstaged edits that no return names.
+- Stage: when `Fix paths:` names files, validate every entry before staging any. An entry passes only if it matches, character for character, a path that `git status --porcelain --untracked-files=all` lists, and holds no single or double quote. Any other entry stops the loop with the index untouched. By design that includes a path porcelain v1 C-quotes, one holding whitespace or another unusual character, because its listed spelling holds a double quote; the user stages such a path. [verified: git-status(1), "Porcelain Format Version 1", per ciso-reviewer's plan-review round 6] Then stage every entry in one `git add` call, each as a single-quoted, root-anchored literal pathspec, `git add -- ':(top,literal)<path>'`, so neither the parent's working directory nor glob or pathspec magic in the text changes what is staged. If that call fails, stop and tell the user to check `git diff --cached --name-only`, since the index may be partly staged. Each entry is a path relative to the repo root, and a rename lists both its old and its new path. These rules are [unverified: architect's proposal]. Porcelain v1 lists paths relative to the repo root whatever the working directory, and `top` anchors a pathspec there [verified: git-status(1), "Porcelain Format Version 1", and gitglossary(7), the `top` magic, per ciso-reviewer's plan-review round 6]. Staging retires any marker written before the fix, because the marker keys on the staged-diff hash. [verified: `code-review/SKILL.md` § "Step — Record review completion", "Re-staging any change invalidates the marker automatically"]
+- Check: unless the Relay or Stage step stopped, run `~/.claude/scripts/marker.sh check code-review` bare, which `permissions.allow` already lists as `Bash(~/.claude/scripts/marker.sh check code-review)` [verified: claude/.claude/settings.json]. The marker-script-shape gate denies an appended `; echo $?` [verified: `code-review/SKILL.md` § "Step 0.1 — Short-circuit already-reviewed diff"]. Any exit other than 0 or 1 stops and shows the user its stderr.
+- Decide:
+  - `no-match`: with any `HALT:` entry, name the paths just staged, then run `/code-review` inline in this session at once, which asks, logs and carries by the skill's own rules. Otherwise, after staging a fix, dispatch the next round, which reviews the fix. Otherwise stop and point the user to the relayed `Marker:` item. That last stop covers every cause: a failed marker write, which the agent reports under `Marker:` and not under `HALT:`, a `check` that degraded to no-match (marker.sh's `check` handler reads an uncomputable hash, a timeout or an empty staged diff as no-match), or an agent that ended early.
+  - `match`: done only when the return has `Fix paths: none` and `HALT: none`, because a marker then covers the staged state. Any other `match` stops: tell the user that a marker covers a staged fix no round reviewed or a `HALT:` entry nobody decided, so inline `/code-review` would skip at Step 0.1 and a commit would pass without either, and ask them to decide each halted entry before any commit.
+  - "Stop" means one thing throughout this row: dispatch nothing more, start no review, tell the user the cause, and wait for them. A stop at the Stage or Check step still follows the Relay step, so the user has seen every `HALT:` entry.
+  - Every stop and warning in this step is [unverified: architect's proposal].
 
-Row 4 [assumption]: a custom agent granted `Agent` in its `tools:`
-frontmatter can actually call the Agent tool to nest-dispatch further
-subagents, reliably rather than once [unverified — this session's own
-research turned up exactly one data point: a dispatched general-purpose-
-shaped subagent successfully called Agent; no repo documentation or
-Anthropic doc confirms this for a custom agent type specifically, and no
-existing agent in this repo is granted Agent today] — anchors: row 1. This
-is the single highest-risk unverified assumption in this plan — Verification
-step 1 gives it an explicit protocol and pass/fail bar rather than a single
-anecdotal try.
+Lighter option: trusting the return's `Marker:` item alone, with no `check`. A failed write, or one keyed to a different staged state, would read as done. `check` reads the staged-diff hash the commit gate keys on, and the call is already allowlisted, so it costs no prompt. Running it after a staged fix too, which D3 skipped, costs the same and turns a marker over a fix no round reviewed, or one left by a halted round, into a stop instead of a review that Step 0.1 skips.
 
-Row 5 [assumption]: review-orchestrator, running on Opus, is authorized to
-dispatch reviewer/code-writer subagents despite the harness's "don't call
-Agent unless the user requested it" system-prompt line, because its own
-agent description prescribes those dispatches [verified:
-claude/.claude/CLAUDE.md's Agent Briefing bullet 1, merged via PR #486 —
-"When a skill body, a CLAUDE.md rule, or an agent description you are
-following prescribes a subagent dispatch, the user put that instruction in
-play... the prescription is the request. Dispatch normally."] — anchors:
-root.
+Set aside: a script that fingerprints the tree before and after each dispatch. It caught changes the return leaves out, at the cost of a model-copied token that no exact `permissions.allow` rule matches and a verdict table that grew with each review round. [engineer-verified: "Drop fingerprint (Recommended)"]
 
-Row 6 [assumption]: review-orchestrator must run in the parent's own
-worktree, not an isolated one, or its marker write won't be recognized by
-the gate it's meant to release [verified: docs/design-decisions.md §2's
-content-addressed-marker mechanism is keyed per repo-hash, and this repo's
-worktree-scoped marker keying means a marker written from a different
-worktree path doesn't match] — anchors: root.
+Supporting facts:
+- `marker.sh check` prints `match age_seconds=<N>` and exits 0, or prints `no-match` and exits 1. [verified: marker.sh's `check` handler]
+- It exits 2 on a usage or repo-root error. [verified: marker.sh's argument-count check and the `check` handler's `_resolve_repo_root` call]
+- It matches any session's marker under the repo hash within a 24-hour default bound, so done means a marker covers the staged state, not that this dispatch wrote one. [verified: marker.sh's `check` handler, `_marker_fresh_age` and `_resolve_code_review_check_max_age_seconds`]
 
-Row 7 [assumption]: omitting review-orchestrator from
-`_LIB_NO_GATE_RELEASE_AGENTS` is sufficient for it to write markers — no
-`_lib.sh` logic change needed for gate-release itself [verified:
-claude/.claude/hooks/_lib.sh:1473-1476 — "general-purpose and claude carry
-the full tool set and can genuinely run a review skill, so they are
-deliberately absent — that is the documented delegation escape hatch."] —
-anchors: root. This is deliberately decoupled from row 7a below: whether an
-agent may release a gate and whether its `Bash` calls are mutation-
-restricted are two different properties that happened to be conflated in
-`_LIB_REVIEW_ONLY_AGENTS` for every agent that needed both restricted
-together — review-orchestrator needs the second without the first, which is
-exactly why it's a new, separate array rather than an addition to the
-existing one.
+Accepted gaps [unverified: architect's proposal, except where tagged]:
+- The parent trusts the return. A file left out of `Fix paths:` stays unstaged, so the next round reviews without it. A commit made during the dispatch is not identified as one. An unconstrained `general-purpose` dispatch is checked no better, so this meets the root's bar.
+- A fix staged before the agent writes the marker. The marker then covers the staged fix, and staging retires nothing. `marker.sh` has no revoke for completion markers (marker.sh's `deactivate` handler accepts active-bypass skills only). It takes two broken rules at once: row 5's no-marker-after-a-fix rule, and the never-stage rule that binds both the agent and `code-writer` (code-writer.md:21-22). The engineer selected "Accept D3 (Recommended)" in round 3 [engineer-verified: "Accept D3 (Recommended)"]; that this option accepted this gap is the session's reading of its option text [unverified: session's reading of option D3]. Always checking now catches it when the return reports the fix: staging changes nothing, `check` prints `match`, and the loop stops with a warning. The marker itself stays live, and nothing in this PR revokes it.
+- `Fix paths: none` after a fix, together with a marker written in that round, reads as done, so a commit carries the reviewed state without the fix. Either mistake alone is safe: the missing paths stop at `no-match`, and a marker after a reported fix is retired by staging.
+- A marker written in a round that also returned a `HALT:` entry and named no fix. Inline `/code-review` would skip at Step 0.1 on it, so the halted decision could reach a commit unmade. Decide's `match` branch stops and asks the user to decide each halted entry before any commit, and the marker stays live. Row 5 states the rule against that marker.
 
-Row 7a [mechanism]: new `_LIB_BASH_MUTATION_RESTRICTED_AGENTS` array
-(containing `review-orchestrator`), consumed by a new hook that restricts
-its `Bash` tool calls to: strict read-only git subcommands (reusing
-`_lib_strict_readonly_git_subcmds`), exact-path invocations of `marker.sh`,
-`review-ledger.sh`, and `orchestrator-checkpoint.sh`, and exactly the
-verification commands root `CLAUDE.md`'s own Commands section already
-names for this repo (`.venv/bin/pytest claude/.claude/`,
-`.venv/bin/ruff check claude/.claude/`,
-`scripts/list-shell-files.sh | xargs -0 shellcheck`, and their
-worktree-relative `../../../.venv/bin/...` forms) — a closed enumeration,
-not an open "whatever the skill names" bucket — denying output redirection,
-`sed -i`, `git commit`, `git add`, `rm`, `mv`, or `cp` into a tracked path —
-anchors: row 1. Without this, `review-orchestrator`'s `Bash` grant lets it
-mutate the tree directly (`echo > file`, `git commit`) with zero `Edit`/
-`Write` tool call, which would make the "fixes route through code-writer"
-claim in Row 1 false as designed rather than true by construction.
-  Lighter primitives rejected:
-  (a) Rely on `review-orchestrator`'s own system-prompt instructions never
-      to use `Bash` for mutation, no hook — rejected: this is exactly the
-      advisory-vs-hook-enforced distinction row 1(a)/row 2(a) already
-      reject for the analogous cases; an instruction a model can talk
-      itself out of isn't a guarantee.
-  (b) Add `review-orchestrator` to the existing `_LIB_REVIEW_ONLY_AGENTS`
-      array instead of a new one — rejected: that array also drives
-      `_LIB_NO_GATE_RELEASE_AGENTS` (row 7), so adding it there would strip
-      the marker-write capability the whole design depends on. This is
-      exactly the coupling row 7 names and row 7a exists to avoid.
-  (c) An open-ended allowlist bucket for "whatever verification command the
-      running skill happens to name" — rejected on re-review: no existing
-      hook payload exposes "which skill is running" for a PreToolUse hook
-      to key on, and an open bucket has no fixture coverage by
-      construction. Pinned to the closed, already-canonical command list
-      above instead.
+Row 8 [assumption]: No `marker.sh check` before dispatch. anchors: row 7. The session's design input proposed one. [unverified as input] Without it, an already-reviewed state still ends as done: Step 0.1 sees the match and skips the round, so the return reports no fix and `check` matches. Dispatching anyway also keeps Step 0.1's CLEAN ledger row, which a skip on the parent's side would drop. [verified: `code-review/SKILL.md` § "Step 0.1 — Short-circuit already-reviewed diff"]
 
-Row 7b [mechanism]: `review-orchestrator`'s `Bash` restriction (row 7a)
-only covers its *direct* tool calls — it is also granted `Agent` (row 1),
-and without a matching restriction on dispatch *targets* it could
-nest-dispatch an unrestricted `general-purpose` or `claude` to mutate the
-tree and release the gate on its behalf, reopening row 7a's gap one hop
-away with zero `Bash` call from `review-orchestrator` itself. New hook
-`require-review-orchestrator-agent-target.sh`: PreToolUse on `Agent`
-tool calls where the caller's `agent_type` is `review-orchestrator`, denying
-any dispatch whose requested subagent type is not a member of
-`_LIB_REVIEW_ONLY_AGENTS ∪ {code-writer}` — anchors: row 1, row 7a. Reuses
-`_LIB_REVIEW_ONLY_AGENTS` as the allowlist rather than inventing a third
-roster: every member is already established as mutation-restricted and
-non-gate-releasing, which is exactly the property a legitimate nested
-dispatch target needs, and the array already carries this repo's
-closed-enumeration discipline ("new entries are added deliberately... not
-accreted via etc./like").
-  Lighter primitives rejected:
-  (a) Prose-only instruction in `review-orchestrator.md` naming
-      `code-writer` as the only legitimate nested-dispatch target, no hook
-      — rejected for the same advisory-vs-hook-enforced reason as row
-      7a(a); this is the exact gap the re-review surfaced by naming a
-      concrete bypass path, not a hypothetical one.
-  (b) A closed allowlist of exactly `{code-writer}`, nothing else —
-      rejected: `review-orchestrator` also needs to nest-dispatch the
-      reviewer personas themselves (the Change-type/routing-table spawns
-      that code-review/plan-review's own instructions call for), so the
-      allowlist has to cover them too; `_LIB_REVIEW_ONLY_AGENTS` already
-      enumerates exactly that set.
+Row 9 [mechanism, deleted]: Delete `require-review-orchestrator-agent-target.sh`, its test, its settings.json hook object and its docs/hooks.md bullet. anchors: row 10. [unverified: the architect's recommendation; the engineer typed "Ask the architect", which accepted no option] The engineer's round-5 "Keep all I think but check with the architect" covered this deletion, and the architect still recommends it. [unverified: architect's recommendation] In round 6 the engineer selected "Keep all (Recommended)" on it [engineer-verified: "Keep all (Recommended)"], an option whose text was the session's.
+- With row 10's Bash allowlist gone, getting past this hook reaches nothing the agent's own `Bash` cannot, so it no longer closes a gap. Its header gives its purpose as closing the one-hop gap the Bash restriction left open. [verified: require-review-orchestrator-agent-target.sh:3-6]
+- As built it denies `plan-architect`, which `/code-review` dispatches. [verified: require-review-orchestrator-agent-target.sh:56; `code-review/SKILL.md`'s `code-review-round-cap-consult-verdict`, `code-review-new-primitive-route` and `code-review-contradiction-route` blocks]
+- Keeping it would also need a tier line and a tiers-table row, which it lacks today. [verified: claude/.claude/hooks/tests/test_hook_alignment.py `GATE_HOOKS`, `test_tier_threat_model_header_present_and_well_formed`, `test_tier_table_keys_match_gate_hooks_exhaustive`]
+- If a `Bash` restriction for the agent returns, this hook returns with it (Out of scope).
 
-Row 8 [assumption]: plan-review's own design never has the acting session
-edit the plan file itself — required changes always return to the plan's
-author — so review-orchestrator running /plan-review needs no
-fix-application capability at all; only code-review does
-[verified: claude/.claude/skills/plan-review/SKILL.md:270 — "Do not write
-[the marker] on Request changes — write it only after the plan author
-revises the plan and a clean re-review completes."] — anchors: root.
+Row 10 [mechanism, deleted]: Delete `require-review-orchestrator-bash.sh`, its test, its settings.json hook object and its docs/hooks.md bullet. Delete `orchestrator-checkpoint.sh` and its test. anchors: root. With one round per dispatch, the parent is how a run resumes, so nothing reads a checkpoint. The agent's `Bash` is then governed only by hooks that apply across the whole repo.
+- This reopens, for this agent, the routes past `enforce-marker-script-shape.sh`'s deny on an `--engineer-quote` ledger row that the hook's header lists as residuals. Its review-ledger list names, among others, variable and function indirection, brace expansion, `$'\x..'` escapes, a script name or op supplied at run time, and a renamed copy or link of `review-ledger.sh`. Its `.agent_id` paragraph names a nested `claude -p` or `claude --print` session started through `Bash`, whose payload carries no `agent_id`. Through any of them the agent can log a row attributed to the engineer, which the PR body then publishes, with no engineer turn. [verified: enforce-marker-script-shape.sh header, "The review-ledger arms have these residuals" and the paragraph on `.agent_id`] The deleted allowlist denies every one of these the agent could produce itself: its character class rejects `$`, backtick, backslash and braces, and any command word off its closed list, `claude`, `ln` and `cp` among them, denies. [verified: require-review-orchestrator-bash.sh:77-81, :528; that this covers every listed route is the architect's reading] A `general-purpose` dispatch reaches the same set, so the deletion still meets the root's bar. The header names a whole-class control, a permission-layer `ask` or `deny` entry, only for the nested session, and none for the rest.
+- The engineer typed "That seems paranoid so yes I lean accept and record. Ask the architect" in round 5, and "Im not sure. Remember we don't need to make this stricter than a general purpose agent guardrails if it's too complicated. What does the architect think?" in round 6. The architect recommends accepting the whole reopened set in this PR and recording it here, in the decision record and in the sign-off list, with the permission-layer entry for `claude -p` and `claude --print` as the one named follow-on (Out of scope). Accepting only the nested session would accept less than the deletion reopens. Keeping a `Bash` restriction would make this agent stricter than a `general-purpose` dispatch and bring back the dispatch-target hook (row 9). The engineer then selected "Accept the whole set (Recommended)" [engineer-verified: "Accept the whole set (Recommended)"], an option whose text was the session's. Dispatch 3 records the set as accepted.
 
-Row 9 [assumption]: before re-dispatching a fresh review-orchestrator
-instance against a checkpoint left by a presumed-dead one, the parent
-confirms genuine termination via the harness's task-status tooling (the
-`Monitor`/`TaskStop`/`TaskOutput` family) rather than inferring death from
-silence — anchors: root, row 3. Subagents aren't OS-addressable processes a
-parent can `kill -0`; two live orchestrator instances independently reading
-the same "last completed step" and both dispatching a fix or a reviewer run
-would duplicate work in a way the file-locking in row 3c doesn't prevent
-(locking protects concurrent *writes* from corrupting the file, not two
-readers from acting on the same read). [unverified — this plan names the
-mechanism to check before redispatch; confirming its exact call shape for a
-task presumed dead, as opposed to one merely slow, is deferred to
-implementation]
-```
+Row 11 [mechanism, deleted]: Delete the `_lib.sh` helpers whose only production caller was the deleted hook, together with their claude/.claude/hooks/tests/test_lib.py sections, each headed by a `# --- <helper> ---` comment. anchors: row 10.
+- `_lib_collapse_dot_segments`, with its `TestLibCollapseDotSegments` section
+- `_lib_fragment_has_leading_env_assignment`
+- `_LIB_STRICT_READONLY_EXCLUDED_GIT_SUBCMDS` and `_lib_strict_readonly_git_subcmds`
+- `_LIB_BASH_MUTATION_RESTRICTED_AGENTS` and its two functions, per row 24; they have no test_lib.py section
 
-**On Row 4 and staged delivery — two PRs, not one.** Given how much of
-this plan's value depends on nested dispatch actually working, this ships
-as two PRs with a stated gate between them, not one PR with an internal
-note:
+[verified: grep across claude/.claude finds no other production caller]
 
-- **PR 1** — `review-orchestrator.md`, `orchestrator-checkpoint.sh`, the
-  `_lib.sh` extraction (row 3c), the new Bash-mutation-restriction hook
-  (row 7a), and their tests. Purely additive: nothing in the existing
-  pipeline changes, and the orchestrator is only ever reached by an
-  explicit, manual `Agent` dispatch. Independently mergeable and useful on
-  its own.
-- **Gate.** Open PR 2 only once each of `code-review` and `plan-review` has
-  been manually dispatched through `review-orchestrator` at least twice, on
-  real work in this repo, with no nested-dispatch failure and no
-  checkpoint-resume anomaly (Verification steps 3–4). A count-based,
-  run-your-own-usage gate — not a calendar-time one. `ready-for-review` is
-  out of scope (see Approach) and has no gate here.
-- **PR 2** — `require-review-orchestrator-dispatch.sh`, the CLAUDE.md
-  rewiring, and the `docs/` entries. If Row 4 turns out false or unreliable
-  during PR 1's dogfooding, PR 2 simply never opens, and every stow user's
-  session keeps working exactly as it does today — no one is ever
-  hard-blocked by an unproven mechanism.
+Kept, with only its header comment edited [verified: grep]:
+- `_lib_strip_word_quotes`: called inside `_lib.sh` by `_lib_fragment_has_command_invoking_git_flag` and `_lib_fragment_has_git_write_target_flag`, which deny-reviewer-tree-mutation.sh uses.
 
-**Rollback.** Both PRs are cleanly revertible (new files, and additive
-edits to `settings.json`/`CLAUDE.md`); this repo's stow distribution means
-a revert commit propagates to every contributor's `~/.claude` the same way
-the forward change did, via a plain `git pull`. For the interim window
-before a revert lands, the existing `general-purpose` escape hatch (see the
-residual gap below) is the **sanctioned** bypass if
-`require-review-orchestrator-dispatch.sh` misfires for a session that needs
-to run `code-review` or `plan-review` immediately — this promotes it from an
-unclosed loophole to a documented rollback path, matching this repo's
-existing precedent of a general-purpose-shaped escape hatch for other
-marker-write hooks. No automated detection exists for post-merge,
-below-dogfooding-rate unreliability in Row 4 (e.g., a 1-in-20 failure rate
-the manual gate above wouldn't surface); this is an accepted gap, matching
-the `spawnDepth` telemetry gap already named in Out of Scope, not a promise
-this plan makes and fails to keep.
+Row 31 returns `_lib_resolve_repo_root`, `_lib_sweep_stale_files` and `_lib_append_line_locked` to merge-base content instead of keeping them. `_LIB_READONLY_GIT_SUBCMDS`'s header returns to merge-base content too: the branch's only change there is two lines naming `_LIB_STRICT_READONLY_EXCLUDED_GIT_SUBCMDS`, and that header cites no §40. [verified: grep of `_lib.sh` on this branch and in the main checkout, this session]
 
-**Known residual gap: the hook can't force review-orchestrator specifically.**
-It fires only on `agent_type` absent, so a session could still comply with
-its letter by dispatching the existing `general-purpose` escape hatch
-instead of `review-orchestrator` — closing the main-session-context problem
-(the first failure mode in Context above) but silently missing `code-writer`
-substitution and checkpointing.
-Blocking every `agent_type` except `review-orchestrator` isn't a fix: it
-would break the documented `general-purpose` escape hatch this repo already
-relies on elsewhere (CLAUDE.md Safety: "if [a marker-write] hook is
-harness-blocked, delegate it to a general-purpose subagent"). This is an
-accepted limitation, not a hole to patch — the hook closes the worst case,
-not every path around the preferred one. (See also: Rollback, above, which
-depends on this same gap staying open.)
+Row 12 [assumption]: `docs/design-decisions.md §40` citations resolve to the wrong decision. [verified: docs/design-decisions/attribution-in-skill-prose-and-hook.md:3 carries "Formerly `docs/design-decisions.md` §40", and docs/design-decisions.md:5 resolves legacy numbers that way] The surviving citations repoint to `docs/design-decisions/review-orchestrator-gate-release-decoupling.md`. anchors: row 17. The engineer typed "Keep all I think but check with the architect". The architect keeps the repoint, because each surviving citation sits in text this branch adds (the `_lib_strip_word_quotes` header and two docstrings in test_deny_reviewer_tree_mutation.py), so dropping it would ship citations to an unrelated decision. [unverified: architect's recommendation] In round 6 the engineer selected "Keep all (Recommended)" on it [engineer-verified: "Keep all (Recommended)"], an option whose text was the session's.
 
-**No changes to any skill's content.** Because the orchestrator calls the
-`Skill` tool and follows what loads, `code-review/SKILL.md`,
-`plan-review/SKILL.md`, and `plan-review/ROUTING.md` need zero edits — every
-new behavior (fix
-substitution, halt substitution, checkpointing) lives in the new agent
-file. Where a skill's instructions say "fix it" or "halt on findings," the
-orchestrator's own body carries one generic substitution rule: if it lacks
-the tool a step calls for (`Edit`/`Write`), it dispatches `code-writer`
-with a narrowly-scoped description of that one change, re-verifies, and
-resumes the skill's flow rather than returning control to its caller —
-except for a finding the skill's own instructions give no deterministic
-disposition path for (a genuine DEFER/dispute), which it surfaces in its
-summary instead of guessing. **This substitution behavior has no automated
-regression coverage** — it's prose interpreted by an agent's own reasoning,
-not a script; Verification steps 4–5 (manual dogfooding, one-time smoke
-test) are the only checks, and neither re-runs on a future edit to
-`review-orchestrator.md`'s body. Named here as a permanent accepted gap,
-matching the transparency of the residual-gap note above, not left
-implicit.
+Row 13 [assumption]: The deny-reviewer-tree-mutation.sh hardening and the `_lib.sh` helpers it calls are this branch's own additions, and they stay (row 26). [verified: `git diff --stat origin/main...HEAD` lists both files as changed on this branch, per staff-platform-engineer's plan-review round 2]
 
-**Checkpoint resume-decision interpretation is similarly untested.** The
-checkpoint *script's* read/append contract is unit-tested (Critical Files,
-below). Whether `review-orchestrator` correctly *interprets* a resumed
-checkpoint — skipping a step already marked done rather than re-running it
-— is agent behavior, not script behavior, and Verification step 3's manual
-kill-and-resume check is the only coverage it gets, once, by hand.
+Row 14 [mechanism]: Until dogfood passes, `TRIGGER` fires only when the user explicitly asks. anchors: row 1, G1. A `TRIGGER` matching every `/code-review` would send every stow consumer's reviews through an agent nobody has dogfooded, which is rewiring under another name. The record being rewritten sets the bar: "The orchestrator ships additive-only first — reachable only by explicit manual `Agent` dispatch — with the top-level-session-forcing hook (`require-review-orchestrator-dispatch.sh`), the CLAUDE.md rewiring, and the docs update held back until `review-orchestrator` has been manually dispatched at least twice per skill against real work with no nested-dispatch failure." [verified: docs/design-decisions/review-orchestrator-gate-release-decoupling.md:15] Consequence, stated plainly: until the follow-on rewiring PR, no session is told to use the agent unless the user asks. [engineer-verified: "Row 14: explicit-request-only TRIGGER"] The `subagent-delegation` paragraph that carries the protocol (row 15) states the same condition. [unverified: architect's proposal]
+
+Row 15 [mechanism]: The parent's protocol has one home, `subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven", which already governs review loops and already prescribes "separate bounded per-step dispatches the orchestrator sequences between". [verified: that section's first paragraph] The agent description carries no protocol. It names the skill, whose own TRIGGER already covers "delegating a multi-step gate/review loop". [verified: subagent-delegation/SKILL.md:7] anchors: row 7. Home of the protocol: [engineer-verified: "Fable: thin shell, protocol in skill (Recommended)"], which supersedes their earlier selections "Agent description (Recommended)" and "Rows 15/25: description carries call syntax and four rules". The skill-body edit joins this PR: the agent ships here, and a thin shell is unusable without its protocol. The engineer typed "I think the skill edit makes sense but have the architect take a look", and the architect agrees, provided the edit stays within the line budget Dispatch 3 states. [unverified: architect's review] Two tripwires pin the contract's ends and nothing else. The description must carry the explicit-request TRIGGER phrase (row 14), no other `TRIGGER` clause outside `DO NOT TRIGGER`, and the name `subagent-delegation`. The section must carry `~/.claude/scripts/marker.sh check code-review` in its exact allowlisted form, the root-anchored literal pathspec magic `:(top,literal)` (row 7), the Stage step's quote exclusion `no single or double quote` (row 7), which no benign dogfood round exercises, and the explicit-request phrase `only when the user explicitly asks` (row 14). The section and the agent body must both name `Fix paths:`, `Marker:` and `HALT:`. Every other rule is deliberately unpinned: under the engineer's bar a dropped rule surfaces in dogfood or review, not in a test. [unverified: architect's proposal]
+
+Row 16 [mechanism]: The body claims CLAUDE.md Main session's Agent Briefing and Model & Effort Routing. It does not claim Shipping, Code Review or Pre-Handoff Review. anchors: row 3. Some claim is owed. [verified: docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md:151, "A future review-orchestrator agent must claim Main session in its own body"] Leaving those sections out stops the agent from committing, or from re-running `/code-review` after its own fix. Row 3 forbids both, and Agent Core already bars shipping: "any fork or subagent returns its work to its dispatcher rather than shipping on its own". [verified: claude/.claude/CLAUDE.md Agent Core]
+
+Row 17 [mechanism]: Rewrite the decision record in place and keep its slug. [engineer-verified: "Rewrite it to the new design (Recommended)"] Renaming is allowed before merge (.claude/rules/design-decisions.md). The record still decides who may release the gate, and keeping the slug avoids repointing every citation.
+
+Row 19 [assumption]: The agent starts with no round count in memory, so it takes Step 0.1's resume path: `review-ledger.sh show > /dev/null`, then one past the max round its stderr header reports. [verified: `code-review/SKILL.md` § "Step 0.1 — Short-circuit already-reviewed diff"] On a feature branch the ledger file is keyed by repo and branch, not session, so the agent's rows land in the file the parent's rounds use. [verified: claude/.claude/hooks/_lib.sh `_lib_review_ledger_path`; claude/.claude/scripts/review-ledger.sh:55-56] Its `show` arm, Step 0.1's first call, its `append` arm and its `render` arm, which the skill runs every round, all resolve a session id through `_resolve_session_id` [verified: grep of review-ledger.sh and of `code-review/SKILL.md` § "Ripple effect triage", this session], so a failed walk would first surface at the resume step. Whether the walk succeeds from inside a subagent is [unverified; dogfood observes it].
+
+Row 20 [assumption]: `Skill` inside a custom subagent runs `/code-review` and the skills it calls (`/skill-review`, `/agent-review`). [unverified; dogfood observes it]
+
+Row 21 [mechanism]: Correct the docs/skills.md bullet that says "their working sets never reach the parent". The session running the skill reads each findings file back. [verified: `code-review/SKILL.md` § "Ripple effect triage", the paragraph on synchronous spawns] anchors: root. [engineer-verified: "Row 21: fix docs/skills.md:155"]
+
+Row 22 [assumption]: Remove `.claude/plans/orchestrator-resume-and-wait-guidance.md`, which only this branch adds, from this PR. [engineer-verified: "Delete it in this PR (Recommended)"] Carry it to row 28's split-out branch, where its wait-guidance half is the plan the moved implementation came from; that branch's own review decides whether its checkpoint-store half stays. The engineer typed "Ask the architect", the architect recommended carrying it, and the engineer then selected "Confirm 1 and 2, redo 3 (Recommended)" [engineer-verified: "Confirm 1 and 2, redo 3 (Recommended)"], an option whose text was the session's. That this label covers carrying the plan is the session's reading of that option text. [unverified: session's reading of the option]
+
+Row 23 [mechanism]: A post-merge dogfood of two real `/code-review` dispatches, at least one of them with a fix, gates any CLAUDE.md rewiring. anchors: row 14, G1. Requiring a fix round is this plan's addition, because rows 5 and 7 only come into play when a fix happens. [engineer-verified: "Row 23: dogfood needs a fix round"] Post-merge timing: [engineer-verified: "Yes, post-merge (Recommended)"], a selected label whose option text was not the engineer's words. Out of scope says why pre-merge is declined.
+
+Row 24 [assumption]: Delete `_LIB_BASH_MUTATION_RESTRICTED_AGENTS` and both its functions in `_lib.sh`, and in `test_agent_roster.py` delete `_bash_mutation_restricted_agents()` and `test_present_in_bash_mutation_restricted_agents`, keeping the class's other three tests. Rewrite the class docstring and `test_absent_from_review_only_agents`'s docstring, which both describe the deleted restriction. `deny-reviewer-tree-mutation.sh`'s logic needs no change: it never reads the array and exits at :182 for any agent outside `_LIB_REVIEW_ONLY_AGENTS`. [engineer-verified: "A: delete the array (Recommended)"] (the question was whether the agent stays in the array once its only reader is deleted; option text was the architect's.)
+
+Row 26 [assumption]: Keep the `deny-reviewer-tree-mutation.sh` hardening and the four `_lib.sh` helpers it calls in this PR (`_lib_fragment_has_command_invoking_git_flag`, `_lib_fragment_has_git_write_target_flag`, `_lib_fragment_has_env_assignment_before_git` and `_lib_fragment_is_bare_env_assignment`, none of them row 11's one Kept helper), add a CHANGELOG bullet, and keep the two residual paragraphs in the rewritten decision record. [engineer-verified: "Keep it, add a CHANGELOG bullet (Recommended)"] (option text was the architect's; row 13 verifies that these are this branch's own additions.) Row 26 also keeps the branch's record of the hardened hook's remaining gaps, tracked by GH-811 and GH-1208, none of which depends on a deleted file. That record is: the hook header's Known-gaps paragraph on the git-word skip and the bare-`&` split; the four test functions, with 12 parametrized cases, that the branch adds to test_deny_reviewer_tree_mutation.py's `TestKnownGapBypass` to pin those two mechanisms beside neighboring deny controls [per staff-backend-engineer's plan-review round 6]; the text the hook's docs/hooks.md bullet gains; and test_lib.py's `_lib_split_fragments` and `_lib_fragment_invokes_git known false-positive` sections. That bullet gains no sentence for the new denials, which its "git writes" already covers; the CHANGELOG bullet lists them. [unverified: the architect's call on hunks no earlier row named]
+
+Rows 27-34 dispose of branch changes that predate this design. Each verdict is the architect's, and the engineer accepted the set: [engineer-verified: "Accept the verdicts, I will reconcile the file list first (Recommended)"], an option whose text was the architect's. In round 5 the engineer selected "Confirm 1 and 2, redo 3 (Recommended)" [engineer-verified: "Confirm 1 and 2, redo 3 (Recommended)"], whose third item had the session redo the file-list reconciliation; its option text was the session's. The redo classified every hunk `git diff e1a24ad9...f863e768` shows in `_lib.sh`, `test_lib.py`, `deny-reviewer-tree-mutation.sh`, `test_deny_reviewer_tree_mutation.py`, `test_enforce_marker_script_shape.py` and `docs/hooks.md`. Rows 11, 24, 26, 31 and 32 and Dispatches 1 and 2 now carry each disposition, and row 30 now settles its own check. [unverified: the session's classification by a read-only agent that ran no tests; the architect spot-checked it against the files] On the cleanup itself the engineer typed "Ask the architect". The architect keeps it in this plan: the reverts must land before merge either way, and the one alternative that removes them, a fresh branch carrying only the kept work, would drop this branch's review ledger (row 19) and PR #714's history. [unverified: architect's recommendation] None of this work is done yet. Cutting a split-out branch, opening its PR, filing a tracker item or committing to another branch is shared-state work that the session confirms with the engineer each time. `f863e768`, this branch's tip before the reverts, is every split-out's cut point, and `git diff e1a24ad9...f863e768 -- <paths>` reproduces a cluster. The cut point is reachable only from the local branch until the push that carries Dispatch 3's commit, so no reset, rebase or branch deletion runs before that push. [per staff-backend-engineer's plan-review round 6] After it, PR #714's head ref keeps the cut point reachable, and the Deferred list names that ref as where to fetch it. [unverified: that the PR head ref outlives a squash merge] The PR description carries a Deferred list with one line per cluster (rows 22 and 28 together, 29, 32 and 34), naming that cut point, the cluster's paths and its owner, the engineer unless they name another. A tracker item or pushed branch per cluster, made before the squash merge, is a follow-up the engineer confirms.
+
+Row 27 [assumption]: Return `subagent-delegation/SKILL.md`'s Steps 1-2 to merge-base content. anchors: root. The branch re-wrapped them and flattened the no-op-dispatch list into one sentence, a move `docs/skills.md` § "Skill architecture notes" rules out at a line cap. [verified: this branch's file against the main checkout's copy on `main`, this session] With row 28 the whole file returns to its 197-line merge-base content, so Dispatch 3 states a line budget for the protocol.
+
+Row 28 [assumption]: Split out to a new branch off `origin/main`, and return here to merge-base content: `subagent-delegation/SKILL.md`'s § "Step 3 — Wait for a dispatch without polling" and the wait and `sleep` clauses its description's TRIGGER and DO NOT TRIGGER lists gained; `TestSubagentDelegationWaitWithoutPollingSection` in `test_skills.py`; the description trims in `review-permissions/SKILL.md` and `plugins/linear-formatting/skills/linear-formatting/SKILL.md`; and the `linear-formatting` `plugin.json` bump to 1.1.1. anchors: root, row 22. They implement the sibling plan's wait guidance, which this design does not need, and the trims made room for the wider description in the skill-description listing budget, so all of them travel together. [per staff-platform-engineer's plan-review round 4, from commit ec93cd3f's message] If that branch lands first, it meets the 200-line cap on main's 197-line file. If this PR lands first, the file sits at up to 200 lines, and that branch must free as many lines as it adds. Restoring the whole `plugins/linear-formatting/` tree keeps `require-plugin-version-bump.sh`, which diffs the index against the merge-base, from asking for a bump here. [verified: plugins/plugin-semver/hooks/require-plugin-version-bump.sh:138]
+
+Row 29 [assumption]: Split out `require-memory-skill.sh`'s widened deny, `test_require_memory_skill.py` and the branch's additions to `claude/.claude/tests/helpers.py` to their own branch, and return all three to merge-base content here. anchors: root. The deny now fires on any failed path resolution while `REAL_PROJECTS_DIR` is set, a wider surface on a gate every stow consumer runs, and this design needs none of it. [per staff-platform-engineer's plan-review round 4] It also closes a bypass: where neither `realpath -m` nor `grealpath` exists, main's raw-string check never marks a memory path spelled with a `..` segment as a candidate, which the branch's `test_obfuscated_memory_path_denied_under_forced_realpath_fallback` pins. The Deferred list records this hardening as reverted here, not dropped. [per staff-platform-engineer's plan-review round 5] Unlike the other clusters, this one also gets a tracker item before merge, because main keeps that bypass; filing it is shared-state work the session confirms with the engineer (rows 27-34 preamble).
+
+Row 30 [assumption]: Keep the one `require-plan-review.sh` comment hunk that corrects a false merge-base comment, and return its other comment-only hunks to merge-base content. anchors: root. The merge-base comment says `_lib_realpath_m` "resolves .. lexically but not symlinks". The branch's says it resolves both, which matches the helper's `realpath -m` primary path. [verified: both comments, this session; the helper's behavior per staff-platform-engineer's plan-review round 5] The PR description lists the kept hunk under Incidental edits. The other hunks add comments where the merge-base text is not false, so they revert. [unverified: architect's reading] The engineer kept the one hunk with the round-6 label "Keep all (Recommended)" [engineer-verified: "Keep all (Recommended)"], an option whose text was the session's.
+
+Row 31 [assumption]: Return the checkpoint-era shared-helper changes to merge-base content: `_lib_resolve_repo_root` and `_lib_sweep_stale_files` in `_lib.sh`, which only this branch defines; `_lib_append_line_locked`, whose whole body the branch rewrote and moved, so the merge-base function returns at its merge-base position, delegating to `_lib_acquire_append_lock`; the header comments of `_LIB_APPEND_LOCK_RETRIES` and `_lib_append_json_line_locked`, and a later comment's `_lib_sweep_stale_files` name; `log-reviewer-round.sh`; `review-ledger.sh`; `test_lib_append_line_locked.py`; `test_review_ledger_script.py`; and, in test_lib.py, the `_lib_append_line_locked` and `_lib_sweep_stale_files` sections, the three `_lib_resolve_repo_root` tests, the `_dead_pid` import and `_run_lib_call`'s `cwd` parameter. anchors: row 10. They came with the checkpoint store row 10 deletes, and this design needs none of them. [verified: grep of `_lib.sh` on this branch and in the main checkout on `main`, this session, finds the two helpers only here] Row 11's Kept list shrinks to `_lib_strip_word_quotes`, and `log-reviewer-round.sh`, which runs on every reviewer spawn, leaves this PR. These net removals, `log-reviewer-round.sh`'s included, are the architect's default [unverified: architect's default], which the engineer kept with the round-6 label "Keep all (Recommended)" [engineer-verified: "Keep all (Recommended)"], an option whose text was the session's.
+
+Row 32 [assumption]: Split out to a test-only PR, and return here to merge-base content, the quoted-`&` test cases in `test_block_gh_pr_merge.py`, `test_deny_invisible_commit_content.py`, `test_deny_network_installs.py`, `test_deny_pii_in_commits.py`, `test_deny_private_project_refs.py` and `test_require_ready_for_review.py`, and test_lib.py's `TestCommandConcludesCommit::test_both_predicates_true_for_a_quoted_ampersand_inside_a_global_flag_value`. anchors: root. The same PR takes `test_design_decision_files.py`'s change, which anchors the provenance-line lookup two lines below the H1 and adds tests for it: test-only hardening with no tie to this design. [verified: its `_provenance_line_text` docstring, this session] That PR branches from `origin/main`, and none of these cases needs this branch's `_lib.sh`, whose diff touches neither `_lib_split_fragments` nor the `_lib_command_*` predicates. [per staff-sdet's and staff-backend-engineer's plan-review round 5] This split-out is the architect's default [unverified: architect's default], which the engineer kept with the round-6 label "Keep all (Recommended)" [engineer-verified: "Keep all (Recommended)"], an option whose text was the session's.
+
+Row 33 [assumption]: Return `test_require_skill_review.py` to merge-base content. anchors: root.
+
+Row 34 [assumption]: Remove `.claude/plans/tokenizer-redesign-strip-word-quotes.md`, which only this branch adds, and carry it to the branch that implements it, which this plan neither creates nor names. anchors: root. It is an approved plan for work not yet done. Two of the four regression tests its Context names sit in `test_require_review_orchestrator_bash.py`, which Dispatch 1 deletes, so the implementing branch re-homes them. [per staff-platform-engineer's plan-review round 4]
 
 ## Critical files
 
-**PR 1**
+Three dispatches, run in order. The session runs each Verify line itself after the dispatch returns, from the worktree, so `.venv` paths are `../../../.venv/bin/...` (`README.md` § "Tests"). `code-writer` runs no full suite (code-writer.md:23-26).
+- The branch is synced: a merge commit brought in `origin/main`. If `origin/main` moves before Dispatch 1, sync once more first and re-run Verification's first grep, because Dispatch 1 deletes from files main also edits. [verified: no `MERGE_HEAD` in this worktree's git dir, this session]
+- Dispatch 1 removes the guard set before anything else. Four cases are red at HEAD, and Dispatch 1 clears all four: `test_hook_alignment.py`'s `test_tier_threat_model_header_present_and_well_formed` for each orchestrator gate, since neither carries a `# tier-threat-model:` line; its `test_tier_table_keys_match_gate_hooks_exhaustive`, since neither has a tiers-table row; and `test_skills.py`'s `TestReviewOrchestratorRetryCapLanguage::test_retry_cap_is_three_total_attempts_cites_design_decisions_grounding`, which pins a `docs/design-decisions.md` §40 citation the agent no longer carries. None reproduces at the merge-base, where neither gate nor that class exists. `select-tests.py` selects by the whole branch's footprint against `git merge-base HEAD origin/main`, not the dispatch's, so no dispatch ahead of the removal could pass its gate. That red set comes from tracing and from staff-sdet's replay of the class's assertions in plan-review round 4; no pytest run has confirmed it.
+- Dispatch 3 adds the protocol's home (row 15) and describes what Dispatches 1-2 produced.
+- Nothing is committed or pushed between dispatches. Dispatch 1 alone leaves the old agent's broad trigger with its guards gone, and Dispatch 2 alone points at a protocol Dispatch 3 has not yet written. The first commit follows Dispatch 3's Verify and a `/code-review` that passes on the final staged state. The push that carries it also rewrites PR #714's body for this design with `/pr-description`, and that body names `install.sh` or `stow`, which `require-stow-reminder.sh` requires of a PR that adds a file under `claude/.claude/agents/`. [per staff-platform-engineer's plan-review round 4]
 
-| File | Change |
-|---|---|
-| `claude/.claude/agents/review-orchestrator.md` | **New.** tools: Skill, Agent, Read, Grep, Glob, Bash. model: opus. effort: high (spans trivial "no findings" runs to multi-round reconciliation; its highest-stakes action — code fixes — is backstopped by `code-writer`'s own self-review pass, matching CLAUDE.md's `high` criterion). Body: accepts `skill`, `target`, and `orchestrator_run_id` in its dispatch prompt; reads any existing checkpoint for that run id and resumes from the last recorded step; invokes the named skill via the Skill tool; substitutes a `code-writer` dispatch for any Edit/Write step or "halt on findings" step per the Approach section's rule; appends a checkpoint entry (step id, status, marker-hash only — row 3b) after each meaningful step; returns only a synthesized summary (verdict/marker status, fixed/deferred/disputed counts, anything needing human judgment) — never raw findings. Must run without `isolation: worktree` (Row 6). |
-| `claude/.claude/hooks/_lib.sh` | Extract `review-ledger.sh`'s noclobber-lock + PID-liveness-eviction + single-EXIT-trap append primitive into a shared function (row 3c); add `_LIB_BASH_MUTATION_RESTRICTED_AGENTS = (review-orchestrator)` and its accessor (row 7a), documented as decoupled from `_LIB_REVIEW_ONLY_AGENTS`/`_LIB_NO_GATE_RELEASE_AGENTS` (row 7). |
-| `claude/.claude/scripts/review-ledger.sh` | Switch `_append_ledger_line_locked` to call the extracted `_lib.sh` helper (row 3c) — behavior-preserving, existing tests must stay green. |
-| `claude/.claude/scripts/orchestrator-checkpoint.sh` | **New.** `append`/`read` subcommands; JSONL at `<config-dir>/orchestrator-checkpoints/<repo-hash>.<orchestrator_run_id>.jsonl` (row 3a for the id shape); calls the same shared `_lib.sh` locking helper `review-ledger.sh` now uses. |
-| `claude/.claude/hooks/require-review-orchestrator-bash.sh` | **New.** Restricts `Bash` tool calls for `_LIB_BASH_MUTATION_RESTRICTED_AGENTS` members to the closed allowlist in row 7a; denies everything else with a message naming `code-writer` dispatch as the alternative. |
-| `claude/.claude/hooks/require-review-orchestrator-agent-target.sh` | **New** (row 7b). Restricts `Agent` tool calls made by `review-orchestrator` to subagent types in `_LIB_REVIEW_ONLY_AGENTS ∪ {code-writer}`; denies a dispatch targeting `general-purpose`, `claude`, or any other type, naming the closed allowlist in the denial message. |
-| `claude/.claude/hooks/tests/test_orchestrator_checkpoint_script.py` | **New.** Cases: append/read round-trip; concurrent appends under the shared lock; a truncated/corrupt JSONL line from a kill mid-write; a stale checkpoint from an abandoned run interacting with the sweep; no checkpoint file yet for a brand-new `orchestrator_run_id`; a duplicate entry for the same step (retry semantics); repo-hash scoping across two worktrees of the same repo doesn't cross-read. |
-| `claude/.claude/hooks/tests/test_require_review_orchestrator_bash.py` | **New.** Cases: allowed read-only git subcommand passes; allowed helper-script invocation passes; each of the closed verification-command forms passes; a redirect/`sed -i`/`git commit`/`rm` is denied with `code-writer` guidance; the restriction does not fire for any agent type other than `review-orchestrator`; malformed/missing payload fields (command, agent_type) are handled without crashing, mirroring the equivalent case in the PR2 hook's test file. |
-| `claude/.claude/hooks/tests/test_require_review_orchestrator_agent_target.py` | **New** (row 7b). Cases: dispatch to `code-writer` allowed; dispatch to a `_LIB_REVIEW_ONLY_AGENTS` member (e.g. `ciso-reviewer`) allowed; dispatch to `general-purpose` denied; dispatch to `claude` denied; the restriction does not fire for any caller other than `review-orchestrator`. |
-| `claude/.claude/hooks/tests/test_agent_roster.py` | Add `review-orchestrator`'s expected model/effort entries; assert its `tools:` frontmatter excludes both `Edit` and `Write`; assert it is present in `_LIB_BASH_MUTATION_RESTRICTED_AGENTS`; assert it is absent from both `_LIB_NO_GATE_RELEASE_AGENTS` (row 7) and `_LIB_REVIEW_ONLY_AGENTS` (row 7), each with a comment explaining why — so a future "fix" can't silently re-couple the two properties. |
-| `claude/.claude/hooks/tests/test_enforce_marker_script_shape.py` | Add `review-orchestrator` to the existing `GATE_RELEASE_ALLOWED_AGENTS` test fixture (currently `["general-purpose", "claude"]`), giving it the same functional allow-path test coverage those two identities already get — a roster-membership assertion in `test_agent_roster.py` alone doesn't exercise the hook's actual allow branch. |
-| `claude/.claude/settings.json` | Register `require-review-orchestrator-bash.sh` and `require-review-orchestrator-agent-target.sh`, following `require-skill-review.sh`'s existing PreToolUse registration shape — without this, neither hook is live and rows 7a/7b are enforced in name only. |
-| `docs/hooks.md` | Document `require-review-orchestrator-bash.sh` and `require-review-orchestrator-agent-target.sh`, mirroring existing entries' style. |
-| `docs/design-decisions.md` | New §29 entry recording this decision, its rejected alternatives, and the row 7/7a/7b coupling fix (condensed from the assumption ledger above). |
-| `.claude/plans/review-pipeline-orchestrator-subagent.md` | This plan, committed to the branch. |
+**Dispatch 1: remove the guard set.**
+- The session, before dispatching `code-writer`, in this order:
+  - first edits `claude/.claude/settings.json` itself, because `Edit(//**/.claude/settings*.json)` sits in settings.json's `permissions.ask` and the engineer answers that prompt, not a `code-writer` mid-dispatch. Remove the two hook objects whose `command` is `~/.claude/hooks/require-review-orchestrator-bash.sh` or `~/.claude/hooks/require-review-orchestrator-agent-target.sh`. Each is the last object in its `hooks` array, so also drop the comma that ends the object before it. A declined prompt stops Dispatch 1 before any `git rm`, so settings.json never points at a deleted hook.
+  - removes with `git rm`: `claude/.claude/hooks/require-review-orchestrator-bash.sh` and `claude/.claude/hooks/require-review-orchestrator-agent-target.sh` (rows 9-10); their tests `claude/.claude/hooks/tests/test_require_review_orchestrator_bash.py` and `claude/.claude/hooks/tests/test_require_review_orchestrator_agent_target.py`; `claude/.claude/scripts/orchestrator-checkpoint.sh` and `claude/.claude/hooks/tests/test_orchestrator_checkpoint_script.py`; `.claude/plans/orchestrator-resume-and-wait-guidance.md` (row 22); and `.claude/plans/tokenizer-redesign-strip-word-quotes.md` (row 34). The deletions must be staged: `scripts/list-shell-files.sh` emits every tracked `*.sh` path without checking that it exists (:25-29), and `test_shellcheck.py` shellchecks that list.
+  - returns every file rows 27-33 name outside `_lib.sh`, `test_lib.py` and `test_skills.py`, and also `test_hook_command_normalization.py`, to merge-base content, removing any file the merge-base lacks: whole files where every hunk belongs to those rows, hunk by hunk otherwise, as row 30 does for `require-plan-review.sh`. On `test_hook_command_normalization.py` the branch changed only the pin, from 12 to 13, and two docstring lines, and the merge-base pin of 12 counts the call sites left once the Bash hook is gone. [verified: the branch's copy against the main checkout's copy on `main`, this session; the remaining count per staff-backend-engineer's and staff-platform-engineer's plan-review round 5] The moved content stays reachable at `f863e768`, the cut point the rows 27-34 preamble names.
+  - dispatches with every hunk already classified: rows 11, 24, 26, 31 and 32 and Dispatch 2 give each hunk in `_lib.sh`, `test_lib.py`, `deny-reviewer-tree-mutation.sh`, `test_deny_reviewer_tree_mutation.py`, `test_enforce_marker_script_shape.py`, `docs/hooks.md` and `review-orchestrator.md` its disposition, as of `f863e768`. If this branch has gained a commit since then other than a sync merge from `origin/main`, stop for a re-classification before dispatching. A verdict written into this plan file mid-dispatch would re-arm `require-plan-review.sh` and block `code-writer`. [per staff-platform-engineer's plan-review round 5]
+- `code-writer` makes the referent edits, located by symbol or text, never by line number:
+  - `claude/.claude/hooks/_lib.sh`: delete row 11's helpers, return row 31's hunks to merge-base content, and delete the two lines the branch added to the `_LIB_READONLY_GIT_SUBCMDS` header (row 11). In the `_lib_strip_word_quotes` header, drop the deleted Bash hook's name and repoint §40 (row 12).
+  - `claude/.claude/hooks/tests/test_lib.py`: delete row 11's three sections, return row 31's hunks and row 32's quoted-`&` test to merge-base content, and keep the sections for `_lib_strip_word_quotes` and row 26's four helpers, and row 26's `_lib_split_fragments` and `_lib_fragment_invokes_git known false-positive` sections. Drop the deleted hooks, the deleted script and `TestLibCollapseDotSegments` from every remaining comment and docstring that names them.
+  - `claude-skills/skills/tests/test_skills.py`: delete `TestReviewOrchestratorRetryCapLanguage`, which pins the old agent's checkpoint and retry-cap text and is red at HEAD, and `TestSubagentDelegationWaitWithoutPollingSection` (row 28).
+  - `claude/.claude/hooks/tests/test_deny_reviewer_tree_mutation.py`: in the docstrings of `test_git_log_textconv_ansi_c_hex_escape_bypass_denied` and `test_git_log_textconv_ansi_c_octal_escape_bypass_denied`, drop the deleted hook's name and repoint §40. Rewrite `test_raw_bash_write_target_onto_tracked_file_denied`'s docstring as a plain statement of what it pins, with no hook name and no §40, because the two-hop path it describes exists only with the deleted dispatch-target hook. In `TestEscapeExpansionBypassRedesign`'s docstrings, replace "the sibling hook" and each contrast with a "prior" check or design with a plain statement of what the test pins.
+  - `claude/.claude/hooks/deny-reviewer-tree-mutation.sh`: end the accepted-over-deny comment above the `$`, backtick and brace check at "not just brace-expansion syntax.", dropping "mirroring the sibling hook's own accepted parens over-deny", whose sibling is the deleted Bash hook.
+  - `claude/.claude/hooks/tests/test_agent_roster.py`: row 24's edits.
+  - `docs/hooks.md`: delete the bullets for the two deleted hooks, and leave the `deny-reviewer-tree-mutation.sh` bullet as the branch has it (row 26).
+- Verify: `../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`, then `../../../.venv/bin/ruff check claude/.claude/ claude-skills/`, then `scripts/list-shell-files.sh | xargs -0 ../../../.venv/bin/shellcheck`, then Verification's footprint check in its after-Dispatch-1 form.
 
-**PR 2** (opened only after the dogfooding gate above)
+**Dispatch 2: rewrite the agent.**
+- Rewrite `claude/.claude/agents/review-orchestrator.md`.
+  - Frontmatter as in row 2. Write the description as a plain YAML scalar, exactly as below. It contains no colon-space (`: `) and no space-hash (` #`), so `yaml.safe_load` parses it, which `test_frontmatter_parses_strictly` in claude/.claude/hooks/tests/test_agent_roster.py checks. At about 525 characters it sits well under `AGENT_DESCRIPTION_MAX_CHARS` (1000). It carries no protocol (row 15). Keep its TRIGGER clause and its `subagent-delegation` pointer intact:
+    > Runs one /code-review round in its own context so findings and fix churn stay out of yours — sends every fix to code-writer and writes the code-review marker only on a round with no fix. TRIGGER only when the user explicitly asks to run /code-review through review-orchestrator. DO NOT TRIGGER for /plan-review, /ready-for-review, or writing code (use code-writer). Before dispatching, load the subagent-delegation skill and follow its gate/review-loop exception, which says how to dispatch this agent and act on each return.
+  - Body, in this order:
+    1. Role: one `/code-review` round per dispatch. You change nothing yourself.
+    2. Follow CLAUDE.md Main session § Agent Briefing and § Model & Effort Routing as the session running this review (row 16). Never stage, commit, push or open a PR.
+    3. If you do not hold the `Skill` tool or the `Agent` tool, return `HALT:` naming the missing tool before doing anything else.
+    4. Invoke `code-review` through `Skill` and follow it verbatim. You start with no round count, so take Step 0.1's resume path.
+    5. Dispatch every nested agent synchronously. Ending your turn returns you to the parent.
+    6. Wherever the skill applies a fix, on either Fix route, dispatch `code-writer` once with every ADDRESS row, including a row the skill would fix inline because it is not code, when that row edits a tracked file. Report any other inline-route row under `HALT:`. Never change the tree or the index yourself.
+    7. Write the marker, using the skill's own command, only when the round is clean as the skill defines it, you dispatched no `code-writer`, and you have no `HALT:` entry. After a fix, return without writing it; the next round reviews the fix.
+    8. Report under `HALT:` anything the skill or Agent Core sends to a human: a stop-and-ask, a re-plan or replace-the-surface verdict, a `plan-architect` return that calls for a plan revision, a hook denial you cannot satisfy (quoted), a tool that is unavailable or errors (except a failed marker write, which `Marker:` reports), a nested dispatch that fails or returns nothing usable, or a step with no defensible reading. Each entry states the checklist item id and `file:line` (or the blocked step), the open decision, the options the skill offers, and anything the skill tells the human at that stop. It also names the rule that raised the stop: the skill's `DISPOSITION_RULE` block or section heading, the hook, or the Agent Core rule. A stop-and-ask about one finding ends only that finding's handling, so finish the rest of the round; every other entry ends the round. A `plan-architect` return the skill only relays while the round continues goes on the `Spawn decisions:` line verbatim instead. Never do a reviewer's or `code-writer`'s work yourself in its place.
+    9. Return these items on every round, a halted one included, in this order, and nothing else:
+       - `Verdict:` the skill's verdict in its own words, followed verbatim by every `carry of decision` line `review-ledger.sh` printed this round, which the skill's round report relays.
+       - `Spawn decisions:` the skill's mandatory line, verbatim (`code-review/SKILL.md` § "Output format"), followed by any `plan-architect` return item 8 routes there, or `none` after a Step 0.1 short-circuit.
+       - `Marker:` written, or not written plus the reason.
+       - `Fix paths:` every file the fix changed, created or deleted, one per line, spelled as `git status --porcelain --untracked-files=all` lists it, with a rename listing both its old and its new path, or `none`.
+       - `Not addressed:` one entry per finding not already under `HALT:`, with its checklist item id, `file:line`, the failure it names, and its disposition with the closed-list criterion, or `none`.
+       - `HALT:` one entry per item, as item 8 specifies, or `none`.
+  - The return has no `Counts:` item. `halted` is the number of `HALT:` entries, `deferred` is readable from `Not addressed:`, and `addressed` matters only as whether a fix happened, which `Fix paths:` already says. A second encoding only adds a way for the two to disagree. [unverified: the architect's recommendation; the engineer typed "Ask the architect", which accepted no option] Their round-5 "Keep all I think but check with the architect" left it there, and the architect keeps `Counts:` out because row 7 now relays the whole return, `Not addressed:` included, to the user every round. [unverified: architect's recommendation]
+- Modify `claude/.claude/hooks/tests/test_agent_roster.py`:
+  - in `NON_REVIEWER_AGENTS`, change the `review-orchestrator.md` entry's comment to "runs one /code-review round in its own context; returns a summary";
+  - in `NON_REVIEWER_MODELS`, change the `review-orchestrator.md` value to `"sonnet"`, with a comment naming orchestration that follows a skill;
+  - in `EXPECTED_EFFORT`, keep the `review-orchestrator.md` value `"high"`;
+  - in `test_tools_exclude_edit_and_write`'s failure message, drop ", per its own generic-substitution rule", which names a rule only the old body has;
+  - add one test to `TestReviewOrchestratorRosterPlacement` asserting the agent's `description` contains `TRIGGER only when the user explicitly asks` (row 14) and `subagent-delegation` (row 15), and that `TRIGGER` occurs in it exactly once more often than `DO NOT TRIGGER` does, so an appended trigger clause fails, with each failure message stating in its own words the invariant it guards (the agent fires only on an explicit request until the post-merge dogfood passes; its dispatch protocol lives in `subagent-delegation`) and pointing to the decision record, never naming a plan row. A follow-on PR that widens `TRIGGER` then edits this assertion deliberately. It pins nothing else (row 15);
+  - in the comment above `AGENT_DESCRIPTION_MAX_CHARS`, change the current-maximum figure from 786 to 901, the length of `staff-data-engineer`'s description. The new description does not change the maximum. The figure is drift already on `origin/main`, so the PR description lists this edit under Incidental edits. The engineer typed "Keep all I think but check with the architect", and the architect keeps it, since this dispatch already edits the file. [unverified: architect's recommendation] In round 6 the engineer selected "Keep all (Recommended)" on it [engineer-verified: "Keep all (Recommended)"], an option whose text was the session's.
+- Modify `claude/.claude/hooks/tests/test_enforce_marker_script_shape.py`: keep the branch's `review-orchestrator` entry in `GATE_RELEASE_ALLOWED_AGENTS` (row 6). In the comment above it, replace "the dedicated agent this whole mechanism was built for" with a plain statement that it runs the review skill itself.
+- Verify: `../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`, then `../../../.venv/bin/ruff check claude/.claude/ claude-skills/`.
 
-| File | Change |
-|---|---|
-| `claude/.claude/hooks/require-review-orchestrator-dispatch.sh` | **New.** PreToolUse on `Skill` calls naming code-review/plan-review with `agent_type` absent; denies with the exact dispatch shape (agent name, no isolation, required prompt fields) to run instead. Does not name `ready-for-review` — out of `review-orchestrator`'s scope (see Approach). |
-| `claude/.claude/hooks/tests/test_require_review_orchestrator_dispatch.py` | **New**, mirroring `test_require_skill_review.py`'s shape. Cases: deny when `agent_type` absent and skill name matches one of the two; allow when `agent_type=review-orchestrator`; allow when `agent_type=general-purpose` (the preserved escape hatch — a regression here silently breaks the documented rollback path above, so this case is load-bearing, not incidental); allow for an unrelated skill name (e.g. `skill-review`, `ready-for-review`) even with `agent_type` absent; malformed/missing `agent_type` field handled as absent, not as a crash. |
-| `claude/.claude/settings.json` | Register `require-review-orchestrator-dispatch.sh`, following `require-skill-review.sh`'s existing PreToolUse registration shape. This repo's stow distribution means a plain `git pull` is sufficient for every contributor to pick this up — no `install.sh` re-run, since `settings.json` is a plain symlink with no `--adopt` merging step. A session already running when the pull happens won't see the new hook until its next start (hook config is read at session start), which is expected, not a bug. |
-| `claude/.claude/CLAUDE.md` | Rewrite the "Code Review," "Plan Review," and "Pre-Handoff Review" bullets to describe dispatching `review-orchestrator` instead of running the skill inline. Add one bullet to Model & Effort Routing naming `review-orchestrator`, mirroring the existing `code-writer` bullet's shape. File is 141 lines against a 200-line cap — budget the additions accordingly. |
-| `docs/hooks.md` | Document `require-review-orchestrator-dispatch.sh`, alongside the two PR1 hooks already documented there. |
+**Dispatch 3: prose.**
+- Rewrite `docs/design-decisions/review-orchestrator-gate-release-decoupling.md` in place, keeping the slug (row 17). Give it an H1 naming the new decision and a provenance line dated to the commit, with no `Formerly` clause there or anywhere in its body, which `test_no_malformed_formerly_fragment_outside_provenance_line` in test_design_decision_files.py rejects outside the provenance line. Content:
+  - the decision: rows 1-7, 9, 14 and 15, including that the agent's tree and marker rules are a prose contract and that the hooks gating marker and ledger writes treat it as any subagent absent from `_LIB_NO_GATE_RELEASE_AGENTS` (row 6), which Dispatch 2 keeps out of the agent body;
+  - answers to `agent-review/SKILL.md` § "7. Existence test: should this be an agent at all?". The existence case rests on the model pin, which is a request rather than a guarantee (claude/.claude/CLAUDE.md Model & Effort Routing), and on context isolation. No hook names the agent. `enforce-marker-script-shape.sh` keys marker and ledger writes on agent identity, and the agent's absence from `_LIB_NO_GATE_RELEASE_AGENTS` lets it write the marker as a `general-purpose` dispatch can (row 6). The tools cap only steers. On question 2, the call site does not yet fire often enough: until rewiring the agent runs only on an explicit request, so its always-loaded description is a standing cost for rare use. The follow-on rewiring, which routes `/code-review` rounds through it, is the amortization path, and a failed dogfood removes the agent (Verification's rollback unit);
+  - two deliberate departures from `agent-review/SKILL.md` § "8. Review checklist": the description's `TRIGGER only when` and `DO NOT TRIGGER for` clauses stand in for its literal `TRIGGER when:` and `DO NOT TRIGGER when:` blocks, because the agent fires on no situation, only on an explicit request (row 14); and body item 4 names the `Skill` tool as its invocation verb, because this repo-specific agent invokes `code-review` through the `Skill` tool its frontmatter grants (row 2);
+  - why an agent named for orchestration runs on Sonnet although CLAUDE.md Model & Effort Routing lists "parent-dispatcher orchestration" under Opus: it runs one round of a skill it follows verbatim, and the round's open judgment calls go to the human as `HALT:` entries or to the Opus-pinned `plan-architect` the skill spawns (row 2);
+  - rejected alternatives: the closed Bash allowlist, the dispatch-target allowlist and the checkpoint store, `general-purpose`, `context: fork`, a marker written by the parent, a before/after tree fingerprint (row 7), and the parent's protocol in the agent description (row 15);
+  - the staged rollout, the dogfood's pass list and its two consequences (see Verification), and the follow-on PR's config key as the rollout mechanism the engineer asked for (Out of scope, Context);
+  - accepted residual risks:
+    - Prompt injection from reviewed content: the agent can fix and release, with no human turn in between, any gate whose marker it can write or activate, which row 6 shows is not only code-review's. Staging a reported fix retires a marker written before it. Nothing catches a change the return leaves out of `Fix paths:`, a commit made during the dispatch, or a steered clean verdict.
+    - Row 7's other accepted gaps, each needing the agent to break a written rule, none closed in this PR:
+      - a fix staged before the marker, which leaves a marker over an unreviewed fix live, since `marker.sh` has no revoke for completion markers, though the parent's `check` stops the loop on it when the return reports the fix;
+      - `Fix paths: none` after a fix, together with a marker written in that round;
+      - a marker written in a round that also returned a `HALT:` entry, which the parent's `check` can only report: inline `/code-review` would skip at Step 0.1, so the user decides each halted entry before any commit.
+    - The routes past `enforce-marker-script-shape.sh`'s engineer-quote deny that its header lists as residuals, from its review-ledger residual list to a nested top-level session the agent starts through `Bash` (`claude -p`), whose payload carries no `agent_id`. Through any of them the agent can log a ledger row attributed to the engineer, which the PR body then publishes, with no engineer turn. A `general-purpose` dispatch has the same reach. [verified: enforce-marker-script-shape.sh header, "The review-ledger arms have these residuals" and the paragraph on `.agent_id`] The record names the whole-class control that header identifies for the nested session, a permission-layer `ask` or `deny` entry for `claude -p` and `claude --print`, as the follow-on that closes that one route, and says the header names no control for the rest (Out of scope).
+    - The ANSI-C and glob-obfuscation paragraphs, now scoped to `deny-reviewer-tree-mutation.sh` alone (row 26).
+    - The agent's `Bash` and `Agent` calls face only the hooks every session runs, as a `general-purpose` dispatch's do (row 10). Beyond what those hooks deny, nothing in this design bounds its network egress, `git push`, `gh pr edit` or `gh pr comment`, its dispatch of an agent that holds `Edit` and `Write`, or `rm` and `truncate` on marker and ledger files, which `enforce-marker-script-shape.sh`'s header lists as unscanned.
+  - drop the retry-cap paragraph and the `_fragment_invokes_canonical_git` paragraph;
+  - no measured figures.
+- Modify `claude-skills/skills/subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven" (row 15), starting from the merge-base content rows 27 and 28 restore. Append a paragraph naming `review-orchestrator` as that bounded per-step split for `/code-review`, used only when the user explicitly asks (row 14): one round per dispatch, with this session sequencing the rounds. The paragraph also says to stage the review target and dispatch in the foreground with `model: sonnet` and without worktree isolation, carries the phrase `only when the user explicitly asks` verbatim, and holds row 7's Relay step with its missing-return stop. Follow it with the protocol as one ordered list addressed to the dispatching session: row 7's stage, check and decide steps, in row 7's order and without its evidence tags. Decide's branches become two sub-items, one per `check` outcome, in row 7's order, and row 7's single meaning of "stop" goes on the Decide item's own line. Change neither the heading nor the skill's description. Line budget: `check-skill-length.sh` denies a commit that leaves this file over 200 lines and longer than its committed version [verified: claude/.claude/hooks/check-skill-length.sh:6-9, :111-119], and the merge-base file is 197 lines [verified: the main checkout's copy on `main`, this session]. Write the paragraph and each list item and sub-item as one unwrapped line, as the Implementation-work section's closing paragraph already is. That is eight lines with their blank separators: a blank, the paragraph, a blank, three list items and two sub-items. The file would reach 205 lines, so the edit must also free at least five [unverified: architect's count]. Free them by deleting text this file already states elsewhere, as `docs/skills.md` § "Skill architecture notes" prescribes. Never flatten a list or move the protocol into a co-located file, which that section and .claude/rules/skill-and-agent-self-review.md bar as a way around a length cap, and do not re-wrap existing prose, which row 27 reverts. Two edits free seven lines, leaving 198, and each keeps the one fact only its deleted text states. [verified: the main checkout's 197-line copy on `main`, this session] The first deletes the Codebase-discovery paragraph on comprehension reads with the blank line before it (five lines), whose rule Step 1's "Stays inline" comprehension-read bullet states. It appends "Comprehension reads (Step 1) stay inline: the split is locate-and-report (delegable) vs. read-and-reason (not)." to the end of the preceding paragraph's last line, which ends "have already landed in context.". That keeps the split's only definition under Step 2's Codebase discovery, where plan-it/SKILL.md and docs/cost-levers-considered.md cite it by name. The second deletes the Heavy-command-output bullet on commands scoped to a single test file or test name (two lines). It inserts ", including runs scoped to a single test file or test name while debugging," after "Run checks (tests, lint, typecheck, build)" in that section's opening line, so the opening rule still names the runs Step 1's second-or-third-`Bash` trigger would otherwise send to a subagent. Neither edit re-wraps a line. `/skill-review` decides whether each keeps behavior. If it rejects only the second, the file reaches 200 and passes; if it rejects the first, stop and ask the engineer. `require-skill-review.sh` gates the commit on `/skill-review` (.claude/rules/review-pipeline-dispatch.md).
+- Modify `claude-skills/skills/tests/test_skills.py`: add one test asserting that this section contains the marker-check command exactly as `permissions.allow` lists it, `:(top,literal)`, `no single or double quote` and `only when the user explicitly asks`, and that the section and the `review-orchestrator` body both contain `Fix paths:`, `Marker:` and `HALT:`. Derive the expected command by parsing claude/.claude/settings.json as JSON, selecting the `permissions.allow` entry that contains `marker.sh check code-review`, asserting it is the only one, and unwrapping its `Bash(...)`, rather than by repeating the literal. Compare whitespace-normalized on both sides, as this file's other prose pins do. Each failure message states the invariant in its own words and points to the decision record, never naming a plan row. Renaming either end of the return contract then fails a test (row 15). It pins nothing else.
+- Modify the docs/skills.md bullet that says the working sets of `code-review` and `plan-review` "never reach the parent" (row 21). State that `code-review` and `plan-review` run their reviewers as subagents, but the session running the skill still reads each findings file back. Forking would therefore trade `AskUserQuestion` and session-only state for the body plus that read-back.
+- Modify `CHANGELOG.md` under `[Unreleased]`:
+  - An Added bullet covering the agent, its explicit-request-only trigger and its dispatch protocol in `subagent-delegation`. It says a consumer whose active config dir's `agents/` is not a folded directory symlink re-runs `./install.sh` to link the new agent, since `git pull` alone does not link a new file into an existing stowed directory (claude/.claude/hooks/require-stow-reminder.sh header, its Scope list).
+  - A bullet under the first `### Changed` heading in `[Unreleased]`, directly below `## [Unreleased]`, for `deny-reviewer-tree-mutation.sh`'s new denials (row 26), derived from its diff against `origin/main`. `[Unreleased]` carries a second `### Changed` after `### Added`, which holds older entries. [verified: CHANGELOG.md headings, this session]
+- Verify: `../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`, then `../../../.venv/bin/ruff check claude/.claude/ claude-skills/`, then `wc -l claude-skills/skills/subagent-delegation/SKILL.md`, which must print 200 or less, then Verification's two grep checks and its footprint check in its after-Dispatch-3 form, all before the `/code-review` that precedes the first commit.
+
+The session owns `.claude/plans/review-pipeline-orchestrator-subagent.md` (this file).
+
+Reuse:
+- `marker.sh check code-review`, already in `permissions.allow` in claude/.claude/settings.json, as the parent's marker read (row 7).
+- `subagent-delegation/SKILL.md` § "Exception: gate/review loops stay orchestrator-driven", which already prescribes bounded per-step dispatches, as the protocol's home (row 15).
+- Inline `/code-review` in the main session, with its own asking, logging and carry rules, as the continuation after a `HALT:` that `check` reports as `no-match` (row 7).
 
 ## Verification
 
-**Before PR 1**
-
-1. **Feasibility spike (Row 4) — explicit protocol, before writing anything
-   else.** From a minimal throwaway custom agent definition with `Agent` in
-   its `tools:` frontmatter, run at least 3 sequential nested dispatches:
-   at least one to a reviewer-shaped prompt, at least one to a
-   `code-writer`-shaped prompt. **Pass:** every dispatch returns usable
-   output, none fails after the first succeeds, no context/tool-budget
-   failure appears on repeat. **Fail:** any dispatch after the first fails,
-   or output is silently truncated/malformed. On fail, do not proceed with
-   the rest of this plan — fall back to Row 1(b) (dispatch the existing
-   `general-purpose` escape hatch ad hoc) and revise this plan accordingly.
-
-**PR 1**
-
-2. `../../../.venv/bin/pytest claude/.claude/` and
-   `../../../.venv/bin/ruff check claude/.claude/` from the worktree
-   (covers the `_lib.sh` extraction and `review-ledger.sh`'s existing tests
-   staying green), plus `scripts/list-shell-files.sh | xargs -0 shellcheck`
-   for the new shell scripts.
-3. **Checkpoint script correctness (automated).** Covered by
-   `test_orchestrator_checkpoint_script.py`'s enumerated cases above — this
-   tests the script's mechanical read/append/resume-marker contract only,
-   not whether `review-orchestrator` correctly interprets a resumed
-   checkpoint.
-4. **Checkpoint resume-decision correctness (manual, one-time, no
-   regression coverage — see the note in Approach).** Kill a
-   `review-orchestrator` dispatch mid-run against a real diff; re-dispatch
-   with the same `orchestrator_run_id`. Concrete assertions: the checkpoint
-   file has exactly one entry per completed step (no duplicates from the
-   resumed run re-doing a step), no reviewer already dispatched is
-   dispatched again, no fix already verified is re-applied.
-5. **Manual dogfooding round** (the two-PR gate above): dispatch
-   `review-orchestrator` by hand for each of `code-review` and `plan-review`
-   against real work in this repo, at least twice each, before opening PR 2.
-6. `agent-review` on `review-orchestrator.md` (code-review's own Change-type
-   table already routes agent files there — no skill edit needed for this).
-7. `claude-hook-review` on both new hooks.
-8. `/code-review` on PR 1's full staged diff; `/plan-review` on this plan.
-
-**PR 2**
-
-9. **Behavioral smoke test.** From a fresh top-level session, attempt
-   `/code-review` directly and confirm the hook denies it with actionable
-   guidance; confirm a `general-purpose` dispatch is *not* denied (the
-   sanctioned rollback path); then dispatch `review-orchestrator` and
-   confirm it completes and the main session's context shows only the
-   summary.
-10. `/code-review` on PR 2's full staged diff.
+- Each dispatch's Verify line, run by the session (Critical files), must pass before the next dispatch goes out. A failure that also reproduces at the merge-base is pre-existing drift, not a failure of this gate (claude/.claude/CLAUDE.md Engineering Judgment, "Prove your change caused a failing check").
+- After Dispatch 3, run two grep checks:
+  - `git grep -n -i --untracked -e require-review-orchestrator -e orchestrator.checkpoint -e orchestrator_run_id -e bash_mutation_restricted -e strict_readonly -e collapse_dot_segments -e CollapseDotSegments -e fragment_has_leading_env_assignment -- ':!.claude/plans/'` should hit only the rewritten decision record. It is case-insensitive and matches either separator in the checkpoint name, so it catches the uppercase arrays, the lowercase functions and both spellings.
+  - `git grep -n 'design-decisions.md §40' -- claude/ claude-skills/` should return nothing.
+- Footprint check, run by the session after Dispatch 1's Verify and again after Dispatch 3's, each time right after staging every tracked change with `git add -u`, because `code-writer` leaves its edits unstaged and the commit takes the index. Take the SHA `git merge-base HEAD origin/main` prints, then run `git diff --cached --name-status <sha>` as a separate call. A path that list omits has merge-base content in the index, so the list confirms each whole-file revert in what the commit will take, `settings.json` and `test_hook_command_normalization.py` included. It says nothing about untracked files, which the `??` check below covers. [unverified: architect's proposal]
+  - After Dispatch 1 it lists exactly `.claude/plans/review-pipeline-orchestrator-subagent.md`, `claude/.claude/agents/review-orchestrator.md`, `docs/design-decisions/review-orchestrator-gate-release-decoupling.md`, `docs/hooks.md`, `claude/.claude/hooks/_lib.sh`, `claude/.claude/hooks/deny-reviewer-tree-mutation.sh`, `claude/.claude/hooks/require-plan-review.sh` (row 30), and, under `claude/.claude/hooks/tests/`, `test_agent_roster.py`, `test_deny_reviewer_tree_mutation.py`, `test_enforce_marker_script_shape.py` and `test_lib.py`.
+  - After Dispatch 3 it lists exactly those paths plus `CHANGELOG.md`, `docs/skills.md`, `claude-skills/skills/subagent-delegation/SKILL.md` and `claude-skills/skills/tests/test_skills.py`.
+  - `git diff --cached <sha> -- claude/.claude/hooks/_lib.sh` adds only `_lib_strip_word_quotes` and row 26's four helpers. The same diff of `claude/.claude/hooks/tests/test_lib.py` adds only the sections for those five helpers and row 26's `_lib_split_fragments` and `_lib_fragment_invokes_git known false-positive` sections, with no other hunk, and the same diff of `claude/.claude/hooks/require-plan-review.sh` shows only row 30's one hunk.
+  - `git status --porcelain` shows no `??` line, since `git diff` omits untracked files.
+  - Any other path or `_lib.sh` hunk stops for the engineer.
+- `/code-review`'s per-file-type dispatch runs `/agent-review` on the agent file and `/skill-review` on `subagent-delegation/SKILL.md`, which `require-skill-review.sh` enforces at commit (.claude/rules/review-pipeline-dispatch.md). Both run at implementation time on the text this plan drafts. This plan's review ran neither, so the drafted description, body and protocol stay open to their findings.
+- Post-merge dogfood. This gates the follow-on rewiring PR, not this merge:
+  - After merge and pull, confirm `agents/review-orchestrator.md` resolves under the active config dir (G1). Where that `agents/` is not a folded directory symlink, re-run `./install.sh` first.
+  - Run two real `/code-review` rounds through the agent on explicit request, from a session that has not loaded this plan. At least one round must include a fix (row 23).
+  - Pass requires, per dispatch:
+    - the agent ran on Sonnet, read from its transcript, since the pin is a request, not a guarantee (row 2);
+    - reviewers and `code-writer` spawned beneath it, plus `plan-architect` if the round cap fired, with no nested-dispatch failure, and the return's `Spawn decisions:` line matches what spawned (row 20, G2);
+    - the return followed the format, and `Fix paths:` named every file the fix touched and nothing else, checked against the change in `git status --porcelain --untracked-files=all` captured before and after the dispatch;
+    - `review-ledger.sh show` lists the round's rows in this branch's ledger (row 19);
+    - the session's action followed from the agent description and the `subagent-delegation` section alone, and matched row 7's step for that return (row 15);
+    - after done, `git commit` passes `require-code-review.sh` on the agent's own marker (row 6).
+  - Any miss means no rewiring. The row the miss names reopens as an engineer decision before the follow-on PR, and a nested-dispatch failure sends the design back for revision.
+  - A marker over a fix no round reviewed, row 7's open gap, reopens row 5 as an engineer decision. An identity deny on `marker.sh write` cannot tell a clean round from a post-fix one, so it would amount to the parent-writes option the engineer set aside.
+  - The dogfood does not test the cost premise (Context). The follow-on plan carries it as `[unverified]`. No measured figure goes into a repo file or PR body unless it meets `docs/private-project-redaction.md` § "Publishing a tooling measurement".
+  - The record lives in the follow-on rewiring PR's plan file, as observations its assumption ledger cites. It names which of row 7's branches the two dispatches exercised. Every other branch stays `[unverified]` there, and the `HALT:` branches may go unobserved. Row 14's negative path, that a session asked for `/code-review` without naming the agent runs it inline, stays `[unverified]` there too unless a dogfood-window session shows it. [unverified: architect's proposal]
+  - Rollback unit, if the dogfood fails: a forward PR removes `claude/.claude/agents/review-orchestrator.md`, the test entries that name it (`TestReviewOrchestratorRosterPlacement` and its roster-map entries in test_agent_roster.py, and its `GATE_RELEASE_ALLOWED_AGENTS` entry in test_enforce_marker_script_shape.py), the protocol paragraph in `subagent-delegation/SKILL.md` with its test, and the CHANGELOG Added bullet, and records the withdrawal in the decision record. The guard-set deletion, the `deny-reviewer-tree-mutation.sh` hardening with its `_lib.sh` helpers and Changed bullet, and the docs/skills.md correction stay. Reverting this PR is not the unit: the repo lands each PR as one commit, so a revert would also drop the hardening row 26 keeps. The session that records the failing dogfood drafts that PR; merging stays the engineer's. Its completeness check is `git grep -n -i review-orchestrator -- ':!.claude/plans/'`, which should then hit only the decision record, `docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md` (whose note predates this branch) and any released CHANGELOG entry. The check is needed because the roster-map tests pass with a stale entry. Its CHANGELOG bullet tells a consumer whose `agents/` is a real directory that the removed file leaves a dangling link there until `./install.sh` reruns, since `require-stow-reminder.sh` fires only on added files. [unverified: architect's proposal; the dangling link per staff-platform-engineer's plan-review round 5]
 
 ## Out of scope
 
-- **Extending the enforcing hook to `/skill-review`, `/ai-instruction-and-
-  memory-files`, or other review-adjacent skills.** The user's request
-  scoped this to code-review/plan-review/ready-for-review; those stay
-  reachable via the existing `general-purpose` escape hatch.
-- **Cross-model reviewer decorrelation.** Unrelated to this change; already
-  addressed and rejected in `docs/design-decisions.md` §3.
-- **A `spawnDepth > 1` telemetry/observability pass, and any automated
-  detection of below-dogfooding-rate Row 4 unreliability post-merge.** This
-  repo's transcript tooling has never recorded a dispatch deeper than one
-  level; adding analysis for the new two-level shape this plan introduces,
-  or alerting on intermittent nested-dispatch failure, is worth doing once
-  real usage exists, not speculatively here. Named explicitly in Approach
-  (Rollback) as an accepted gap, not a promise this plan makes.
-- **Exact call shape for confirming a presumed-dead orchestrator is
-  genuinely terminated before redispatch (row 9).** The mechanism family
-  (`Monitor`/`TaskStop`/`TaskOutput`) is named; the precise sequence is
-  deferred to implementation, since it depends on details of in-flight
-  harness behavior this plan hasn't independently verified.
+- The `/plan-review` arm. [engineer-verified: "Accept inline-only (Recommended)"]
+- Running `/ready-for-review` through the agent, because it pushes and opens a PR.
+- `context: fork` on `code-review`: it applies to every call and reverses the `_FORKED_SKILLS` pin in claude-skills/skills/tests/test_skills.py.
+- An Opus pin. [engineer-verified: "Sonnet. Full stop. Orchestration doesn't need Opus judgment."]
+- These wait for a follow-on PR until dogfood passes:
+  - the CLAUDE.md rewiring, including naming the agent in its opening line (global-claude-md-agent-core-and-main-session-groups.md:145), and the Model & Effort Routing line that lists "parent-dispatcher orchestration" under Opus (row 2);
+  - a README agent paragraph and gate-table row;
+  - widening `TRIGGER`;
+  - the rollout mechanism, a config key `review_orchestrator_routing`: boolean, default `false`, resolved from the config dir. A SessionStart hook emits one `additionalContext` line only when the key is on. The key gates routing, not use, so an explicit-request dispatch works either way. The dogfood bar (Verification) gates flipping the default. [unverified: the session's and architect's design; the engineer's words and selection are quoted in Context]
+  - a decision, before any rewiring, on how the main-thread-only transcript analyses count a round run inside the agent. `reviewer_yield.py` and `review_rounds.py` skip sidechain records, so such a round drops out of reviewer-yield and round-count audits. [verified: claude/.claude/scripts/transcript_analysis/reviewer_yield.py:526-528, review_rounds.py:79-80, :161]
+- Editing `/code-review`'s own flow; the agent follows it verbatim.
+- A `Bash` restriction for the agent (the array decision's option C, row 24), and with it the dispatch-target hook (row 9). Revisit only if the dogfood fails (Verification). A `Bash` restriction coming back restores the hook, because only then does the one-hop dispatch gap it closed reopen.
+- A permission-layer `ask` or `deny` entry for `claude -p` and `claude --print`, the whole-class control `enforce-marker-script-shape.sh`'s header names for the nested-session route, the one member of row 10's reopened set it closes. It would change every session's `Bash` for every stow consumer, not only this agent's. So it needs its own review of the spellings it catches and of the direct `claude -p` uses the repo documents (evals/README.md, CONTRIBUTING.md). The PR description's Deferred list names it, owned by the engineer unless they name another. [unverified: architect's recommendation]
+- `require-review-orchestrator-dispatch.sh`, which was never built.
+- Other plans that mention the agent (`claude-md-agent-core.md`, `defer-ci-check-to-end.md`). They are committed records of other changes. `tokenizer-redesign-strip-word-quotes.md` is not: this branch adds it, and row 34 moves it.
+- A pre-merge dogfood (row 23). It is reachable: a copy of the agent file in a project `.claude/agents/` directory plus a session restart, or `--agents` at launch (G1). It is declined because:
+  - a pre-merge session still loads main's `subagent-delegation` skill, which lacks this PR's protocol, so row 15's pass check, that the session acted from the agent description and that section alone, cannot run there;
+  - it needs a temporary second copy of the agent, which can drift from the reviewed file;
+  - until dogfood passes the agent runs only on explicit request (row 14), and row 7's stops fail closed, so a post-merge failure reaches only a user who asked for the agent.
+- Continuing a halted agent with the user's answer instead of continuing the review inline (row 7). `SendMessage` can continue a completed synchronous dispatch with its own earlier tool results intact. [verified: docs/cost-levers-considered.md, "Harness prerequisites, separately verified viable", which records a probe not re-run here] That could spare the main session the rest of a halted review. Whether `SendMessage` is available in every stow consumer's session is [unverified]. It would still need the main session to log any keep, because `enforce-marker-script-shape.sh` denies an append carrying `--engineer-quote` to every subagent whose hook payload carries `agent_id`. [verified: enforce-marker-script-shape.sh header, the paragraph on `.agent_id`] The follow-on plan weighs it against the dogfood's observations.
+- Further engineer sign-off on this revision. Rows 2, 7, 23 and 27-34 record the engineer's labels on the CLAUDE.md line, `HALT:` handling, dogfood timing and branch scope, and the other proposals take these defaults:
+  - the `subagent-delegation/SKILL.md` edit, the two tripwires, and leaving every other rule unpinned follow from the engineer's selected label "Fable: thin shell, protocol in skill (Recommended)" (row 15), and the edit also has their typed "I think the skill edit makes sense but have the architect take a look";
+  - row 7's stops and warnings fail closed, apart from the `HALT:`-with-`match` stop, which the engineer kept with "Keep the stop (Recommended)" (row 7);
+  - row 7's accepted gaps meet the root quote's bar on the plan's reading, which the engineer has not verified;
+  - deleting the return's `Counts:` item and deleting the dispatch-target hook were delegated when the engineer typed "Ask the architect" (Dispatch 2, row 9);
+  - the `subagent-delegation` line budget is the architect's answer where the engineer typed "I think the skill edit makes sense but have the architect take a look" (row 15, Dispatch 3); running `check` after every dispatch and carrying the sibling plan to row 28's branch, the architect's answers to "I think always check but ask the architect" and "Ask the architect", the engineer has since selected "Confirm 1 and 2, redo 3 (Recommended)" for both (rows 7 and 22), and that this label covers carrying the plan is the session's reading;
+  - the dogfood pass list, its consequences, its home and the rollback unit derive from the rows they cite (Verification);
+  - the routes past the engineer-quote deny that row 10 reopens, the nested `claude -p` session among them, are an accepted enforcement-invariant gap: the engineer selected "Accept the whole set (Recommended)" [engineer-verified: "Accept the whole set (Recommended)"] after typing "That seems paranoid so yes I lean accept and record. Ask the architect" and then "Im not sure. Remember we don't need to make this stricter than a general purpose agent guardrails if it's too complicated. What does the architect think?", and the architect recommends accepting the whole set, with the permission-layer entry for `claude -p` as the one named follow-on (Out of scope above);
+  - the dispositions of hunks no earlier row named (rows 26, 30, 31 and 32), row 7's staging rule, its single meaning of "stop", its verbatim relay of the return, and the added test pins (row 15) are the architect's answers to round-5 and round-6 review findings; the engineer kept rows 30-32's dispositions with the round-6 label "Keep all (Recommended)".
+  - the edits answering the six code-review findings on this revision (Context's Why now, rows 6, 7, 15 and 29, and Dispatch 3) follow the engineer's typed "Fix all"; their wording is the architect's.
