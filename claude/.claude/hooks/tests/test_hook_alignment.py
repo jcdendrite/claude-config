@@ -15,8 +15,8 @@ hook that gates it — both files present, and the hook still wired into a
 PreToolUse matcher group — asserts that same PreToolUse wiring for every
 hook-class: gate hook regardless of skill pairing, and pins standalone
 config-value invariants in settings.json unrelated to gate/skill pairing
-(e.g. the plan-mode-entry deny/defaultMode declarations). Four further
-static shape checks:
+(e.g. the plan-mode-entry deny/defaultMode declarations). Further static
+shape checks:
 - Every `jq` invocation in claude/.claude/hooks/*.sh goes through a
   `_lib_*` wrapper (bare `jq` outside one reintroduces the per-hook
   duplicated timeout-handling this suite exists to prevent).
@@ -29,6 +29,11 @@ static shape checks:
 - No hook regex in claude/.claude/hooks/*.sh, plugins/*/hooks/*.sh, or
   either directory's _lib.sh uses GNU grep's `\\s` extension, which a
   POSIX-strict grep reads as a literal `s`.
+- No hook in claude/.claude/hooks/*.sh (including _lib.sh and _config.sh) or
+  plugins/*/hooks/*.sh (including each _lib.sh) pipes into a grep that can
+  exit at its first match -- under `set -o pipefail` that fails a pipeline
+  whose writer is still writing a large input with 141, which an `if` reads
+  as no match.
 - Every hook entry object inside `hooks.<Event>[].hooks[]` in
   claude/.claude/settings.json carries non-empty `type` and `command`
   fields — catches an entry left with only a `timeout` key and no `type`
@@ -40,9 +45,10 @@ static shape checks:
   reintroducing the "Hook cancelled" regression it exists to fix.
 
 The first two carry a small, named exemption dict for a structural holdout
-that resisted conversion. The `\\s` check has none: no live `\\s`
-occurrence remains anywhere in its scope. See `_all_hook_files` for why
-only the `\\s` check also sweeps each directory's _lib.sh.
+that resisted conversion. The `\\s` check and the early-exit-grep check have
+none: no live occurrence remains anywhere in their scope. See
+`_all_hook_files` for why only those two checks also sweep each directory's
+_lib.sh.
 
 Layer 2 — Behavior checks: every gate-class hook must deny on malformed
 input, empty stdin, non-object `.tool_input`, and missing `_lib.sh`; and
@@ -90,15 +96,17 @@ def _all_hook_files(*, include_lib: bool = False) -> list[Path]:
     """Return every .sh hook across claude/.claude/hooks/ and plugins/*/hooks/.
 
     Excludes both shared helper libraries (_lib.sh, _config.sh) by default.
-    Pass include_lib=True to add _lib.sh back in -- used only by the `\\s`
-    detector, which is safe against _lib.sh because it isn't defined there.
+    Pass include_lib=True to add _lib.sh back in -- used by the `\\s` and
+    early-exit-grep detectors, which are safe against _lib.sh because neither
+    primitive is defined there.
     _config.sh stays excluded even then: it exists only under
     claude/.claude/hooks/, so folding it into ALL_HOOKS_AND_LIBS would break
     test_all_hooks_and_libs_includes_every_lib_sh's one-_lib.sh-per-directory
-    count invariant. The bare-jq and inline-matcher detectors stay excluded
-    from _lib.sh because each is itself defined inside _lib.sh using the
-    exact primitive it detects -- including it would be a guaranteed
-    self-match.
+    count invariant. The early-exit-grep test appends _config.sh to its own
+    parametrization instead, since every hook sources it. The bare-jq and
+    inline-matcher detectors stay excluded from _lib.sh because each is
+    itself defined inside _lib.sh using the exact primitive it detects --
+    including it would be a guaranteed self-match.
     """
     excluded = {"_config.sh"} if include_lib else _HELPER_LIBRARY_NAMES
     hooks: list[Path] = []
@@ -1012,13 +1020,13 @@ _INLINE_COMMAND_MATCHER_EXEMPT_HOOKS: dict[str, str] = {
 
 def _strip_comment(line: str) -> str:
     """Strip a full-line or same-line trailing `#` comment from a shell
-    line, for the three detectors below.
+    line, for the four detectors below.
 
     Naive substring split on " #", not shell-aware.
 
     Blind spot: no line in the current hook set has a literal " #" inside
     a string. A future line that legitimately needs one would have its
-    trailing content truncated -- a false negative in all three detectors
+    trailing content truncated -- a false negative in all four detectors
     below, not just a missed comment.
     """
     if line.lstrip().startswith("#"):
@@ -1048,7 +1056,7 @@ def test_strip_comment_string_interior_hash_is_a_known_blind_spot() -> None:
     literal " #" inside a quoted string is indistinguishable from a real
     trailing comment, so the string's own content past that point is
     dropped rather than preserved. Fails loudly if this ever changes, since
-    the three detectors above rely on this exact truncation behavior.
+    the detectors below rely on this exact truncation behavior.
     """
     assert _strip_comment("grep -qE 'foo #bar\\s+baz'") == "grep -qE 'foo"
 
@@ -1291,7 +1299,8 @@ def test_no_gnu_backslash_s_regex_extension(hook: Path) -> None:
     plugins/*/hooks/*.sh hits and needs no allowlist. The bare-jq and
     inline-matcher checks stay on _MAIN_HOOKS because each has unresolved
     plugin-side hits requiring adjudication first. See `_all_hook_files`
-    for why only this detector also sweeps each directory's _lib.sh. Ids
+    for why this detector and the early-exit-grep check also sweep each
+    directory's _lib.sh. Ids
     are repo-relative paths, not bare filenames, since every hooks
     directory has a same-named _lib.sh.
 
@@ -1309,7 +1318,7 @@ def test_no_gnu_backslash_s_regex_extension(hook: Path) -> None:
 def test_backslash_s_detector_flags_code_not_comments(tmp_path: Path) -> None:
     """Meta-test for _live_backslash_s_hits: a bare `\\s` in code is flagged,
     and the same literal inside a full-line or same-line-trailing comment is
-    not, since all three Layer-1 detectors share _strip_comment.
+    not, since all four Layer-1 detectors share _strip_comment.
     """
     fixture = tmp_path / "fixture.sh"
     fixture.write_text(
@@ -1322,12 +1331,235 @@ def test_backslash_s_detector_flags_code_not_comments(tmp_path: Path) -> None:
     assert len(hits) == 1, f"expected exactly 1 fixture line flagged, got {hits!r}"
 
 
+# A single `|` (never `||`) feeding grep, optionally behind env assignments or
+# the _lib_capped / _lib_capped_for N / `command` wrappers.
+_PIPE_INTO_GREP_PREFIX = (
+    r"(?<![|\\])\|(?!\|)\s*"
+    r"(?:(?:[A-Za-z_][A-Za-z0-9_]*=\S*|_lib_capped|_lib_capped_for\s+[0-9]+|command)\s+)*"
+    r"(?:grep|egrep|fgrep)\s+"
+)
+# A grep option that stops reading at its first match or file: a `q`, `l`,
+# `L`, or `m` in a short-flag bundle, or the matching long option spelled out.
+_EARLY_EXIT_GREP_OPTION = (
+    r"(?:-(?!-)[A-Za-z0-9]*[qlLm][A-Za-z0-9]*"
+    r"|--(?:quiet|silent|files-with-matches|files-without-match|max-count))"
+    r"(?=[=\s]|$)"
+)
+_PIPE_INTO_EARLY_EXIT_GREP_RE = re.compile(
+    _PIPE_INTO_GREP_PREFIX + r"(?:-\S*\s+)*" + _EARLY_EXIT_GREP_OPTION
+)
+
+
+def _pipe_into_early_exit_grep_hits(hook: Path) -> list[str]:
+    """Return non-comment shell statements that pipe into a grep that can
+    exit at its first match (`-q`, `-l`, `-L`, `-m`, or their long forms).
+
+    Line-based on `_strip_comment` output. A code line ending in a single
+    `|` or in `\\` is joined with the following line first, so a pipe split
+    across lines is scanned as one statement. Each hit is the statement's
+    physical lines, stripped and joined by a space.
+
+    Blind spot: only a `|` followed directly by grep, optionally behind an
+    env assignment, `_lib_capped`, `_lib_capped_for N`, or `command`, is
+    caught.
+    - Misses grep behind another wrapper (`timeout`, `env`, `xargs`, a
+      function that forwards to grep).
+    - Misses grep spelled `/usr/bin/grep` or `\\grep`, or grouped as
+      `{ grep -q ...; }`.
+    - Misses an early-exit flag held in a variable, placed after the
+      pattern, or spelled as a GNU long-option abbreviation (`--quie`).
+    - Misses other early-exit readers (`head -1`, `sed q`, `awk ... exit`).
+    """
+    hits = []
+    statement_lines: list[str] = []
+    statement_code = ""
+    for line in hook.read_text().splitlines():
+        code = _strip_comment(line).rstrip()
+        if not code.strip():
+            continue
+        statement_lines.append(line.strip())
+        if code.endswith("\\"):
+            statement_code += code[:-1] + " "
+            continue
+        if code.endswith("|") and not code.endswith("||"):
+            statement_code += code + " "
+            continue
+        statement_code += code
+        if _PIPE_INTO_EARLY_EXIT_GREP_RE.search(statement_code):
+            hits.append(" ".join(statement_lines))
+        statement_lines, statement_code = [], ""
+    if _PIPE_INTO_EARLY_EXIT_GREP_RE.search(statement_code):
+        hits.append(" ".join(statement_lines))
+    return hits
+
+
+# _config.sh is not in ALL_HOOKS_AND_LIBS (see `_all_hook_files`), but every
+# hook sources it, so the early-exit-grep test sweeps it as well.
+_PIPE_LINT_FILES = [*ALL_HOOKS_AND_LIBS, _MAIN_HOOKS_DIR / "_config.sh"]
+
+
+@pytest.mark.parametrize(
+    "hook",
+    _PIPE_LINT_FILES,
+    ids=[str(h.relative_to(_REPO_ROOT)) for h in _PIPE_LINT_FILES],
+)
+def test_no_pipe_into_early_exit_grep(hook: Path) -> None:
+    """No hook, _lib.sh, or _config.sh pipes into a grep that can exit at its
+    first match (`-q`, `-l`, `-L`, `-m`, or their long forms).
+
+    Under `set -o pipefail`, grep exiting at its first match while the writer
+    still writes a large multi-line input fails the pipeline with 141. An
+    `if`, `||`, or `&&` reads that as no match, so a match-to-deny gate fails
+    open. Feed grep a here-string instead: `grep -q PATTERN <<< "$var"`.
+
+    There is no exemption dict: a site bounded to one line today loses that
+    bound the day a guard around it is edited, so every site uses the
+    here-string form. Ids are repo-relative paths, since every hooks
+    directory has a same-named _lib.sh. See _pipe_into_early_exit_grep_hits
+    for the detector's blind spot.
+    """
+    hits = _pipe_into_early_exit_grep_hits(hook)
+    assert not hits, (
+        f"{hook.relative_to(_REPO_ROOT)}: pipe into an early-exit grep -- "
+        f"read a here-string instead (`grep -q PATTERN <<< \"$var\"`). "
+        f"When the writer is a command that must stream, capture its output "
+        f"into a variable first:\n" + "\n".join(hits)
+    )
+
+
+# Each snippet must produce exactly one hit.
+_EARLY_EXIT_GREP_FLAGGED_SHAPES = {
+    "grep-q": "printf '%s\\n' \"$x\" | grep -q foo\n",
+    "grep-qE": "printf '%s\\n' \"$x\" | grep -qE 'foo|bar'\n",
+    "grep-Eq": "printf '%s\\n' \"$x\" | grep -Eq 'foo|bar'\n",
+    "grep-E-separate-q": "printf '%s\\n' \"$x\" | grep -E -q 'foo|bar'\n",
+    "grep-long-quiet": "printf '%s\\n' \"$x\" | grep --quiet foo\n",
+    "grep-long-silent": "printf '%s\\n' \"$x\" | grep --silent foo\n",
+    "egrep-q": "printf '%s\\n' \"$x\" | egrep -q foo\n",
+    "fgrep-q": "printf '%s\\n' \"$x\" | fgrep -q foo\n",
+    "grep-l": "printf '%s\\n' \"$x\" | grep -l foo\n",
+    "grep-L": "printf '%s\\n' \"$x\" | grep -L foo\n",
+    "grep-m1": "printf '%s\\n' \"$x\" | grep -m1 foo\n",
+    "grep-long-max-count": "printf '%s\\n' \"$x\" | grep --max-count=1 foo\n",
+    "grep-long-files-with-matches": "printf '%s\\n' \"$x\" | grep --files-with-matches foo\n",
+    "grep-long-files-without-match": "printf '%s\\n' \"$x\" | grep --files-without-match foo\n",
+    "three-line-pipe-continuation-chain": (
+        "printf '%s\\n' \"$x\" |\n"
+        "  tr a b |\n"
+        "  grep -q foo\n"
+    ),
+    "lib-capped-prefix": "printf '%s\\n' \"$x\" | _lib_capped grep -qiE 'foo|bar'\n",
+    "lib-capped-for-prefix": "printf '%s\\n' \"$x\" | _lib_capped_for 5 grep -q foo\n",
+    "env-assignment-prefix": "printf '%s\\n' \"$x\" | LC_ALL=C grep -Eq 'foo|bar'\n",
+    "continuation-line-starting-with-pipe": (
+        "printf '%s\\n' \"$x\" \\\n"
+        "  | grep -q foo\n"
+    ),
+    "line-ending-in-pipe-grep-on-next-line": (
+        "printf '%s\\n' \"$x\" |\n"
+        "  grep -q foo\n"
+    ),
+    "non-printf-writer": "git diff --name-only | grep -qF foo\n",
+    "backslash-continuation-after-pipe": (
+        "printf '%s\\n' \"$x\" | \\\n"
+        "  grep -q foo\n"
+    ),
+    "command-prefix": "printf '%s\\n' \"$x\" | command grep -q foo\n",
+    "stacked-prefixes": "printf '%s\\n' \"$x\" | LC_ALL=C _lib_capped grep -q foo\n",
+}
+
+# Each snippet must produce no hit.
+_EARLY_EXIT_GREP_UNFLAGGED_SHAPES = {
+    "here-string-grep-q": "grep -q foo <<< \"$x\"\n",
+    "here-string-lib-capped-grep-qiE": "_lib_capped grep -qiE 'foo|bar' <<< \"$x\"\n",
+    "or-chain-grep-q": "false || grep -q x f\n",
+    "pipe-into-grep-c": "printf '%s\\n' \"$x\" | grep -c foo\n",
+    "pipe-into-grep-o": "printf '%s\\n' \"$x\" | grep -o foo\n",
+    "pipe-into-grep-line-buffered": "printf '%s\\n' \"$x\" | grep --line-buffered foo\n",
+    "quiet-letters-only-in-pattern": "printf '%s\\n' \"$x\" | grep -E 'mail|local'\n",
+    "full-line-comment": "# printf '%s\\n' \"$x\" | grep -q foo\n",
+    "same-line-trailing-comment": "printf '%s\\n' \"$x\" | grep -c foo # was | grep -q foo\n",
+    "line-ending-in-or-then-grep-on-next-line": (
+        "cmd ||\n"
+        "  grep -q foo file\n"
+    ),
+    "grep-flags-without-pipe": "grep -qFx -e \"$v\" -- \"$f\"\n",
+}
+
+# Each snippet is a shape the detector documents as a blind spot.
+_EARLY_EXIT_GREP_BLIND_SPOT_SHAPES = {
+    "timeout-wrapper": "printf '%s\\n' \"$x\" | timeout 5 grep -q foo\n",
+    "env-command-wrapper": "printf '%s\\n' \"$x\" | env X=1 grep -q foo\n",
+    "xargs-wrapper": "printf '%s\\n' \"$x\" | xargs grep -ql foo\n",
+    "absolute-path-grep": "printf '%s\\n' \"$x\" | /usr/bin/grep -q foo\n",
+    "backslash-escaped-grep": "printf '%s\\n' \"$x\" | \\grep -q foo\n",
+    "brace-group": "printf '%s\\n' \"$x\" | { grep -q foo; }\n",
+    "quiet-flag-in-variable": "printf '%s\\n' \"$x\" | grep $quiet_flag foo\n",
+    "flags-after-pattern": "printf '%s\\n' \"$x\" | grep \"$pattern\" -q\n",
+    "gnu-long-option-abbreviation": "printf '%s\\n' \"$x\" | grep --quie foo\n",
+    "other-wrapper-function": "printf '%s\\n' \"$x\" | _hook_grep_wrapper -q foo\n",
+    "head-early-exit-reader": "printf '%s\\n' \"$x\" | head -1\n",
+}
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    list(_EARLY_EXIT_GREP_FLAGGED_SHAPES.values()),
+    ids=list(_EARLY_EXIT_GREP_FLAGGED_SHAPES),
+)
+def test_early_exit_grep_detector_flags_pipe_shapes(tmp_path: Path, snippet: str) -> None:
+    """Meta-test for _pipe_into_early_exit_grep_hits: each pipe-into-grep
+    shape the detector claims to catch is flagged exactly once -- every
+    early-exit option spelling, grep/egrep/fgrep, each wrapper prefix, a
+    pipe split across lines, and a non-printf writer.
+    """
+    fixture = tmp_path / "fixture.sh"
+    fixture.write_text("#!/bin/bash\n" + snippet)
+    hits = _pipe_into_early_exit_grep_hits(fixture)
+    assert len(hits) == 1, f"expected exactly 1 hit for {snippet!r}, got {hits!r}"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    list(_EARLY_EXIT_GREP_UNFLAGGED_SHAPES.values()),
+    ids=list(_EARLY_EXIT_GREP_UNFLAGGED_SHAPES),
+)
+def test_early_exit_grep_detector_ignores_safe_shapes(tmp_path: Path, snippet: str) -> None:
+    """Negative controls for _pipe_into_early_exit_grep_hits: a here-string
+    read, a `||` chain, a grep that reads to end of input, flag letters that
+    sit in the pattern, and a pipe mentioned only in a comment stay
+    unflagged, proving the detector keys on a single pipe feeding an
+    early-exit option rather than on `grep -q` alone.
+    """
+    fixture = tmp_path / "fixture.sh"
+    fixture.write_text("#!/bin/bash\n" + snippet)
+    hits = _pipe_into_early_exit_grep_hits(fixture)
+    assert hits == [], f"expected no hit for {snippet!r}, got {hits!r}"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    list(_EARLY_EXIT_GREP_BLIND_SPOT_SHAPES.values()),
+    ids=list(_EARLY_EXIT_GREP_BLIND_SPOT_SHAPES),
+)
+def test_early_exit_grep_detector_blind_spots_stay_unflagged(tmp_path: Path, snippet: str) -> None:
+    """Pins _pipe_into_early_exit_grep_hits's documented blind spots as
+    executable: each shape reaches an early-exit reader without a `|`
+    directly followed by grep and its option, so it stays unflagged. Fails
+    loudly if the detector ever widens to cover one, prompting the
+    docstring to change with it.
+    """
+    fixture = tmp_path / "fixture.sh"
+    fixture.write_text("#!/bin/bash\n" + snippet)
+    assert _pipe_into_early_exit_grep_hits(fixture) == []
+
+
 def test_all_hooks_and_libs_includes_every_lib_sh() -> None:
     """ALL_HOOKS_AND_LIBS must contain exactly one _lib.sh per hooks
     directory, on top of every entry in ALL_HOOKS. Fails if a hooks
     directory is added, renamed, or loses its _lib.sh, catching what
-    would otherwise be a silent drop in the backslash-s detector's
-    parametrized case count.
+    would otherwise be a silent drop in the backslash-s and early-exit-grep
+    detectors' parametrized case counts.
     """
     expected_lib_count = 1 + len(_PLUGIN_HOOKS_DIRS)  # main dir + each plugin
     lib_files = [h for h in ALL_HOOKS_AND_LIBS if h.name == "_lib.sh"]

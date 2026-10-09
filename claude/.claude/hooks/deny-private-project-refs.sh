@@ -784,11 +784,7 @@ fi
 # data — echoing either here would persist it into this session's transcript,
 # same reasoning deny-pii-in-commits.sh states for its own label-only rule.
 #
-# Here-string (`<<<`), not `printf | grep`: under this file's `set -uo
-# pipefail`, piping a large SCAN_TARGET into `grep -Eq` risks the first match
-# SIGPIPE-ing the printf side, and pipefail would then report the pipeline's
-# rightmost exit status — misreporting a clean match as a grep error. A
-# here-string has no pipe to SIGPIPE.
+# grep -q reads a here-string, never a pipe: see test_no_pipe_into_early_exit_grep in hooks/tests/test_hook_alignment.py.
 #
 # Fail closed on rc>=2 (a real grep engine error). This is stricter than the
 # tracker-ID scan above, whose `|| true` swallows any grep error and so fails
