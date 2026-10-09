@@ -5461,8 +5461,8 @@ class TestPlanItStep7FallbackToJudgment:
         )
 
 
-# plan-it Step 7 push bullets whose loss would push without an answer, push when the
-# remote has more than one destination, or push a commit other than the one named.
+# plan-it Step 7 push bullets that decide whether a push happens, where it goes,
+# and what it sends.
 _PINNED_PLAN_IT_PUSH_CONSENT_CLAUSES: dict[str, str] = {
     "exactly_one_push_url": (
         "Ask only when `git remote get-url --push --all <remote>` prints exactly "
