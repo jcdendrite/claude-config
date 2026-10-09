@@ -33,7 +33,7 @@ FILE_PATH=$(printf '%s\n' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/d
 BASENAME=$(basename "$FILE_PATH")
 
 # Only consume tokens for Supabase migrations with a 14-digit UTC prefix.
-if ! printf '%s\n' "$FILE_PATH" | grep -qE 'supabase/migrations/[0-9]{14}_[^/]+\.sql$' 2>/dev/null; then
+if ! grep -qE 'supabase/migrations/[0-9]{14}_[^/]+\.sql$' 2>/dev/null <<< "$FILE_PATH"; then
   exit 0
 fi
 

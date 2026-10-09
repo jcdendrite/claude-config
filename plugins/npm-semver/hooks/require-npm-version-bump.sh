@@ -124,7 +124,7 @@ fi
 # at the start of the command OR after a shell separator (`&&`, `||`, `;`,
 # `|`), so chained forms like `git add . && git commit` are also caught. The
 # trailing `([[:space:]]|$)` ensures we don't match `git commit-tree`.
-if ! printf '%s\n' "$COMMAND" | grep -qE '(^|&&?|;|\|\|?)[[:space:]]*git[[:space:]]+commit([[:space:]]|$)'; then
+if ! grep -qE '(^|&&?|;|\|\|?)[[:space:]]*git[[:space:]]+commit([[:space:]]|$)' <<< "$COMMAND"; then
   exit 0
 fi
 
