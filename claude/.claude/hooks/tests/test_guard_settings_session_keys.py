@@ -241,8 +241,8 @@ class TestGuardSettingsSessionKeys:
     def test_guarded_key_change_with_large_staged_path_list_denied(self, settings_repo):
         """Required regression test: a guarded-key change is still denied when
         settings.json sorts first in a staged name list above pipe capacity.
-        The mechanism is in the LARGE_MULTILINE_TAIL comment in
-        tests/helpers.py."""
+        The mechanism is the one in the LARGE_MULTILINE_TAIL comment in
+        tests/helpers.py, with git's staged name list as the writer."""
         repo, settings_file = settings_repo
         stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
         blob_sha = subprocess.run(
@@ -268,7 +268,7 @@ class TestGuardSettingsSessionKeys:
         assert names_changed_keys(reason) == {"model"}
 
     def test_git_failure_on_staged_name_list_allows(self, settings_repo, tmp_path):
-        """Required regression test (fail-open pin): a nonzero `git diff --cached` exit allows the commit
+        """Fail-open pin: a nonzero `git diff --cached` exit allows the commit
         without scanning the partial name list it printed, even with a
         guarded-key change staged."""
         repo, settings_file = settings_repo

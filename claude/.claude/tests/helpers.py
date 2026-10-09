@@ -40,11 +40,14 @@ _LIB_SH = HOOKS_DIR / "_lib.sh"
 # A single unbroken line never triggers it, since `grep -q` reads the whole line first.
 # Few lines keep the per-fragment scans fast.
 # Do not use it on a path that reaches `_lib_mask_shell_quotes` (called by
-# `deny-invisible-commit-content.sh`): its quadratic awk scan exceeds its 5 s cap at this size.
+# `deny-invisible-commit-content.sh`): its quadratic awk scan lands at or near its 5 s cap at this size.
+# Where it lands depends on awk and load.
 # Use MASK_SAFE_MULTILINE_TAIL there instead.
 LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
 
-# About 80 KB in 8 lines: above the pipe capacity, yet small enough that `_lib_mask_shell_quotes` finishes within its 5 s cap.
+# About 80 KB in 8 lines: small enough that `_lib_mask_shell_quotes` finishes within its 5 s cap.
+# It is a control input for benign commands that allow with or without the SIGPIPE bug, not a regression trigger.
+# The size keeps the mask scan exercised at scale while staying under that cap.
 MASK_SAFE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 8)
 
 

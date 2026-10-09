@@ -359,9 +359,9 @@ class TestDenyInvisibleCommitContent:
         assert "could not evaluate" not in reason
 
     def test_large_multiline_commit_without_wrapper_token_allowed(self):
-        """Negative twin of the test above: a benign multi-line commit command
-        above pipe capacity with no wrapper token is allowed. This path
-        reaches `_lib_mask_shell_quotes`, so it uses MASK_SAFE_MULTILINE_TAIL
+        """Control for the test above: a benign large multi-line commit command
+        with no wrapper token is allowed, with or without the SIGPIPE bug. This
+        path reaches `_lib_mask_shell_quotes`, so it uses MASK_SAFE_MULTILINE_TAIL
         instead of LARGE_MULTILINE_TAIL."""
         assert run_hook(
             DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
