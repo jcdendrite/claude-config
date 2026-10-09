@@ -73,6 +73,9 @@
 #   without also touching `install.sh` gets no reminder — that is the
 #   standing, unclosed gap.
 
+# Every grep -q in this file reads a here-string, never a pipe. Under
+# pipefail, grep exiting at its first match while printf still writes a large
+# multi-line input fails the pipeline, which reads as no match.
 set -uo pipefail
 
 DENY_GATE_LABEL="stow-reminder"
@@ -174,7 +177,7 @@ if _lib_command_invokes_tool_subcmd "$COMMAND" gh pr edit; then
   IS_GH_PR_EDIT=1
 fi
 if [ "$IS_GH_PR_EDIT" -eq 1 ]; then
-  if ! printf '%s\n' "$COMMAND" | grep -qE '(--body([[:space:]=]|$)|--body-file|-F([[:space:]=]|$)|--template|-T([[:space:]=]|$))'; then
+  if ! grep -qE '(--body([[:space:]=]|$)|--body-file|-F([[:space:]=]|$)|--template|-T([[:space:]=]|$))' <<< "$COMMAND"; then
     exit 0
   fi
 fi
@@ -212,13 +215,13 @@ fi
 
 # `--fill` family: body comes from commit messages. Add those to the
 # scan target so a properly-worded commit message satisfies the gate.
-if printf '%s\n' "$COMMAND" | grep -qE '(--fill(-first|-verbose)?|[[:space:]]-f([[:space:]]|$))'; then
+if grep -qE '(--fill(-first|-verbose)?|[[:space:]]-f([[:space:]]|$))' <<< "$COMMAND"; then
   COMMIT_MESSAGES=$(cd "$REPO_ROOT" && git log --format='%B' main..HEAD 2>/dev/null || true)
   SCAN_TARGET+=$'\n'"$COMMIT_MESSAGES"
 fi
 
 # Marker check: case-insensitive substring match for install.sh or stow.
-if printf '%s' "$SCAN_TARGET" | grep -qiE '(install\.sh|stow)'; then
+if grep -qiE '(install\.sh|stow)' <<< "$SCAN_TARGET"; then
   exit 0
 fi
 

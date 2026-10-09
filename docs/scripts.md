@@ -184,11 +184,11 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
 - **`review-pr-check-attribution.sh`** — mechanical attribution check `/review-pr`'s synthesize-and-record step runs over the findings-body file and the mode (`checkout`/`diff-only`) before the deliver step posts it. Exits 0 when the attribution prefix, the attribution trailer, and (in `diff-only` mode) the disclosure line are all present, 1 on any missing piece, and 2 on a usage error. `marker.sh`'s `write review-pr` arm calls it before writing the completion marker and refuses the write on a non-zero exit. The script's usage text owns the rest.
 
-- **`ci-watch.sh`** — launches a background CI-status watch for one PR and reports a single machine-parseable terminal result line. Invoked by `/ready-for-review`'s "CI watch (out-of-band)" step via `Bash` `run_in_background`, once the PR number is known. Never run it in the foreground for a real PR — `gh pr checks --watch` blocks until every check reaches a terminal state, which can take hours:
+- **`ci-watch.sh`** — launches a background CI-status watch for one PR and reports a single machine-parseable terminal result line. Invoked by `/ready-for-review`'s "CI watch (out-of-band)" step via `Bash` `run_in_background`, once the branch's commits are pushed to the PR. Never run it in the foreground for a real PR — `gh pr checks --watch` blocks until every check reaches a terminal state, which can take hours:
 
   - Prints `LAUNCH_SHA: <oid>` once at start.
   - Reports exactly one terminal `CI_RESULT` line:
-    - `CI_RESULT: none` — no checks were ever configured.
+    - `CI_RESULT: none` — no checks had registered when `gh` last polled.
     - `CI_RESULT: error <reason>`
     - `CI_RESULT: checks <json>` — the `bucket` field per check is the pass/fail source of truth.
   - Reads the optional `CI_CHECKS_GH_TOKEN` environment variable and, when set, uses it (as `GH_TOKEN`) for the two `gh pr checks` calls only — unless the cross-host mismatch gate below withholds it first.

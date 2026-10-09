@@ -35,6 +35,9 @@
 #   3.2 the `-f` test passes for them inside the reading loop. Accepted debt
 #   shared with deny-pii-in-commits.sh and deny-private-project-refs.sh.
 
+# Every grep -q in this file reads a here-string, never a pipe. Under
+# pipefail, grep exiting at its first match while printf still writes a large
+# multi-line input fails the pipeline, which reads as no match.
 set -uo pipefail
 
 DENY_GATE_LABEL="backtick-escape"
@@ -137,7 +140,7 @@ fi
 # The literal two-character sequence backslash + backtick is the only
 # thing scanned. -F means fixed-string (no regex interpretation), so
 # the backslash is treated literally and not as a regex escape.
-if printf '%s' "$SCAN_TARGET" | grep -qF -- '\`'; then
+if grep -qF -- '\`' <<< "$SCAN_TARGET"; then
   emit_deny "PR body — it contains literal backslash-backtick sequences (\\\`) that break GitHub markdown code-span rendering. Fix: if using a <<'EOF' heredoc (single-quoted delimiter), write backticks literally — do NOT write \\\`; the single-quote suppresses all expansion so the backslash is unnecessary and harmful. If using an unquoted <<EOF heredoc or double-quoted --body \"...\", switch to <<'EOF' so backticks need no escaping. See ~/.claude/skills/ready-for-review/SKILL.md 'Backtick hygiene' subsection for the full rationale."
   exit 0
 fi
