@@ -988,7 +988,7 @@ _HELPER_PROC_FIXTURES: tuple[tuple[str, str], ...] = (
      "letting an unscanned PR body bypass the backtick-escape scan."),
 )
 
-# The single deny-encode preamble (_lib.sh's _lib_emit_deny jq-degrade path),
+# A frozen, older deny-encode preamble (_lib.sh's _lib_emit_deny jq-degrade path),
 # wrapping a parse-failure reason to prove deny-encode's cascade precedence
 # over an input-parse fragment embedded in the same message.
 _DENY_ENCODE_FIXTURE = (
@@ -1086,10 +1086,13 @@ _HELPER_PROC_CURRENT_WORDING_FIXTURES: tuple[tuple[str, str], ...] = (
 _DENY_ENCODE_CURRENT_WORDING_FIXTURE = (
     "Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed "
     "out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an "
-    "interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, "
-    "which runs outside the tool-call path these hooks gate; in a headless or non-interactive "
-    "run, ensure jq is installed in the execution environment beforehand. Underlying gate "
-    "reason follows.\nBlocked by code-review gate: could not parse tool-input JSON.\n"
+    "interactive session, ask the user to install jq (and GNU coreutils timeout) in a "
+    "separate terminal, which runs outside the tool-call path these hooks gate; in a headless "
+    "or non-interactive run, ensure jq is installed in the execution environment beforehand. "
+    "A timeout or gtimeout that rejects -k (GNU coreutils, or BusyBox 1.35.0 or newer, "
+    'accepts it) causes the same block; see docs/hooks.md "Gate deadlock recovery" in the '
+    "claude-config repository. Underlying gate reason follows."
+    "\nBlocked by code-review gate: could not parse tool-input JSON.\n"
 )
 
 # _lib.sh's own field-shift deny is a deliberate 0x1f-injection bypass
