@@ -41,7 +41,11 @@ _LIB_SH = HOOKS_DIR / "_lib.sh"
 # Few lines keep the per-fragment scans fast.
 # Do not use it on a path that reaches `_lib_mask_shell_quotes` (called by
 # `deny-invisible-commit-content.sh`): its quadratic awk scan exceeds its 5 s cap at this size.
+# Use MASK_SAFE_MULTILINE_TAIL there instead.
 LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
+
+# About 80 KB in 8 lines: above the pipe capacity, yet small enough that `_lib_mask_shell_quotes` finishes within its 5 s cap.
+MASK_SAFE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 8)
 
 
 def _sourced_value(var_name: str) -> str:

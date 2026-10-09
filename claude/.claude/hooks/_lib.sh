@@ -3416,7 +3416,7 @@ _lib_has_unsafe_ssh_dir_reference() {
     esac
     base="${candidate%/}"
     base="${base##*/}"
-    if ! printf '%s' "$base" | grep -qEi "$_LIB_SSH_SAFE_BASENAME_REGEX"; then
+    if ! grep -qEi "$_LIB_SSH_SAFE_BASENAME_REGEX" <<< "$base"; then
       return 0
     fi
   done < <(printf '%s' "$text" | grep -oEi '\.ssh([._-][A-Za-z0-9_.-]*)?/[^[:space:]"'"'"']+')

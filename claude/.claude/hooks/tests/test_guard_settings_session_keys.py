@@ -1,6 +1,7 @@
 """Tests for guard-settings-session-keys.sh."""
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -235,6 +236,64 @@ class TestGuardSettingsSessionKeys:
                 cwd=repo,
             )
             == "deny"
+        )
+
+    def test_guarded_key_change_with_large_staged_path_list_denied(self, settings_repo):
+        """Required regression test: a guarded-key change is still denied when
+        settings.json sorts first in a staged name list above pipe capacity.
+        The mechanism is in the LARGE_MULTILINE_TAIL comment in
+        tests/helpers.py."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        blob_sha = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=repo, input="filler\n", capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        # The list must exceed the pipe capacity plus one grep read so the pipe form misses reliably.
+        # 3,000 paths of 70 bytes each sort after "claude/" and total about 210 KB.
+        index_entries = "".join(
+            f"100644 {blob_sha}\tzz/{path_number:05d}-{'p' * 60}\n" for path_number in range(3_000)
+        )
+        subprocess.run(
+            ["git", "update-index", "--add", "--index-info"],
+            cwd=repo, input=index_entries, text=True, check=True,
+        )
+
+        reason = run_hook_reason(
+            GUARD_SETTINGS_SESSION_KEYS_HOOK,
+            bash_input("git commit -m 'update settings'"),
+            cwd=repo,
+        )
+
+        assert names_changed_keys(reason) == {"model"}
+
+    def test_git_failure_on_staged_name_list_allows(self, settings_repo, tmp_path):
+        """Required regression test (fail-open pin): a nonzero `git diff --cached` exit allows the commit
+        without scanning the partial name list it printed, even with a
+        guarded-key change staged."""
+        repo, settings_file = settings_repo
+        stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
+        real_git = shutil.which("git")
+        if not real_git:
+            pytest.skip("git not found in PATH")
+        shim_dir = tmp_path / "failing-diff-cached-git"
+        shim_dir.mkdir()
+        shim = shim_dir / "git"
+        shim.write_text(
+            "#!/bin/bash\n"
+            'for arg in "$@"; do [ "$arg" = "--cached" ] && { echo claude/.claude/settings.json; exit 1; }; done\n'
+            f'exec "{real_git}" "$@"\n'
+        )
+        shim.chmod(0o755)
+
+        assert (
+            run_hook(
+                GUARD_SETTINGS_SESSION_KEYS_HOOK,
+                bash_input("git commit -m 'update settings'"),
+                cwd=repo,
+                extra_env={"PATH": f"{shim_dir}:{os.environ['PATH']}"},
+            )
+            == "allow"
         )
 
     def test_denies_against_origin_main_not_local_main_when_diverged(self, settings_repo):

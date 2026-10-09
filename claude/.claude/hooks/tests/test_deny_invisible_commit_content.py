@@ -14,7 +14,16 @@ import shutil
 import subprocess
 
 import pytest
-from helpers import HOOKS_DIR, bash_input, build_path_without, read_input, run_hook, run_hook_reason
+from helpers import (
+    HOOKS_DIR,
+    LARGE_MULTILINE_TAIL,
+    MASK_SAFE_MULTILINE_TAIL,
+    bash_input,
+    build_path_without,
+    read_input,
+    run_hook,
+    run_hook_reason,
+)
 
 DENY_INVISIBLE_COMMIT_CONTENT_HOOK = HOOKS_DIR / "deny-invisible-commit-content.sh"
 
@@ -335,6 +344,29 @@ class TestDenyInvisibleCommitContent:
         is already covered by test_bash_c_wrapped_chained_add_denied and
         test_leading_clean_commit_then_wrapped_add_and_commit_denied above."""
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "deny"
+
+    def test_wrapper_token_on_first_line_of_large_multiline_commit_named_in_deny(self):
+        """Required regression test: a wrapper token on the first line of a
+        multi-line commit command above pipe capacity is named in the deny,
+        not reported as an evaluation failure. The mechanism is in the
+        LARGE_MULTILINE_TAIL comment in tests/helpers.py."""
+        reason = run_hook_reason(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("xargs true && git commit -m x" + LARGE_MULTILINE_TAIL),
+        )
+        assert reason is not None
+        assert "execution-wrapper token" in reason
+        assert "could not evaluate" not in reason
+
+    def test_large_multiline_commit_without_wrapper_token_allowed(self):
+        """Negative twin of the test above: a benign multi-line commit command
+        above pipe capacity with no wrapper token is allowed. This path
+        reaches `_lib_mask_shell_quotes`, so it uses MASK_SAFE_MULTILINE_TAIL
+        instead of LARGE_MULTILINE_TAIL."""
+        assert run_hook(
+            DENY_INVISIBLE_COMMIT_CONTENT_HOOK,
+            bash_input("git commit -m x" + MASK_SAFE_MULTILINE_TAIL),
+        ) == "allow"
 
     def test_commit_message_mentioning_wrapper_token_as_text_denied(self):
         """Accepted over-deny cost of the wrapper/commit co-occurrence

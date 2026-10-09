@@ -657,6 +657,15 @@ class TestEnforceMarkerScriptShape:
         cmd = "~/.claude/scripts/../scripts/marker.sh activate code-review"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
+    def test_traversal_on_first_line_of_large_multiline_marker_command_denied(self):
+        """Required regression test: a `..` path segment on the first line of
+        a multi-line marker command above pipe capacity is still denied. The
+        mechanism is in the LARGE_MULTILINE_TAIL comment in tests/helpers.py."""
+        cmd = "~/.claude/scripts/../scripts/marker.sh write code-review" + LARGE_MULTILINE_TAIL
+        reason = run_hook_reason(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd))
+        assert reason is not None
+        assert "path traversal" in reason
+
 
 class TestDevNullRedirectAllowed:
     """Trailing 2>/dev/null on an otherwise-valid shape is allowed.

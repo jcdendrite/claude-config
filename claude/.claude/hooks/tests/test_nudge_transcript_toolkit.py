@@ -16,6 +16,7 @@ from pathlib import Path
 
 from helpers import (
     HOOKS_DIR,
+    LARGE_MULTILINE_TAIL,
     REPO_ROOT,
     _build_subprocess_env,
     build_path_without,
@@ -247,6 +248,16 @@ class TestFireSideVariety:
         leaves the full glob shape as one contiguous literal substring."""
         result = _run_hook(write_input("/tmp/scan_transcripts.py", content=STRING_CONCAT_GLOB))
         assert _fired(result)
+
+    def test_glob_on_first_line_of_large_multiline_write_nudges(self, tmp_path):
+        """Required regression test: a transcript glob on the first line of
+        written content above pipe capacity still triggers the nudge. The
+        mechanism is in the LARGE_MULTILINE_TAIL comment in tests/helpers.py."""
+        result = _run_hook(
+            write_input(str(tmp_path / "scan_transcripts.py"), content=INCIDENT_GLOB + LARGE_MULTILINE_TAIL)
+        )
+        assert _fired(result)
+        assert "transcript-analysis.py" in _additional_context(result)
 
 
 class TestJqAbsentFailsOpen:

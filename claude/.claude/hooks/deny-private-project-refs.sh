@@ -355,11 +355,9 @@ while IFS= read -r fragment; do
       # fail-toward-scan: a false positive costs one redundant scan, a
       # false negative ships a leak. `[^A-Za-z]` is the trailing method
       # boundary (grep-portable substitute for `\b`).
-      if printf '%s\n' "$COMMAND_UNQUOTED" \
-          | grep -qiE '((-X|--method)(=|[[:space:]]+)|-X)(POST|PATCH|PUT|DELETE)([^A-Za-z]|$)'; then
+      if grep -qiE '((-X|--method)(=|[[:space:]]+)|-X)(POST|PATCH|PUT|DELETE)([^A-Za-z]|$)' <<< "$COMMAND_UNQUOTED"; then
         IS_GH_API=1
-      elif printf '%s\n' "$COMMAND_UNQUOTED" \
-          | grep -qE '(^|[[:space:]])(-f|-F|--field|--raw-field|--input)(=|[[:space:]]+)'; then
+      elif grep -qE '(^|[[:space:]])(-f|-F|--field|--raw-field|--input)(=|[[:space:]]+)' <<< "$COMMAND_UNQUOTED"; then
         IS_GH_API=1
       fi
       ;;
@@ -526,7 +524,7 @@ extract_gh_api_field_at_paths() {
 # inside a string-quoted region (e.g. --body "use && to chain") would
 # still trigger the hint (known false positive).
 chain_split_hint_if_chained() {
-  if printf '%s' "$1" | grep -qE '&&|\|\|'; then
+  if grep -qE '&&|\|\|' <<< "$1"; then
     # $1 is used as a grep predicate only — its text is not echoed in
     # the hint because the command content is not needed for the split
     # guidance.

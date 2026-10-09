@@ -7,6 +7,7 @@ import subprocess
 import pytest
 from helpers import (
     HOOKS_DIR,
+    LARGE_MULTILINE_TAIL,
     bash_input,
     build_path_without,
     edit_input,
@@ -84,6 +85,18 @@ class TestDenyCredentialBashReads:
         bypass valve." Pinned so a future edit reverting to a
         case-sensitive grep doesn't reopen this silently."""
         assert run_hook(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home) == "deny"
+
+    def test_credential_path_on_first_line_of_large_multiline_command_denied(self, isolated_home):
+        """Required regression test: a credential path on the first line of a
+        multi-line command above pipe capacity is still denied. The mechanism
+        is in the LARGE_MULTILINE_TAIL comment in tests/helpers.py."""
+        reason = run_hook_reason(
+            DENY_CREDENTIAL_BASH_READS_HOOK,
+            bash_input("cat /foo/.env" + LARGE_MULTILINE_TAIL),
+            home=isolated_home,
+        )
+        assert reason is not None
+        assert "references a credential-shaped path" in reason
 
     # ------------------------------------------------------------------ #
     # Leading-dot credentials.json — closes a dotfile-boundary gap        #

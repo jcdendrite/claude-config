@@ -1003,7 +1003,7 @@ TRIMMED=$(printf '%s' "$COMMAND" | sed -E 's/^[[:space:]]+//')
 # before Stage 2 so that tilde-form traversal paths (e.g.
 # ~/.claude/scripts/../scripts/marker.sh) are caught even though Stage 2's
 # anchored regex does not match them.
-if printf '%s' "$TRIMMED" | grep -qE '(^|/)\.\.(/|$)'; then
+if grep -qE '(^|/)\.\.(/|$)' <<< "$TRIMMED"; then
   TRUNCATED=$(printf '%s' "$TRIMMED" | cut -c1-80)
   emit_deny "marker.sh invocation denied (path traversal '..' detected). Command (truncated): $TRUNCATED"
   exit 0
@@ -1032,7 +1032,7 @@ MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(writ
 # trailing `2>/dev/null`), no extra args after the skill name.
 VALID_PATTERN="^${MARKER_SHAPE}([[:space:]]+2>/dev/null)?[[:space:]]*\$"
 
-if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_PATTERN"; then
+if [[ "$TRIMMED" != *$'\n'* ]] && grep -qE "$VALID_PATTERN" <<< "$TRIMMED"; then
   exit 0
 fi
 
@@ -1062,7 +1062,7 @@ fi
 # class with no observed agent friction on the commit-chain form to justify it.
 VALID_CHAINED_COMMIT_PATTERN='^((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+(commit|(merge|rebase|cherry-pick|revert)[[:space:]]+--continue)([[:space:]]+[^&|;<>]*)?$'
 
-if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_CHAINED_COMMIT_PATTERN"; then
+if [[ "$TRIMMED" != *$'\n'* ]] && grep -qE "$VALID_CHAINED_COMMIT_PATTERN" <<< "$TRIMMED"; then
   exit 0
 fi
 
@@ -1081,7 +1081,7 @@ fi
 # this block above the traversal guard.
 VALID_MARKER_CHAIN_PATTERN="^${MARKER_SHAPE}([[:space:]]*&&[[:space:]]*${MARKER_SHAPE})+([[:space:]]+2>/dev/null)?[[:space:]]*\$"
 
-if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_MARKER_CHAIN_PATTERN"; then
+if [[ "$TRIMMED" != *$'\n'* ]] && grep -qE "$VALID_MARKER_CHAIN_PATTERN" <<< "$TRIMMED"; then
   exit 0
 fi
 
