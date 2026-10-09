@@ -741,7 +741,12 @@ class TestConfigKeyDocumentationCoverage:
         around some types and every default; the Promptable and Docs cells are
         not compared."""
         doc_lines = (REPO_ROOT / _CONFIG_FILE_DOC_REL_PATH).read_text().splitlines()
-        row_line = next(line for line in doc_lines if line.startswith(f"| `{key}` |"))
+        row_line = next(
+            (line for line in doc_lines if line.startswith(f"| `{key}` |")), None
+        )
+        assert row_line is not None, (
+            f"{_CONFIG_FILE_DOC_REL_PATH}: no table row for schema key {key!r}"
+        )
         # A row is `| key | type | default | resolution | promptable | docs |`; the
         # leading and trailing pipes yield empty first and last split cells.
         _, _, type_cell, default_cell, resolution_cell, *_ = (

@@ -6018,6 +6018,7 @@ class TestCodeReviewDeferInvariantRegionPin:
 
 _CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR = "DISPOSITION_RULE:code-review-fix-plan-pilot"
 _CODE_REVIEW_DEFER_CRITERIA_HEADING = "**DEFER criteria (closed list).**"
+_CODE_REVIEW_INVALID_DEFER_HEADING = "**Invalid DEFER rationales.**"
 
 # The whole fix-plan pilot region, pinned by exact equality so any edit to it is a visible
 # change to this constant. The mid-sentence "- " tokens are SKILL.md's verdict bullets after
@@ -6050,10 +6051,10 @@ _PINNED_FIX_PLAN_PILOT_CLAUSE = (
     "decides, this consult replaces the heavier-mechanism and "
     "contradiction consults. Relay the return verbatim and validate "
     "it by the list below; never re-litigate a row. Each stop names "
-    "every condition the return failed, and nothing re-dispatches "
-    "automatically: only the human may re-dispatch, with the new "
-    "return read under the same list, or send the payload findings "
-    "through the rest of this section instead. Write one tag on the "
+    "every condition the return failed. Nothing re-dispatches "
+    "automatically. Only the human may re-dispatch or send the "
+    "payload findings through the rest of this section instead. A "
+    "re-dispatch's return is read under the same list. Write one tag on the "
     "round's `Fix route:` line: `fix-plan: dispatched` when a valid "
     "table became the disposition, `fix-plan: fell-back` when the "
     "human chose the rest of this section, and `fix-plan: stopped` "
@@ -6127,9 +6128,9 @@ class TestCodeReviewFixPlanPilotRegionPin:
         )
 
     def test_cited_referents_still_exist(self) -> None:
-        """The region cites "the round-cap consult's first verdict" and "that
-        rule's endorsed follow-up" by position and name, and neither region is
-        otherwise pinned."""
+        """The region cites "the round-cap consult's first verdict", "that
+        rule's endorsed follow-up" and "invalid DEFER rationales below" by
+        position and name, and none of those is otherwise pinned."""
         skill_md_path = _skill_file("code-review")
         round_cap_text = _normalized_anchor_text(
             skill_md_path, "DISPOSITION_RULE:code-review-round-cap-consult-verdict"
@@ -6147,6 +6148,20 @@ class TestCodeReviewFixPlanPilotRegionPin:
         assert "**Endorsed" in heavier_mechanism_text, (
             f"{skill_md_path}: the heavier-mechanism region no longer has an "
             "`Endorsed` follow-up"
+        )
+        raw_text = skill_md_path.read_text()
+        pilot_end = raw_text.find(
+            f"<!-- {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} end -->"
+        )
+        invalid_defer_heading = raw_text.find(_CODE_REVIEW_INVALID_DEFER_HEADING)
+        assert -1 not in (pilot_end, invalid_defer_heading), (
+            f"{skill_md_path}: the region cites {_CODE_REVIEW_INVALID_DEFER_HEADING} "
+            "by name and needs it below the region; offsets found: "
+            f"{pilot_end}, {invalid_defer_heading}"
+        )
+        assert pilot_end < invalid_defer_heading, (
+            f"{skill_md_path}: {_CODE_REVIEW_INVALID_DEFER_HEADING} must fall "
+            "after the fix-plan pilot region"
         )
 
     def test_region_names_a_key_in_the_config_schema(self) -> None:

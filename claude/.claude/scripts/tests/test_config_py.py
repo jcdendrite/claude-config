@@ -86,14 +86,20 @@ class TestSchema:
             "test_selection_tracking": "false",
             "architect_fix_plan_pilot": "false",
         }
-        # The pilot is per-account: a widening to config-dir-or-home would make
-        # a home-level file enable it for every account.
+
+    def test_architect_fix_plan_pilot_resolves_per_account(self):
+        """A widening to config-dir-or-home would make a home-level file enable
+        the pilot for every account."""
         assert schema()["architect_fix_plan_pilot"].resolution == "config-dir"
-        # config-get.sh's exit-0 gate compares against the literal "false",
-        # which holds for a bool only.
+
+    def test_architect_fix_plan_pilot_is_bool_typed(self):
+        """config-get.sh's exit-0 gate compares against the literal "false",
+        which holds for a bool only."""
         assert schema()["architect_fix_plan_pilot"].type == "bool"
-        # A non-empty prompt_description would offer the pilot in install.sh's
-        # opt-in prompt to every consumer.
+
+    def test_architect_fix_plan_pilot_has_no_prompt_description(self):
+        """A non-empty prompt_description would offer the pilot in install.sh's
+        opt-in prompt to every consumer."""
         assert schema()["architect_fix_plan_pilot"].prompt_description == ""
 
     def test_legacy_filename_is_empty_iff_legacy_polarity_is_empty(self):

@@ -178,8 +178,7 @@ It runs two phases, always in this order:
      `legacy-polarity` are both empty. Scaffold therefore currently writes
      both keys' default rows. A scaffolded explicit row shadows the schema
      default, so changing such a key's `default` column needs a row
-     migration. A key with
-     a legacy-polarity
+     migration. A key with a legacy-polarity
      (`presence-enables`/`presence-disables`/`content-matches`) stays
      absent from the state file unless this run's import path already
      gave it an explicit row, so its legacy file remains a live override

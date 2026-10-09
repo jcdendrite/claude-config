@@ -2,7 +2,7 @@
 
 *2026-10-08.*
 
-`/code-review` today has the orchestrating session decide each round's
+By default, `/code-review` has the orchestrating session decide each round's
 dispositions, and consults `plan-architect` only on three narrow triggers:
 a heavier mechanism, a contradiction with an earlier fix, and the round cap.
 A new per-account config key, `architect_fix_plan_pilot`, default `false`,
@@ -81,9 +81,7 @@ consistently."
 There is no automatic re-dispatch, so there is no retry count to ground; no
 primary source supplies one. Each stop names the condition the return
 failed, which leaves the evidence for any later retry decision in the
-transcript. The cost is that a malformed return interrupts the human. The
-tag on the round's `Fix route:` line records the round's final outcome:
-`dispatched`, `fell-back` or `stopped`.
+transcript. The cost is that a malformed return interrupts the human.
 
 ## Placement
 
@@ -99,12 +97,13 @@ runtime by the config key.
 - **Respecting a loaded project layer's rules is not placement.** The
   dispatch carries the layer's path when Step 0.5 loaded one, and the
   barred-row item names the layer as a source beside the enforcement-invariant
-  rule. Without that, the control arm's orchestrator applies the layer's
-  rules and the pilot's architect never sees them, so the evaluation would
-  measure the architect plus a loosened rule. The dispatch also carries the
-  base file's DEFER criteria and invalid DEFER rationales, so the architect
-  applies the same rulebook the control arm's orchestrator applies from its
-  own skill body. The pilot stays in the base file.
+  rule. Without that, a key-off round's orchestrator applies the layer's
+  rules and the pilot's architect never sees them, so a comparison of key-on
+  against key-off rounds would measure the architect plus a loosened rule. The
+  dispatch also carries the base file's DEFER criteria and invalid DEFER
+  rationales, so the architect applies the same rulebook a key-off round's
+  orchestrator applies from its own skill body. The pilot stays in the base
+  file.
 
 ## Cost to every stow consumer
 
@@ -117,28 +116,27 @@ runtime by the config key.
   which may prompt for permission, because neither `config-get.sh` nor
   `review-ledger.sh` has a `permissions.allow` entry. `/code-review` already
   calls `review-ledger.sh` every round, so the call matches the current
-  permission posture. Only an observed exit 0 enables the pilot, so every
-  other outcome, a call with no exit code included, reads as off.
+  permission posture. `DISPOSITION_RULE:code-review-fix-plan-pilot` in
+  `claude-skills/skills/code-review/SKILL.md` states which outcome enables
+  the pilot.
 - **A per-account key.** An opted-in account runs the pilot in every repo it
-  reviews, while the evaluation counts this repository only.
+  reviews, while the key-on versus key-off comparison counts this repository
+  only.
 
 ## Ledger and observability
 
-The ledger schema is unchanged. The merged schema rejects `--decided-by` on
-ADDRESS and allows only `carry` on DEFER, so every table-decided row's
-`--rationale` starts with `fix-plan:`, the only per-row marker available
-without a script change every consumer would receive. A KEEP row is logged
-`SETTLED --decided-by plan-architect`, as the contradiction route logs a
-consult's keep.
+The ledger schema is unchanged, because a script change would reach every
+consumer. The merged schema rejects `--decided-by` on ADDRESS and allows only
+`carry` on DEFER, so a per-row marker for table-decided rows has to ride in
+`--rationale`. `DISPOSITION_RULE:code-review-fix-plan-pilot` in
+`claude-skills/skills/code-review/SKILL.md` states that marker, how KEEP rows
+are logged and the round's outcome tags.
 
 ## Schema scaffold: the explicit `false` row
 
-The key has no legacy file, like `test_selection_tracking`. The config
-scaffold therefore backfills an explicit `architect_fix_plan_pilot = false`
-row into every `<config-dir>/claude-config.toml`. An explicit row shadows the
-schema default, so flipping the default to `true` later needs a row
-migration; changing the `default` column in `config-keys.psv` alone would
-not reach any scaffolded account.
+`docs/config-file.md` § "Migration" states that a scaffolded explicit row
+shadows the schema default. For this key, flipping the default to `true` later
+needs a row migration.
 
 ## Known gaps
 
@@ -175,15 +173,19 @@ not reach any scaffolded account.
 
 The key stays off on every account until all four exist:
 
-- A baseline from #1211 steps 1-3.
+- A baseline of review-loop convergence and disposition-error rates without
+  the pilot (#1211).
 - A pre-registered adopt/revert rule with a stop-rate threshold. It names the
   behavior evidence required before enabling: the scope of any Layer-2 run or
   cited transcript.
-- The evaluation's reader for the `fix-plan:` prefix and outcome tags, run on
+- A reader for the `fix-plan:` prefix and outcome tags, run on
   a synthetic fixture before any account enables the key, because ledger
   rows and transcripts roll over at 30 days.
-- A deny fixture: an enforcement-invariant finding plus a DEFER or KEEP row
-  yields a stop. The region's barred-row stop is pinned as text only.
+- A deny/allow fixture pair, run against the region with its result recorded
+  in the pre-registration follow-up: an enforcement-invariant finding with a
+  DEFER or KEEP row yields a stop, and the same finding with an ADDRESS row in
+  an otherwise valid table proceeds. The region's barred-row stop is pinned as
+  text only.
 
 **Enable, check, disable.** Hand-edit `architect_fix_plan_pilot = true` in
 `<config-dir>/claude-config.toml`. Check with
@@ -196,13 +198,20 @@ key is never enabled. The round-2 pilot's record fixed its gates before its
 sentinel existed and also carried a stopping rule; this pilot fixes gates
 before enabling but ships no stopping rule.
 
-**Revert contract.** Delete the region, its pin constant and test class, its
+**Revert contract.** Delete the region, its pin constants and test class, its
 anchor-set entry and its wiring test. Set the config-schema audit's Call site
 for this key to none. Keep the key row inert at default `false`, because
 deleting a schema row makes every scaffolded `claude-config.toml` warn on
-every read, and keep the hand-typed schema pin, the only independent guard of
-that default. Keep this record so the schema's docs-anchor never dangles.
-Set the key `false` on any account that enabled it.
+every read. Keep the per-key tests, which still hold for an inert row:
+
+- The hand-typed schema pins in `test_config_py.py` (known set and defaults,
+  per-account resolution, bool type, empty prompt description).
+- `TestArchitectFixPlanPilotGate` in `test_config_get.py`, with its docstring's
+  reference to `SKILL.md` reworded.
+
+`test_fresh_home_with_no_state_file_exits_1` in that class asserts the `false`
+default independently of the hand-typed pins. Keep this record so the schema's
+docs-anchor never dangles. Set the key `false` on any account that enabled it.
 
 **Adopt.** A follow-up supersedes the
 [§42](code-review-fix-route-plan-architect.md) and

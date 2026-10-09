@@ -142,6 +142,21 @@ class TestArchitectFixPlanPilotGate:
         assert result.returncode == 1
         assert result.stdout == "false\n"
 
+    def test_relative_claude_config_dir_exits_3_with_empty_stdout_not_a_silent_enable(
+        self, tmp_path: Path
+    ) -> None:
+        """Security regression: an unresolvable config dir (status 2 in
+        config-get.sh) must exit 3 with no stdout. Falling through would print
+        an empty VALUE, and "" != "false" would enable the pilot on a mis-set
+        environment even though a state file elsewhere reads true."""
+        scripts_dir = _isolated_scripts_dir(tmp_path, _CONFIG_KEYS_PSV.read_text())
+        (self._config_dir(tmp_path) / "claude-config.toml").write_text(f"{self._KEY} = true\n")
+
+        result = _run(scripts_dir, self._KEY, tmp_path, claude_config_dir=Path("relative/acct"))
+
+        assert result.returncode == 3
+        assert result.stdout == ""
+
     def test_true_in_claude_config_dir_exits_0(self, tmp_path: Path) -> None:
         scripts_dir = _isolated_scripts_dir(tmp_path, _CONFIG_KEYS_PSV.read_text())
         account_dir = tmp_path / "acct"
