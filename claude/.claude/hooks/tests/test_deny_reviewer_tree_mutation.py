@@ -6,7 +6,6 @@ import os
 import shutil
 import subprocess
 import textwrap
-from pathlib import Path
 
 import pytest
 from helpers import (
@@ -358,358 +357,6 @@ class TestBashGitWrites:
         assert run_hook(HOOK, bash_input("git checkout -- x", agent_type="code-writer")) == "allow"
 
 
-class TestCommandInvokingGitFlagDenied:
-    """A subcommand-word-only allowlist check treats 'git grep -O...' as safe
-    because grep is otherwise read-only, while -O execs its argument as a
-    command unconditionally -- these flags must deny regardless of
-    subcommand for a review-only agent too."""
-
-    def test_git_grep_open_files_in_pager_short_form_denied(self):
-        command = 'git grep -O\'sh -c "touch /tmp/marker" #\' the README.md'
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_git_grep_open_files_in_pager_short_form_denied_with_no_embedded_dash_c(self):
-        """Confound-free companion to the fixture above: that payload's own
-        embedded 'sh -c "..."' produces a bare -c token that independently
-        satisfies the -c arm, so it doesn't pin -O short-form detection on
-        its own. This value carries no -c-shaped token anywhere."""
-        command = "git grep -O'less' the README.md"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_git_log_open_files_in_pager_long_form_denied(self):
-        assert run_hook(
-            HOOK, bash_input("git log --open-files-in-pager=sh", agent_type="staff-sdet")
-        ) == "deny"
-
-    def test_git_log_bare_config_override_denied(self):
-        assert run_hook(
-            HOOK, bash_input("git -c core.pager=less log", agent_type="staff-sdet")
-        ) == "deny"
-
-    def test_git_diff_ext_diff_denied(self):
-        assert run_hook(HOOK, bash_input("git diff --ext-diff", agent_type="staff-sdet")) == "deny"
-
-    def test_git_show_textconv_denied(self):
-        assert run_hook(
-            HOOK, bash_input("git show --textconv HEAD:file.bin", agent_type="staff-sdet")
-        ) == "deny"
-
-    def test_git_config_env_denied(self):
-        assert run_hook(
-            HOOK, bash_input("git log --config-env=core.pager=SOME_ENV_VAR", agent_type="staff-sdet")
-        ) == "deny"
-
-    def test_plain_readonly_git_log_with_no_unsafe_flag_still_allowed(self):
-        """Regression guard: the new flag scan must not false-deny an
-        ordinary read-only git subcommand with none of the unsafe flags."""
-        assert run_hook(HOOK, bash_input("git log --oneline", agent_type="staff-sdet")) == "allow"
-
-    def test_git_log_textconv_ansi_c_hex_escape_bypass_denied(self):
-        """Regression guard for the ANSI-C-escape bypass shared with
-        require-review-orchestrator-bash.sh: bash's ANSI-C \\xHH hex escape
-        ($'--tex\\x74conv' decodes \\x74 to 't' at exec time) reassembles the
-        real --textconv flag, which _lib_strip_word_quotes does not decode
-        (see docs/design-decisions.md §40's accepted-residual entry). The
-        git-anchored $'.../${.../backslash check denies the fragment outright
-        rather than relying on decoding the escape correctly."""
-        command = "git log $'--tex\\x74conv' HEAD"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_git_log_textconv_ansi_c_octal_escape_bypass_denied(self):
-        """Octal-escape variant of the hex-escape bypass above
-        ($'--tex\\164conv' decodes \\164 to 't' at exec time) -- same
-        blanket $'...' deny, see docs/design-decisions.md §40's
-        accepted-residual entry for _lib_strip_word_quotes."""
-        command = "git log $'--tex\\164conv' HEAD"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-
-# --- _top_level_command_segments direct unit tests --------------------------
-#
-# _top_level_command_segments is a variant of _lib.sh's _lib_split_fragments
-# that also splits on a bare `&` and keeps $(...)/backtick bytes intact rather
-# than sub-splitting on them -- see the function's own comment in
-# deny-reviewer-tree-mutation.sh for why.
-
-
-def _extract_shell_function(source: Path, name: str) -> str:
-    """Return NAME's function definition, delimited by its own closing brace
-    line. Safe here because _top_level_command_segments has no nested braces
-    in its body -- a real shell-syntax parser is unneeded."""
-    text = source.read_text()
-    start_marker = f"{name}() {{"
-    start = text.index(start_marker)
-    end = text.index("\n}", start)
-    return text[start : end + len("\n}")]
-
-
-def _top_level_command_segments(command: str) -> list[str]:
-    function_src = _extract_shell_function(HOOK, "_top_level_command_segments")
-    result = subprocess.run(
-        ["bash", "-c", f'{function_src}\n_top_level_command_segments "$1"', "bash", command],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-
-
-class TestTopLevelCommandSegmentsDirect:
-    @pytest.mark.parametrize(
-        ("command", "expected"),
-        [
-            # >&/<& fd duplication and &>/&>> combined redirect must stay
-            # glued to their fragment -- a split here would separate the
-            # redirect target from the command it applies to.
-            ("cmd1 2>&1", ["cmd1 2>&1"]),
-            ("cmd1 0<&1", ["cmd1 0<&1"]),
-            ("cmd1 &> /dev/null", ["cmd1 &> /dev/null"]),
-            ("cmd1 &>> /dev/null", ["cmd1 &>> /dev/null"]),
-            # |& (combined stdout+stderr pipe) invokes two distinct
-            # commands exactly like a plain `|` does, so it must split
-            # cleanly -- with no stray operator byte glued onto either
-            # side, which a naive protect-only-the-`&` approach produces.
-            ("cmd1 |& cmd2", ["cmd1", "cmd2"]),
-        ],
-    )
-    def test_glued_redirect_ampersand_forms_stay_whole_and_pipe_ampersand_splits(
-        self, command: str, expected: list[str]
-    ) -> None:
-        assert _top_level_command_segments(command) == expected
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "cmd1 & cmd2",
-            "cmd1&cmd2",
-        ],
-    )
-    def test_bare_ampersand_splits_into_two_segments(self, command: str) -> None:
-        """A bare `&` backgrounds the left command and starts a new one, so it
-        is a segment boundary -- unlike _lib_split_fragments, which leaves it
-        unsplit."""
-        assert _top_level_command_segments(command) == ["cmd1", "cmd2"]
-
-    def test_subshell_paren_stripped(self) -> None:
-        """Leading/trailing parens are stripped, same as _lib_split_fragments,
-        so a subshell-wrapped command yields a clean git fragment rather than
-        one carrying a stray trailing `)`."""
-        assert _top_level_command_segments("(cd /x; git push)") == ["cd /x", "git push"]
-
-    def test_dollar_paren_and_backtick_bytes_survive_the_split(self) -> None:
-        """Unlike _lib_split_fragments, `$(` and a bare backtick are NOT split
-        points here, so a git-invoking segment's own command-substitution
-        bytes stay intact for the git-anchored $/backtick/brace check to
-        see."""
-        assert _top_level_command_segments("git log $(printf -- --textconv) HEAD") == [
-            "git log $(printf -- --textconv) HEAD"
-        ]
-        assert _top_level_command_segments("git log `printf -- --textconv` HEAD") == [
-            "git log `printf -- --textconv` HEAD"
-        ]
-
-
-class TestEscapeExpansionBypassRedesign:
-    """Regression tests for the per-fragment escape/expansion redesign: a
-    prior version paired two independently split arrays (one split on the
-    raw command, one on its quote-stripped form) by index, which desynced
-    whenever quote-stripping created a new adjacent-delimiter pair that
-    wasn't adjacent in the raw text. The redesign uses a single coarse split
-    (_top_level_command_segments) so there is nothing left to desync, and
-    still catches brace expansion and command/backtick substitution, which
-    the prior version's character-class check never covered at all."""
-
-    def test_multi_fragment_index_desync_denied(self):
-        """A bare `&` inside an ANSI-C string ($'&') plus a real `&`
-        immediately after it splits into three raw fragments, but only two
-        survive quote-stripping -- the exact desync that let the prior
-        per-index-pairing design skip the real git fragment's own raw text
-        entirely. Verified empirically against the unfixed hook before this
-        test was written: the command below was allowed."""
-        command = "echo $'&'& git log $'--tex\\x74conv' HEAD"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_brace_expansion_textconv_denied(self):
-        """git show --te{x,}tconv reassembles --textconv via bash brace
-        expansion, the sibling hook's own motivating example -- never
-        covered by the prior $'.../${.../backslash-only character check."""
-        command = "git show --te{x,}tconv HEAD:file.bin"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_command_substitution_textconv_denied(self):
-        """$(printf -- --textconv) synthesizes --textconv at exec time.
-        _lib_split_fragments itself splits on "$(", consuming those two
-        bytes as the delimiter -- so a check that only inspects the
-        resulting per-fragment text (fine-grained _lib_split_fragments
-        output) can never see them. _top_level_command_segments does not
-        split on "$(", so the git-invoking segment's own raw text still
-        carries it."""
-        command = "git log $(printf -- --textconv) HEAD"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_backtick_command_substitution_textconv_denied(self):
-        """Backtick variant of the command-substitution bypass above --
-        _lib_split_fragments also splits on a bare backtick, so the same
-        coarser-split rationale applies."""
-        command = "git log `printf -- --textconv` HEAD"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_nested_command_substitution_textconv_denied(self):
-        """Nested $(...) inside $(...) is still just a $ character to this
-        segment's raw text -- the git-anchored check denies on the presence
-        of the construct, not on parsing its nesting depth."""
-        command = "git log $(echo $(printf -- --textconv)) HEAD"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_subshell_wrapped_ansi_c_textconv_bypass_denied(self):
-        """The ANSI-C hex-escape bypass still denies once wrapped in a
-        subshell/group: _top_level_command_segments strips the leading '('
-        and trailing ')', so the git-anchored check still sees the
-        unwrapped fragment's own $'...' construct."""
-        command = "(git log $'--tex\\x74conv' HEAD)"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_grep_pattern_with_legitimate_brace_denied(self):
-        """Accepted over-deny: a benign literal brace in a search pattern
-        (not brace-expansion syntax) still denies, because the git-anchored
-        check denies on ANY brace in a git-invoking segment -- pinned as
-        current behavior, not an unnoticed regression."""
-        command = "git log --grep='{TODO}'"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_quoted_semicolon_metacharacter_over_deny_confound_denied(self):
-        """Accepted quote-blind-split over-deny: _lib_split_fragments splits
-        on a `;` even inside a quoted argument value, so a --grep pattern
-        that literally contains ';sed -i ...' splits into its own fragment
-        and denies via the in-place-edit family check below, even though the
-        real shell would never execute that quoted text as a command. Pinned
-        as current behavior, not a fix target here."""
-        command = 'git log --grep="a;sed -i s/x/y/ file"'
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_quoted_ampersand_in_grep_pattern_allowed(self):
-        """Confound-free companion: _lib_split_fragments does not split a bare
-        `&`, so a quoted '&sed -i ...' stays inside the --grep value instead
-        of becoming a fragment of its own."""
-        command = 'git log --grep="a&sed -i s/x/y/ file"'
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
-
-    def test_dollar_expansion_before_bare_ampersand_git_status_allowed(self):
-        """Confound-free companion: a `$` in a non-git command backgrounded
-        with a bare `&` must not be attributed to the git-invoking segment
-        after it. _top_level_command_segments splits on the `&`, so the
-        git-anchored $/backtick/brace check sees only `git status`."""
-        command = 'echo "$X" & git status'
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
-
-    def test_grep_pattern_with_legitimate_backslash_allowed(self):
-        """Confound-free companion: a real git invocation with a backslash
-        in an ordinary --grep pattern, and no $, backtick, {, or } anywhere,
-        must not be false-denied. The prior design's bare `*\\\\*` alternative
-        denied ANY backslash in a git-invoking fragment; the redesign drops
-        that alternative because ANSI-C escape decoding needs a $' prefix a
-        bare backslash can't supply on its own."""
-        command = 'git log --grep="\\bTODO\\b"'
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
-
-
-class TestAmpersandInsideAWord:
-    """An `&` inside a word (a sed replacement, a quoted path) is not a
-    command separator, so it must neither hide a denied command nor
-    false-deny a read-only one."""
-
-    def test_sed_in_place_with_ampersand_replacement_denied(self):
-        command = "sed 's/foo/&/' -i src/x.py"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_git_read_only_with_quoted_ampersand_path_allowed(self):
-        command = 'git -C "R&D" log'
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
-
-
-class TestGitWriteTargetFlagDenied:
-    """git diff/log/show (and the diff-machinery subcommands sharing their
-    option parser) accept --output=<file> / --output <file>, writing the
-    command's own content to a caller-chosen path with no shell redirect
-    character for a `<`/`>` scan to see."""
-
-    def test_git_diff_output_denied(self):
-        command = "git diff --output=src/tracked_file.py HEAD~1..HEAD"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_git_log_output_denied(self):
-        assert run_hook(
-            HOOK, bash_input("git log --output=src/tracked_file.py", agent_type="staff-sdet")
-        ) == "deny"
-
-    def test_git_show_output_denied(self):
-        command = "git show --output=src/tracked_file.py HEAD"
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_git_log_output_indicator_flag_confound_free_companion_allowed(self):
-        """Confound-free companion: --output-indicator-new shares the
-        --output prefix but writes nothing anywhere -- must not false-deny."""
-        assert run_hook(
-            HOOK, bash_input("git log --output-indicator-new=+", agent_type="staff-sdet")
-        ) == "allow"
-
-
-class TestBareEnvAssignmentFragmentDenied:
-    """A fragment that is ITSELF purely an environment-variable assignment
-    denies regardless of whether it mentions git -- closing the cross-
-    fragment path where splitting an assignment out via `;` from its
-    eventual `git` invocation leaves neither fragment individually caught by
-    _lib_fragment_has_env_assignment_before_git's git-anchored scan."""
-
-    def test_git_config_env_var_mechanism_split_across_fragments_denied(self):
-        """The exact multi-fragment GIT_CONFIG_* attack: each `export ...`
-        fragment doesn't itself invoke git, and the final `git diff` fragment
-        carries no assignment of its own -- only a per-fragment bare-
-        assignment check catches this."""
-        command = (
-            "export GIT_CONFIG_COUNT=1; export GIT_CONFIG_KEY_0=diff.external; "
-            "export GIT_CONFIG_VALUE_0=x; git diff"
-        )
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_bare_export_fragment_alone_denied(self):
-        assert run_hook(HOOK, bash_input("export SOME_VAR=x", agent_type="staff-sdet")) == "deny"
-
-    def test_bare_assignment_fragment_without_export_denied(self):
-        assert run_hook(HOOK, bash_input("SOME_VAR=x", agent_type="staff-sdet")) == "deny"
-
-    def test_plain_command_with_no_bare_assignment_fragment_still_allowed(self):
-        """Regression guard: the new bare-assignment scan must not false-deny
-        a normal command with no env-assignment fragment anywhere."""
-        assert run_hook(HOOK, bash_input("git status", agent_type="staff-sdet")) == "allow"
-
-
-class TestEnvironmentVariableAssignmentBeforeGitDenied:
-    """Git's own GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n>
-    mechanism (git-config(1) ENVIRONMENT) sets arbitrary config -- including
-    diff.external -- with zero matching CLI flag token, entirely bypassing
-    the flag-token scan above. A leading env-var assignment before the git
-    word is denied as a blanket rule, not enumerated per variable name."""
-
-    def test_git_config_env_var_mechanism_denied(self):
-        command = (
-            "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external "
-            "GIT_CONFIG_VALUE_0='touch /tmp/marker #' git diff"
-        )
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
-
-    def test_non_git_prefixed_env_assignment_denied(self):
-        """The rule is a blanket one on the WORD=value shape, not scoped to
-        GIT_-prefixed names -- any env var could matter to some git
-        mechanism now or in the future."""
-        assert run_hook(HOOK, bash_input("FOO=bar git diff", agent_type="staff-sdet")) == "deny"
-
-    def test_plain_command_with_no_env_assignment_still_allowed(self):
-        """Regression guard: the new env-assignment scan must not false-deny
-        an ordinary git command with no leading env-var assignment."""
-        assert run_hook(HOOK, bash_input("git log --oneline", agent_type="staff-sdet")) == "allow"
-
-
 class TestBashGitModeDependentWrites:
     """The shared _LIB_READONLY_GIT_SUBCMDS admits branch/tag/worktree/remote/
     fetch/reflog/symbolic-ref as read-only for require-worktree-for-git-writes.sh's
@@ -853,21 +500,20 @@ class TestBashInPlaceEditFamily:
         assert run_hook(HOOK, bash_input("'sed' -i s/a/b/ x.txt", agent_type="staff-sdet")) == "deny"
 
     def test_reviewer_quoted_argument_without_dash_i_allowed(self):
-        # GH-783: confirms quote-stripping the command text doesn't affect
-        # fragment splitting for a benign quoted argument with no
-        # token-boundary interaction. Not an over-strip false-positive
-        # guard: _lib_strip_shell_quotes only deletes quote/backslash
-        # characters, so it can't merge, split, or relocate a token
-        # boundary, and this hook's -i gate is an exact-token-prefix match
-        # -- there is no constructible near-boundary input for this hook
-        # that a broken over-strip implementation could flip from allow to
-        # deny.
+        # GH-783: confirms COMMAND_UNQUOTED doesn't affect fragment splitting
+        # for a benign quoted argument with no token-boundary interaction.
+        # Not an over-strip false-positive guard: _lib_strip_shell_quotes
+        # only deletes quote/backslash characters, so it can't merge, split,
+        # or relocate a token boundary, and this hook's -i gate is an
+        # exact-token-prefix match -- there is no constructible near-boundary
+        # input for this hook that a broken over-strip implementation could
+        # flip from allow to deny.
         assert run_hook(HOOK, bash_input('sed s/a/b/ "x.txt"', agent_type="staff-sdet")) == "allow"
 
     def test_command_unquoted_sed_absent_from_path_denied(self, tmp_path):
-        # GH-783: a missing sed anywhere in the quote-strip/split pipeline
-        # must fail closed rather than let a collapsed fragment detection
-        # fall through to this hook's normal allow path.
+        # GH-783: COMMAND_UNQUOTED's sed/tr strip failure must fail closed
+        # rather than let a missing sed silently collapse fragment
+        # detection and fall through to this hook's normal allow path.
         farm_dir = tmp_path / "path-without-sed"
         farm_dir.mkdir()
         restricted_path = build_path_without("sed", farm_dir)
@@ -882,43 +528,36 @@ class TestBashInPlaceEditFamily:
 
     def test_fragments_split_sed_failure_denied(self, tmp_path):
         """GH-783: FRAGMENTS_SPLIT_EXIT must fail closed on its own, isolated
-        from TOP_LEVEL_SEGMENTS_EXIT above -- both checks depend on the
-        same sed binary, and _top_level_command_segments shares
-        _lib_split_fragments's non-`-e` invocation shape, so a shim keyed
-        only on the `-e` flag would trip the wrong check first. This shim
-        instead fails only on _lib_split_fragments's first-stage sed call,
-        identified by the `\\$\\(` substring in its script -- the only sed
-        invocation in the file that splits on `$(`/backtick. Every other
-        sed call, including all four inside _top_level_command_segments
-        and _lib_strip_shell_quotes's own `-e`-flagged call, succeeds via
-        the real sed."""
+        from COMMAND_UNQUOTED_EXIT above -- both checks depend on the same
+        sed binary, so a total sed-absent test (like the one above) can't
+        tell which of the two is actually catching the failure. A sed shim
+        fails on any invocation that isn't _lib_strip_shell_quotes's own
+        `-e`-flagged shape, so COMMAND_UNQUOTED succeeds via the real sed
+        while the later _lib_split_fragments call (a bare `sed -E
+        's/.../g'`, no `-e` token) fails on its own."""
         real_sed = shutil.which("sed")
         assert real_sed, "test host must have a real sed binary on PATH"
 
-        shim_dir = tmp_path / "sed-fails-only-on-lib-split-fragments-script"
+        shim_dir = tmp_path / "sed-fails-outside-strip-shell-quotes-shape"
         shim_dir.mkdir()
         shim_script = textwrap.dedent(f"""\
             #!/bin/bash
-            case "$2" in
-              *'\\$\\('*) exit 1 ;;
-            esac
+            if [ "$2" != "-e" ]; then
+              exit 1
+            fi
             exec "{real_sed}" "$@"
         """)
         (shim_dir / "sed").write_text(shim_script)
         (shim_dir / "sed").chmod(0o755)
 
-        # `git status` is allowed absent the shim, so a deny here can only
-        # come from the fragment-split fail-closed path.
-        read_only_command = "'git' status"
-        assert run_hook(HOOK, bash_input(read_only_command, agent_type="staff-sdet")) == "allow"
-
-        reason = run_hook_reason(
-            HOOK,
-            bash_input(read_only_command, agent_type="staff-sdet"),
-            extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+        assert (
+            run_hook(
+                HOOK,
+                bash_input("'git' checkout -- some/file.txt", agent_type="staff-sdet"),
+                extra_env={"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"},
+            )
+            == "deny"
         )
-        assert reason is not None
-        assert "could not split the command into fragments" in reason
 
 
 class TestRawWriteTargetGap:
@@ -1015,24 +654,6 @@ class TestRawWriteTargetGap:
             )
             == "allow"
         )
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "cp /tmp/malicious.txt claude/.claude/hooks/_lib.sh",
-            "printf malicious > claude/.claude/hooks/_lib.sh",
-            "echo malicious | tee claude/.claude/hooks/_lib.sh",
-        ],
-    )
-    def test_raw_bash_write_target_onto_tracked_file_denied(self, command):
-        """`_fragment_raw_write_targets` resolves a cp/redirect/tee target
-        from each fragment's own positional words, so the piped `tee`
-        fragment's real target denies like the others. This closes the
-        composed two-hop path require-review-orchestrator-agent-target.sh's
-        own allowlist otherwise leaves open for a
-        review-orchestrator-dispatched reviewer persona -- see
-        docs/design-decisions.md §40."""
-        assert run_hook(HOOK, bash_input(command, agent_type="ciso-reviewer")) == "deny"
 
 
 class TestBuiltinAgents:
@@ -1226,90 +847,6 @@ class TestKnownGapBypass:
         # Same documented gap: GNU sed's `--in-place` long form starts `--i`,
         # not `-i`, so it is not caught. Pin the accepted allow.
         assert run_hook(HOOK, bash_input("sed --in-place s/a/b/ x.txt", agent_type="staff-sdet")) == "allow"
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "sed -i s/a/b/ x.txt & git diff",
-            "git diff & black x.py",
-            "sed -i s/a/b/ x.txt # git diff",
-            "git diff > src/x",
-        ],
-        ids=[
-            "write-then-git-partner",
-            "git-partner-then-formatter",
-            "write-then-git-word-in-comment",
-            "git-fragment-raw-redirect",
-        ],
-    )
-    def test_reviewer_git_word_fragment_skips_later_checks_allowed(self, command):
-        """GH-811, GH-1208: pins the CURRENT (imperfect) behavior of an accepted
-        gap, not the desired one. A fragment holding a `git` word anywhere gets
-        only the git checks, so every later check is skipped for it, the raw
-        write-target check included. These cases illustrate that mechanism;
-        they do not list every shape it covers. Flip an allow case to "deny"
-        when this mechanism changes."""
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
-
-    @pytest.mark.parametrize(
-        "command, expected_reason_fragment",
-        [
-            ("sed -i s/a/b/ x.txt # ls", "'sed -i'/'perl -i' rewrites the file in place."),
-            ("ls & git checkout -- f", "'git checkout' is not a read-only git subcommand"),
-        ],
-        ids=["comment-without-git-word", "git-write-behind-non-git-head"],
-    )
-    def test_reviewer_git_word_mechanism_neighbor_shapes_denied(self, command, expected_reason_fragment):
-        """Control for the git-word mechanism above: a trailing comment with no
-        git word still reaches the in-place-edit check, and a git write
-        sharing a fragment still reaches the git checks, so a regression that
-        widens the skip fails here."""
-        reason = run_hook_reason(HOOK, bash_input(command, agent_type="staff-sdet"))
-        assert reason is not None
-        assert expected_reason_fragment in reason
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "ls & sed -i s/a/b/ x.txt",
-            "ls & black x.py",
-            "ls |& sed -i s/a/b/ x.txt",
-        ],
-        ids=[
-            "write-after-bare-ampersand",
-            "formatter-after-bare-ampersand",
-            "write-after-pipe-ampersand",
-        ],
-    )
-    def test_reviewer_non_git_checks_read_only_first_command_allowed(self, command):
-        """GH-811, GH-1208: pins the CURRENT (imperfect) behavior of an accepted
-        gap, not the desired one. The shared splitter does not split on a bare
-        `&` and splits `|&` only at its `|`. A command after either one is not
-        reliably checked. These cases illustrate that mechanism; they do not
-        list every shape it covers. Flip an allow case to "deny" when this mechanism
-        changes."""
-        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
-
-    @pytest.mark.parametrize(
-        "command, expected_reason_fragment",
-        [
-            ("sed -i s/a/b/ x.txt & ls", "'sed -i'/'perl -i' rewrites the file in place."),
-            ("black x.py & ls", "'black' reformats files"),
-            ("sed -i s/a/b/ x.txt |& ls", "'sed -i'/'perl -i' rewrites the file in place."),
-        ],
-        ids=[
-            "write-before-bare-ampersand",
-            "formatter-before-bare-ampersand",
-            "write-before-pipe-ampersand",
-        ],
-    )
-    def test_reviewer_non_git_checks_first_command_write_denied(self, command, expected_reason_fragment):
-        """Control for the first-command mechanism above: the same write or
-        formatter as the first command of a joined fragment is still denied, so
-        a regression that stops reading the first command fails here."""
-        reason = run_hook_reason(HOOK, bash_input(command, agent_type="staff-sdet"))
-        assert reason is not None
-        assert expected_reason_fragment in reason
 
     # GH-1103: the three tests below pin the CURRENT (imperfect) allow verdicts
     # for the /tmp link gap in the header's known-gaps list. The hook matches

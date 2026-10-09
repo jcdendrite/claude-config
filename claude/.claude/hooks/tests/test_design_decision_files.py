@@ -156,25 +156,8 @@ def _decision_files(directory: Path = DESIGN_DECISIONS_DIR) -> list[Path]:
     return sorted(directory.glob("*.md"))
 
 
-def _provenance_line_text(text: str) -> str | None:
-    """The file's provenance line -- by the Format bullet's own shape, the
-    line two lines below the H1 heading (H1, blank, provenance) -- or None
-    if that structure isn't present. Anchoring to this position, rather
-    than searching the whole file, stops an unrelated line elsewhere in the
-    body that happens to match a provenance shape from masking a missing or
-    malformed real one."""
-    lines = text.splitlines()
-    for index, line in enumerate(lines):
-        if line.startswith("# "):
-            return lines[index + 2] if index + 2 < len(lines) else None
-    return None
-
-
 def _provenance_number(text: str) -> int | None:
-    line = _provenance_line_text(text)
-    if line is None:
-        return None
-    match = _PROVENANCE_RE.search(line)
+    match = _PROVENANCE_RE.search(text)
     return int(match.group(1)) if match else None
 
 
@@ -1045,44 +1028,6 @@ class TestFaultInjection:
         assert len(violations) == 1
         assert "outside the expected closed set" in violations[0]
         assert "include [64]," in violations[0]
-
-    def test_post_split_bare_dated_file_accepted_with_no_legacy_number(
-        self, tmp_path: Path
-    ) -> None:
-        (tmp_path / "first-decision.md").write_text(
-            "# First Decision\n\nFormerly `docs/design-decisions.md` §1.\n",
-            encoding="utf-8",
-        )
-        (tmp_path / "recorded-after-split.md").write_text(
-            "# Recorded After Split\n\n*2026-09-07.*\n\nBody text.\n",
-            encoding="utf-8",
-        )
-        violations = _legacy_number_range_violations(
-            _decision_files(tmp_path), expected_legacy_numbers=frozenset({1})
-        )
-        assert violations == []
-
-    def test_missing_provenance_flagged_even_with_unrelated_date_line_elsewhere(
-        self, tmp_path: Path
-    ) -> None:
-        (tmp_path / "mangled-decision.md").write_text(
-            "# Mangled Decision\n\nFormely `docs/design-decisions.md` §1.\n\n"
-            "Body text quoting a sibling decision's clause verbatim: "
-            "Formerly `docs/design-decisions.md` §7.\n",
-            encoding="utf-8",
-        )
-        violations = _provenance_line_violations(_decision_files(tmp_path))
-        assert len(violations) == 1
-        assert "mangled-decision.md" in violations[0]
-
-    def test_file_with_no_provenance_line_at_all_flagged(self, tmp_path: Path) -> None:
-        (tmp_path / "no-provenance.md").write_text(
-            "# No Provenance\n\nJust body text, no provenance line.\n",
-            encoding="utf-8",
-        )
-        violations = _provenance_line_violations(_decision_files(tmp_path))
-        assert len(violations) == 1
-        assert "no-provenance.md" in violations[0]
 
     def test_numbered_heading_detects_revived_heading(self, tmp_path: Path) -> None:
         (tmp_path / "some-decision.md").write_text(

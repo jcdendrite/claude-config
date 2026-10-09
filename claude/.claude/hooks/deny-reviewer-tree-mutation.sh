@@ -76,15 +76,6 @@
 #     residual gaps (relative paths, symlinks, fd-numbered redirects,
 #     `&>`, `cp -t DIR`, and `tee -`/`tee -- -file`).
 #     Its symlinks entry is the /tmp link gap below.
-#   - A write can pass through either of two mechanisms. Each covers every
-#     shape it produces, so a new shape is not a new gap. Both are accepted
-#     cooperative-tier debt, tracked by GH-811 and GH-1208:
-#       - A fragment holding a `git` word anywhere, a trailing comment
-#         included, gets only the git checks. Every later check in the Bash
-#         arm is skipped for it, the raw write-target check included, so
-#         `git diff > src/x` passes.
-#       - The splitter does not split on a bare `&` and splits `|&` only at
-#         its `|`. A command after either one is not reliably checked.
 #   - A symlink or hard link under /tmp launders the /tmp exemption.
 #     GH-1103 tracks the structural fix. The facts of this one gap:
 #       - Both arms match the literal `/tmp/*` text without resolving links.
@@ -138,11 +129,10 @@
 #     check — git absent, the resolved cwd not a repo, the timeout firing —
 #     denies rather than allows (fail-closed friction on an unusual
 #     environment, not a missed mutation).
-#   - The Bash arm's quote-strip/split failures (top-level segments,
-#     COMMAND_UNQUOTED, fragment splitting) all fail closed:
-#     each exit status is checked and denies with an explicit message
-#     rather than falling through to this hook's normal "no gated fragment
-#     matched" allow path.
+#   - The Bash arm's COMMAND_UNQUOTED sed/tr strip failure fails closed: its
+#     exit status is checked and denies with an explicit message rather than
+#     falling through to this hook's normal "no gated fragment matched"
+#     allow path.
 
 set -uo pipefail
 
@@ -264,23 +254,6 @@ _fragment_raw_write_targets() {
     done
   fi
   if [[ "$saved_opts" != *f* ]]; then set +f; fi
-}
-
-# Splits $1 on the true command-chaining operators only (;, &&, ||, |, |&, a
-# bare &), keeping $(...)/backtick bytes intact -- unlike _lib_split_fragments,
-# which sub-splits on them -- because the git-invoking-fragment check below
-# needs those bytes still present. It also splits on a bare &, which
-# _lib_split_fragments leaves unsplit. Its sed/tr calls, like _lib_split_fragments's
-# and _lib_strip_shell_quotes's, run unbounded (no _lib_capped wrapper):
-# input arrives via an EOF-terminated pipe over an in-memory string, not a
-# filesystem or network resource those calls could stall on.
-_top_level_command_segments() {
-  local amp_marker=$'\x01'
-  printf '%s' "$1" \
-    | sed -E "s/(>|<)&/\\1${amp_marker}/g; s/&(>>?)/${amp_marker}\\1/g" \
-    | sed -E 's/;/\n/g; s/\|&/\n/g; s/&&/\n/g; s/&/\n/g; s/\|\|/\n/g; s/\|/\n/g' \
-    | sed -E "s/${amp_marker}/\\&/g" \
-    | sed -E 's/^[[:space:]]*\(//; s/\)[[:space:]]*$//'
 }
 
 case "$TOOL_NAME" in
@@ -406,58 +379,10 @@ case "$TOOL_NAME" in
     done < <(_lib_readonly_git_subcmds)
     ALLOWED_RE=$(IFS='|'; echo "${ALLOWED_SUBCMDS[*]}")
 
-    # Escape/expansion bypass check, run as its own self-contained pass over
-    # _top_level_command_segments (see that function's own comment for why
-    # it -- not _lib_split_fragments -- drives this specific check). A
-    # single split feeding a single loop, with no second, independently
-    # split array to correlate it against by index.
-    TOP_LEVEL_SEGMENTS=$(_top_level_command_segments "$COMMAND")
-    TOP_LEVEL_SEGMENTS_EXIT=$?
-    if [ "$TOP_LEVEL_SEGMENTS_EXIT" -ne 0 ]; then
-      emit_deny "could not split the command into top-level segments (exit ${TOP_LEVEL_SEGMENTS_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
-      exit 0
-    fi
-    while IFS= read -r raw_segment; do
-      [ -z "$raw_segment" ] && continue
-      segment_stripped=$(_lib_strip_shell_quotes "$raw_segment")
-      segment_stripped_exit=$?
-      if [ "$segment_stripped_exit" -ne 0 ]; then
-        emit_deny "could not quote-strip a command segment (exit ${segment_stripped_exit}) — sed/tr may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
-        exit 0
-      fi
-      if _lib_fragment_invokes_git "$segment_stripped"; then
-        # A $'...', ${...}, $(...), or backtick construct inside a
-        # git-invoking fragment can reassemble a mutating flag or subcommand
-        # that the checks below only recognize literally. A review-only
-        # agent never has a legitimate reason to reach for any of these
-        # specifically inside a git invocation, unlike its otherwise-
-        # unrestricted shell use.
-        # Accepted over-deny: this denies ANY brace in a git-invoking
-        # segment, including a benign literal brace in a search pattern
-        # (`git log --grep='{TODO}'`), not just brace-expansion syntax --
-        # mirroring the sibling hook's own accepted parens over-deny.
-        case "$raw_segment" in
-          *'$'*|*'`'*|*'{'*|*'}'*)
-            emit_deny "'$segment_stripped' invokes git and its raw text carries a \$, backtick, or brace construct -- these can reassemble a mutating flag or subcommand into a token this hook's checks don't recognize literally. $SANCTIONED_ALTERNATIVE"
-            exit 0
-            ;;
-        esac
-      fi
-    done <<< "$TOP_LEVEL_SEGMENTS"
-
-    # Fine-grained split driving every other check below: _lib_split_fragments's
-    # $(...)/backtick sub-splitting lets a nested command (e.g. `echo $(sed -i
-    # ...)`) get scanned as its own fragment, which the coarse split above
-    # deliberately does not do.
     # Quote-stripped so an adjacent-quote split (`'sed' -i file`, `"git"
     # checkout`) can't dodge the word-walk detectors below — same helper
     # as deny-network-installs.sh. Checked and fail-closed, matching
     # deny-invisible-commit-content.sh's own COMMAND_UNQUOTED computation.
-    # Accepted over-deny: this split is quote-blind, so a shell metacharacter
-    # embedded inside a quoted argument value (e.g. a --grep pattern
-    # literally containing ";sed -i ...") still splits the command and can
-    # land in its own fragment that matches a denied pattern, even though
-    # the real shell would never execute that quoted text as a command.
     COMMAND_UNQUOTED=$(_lib_strip_shell_quotes "$COMMAND")
     COMMAND_UNQUOTED_EXIT=$?
     if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
@@ -471,28 +396,10 @@ case "$TOOL_NAME" in
       emit_deny "could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
       exit 0
     fi
-
     while IFS= read -r fragment; do
       [ -z "$fragment" ] && continue
 
-      if _lib_fragment_is_bare_env_assignment "$fragment"; then
-        emit_deny "'$fragment' is a bare environment-variable assignment -- a later fragment in the same command can consume it (e.g. git's GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism), with no git word in THIS fragment for the git-anchored checks below to catch. $SANCTIONED_ALTERNATIVE"
-        exit 0
-      fi
-
       if _lib_fragment_invokes_git "$fragment"; then
-        if _lib_fragment_has_command_invoking_git_flag "$fragment"; then
-          emit_deny "'$fragment' carries a git flag (-c, --config-env, -O/--open-files-in-pager, --ext-diff, or --textconv) that can exec an arbitrary command regardless of subcommand. $SANCTIONED_ALTERNATIVE"
-          exit 0
-        fi
-        if _lib_fragment_has_git_write_target_flag "$fragment"; then
-          emit_deny "'$fragment' carries a git flag (--output/--output-directory) that writes the command's own output to a caller-chosen filesystem path, with no shell redirect character for a redirect scan to catch. $SANCTIONED_ALTERNATIVE"
-          exit 0
-        fi
-        if _lib_fragment_has_env_assignment_before_git "$fragment"; then
-          emit_deny "'$fragment' carries an environment-variable assignment before the git word -- git's GIT_CONFIG_COUNT/GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> mechanism can set arbitrary config (e.g. diff.external) this way with no matching CLI flag. $SANCTIONED_ALTERNATIVE"
-          exit 0
-        fi
         subcmd=$(_lib_extract_git_subcmd "$fragment")
         # Unlike require-worktree-for-git-writes.sh, cwd is irrelevant here:
         # a reviewer never has a legitimate git-write target anywhere, so

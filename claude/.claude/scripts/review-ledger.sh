@@ -171,11 +171,15 @@ _resolve_session_id() {
   printf '%s' "$sid"
 }
 
-# Locking (noclobber-lock + PID-liveness-eviction + single-EXIT-trap), the
-# stale-file sweep, and repo-root resolution live in _lib.sh
-# (_lib_append_line_locked, _lib_sweep_stale_files, _lib_resolve_repo_root) —
-# shared with orchestrator-checkpoint.sh so this repo doesn't hold a second
-# near-identical copy of any of the three.
+_resolve_repo_root() {
+  local root
+  root=$(git rev-parse --show-toplevel 2>/dev/null | tr -d '\n')
+  if [ -z "$root" ]; then
+    printf 'review-ledger.sh: not inside a git repository\n' >&2
+    return 2
+  fi
+  printf '%s' "$root"
+}
 
 # _resolve_ledger_location REPO_ROOT SESSION_ID
 # Sets LEDGER_SCOPE (branch|session) and LEDGER_FILE from
@@ -226,6 +230,39 @@ already passed.
 Required so two rounds raising an identical finding don't collapse into one
 ledger line under this script's round-scoped dedup key. Abort without writing.
 EOF
+}
+
+# _sweep_stale_ledger_files LEDGER_DIR WINDOW_DAYS DRY_RUN REPORT
+# Removes (or, if DRY_RUN=1, reports without removing) every *.jsonl and
+# *.lock file under LEDGER_DIR older than WINDOW_DAYS by mtime, across every
+# repo-hash. Shaped like nudge-handoff-near-context-cap.sh's directory-wide
+# `find ... -mtime +30 -delete` sweep of .handoff-nudge-fired.d, except this
+# window is a caller-resolved value rather than a fixed 30. The best-effort
+# append path passes the fixed _LEDGER_SWEEP_FLOOR_DAYS floor directly.
+# clear-stale resolves _ledger_sweep_window_days' dynamic settings.json read
+# itself and passes the result. REPORT=1 prints per-file and summary lines
+# (clear-stale). REPORT=0 is silent (the best-effort sweep append performs
+# on every invocation).
+_sweep_stale_ledger_files() {
+  local ledger_dir="$1" window_days="$2" dry_run="$3" report="$4"
+  [ -d "$ledger_dir" ] || return 0
+  local evicted=0 entry
+  while IFS= read -r -d '' entry; do
+    evicted=$((evicted + 1))
+    if [ "$dry_run" -eq 1 ]; then
+      [ "$report" -eq 1 ] && printf '  evict (dry-run): %s\n' "$(basename "$entry")"
+    else
+      rm -f "$entry" 2>/dev/null
+      [ "$report" -eq 1 ] && printf '  evict: %s\n' "$(basename "$entry")"
+    fi
+  done < <(find "$ledger_dir" -maxdepth 1 \( -name '*.jsonl' -o -name '*.lock' \) -mtime "+$window_days" -print0 2>/dev/null)
+  if [ "$report" -eq 1 ]; then
+    if [ "$dry_run" -eq 1 ]; then
+      printf 'clear-stale: would evict %d file(s)\n' "$evicted"
+    else
+      printf 'clear-stale: evicted %d file(s)\n' "$evicted"
+    fi
+  fi
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -392,7 +429,7 @@ case "$SUBCOMMAND" in
       "$CARRY_FORWARD" "$DEFER_CRITERION" "$REF" "$CITED_LINE" "$SOURCE" "$EMPTY_VALUE_FLAGS" || exit 2
 
     SESSION_ID=$(_resolve_session_id) || exit 2
-    REPO_ROOT=$(_lib_resolve_repo_root "review-ledger.sh") || exit 2
+    REPO_ROOT=$(_resolve_repo_root) || exit 2
     _resolve_ledger_location "$REPO_ROOT" "$SESSION_ID" || exit 2
     LOCK_FILE="$LEDGER_FILE.lock"
     # Checked before the first read of the ledger.
@@ -523,7 +560,7 @@ case "$SUBCOMMAND" in
     # A range-form source adds one capped awk read for the site hash.
     # _resolve_ledger_location adds capped git calls: symbolic-ref HEAD, the
     # origin/HEAD resolution, and the candidate rev-parse probes.
-    # The sweep's find is uncapped.
+    # The bare git rev-parse --show-toplevel and the sweep's find are uncapped.
     # With neither timeout nor gtimeout on PATH, each capped call above is an
     # uncapped-hang point.
 
@@ -554,8 +591,8 @@ case "$SUBCOMMAND" in
       fi
     fi
 
-    # Best-effort retention sweep on every append — see _lib_sweep_stale_files.
-    _lib_sweep_stale_files "$LEDGER_DIR" 0 0 "$_LEDGER_SWEEP_FLOOR_DAYS"
+    # Best-effort retention sweep on every append — see _sweep_stale_ledger_files.
+    _sweep_stale_ledger_files "$LEDGER_DIR" "$_LEDGER_SWEEP_FLOOR_DAYS" 0 0
     ;;
   show)
     if [ $# -gt 0 ]; then
@@ -563,7 +600,7 @@ case "$SUBCOMMAND" in
       exit 2
     fi
     SESSION_ID=$(_resolve_session_id) || exit 2
-    REPO_ROOT=$(_lib_resolve_repo_root "review-ledger.sh") || exit 2
+    REPO_ROOT=$(_resolve_repo_root) || exit 2
     _resolve_ledger_location "$REPO_ROOT" "$SESSION_ID" || exit 2
     # This worktree's own session file is read alongside the resolved file:
     # in branch scope it holds rows appended while HEAD was detached, and
@@ -656,7 +693,7 @@ case "$SUBCOMMAND" in
           ;;
       esac
     done
-    REPO_ROOT=$(_lib_resolve_repo_root "review-ledger.sh") || exit 2
+    REPO_ROOT=$(_resolve_repo_root) || exit 2
     # A stale --out is deleted before any later step that can exit, so a failed
     # render never leaves the previous round's body file to be published.
     if [ -n "$RENDER_OUT" ]; then
@@ -681,7 +718,7 @@ case "$SUBCOMMAND" in
       exit 2
     fi
     WINDOW_DAYS=$(_ledger_sweep_window_days "$CONFIG_DIR/settings.json")
-    _lib_sweep_stale_files "$LEDGER_DIR" "$DRY_RUN" 1 "$WINDOW_DAYS"
+    _sweep_stale_ledger_files "$LEDGER_DIR" "$WINDOW_DAYS" "$DRY_RUN" 1
     ;;
   *)
     printf "review-ledger.sh: unknown subcommand '%s'\n" "$SUBCOMMAND" >&2

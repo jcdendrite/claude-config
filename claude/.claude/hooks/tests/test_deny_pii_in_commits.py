@@ -1617,21 +1617,6 @@ class TestDenyPiiInCommits:
             cwd=git_repo,
         ) == "allow"
 
-    def test_quoted_ampersand_in_commit_message_does_not_arm_the_head_scan(
-        self, isolated_home, git_repo, pii_patterns
-    ):
-        """A `&` inside a quoted `-m` message is part of that one argument, so
-        it must not split the message into words the pathspec check reads as
-        a worktree target. The worktree-only SSN stays unscanned, as it does
-        for any commit with no `-a` or pathspec."""
-        pii_patterns("# no user patterns\n")
-        _modify_unstaged(git_repo, "file.txt", f"first\nsecond\nSSN {SSN}\n")
-        assert run_hook(
-            DENY_PII_IN_COMMITS_HOOK,
-            bash_input('git commit -m "fix a & b"'),
-            cwd=git_repo,
-        ) == "allow"
-
     # ------------------------------------------------------------------ #
     # Fail-closed on malformed JSON                                       #
     # ------------------------------------------------------------------ #

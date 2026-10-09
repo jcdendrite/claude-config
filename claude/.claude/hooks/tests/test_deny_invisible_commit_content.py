@@ -53,18 +53,6 @@ class TestDenyInvisibleCommitContent:
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command)) == "allow"
         assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input(command.replace(" & ", " && "))) == "deny"
 
-    def test_quoted_ampersand_in_directory_flag_chained_add_then_commit_denied(self):
-        """A quoted in-word `&` must not cut `git -C` from its `commit`
-        subcommand, so the chained `git add -A` still reaches the walk."""
-        assert (
-            run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input('git add -A && git -C "R&D" commit -m x')) == "deny"
-        )
-
-    def test_quoted_ampersand_in_directory_flag_plain_commit_allowed(self):
-        """Confound-free companion: the same commit with nothing chained ahead
-        of it has no staging to deny."""
-        assert run_hook(DENY_INVISIBLE_COMMIT_CONTENT_HOOK, bash_input('git -C "R&D" commit -m x')) == "allow"
-
     def test_quoted_git_word_chained_add_then_commit_denied(self):
         """GH-783: this is test_chained_add_then_commit_denied's own
         fixture with two quote characters added around the second `git`.

@@ -785,10 +785,9 @@ NO_GATE_RELEASE_AGENTS = ["code-writer", "staff-sdet", "ciso-reviewer", "Explore
 
 # Agent types that may release a review gate. general-purpose/claude keep the
 # documented delegation escape hatch: both carry the full tool set, so they
-# can genuinely run a review skill themselves. review-orchestrator is the
-# dedicated agent this whole mechanism was built for — it is deliberately
-# absent from _LIB_NO_GATE_RELEASE_AGENTS precisely so it can write the
-# marker for the skill it actually ran.
+# can genuinely run a review skill themselves. review-orchestrator runs the
+# review skill itself, so it is deliberately absent from
+# _LIB_NO_GATE_RELEASE_AGENTS and can write the marker for the skill it ran.
 GATE_RELEASE_ALLOWED_AGENTS = ["general-purpose", "claude", "review-orchestrator"]
 
 
@@ -958,7 +957,7 @@ class TestGateReleaseAuthority:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_full_tool_set_agents_may_still_write(self, agent_type):
+    def test_gate_release_agents_may_still_write(self, agent_type):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -1116,7 +1115,7 @@ class TestGateReleaseAuthority:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_quote_split_write_allowed_for_full_tool_set_agents(self, agent_type):
+    def test_quote_split_write_allowed_for_gate_release_agents(self, agent_type):
         """The command-word arm gates on agent authority, not just command
         shape: the same quote-split write that denies for a no-gate-release
         agent above must not deny here. (This command's overall verdict is
@@ -1403,7 +1402,7 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_full_tool_set_agents_may_redirect_into_a_marker_path(self, agent_type):
+    def test_gate_release_agents_may_redirect_into_a_marker_path(self, agent_type):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -1800,7 +1799,7 @@ class TestGateReleaseAuthorityFileWrites:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_full_tool_set_agents_may_write_markers(self, marker_home, agent_type):
+    def test_gate_release_agents_may_write_markers(self, marker_home, agent_type):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -2292,7 +2291,7 @@ class TestGateReleaseRawDetectorOnQuotedAndLargeCommands:
         SCRIPT_NAME_SPLIT_MARKER_WRITES,
         ids=SCRIPT_NAME_SPLIT_MARKER_WRITE_IDS,
     )
-    def test_full_tool_set_agent_allowed_for_the_same_split_script_name(self, agent_type, command):
+    def test_gate_release_agent_allowed_for_the_same_split_script_name(self, agent_type, command):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -2360,7 +2359,7 @@ class TestGateReleaseRawDetectorOnQuotedAndLargeCommands:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_full_tool_set_agent_allowed_for_the_same_large_command(self, agent_type):
+    def test_gate_release_agent_allowed_for_the_same_large_command(self, agent_type):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,

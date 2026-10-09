@@ -4,48 +4,77 @@ description: >
   Dispatch to a subagent vs inline. TRIGGER when: full
   check suite or full-project verification; broad codebase search;
   first exploratory read; 2nd/3rd Bash toward same question; delegating
-  implementation; delegating a multi-step gate/review loop; waiting on
-  a dispatched subagent, or writing a `sleep`-then-recheck loop.
+  implementation; delegating a multi-step gate/review loop.
   DO NOT TRIGGER when: single-artifact targeted lookup (one file or
   value, not a multi-site sweep); comprehension read feeding your own
   writing/review/design; Edit/Write sequences where scope or content
   is still forming; the specific failure output or diff you reason over
-  line by line; a `sleep` unrelated to dispatch-waiting — documented
-  backoff, a fixture's timing test.
+  line by line.
 ---
 
 # Subagent delegation
 
-The parent session's context is the expensive resource — it is re-read on every turn, for the rest of the session, so verbose tool output left there is paid for again and again. Treat a subagent as a function call: the parent keeps the *return value*, not the callee's stack.
+The parent session's context is the expensive resource — it is re-read
+on every turn, for the rest of the session, so verbose tool output left
+there is paid for again and again. Treat a subagent as a function call:
+the parent keeps the *return value*, not the callee's stack.
 
 ## Step 1 — The two-test gate
 
 Before running a `Bash` command — or starting a sequence of them —
 toward a question, apply two tests:
 
-- **Output test:** will my reasoning consume this command's *output*, or only a *conclusion drawn from it*? Conclusion-only ⇒ the output is scratch — the same locate-and-report vs. read-and-reason split named under Codebase discovery below.
-- **Judgment test:** does choosing this command, and the next one after seeing its result, need parent-grade judgment? If a cheaper model could run the loop, it should.
+- **Output test:** will my reasoning consume this command's *output*, or
+  only a *conclusion drawn from it*? Conclusion-only ⇒ the output is scratch.
+- **Judgment test:** does choosing this command, and the next one after
+  seeing its result, need parent-grade judgment? If a cheaper model
+  could run the loop, it should.
 
-Both pointing to delegate ⇒ dispatch the **objective** — not the individual command — to a subagent: "find out X; report findings." The subagent runs the whole probe loop in its own context; the parent gets back the findings.
+Both pointing to delegate ⇒ dispatch the **objective** — not the
+individual command — to a subagent: "find out X; report findings." The
+subagent runs the whole probe loop in its own context; the parent gets
+back the findings.
 
-**Operational trigger:** noticing you're about to run the *second or third* `Bash` command toward the same question — stop and dispatch the question instead of continuing inline.
+**Operational trigger:** before running the *second or third* `Bash` command
+toward the same question, dispatch the question instead of continuing inline.
 
 **Stays inline — do not over-delegate:**
 
-- A lookup whose result is a single artifact the parent consumes directly — one `Read` of a known path, or a `grep` that resolves to one value or one yes/no answer (e.g. confirming a symbol is defined in exactly one place). The test is result shape, not whether the target is known: multi-site lookups (known or unknown target) dispatch; single-value lookups stay inline.
-- A comprehension read whose content feeds your own writing, review, or design.
-- `Edit`/`Write` sequences where you are still deciding approach, scope, or the substantive content — the judgment is the parent's and the edit stays inline. See the **Read-then-edit: decision-made test** in the `code-writer` section below for the narrow exception.
+- A lookup whose result is a single artifact the parent consumes
+  directly — one `Read` of a known path, or a `grep` resolving to one
+  value or one yes/no answer. The test is result shape, not whether the
+  target is known: multi-site lookups dispatch; single-value lookups
+  stay inline.
+- A comprehension read whose content feeds your own writing, review, or
+  design.
+- `Edit`/`Write` sequences where you are still deciding approach, scope,
+  or the substantive content — the judgment is the parent's and the edit
+  stays inline. See the **Read-then-edit: decision-made test** in the
+  `code-writer` section below for the narrow exception.
 - The failure output or diff you reason over line by line — the artifact itself, not the investigation that precedes it.
 
-**A dispatch must return something the parent does not already have.** Never dispatch an agent — of any type — whose instructions are to do no work: report back immediately, occupy the turn, or hold while other dispatches finish. A no-op agent returns at once, so it waits for nothing — waiting isn't an action a dispatch can perform — yet still pays a full agent's context cost for an empty return. When pending dispatches are all that remain, end the turn without a tool call and let their completion drive the next one.
+**A dispatch must return something the parent does not already have.**
+Never dispatch an agent — of any type — whose instructions are to do no work:
 
-**No permission cost.** A subagent inherits the parent's permission mode, so under auto mode its read-only diagnostics clear the same classifier as the parent's — no extra prompts, no `permissions.allow` entries needed.
+- Report back immediately.
+- Occupy the turn.
+- Hold while other dispatches finish.
+
+A no-op agent returns at once, so it waits for nothing — waiting isn't an
+action a dispatch can perform. It still pays a full agent's context cost
+for an empty return. When pending dispatches are all that remain, end the
+turn without a tool call and let their completion drive the next one.
+
+**No permission cost.** A subagent inherits the parent's permission
+mode, so under auto mode its read-only diagnostics clear the same
+classifier as the parent's — no extra prompts, no `permissions.allow`
+entries needed.
 
 ## Step 2 — Pick the right subagent
 
 ### Heavy command output — run inline
 
-Run checks (tests, lint, typecheck, build) via the parent's Bash tool — never delegate. Harness
+Run checks (tests, lint, typecheck, build), including runs scoped to a single test file or test name while debugging, via the parent's Bash tool — never delegate. Harness
 output truncates past a threshold, so the returned preview tends to miss the failure. See
 `subagent-delegation/REFERENCES.md` §
 "Heavy command output — harness truncation and check-suite sizes" for the threshold and sizes.
@@ -53,25 +82,42 @@ output truncates past a threshold, so the returned preview tends to miss the fai
 - **Enumerate check commands and run them one at a time** (test, then lint,
   then typecheck) or as a single chained command when they share a working
   directory.
-- **Set an explicit working directory** before running — always run from an absolute path you've anchored with `cd` or `Bash(cd ... && ...)`.
-- **Setup and state-mutating commands run inline too** (db resets, migrations, container start/stop, seed scripts, package installs). There is no charter boundary that requires splitting setup from checks.
-- Commands scoped to a single test file or single test name during interactive debugging also stay inline.
-- On overflow, the harness persists full output to a `tool-results/` file and returns only a ~2 KB preview (the *first* 2 KB, usually the startup banner) — grep/sed the persisted file for what you need. Never re-run the command or `Read` the persisted file whole; each full re-read re-bills the entire file size.
+- **Set an explicit working directory** before running — always run from an
+  absolute path you've anchored with `cd` or `Bash(cd ... && ...)`.
+- **Setup and state-mutating commands run inline too** (db resets, migrations,
+  container start/stop, seed scripts, package installs). There is no charter
+  boundary that requires splitting setup from checks.
+- On overflow, the harness persists full output to a `tool-results/`
+  file and returns only a ~2 KB preview (the *first* 2 KB, usually the
+  startup banner) — grep/sed the persisted file for what you need.
+- Never re-run the command or `Read` the persisted file whole; each
+  full re-read re-bills the entire file size.
 
 ### Codebase discovery → `Explore` or `general-purpose`
 
-When you need to *locate* something — where a symbol is defined, which files reference an identifier, broad `grep`/`glob` sweeps, exploratory reads mapping an unfamiliar area — dispatch it to a subagent rather than running it inline:
+When you need to *locate* something — where a symbol is defined, which
+files reference an identifier, broad `grep`/`glob` sweeps, exploratory
+reads mapping an unfamiliar area — dispatch it rather than running inline:
 
-- `subagent_type: Explore` for locate-style search (reads excerpts, not whole files).
-- `general-purpose` when the exploration must read whole files (as `/plan-it` and `/plan-review` do). Always pass an explicit `model` on `general-purpose` — it has no model of its own and inherits the parent's, which under auto mode may be Opus.
+- `subagent_type: Explore` for locate-style search (reads excerpts, not
+  whole files).
+- `general-purpose` when the exploration must read whole files (as
+  `/plan-it` and `/plan-review` do). Always pass an explicit `model` — it
+  has no model of its own and inherits the parent's, which under auto mode
+  may be Opus.
 
-Dispatch any exploratory read immediately, even a single command — a "~3-query" rule of thumb is only a trailing indicator, since by the third command multiple turns of output have already landed in context.
-
-This does not apply to *comprehension* reads: when you need a file's content in your own reasoning — to write or modify it, review it, or design against it — read it directly. The split is locate-and-report (delegable) vs. read-and-reason (not).
+Dispatch any exploratory read immediately, even a single command — a
+"~3-query" rule of thumb is only a trailing indicator, since by the
+third command multiple turns of output have already landed in context. Comprehension reads (Step 1) stay inline: the split is locate-and-report (delegable) vs. read-and-reason (not).
 
 ### Debug-investigation probe → `general-purpose` or `Explore`
 
-When root-causing a check or test failure requires a read-heavy probe — finding how existing tests handle a pattern, locating the relevant convention, mapping an analogous code shape — dispatch that probe as an objective to `Explore` or `general-purpose`, both with an explicit `model: sonnet` per `CLAUDE.md`'s Model Routing rule — pass it even on `Explore`, whose `Explore.md` pin is a request, not a guarantee. Use the same Explore/general-purpose split as Codebase discovery above.
+When root-causing a check or test failure requires a read-heavy probe — finding
+how existing tests handle a pattern, locating the relevant convention, mapping
+an analogous code shape — dispatch that probe as an objective, using the same
+Explore/general-purpose split as Codebase discovery above. Pass an explicit
+`model: sonnet` per `CLAUDE.md`'s Model Routing rule on both — even on
+`Explore`, whose `Explore.md` pin is a request, not a guarantee.
 
 > "Diagnose why [test/check] fails; report root cause + minimal evidence
 > + proposed fix."
@@ -84,17 +130,20 @@ before forming a hypothesis). A CI-failure diagnosis dispatches the whole skill 
 
 ### Implementation work → `code-writer`
 
-When delegating code-writing — feature code, fixes, refactors, migrations, schema, scripts — dispatch the `code-writer` subagent, not `general-purpose`. It carries `model: sonnet` and self-reviews its own diff against staff-engineer reviewer angles before returning, catching review-finding-class defects in its own context instead of as a parent round-trip.
+When delegating code-writing — feature code, fixes, refactors, migrations,
+schema, scripts — dispatch the `code-writer` subagent, not `general-purpose`.
+It carries `model: sonnet` and self-reviews its own diff against staff-engineer
+reviewer angles before returning, catching review-finding-class defects in its
+own context instead of as a parent round-trip.
 
-**Read-then-edit: decision-made test.** A read-then-edit sequence
-routes to `code-writer` only when both conditions hold: (1) the change
-is already decided before you read — you read only to *locate* a known
-target and apply a fixed change, not to determine scope or design a fix
-from what the file reveals; (2) reaching that target costs non-trivial
-context that will sit in the parent for the rest of the session. If you
-are still deciding *what* to change as you read — scope, approach, or
-the substantive content — the edit stays inline. Discovery reads
-(mapping an unfamiliar area before deciding) route to
+**Read-then-edit: decision-made test.** A read-then-edit sequence routes to
+`code-writer` only when both conditions hold: (1) the change is already
+decided before you read — you read only to *locate* a known target and apply
+a fixed change, not to determine scope or design a fix from what the file
+reveals; (2) reaching that target costs non-trivial context that will sit in
+the parent for the rest of the session. Failing (1) — still deciding scope,
+approach, or the substantive content as you read — the edit stays inline.
+Discovery reads (mapping an unfamiliar area before deciding) route to
 `Explore`/`general-purpose`, not `code-writer`.
 
 **Implementation of an approved plan is delegated by default.** A plan that cleared `/plan-review` already fixed
@@ -140,15 +189,10 @@ This does not conflict with per-phase `code-writer` dispatch above: dispatching 
 implementation work is not a gate loop, even across several phases dispatched in sequence — each phase dispatch
 returns to the parent, which reviews it before the next one goes out.
 
-## Step 3 — Wait for a dispatch without polling
+`review-orchestrator` is that bounded per-step split for `/code-review`, used only when the user explicitly asks for it: one round per dispatch, with this session sequencing the rounds. Stage the review target, then dispatch in the foreground with `model: sonnet` and without worktree isolation. After every dispatch, relay the return to the user verbatim, which keeps its `Spawn decisions:` line and any skipped reviewer as visible as in an inline round. A return that lacks a `Fix paths:` or `HALT:` item, or no return at all, stops: relay what arrived and tell the user to check `git status` for unstaged edits that no return names. Otherwise follow these steps in order:
 
-After dispatching, do not write a Bash `sleep N`-then-recheck loop to
-wait on it. End the turn, or continue other work, and let the
-harness's automatic `<task-notification>` delivery arrive — it fires
-even after the dispatching turn has already ended, so there is
-nothing to poll for.
-
-If you need inline confirmation before proceeding, check `ListAgents`
-once — never in a loop. For a cross-session peer that wants proactive
-notice instead of polling its own inbox, use `SendMessage`'s
-`notify_when_idle` instead.
+1. Stage: when `Fix paths:` names files, validate every entry before staging any. An entry passes only if it matches, character for character, a path that `git status --porcelain --untracked-files=all` lists, and it holds no single or double quote; any other entry stops the loop with the index untouched, and that includes a path porcelain v1 C-quotes (one holding whitespace or another unusual character), which the user stages. Then stage every entry in one `git add -- ':(top,literal)<path>'` call, each as a single-quoted, root-anchored literal pathspec, so neither this session's working directory nor glob or pathspec magic in the text changes what is staged. If that call fails, stop and tell the user to check `git diff --cached --name-only`, since the index may be partly staged. Each entry is a path relative to the repo root, and a rename lists both its old and its new path. Staging retires any marker written before the fix, because the marker keys on the staged-diff hash.
+2. Check: unless an earlier step stopped, run `~/.claude/scripts/marker.sh check code-review` bare, exactly as written, because the marker-script-shape gate denies an appended `; echo $?`. Any exit other than 0 or 1 stops and shows the user its stderr.
+3. Decide on the `check` outcome. "Stop" means one thing here: dispatch nothing more, start no review, tell the user the cause, and wait for them. A stop at the Stage or Check step still follows the relay, so the user has seen every `HALT:` entry.
+   - `no-match`: with any `HALT:` entry, name the paths just staged, then run `/code-review` inline in this session at once, which asks, logs and carries by the skill's own rules. Otherwise, after staging a fix, dispatch the next round, which reviews the fix. Otherwise stop and point the user to the relayed `Marker:` item, which covers a failed marker write, an agent that ended early, and a `check` that degraded to no-match (an uncomputable hash, a timeout or an empty staged diff reads as no-match).
+   - `match`: done only when the return has `Fix paths: none` and `HALT: none`, because a marker then covers the staged state. Any other `match` stops: tell the user that a marker covers a staged fix no round reviewed or a `HALT:` entry nobody decided, so inline `/code-review` would skip at its Step 0.1 and a commit would pass without either, and ask them to decide each halted entry before any commit.

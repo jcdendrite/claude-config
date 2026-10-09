@@ -5444,8 +5444,8 @@ class TestSkillReviewGateCommitShapeTrigger:
         self, isolated_home, git_repo, command
     ):
         """Each of `&`, `&&`, `;`, `|`, `||` ahead of `git commit` reaches the
-        gate. _lib_split_fragments splits a single `&` into its own fragment
-        like the other separators."""
+        gate. A single `&` is the shape _lib_split_fragments leaves unsplit
+        (GH-1063)."""
         _stage_reach_probe_skill(git_repo)
         reason = run_hook_reason(
             SKILL_REVIEW_HOOK,
@@ -5716,8 +5716,9 @@ class TestSkillReviewGateEvaluationScopeResiduals:
     ):
         """`git commit -am x` stages a tracked file's working-tree edit itself,
         so the index the gate reads holds nothing gated and it disarms. The
-        stowed deny-invisible-commit-content.sh denies `-a`, and a
-        plugin-only install lacks it."""
+        stowed deny-invisible-commit-content.sh denies `-a` except behind a
+        read-only first command (GH-1063), and a plugin-only install lacks
+        it."""
         _stage_gated_file(
             git_repo,
             _REACH_PROBE_SKILL_REL,

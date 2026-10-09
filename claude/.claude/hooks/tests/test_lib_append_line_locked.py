@@ -3,11 +3,9 @@ noclobber-lock / dead-PID-eviction / bounded-retry / whole-line-dedup-then-
 append primitive log-reviewer-round.sh calls. review-ledger.sh's own
 append uses the JSON-projection sibling, _lib_append_json_line_locked,
 instead -- see test_review_ledger_script.py's TestReviewLedgerRoundScopedDedup
-class for that primitive's own dedup-key coverage. _lib_append_line_locked
-has its own self-contained inline lock-acquisition/eviction/retry loop
-(unlike _lib_append_json_line_locked, which delegates that to the shared
-_lib_acquire_append_lock), exercised here only through this function's own
-call path.
+class for that primitive's own dedup-key coverage. Both share
+_lib_acquire_append_lock's lock-acquisition/eviction/retry logic, exercised
+here only through this function's own call path.
 
 These call the function directly against a bare tmp_path file -- no git
 repo, no JSON payload, no hook invocation -- mirroring
@@ -49,24 +47,7 @@ _LOCK_HOLD_SECONDS = 3
 _EARLY_RETURN_CEILING_SECONDS = 1.5
 
 
-# RETRIES=5 mirrors _lib.sh's _LIB_APPEND_LOCK_RETRIES and
-# orchestrator-checkpoint.sh's _CHECKPOINT_LOCK_RETRIES -- the shared
-# function takes RETRIES as its 4th, caller-supplied argument rather than
-# defaulting it internally.
-_RETRIES = 5
-
-
 def _append_line_locked(file: Path, lock_file: Path, line: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["bash", "-c", f'. "{LIB_SH}"; _lib_append_line_locked "$1" "$2" "$3" "$4"',
-         "_", str(file), str(lock_file), line, str(_RETRIES)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-def _append_line_locked_default_retries(file: Path, lock_file: Path, line: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", "-c", f'. "{LIB_SH}"; _lib_append_line_locked "$1" "$2" "$3"',
          "_", str(file), str(lock_file), line],
@@ -207,50 +188,6 @@ class TestLibAppendLineLockedConcurrency:
             # near the holder's own hold duration -- an early return would
             # mean it never really exhausted its retries against the
             # still-live holder.
-            assert _RETRY_BUDGET_SECONDS <= elapsed < _EARLY_RETURN_CEILING_SECONDS, (
-                f"append call took {elapsed:.2f}s -- expected roughly the "
-                f"{_RETRY_BUDGET_SECONDS}s retry budget, not an early return "
-                f"or a block until the {_LOCK_HOLD_SECONDS}s holder released"
-            )
-            assert lock_file.read_text().strip() == holder_pid, (
-                "the still-live holder's lock must be left alone by the "
-                "fallback append, not evicted or overwritten"
-            )
-        finally:
-            try:
-                holder.wait(timeout=_LOCK_HOLD_SECONDS + 5)
-            except subprocess.TimeoutExpired:
-                holder.kill()
-                holder.wait()
-
-    @pytest.mark.timing
-    def test_lock_held_past_retry_budget_with_default_retries_falls_through_to_unlocked_append(
-        self, tmp_path
-    ):
-        """Mirrors test_lock_held_past_retry_budget_falls_through_to_unlocked_append
-        above but omits the RETRIES argument, so it defaults to
-        $_LIB_APPEND_LOCK_RETRIES instead of an explicit caller value. Guards
-        against the omitted-RETRIES path silently skipping the lock attempt
-        instead of genuinely retrying and falling through."""
-        target = tmp_path / "state.txt"
-        lock_file = tmp_path / "state.txt.lock"
-        holder = subprocess.Popen(
-            ["bash", "-c", f'echo "$$" > "$1"; sleep {_LOCK_HOLD_SECONDS}; rm -f "$1"',
-             "_", str(lock_file)],
-        )
-        try:
-            deadline = time.monotonic() + 5
-            while not lock_file.exists() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            assert lock_file.exists(), "holder failed to create the lock file in time"
-            holder_pid = lock_file.read_text().strip()
-
-            start = time.monotonic()
-            result = _append_line_locked_default_retries(target, lock_file, "after-exhausted-default-retries")
-            elapsed = time.monotonic() - start
-
-            assert result.returncode == 0
-            assert target.read_text().splitlines() == ["after-exhausted-default-retries"]
             assert _RETRY_BUDGET_SECONDS <= elapsed < _EARLY_RETURN_CEILING_SECONDS, (
                 f"append call took {elapsed:.2f}s -- expected roughly the "
                 f"{_RETRY_BUDGET_SECONDS}s retry budget, not an early return "

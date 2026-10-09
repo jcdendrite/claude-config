@@ -2167,104 +2167,6 @@ class TestHandoffCollectStepPinsLoadBearingClauses:
         )
 
 
-class TestSubagentDelegationWaitWithoutPollingSection:
-    """Pin the wait-without-polling section, so a future edit can't silently
-    drop the no-`sleep`-loop guidance or the ListAgents/notify_when_idle
-    fallbacks without a test failing.
-
-    Whitespace-normalized so a benign rewrap of the prose doesn't fail
-    these for an unrelated reason.
-    """
-
-    def _normalized_body(self):
-        return " ".join(_skill_file("subagent-delegation").read_text().split())
-
-    def test_has_step_3_wait_without_polling_heading(self):
-        assert (
-            "## Step 3 — Wait for a dispatch without polling"
-            in self._normalized_body()
-        )
-
-    def test_forbids_sleep_then_recheck_loop(self):
-        assert (
-            "do not write a Bash `sleep N`-then-recheck loop"
-            in self._normalized_body()
-        )
-
-    def test_directs_to_task_notification_delivery(self):
-        assert "automatic `<task-notification>` delivery" in self._normalized_body()
-
-    def test_allows_single_listagents_check_never_a_loop(self):
-        assert (
-            "check `ListAgents` once — never in a loop" in self._normalized_body()
-        )
-
-    def test_cross_session_peer_uses_notify_when_idle(self):
-        assert (
-            "`SendMessage`'s `notify_when_idle` instead" in self._normalized_body()
-        )
-
-
-class TestReviewOrchestratorRetryCapLanguage:
-    """Pin review-orchestrator's retry-cap and wait-without-polling language,
-    so a future edit can't silently drop the attempt-counting rule, the
-    grounded cap value, the checkpoint --attempt append, the retry-cap
-    enumeration under "Anything needing a human's judgment", or the
-    sleep-loop prohibition without a test failing.
-
-    Whitespace-normalized so a benign rewrap of the prose doesn't fail
-    these for an unrelated reason.
-    """
-
-    def _normalized_body(self):
-        return " ".join(_agent_body("review-orchestrator").split())
-
-    def test_resume_protocol_counts_started_entries_for_next_attempt(self):
-        assert (
-            "count that step's `started` entries in the checkpoint"
-            in self._normalized_body()
-        )
-        assert (
-            "its next `--attempt` value is that count plus 1"
-            in self._normalized_body()
-        )
-
-    def test_retry_cap_is_three_total_attempts_cites_design_decisions_grounding(self):
-        assert (
-            "Retry cap: 3 total attempts / 2 automatic retries — rationale "
-            "and citation in `docs/design-decisions.md` §40."
-            in self._normalized_body()
-        )
-
-    def test_step_at_cap_is_not_redispatched(self):
-        assert (
-            "A step already at 3 `started` entries has hit the retry cap: "
-            "do not redispatch it again"
-            in self._normalized_body()
-        )
-
-    def test_checkpointing_appends_attempt_on_started(self):
-        assert (
-            "Append `--step reviewer:<name> --status started --attempt <n>` "
-            "before dispatching"
-            in self._normalized_body()
-        )
-
-    def test_return_format_enumerates_retry_cap_case(self):
-        assert (
-            "This includes a step that hit the Resume protocol's retry "
-            "cap: name the step, its attempt count (3), and that automatic "
-            "redispatch stopped"
-            in self._normalized_body()
-        )
-
-    def test_forbids_sleep_then_recheck_loop_while_waiting_on_nested_dispatch(self):
-        assert (
-            "do not write a Bash `sleep`-then-recheck loop"
-            in self._normalized_body()
-        )
-
-
 class TestModelInvokableSkillTriggerContracts:
     """TRIGGER / DO NOT TRIGGER contract tests for all model-invokable skills.
 
@@ -4366,9 +4268,10 @@ def test_tooling_measurement_code_review_skill_citation_is_still_present() -> No
     ],
 )
 def test_normalize_heading(raw_heading: str, normalized: str) -> None:
-    """The real heading at subagent-delegation/SKILL.md:120 pins the
-    mid-heading-backtick case; the rest are synthetic but exercise the same
-    normalization independently."""
+    """The real heading "Debug-investigation probe → `general-purpose` or
+    `Explore`" in subagent-delegation/SKILL.md pins the mid-heading-backtick
+    case; the rest are synthetic but exercise the same normalization
+    independently."""
     assert normalize_heading(raw_heading) == normalized
 
 
@@ -7216,4 +7119,77 @@ def test_findings_path_retired_recipe_expressions_absent_from_every_skill_body()
                 f"{path}: retired findings_path recipe expression {expr!r} still "
                 "present — call findings-path-suffix.sh instead of restating the "
                 "derivation inline"
+            )
+
+
+_SUBAGENT_DELEGATION_GATE_LOOP_HEADING = "### Exception: gate/review loops stay orchestrator-driven"
+_REVIEW_ORCHESTRATOR_RETURN_ITEMS = ("Fix paths:", "Marker:", "HALT:")
+
+
+def test_review_orchestrator_dispatch_protocol_pins_both_ends_of_the_contract() -> None:
+    """The dispatching session's protocol (subagent-delegation's gate/review-loop
+    exception) and the `review-orchestrator` agent body share one return
+    contract: the protocol's marker check, its staging rule, its explicit-request
+    condition, and the three return items the agent reports. Renaming either end
+    of that contract fails here. Every other rule in the protocol is deliberately
+    unpinned.
+    """
+    settings = json.loads((REPO_ROOT / "claude/.claude/settings.json").read_text())
+    marker_check_rules = [
+        rule
+        for rule in settings["permissions"]["allow"]
+        if "marker.sh check code-review" in rule
+    ]
+    assert len(marker_check_rules) == 1, (
+        "settings.json permissions.allow must list exactly one rule for "
+        f"`marker.sh check code-review`, found {marker_check_rules!r}. The "
+        "dispatch protocol quotes that rule's command verbatim, so a second "
+        "spelling leaves it without a single allowlisted form to quote. See "
+        "docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
+    )
+    marker_check_command = " ".join(
+        re.fullmatch(r"Bash\((.*)\)", marker_check_rules[0]).group(1).split()
+    )
+
+    section = _heading_section_text(
+        _skill_file("subagent-delegation"), _SUBAGENT_DELEGATION_GATE_LOOP_HEADING
+    )
+    required_protocol_phrases = {
+        marker_check_command: (
+            "the parent's marker read must stay the exact command permissions.allow "
+            "pre-approves, so it runs with no prompt and the marker-script-shape gate "
+            "accepts it"
+        ),
+        ":(top,literal)": (
+            "staged fix paths must be root-anchored literal pathspecs, so neither the "
+            "working directory nor pathspec magic changes what is staged"
+        ),
+        "no single or double quote": (
+            "the staging step must refuse a path holding a quote, which no benign "
+            "dogfood round exercises"
+        ),
+        "only when the user explicitly asks": (
+            "the agent is used only on an explicit user request until the post-merge "
+            "dogfood passes"
+        ),
+    }
+    for phrase, invariant in required_protocol_phrases.items():
+        assert phrase in section, (
+            f"subagent-delegation/SKILL.md {_SUBAGENT_DELEGATION_GATE_LOOP_HEADING!r} "
+            f"no longer contains {phrase!r}: {invariant}. See "
+            "docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
+        )
+
+    agent_body = " ".join(_agent_body("review-orchestrator").split())
+    for item in _REVIEW_ORCHESTRATOR_RETURN_ITEMS:
+        for owner, text in (
+            ("subagent-delegation/SKILL.md's gate/review-loop section", section),
+            ("review-orchestrator's agent body", agent_body),
+        ):
+            assert item in text, (
+                f"{owner} no longer names the return item {item!r}. The agent "
+                "reports it and the dispatching session acts on it, so renaming "
+                "it at one end leaves the other end reading a field that no "
+                "longer exists. See "
+                "docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
             )

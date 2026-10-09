@@ -38,10 +38,6 @@
 
 set -uo pipefail
 
-# Small and fixed: this runs synchronously inside a PostToolUse hook,
-# mirroring _lib.sh's _LIB_APPEND_LOCK_RETRIES rationale.
-_ROUND_STATE_LOCK_RETRIES=5
-
 INPUT=$(cat 2>/dev/null)
 [ -n "$INPUT" ] || exit 0
 
@@ -114,7 +110,7 @@ _record_reviewer_round() {
     [ "$existing_count" -ge "$cap" ] && return 0
   fi
 
-  _lib_append_line_locked "$state_file" "$state_file.lock" "$state_value" "$_ROUND_STATE_LOCK_RETRIES"
+  _lib_append_line_locked "$state_file" "$state_file.lock" "$state_value"
 
   # 30-day sweep, only on this write-transition branch -- matching
   # nudge-worktree-anchor.sh's and review-ledger.sh's own sweep placement.

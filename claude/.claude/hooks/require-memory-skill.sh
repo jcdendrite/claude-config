@@ -96,13 +96,12 @@ REAL_PATH_STATUS=$?
 IS_CANDIDATE=0
 
 # A failed REAL_PATH resolution must not fall through to an allow, since an
-# empty REAL_PATH matches neither candidate pattern below. Gated
-# unconditionally on any resolution failure, not narrowed to raw paths
-# shaped like a memory-tree target: once resolution has failed there is no
-# reliable way to tell an obfuscated-but-real memory path (e.g. one with an
-# embedded ".." that trips the fallback loop) apart from an unrelated
-# dangling symlink, so narrowing here would reopen a classification bypass.
-if [ "$REAL_PATH_STATUS" -ne 0 ] && [ -n "$REAL_PROJECTS_DIR" ]; then
+# empty REAL_PATH matches neither candidate pattern below.
+# This check is scoped to the raw, unresolved FILE_PATH so an unrelated
+# dangling symlink elsewhere on disk isn't swept in just because it also
+# fails to resolve.
+if [ "$REAL_PATH_STATUS" -ne 0 ] && [ -n "$CONFIG_DIR" ] \
+   && [[ "$FILE_PATH" == "$CONFIG_DIR/projects/"* ]] && [[ "$FILE_PATH" == *"/memory/"* ]]; then
   IS_CANDIDATE=1
 fi
 

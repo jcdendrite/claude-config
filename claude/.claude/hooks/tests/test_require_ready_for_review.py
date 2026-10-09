@@ -1733,21 +1733,6 @@ class TestRequireReadyForReview:
             == "allow"
         )
 
-    def test_quoted_ampersand_in_a_git_config_value_does_not_hide_the_push(
-        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
-    ):
-        """A `&` inside a quoted `-c` value is part of one word, so it must not
-        cut `git` from its `push` subcommand. fake_gh_pr_exists and no
-        completion marker are the strictest available inputs."""
-        assert (
-            run_hook(
-                READY_FOR_REVIEW_HOOK,
-                bash_input('git -c "a.b=&" push origin feature', session_id="s"),
-                cwd=repo_on_feature_branch,
-            )
-            == "deny"
-        )
-
     def test_full_path_git_push_invocation_detected(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
     ):

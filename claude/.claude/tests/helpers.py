@@ -2066,22 +2066,6 @@ _FORCED_FALLBACK_REALPATH_SHIM = textwrap.dedent("""\
     fi
     exec /bin/realpath "$@"
 """)
-_FORCED_FALLBACK_GREALPATH_SHIM = textwrap.dedent("""\
-    #!/bin/bash
-    echo "grealpath: illegal option -- m" >&2
-    exit 1
-""")
-
-
-def build_no_realpath_m_path_env(tmp_path: Path) -> str:
-    """Build a PATH value with realpath -m and grealpath -m shimmed out."""
-    shim_dir = tmp_path / "realpath_shim"
-    shim_dir.mkdir(exist_ok=True)
-    (shim_dir / "realpath").write_text(_FORCED_FALLBACK_REALPATH_SHIM)
-    (shim_dir / "realpath").chmod(0o755)
-    (shim_dir / "grealpath").write_text(_FORCED_FALLBACK_GREALPATH_SHIM)
-    (shim_dir / "grealpath").chmod(0o755)
-    return f"{shim_dir}:{os.environ['PATH']}"
 
 
 def _forced_fallback_path_env(tmp_path: Path) -> str:

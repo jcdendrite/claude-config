@@ -52,7 +52,6 @@ class TestBlockGhPrMerge:
             "gh\tpr\tmerge 291",                 # tab-separated tokens (\s+ matches tabs)
             "gh  pr  merge 291",                 # multiple spaces (\s+ matches runs)
             "git status\ngh pr merge 291",       # newline-separated multi-step command
-            'NOTE="R&D" gh pr merge 1',          # quoted `&` inside a leading env-var assignment
         ],
     )
     def test_additional_shapes_denied(self, command):

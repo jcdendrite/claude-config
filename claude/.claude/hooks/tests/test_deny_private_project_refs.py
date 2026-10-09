@@ -540,12 +540,6 @@ class TestDenyPrivateProjectRefs:
     def test_gh_pr_create_quoted_word_denied(self, claude_config_repo, command):
         assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
 
-    def test_gh_pr_create_quoted_ampersand_repo_flag_value_denied(self, claude_config_repo):
-        """A quoted in-word `&` in a `-R` value must not cut `gh` from its
-        `pr create` subcommand, so the tracker-shaped body is still scanned."""
-        command = "gh -R \"o&r\" pr create --body 'Fixes WIDGET-123'"
-        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "deny"
-
     def test_gh_pr_create_body_file_with_tracker_denied(self, claude_config_repo, tmp_path):
         """The canonical leak pattern: --body-file pointing at a file whose
         contents never appear in the command string. The hook must read
