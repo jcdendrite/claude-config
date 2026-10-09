@@ -9,6 +9,7 @@ pattern. No git repo is needed -- this script makes no local git calls.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import textwrap
@@ -35,6 +36,17 @@ SID = "test-session-review-pr-acquire"
 # A harness bound so a hung bash fails one test instead of the suite.
 _SUBPROCESS_TIMEOUT_SECONDS = 60
 
+# Fixture tokens: the ambient one models a fine-grained PAT that cannot read
+# `statusCheckRollup`, the override one the CI_CHECKS_GH_TOKEN value that can.
+AMBIENT_TOKEN = "ambient-fine-grained-token-value"
+CHECKS_OVERRIDE_TOKEN = "override-checks-capable-token-value"
+# The `url` a PR on each kind of host reports.
+GITHUB_COM_PR_URL = f"https://github.com/{OWNER_REPO}/pull/{PR_NUMBER}"
+MIXED_CASE_GITHUB_COM_PR_URL = f"https://GitHub.COM/{OWNER_REPO}/pull/{PR_NUMBER}"
+TENANT_PR_URL = f"https://octocat.ghe.com/{OWNER_REPO}/pull/{PR_NUMBER}"
+# A secret-shaped payload gh might echo on a failed call.
+CHECKS_ERROR_PAYLOAD = "Resource not accessible leaked-token=ghp_" + "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII"
+
 _KNOWN_API_ENDPOINT = re.compile(
     rf"repos/{re.escape(OWNER_REPO)}/pulls/{re.escape(PR_NUMBER)}(/(files|commits|reviews|comments)\?per_page=100)?$"
 )
@@ -56,6 +68,7 @@ def isolated_home(tmp_path):
 def _gh_shim_source(
     call_log: Path,
     head_ref_oid: str | None = None,
+    pr_url: str | None = GITHUB_COM_PR_URL,
     capped_files: list[str] | None = None,
     full_files: list[str] | None = None,
     capped_commits: list[str] | None = None,
@@ -77,6 +90,11 @@ def _gh_shim_source(
     fail_reviews: bool = False,
     fail_inline_comments: bool = False,
     rest_error_text: str | None = None,
+    checks_required_token: str | None = None,
+    checks_error_text: str = "Resource not accessible by personal access token",
+    checks_exit_status: int = 0,
+    checks_head_ref_oid: str | None = None,
+    checks_raw_stdout: str | None = None,
 ) -> str:
     """gh shim recording every invocation in `call_log`.
     `capped_files`/`capped_commits` model `gh pr view --json files/commits`'
@@ -93,7 +111,19 @@ def _gh_shim_source(
     rendered in caret notation as gh 2.100.0 is modeled to do (see the shim
     constant in conftest.py).
     Every listing call must carry `--paginate` and `per_page=100`; the shim
-    exits 97 otherwise."""
+    exits 97 otherwise.
+    The metadata call's `url` is `pr_url`; None leaves the key out of that call's document, to model a response without it.
+    Each logged call also records the `GH_TOKEN` and `GH_HOST` it ran with (null when unset).
+    A `gh pr view` requesting `statusCheckRollup` is the check-status call:
+    - `checks_required_token` models a fine-grained PAT, which cannot read that
+      field. When set, the call prints `checks_error_text` on stderr and exits 1
+      unless `GH_TOKEN` equals it.
+    - `checks_exit_status` (non-zero) fails the call with that status, 124 being
+      a cap kill.
+    - `checks_head_ref_oid` overrides the `headRefOid` that call returns, to
+      model a head that moved.
+    - `checks_raw_stdout` replaces that call's JSON, to model an unusable
+      response."""
     capped_files = capped_files if capped_files is not None else []
     full_files = full_files if full_files is not None else capped_files
     capped_commits = capped_commits if capped_commits is not None else []
@@ -106,10 +136,12 @@ def _gh_shim_source(
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import json
+        import os
         import sys
 
         CALL_LOG = {str(call_log)!r}
         HEAD_REF_OID = {head_ref_oid!r}
+        PR_URL = {pr_url!r}
         CAPPED_FILES = {list(capped_files)!r}
         FULL_FILES = {list(full_files)!r}
         CAPPED_COMMITS = {list(capped_commits)!r}
@@ -130,10 +162,17 @@ def _gh_shim_source(
         FAIL_REVIEWS = {fail_reviews!r}
         FAIL_INLINE_COMMENTS = {fail_inline_comments!r}
         REST_ERROR_TEXT = {rest_error_text!r}
+        CHECKS_REQUIRED_TOKEN = {checks_required_token!r}
+        CHECKS_ERROR_TEXT = {checks_error_text!r}
+        CHECKS_EXIT_STATUS = {checks_exit_status!r}
+        CHECKS_HEAD_REF_OID = {checks_head_ref_oid!r}
+        CHECKS_RAW_STDOUT = {checks_raw_stdout!r}
         {GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE}
         args = sys.argv[1:]
         with open(CALL_LOG, "a") as f:
-            f.write(json.dumps({{"args": args}}) + chr(10))
+            f.write(json.dumps({{
+                "args": args, "gh_token": os.environ.get("GH_TOKEN"), "gh_host": os.environ.get("GH_HOST"),
+            }}) + chr(10))
 
         if args[:2] == ["pr", "view"]:
             if FAIL_PR_VIEW:
@@ -142,6 +181,7 @@ def _gh_shim_source(
                 "title": "t", "body": "b", "author": {{"login": "someone"}},
                 "isCrossRepository": False, "baseRefOid": "0" * 40,
                 "headRefOid": HEAD_REF_OID, "headRepositoryOwner": {{"login": "foo"}},
+                "url": PR_URL,
                 "files": [{{"path": p, "additions": 1, "deletions": 0, "changeType": "MODIFIED"}} for p in CAPPED_FILES],
                 "changedFiles": len(FULL_FILES),
                 "commits": [{{"oid": c}} for c in CAPPED_COMMITS],
@@ -154,7 +194,20 @@ def _gh_shim_source(
             if unknown:
                 print("Unknown JSON field: " + ", ".join(unknown), file=sys.stderr)
                 sys.exit(1)
-            print(json.dumps({{name: doc[name] for name in requested}}))
+            if "statusCheckRollup" in requested:
+                if CHECKS_EXIT_STATUS:
+                    sys.exit(CHECKS_EXIT_STATUS)
+                if CHECKS_REQUIRED_TOKEN is not None and os.environ.get("GH_TOKEN") != CHECKS_REQUIRED_TOKEN:
+                    print(CHECKS_ERROR_TEXT, file=sys.stderr)
+                    sys.exit(1)
+                if CHECKS_RAW_STDOUT is not None:
+                    print(CHECKS_RAW_STDOUT)
+                    sys.exit(0)
+                if CHECKS_HEAD_REF_OID is not None:
+                    doc["headRefOid"] = CHECKS_HEAD_REF_OID
+            if PR_URL is None:
+                doc.pop("url")
+            print(json.dumps({{name: doc[name] for name in requested if name in doc}}))
             sys.exit(0)
         if args[:1] == ["api"]:
             path, _, query = (args[1] if len(args) > 1 else "").partition("?")
@@ -225,17 +278,54 @@ def _read_calls(call_log: Path) -> list[list[str]]:
     return [json.loads(line)["args"] for line in call_log.read_text().splitlines() if line]
 
 
+def _is_status_check_call(call: list[str]) -> bool:
+    """True for the `gh pr view` call that requests `statusCheckRollup`."""
+    return call[:2] == ["pr", "view"] and "statusCheckRollup" in call[call.index("--json") + 1].split(",")
+
+
+def _logged_gh_calls(call_log: Path) -> list[dict]:
+    """Each logged call as `{"args", "gh_token", "gh_host"}`, the last two None when unset in that call's env."""
+    if not call_log.exists():
+        return []
+    return [json.loads(line) for line in call_log.read_text().splitlines() if line]
+
+
+def _timeout_shim_source(timeout_log: Path) -> str:
+    """`timeout` shim that logs its own argv (`-k 2 SECONDS COMMAND...`) and execs COMMAND uncapped."""
+    return textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json
+        import os
+        import sys
+
+        args = sys.argv[1:]
+        with open({str(timeout_log)!r}, "a") as f:
+            f.write(json.dumps(args) + chr(10))
+        command = args[3:]
+        os.execvp(command[0], command)
+    """)
+
+
 def _run(
     home: Path,
     args: list[str],
     tmp_path: Path,
     extra_env: dict | None = None,
+    timeout_log: Path | None = None,
     **shim_kwargs,
 ) -> tuple[subprocess.CompletedProcess, Path]:
+    """`timeout_log`, when given, puts a logging `timeout` shim ahead of the real one on PATH."""
     _seed_session(home, SID)
     call_log = tmp_path / "gh_calls.jsonl"
     env = {**_shimmed_env(tmp_path, _gh_shim_source(call_log, **shim_kwargs)), "HOME": str(home)}
     env.pop("CLAUDE_CONFIG_DIR", None)
+    if timeout_log is not None:
+        timeout_shim_dir = tmp_path / "timeout_shim"
+        timeout_shim_dir.mkdir()
+        timeout_shim = timeout_shim_dir / "timeout"
+        timeout_shim.write_text(_timeout_shim_source(timeout_log))
+        timeout_shim.chmod(0o755)
+        env["PATH"] = f"{timeout_shim_dir}{os.pathsep}{env['PATH']}"
     if extra_env:
         env.update(extra_env)
     result = subprocess.run(
@@ -478,21 +568,45 @@ class TestStatusCheckRollupPassThrough:
     StatusContext shapes are not normalized -- and a null value reads as an
     empty list."""
 
-    def test_status_check_rollup_is_requested_in_the_pr_view_fields(self, isolated_home, tmp_path):
+    def test_main_pr_view_call_omits_status_check_rollup_and_one_separate_call_requests_it(
+        self, isolated_home, tmp_path
+    ):
+        """A fine-grained PAT cannot read `statusCheckRollup`, so requesting it
+        in the metadata call would fail that whole call."""
         result, call_log = _run(isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40)
         assert result.returncode == 0, result.stderr
         calls = _read_calls(call_log)
         assert not [c for c in calls if c[:2] == ["pr", "checks"]]
         pr_view_calls = [c for c in calls if c[:2] == ["pr", "view"]]
-        assert "statusCheckRollup" in pr_view_calls[0][pr_view_calls[0].index("--json") + 1].split(",")
+        assert len(pr_view_calls) == 2
+        main_call = pr_view_calls[0]
+        assert "statusCheckRollup" not in main_call[main_call.index("--json") + 1].split(",")
+        status_check_calls = [c for c in pr_view_calls if _is_status_check_call(c)]
+        assert len(status_check_calls) == 1
+        requested_fields = status_check_calls[0][status_check_calls[0].index("--json") + 1].split(",")
+        assert set(requested_fields) == {"headRefOid", "statusCheckRollup"}
         assert "checks" not in json.loads(result.stdout)
+
+    def test_zero_registered_checks_is_an_empty_list_with_the_flag_true(self, isolated_home, tmp_path):
+        """An empty list means no checks are registered, and is distinct from
+        the null a failed fetch gives."""
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, status_check_rollup=[],
+        )
+        assert result.returncode == 0, result.stderr
+        document = json.loads(result.stdout)
+        assert document["statusCheckRollup"] == []
+        assert document["statusCheckRollupAvailable"] is True
+        assert "check status" not in result.stderr
 
     def test_null_status_check_rollup_from_gh_is_normalized_to_an_empty_list(self, isolated_home, tmp_path):
         result, _ = _run(
             isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, null_status_check_rollup=True,
         )
         assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout)["statusCheckRollup"] == []
+        document = json.loads(result.stdout)
+        assert document["statusCheckRollup"] == []
+        assert document["statusCheckRollupAvailable"] is True
 
     def test_check_run_and_status_context_entries_pass_through_unchanged(self, isolated_home, tmp_path):
         rollup = [
@@ -504,6 +618,299 @@ class TestStatusCheckRollupPassThrough:
         )
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout)["statusCheckRollup"] == rollup
+
+
+class TestStatusCheckRollupUnavailable:
+    """Check status is read-only context, so a failed fetch of it degrades the
+    document instead of aborting the run."""
+
+    def _run_with_a_failing_checks_call(self, isolated_home, tmp_path, **shim_kwargs):
+        shim_kwargs.setdefault("checks_required_token", CHECKS_OVERRIDE_TOKEN)
+        return _run(
+            isolated_home, [PR_IDENTITY], tmp_path, extra_env={"GH_TOKEN": AMBIENT_TOKEN},
+            head_ref_oid="a" * 40, capped_files=["a.py"], capped_commits=["c1"], **shim_kwargs,
+        )
+
+    def test_a_checks_call_the_token_cannot_read_gives_null_and_flag_false_and_still_writes_everything(
+        self, isolated_home, tmp_path
+    ):
+        result, _ = self._run_with_a_failing_checks_call(isolated_home, tmp_path)
+
+        assert result.returncode == 0, result.stderr
+        document = json.loads(result.stdout)
+        assert document["statusCheckRollup"] is None
+        assert document["statusCheckRollupAvailable"] is False
+        assert document["headRefOid"] == "a" * 40
+        assert document["files"] == ["a.py"]
+        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+        assert json.loads((active_dir / f"{SID}.context.json").read_text()) == document
+        assert _provenance_fields(active_dir / f"{SID}.provenance")["mode"] == "acquired"
+
+    def test_the_availability_flag_follows_the_completeness_flags_at_the_head_of_the_document(
+        self, isolated_home, tmp_path
+    ):
+        result, _ = self._run_with_a_failing_checks_call(isolated_home, tmp_path)
+        assert list(json.loads(result.stdout))[:3] == [
+            "filesComplete", "commitsComplete", "statusCheckRollupAvailable",
+        ]
+
+    def test_the_degraded_note_precedes_the_backstop_path_line_which_stays_last(self, isolated_home, tmp_path):
+        result, _ = self._run_with_a_failing_checks_call(isolated_home, tmp_path)
+
+        stderr_lines = result.stderr.splitlines()
+        context_file = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.context.json"
+        assert stderr_lines[-1].endswith(f": {context_file}")
+        degraded_lines = [line for line in stderr_lines if "check status" in line]
+        assert len(degraded_lines) == 1
+        assert "failed (exit 1)" in degraded_lines[0]
+        assert "CI status is unknown" in degraded_lines[0]
+
+    def test_an_ambient_token_failure_hints_that_fine_grained_pats_cannot_read_check_status(
+        self, isolated_home, tmp_path
+    ):
+        result, _ = self._run_with_a_failing_checks_call(isolated_home, tmp_path)
+        assert "Possible cause: fine-grained PATs cannot read check status" in result.stderr
+        assert "for a github.com PR, set CI_CHECKS_GH_TOKEN" in result.stderr
+
+    @pytest.mark.parametrize(
+        "exit_status,status_wording,hints_at_fine_grained_pats",
+        [(1, "failed (exit 1)", True), (124, "timed out", False), (137, "failed (exit 137)", False)],
+        ids=["gh-failed", "cap-kill-124", "sigkill-137"],
+    )
+    def test_a_cap_kill_is_not_blamed_on_the_token_and_only_124_is_named_a_timeout(
+        self, isolated_home, tmp_path, exit_status, status_wording, hints_at_fine_grained_pats
+    ):
+        result, _ = self._run_with_a_failing_checks_call(
+            isolated_home, tmp_path, checks_required_token=None, checks_exit_status=exit_status,
+        )
+        assert result.returncode == 0, result.stderr
+        document = json.loads(result.stdout)
+        assert document["statusCheckRollup"] is None
+        assert document["statusCheckRollupAvailable"] is False
+        assert f"the fetch {status_wording}." in result.stderr
+        assert ("fine-grained PATs cannot read check status" in result.stderr) is hints_at_fine_grained_pats
+
+    def test_the_checks_call_runs_under_the_same_cap_as_the_metadata_call(self, isolated_home, tmp_path):
+        """A hung check-status fetch must not block the run it exists to
+        keep alive."""
+        timeout_log = tmp_path / "timeout_calls.jsonl"
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, timeout_log=timeout_log, head_ref_oid="a" * 40,
+        )
+        assert result.returncode == 0, result.stderr
+        # Each logged argv is `-k 2 SECONDS gh ARGS...`.
+        capped_pr_view_calls = [
+            (argv[2], argv[4:]) for argv in map(json.loads, timeout_log.read_text().splitlines())
+            if argv[3:6] == ["gh", "pr", "view"]
+        ]
+        seconds_by_status_check_call = [seconds for seconds, gh_args in capped_pr_view_calls if _is_status_check_call(gh_args)]
+        seconds_by_metadata_call = [seconds for seconds, gh_args in capped_pr_view_calls if not _is_status_check_call(gh_args)]
+        assert len(seconds_by_status_check_call) == 1
+        assert int(seconds_by_status_check_call[0]) > 0
+        assert seconds_by_status_check_call == seconds_by_metadata_call
+
+    def test_a_head_that_moved_between_the_two_calls_marks_check_status_unavailable(
+        self, isolated_home, tmp_path
+    ):
+        """Checks read from a newer head would describe commits the rest of the
+        document does not."""
+        result, _ = self._run_with_a_failing_checks_call(
+            isolated_home, tmp_path, checks_required_token=None,
+            checks_head_ref_oid="b" * 40, status_check_rollup=[{"__typename": "CheckRun", "name": "ci"}],
+        )
+        assert result.returncode == 0, result.stderr
+        document = json.loads(result.stdout)
+        assert document["statusCheckRollup"] is None
+        assert document["statusCheckRollupAvailable"] is False
+        assert document["headRefOid"] == "a" * 40
+        active_dir = isolated_home / ".claude" / ".review-pr-active.d"
+        assert _provenance_fields(active_dir / f"{SID}.provenance")["head_ref_oid"] == "a" * 40
+        assert "the PR head moved" in result.stderr
+        assert "fine-grained" not in result.stderr
+
+    @pytest.mark.parametrize(
+        "raw_stdout",
+        [
+            "not json",
+            "[]",
+            '{"headRefOid": "' + "a" * 40 + '"}',
+            '{"statusCheckRollup": []}',
+            '{"headRefOid": "' + "a" * 40 + '", "statusCheckRollup": {}}',
+            '{"headRefOid": "' + "a" * 40 + '", "statusCheckRollup": "passing"}',
+            '{"headRefOid": "' + "a" * 40 + '", "statusCheckRollup": 0}',
+            "",
+        ],
+        ids=[
+            "not-json", "not-an-object", "no-rollup-key", "no-head",
+            "rollup-is-an-object", "rollup-is-a-string", "rollup-is-a-number", "exit-0-with-empty-stdout",
+        ],
+    )
+    def test_an_unusable_checks_response_is_unavailable_not_an_empty_list(
+        self, isolated_home, tmp_path, raw_stdout
+    ):
+        result, _ = self._run_with_a_failing_checks_call(
+            isolated_home, tmp_path, checks_required_token=None, checks_raw_stdout=raw_stdout,
+        )
+        assert result.returncode == 0, result.stderr
+        document = json.loads(result.stdout)
+        assert document["statusCheckRollup"] is None
+        assert document["statusCheckRollupAvailable"] is False
+        assert "no usable headRefOid and statusCheckRollup" in result.stderr
+
+
+class TestStatusCheckRollupTokenContainment:
+    """CI_CHECKS_GH_TOKEN authenticates only the check-status call, and only
+    against github.com."""
+
+    def _credentials_by_call_kind(self, call_log):
+        """The (GH_TOKEN, GH_HOST) pair of the check-status call and of every other call."""
+        checks_credentials, other_credentials = [], []
+        for entry in _logged_gh_calls(call_log):
+            credentials = checks_credentials if _is_status_check_call(entry["args"]) else other_credentials
+            credentials.append((entry["gh_token"], entry["gh_host"]))
+        return checks_credentials, other_credentials
+
+    def test_the_override_reaches_only_the_checks_call_pinned_to_github_com_when_gh_host_is_unset(
+        self, isolated_home, tmp_path
+    ):
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            extra_env={"GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN},
+            checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["statusCheckRollupAvailable"] is True
+        checks_credentials, other_credentials = self._credentials_by_call_kind(call_log)
+        assert checks_credentials == [(CHECKS_OVERRIDE_TOKEN, "github.com")]
+        assert other_credentials
+        assert set(other_credentials) == {(AMBIENT_TOKEN, None)}
+        logged_argv = json.dumps([entry["args"] for entry in _logged_gh_calls(call_log)])
+        assert CHECKS_OVERRIDE_TOKEN not in logged_argv
+
+    def test_the_checks_call_pins_lowercase_github_com_whatever_the_ambient_gh_host_spelling_while_other_calls_keep_it(
+        self, isolated_home, tmp_path
+    ):
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            extra_env={
+                "GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN, "GH_HOST": "GitHub.COM",
+            },
+            checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
+        assert result.returncode == 0, result.stderr
+        checks_credentials, other_credentials = self._credentials_by_call_kind(call_log)
+        assert checks_credentials == [(CHECKS_OVERRIDE_TOKEN, "github.com")]
+        assert set(other_credentials) == {(AMBIENT_TOKEN, "GitHub.COM")}
+
+    def test_a_mixed_case_github_com_pr_url_engages_the_override_pinned_to_lowercase_github_com(
+        self, isolated_home, tmp_path
+    ):
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, pr_url=MIXED_CASE_GITHUB_COM_PR_URL,
+            extra_env={"GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN},
+            checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["statusCheckRollupAvailable"] is True
+        checks_credentials, other_credentials = self._credentials_by_call_kind(call_log)
+        assert checks_credentials == [(CHECKS_OVERRIDE_TOKEN, "github.com")]
+        assert set(other_credentials) == {(AMBIENT_TOKEN, None)}
+
+    def test_an_override_with_no_ambient_token_still_reaches_only_the_checks_call(self, isolated_home, tmp_path):
+        """A keychain-backed `gh` login leaves GH_TOKEN unset."""
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            extra_env={"CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN},
+            checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["statusCheckRollupAvailable"] is True
+        checks_credentials, other_credentials = self._credentials_by_call_kind(call_log)
+        assert checks_credentials == [(CHECKS_OVERRIDE_TOKEN, "github.com")]
+        assert set(other_credentials) == {(None, None)}
+
+    def test_an_empty_override_counts_as_unset_and_the_checks_call_uses_the_ambient_token(
+        self, isolated_home, tmp_path
+    ):
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            extra_env={"GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": ""},
+            checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
+        assert result.returncode == 0, result.stderr
+        assert self._credentials_by_call_kind(call_log)[0] == [(AMBIENT_TOKEN, None)]
+        assert "Possible cause: fine-grained PATs cannot read check status" in result.stderr
+
+    def test_the_override_is_withheld_from_a_tenant_pr_and_the_hint_says_so(
+        self, isolated_home, tmp_path
+    ):
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, pr_url=TENANT_PR_URL,
+            extra_env={
+                "GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN,
+                "GH_HOST": "octocat.ghe.com",
+            },
+            checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["statusCheckRollupAvailable"] is False
+        checks_credentials, other_credentials = self._credentials_by_call_kind(call_log)
+        assert checks_credentials == [(AMBIENT_TOKEN, "octocat.ghe.com")]
+        assert set(other_credentials) == {(AMBIENT_TOKEN, "octocat.ghe.com")}
+        assert "CI_CHECKS_GH_TOKEN is set but was not sent because the PR is not reported on github.com" in result.stderr
+        assert CHECKS_OVERRIDE_TOKEN not in result.stderr
+
+    def test_a_tenant_pr_withholds_the_override_even_when_gh_host_is_unset(self, isolated_home, tmp_path):
+        """An unset GH_HOST does not mean github.com: gh falls back to a lone configured tenant host."""
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, pr_url=TENANT_PR_URL,
+            extra_env={"GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN},
+            checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["statusCheckRollupAvailable"] is False
+        checks_credentials, other_credentials = self._credentials_by_call_kind(call_log)
+        assert checks_credentials == [(AMBIENT_TOKEN, None)]
+        assert set(other_credentials) == {(AMBIENT_TOKEN, None)}
+        assert "CI_CHECKS_GH_TOKEN is set but was not sent because the PR is not reported on github.com" in result.stderr
+        assert CHECKS_OVERRIDE_TOKEN not in result.stderr
+
+    def test_a_metadata_response_without_a_url_withholds_the_override(self, isolated_home, tmp_path):
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, pr_url=None,
+            extra_env={"GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN},
+            checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
+        assert result.returncode == 0, result.stderr
+        assert self._credentials_by_call_kind(call_log)[0] == [(AMBIENT_TOKEN, None)]
+        assert "CI_CHECKS_GH_TOKEN is set but was not sent because the PR is not reported on github.com" in result.stderr
+
+    def test_a_withheld_override_with_an_ambient_token_that_can_read_checks_leaves_the_document_complete(
+        self, isolated_home, tmp_path
+    ):
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, pr_url=TENANT_PR_URL,
+            extra_env={
+                "GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN,
+                "GH_HOST": "octocat.ghe.com",
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        document = json.loads(result.stdout)
+        assert document["statusCheckRollup"] == []
+        assert document["statusCheckRollupAvailable"] is True
+        assert "check status" not in result.stderr
+        assert self._credentials_by_call_kind(call_log)[0] == [(AMBIENT_TOKEN, "octocat.ghe.com")]
+
+    def test_an_override_that_still_fails_says_it_was_used(self, isolated_home, tmp_path):
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            extra_env={"GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN},
+            checks_required_token="a-token-nobody-holds",
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["statusCheckRollupAvailable"] is False
+        assert "CI_CHECKS_GH_TOKEN was used for this fetch and it still failed" in result.stderr
 
 
 class TestContextAssemblyOfOversizedLists:
@@ -526,6 +933,22 @@ class TestContextAssemblyOfOversizedLists:
         assert result.returncode == 0, result.stderr
         doc = json.loads(result.stdout)
         assert doc["existingReviews"][0]["body"] == oversized_body
+        assert list(scratch_root.iterdir()) == [], "the context-assembly temp directory must be removed on exit"
+
+    def test_a_status_check_rollup_past_the_single_argument_limit_assembles_and_leaves_no_temp_dir(
+        self, isolated_home, tmp_path
+    ):
+        oversized_rollup = [{"__typename": "CheckRun", "name": "ci", "detailsUrl": "x" * 300_000}]
+        scratch_root = tmp_path / "scratch"
+        scratch_root.mkdir()
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, extra_env={"TMPDIR": str(scratch_root)},
+            head_ref_oid="a" * 40, status_check_rollup=oversized_rollup,
+        )
+        assert result.returncode == 0, result.stderr
+        doc = json.loads(result.stdout)
+        assert doc["statusCheckRollup"] == oversized_rollup
+        assert doc["statusCheckRollupAvailable"] is True
         assert list(scratch_root.iterdir()) == [], "the context-assembly temp directory must be removed on exit"
 
 
@@ -755,3 +1178,34 @@ class TestGhFailureNeverBypassesTheScrub:
         assert secret_shaped_text not in result.stderr
         context_file = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.context.json"
         assert not context_file.exists()
+
+    @pytest.mark.parametrize(
+        "checks_shim_kwargs",
+        [
+            {"checks_required_token": "a-token-nobody-holds", "checks_error_text": CHECKS_ERROR_PAYLOAD},
+            {"checks_required_token": CHECKS_OVERRIDE_TOKEN, "checks_raw_stdout": "not json " + CHECKS_ERROR_PAYLOAD},
+            {
+                "checks_required_token": CHECKS_OVERRIDE_TOKEN, "checks_head_ref_oid": "b" * 40,
+                "status_check_rollup": [{"__typename": "CheckRun", "name": CHECKS_ERROR_PAYLOAD}],
+            },
+            {"checks_required_token": CHECKS_OVERRIDE_TOKEN},
+        ],
+        ids=["checks-call-fails", "bad-stdout", "head-moved", "checks-call-succeeds-with-override"],
+    )
+    def test_checks_call_response_text_and_override_token_never_reach_output_context_json_or_argv(
+        self, isolated_home, tmp_path, checks_shim_kwargs
+    ):
+        """gh's stderr is discarded, a rejected response is never echoed, and
+        the override token rides only the checks call's environment."""
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            extra_env={"GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN},
+            **checks_shim_kwargs,
+        )
+        assert result.returncode == 0, result.stderr
+        context_file = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.context.json"
+        logged_argv = json.dumps([entry["args"] for entry in _logged_gh_calls(call_log)])
+        for surface in (result.stdout, result.stderr, context_file.read_text(), logged_argv):
+            assert CHECKS_ERROR_PAYLOAD not in surface
+            assert CHECKS_OVERRIDE_TOKEN not in surface
+            assert AMBIENT_TOKEN not in surface

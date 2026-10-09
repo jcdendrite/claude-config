@@ -20,11 +20,15 @@
 # (cli/cli's pkg/cmd/pr/checks/checks.go).
 #
 # Input (environment):
-#   CI_CHECKS_GH_TOKEN  -- optional; used only for the two `gh pr checks`
-#                           calls, since fine-grained PATs 403 on the Checks
+#   CI_CHECKS_GH_TOKEN  -- optional; used for the two `gh pr checks` calls,
+#                           since fine-grained PATs 403 on the Checks
 #                           API. Resolved via direnv and withheld on a
 #                           cross-host mismatch — see docs/scripts.md's
 #                           CI_CHECKS_GH_TOKEN entry for the full mechanism.
+#                           review-pr-acquire.sh also reads it, for its
+#                           check-status fetch, but shares neither the direnv
+#                           resync nor its cross-host mismatch gate (acquire
+#                           gates on the PR url; see its usage text).
 #   GH_HOST             -- optional; tells `gh` which host to target. Needed
 #                           when a GHE host is supplied only via direnv and
 #                           was never registered via `gh auth login`, so

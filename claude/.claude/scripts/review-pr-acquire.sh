@@ -11,8 +11,9 @@ usage() {
 Usage: ~/.claude/scripts/review-pr-acquire.sh <owner>/<repo>#<number>
 
 Fetches everything /review-pr's later steps need in one call:
-- gh pr view's own metadata fields, including statusCheckRollup (entries
-  passed through raw, a null value read as an empty list).
+- gh pr view's own metadata fields.
+- statusCheckRollup, from a separate gh pr view call whose failure cannot abort
+  the run: entries passed through raw, a null value read as an empty list.
 - author_association and the PR's own `changed_files`/`commits` totals, from a
   separate REST call (author_association is not a valid `gh pr view --json`
   field).
@@ -32,13 +33,25 @@ keys, each true only when the list's length equals the PR's own REST total.
 A re-fetched file list that still differs in length from `changed_files`
 aborts instead.
 
+`statusCheckRollupAvailable` follows them. It is false when the check-status
+fetch fails, times out, returns an unusable response, or returns a head other
+than the metadata call's. Then statusCheckRollup is null. An empty list is a
+successful fetch that found no registered checks. The run still exits 0 and
+prints one stderr line.
+
+Environment: CI_CHECKS_GH_TOKEN, when set, authenticates only the check-status
+fetch, and only when the PR's own url is on github.com. See docs/scripts.md's
+ci-watch.sh entry.
+The token is sent to github.com whenever the PR url is on github.com, without
+checking that it was issued for github.com.
+
 Also writes this session's provenance file (mode "acquired").
 review-pr-checkout.sh and review-pr-diff.sh each rewrite it (mode
 "checkout"/"diff-only") after their own independent re-derivation.
 marker.sh write review-pr accepts only those two modes, so an acquire-only
 session can never write a completion marker.
 
-Any gh failure aborts with no partial document written. gh's own
+Any other gh failure aborts with no partial document written. gh's own
 stderr/error text is never echoed verbatim, since an API error payload can
 echo request parameters: only this script's own fixed messages reach
 stdout/stderr.
@@ -81,7 +94,7 @@ fi
 # 10s: a network GET carrying no payload, matching review-pr-checkout.sh's
 # own budget for the same call shape.
 GH_PR_VIEW_TIMEOUT_SECONDS=10
-PR_VIEW_FIELDS="title,body,author,isCrossRepository,baseRefOid,headRefOid,headRepositoryOwner,files,changedFiles,commits,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup"
+PR_VIEW_FIELDS="title,body,author,isCrossRepository,baseRefOid,headRefOid,headRepositoryOwner,url,files,changedFiles,commits,reviewDecision,mergeable,mergeStateStatus"
 if ! PR_VIEW_JSON=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json "$PR_VIEW_FIELDS" 2>/dev/null); then
   echo "review-pr-acquire.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's metadata (gh pr view failed or timed out). Abort." >&2
   exit 2
@@ -95,6 +108,58 @@ HEAD_REF_OID=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.headRefOid // empty' 2
 if [[ -z "$HEAD_REF_OID" ]]; then
   echo "review-pr-acquire.sh: PR $OWNER_REPO#$PR_NUMBER's metadata carried no headRefOid. Abort." >&2
   exit 2
+fi
+
+# Empty is not fatal: the override token is then withheld.
+PR_URL=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.url // empty' 2>/dev/null) || PR_URL=""
+
+# Read-only context that nothing branches on, so a failed fetch degrades instead of aborting (why it is a separate call: REFERENCES.md).
+# The override token and its pinned GH_HOST ride per-call prefix assignments, never an export, and never reach argv or output.
+fetch_status_check_rollup() {
+  _lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid,statusCheckRollup 2>/dev/null
+}
+
+# Prints the hint for a failed fetch with exit status $1, worded as a possible cause.
+# A cap kill gets none of the token hints, since a timeout is not a token problem.
+status_check_failure_hint() {
+  if _lib_status_consistent_with_cap_kill "$1"; then
+    return 0
+  fi
+  case "$CHECKS_TOKEN_SOURCE" in
+    override) printf 'CI_CHECKS_GH_TOKEN was used for this fetch and it still failed.' ;;
+    withheld) printf 'Possible cause: CI_CHECKS_GH_TOKEN is set but was not sent because the PR is not reported on github.com.' ;;
+    *) printf "Possible cause: fine-grained PATs cannot read check status; for a github.com PR, set CI_CHECKS_GH_TOKEN (see docs/scripts.md's ci-watch.sh entry)." ;;
+  esac
+}
+
+CHECKS_TOKEN_SOURCE=$(review_pr_checks_token_source "$PR_URL" "${CI_CHECKS_GH_TOKEN:-}")
+CHECKS_FETCH_STATUS=0
+if [[ "$CHECKS_TOKEN_SOURCE" == "override" ]]; then
+  CHECKS_VIEW_JSON=$(GH_HOST=github.com GH_TOKEN="$CI_CHECKS_GH_TOKEN" fetch_status_check_rollup) || CHECKS_FETCH_STATUS=$?
+else
+  CHECKS_VIEW_JSON=$(fetch_status_check_rollup) || CHECKS_FETCH_STATUS=$?
+fi
+# Null, not an empty list, when unavailable: an empty list means no checks are registered.
+STATUS_CHECK_ROLLUP_JSON="null"
+STATUS_CHECK_ROLLUP_AVAILABLE=false
+CHECKS_UNAVAILABLE_NOTE=""
+if [[ "$CHECKS_FETCH_STATUS" -ne 0 ]]; then
+  CHECKS_UNAVAILABLE_NOTE="the fetch $(review_pr_gh_status_description "$CHECKS_FETCH_STATUS")."
+  CHECKS_FAILURE_HINT=$(status_check_failure_hint "$CHECKS_FETCH_STATUS")
+  if [[ -n "$CHECKS_FAILURE_HINT" ]]; then
+    CHECKS_UNAVAILABLE_NOTE+=" $CHECKS_FAILURE_HINT"
+  fi
+# Line 1 is the response's headRefOid and line 2 the rollup as compact JSON, a null read as an empty list.
+elif ! CHECKS_RESPONSE_LINES=$(printf '%s' "$CHECKS_VIEW_JSON" | _lib_jq -er '
+    select(type == "object" and ((.headRefOid | type) == "string") and (.headRefOid | length) > 0
+      and has("statusCheckRollup") and ((.statusCheckRollup | type) == "array" or .statusCheckRollup == null))
+    | .headRefOid, ((.statusCheckRollup // []) | tojson)' 2>/dev/null); then
+  CHECKS_UNAVAILABLE_NOTE="the fetch returned no usable headRefOid and statusCheckRollup."
+elif [[ "${CHECKS_RESPONSE_LINES%%$'\n'*}" != "$HEAD_REF_OID" ]]; then
+  CHECKS_UNAVAILABLE_NOTE="the PR head moved between the metadata fetch and the check-status fetch."
+else
+  STATUS_CHECK_ROLLUP_JSON="${CHECKS_RESPONSE_LINES#*$'\n'}"
+  STATUS_CHECK_ROLLUP_AVAILABLE=true
 fi
 
 # authorAssociation is not a valid `gh pr view --json` field -- including it
@@ -235,7 +300,8 @@ trap 'rm -rf -- "${CONTEXT_TMP_DIR:?}"' EXIT
 if ! { printf '%s' "$FILES_JSON" > "$CONTEXT_TMP_DIR/files.json" \
   && printf '%s' "$COMMITS_JSON" > "$CONTEXT_TMP_DIR/commits.json" \
   && printf '%s' "$REVIEWS_JSON" > "$CONTEXT_TMP_DIR/reviews.json" \
-  && printf '%s' "$INLINE_COMMENTS_JSON" > "$CONTEXT_TMP_DIR/inline-comments.json"; }; then
+  && printf '%s' "$INLINE_COMMENTS_JSON" > "$CONTEXT_TMP_DIR/inline-comments.json" \
+  && printf '%s' "$STATUS_CHECK_ROLLUP_JSON" > "$CONTEXT_TMP_DIR/status-check-rollup.json"; }; then
   echo "review-pr-acquire.sh: could not stage the context document's lists in $CONTEXT_TMP_DIR. Abort." >&2
   exit 2
 fi
@@ -252,12 +318,14 @@ if ! CONTEXT_JSON=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -c \
   --arg authorAssociation "$AUTHOR_ASSOCIATION" \
   --argjson filesComplete "$FILES_COMPLETE" \
   --argjson commitsComplete "$COMMITS_COMPLETE" \
+  --argjson statusCheckRollupAvailable "$STATUS_CHECK_ROLLUP_AVAILABLE" \
+  --slurpfile statusCheckRollup "$CONTEXT_TMP_DIR/status-check-rollup.json" \
   --slurpfile files "$CONTEXT_TMP_DIR/files.json" \
   --slurpfile commits "$CONTEXT_TMP_DIR/commits.json" \
   --slurpfile existingReviews "$CONTEXT_TMP_DIR/reviews.json" \
   --slurpfile existingInlineComments "$CONTEXT_TMP_DIR/inline-comments.json" \
-  '{filesComplete: $filesComplete, commitsComplete: $commitsComplete} + . + {
-     statusCheckRollup: (.statusCheckRollup // []),
+  '{filesComplete: $filesComplete, commitsComplete: $commitsComplete, statusCheckRollupAvailable: $statusCheckRollupAvailable} + . + {
+     statusCheckRollup: $statusCheckRollup[0],
      prIdentity: $prIdentity,
      authorAssociation: $authorAssociation,
      files: $files[0],
@@ -284,6 +352,9 @@ if ! _lib_write_review_pr_provenance "$PROVENANCE" \
   exit 2
 fi
 
+if [[ -n "$CHECKS_UNAVAILABLE_NOTE" ]]; then
+  echo "review-pr-acquire.sh: check status for PR $OWNER_REPO#$PR_NUMBER is unavailable -- $CHECKS_UNAVAILABLE_NOTE statusCheckRollupAvailable is false and CI status is unknown." >&2
+fi
 # The path line precedes the document so a head-truncated merged stream keeps it.
 echo "review-pr-acquire.sh: context backstop file (Read it if stdout was cut off): $CONTEXT_FILE" >&2
 printf '%s\n' "$CONTEXT_JSON"

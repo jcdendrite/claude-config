@@ -23,6 +23,7 @@
 #   review_pr_audit_match_lines     — the audit's stop document as one escaped, bounded line per match, for a stop message
 #   review_pr_audit_match_report    — review_pr_audit_match_lines, or a fixed line with the match count when the document cannot be formatted
 #   review_pr_gh_status_description — "timed out" for a gh exit status of 124, else "failed (exit N)"
+#   review_pr_checks_token_source   — whether the check-status fetch uses the CI_CHECKS_GH_TOKEN override (PR url on github.com), withholds it, or runs on the ambient token
 #   review_pr_resolve_session_and_pid — sets SESSION_ID and CLAUDE_PID for the scripts that record provenance
 #
 # Every function except review_pr_resolve_session_and_pid takes its input as an
@@ -176,6 +177,24 @@ review_pr_gh_status_description() {
   else
     printf 'failed (exit %s)' "$1"
   fi
+}
+
+# review_pr_checks_token_source PR_URL OVERRIDE_TOKEN
+# Prints `ambient` when OVERRIDE_TOKEN is empty, `override` when it is non-empty and PR_URL begins with `https://github.com/` (host case-insensitive), else `withheld`.
+# PR_URL is the `url` field of `gh pr view --json`, which names the host the PR lives on; an unset GH_HOST does not.
+# The caller pins GH_HOST=github.com on the `override` call, so the token only ever goes to github.com.
+# The match is anchored at the start and requires the `/` after the host, so a port, userinfo, a subdomain, a suffix domain, or a bare host does not match.
+# Prints only the verdict, so the token never reaches a caller's output.
+review_pr_checks_token_source() {
+  local pr_url="${1-}" override_token="${2-}"
+  if [[ -z "$override_token" ]]; then
+    printf 'ambient'
+    return 0
+  fi
+  case "$pr_url" in
+    https://[Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]/*) printf 'override' ;;
+    *) printf 'withheld' ;;
+  esac
 }
 
 # review_pr_resolve_session_and_pid SCRIPT_NAME CONSEQUENCE ABORT_NOTE
