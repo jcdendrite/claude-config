@@ -660,3 +660,39 @@ Full empirical record: [`case-studies/review-loop-cost-forensics.md`](case-studi
 |---|---|---|
 | Cache-TTL selection (5-minute vs. 1-hour), re-examined against one disproportionately expensive private-project branch | Not pursued — secondary on this branch | The one-hour tier is selectable by config via `promptCacheTtl`/`ENABLE_PROMPT_CACHING_1H`, not structurally blocked. Idle-gap rebuilds are a real but secondary contributor to this branch's own spend, behind the subagent thread's own review-loop dispatch volume. This study leaves the standing "Cache-TTL selection" verdict above unchanged. Whether the one-hour tier would net-save is a `cache-rebuild --ttl-verdict` question this study did not run. |
 | Idle-gap rebuild cause: concurrent-session switching vs. operator breaks, re-examined on the same branch | **Departs from the corpus-wide finding** | The branch's idle-gap rebuilds show no evidence of a concurrent session — the opposite of the corpus-wide concurrent-session-driven finding in the "Context cost root cause" section above. This branch's idle gaps read as genuine operator breaks, not session-switching; recorded as a named exception to the corpus-wide pattern, not a refutation of it. |
+
+## From `review-loop-cost-levers.md` — "Review-loop cost levers: record the verdict on each lever in the cost-levers register"
+
+GH-1207 asked for a verdict on four review-loop cost levers. `docs/case-studies/review-loop-cost-forensics.md` § "Recommended, not implemented here" named incremental credit, a fan-out cap, and a narrowed cumulative pass as follow-ups without a verdict. This section records a verdict on each lever, and adopts none of them.
+
+The evidence is a pair of ad hoc scans of existing, locally retained transcripts. They collected no new data and cannot be rerun as a script. The first scan covered repeat reviewer spawns across staged-diff `/code-review` rounds on a single commit. The second covered `ready-for-review` cumulative re-passes after a fix. This section names no account, root count, or time window.
+
+Because the scans are ad hoc rather than a scope-refusing subcommand, this section follows `docs/private-project-redaction.md` § "Publishing a tooling measurement". It names no figure from the scans and no share-like descriptor. It records only ordinal comparisons of which way each reading pointed. `<config-dir>` below means the active `CLAUDE_CONFIG_DIR`, else the default Claude config directory.
+
+Limits of the scans:
+
+- No record reliably keeps the bytes each spawn was handed. `<config-dir>/.reviewer-round-state.d/` keeps only a capped list of whole-staged-diff hashes per branch, with no agent or lane.
+- Some staged spawns' verdicts lived only in `agent-reviews/` findings files that no longer exist.
+- Diff text could not be recovered for every spawn.
+- Some cumulative re-passes could not be reconstructed because their `<config-dir>/cumulative-review-diff-markers/` file had already been garbage-collected, so that sample is non-random.
+- "Dirty" means any finding was raised, not that a finding was addressed, and only dirty re-passes were analysed.
+- Placing a finding inside or outside a fix delta is a heuristic token match, and some findings had no usable location.
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Incremental per-agent review credit for repeat staged-diff `/code-review` rounds (skip re-spawning an agent whose files are byte-identical to files it already cleared with zero findings) | Not built (measured) | - Repeat spawns that followed a returned finding outnumbered those that followed a zero-finding return.<br>- The verdict holds even if every unclassified verdict were zero-finding, because changed file chunks outnumbered unchanged ones.<br>- Reopening it would need what the reopening list below names. |
+| Narrowing `ready-for-review`'s cumulative pass to the increment since the last clean review | Not pursued (measured) | - Among placeable findings on dirty re-passes, those outside the fix delta outnumbered those inside it.<br>- Passes whose findings all sat outside the delta outnumbered passes whose findings all sat inside it, so a narrowed pass would have missed findings the full pass raised.<br>- Clean re-passes, where narrowing would save cost without loss, were not measured.<br>- The pass stays unnarrowed per `claude-skills/skills/ready-for-review/SKILL.md` § "3. Code review (halt on findings)". |
+| Capping reviewer fan-out | Rejected, standing verdict | The `token-spend-reduction.md` section's "Capping reviewer-ownership fan-out in `/code-review`" row stands. Nothing measured here bears on it. |
+| Letting a live staged-diff code-review marker satisfy `ready-for-review`'s cumulative pass on a single-commit branch (GH-1057) | Rejected (falsified), reinforced. GH-1057 is closed, folded into GH-1207. | - The `token-spend-reduction.md` section's "Skipping cumulative `/code-review` for single-commit PRs" row stands.<br>- A further reason: `claude-skills/skills/code-review/SKILL.md` § "Step 0.6 — Pre-judgment table check" defers the comment/durable-doc-prose row from every staged-diff round, so the cumulative pass is that row's only exhaustive pass.<br>- The code-review marker stores a single staged-diff hash, with no record of which reviewers ran. |
+
+**What the scans could not settle.** Whether re-run cost is driven by incomplete first passes or by reviewer variance. Existing data cannot separate a missed finding from a variance draw, for the reasons in the limits list above. `comment-discipline-reviewer` confounds any such reading: its findings inside a fix delta are a first read of that prose, so only its outside-delta findings say anything about variance. A cycle of a delta review since the last cumulative pass, run until clean, is today's loop when a fix lands as a single commit. The fix step dispatches a single `code-writer`, whose fix commit already passes the staged-diff gate before the next full pass. That cycle would save cost only by narrowing the next pass, which is the narrowed-pass row above.
+
+Reopening incremental credit would need:
+
+- A measurement of which spawns are creditable. That needs a per-spawn record of handed bytes and verdict, which nothing keeps today.
+- A credit key wider than the agent's own files, because directed causal-reach duties reach other lanes. See `claude-skills/skills/code-review/SKILL.md` § "Step 0.6 — Pre-judgment table check".
+- An audit record for each credited skip, because `skill-fidelity-reviewer` accepts a spawn of the required type anywhere on the branch.
+- An accurate backstop claim. The cumulative pass does not gate a first push with no open PR, per `docs/design-decisions/comment-discipline-reviewer-deferred-to-cumulative-pass.md`. A credit design would widen that doc's accepted residual from a single row to every credited row.
+- Line headroom in `code-review/SKILL.md`. See `docs/design-decisions/ready-for-review-fix-loop-convergence.md` § "The `code-review/SKILL.md` line cap".
+
+No code, skill, hook, or test change ships from this investigation.
