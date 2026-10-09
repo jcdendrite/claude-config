@@ -5488,11 +5488,12 @@ _PINNED_PLAN_IT_PUSH_CONSENT_CLAUSES: dict[str, str] = {
 
 class TestPlanItStep7PushConsent:
     """Pin the plan-it Step 7 push bullets, so a reword that drops the no-answer
-    or autonomous-shipping consent rule, the one-push-URL condition, the `refs/heads/` tip resolution, a
-    flag of the pinned push command, or its escaping rule fails this test
-    instead of drifting silently. The pins check wording and the bullet's right edge, not runtime
-    behavior. On failure, re-read the guarantee and update the constant only
-    if the new wording preserves it.
+    or autonomous-shipping consent rule, the one-push-URL condition, the
+    `refs/heads/` tip resolution, a flag, the refspec, or the literal-SHA rule
+    of the pinned push command, or its escaping rule fails this test instead of
+    drifting silently. The pins check wording and the bullet's right edge, not
+    runtime behavior. On failure, re-read the guarantee and update the constant
+    only if the new wording preserves it.
     """
 
     @pytest.mark.parametrize("clause_key", sorted(_PINNED_PLAN_IT_PUSH_CONSENT_CLAUSES))
