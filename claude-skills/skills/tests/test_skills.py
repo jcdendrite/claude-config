@@ -5461,6 +5461,55 @@ class TestPlanItStep7FallbackToJudgment:
         )
 
 
+# plan-it Step 7 push bullets that decide whether a push happens, where it goes,
+# and what it sends.
+_PINNED_PLAN_IT_PUSH_CONSENT_CLAUSES: dict[str, str] = {
+    "exactly_one_push_url": (
+        "Ask only when `git remote get-url --push --all <remote>` prints exactly "
+        "one URL, since `git push <remote>` publishes to every URL it prints."
+    ),
+    "tip_pinned_to_refs_heads_sha": (
+        "Before asking, resolve the branch tip once with "
+        "`git rev-parse --verify refs/heads/<branch>`, and name that `<sha>` "
+        "and the remote branch `refs/heads/<branch>` in the question."
+    ),
+    "no_answer_no_push": "No answer means no push.",
+    "pinned_push_command": (
+        "Push only after a yes, with exactly `git -c push.pushOption= push "
+        "--no-follow-tags --no-recurse-submodules <remote> "
+        "<sha>:refs/heads/<branch>`, where `<sha>` is the literal hex named in "
+        "the question, never a command substitution. Escape every substituted "
+        "value so the shell sees one literal word, in this command and in every "
+        "other command in this list."
+    ),
+    "autonomous_shipping_no_waiver": "Autonomous shipping does not waive the question.",
+}
+
+
+class TestPlanItStep7PushConsent:
+    """Pin the plan-it Step 7 push bullets, so a reword that drops the no-answer
+    or autonomous-shipping consent rule, the one-push-URL condition, the
+    `refs/heads/` tip resolution, a flag, the refspec, or the literal-SHA rule
+    of the pinned push command, or its escaping rule fails this test instead of
+    drifting silently. The pins check wording and the bullet's right edge, not
+    runtime behavior. On failure, re-read the guarantee and update the constant
+    only if the new wording preserves it.
+    """
+
+    @pytest.mark.parametrize("clause_key", sorted(_PINNED_PLAN_IT_PUSH_CONSENT_CLAUSES))
+    def test_pinned_push_bullet_matches_live_text(self, clause_key: str) -> None:
+        raw_section = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP7_HEADING)
+        pinned_text = " ".join(_PINNED_PLAN_IT_PUSH_CONSENT_CLAUSES[clause_key].split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            raw_section,
+            context=(
+                f"plan-it/SKILL.md: Step 7's {clause_key!r} push bullet no longer "
+                "matches its pinned clause."
+            ),
+        )
+
+
 _READY_FOR_REVIEW_STEP1_HEADING = "## 1. Preconditions (halt on fail)"
 
 # The condition→action bullets from ready-for-review/SKILL.md's step-1
