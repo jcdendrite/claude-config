@@ -292,7 +292,8 @@ def _check_model_breakdown_cell(cell: dict | None, row: dict) -> None:
     ):
         raise _ModelBreakdownCheckError("tokens")
 
-    # N leaves and the scalar each round by at most half a micro-dollar, so their integer gap is at most (N + 1) // 2.
+    # N leaves and the scalar each round by at most half a micro-dollar, so while their float sums agree
+    # their integer gap is at most (N + 1) // 2.
     group_count = len(groups)
     tolerance_micros = 0 if group_count <= 1 else (group_count + 1) // 2
     if any(
