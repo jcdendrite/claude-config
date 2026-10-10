@@ -27,14 +27,17 @@ Run it with Bash `timeout: 600000`. A harness timeout kill is not a script exit 
 
 The document carries:
 
-- `gh pr view`'s metadata fields, including `statusCheckRollup`.
+- `gh pr view`'s metadata fields.
+- `statusCheckRollup` (CI status), with a `statusCheckRollupAvailable` flag.
 - `prIdentity` and `authorAssociation`.
 - `files` (an array of path strings) and `commits` (an array of commit SHA strings), each with a `filesComplete` or `commitsComplete` flag.
 - `existingReviews` and `existingInlineComments`.
 
 A flag is `false` when that list's length does not match the PR's own total. Say so in the findings rather than reasoning as if the list were whole.
 
-Re-running this step resets provenance to mode `acquired`, so re-run step 2 before the step 7 marker write. Record `headRefOid` from the printed document, because every later step pins to it. Treat `mergeable`/`mergeStateStatus` as frequently `UNKNOWN`, and never branch a stop decision on either. Any `gh` failure aborts the whole call rather than proceeding on partial data.
+`statusCheckRollupAvailable: false` means CI status is unknown, and `statusCheckRollup` is then `null`. Say so in the findings, and never read it as passing or as "no checks" (which is an empty list with the flag `true`).
+
+Re-running this step resets provenance to mode `acquired`, so re-run step 2 before the step 7 marker write. Record `headRefOid` from the printed document, because every later step pins to it. Treat `mergeable`/`mergeStateStatus` as frequently `UNKNOWN`, and never branch a stop decision on either. Any other `gh` failure aborts the whole call rather than proceeding on partial data.
 
 ## Step 2 — Checkout or diff-only
 

@@ -7,7 +7,7 @@ match list still holds.
 
 ## What `review-pr-acquire.sh` fetches (Step 1)
 
-`gh pr view --json title,body,author,isCrossRepository,baseRefOid,headRefOid,headRepositoryOwner,files,changedFiles,commits,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup`, plus a second REST call, a paginated existing-reviews fetch, and a paginated inline-review-comments fetch — all inside the one script call, not typed out per-run.
+`gh pr view --json title,body,author,isCrossRepository,baseRefOid,headRefOid,headRepositoryOwner,url,files,changedFiles,commits,reviewDecision,mergeable,mergeStateStatus`, plus a separate `gh pr view --json headRefOid,statusCheckRollup` call, a second REST call, a paginated existing-reviews fetch, and a paginated inline-review-comments fetch — all inside the one script call, not typed out per-run.
 
 - **The printed document overwrites `gh pr view`'s `files` and `commits`
   keys with different shapes.** `files` is an array of path strings and
@@ -40,6 +40,16 @@ match list still holds.
   entry (the legacy Commit Status API, used by some external CI systems)
   carries `state`. The script passes the entries through raw, reads a null
   value as an empty list, and branches on neither shape.
+- **`statusCheckRollup` comes from its own `gh pr view` call.** Under a
+  fine-grained PAT, `gh pr view --json statusCheckRollup` fails with
+  `GraphQL: Resource not accessible by personal access token
+  (repository.pullRequest.statusCheckRollup...)` (observed; the same call
+  without that field succeeds). A shared call would therefore abort the whole
+  acquire step. A failed or head-mismatched fetch gives `null` with
+  `statusCheckRollupAvailable: false`, never an empty list. For a PR with no
+  checks, `gh pr view --json headRefOid,statusCheckRollup` exits 0 with
+  `"statusCheckRollup": []` (observed), so an absent key is treated as
+  unavailable.
 - **`mergeable` and `mergeStateStatus` are frequently `UNKNOWN`.** GitHub
   computes mergeability asynchronously; a first request routinely returns
   `UNKNOWN` with no signal that a retry would resolve it. The skill never

@@ -1584,6 +1584,9 @@ def test_parse_pr_identity_returns_owner_repo_and_number(tmp_path: Path) -> None
         # that both '/'-delimited segments are checked on their own.
         pytest.param("foo/..#5", id="repo_half_traversal_only"),
         pytest.param("../foo#5", id="owner_half_traversal_only"),
+        # gh's `-R HOST/OWNER/REPO` would override a pinned GH_HOST, so a
+        # host-qualified identity must never reach it.
+        pytest.param("github.com/foo/bar#5", id="host_qualified"),
     ],
 )
 def test_parse_pr_identity_rejects_malformed_shapes(tmp_path: Path, pr_identity: str) -> None:

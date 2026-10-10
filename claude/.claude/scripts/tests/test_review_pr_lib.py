@@ -504,6 +504,62 @@ class TestGhStatusDescription:
 
 
 
+class TestChecksTokenSource:
+    """The override goes only to a PR whose url is on github.com; an empty override is no override."""
+
+    @pytest.mark.parametrize(
+        "pr_url,expected_with_token",
+        [
+            ("https://github.com/owner/repo/pull/7", "override"),
+            ("https://GitHub.COM/owner/repo/pull/7", "override"),
+            ("", "withheld"),
+            ("https://octocat.ghe.com/owner/repo/pull/7", "withheld"),
+            ("https://ghes.example.test/owner/repo/pull/7", "withheld"),
+        ],
+        ids=["github.com", "mixed-case-github.com", "url-absent", "ghe.com-tenant", "self-hosted-ghes"],
+    )
+    def test_a_non_empty_token_is_sent_only_to_a_github_com_pr(self, pr_url, expected_with_token):
+        status, output = _call("review_pr_checks_token_source", pr_url, "override-token-value")
+        assert (status, output) == (0, expected_with_token)
+
+    @pytest.mark.parametrize(
+        "lookalike_url",
+        [
+            "https://github.com.example.test/owner/repo/pull/7",
+            "https://github.com:443/owner/repo/pull/7",
+            "https://github.com@evil.test/owner/repo/pull/7",
+            "https://api.github.com/owner/repo/pull/7",
+            "https://notgithub.com/owner/repo/pull/7",
+            "http://github.com/owner/repo/pull/7",
+            "github.com/owner/repo/pull/7",
+            " https://github.com/owner/repo/pull/7",
+            "https://github.com",
+        ],
+        ids=[
+            "suffix-domain", "port", "userinfo-smuggle", "github-subdomain", "prefix-lookalike", "plain-http",
+            "no-scheme", "leading-space", "bare-host-without-path",
+        ],
+    )
+    def test_a_lookalike_of_a_github_com_url_withholds_a_non_empty_token(self, lookalike_url):
+        status, output = _call("review_pr_checks_token_source", lookalike_url, "override-token-value")
+        assert (status, output) == (0, "withheld")
+
+    @pytest.mark.parametrize(
+        "pr_url",
+        [
+            "https://github.com/owner/repo/pull/7",
+            "https://GitHub.COM/owner/repo/pull/7",
+            "",
+            "https://octocat.ghe.com/owner/repo/pull/7",
+            "https://ghes.example.test/owner/repo/pull/7",
+        ],
+        ids=["github.com", "mixed-case-github.com", "url-absent", "ghe.com-tenant", "self-hosted-ghes"],
+    )
+    def test_an_empty_token_is_ambient_for_every_url(self, pr_url):
+        status, output = _call("review_pr_checks_token_source", pr_url, "")
+        assert (status, output) == (0, "ambient")
+
+
 class TestResolveSessionAndPid:
     """_lib_resolve_claude_pid is stubbed after sourcing, so these rows pin the
     helper's own wiring without depending on the test process's ancestry."""
