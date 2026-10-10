@@ -17,6 +17,7 @@ from ._pr_cost_helpers import (
     _PRE_MODEL_HEADER_LINE,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
+    _make_mkstemp_create_0644,
     _pr_cost_args,
     _pr_cost_export_args,
     _pre_model_row_line,
@@ -1071,33 +1072,86 @@ class TestModelBreakdownUsdMicros:
         assert Decimal(scalar_cell).scaleb(6) == leaf["usd_micros"]
 
 
+_FOUR_VARIANTS = ("standard", "fast", "us_geo", "fast_us_geo")
+_INT64_MAX = 2**63 - 1
+_DOLLARS_ABOVE_2_TO_THE_53_MICROS = 17179869184.015625
+_MICROS_ABOVE_2_TO_THE_53 = 17_179_869_184_015_625
+
+
+class TestUsdToMicros:
+    """Each expected literal is computed by hand from the six-decimal rendering of the input."""
+
+    @pytest.mark.parametrize(
+        "dollars,expected_micros",
+        [
+            pytest.param(0.0, 0, id="zero"),
+            pytest.param(-0.0, 0, id="negative-zero-is-zero"),
+            pytest.param(1.5, 1_500_000, id="plain-value"),
+            pytest.param(0.30000000000000004, 300_000, id="float-noise-renders-away"),
+            pytest.param(0.0078125, 7812, id="tie-with-even-neighbor-rounds-down"),
+            pytest.param(0.0234375, 23438, id="tie-with-odd-neighbor-rounds-up"),
+            pytest.param(-0.0078125, -7812, id="negative-tie-rounds-to-even"),
+            pytest.param(-1.5, -1_500_000, id="negative-value"),
+            pytest.param(2.5e-06, 3, id="decimal-tie-that-is-not-a-binary-tie-rounds-up"),
+            pytest.param(_DOLLARS_ABOVE_2_TO_THE_53_MICROS, _MICROS_ABOVE_2_TO_THE_53, id="above-2-to-the-53-micros-stays-exact"),
+        ],
+    )
+    def test_micros_denote_the_six_decimal_rendering_of_the_dollars(self, dollars, expected_micros):
+        assert _mod.pr_cost._usd_to_micros(dollars) == expected_micros
+
+    def test_the_above_2_to_the_53_case_exceeds_what_float_multiplication_can_hold_exactly(self):
+        assert _MICROS_ABOVE_2_TO_THE_53 > 2**53
+        assert int(_DOLLARS_ABOVE_2_TO_THE_53_MICROS * 1e6) != _MICROS_ABOVE_2_TO_THE_53
+
+
 class TestCheckModelBreakdownCell:
     @staticmethod
-    def _cell_with_class_micros(group_count: int, token_class: str, micros_total: int) -> dict:
-        variants = ("standard", "fast", "us_geo")[:group_count]
-        cell = {"claude-sonnet-5": {variant: _zero_group() for variant in variants}}
-        cell["claude-sonnet-5"][variants[0]][token_class]["usd_micros"] = micros_total
+    def _cell_with_class_micros(groups: tuple[tuple[str, str], ...], token_class: str, micros_total: int) -> dict:
+        """A cell holding one all-zero group per (model, variant) pair, with micros_total on the first group's class."""
+        cell: dict = {}
+        for model, variant in groups:
+            cell.setdefault(model, {})[variant] = _zero_group()
+        first_model, first_variant = groups[0]
+        cell[first_model][first_variant][token_class]["usd_micros"] = micros_total
         return cell
 
     @pytest.mark.parametrize("token_class", _TOKEN_CLASS_NAMES)
     @pytest.mark.parametrize("gap_sign", [1, -1], ids=["leaves-above-scalar", "leaves-below-scalar"])
     @pytest.mark.parametrize(
-        "group_count,gap_micros,is_accepted",
+        "groups,gap_micros,is_accepted",
         [
-            pytest.param(1, 0, True, id="n1-accepts-gap-0"),
-            pytest.param(1, 1, False, id="n1-rejects-gap-1"),
-            pytest.param(2, 1, True, id="n2-accepts-gap-1"),
-            pytest.param(2, 2, False, id="n2-rejects-gap-2"),
-            pytest.param(3, 2, True, id="n3-accepts-gap-2"),
-            pytest.param(3, 3, False, id="n3-rejects-gap-3"),
+            pytest.param((("claude-sonnet-5", "standard"),), 0, True, id="n1-accepts-gap-0"),
+            pytest.param((("claude-sonnet-5", "standard"),), 1, False, id="n1-rejects-gap-1"),
+            pytest.param(tuple(("claude-sonnet-5", v) for v in _FOUR_VARIANTS[:2]), 1, True, id="n2-accepts-gap-1"),
+            pytest.param(tuple(("claude-sonnet-5", v) for v in _FOUR_VARIANTS[:2]), 2, False, id="n2-rejects-gap-2"),
+            pytest.param(tuple(("claude-sonnet-5", v) for v in _FOUR_VARIANTS[:3]), 2, True, id="n3-accepts-gap-2"),
+            pytest.param(tuple(("claude-sonnet-5", v) for v in _FOUR_VARIANTS[:3]), 3, False, id="n3-rejects-gap-3"),
+            pytest.param(tuple(("claude-sonnet-5", v) for v in _FOUR_VARIANTS), 2, True, id="n4-accepts-gap-2"),
+            pytest.param(tuple(("claude-sonnet-5", v) for v in _FOUR_VARIANTS), 3, False, id="n4-rejects-gap-3"),
+            pytest.param(
+                (*(("claude-sonnet-5", v) for v in _FOUR_VARIANTS), ("claude-opus-5", "standard")), 3, True,
+                id="n5-accepts-gap-3",
+            ),
+            pytest.param(
+                (*(("claude-sonnet-5", v) for v in _FOUR_VARIANTS), ("claude-opus-5", "standard")), 4, False,
+                id="n5-rejects-gap-4",
+            ),
+            pytest.param(
+                (("claude-sonnet-5", "standard"), ("claude-opus-5", "standard")), 1, True,
+                id="n2-across-two-models-accepts-gap-1",
+            ),
+            pytest.param(
+                (("claude-sonnet-5", "standard"), ("claude-opus-5", "standard")), 2, False,
+                id="n2-across-two-models-rejects-gap-2",
+            ),
         ],
     )
     def test_dollar_tolerance_boundary_by_group_count_for_every_token_class(
-        self, token_class, group_count, gap_micros, is_accepted, gap_sign,
+        self, token_class, groups, gap_micros, is_accepted, gap_sign,
     ):
         scalar_micros = 10
         row = _zero_scalar_row(**{f"{token_class}_usd": scalar_micros / 1_000_000})
-        cell = self._cell_with_class_micros(group_count, token_class, scalar_micros + gap_sign * gap_micros)
+        cell = self._cell_with_class_micros(groups, token_class, scalar_micros + gap_sign * gap_micros)
 
         if is_accepted:
             _mod.pr_cost._check_model_breakdown_cell(cell, row)
@@ -1236,10 +1290,73 @@ class TestCheckModelBreakdownCell:
         cell = {"claude-sonnet-5": {"standard": group}}
         self._assert_rule(cell, _zero_scalar_row(cache_read_tokens=-5), "shape")
 
+    @staticmethod
+    def _cell_and_row_with_cache_read_tokens(tokens: int) -> tuple[dict, dict]:
+        group = _zero_group()
+        group["cache_read"]["tokens"] = tokens
+        return {"claude-sonnet-5": {"standard": group}}, _zero_scalar_row(cache_read_tokens=tokens)
+
+    def test_leaf_tokens_at_int64_max_pass_the_check(self):
+        cell, row = self._cell_and_row_with_cache_read_tokens(_INT64_MAX)
+        _mod.pr_cost._check_model_breakdown_cell(cell, row)
+
+    def test_leaf_tokens_one_above_int64_max_fail_the_shape_rule(self):
+        cell, row = self._cell_and_row_with_cache_read_tokens(_INT64_MAX + 1)
+        self._assert_rule(cell, row, "shape")
+
+    def test_leaf_usd_micros_at_int64_max_clear_the_shape_rule_and_one_above_fail_it(self):
+        """The row's dollar scalar is zero, so the max case clears shape and then fails the dollars rule."""
+        for usd_micros, expected_rule in ((_INT64_MAX, "dollars"), (_INT64_MAX + 1, "shape")):
+            group = _zero_group()
+            group["cache_read"]["usd_micros"] = usd_micros
+            cell = {"claude-sonnet-5": {"standard": group}}
+
+            self._assert_rule(cell, _zero_scalar_row(), expected_rule)
+
     def test_token_sum_off_by_one_with_dollars_inside_tolerance_fails_the_tokens_rule_not_dollars(self):
         cell = {"claude-sonnet-5": {variant: _zero_group() for variant in ("standard", "fast", "us_geo")}}
         cell["claude-sonnet-5"]["standard"]["cache_read"]["tokens"] = 6
         self._assert_rule(cell, _zero_scalar_row(cache_read_tokens=5), "tokens")
+
+    @staticmethod
+    def _cell_and_row_failing(failing_rules: set[str]) -> tuple[dict, dict]:
+        """A one-group cell and its row that fail exactly the listed rules (shape, model-membership,
+        label-membership, tokens, dollars) and pass every other."""
+        group = _zero_group()
+        model, variant = "claude-sonnet-5", "standard"
+        row_overrides: dict = {}
+        if "shape" in failing_rules:
+            group["cache_read"]["tokens"] = -5
+            row_overrides["cache_read_tokens"] = -5
+        if "model-membership" in failing_rules:
+            model = "claude-test-unpriced"
+        if "label-membership" in failing_rules:
+            variant = "warp_speed"
+        if "tokens" in failing_rules:
+            group["cache_read"]["tokens"] = 6
+            row_overrides["cache_read_tokens"] = 5
+        if "dollars" in failing_rules:
+            group["cache_read"]["usd_micros"] = 3
+        return {model: {variant: group}}, _zero_scalar_row(**row_overrides)
+
+    @pytest.mark.parametrize(
+        "earlier_rule,later_rule",
+        [
+            pytest.param("shape", "model-membership", id="shape-before-model-membership"),
+            pytest.param("model-membership", "label-membership", id="model-membership-before-label-membership"),
+            pytest.param("label-membership", "tokens", id="label-membership-before-tokens"),
+            pytest.param("tokens", "dollars", id="tokens-before-dollars"),
+        ],
+    )
+    def test_a_cell_failing_two_adjacent_rules_reports_the_earlier_one(self, earlier_rule, later_rule):
+        """Each defect alone fails its own rule, so the combined cell fails both and the order alone decides."""
+        earlier_only_cell, earlier_only_row = self._cell_and_row_failing({earlier_rule})
+        later_only_cell, later_only_row = self._cell_and_row_failing({later_rule})
+        both_cell, both_row = self._cell_and_row_failing({earlier_rule, later_rule})
+
+        self._assert_rule(earlier_only_cell, earlier_only_row, earlier_rule)
+        self._assert_rule(later_only_cell, later_only_row, later_rule)
+        self._assert_rule(both_cell, both_row, earlier_rule)
 
     @pytest.mark.parametrize(
         "plant,expected_rule",
@@ -1678,7 +1795,10 @@ class TestPrCostRecordWritesAndReportsTheBreakdown:
         assert "per-model breakdown failed" not in err
         assert "row(s) recorded without a per-model breakdown" not in err
 
-    def test_ledger_created_by_a_record_run_has_mode_0600(self, fake_projects, tmp_path, monkeypatch):
+    def test_ledger_created_by_a_record_run_has_mode_0600_even_when_mkstemp_creates_0644(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        _make_mkstemp_create_0644(monkeypatch)
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         assert not ledger_path.exists()
 
@@ -1846,13 +1966,18 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         assert "is already captured" in captured.err
         self._assert_untouched(ledger_path, before_bytes, captured)
 
-    def test_read_mode_leaves_the_file_unchanged(self, fake_projects, tmp_path, monkeypatch, capsys):
+    def test_read_mode_leaves_the_file_unchanged_and_prints_the_seeded_row(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
-        before_bytes = self._seed_pre_model_ledger(ledger_path)
+        before_bytes = self._seed_pre_model_ledger(ledger_path, pr_number=4217)
 
         _mod.pr_cost._pr_cost_report(_pr_cost_args(), _NOW, [fake_projects.parent])
 
-        self._assert_untouched(ledger_path, before_bytes, capsys.readouterr())
+        captured = capsys.readouterr()
+        self._assert_untouched(ledger_path, before_bytes, captured)
+        assert "4217" in captured.out
+        assert "No rows recorded yet" not in captured.out
 
     def test_export_leaves_the_file_unchanged(self, fake_projects, tmp_path, monkeypatch, capsys):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))

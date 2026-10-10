@@ -26,6 +26,7 @@ from ._pr_cost_helpers import (
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
     _legacy_row_line,
+    _make_mkstemp_create_0644,
     _pr_cost_args,
     _pre_model_row_line,
     _sample_model_breakdown,
@@ -257,10 +258,22 @@ class TestParsePrCostLedgerFileTextMalformed:
         with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="merge-conflict marker"):
             _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
 
-    def test_missing_header_raises(self):
+    def test_unrecognized_first_line_is_named_without_echo_or_the_newer_version_hint(self):
         text = "not-the-header\n" + self._valid_line() + "\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="missing or mismatched"):
+        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
             _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        assert str(exc_info.value) == "missing or mismatched pr-cost ledger header row (unrecognized first line)"
+
+    def test_empty_file_is_named_without_the_newer_version_hint(self):
+        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text("")
+        assert str(exc_info.value) == "missing or mismatched pr-cost ledger header row (the file is empty)"
+
+    def test_current_header_with_a_trailing_space_gets_no_newer_version_hint(self):
+        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + " \n" + self._valid_line() + "\n"
+        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        assert "update this checkout" not in str(exc_info.value)
 
     def test_mismatched_header_raises(self):
         # Dropping a middle column (not the last) keeps this header distinct from every recognized frozen header.
@@ -370,13 +383,8 @@ class TestPrCostLedgerFrozenHeaders:
         for column in missing:
             assert column in _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMN_DEFAULTS, column
 
-    @pytest.mark.parametrize("header_line", [*_FROZEN_PR_COST_HEADER_LINES])
-    def test_every_column_of_a_frozen_header_exists_in_the_current_column_tuple(self, header_line):
-        """A column dropped from the current tuple would be silently discarded when a frozen-header row is rewritten."""
-        retired = [c for c in header_line.split("\t") if c not in _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS]
-        assert retired == []
-
     def test_every_column_of_every_recognized_header_exists_in_the_current_column_tuple(self):
+        """A column dropped from the current tuple would be silently discarded when an older-header row is rewritten."""
         for header_line, columns in _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS_BY_HEADER_LINE.items():
             retired = [c for c in columns if c not in _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS]
             assert retired == [], header_line
@@ -533,6 +541,7 @@ _CODEC_REJECT_CASES = [
         for leaf_key, other_key in (("tokens", "usd_micros"), ("usd_micros", "tokens"))
         for label, bad_value in (
             ("float", 1.5), ("bool", True), ("negative", -1), ("nan", float("nan")), ("infinity", float("inf")),
+            ("above-int64", 2**63),
         )
     ],
 ]
@@ -579,6 +588,10 @@ class TestDecodeModelBreakdownCell:
             sys.set_int_max_str_digits(previous_limit)
         assert exc_info.value.__cause__ is None
         assert exc_info.value.__context__ is None
+
+    def test_leaf_integers_at_the_int64_maximum_are_accepted(self):
+        cell = _single_group_cell(leaf={"tokens": 2**63 - 1, "usd_micros": 2**63 - 1})
+        assert _mod.pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
 
     def test_empty_cell_decodes_to_not_recorded_and_empty_object_to_recorded_nothing(self):
         assert _mod.pr_cost_ledger._decode_model_breakdown_cell("", 2) is None
@@ -717,7 +730,8 @@ class TestFormatModelBreakdownCell:
 
 
 class TestWritePrCostLedgerFileMode:
-    def test_fresh_file_created_with_0600(self, tmp_path):
+    def test_fresh_file_created_with_0600_even_when_mkstemp_creates_0644(self, tmp_path, monkeypatch):
+        _make_mkstemp_create_0644(monkeypatch)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [])
         assert stat.S_IMODE(ledger_path.stat().st_mode) == 0o600
@@ -760,6 +774,45 @@ class TestWritePrCostLedgerFileVerificationFailure:
         monkeypatch.setattr(os, "replace", replace_failing)
 
         with pytest.raises(OSError, match="replace failed"):
+            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+                _sample_pr_cost_row(pr_number=1), _sample_pr_cost_row(pr_number=2),
+            ])
+
+        _assert_ledger_untouched(ledger_path, before_bytes, before_mtime_ns)
+
+
+class TestWritePrCostLedgerFileDurability:
+    def test_temp_file_is_fsynced_after_its_bytes_are_flushed_and_before_the_replace(self, tmp_path, monkeypatch):
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        events: list[tuple[str, int]] = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def recording_fsync(fd):
+            events.append(("fsync", os.fstat(fd).st_size))
+            real_fsync(fd)
+
+        def recording_replace(source, destination):
+            events.append(("replace", 0))
+            real_replace(source, destination)
+
+        monkeypatch.setattr(os, "fsync", recording_fsync)
+        monkeypatch.setattr(os, "replace", recording_replace)
+
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
+
+        assert events == [("fsync", ledger_path.stat().st_size), ("replace", 0)]
+
+    def test_fsync_failure_propagates_leaving_the_ledger_unchanged_and_no_temp_file(self, tmp_path, monkeypatch):
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=1)])
+        before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
+
+        def fsync_failing(fd):
+            raise OSError(errno.EIO, "fsync failed")
+
+        monkeypatch.setattr(os, "fsync", fsync_failing)
+
+        with pytest.raises(OSError, match="fsync failed"):
             _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
                 _sample_pr_cost_row(pr_number=1), _sample_pr_cost_row(pr_number=2),
             ])

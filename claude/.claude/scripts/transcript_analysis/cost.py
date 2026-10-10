@@ -128,10 +128,10 @@ def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]
     field (mirrors _session_branch_index's own exclusion) but still counts
     toward every other aggregate below.
 
-    Each agg's "by_model" ({model: {pricing variant: {token class: {"tokens",
-    "dollars"}}}}) gets one leaf update per priced turn, beside the agg's own
-    per-class "dollars"/"tokens" totals, so the leaves summed across models
-    equal those totals up to float-summation order. An unpriced turn never
+    Each agg's "by_model" (shape: see _new_pr_cost_agg) gets one leaf update
+    per priced turn, beside the agg's own per-class "dollars"/"tokens" totals,
+    so the leaves summed across models equal those totals up to
+    float-summation order. An unpriced turn never
     reaches "by_model": its model identity is deliberately not recorded.
     """
     branch_totals: dict[str, dict] = defaultdict(_new_pr_cost_agg)

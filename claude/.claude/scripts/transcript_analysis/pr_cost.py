@@ -240,8 +240,9 @@ def _build_model_breakdown_cell(by_model: dict) -> dict:
 
 
 # The closed set of rules _check_model_breakdown_cell can fail on, in check order, each with the cause its per-PR line prints.
-# Transcript data reaches "shape" through a negative token count, and "dollars" through token counts so large that float
-# summation order alone moves a class total by more than the rounding tolerance. The other rules are claude-config defects.
+# Transcript data reaches "shape" through a negative token count. It also reaches "shape" through a leaf above 2**63 - 1.
+# Transcript data reaches "dollars" through token counts so large that float summation order alone moves a class total
+# by more than the rounding tolerance. The other rules are claude-config defects.
 _MODEL_BREAKDOWN_CHECK_CAUSES: dict[str, str] = {
     "shape": "malformed transcript data or a claude-config defect",
     "model-membership": "a claude-config defect",
@@ -433,14 +434,18 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
     discovery are account-independent (never scoped by CLAUDE_CONFIG_DIR).
     Everything else -- local corpus scan, per-branch enrichment (rate-limit/
     network failures degrade that branch's row instead of aborting), and the
-    ledger read/print/write -- loops once per resolved root. A --record row
-    whose model_breakdown fails _check_model_breakdown_cell is still written,
-    with an empty cell; after that row's write the loop prints a per-PR line,
-    a ledger rewritten from an older header prints one upgrade notice, and a
-    run that finished every branch with such a row prints a count line and
-    exits 1. A refused write exits 1 at once and suppresses that row's per-PR
-    line, any upgrade notice, and the count line; earlier branches' lines have
-    already printed.
+    ledger read/print/write -- loops once per resolved root.
+
+    A --record row whose model_breakdown fails _check_model_breakdown_cell is
+    still written, with an empty cell.
+    After that row's write, the loop prints a per-PR line for it.
+    A ledger rewritten from an older header prints one upgrade notice.
+    A run that finished every branch with such a row prints a count line and
+    exits 1.
+    A refused write exits 1 at once.
+    It suppresses that row's per-PR line, any upgrade notice, and the count
+    line. Earlier branches' lines have already printed.
+
     Every stdout/stderr path below routes branch/repo values through
     _assign_root_scoped_redact_label -- no raw branch name or repo value is
     ever printed. There is deliberately no --no-redact escape hatch for this

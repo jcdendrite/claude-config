@@ -3,6 +3,8 @@ test_transcript_gh_cli.py, test_transcript_ledger_common.py)."""
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from transcript_analysis import ledger_common, pr_cost_export, pr_cost_ledger
@@ -97,6 +99,19 @@ def _enable_pr_cost(config_dir: Path, identity: str = "c0ffee01") -> None:
     config dir(s)."""
     (config_dir / ".pr-cost-enabled").touch()
     (config_dir / ledger_common._MACHINE_IDENTITY_FILENAME).write_text(identity)
+
+
+def _make_mkstemp_create_0644(monkeypatch) -> None:
+    """Make tempfile.mkstemp create files 0644, so a test of the ledger's 0600 creation mode
+    fails if the writer relies on mkstemp's own default instead of setting the mode itself."""
+    real_mkstemp = tempfile.mkstemp
+
+    def mkstemp_creating_0644(*args, **kwargs):
+        fd, temp_name = real_mkstemp(*args, **kwargs)
+        os.fchmod(fd, 0o644)
+        return fd, temp_name
+
+    monkeypatch.setattr(tempfile, "mkstemp", mkstemp_creating_0644)
 
 
 def _pr_cost_args(

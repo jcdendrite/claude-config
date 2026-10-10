@@ -47,8 +47,7 @@ _CACHE_READ_MULTIPLIER_OVERRIDES: dict[str, float] = {
 _FAST_MODE_RATE_MULTIPLIER = 2
 _INFERENCE_GEO_US_RATE_MULTIPLIER = 1.1
 
-# Labels persist in pr-cost ledger model_breakdown cells; never rename or remove one. Older checkouts read an added label,
-# because the ledger parser checks labels for key shape only.
+# Same persistence rule as _TOKEN_CLASSES.
 _PRICING_VARIANTS: tuple[str, ...] = ("standard", "fast", "us_geo", "fast_us_geo")
 
 _DEFAULT_REVERIFY_BY = _PRICING_FETCH_DATE + timedelta(days=90)

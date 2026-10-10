@@ -1,5 +1,5 @@
 """The pr-cost ledger's on-disk format: column schema, status and join-confidence enums, path resolution, canonical parser and
-formatter, append-only upsert, crash-safe write, and the --record lock.
+formatter, append-only upsert, kernel-crash-safe write, and the --record lock.
 
 Imports ledger_common by module (attribute access, not by name) -- see scope.py's own top-of-file comment for why."""
 from __future__ import annotations
@@ -129,11 +129,12 @@ def _pr_cost_ledger_path(config_dir_override: Path | None = None) -> Path:
     return (config_dir_override or config_dir()) / "pr-cost-ledger.tsv"
 
 
-# Persisted contract: a cell outside this key rule, these leaf keys, or this depth makes every checkout with this codec refuse
-# the ledger. Never reshape model_breakdown; a new cell shape is a new appended column under a new frozen header. New variant
-# and class labels need neither, because they are checked for key shape only.
+# Persisted contract: a cell outside this key rule, these leaf keys, this leaf integer range, or this depth makes every
+# checkout with this codec refuse the ledger. Never reshape model_breakdown; a new cell shape is a new appended column under a
+# new frozen header. New variant and class labels need neither, because they are checked for key shape only.
 _MODEL_BREAKDOWN_KEY_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _MODEL_BREAKDOWN_LEAF_KEYS = frozenset({"tokens", "usd_micros"})
+_MODEL_BREAKDOWN_LEAF_VALUE_MAX = 2**63 - 1  # int64: a warehouse loader casting the cell to int64 never overflows
 
 
 class _DuplicateJsonKeyError(Exception):
@@ -170,8 +171,11 @@ def _model_breakdown_cell_violation(decoded: object) -> str | None:
                 if not isinstance(leaf, dict) or set(leaf) != _MODEL_BREAKDOWN_LEAF_KEYS:
                     return "class value must be a leaf with exactly the keys tokens and usd_micros"
                 for leaf_value in leaf.values():
-                    if isinstance(leaf_value, bool) or not isinstance(leaf_value, int) or leaf_value < 0:
-                        return "leaf values must be non-negative integers"
+                    if (
+                        isinstance(leaf_value, bool) or not isinstance(leaf_value, int)
+                        or not 0 <= leaf_value <= _MODEL_BREAKDOWN_LEAF_VALUE_MAX
+                    ):
+                        return "leaf values must be integers from 0 to 2**63 - 1"
     return None
 
 
@@ -287,6 +291,21 @@ def _current_cells_from_file_row(cells: list[str], file_columns: tuple[str, ...]
     ]
 
 
+def _unrecognized_header_message(first_line: str | None) -> str:
+    """The refusal for a file whose first line is no recognized header (None: the file has no lines). The
+    newer-version hint appears only when the line extends the current header, the shape a later column
+    produces; the other causes are named without echoing the line."""
+    message = "missing or mismatched pr-cost ledger header row"
+    if first_line is None:
+        return f"{message} (the file is empty)"
+    if first_line.startswith(_PR_COST_LEDGER_HEADER_LINE + "\t"):
+        return (
+            f"{message} (if a newer claude-config wrote this file, update this checkout"
+            " -- see docs/pr-cost.md in the claude-config repo)"
+        )
+    return f"{message} (unrecognized first line)"
+
+
 def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
     """Canonical parser for the pr-cost ledger's tab-separated content.
 
@@ -310,10 +329,7 @@ def _parse_pr_cost_ledger_file_text(text: str) -> list[dict]:
 
     file_columns = _PR_COST_LEDGER_COLUMNS_BY_HEADER_LINE.get(lines[0]) if lines else None
     if file_columns is None:
-        raise _PrCostLedgerParseError(
-            "missing or mismatched pr-cost ledger header row (if a newer claude-config wrote this file,"
-            " update this checkout -- see docs/pr-cost.md in the claude-config repo)"
-        )
+        raise _PrCostLedgerParseError(_unrecognized_header_message(lines[0] if lines else None))
 
     rows: list[dict] = []
     for line_no, line in enumerate(lines[1:], start=2):
@@ -466,7 +482,7 @@ def _read_prior_pr_cost_ledger(ledger_path: Path) -> tuple[list[dict], bool]:
 
 
 def _write_pr_cost_ledger_file(ledger_path: Path, rows: list[dict]) -> bool:
-    """Crash-safe write mirroring _write_cost_ledger_file's temp-file/
+    """Kernel-crash-safe write mirroring _write_cost_ledger_file's temp-file/
     read-back/atomic-replace pattern, adapted for this ledger's plain-TSV
     format (no markdown preamble) and its own 0600 creation mode -- these
     rows carry branch/repo data the public weekly ledger's rows don't, so a
@@ -480,6 +496,11 @@ def _write_pr_cost_ledger_file(ledger_path: Path, rows: list[dict]) -> bool:
     this call began, floats compared at the ledger's six decimals. Returns
     True when it replaced a file whose header was not the current one, False
     otherwise (creation included).
+
+    Durability covers a kernel crash: the temp file is fsynced before the
+    replace. It does not fsync the parent directory after the replace, so a
+    crash can roll the rename back to the old ledger. On macOS os.fsync does
+    not flush the drive cache, so a power loss can still leave a zero-length file.
     """
     prior_rows, prior_header_is_current = _read_prior_pr_cost_ledger(ledger_path)
     new_text = "\n".join([_PR_COST_LEDGER_HEADER_LINE] + [_format_pr_cost_ledger_row(r) for r in rows]) + "\n"
@@ -487,6 +508,8 @@ def _write_pr_cost_ledger_file(ledger_path: Path, rows: list[dict]) -> bool:
     try:
         with os.fdopen(fd, "w") as f:
             f.write(new_text)
+            f.flush()
+            os.fsync(f.fileno())
         written_text = Path(tmp_name).read_text()
         if written_text != new_text:
             raise _PrCostLedgerParseError("write verification mismatch -- refusing to publish")
