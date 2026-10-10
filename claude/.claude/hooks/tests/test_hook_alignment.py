@@ -2866,4 +2866,9 @@ def test_blocks_when_timeout_rejects_dash_k_flag(tmp_path: Path) -> None:
     assert not result.stdout.strip(), f"expected no allow on stdout, got {result.stdout!r}"
     assert "Hook gate could not encode its deny reason" in result.stderr, repr(result.stderr)
     assert "rejects -k" in result.stderr, repr(result.stderr)
+    assert "ask the user to install jq" in result.stderr, repr(result.stderr)
+    assert "separate terminal" in result.stderr, repr(result.stderr)
+    assert "`!" not in result.stderr, repr(result.stderr)
+    assert " ! " not in result.stderr, repr(result.stderr)
+    assert "shell escape" not in result.stderr, repr(result.stderr)
     assert 'docs/hooks.md "Gate deadlock recovery"' in result.stderr, repr(result.stderr)

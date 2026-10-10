@@ -93,7 +93,7 @@ if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
   exit 0
 fi
 
-_INSTALL_ALTERNATIVE="If this install is intentional, name the package, its exact version constraint, and why, then ask the user to run it themselves via the ! shell escape, which runs outside the tool-call path this hook gates."
+_INSTALL_ALTERNATIVE="If this install is intentional, name the package, its exact version constraint, and why, then ask the user to run it themselves in a separate terminal, which runs outside the tool-call path this hook gates."
 
 _INSTALL_VALUE_TAKING_MARKERS="-r --requirement -e --editable"
 

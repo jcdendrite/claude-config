@@ -87,10 +87,9 @@ argument must still resolve to a `.env`-shaped basename (`--env-file
 ~/.netrc` still denies) and its own text must terminate at whitespace or a
 shell metacharacter (`; & | < > ( ) $` or a backtick), not swallow past it
 — see `_lib_strip_env_file_flag_args` in `_lib.sh`. Run a specific
-legitimate non-exposing command via the `!` shell escape instead — its
-output carries no secret content, so it's safe there. To inspect the
-file's actual content, use a separate terminal window outside this
-session: `!` does not avoid this either, since Claude Code adds
+legitimate non-exposing command, or inspect the file's content, in a
+separate terminal window outside this session. The hooks name no `!` route
+for either. `!` is unsafe for content inspection because Claude Code adds
 shell-mode output to the conversation transcript.
 `redact-credential-values.sh` is the
 different-layer backstop for the two gate hooks: a credential can enter
@@ -164,8 +163,8 @@ removes a token from the command string.
   the same way regardless of quote placement. Without quote-stripping, a
   token glued directly to the opening quote (`"npm`) would not match, so
   whether a given mention denies would depend on quote adjacency — an
-  inconsistency this closes. Workaround for all of the above: the `!` shell
-  escape.
+  inconsistency this closes. Workaround for all of the above: asking the user
+  to run the command in a separate terminal.
 - Shell indirection this hook family already accepts as a known gap
   elsewhere — `sh -c '...'` with a fully-inline payload, a temp script
   written then executed separately, `eval $(echo … | base64 -d)`, a

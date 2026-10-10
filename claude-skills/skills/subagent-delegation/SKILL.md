@@ -65,6 +65,11 @@ action a dispatch can perform. It still pays a full agent's context cost
 for an empty return. When pending dispatches are all that remain, end the
 turn without a tool call and let their completion drive the next one.
 
+**Plan mode.** From a session in plan mode, call `ExitPlanMode` and wait
+for the plan's approval before delegating execution: a spawned subagent
+inherits the plan-mode reminder and typically returns a plan instead of
+executing, even when told to execute.
+
 **No permission cost.** A subagent inherits the parent's permission
 mode, so under auto mode its read-only diagnostics clear the same
 classifier as the parent's — no extra prompts, no `permissions.allow`
@@ -123,11 +128,10 @@ When root-causing a check or test failure requires a read-heavy probe — findin
 how existing tests handle a pattern, locating the relevant convention, mapping
 an analogous code shape — dispatch that probe as an objective, using the same
 Explore/general-purpose split as Codebase discovery above. Pass an explicit
-`model: sonnet` per `CLAUDE.md`'s Model Routing rule on both — even on
+`model: sonnet` per `CLAUDE.md`'s Model & Effort Routing rule on both — even on
 `Explore`, whose `Explore.md` pin is a request, not a guarantee.
 
-> "Diagnose why [test/check] fails; report root cause + minimal evidence
-> + proposed fix."
+> "Diagnose why [test/check] fails; report root cause + minimal evidence + proposed fix."
 
 The parent reasons over the returned diagnosis, designs the fix, applies the edit, and re-runs the check inline. Designing the fix while reading the diagnosis normally fails the decision-made test's condition (1) — the fix is not yet decided before that read — so the edit normally stays inline, unlike the review-round default under `subagent-delegation/SKILL.md` § "Implementation work → `code-writer`". See under `docs/design-decisions/debug-investigation-read-only-probe.md` § "Debug-investigation delegation: read-only probe over debug-and-fix agent" for why the parent retains the edit in that case.
 
@@ -181,8 +185,7 @@ A finding surviving a second dispatch stops being delegated — it is now a desi
 ### Everything else → `general-purpose`
 
 The two-test gate above covers every other case: multi-step diagnostics, log correlation, verbose `git diff` /
-state-survey bursts. Dispatch the objective — not the commands — to `general-purpose` with an explicit `model:
-sonnet` (a no-op when the parent is already Sonnet; keeps the dispatched work off Opus when the parent is not).
+state-survey bursts. Dispatch the objective — not the commands — to `general-purpose` with an explicit `model: sonnet`.
 
 ### Exception: gate/review loops stay orchestrator-driven
 

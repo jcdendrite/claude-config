@@ -592,10 +592,25 @@ class TestDenyCredentialBashReads:
     # Deny message content                                                #
     # ------------------------------------------------------------------ #
 
-    def test_deny_message_names_no_bypass_valve(self, isolated_home):
-        reason = run_hook_reason(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input("cat ~/.ssh/id_rsa"), home=isolated_home)
+    @pytest.mark.parametrize(
+        ("command", "branch_marker"),
+        [
+            # Lead-clause markers, independent of each message's credential-family list.
+            ("cat ~/.ssh/id_rsa", "references a credential-shaped path"),
+            ("cat ~/.ssh/deploy_key", "references a file under a .ssh-shaped directory"),
+        ],
+        ids=["credential-shaped-path-branch", "ssh-directory-branch"],
+    )
+    def test_deny_message_names_separate_terminal_not_shell_escape(self, isolated_home, command, branch_marker):
+        reason = run_hook_reason(DENY_CREDENTIAL_BASH_READS_HOOK, bash_input(command), home=isolated_home)
         assert reason is not None
-        assert "shell escape" in reason
+        assert branch_marker in reason
+        assert "No bypass valve" in reason
+        # The shell escape's output enters the transcript, so the message must not route recourse there.
+        assert "ask the user to run it in a separate terminal" in reason
+        assert "`!" not in reason
+        assert " ! " not in reason
+        assert "shell escape" not in reason
 
     # ------------------------------------------------------------------ #
     # Personal/org-specific additions — credential-file-guard.md          #

@@ -739,12 +739,13 @@ class TestDenyGateLabelConformance:
 
 # ---------------------------------------------------------------------------
 # _denial_cause_kind — pins the denial-cause axis against every gate hook's
-# current wording. Every fixture literal below is copied from the working
-# tree as it stands at authoring time — never re-derived via git show/git
-# merge-base, which would resolve to a later rewrite's text. A historical
-# transcript keeps its original wording forever, so a fixture reflecting
-# only newer wording would prove nothing about the corpus these tests exist
-# to classify correctly.
+# wording as of each fixture's authoring. TestDenialCauseKind's docstring
+# names which fixtures are frozen and which are current snapshots. Every
+# fixture literal below is copied from the working tree, never re-derived
+# via git show/git merge-base, which would resolve to a later rewrite's
+# text. A historical transcript keeps its original wording forever, so a
+# fixture reflecting only newer wording would prove nothing about the corpus
+# these tests exist to classify correctly.
 # ---------------------------------------------------------------------------
 
 
@@ -988,8 +989,10 @@ _HELPER_PROC_FIXTURES: tuple[tuple[str, str], ...] = (
      "letting an unscanned PR body bypass the backtick-escape scan."),
 )
 
-# The single deny-encode preamble (_lib.sh's _lib_emit_deny jq-degrade path),
-# wrapping a parse-failure reason to prove deny-encode's cascade precedence
+# Frozen deny-encode preamble (_lib.sh's _lib_emit_deny jq-degrade path).
+# It lacks the sentence about a timeout rejecting -k and routes the install
+# through the shell escape instead of a separate terminal.
+# It wraps a parse-failure reason to prove deny-encode's cascade precedence
 # over an input-parse fragment embedded in the same message.
 _DENY_ENCODE_FIXTURE = (
     "Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed "
@@ -1086,10 +1089,13 @@ _HELPER_PROC_CURRENT_WORDING_FIXTURES: tuple[tuple[str, str], ...] = (
 _DENY_ENCODE_CURRENT_WORDING_FIXTURE = (
     "Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed "
     "out. Every gate hook blocks until this is fixed — this is deliberate, not a bug. In an "
-    "interactive session, install jq (and GNU coreutils timeout) using the ! shell escape, "
-    "which runs outside the tool-call path these hooks gate; in a headless or non-interactive "
-    "run, ensure jq is installed in the execution environment beforehand. Underlying gate "
-    "reason follows.\nBlocked by code-review gate: could not parse tool-input JSON.\n"
+    "interactive session, ask the user to install jq (and GNU coreutils timeout) in a "
+    "separate terminal, which runs outside the tool-call path these hooks gate; in a headless "
+    "or non-interactive run, ensure jq is installed in the execution environment beforehand. "
+    "A timeout or gtimeout that rejects -k (GNU coreutils, or BusyBox 1.35.0 or newer, "
+    'accepts it) causes the same block; see docs/hooks.md "Gate deadlock recovery" in the '
+    "claude-config repository. Underlying gate reason follows."
+    "\nBlocked by code-review gate: could not parse tool-input JSON.\n"
 )
 
 # _lib.sh's own field-shift deny is a deliberate 0x1f-injection bypass
@@ -1107,9 +1113,18 @@ _FIELD_SHIFT_DENY_MESSAGE = (
 class TestDenialCauseKind:
     """Pins _denial_cause_kind's four infra markers plus its behavioral
     fallback against real and hand-transcribed denial wording. No test here
-    may call git show/git merge-base — every fixture literal is the hook's
-    current wording, copied once from the working tree, so a green run
-    here is evidence about today's text specifically."""
+    may call git show/git merge-base.
+
+    - Frozen wording: _LIB_SOURCE_FIXTURES, _INPUT_PARSE_FIXTURES,
+      _HELPER_PROC_FIXTURES, _BEHAVIORAL_FIXTURES, and _DENY_ENCODE_FIXTURE.
+    - Hand-transcribed snapshots of the hooks' wording at the time of writing:
+      _HELPER_PROC_CURRENT_WORDING_FIXTURES,
+      _DENY_ENCODE_CURRENT_WORDING_FIXTURE, and _FIELD_SHIFT_DENY_MESSAGE.
+    - Verified against the real hook:
+      _INPUT_PARSE_CURRENT_WORDING_SHARP_CASES and the subprocess tests below.
+
+    A green run proves the frozen wording still classifies and the snapshots
+    classify, not that the hooks still emit that text."""
 
     @pytest.mark.parametrize("hook_name,message", _LIB_SOURCE_FIXTURES)
     def test_bootstrap_wording_classifies_lib_source(self, hook_name, message):
@@ -1203,19 +1218,29 @@ class TestDenialCauseKind:
         accidentally giving it an infra marker."""
         assert _mod.denials._denial_cause_kind(_FIELD_SHIFT_DENY_MESSAGE) == "behavioral"
 
-    def test_agent_authored_path_with_cause_fragment_misclassifies_helper_proc(self):
+    def test_agent_authored_path_with_cause_fragment_misclassifies_helper_proc(self, tmp_path):
         """Recorded limitation, adversarial case: an agent-controlled Read
         path containing a cause-marker substring reclassifies a genuinely
         behavioral env-read denial as helper-proc in this derived aggregate.
-        The gate still denies in real time and the raw record is unchanged;
+        The real deny-env-reads.sh echoes the path into its message and
+        denies on the dotenv basename alone, so the path need not exist. The
+        gate still denies in real time and the raw record is unchanged;
         review-trace's own cause= line recovers the individual event."""
-        file_path = "/tmp/failing closed.env"
-        message = (
-            f"Read of '{file_path}' denied by env-read gate. Dotenv files commonly hold "
-            "secrets; reading pulls them into Claude's conversation context. If this is a "
-            "non-secret template, rename it to .env.example, .env.template, or .env.sample. "
-            f"Otherwise inspect it with a shell command (e.g. `! cat {file_path}`) instead of "
-            "the Read tool. (Allowlist: ~/.claude/hooks/deny-env-reads.sh)"
+        # Control: the same real denial with a marker-free path is behavioral, so only
+        # the path fragment below can flip it to helper-proc.
+        control_path = tmp_path / "project" / ".env"
+        control_message = run_hook_reason(
+            HOOKS_DIR / "deny-env-reads.sh",
+            {"tool_name": "Read", "tool_input": {"file_path": str(control_path)}},
         )
+        assert control_message is not None
+        assert _mod.denials._denial_cause_kind(control_message) == "behavioral"
+        file_path = tmp_path / "failing closed" / ".env"
+        message = run_hook_reason(
+            HOOKS_DIR / "deny-env-reads.sh",
+            {"tool_name": "Read", "tool_input": {"file_path": str(file_path)}},
+        )
+        assert message is not None
+        assert "failing closed" in message
         assert _mod.denials._denial_cause_kind(message) == "helper-proc"
 

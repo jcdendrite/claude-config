@@ -23,9 +23,7 @@
 # sensitive identifiers — naming the path helps the user see which Read was
 # blocked without leaking anything private.
 #
-# Scope: Read tool only. Bash(cat .env.*) is out of scope by design — CLAUDE.md
-# directs Claude to the ! shell-escape valve for non-Read inspection, which
-# depends on Bash being unrestricted for these paths.
+# Scope: Read tool only. Bash(cat .env.*) is out of scope for this gate.
 # deny-credential-bash-reads.sh's env-variant token match is this gate's own backstop against that Bash-side gap, including a steered attempt to read the file through it.
 
 set -uo pipefail
@@ -67,7 +65,7 @@ case "$BASENAME" in
   .env.example|.env.template|.env.sample)
     : ;;  # allowlist candidate — fall through to symlink-target check
   .env|.env.*)
-    emit_deny "Read of '${FILE_PATH}' — Dotenv files commonly hold secrets; reading pulls them into Claude's conversation context. If this is a non-secret template, rename it to .env.example, .env.template, or .env.sample. Otherwise inspect it with a shell command (e.g. \`! cat ${FILE_PATH}\`) instead of the Read tool. (Allowlist: ~/.claude/hooks/deny-env-reads.sh)"
+    emit_deny "Read of '${FILE_PATH}' — Dotenv files commonly hold secrets; reading pulls them into Claude's conversation context. If this is a non-secret template, ask the user to rename it to .env.example, .env.template, or .env.sample. Otherwise ask the user to inspect it in a separate terminal instead of using the Read tool. (Allowlist: ~/.claude/hooks/deny-env-reads.sh)"
     exit 0
     ;;
   *)
