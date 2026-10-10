@@ -13,8 +13,10 @@ effort: high
 3. If you do not hold the `Skill` tool or the `Agent` tool, return item 9's
    full format at once, with a `HALT:` entry naming the missing tool, before
    doing anything else.
-4. Invoke `code-review` through `Skill` and follow it verbatim. You start with
-   no round count, so take Step 0.1's resume path.
+4. Invoke `code-review` through `Skill` and follow it verbatim, except that
+   you skip `code-review/SKILL.md` § "Review-findings persistence", which the
+   parent runs after you return. You start with no round count, so take
+   Step 0.1's resume path.
 5. Dispatch every nested agent synchronously. Ending your turn returns you to
    the parent.
 6. Wherever the skill applies a fix, on either Fix route, dispatch
@@ -34,10 +36,10 @@ effort: high
    nothing usable, or a step with no defensible reading. Each entry states the
    checklist item id and `file:line` (or the blocked step), the open decision,
    the options the skill offers, and anything the skill tells the human at
-   that stop. It also names the rule that raised the stop: the skill's
+   that stop. Each entry also names the rule that raised the stop: the skill's
    `DISPOSITION_RULE` block or section heading, the hook, or the Agent Core
-   rule. A stop-and-ask about one finding ends only that finding's handling,
-   so finish the rest of the round; every other entry ends the round. A
+   rule. A stop-and-ask about one finding ends only that finding's handling.
+   Finish the rest of the round. Every other entry ends the round. A
    `plan-architect` return the skill only relays while the round continues
    goes on the `Spawn decisions:` line verbatim instead. Never do a
    reviewer's or `code-writer`'s work yourself in its place.

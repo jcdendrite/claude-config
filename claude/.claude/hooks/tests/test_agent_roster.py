@@ -840,45 +840,56 @@ def _review_only_agents() -> list[str]:
 class TestReviewOrchestratorRosterPlacement:
     """review-orchestrator may release a review gate, because it genuinely runs
     the review skill itself. That capability rests on its absence from
-    _LIB_NO_GATE_RELEASE_AGENTS, and on its absence from the
-    _LIB_REVIEW_ONLY_AGENTS array that drives that roster.
+    _LIB_NO_GATE_RELEASE_AGENTS.
     """
 
-    def test_tools_exclude_edit_and_write(self):
-        fm = parse_frontmatter(AGENTS_DIR / "review-orchestrator.md")
-        tools = {t.strip() for t in fm["tools"].split(",")}
-        assert "Edit" not in tools and "Write" not in tools, (
-            "review-orchestrator must carry neither Edit nor Write — every "
-            "tree change must go through a nested code-writer dispatch."
+    def test_declared_tools_are_exactly_the_documented_set(self):
+        """Its absence from _LIB_NO_GATE_RELEASE_AGENTS rests on holding `Skill`
+        (to run the review) and `Agent` (to dispatch code-writer and the
+        reviewers), so the set is pinned by equality, not by Edit/Write absence."""
+        assert TestNoGateReleaseRosterSync._declared_tools("review-orchestrator") == {
+            "Skill",
+            "Agent",
+            "Read",
+            "Grep",
+            "Glob",
+            "Bash",
+        }, (
+            "review-orchestrator.md's tools: line changed. It must stay exactly "
+            "Skill, Agent, Read, Grep, Glob, Bash: Skill and Agent are why it is "
+            "off _LIB_NO_GATE_RELEASE_AGENTS, and omitting Edit and Write steers "
+            "fixes to code-writer. See "
+            "docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
         )
 
     def test_absent_from_no_gate_release_agents(self):
         """review-orchestrator genuinely runs the review skill it is dispatched
         for, so — unlike every _LIB_NO_GATE_RELEASE_AGENTS member — it may
-        release the gate that skill's marker guards. Adding it there would
+        release the gate that skill's marker guards. Adding it there, or to
+        _LIB_REVIEW_ONLY_AGENTS, which that roster is built from, would
         silently strip the capability the whole design depends on."""
         assert "review-orchestrator" not in _no_gate_release_agents()
 
-    def test_absent_from_review_only_agents(self):
-        """_LIB_REVIEW_ONLY_AGENTS also drives _LIB_NO_GATE_RELEASE_AGENTS, so
-        adding review-orchestrator there would strip its gate-release
-        capability."""
-        assert "review-orchestrator" not in _review_only_agents()
+    @staticmethod
+    def _description() -> str:
+        return parse_frontmatter(AGENTS_DIR / "review-orchestrator.md")["description"]
 
-    def test_description_pins_explicit_request_trigger_and_protocol_pointer(self):
-        description = parse_frontmatter(AGENTS_DIR / "review-orchestrator.md")[
-            "description"
-        ]
-        assert "TRIGGER only when the user explicitly asks" in description, (
+    def test_description_pins_explicit_request_trigger(self):
+        assert "TRIGGER only when the user explicitly asks" in self._description(), (
             "review-orchestrator must fire only on an explicit user request "
             "until the post-merge dogfood passes. See "
             "docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
         )
-        assert "subagent-delegation" in description, (
+
+    def test_description_points_to_dispatch_protocol_skill(self):
+        assert "subagent-delegation" in self._description(), (
             "review-orchestrator's dispatch protocol lives in the "
             "subagent-delegation skill, so its description must point there. "
             "See docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
         )
+
+    def test_description_has_exactly_one_trigger_clause(self):
+        description = self._description()
         trigger_clauses = description.count("TRIGGER") - description.count(
             "DO NOT TRIGGER"
         )

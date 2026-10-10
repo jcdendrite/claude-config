@@ -2391,10 +2391,16 @@ LEDGER_APPEND_ENGINEER_BACKSLASH_NEWLINE_ARGS = LEDGER_APPEND_ENGINEER_ARGS.repl
     "--engineer-quote", "--engineer-\\\nquote"
 )
 
-# Agent-type strings that sit in no roster: the two full-tool-set built-ins and
-# a plugin-shaped name. The engineer-row and ledger-state predicates apply to
-# them; the roster's `append` predicate does not.
-NON_ROSTER_AGENT_TYPES = ["general-purpose", "claude", "someplugin:agent"]
+# Agent-type strings that sit in no roster: the two full-tool-set built-ins, the
+# shipped review-orchestrator agent, and a plugin-shaped name. The engineer-row
+# and ledger-state predicates apply to them; the roster's `append` predicate
+# does not.
+NON_ROSTER_AGENT_TYPES = [
+    "general-purpose",
+    "claude",
+    "review-orchestrator",
+    "someplugin:agent",
+]
 
 # Every op of review-ledger.sh, and whether the hook denies it to the roster.
 LEDGER_SCRIPT_OPS_GATED_FOR_ROSTER = {

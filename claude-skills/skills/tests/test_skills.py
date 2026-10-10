@@ -7173,16 +7173,26 @@ def test_findings_path_retired_recipe_expressions_absent_from_every_skill_body()
 
 _SUBAGENT_DELEGATION_GATE_LOOP_HEADING = "### Exception: gate/review loops stay orchestrator-driven"
 _REVIEW_ORCHESTRATOR_RETURN_ITEMS = ("Fix paths:", "Marker:", "HALT:")
+_REVIEW_ORCHESTRATOR_DESIGN_RECORD = (
+    "docs/design-decisions/review-orchestrator-gate-release-decoupling.md"
+)
+_CODE_REVIEW_STEP_0_1_HEADING = "## Step 0.1 — Short-circuit already-reviewed diff"
+_CODE_REVIEW_OUTPUT_FORMAT_HEADING = "## Output format"
+
+# The `review-orchestrator` agent body and the dispatching session's protocol
+# (subagent-delegation's gate/review-loop exception) share one return contract,
+# and the agent body in turn depends on the `code-review` skill's headings.
+# Renaming either end of a boundary fails below. Every other rule in the
+# protocol is deliberately unpinned.
 
 
-def test_review_orchestrator_dispatch_protocol_pins_both_ends_of_the_contract() -> None:
-    """The dispatching session's protocol (subagent-delegation's gate/review-loop
-    exception) and the `review-orchestrator` agent body share one return
-    contract: the protocol's marker check, its staging rule, its explicit-request
-    condition, and the three return items the agent reports. Renaming either end
-    of that contract fails here. Every other rule in the protocol is deliberately
-    unpinned.
-    """
+def _review_orchestrator_protocol_section() -> str:
+    return _heading_section_text(
+        _skill_file("subagent-delegation"), _SUBAGENT_DELEGATION_GATE_LOOP_HEADING
+    )
+
+
+def test_review_orchestrator_protocol_marker_check_is_the_whole_allowlisted_command() -> None:
     settings = json.loads((REPO_ROOT / "claude/.claude/settings.json").read_text())
     marker_check_rules = [
         rule
@@ -7194,51 +7204,115 @@ def test_review_orchestrator_dispatch_protocol_pins_both_ends_of_the_contract() 
         f"`marker.sh check code-review`, found {marker_check_rules!r}. The "
         "dispatch protocol quotes that rule's command verbatim, so a second "
         "spelling leaves it without a single allowlisted form to quote. See "
-        "docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
+        f"{_REVIEW_ORCHESTRATOR_DESIGN_RECORD}."
     )
     marker_check_command = " ".join(
         re.fullmatch(r"Bash\((.*)\)", marker_check_rules[0]).group(1).split()
     )
 
-    section = _heading_section_text(
-        _skill_file("subagent-delegation"), _SUBAGENT_DELEGATION_GATE_LOOP_HEADING
+    section = _review_orchestrator_protocol_section()
+    # The whole backtick span, so text appended inside it (`; echo $?`) fails.
+    assert f"`{marker_check_command}`" in section, (
+        f"subagent-delegation/SKILL.md {_SUBAGENT_DELEGATION_GATE_LOOP_HEADING!r} "
+        f"no longer quotes {marker_check_command!r} as its own complete code span. "
+        "The parent's marker read must be exactly the command permissions.allow "
+        "pre-approves, so it runs with no prompt and the marker-script-shape gate "
+        f"accepts it. See {_REVIEW_ORCHESTRATOR_DESIGN_RECORD}."
     )
-    required_protocol_phrases = {
-        marker_check_command: (
-            "the parent's marker read must stay the exact command permissions.allow "
-            "pre-approves, so it runs with no prompt and the marker-script-shape gate "
-            "accepts it"
+
+
+@pytest.mark.parametrize(
+    "phrase, invariant",
+    [
+        pytest.param(
+            ":(top,literal)",
+            "staged fix paths must be root-anchored literal pathspecs, so neither "
+            "the working directory nor pathspec magic changes what is staged",
+            id="staging-uses-root-anchored-literal-pathspec",
         ),
-        ":(top,literal)": (
-            "staged fix paths must be root-anchored literal pathspecs, so neither the "
-            "working directory nor pathspec magic changes what is staged"
-        ),
-        "no single or double quote": (
+        pytest.param(
+            "no single or double quote",
             "the staging step must refuse a path holding a quote, which no benign "
-            "dogfood round exercises"
+            "dogfood round exercises",
+            id="staging-refuses-quoted-paths",
         ),
-        "only when the user explicitly asks": (
-            "the agent is used only on an explicit user request until the post-merge "
-            "dogfood passes"
+        pytest.param(
+            "only when the user explicitly asks",
+            "the agent is used only on an explicit user request until the "
+            "post-merge dogfood passes",
+            id="agent-used-only-on-explicit-request",
         ),
-    }
-    for phrase, invariant in required_protocol_phrases.items():
-        assert phrase in section, (
-            f"subagent-delegation/SKILL.md {_SUBAGENT_DELEGATION_GATE_LOOP_HEADING!r} "
-            f"no longer contains {phrase!r}: {invariant}. See "
-            "docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
+        pytest.param(
+            "Review-findings persistence",
+            "the parent runs the code-review skill's findings-persistence step, "
+            "which the agent skips, so the protocol must still name it",
+            id="parent-runs-findings-persistence",
+        ),
+    ],
+)
+def test_review_orchestrator_protocol_section_carries_phrase(
+    phrase: str, invariant: str
+) -> None:
+    assert phrase in _review_orchestrator_protocol_section(), (
+        f"subagent-delegation/SKILL.md {_SUBAGENT_DELEGATION_GATE_LOOP_HEADING!r} "
+        f"no longer contains {phrase!r}: {invariant}. "
+        f"See {_REVIEW_ORCHESTRATOR_DESIGN_RECORD}."
+    )
+
+
+@pytest.mark.parametrize("item", _REVIEW_ORCHESTRATOR_RETURN_ITEMS)
+def test_review_orchestrator_return_item_named_at_both_ends(item: str) -> None:
+    agent_body = " ".join(_agent_body("review-orchestrator").split())
+    for owner, text in (
+        (
+            "subagent-delegation/SKILL.md's gate/review-loop section",
+            _review_orchestrator_protocol_section(),
+        ),
+        ("review-orchestrator's agent body", agent_body),
+    ):
+        assert item in text, (
+            f"{owner} no longer names the return item {item!r}. The agent "
+            "reports it and the dispatching session acts on it, so renaming "
+            "it at one end leaves the other end reading a field that no "
+            f"longer exists. See {_REVIEW_ORCHESTRATOR_DESIGN_RECORD}."
         )
 
-    agent_body = " ".join(_agent_body("review-orchestrator").split())
-    for item in _REVIEW_ORCHESTRATOR_RETURN_ITEMS:
-        for owner, text in (
-            ("subagent-delegation/SKILL.md's gate/review-loop section", section),
-            ("review-orchestrator's agent body", agent_body),
-        ):
-            assert item in text, (
-                f"{owner} no longer names the return item {item!r}. The agent "
-                "reports it and the dispatching session acts on it, so renaming "
-                "it at one end leaves the other end reading a field that no "
-                "longer exists. See "
-                "docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
-            )
+
+@pytest.mark.parametrize(
+    "cited_heading", ["Output format", "Review-findings persistence"]
+)
+def test_review_orchestrator_agent_body_cites_code_review_heading_that_exists(
+    cited_heading: str,
+) -> None:
+    # The agent body sits outside test_skill_citations_resolve_to_real_headings'
+    # corpus, so its citations into the code-review skill resolve only here.
+    _assert_citation_resolves_to_heading(
+        _AGENTS_DIR / "review-orchestrator.md",
+        "code-review/SKILL.md",
+        cited_heading,
+        repo_root=REPO_ROOT,
+    )
+
+
+def test_review_orchestrator_resume_path_names_ledger_show_in_code_review_step_0_1() -> None:
+    section_text = _heading_section_text(
+        _skill_file("code-review"), _CODE_REVIEW_STEP_0_1_HEADING
+    )
+    assert "review-ledger.sh show" in section_text, (
+        f"code-review/SKILL.md's {_CODE_REVIEW_STEP_0_1_HEADING!r} section no longer "
+        "names `review-ledger.sh show`, but review-orchestrator's body tells the "
+        "agent to take that step's resume path on its first round. "
+        f"See {_REVIEW_ORCHESTRATOR_DESIGN_RECORD}."
+    )
+
+
+def test_review_orchestrator_return_spawn_decisions_line_exists_in_code_review_output_format() -> None:
+    section_text = _heading_section_text(
+        _skill_file("code-review"), _CODE_REVIEW_OUTPUT_FORMAT_HEADING
+    )
+    assert "Spawn decisions:" in section_text, (
+        f"code-review/SKILL.md's {_CODE_REVIEW_OUTPUT_FORMAT_HEADING!r} section no "
+        "longer carries the `Spawn decisions:` line that review-orchestrator's "
+        "return relays verbatim. "
+        f"See {_REVIEW_ORCHESTRATOR_DESIGN_RECORD}."
+    )
