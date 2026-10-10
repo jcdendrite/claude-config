@@ -3834,6 +3834,9 @@ _lib_is_review_only_agent() {
 # added there is covered here automatically. `general-purpose` and `claude`
 # carry the full tool set and can genuinely run a review skill, so they are
 # deliberately absent — that is the documented delegation escape hatch.
+# `review-orchestrator` is deliberately absent too, because it runs
+# /code-review itself and writes that skill's marker
+# (docs/design-decisions/review-orchestrator-gate-release-decoupling.md).
 _LIB_NO_GATE_RELEASE_AGENTS=(
   "${_LIB_REVIEW_ONLY_AGENTS[@]}"
   code-writer
