@@ -2,14 +2,27 @@
 (attribution, ledger I/O, correction contract, mechanical proxies, join logic that doesn't
 require faking gh). gh-integration scenarios live in test_transcript_pr_cost_gh.py."""
 import importlib.util
+import json
+import random
+import stat
 import subprocess
 import sys
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
-from ._pr_cost_helpers import _enable_pr_cost, _fake_pr_cost_subprocess_run, _pr_cost_args
+from ._pr_cost_helpers import (
+    _PRE_MODEL_HEADER_LINE,
+    _enable_pr_cost,
+    _fake_pr_cost_subprocess_run,
+    _pr_cost_args,
+    _pr_cost_export_args,
+    _pre_model_row_line,
+    _sample_model_breakdown,
+    _sample_pr_cost_row,
+)
 from .conftest import _cost_args, _extract_grand_total, _priced, _two_declared_roots, _write_jsonl, _write_subagent_jsonl
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
@@ -877,3 +890,1024 @@ class TestPrCostAsofWindowOk:
     def test_unparseable_merged_at_returns_false(self):
         now = datetime(2026, 8, 10, tzinfo=UTC)
         assert _mod.pr_cost._pr_cost_asof_window_ok("not-a-timestamp", 3.0, now) is False
+
+
+_NOW = datetime(2026, 8, 10, tzinfo=UTC)
+_TOKEN_CLASS_NAMES = ("cache_read", "cache_write_5m", "cache_write_1h", "output", "input")
+_REJECTED_MARKER = "zzmarkerzz"  # passes the model_breakdown key rule, so it can stand in any key position
+_LEDGER_DIR_MARKER = "zzledgerdirmarkerzz"  # names the ledger's directory; must never reach captured output
+_PRIOR_ROW_MARKER = "zzpriorrowmarkerzz"  # sits in a prior row's head_branch cell; must never reach captured output
+# The cause each check rule prints, hand-written: "shape" and "dollars" are the rules transcript data can reach.
+_TRANSCRIPT_OR_DEFECT = "malformed transcript data or a claude-config defect"
+_CAUSE_BY_RULE = {
+    "shape": _TRANSCRIPT_OR_DEFECT,
+    "model-membership": "a claude-config defect",
+    "label-membership": "a claude-config defect",
+    "tokens": "a claude-config defect",
+    "dollars": _TRANSCRIPT_OR_DEFECT,
+}
+_SEEDED_MACHINE_IDENTITY = "c0ffee01"  # _enable_pr_cost's default identity, so a seeded row shares the run's key
+_EARLIER_CAPTURED_AT = "2026-01-01T00:00:00Z"  # distinct from the run's own wall-clock captured_at
+_ZERO_SCALARS = {
+    "cache_read_usd": 0.0, "cache_write_5m_usd": 0.0, "cache_write_1h_usd": 0.0, "output_usd": 0.0, "input_usd": 0.0,
+    "cache_read_tokens": 0, "cache_write_5m_tokens": 0, "cache_write_1h_tokens": 0, "output_tokens": 0, "input_tokens": 0,
+}
+
+
+def _merged_pr(number: int, branch: str) -> dict:
+    return {
+        "number": number, "headRefName": branch, "additions": 1, "deletions": 1,
+        "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+    }
+
+
+def _zero_group() -> dict:
+    return {token_class: {"tokens": 0, "usd_micros": 0} for token_class in _TOKEN_CLASS_NAMES}
+
+
+def _zero_scalar_row(**overrides) -> dict:
+    return _sample_pr_cost_row(**{**_ZERO_SCALARS, **overrides})
+
+
+def _branch_agg(fake_projects, records: list[dict], branch: str = "feature-a") -> dict:
+    _write_jsonl(fake_projects / "sess.jsonl", records)
+    session_iter, _scope = _mod._resolve_project_scope(
+        _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
+    )
+    branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+    return branch_totals[branch]
+
+
+def _row_from_agg(agg: dict) -> dict:
+    return _mod.pr_cost._new_pr_cost_row(
+        host="github.com", pinned_repo="owner/repo",
+        pr={"number": 9, "mergedAt": "2026-01-01T00:00:00Z", "additions": 1, "deletions": 1, "changedFiles": 1},
+        branch="feature-a", agg=agg, enrichment=None, join_confidence="medium",
+        status=_mod.pr_cost_ledger._PR_COST_STATUS_OK, machine="ci1", captured_at="2026-01-01T00:00:00Z", supersedes="",
+        plan_glob=_mod.pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB, risk_globs=_mod.pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
+        ordinal=1, branch_map={},
+    )
+
+
+class TestPrCostBranchTotalsByModel:
+    def test_two_models_across_all_four_variants_accumulate_into_the_expected_cell(self, fake_projects):
+        sidechain_opus_turn = _priced("claude-opus-5", output=100_000, branch="feature-a")
+        sidechain_opus_turn["isSidechain"] = True
+        agg = _branch_agg(fake_projects, [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+            _priced("claude-sonnet-5", input=1_000_000, speed="fast", branch="feature-a"),
+            _priced("claude-sonnet-5", input=1_000_000, inference_geo="us", branch="feature-a"),
+            _priced("claude-sonnet-5", input=1_000_000, speed="fast", inference_geo="us", branch="feature-a"),
+            _priced("claude-opus-5", output=100_000, branch="feature-a"),
+            sidechain_opus_turn,
+            _priced("claude-opus-5", speed="fast", branch="feature-a"),  # a priced turn with zero tokens
+        ])
+
+        row = _row_from_agg(agg)
+
+        def group(input_tokens=0, input_micros=0, output_tokens=0, output_micros=0):
+            cell_group = _zero_group()
+            cell_group["input"] = {"tokens": input_tokens, "usd_micros": input_micros}
+            cell_group["output"] = {"tokens": output_tokens, "usd_micros": output_micros}
+            return cell_group
+
+        assert row["model_breakdown"] == {
+            "claude-opus-5": {
+                "fast": group(),
+                "standard": group(output_tokens=200_000, output_micros=5_000_000),
+            },
+            "claude-sonnet-5": {
+                "fast": group(input_tokens=1_000_000, input_micros=4_000_000),
+                "fast_us_geo": group(input_tokens=1_000_000, input_micros=4_400_000),
+                "standard": group(input_tokens=1_000_000, input_micros=2_000_000),
+                "us_geo": group(input_tokens=1_000_000, input_micros=2_200_000),
+            },
+        }
+        _mod.pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)  # the zero-valued group passes too
+
+    def test_unpriced_model_is_absent_from_the_cell_and_its_tokens_land_in_unpriced_tokens(self, fake_projects):
+        agg = _branch_agg(fake_projects, [
+            _priced("claude-sonnet-5", input=1_000, branch="feature-a"),
+            _priced("claude-test-unpriced", input=777, branch="feature-a"),
+        ])
+
+        row = _row_from_agg(agg)
+
+        assert list(row["model_breakdown"]) == ["claude-sonnet-5"]
+        assert row["unpriced_tokens"] == 777
+
+    def test_unpriced_only_branch_yields_an_empty_cell_that_passes_the_check(self, fake_projects):
+        agg = _branch_agg(fake_projects, [_priced("claude-test-unpriced", input=500, branch="feature-a")])
+
+        row = _row_from_agg(agg)
+
+        assert row["model_breakdown"] == {}
+        _mod.pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
+
+    def test_zero_activity_default_agg_yields_an_empty_cell(self):
+        assert _row_from_agg(_mod.cost._new_pr_cost_agg())["model_breakdown"] == {}
+
+    def test_opus_dollars_equals_the_opus_family_float_leaf_sum_and_excludes_fable(self, fake_projects):
+        agg = _branch_agg(fake_projects, [
+            _priced("claude-opus-5-5", input=123_457, output=7_891, branch="feature-a"),
+            _priced("claude-opus-5", input=98_765, cache_read=33_333, speed="fast", branch="feature-a"),
+            _priced("claude-fable-5", input=1_000_000, output=50_000, branch="feature-a"),
+        ])
+
+        opus_family_leaf_dollars = sum(
+            leaf["dollars"]
+            for model, leaves_by_variant in agg["by_model"].items() if model in ("claude-opus-5-5", "claude-opus-5")
+            for leaves_by_class in leaves_by_variant.values()
+            for leaf in leaves_by_class.values()
+        )
+        fable_leaf_dollars = sum(
+            leaf["dollars"]
+            for leaves_by_class in agg["by_model"]["claude-fable-5"].values() for leaf in leaves_by_class.values()
+        )
+
+        assert fable_leaf_dollars > 0
+        assert agg["opus_dollars"] == pytest.approx(opus_family_leaf_dollars, rel=1e-12)
+
+
+class TestModelBreakdownUsdMicros:
+    """Each literal is computed by hand from the rate table, never through _price_turn. The literals assume the
+    cache-read rates asserted below."""
+
+    @pytest.fixture(autouse=True)
+    def _assume_cache_read_rates(self):
+        assert _mod.pricing._model_rates("claude-opus-5-5")["cache_read"] == 0.2, "the literals assume this rate"
+        assert _mod.pricing._model_rates("claude-opus-5")["cache_read"] == 0.5, "the literals assume this rate"
+
+    @pytest.mark.parametrize(
+        "model,tokens_per_turn,turn_count,expected_micros,builtin_round_micros",
+        [
+            pytest.param("claude-opus-5-5", 3, 1, 1, None, id="3-tokens-rounds-up-to-1-not-floor"),
+            pytest.param("claude-opus-5-5", 2, 1, 0, None, id="2-tokens-rounds-down-to-0-not-ceil"),
+            pytest.param("claude-opus-5-5", 2, 10, 4, None, id="ten-turns-round-per-leaf-not-per-turn"),
+            pytest.param(
+                "claude-opus-5", 5, 1, 3, 2, id="5-tokens-follow-the-six-decimal-rendering-not-builtin-round",
+            ),
+        ],
+    )
+    def test_leaf_usd_micros_follows_the_six_decimal_rendering_of_the_leaf_dollars(
+        self, fake_projects, model, tokens_per_turn, turn_count, expected_micros, builtin_round_micros,
+    ):
+        agg = _branch_agg(fake_projects, [
+            _priced(model, cache_read=tokens_per_turn, branch="feature-a") for _ in range(turn_count)
+        ])
+        leaf_dollars = agg["by_model"][model]["standard"]["cache_read"]["dollars"]
+        if builtin_round_micros is not None:
+            # The case must keep discriminating: the six-decimal rendering and the built-in round disagree on this leaf.
+            assert round(leaf_dollars * 1e6) == builtin_round_micros
+            assert round(leaf_dollars * 1e6) != expected_micros
+
+        row = _row_from_agg(agg)
+
+        leaf = row["model_breakdown"][model]["standard"]["cache_read"]
+        assert leaf == {"tokens": tokens_per_turn * turn_count, "usd_micros": expected_micros}
+        scalar_cell = _mod.pr_cost_ledger._format_pr_cost_ledger_row(row).split("\t")[
+            _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index("cache_read_usd")
+        ]
+        assert Decimal(scalar_cell).scaleb(6) == leaf["usd_micros"]
+
+
+class TestCheckModelBreakdownCell:
+    @staticmethod
+    def _cell_with_class_micros(group_count: int, token_class: str, micros_total: int) -> dict:
+        variants = ("standard", "fast", "us_geo")[:group_count]
+        cell = {"claude-sonnet-5": {variant: _zero_group() for variant in variants}}
+        cell["claude-sonnet-5"][variants[0]][token_class]["usd_micros"] = micros_total
+        return cell
+
+    @pytest.mark.parametrize("token_class", _TOKEN_CLASS_NAMES)
+    @pytest.mark.parametrize("gap_sign", [1, -1], ids=["leaves-above-scalar", "leaves-below-scalar"])
+    @pytest.mark.parametrize(
+        "group_count,gap_micros,is_accepted",
+        [
+            pytest.param(1, 0, True, id="n1-accepts-gap-0"),
+            pytest.param(1, 1, False, id="n1-rejects-gap-1"),
+            pytest.param(2, 1, True, id="n2-accepts-gap-1"),
+            pytest.param(2, 2, False, id="n2-rejects-gap-2"),
+            pytest.param(3, 2, True, id="n3-accepts-gap-2"),
+            pytest.param(3, 3, False, id="n3-rejects-gap-3"),
+        ],
+    )
+    def test_dollar_tolerance_boundary_by_group_count_for_every_token_class(
+        self, token_class, group_count, gap_micros, is_accepted, gap_sign,
+    ):
+        scalar_micros = 10
+        row = _zero_scalar_row(**{f"{token_class}_usd": scalar_micros / 1_000_000})
+        cell = self._cell_with_class_micros(group_count, token_class, scalar_micros + gap_sign * gap_micros)
+
+        if is_accepted:
+            _mod.pr_cost._check_model_breakdown_cell(cell, row)
+        else:
+            with pytest.raises(_mod.pr_cost._ModelBreakdownCheckError) as exc_info:
+                _mod.pr_cost._check_model_breakdown_cell(cell, row)
+            assert exc_info.value.rule == "dollars"
+
+    @pytest.mark.parametrize("token_class", _TOKEN_CLASS_NAMES)
+    def test_token_sums_require_exact_equality_without_the_dollar_tolerance_for_every_token_class(self, token_class):
+        row = _zero_scalar_row(**{f"{token_class}_tokens": 5})
+        exact_cell = {"claude-sonnet-5": {variant: _zero_group() for variant in ("standard", "fast", "us_geo")}}
+        for variant, tokens in zip(("standard", "fast", "us_geo"), (1, 1, 3), strict=True):
+            exact_cell["claude-sonnet-5"][variant][token_class]["tokens"] = tokens
+        _mod.pr_cost._check_model_breakdown_cell(exact_cell, row)
+
+        off_by_one_cell = json.loads(json.dumps(exact_cell))
+        off_by_one_cell["claude-sonnet-5"]["us_geo"][token_class]["tokens"] = 4
+
+        with pytest.raises(_mod.pr_cost._ModelBreakdownCheckError) as exc_info:
+            _mod.pr_cost._check_model_breakdown_cell(off_by_one_cell, row)
+        assert exc_info.value.rule == "tokens"
+
+    @pytest.mark.parametrize(
+        "rule,field_suffix,scalar_value",
+        [
+            pytest.param("tokens", "tokens", 5, id="tokens"),
+            pytest.param("dollars", "usd", 0.000005, id="dollars"),
+        ],
+    )
+    def test_offsetting_errors_in_two_classes_are_rejected_not_netted_across_classes(
+        self, rule, field_suffix, scalar_value,
+    ):
+        """One group, so the dollar tolerance is 0: cache_read is one unit over its scalar and output one unit
+        under, which a check that summed across classes would pass."""
+        leaf_field = "tokens" if rule == "tokens" else "usd_micros"
+        row = _zero_scalar_row(**{f"cache_read_{field_suffix}": scalar_value, f"output_{field_suffix}": scalar_value})
+        cell = {"claude-sonnet-5": {"standard": _zero_group()}}
+        cell["claude-sonnet-5"]["standard"]["cache_read"][leaf_field] = 6
+        cell["claude-sonnet-5"]["standard"]["output"][leaf_field] = 4
+
+        with pytest.raises(_mod.pr_cost._ModelBreakdownCheckError) as exc_info:
+            _mod.pr_cost._check_model_breakdown_cell(cell, row)
+        assert exc_info.value.rule == rule
+
+    def test_token_counts_so_large_that_float_summation_order_moves_a_class_total_fail_the_dollars_rule(
+        self, fake_projects,
+    ):
+        """Three output turns interleaved across two variants: the class scalar sums them in arrival order while
+        each variant leaf sums its own, and at this magnitude the two float sums land more than the two-group
+        rounding tolerance apart. Only an absurd token count gets here."""
+        assert _mod.pricing._model_rates("claude-sonnet-5")["output"] == 10.0, "the token counts assume this rate"
+        records = [
+            _priced("claude-sonnet-5", output=10**15 + 1, branch="feature-a"),
+            _priced("claude-sonnet-5", output=10**15 + 3, speed="fast", branch="feature-a"),
+            _priced("claude-sonnet-5", output=10**15 + 7, branch="feature-a"),
+        ]
+
+        row = _row_from_agg(_branch_agg(fake_projects, records))
+
+        with pytest.raises(_mod.pr_cost._ModelBreakdownCheckError) as exc_info:
+            _mod.pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
+        assert exc_info.value.rule == "dollars"
+        assert exc_info.value.cause == _TRANSCRIPT_OR_DEFECT
+
+    @pytest.mark.parametrize("tokens_per_turn,expected_leaf_micros", [(2, 0), (3, 1)])
+    def test_real_two_group_fixture_passes_with_leaves_rounding_away_from_the_scalar(
+        self, fake_projects, tokens_per_turn, expected_leaf_micros,
+    ):
+        """claude-opus-5-5 cache reads, standard plus us_geo: 2 tokens each give leaves 0 + 0 against a
+        scalar of 1; 3 tokens each give leaves 1 + 1 against a scalar of 1."""
+        agg = _branch_agg(fake_projects, [
+            _priced("claude-opus-5-5", cache_read=tokens_per_turn, branch="feature-a"),
+            _priced("claude-opus-5-5", cache_read=tokens_per_turn, inference_geo="us", branch="feature-a"),
+        ])
+
+        row = _row_from_agg(agg)
+
+        leaves = [
+            leaves_by_class["cache_read"]["usd_micros"]
+            for leaves_by_class in row["model_breakdown"]["claude-opus-5-5"].values()
+        ]
+        assert leaves == [expected_leaf_micros, expected_leaf_micros]
+        _mod.pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
+
+    def test_three_hand_built_leaves_with_a_gap_of_two_pass_through_the_row_builder(self):
+        agg = _mod.cost._new_pr_cost_agg()
+        agg["dollars"]["cache_read"] = 0.0234375  # three leaves of 0.0078125, summed
+        for variant in ("standard", "fast", "us_geo"):
+            agg["by_model"].setdefault("claude-sonnet-5", {})[variant] = {
+                token_class: {"tokens": 0, "dollars": 0.0078125 if token_class == "cache_read" else 0.0}
+                for token_class in _TOKEN_CLASS_NAMES
+            }
+
+        row = _row_from_agg(agg)
+
+        leaf_micros = sum(
+            leaves_by_class["cache_read"]["usd_micros"] for leaves_by_class in row["model_breakdown"]["claude-sonnet-5"].values()
+        )
+        assert leaf_micros == 3 * 7812
+        assert _mod.pr_cost._usd_to_micros(row["cache_read_usd"]) == 23438
+        _mod.pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
+
+    def test_none_cell_skips_every_check(self):
+        _mod.pr_cost._check_model_breakdown_cell(None, _zero_scalar_row(cache_read_tokens=999, cache_read_usd=9.0))
+
+    def _assert_rule(self, cell, row, expected_rule):
+        with pytest.raises(_mod.pr_cost._ModelBreakdownCheckError) as exc_info:
+            _mod.pr_cost._check_model_breakdown_cell(cell, row)
+        assert exc_info.value.rule == expected_rule
+        assert str(exc_info.value) == expected_rule
+
+    def test_empty_cell_with_a_nonzero_dollar_scalar_fails_the_dollars_rule(self):
+        self._assert_rule({}, _zero_scalar_row(cache_read_usd=1.0), "dollars")
+
+    def test_empty_cell_with_a_nonzero_token_scalar_fails_the_tokens_rule(self):
+        self._assert_rule({}, _zero_scalar_row(cache_read_tokens=1), "tokens")
+
+    def test_model_outside_the_price_table_fails_the_model_membership_rule(self):
+        cell = {"claude-test-unpriced": {"standard": _zero_group()}}
+        self._assert_rule(cell, _zero_scalar_row(), "model-membership")
+
+    def test_unknown_variant_label_fails_the_label_membership_rule(self):
+        cell = {"claude-sonnet-5": {"warp_speed": _zero_group()}}
+        self._assert_rule(cell, _zero_scalar_row(), "label-membership")
+
+    def test_group_missing_a_class_fails_the_label_membership_rule(self):
+        incomplete_group = _zero_group()
+        del incomplete_group["output"]
+        cell = {"claude-sonnet-5": {"standard": incomplete_group}}
+        self._assert_rule(cell, _zero_scalar_row(), "label-membership")
+
+    def test_negative_leaf_tokens_fail_the_shape_rule_without_a_parse_error_escaping(self):
+        group = _zero_group()
+        group["cache_read"]["tokens"] = -5
+        cell = {"claude-sonnet-5": {"standard": group}}
+        self._assert_rule(cell, _zero_scalar_row(cache_read_tokens=-5), "shape")
+
+    def test_token_sum_off_by_one_with_dollars_inside_tolerance_fails_the_tokens_rule_not_dollars(self):
+        cell = {"claude-sonnet-5": {variant: _zero_group() for variant in ("standard", "fast", "us_geo")}}
+        cell["claude-sonnet-5"]["standard"]["cache_read"]["tokens"] = 6
+        self._assert_rule(cell, _zero_scalar_row(cache_read_tokens=5), "tokens")
+
+    @pytest.mark.parametrize(
+        "plant,expected_rule",
+        [
+            pytest.param("model", "model-membership", id="model-key"),
+            pytest.param("variant", "label-membership", id="variant-key"),
+            pytest.param("class", "label-membership", id="class-key"),
+        ],
+    )
+    def test_a_planted_key_fires_the_real_check_without_appearing_in_the_exception_text(self, plant, expected_rule):
+        if plant == "model":
+            cell = {_REJECTED_MARKER: {"standard": _zero_group()}}
+        elif plant == "variant":
+            cell = {"claude-sonnet-5": {_REJECTED_MARKER: _zero_group()}}
+        else:
+            group = _zero_group()
+            group[_REJECTED_MARKER] = {"tokens": 0, "usd_micros": 0}
+            cell = {"claude-sonnet-5": {"standard": group}}
+
+        with pytest.raises(_mod.pr_cost._ModelBreakdownCheckError) as exc_info:
+            _mod.pr_cost._check_model_breakdown_cell(cell, _zero_scalar_row())
+
+        assert exc_info.value.rule == expected_rule
+        assert _REJECTED_MARKER not in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
+
+    def test_rule_tuple_and_cause_table_are_closed_and_match_the_hand_written_causes(self):
+        assert _mod.pr_cost._MODEL_BREAKDOWN_CHECK_RULES == (
+            "shape", "model-membership", "label-membership", "tokens", "dollars",
+        )
+        assert _mod.pr_cost._MODEL_BREAKDOWN_CHECK_CAUSES == _CAUSE_BY_RULE
+
+    @pytest.mark.parametrize("rule", sorted(_CAUSE_BY_RULE))
+    def test_check_error_carries_the_cause_for_its_rule(self, rule):
+        error = _mod.pr_cost._ModelBreakdownCheckError(rule)
+
+        assert error.rule == rule
+        assert error.cause == _CAUSE_BY_RULE[rule]
+
+    def test_unknown_rule_fails_when_the_error_is_constructed_not_when_the_cause_is_printed(self):
+        with pytest.raises(KeyError):
+            _mod.pr_cost._ModelBreakdownCheckError("no-such-rule")
+
+
+class TestSeededBreakdownSweep:
+    _MODELS = ("claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5-20251001")
+    _VARIANT_USAGE_FIELDS = {
+        "standard": {}, "fast": {"speed": "fast"}, "us_geo": {"inference_geo": "us"},
+        "fast_us_geo": {"speed": "fast", "inference_geo": "us"},
+    }
+
+    @pytest.mark.parametrize("seed", range(25))
+    def test_generated_fixtures_pass_the_check_and_leaf_tokens_equal_independently_tracked_totals(
+        self, fake_projects, tmp_path, seed,
+    ):
+        rng = random.Random(seed)
+        groups = rng.sample([(m, v) for m in self._MODELS for v in self._VARIANT_USAGE_FIELDS], rng.randint(2, 4))
+        expected_tokens: dict[tuple[str, str, str], int] = {}
+        records = []
+        for model, variant in groups:
+            for _ in range(rng.randint(1, 3)):
+                upper_bound = rng.choice((40, 5000))
+                counts = {token_class: rng.randint(0, upper_bound) for token_class in _TOKEN_CLASS_NAMES}
+                for token_class, count in counts.items():
+                    key = (model, variant, token_class)
+                    expected_tokens[key] = expected_tokens.get(key, 0) + count
+                records.append(_priced(
+                    model, input=counts["input"], output=counts["output"], cache_read=counts["cache_read"],
+                    ephemeral_1h=counts["cache_write_1h"], ephemeral_5m=counts["cache_write_5m"],
+                    branch="feature-a", **self._VARIANT_USAGE_FIELDS[variant],
+                ))
+
+        row = _row_from_agg(_branch_agg(fake_projects, records))
+
+        _mod.pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
+        for model, variant in groups:
+            for token_class in _TOKEN_CLASS_NAMES:
+                leaf = row["model_breakdown"][model][variant][token_class]
+                assert leaf["tokens"] == expected_tokens[(model, variant, token_class)], (model, variant, token_class)
+        ledger_path = tmp_path / "sweep-ledger.tsv"
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [row])
+        written_row = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())[0]
+        assert written_row["model_breakdown"] == row["model_breakdown"]
+
+
+def _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a", "feature-b")) -> Path:
+    """Opt the account in, give each branch one priced sonnet turn and one merged PR (numbered 1..N in branch
+    order), and fake git/gh. Returns the (not yet existing) ledger path, which sits in a marker-named directory."""
+    _enable_pr_cost(tmp_path)
+    ledger_dir = tmp_path / _LEDGER_DIR_MARKER
+    ledger_dir.mkdir()
+    ledger_path = ledger_dir / "pr-cost-ledger.tsv"
+    monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+    for index, branch in enumerate(branches):
+        _write_jsonl(fake_projects / f"sess-{index}.jsonl", [_priced("claude-sonnet-5", input=1_000_000, branch=branch)])
+    monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(
+        merged_prs=[_merged_pr(index + 1, branch) for index, branch in enumerate(branches)],
+    ))
+    return ledger_path
+
+
+def _fail_check_on_calls(monkeypatch, failing_call_numbers: set[int], rule: str = "dollars") -> None:
+    """Make _check_model_breakdown_cell raise _ModelBreakdownCheckError(rule) on the listed 1-based calls and
+    run the real check on every other call."""
+    real_check = _mod.pr_cost._check_model_breakdown_cell
+    call_count = 0
+
+    def check(cell, row):
+        nonlocal call_count
+        call_count += 1
+        if call_count in failing_call_numbers:
+            raise _mod.pr_cost._ModelBreakdownCheckError(rule)
+        real_check(cell, row)
+
+    monkeypatch.setattr(_mod.pr_cost, "_check_model_breakdown_cell", check)
+
+
+def _per_pr_degrade_line(pr_number: int, rule: str = "dollars") -> str:
+    return (
+        f"pr-cost:   PR #{pr_number}: per-model breakdown failed its {rule} check ({_CAUSE_BY_RULE[rule]})"
+        " -- recorded the row without it; see docs/pr-cost.md"
+    )
+
+
+def _count_line(count: int, entries: str) -> str:
+    return (
+        f"pr-cost: {count} row(s) recorded without a per-model breakdown ({entries}); those rows are valid --"
+        " once the cause is fixed, re-capture each with --record --force --pr N and this run's account flags,"
+        " only while every session of that PR is still inside cleanupPeriodDays (see docs/pr-cost.md)"
+    )
+
+
+def _assert_no_markers(captured) -> None:
+    for marker in (_LEDGER_DIR_MARKER, _PRIOR_ROW_MARKER):
+        assert marker not in captured.err + captured.out, marker
+
+
+def _ledger_rows(ledger_path: Path) -> list[dict]:
+    return _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+
+
+class TestPrCostRecordDegradesOnBreakdownCheckFailure:
+    def test_failing_check_on_one_of_two_branches_records_both_rows_reports_and_exits_1(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+            ledger_path, [_sample_pr_cost_row(pr_number=50, head_branch=_PRIOR_ROW_MARKER)],
+        )
+        _fail_check_on_calls(monkeypatch, {1})
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        assert exc_info.value.code == 1
+        rows = _ledger_rows(ledger_path)
+        assert [(r["pr_number"], r["model_breakdown"] is None) for r in rows] == [(50, True), (1, True), (2, False)]
+        captured = capsys.readouterr()
+        err_lines = captured.err.splitlines()
+        assert _per_pr_degrade_line(1) in err_lines
+        assert _count_line(1, "PR #1") in err_lines
+        assert not any("usd_micros" in line for line in err_lines)
+        _assert_no_markers(captured)
+
+    def test_real_check_failing_on_a_planted_model_key_degrades_without_echoing_the_key(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        monkeypatch.setattr(
+            _mod.pr_cost, "_build_model_breakdown_cell",
+            lambda by_model: {_REJECTED_MARKER: {"standard": _zero_group()}},
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        assert exc_info.value.code == 1
+        assert _ledger_rows(ledger_path)[0]["model_breakdown"] is None
+        captured = capsys.readouterr()
+        assert _per_pr_degrade_line(1, rule="model-membership") in captured.err.splitlines()
+        assert _REJECTED_MARKER not in captured.err + captured.out
+        _assert_no_markers(captured)
+
+    def test_real_decoder_rejection_from_a_negative_token_count_degrades_instead_of_aborting_the_run(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a", "feature-b"))
+        _write_jsonl(fake_projects / "sess-0.jsonl", [
+            _priced("claude-sonnet-5", input=1_000, cache_read=-5, branch="feature-a"),
+        ])
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        assert exc_info.value.code == 1
+        rows = _ledger_rows(ledger_path)
+        assert [(r["pr_number"], r["model_breakdown"] is None) for r in rows] == [(1, True), (2, False)]
+        captured = capsys.readouterr()
+        assert _per_pr_degrade_line(1, rule="shape") in captured.err.splitlines()
+        _assert_no_markers(captured)
+
+    def test_cell_construction_defect_aborts_the_run_and_leaves_the_seeded_ledger_unchanged(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=50)])
+        before_bytes = ledger_path.read_bytes()
+        build_call_count = 0
+
+        def build_raising_on_first_call(by_model):
+            nonlocal build_call_count
+            build_call_count += 1
+            raise RuntimeError("cell construction defect")
+
+        monkeypatch.setattr(_mod.pr_cost, "_build_model_breakdown_cell", build_raising_on_first_call)
+
+        with pytest.raises(RuntimeError, match="cell construction defect"):
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        assert build_call_count == 1
+        assert ledger_path.read_bytes() == before_bytes
+
+    def test_all_accounts_run_where_the_first_account_degrades_still_records_the_second_and_ends_with_the_count_line(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        for root in roots:
+            _enable_pr_cost(root.parent)
+            (root / "-home-user-testrepo").mkdir(parents=True)
+            _write_jsonl(root / "-home-user-testrepo" / "sess.jsonl", [
+                _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+            ])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "feature-a")]))
+        _fail_check_on_calls(monkeypatch, {1})
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
+
+        assert exc_info.value.code == 1
+        first_account_rows = _ledger_rows(roots[0].parent / "pr-cost-ledger.tsv")
+        second_account_rows = _ledger_rows(roots[1].parent / "pr-cost-ledger.tsv")
+        assert first_account_rows[0]["model_breakdown"] is None
+        assert second_account_rows[0]["model_breakdown"] is not None
+        captured = capsys.readouterr()
+        assert "recorded 2 of 2 declared accounts" in captured.out
+        assert captured.err.strip().splitlines()[-1] == _count_line(1, "account-1 PR #1")
+
+    def test_forced_recapture_that_fails_its_check_appends_an_empty_cell_row_over_a_populated_one(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(
+            pr_number=1, machine=_SEEDED_MACHINE_IDENTITY, captured_at=_EARLIER_CAPTURED_AT,
+            model_breakdown=_sample_model_breakdown(),
+        )])
+        _fail_check_on_calls(monkeypatch, {1})
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True, pr=1, force=True), _NOW, [fake_projects.parent])
+
+        assert exc_info.value.code == 1
+        populated_row, degraded_row = _ledger_rows(ledger_path)
+        assert populated_row["model_breakdown"] is not None
+        assert degraded_row["model_breakdown"] is None
+        assert degraded_row["supersedes"] == _EARLIER_CAPTURED_AT
+        assert degraded_row["captured_at"] != _EARLIER_CAPTURED_AT
+
+    def test_forced_recapture_after_a_degrade_appends_a_populated_row_superseding_the_degraded_one_and_exits_0(
+        self, fake_projects, tmp_path, monkeypatch,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(
+            pr_number=1, machine=_SEEDED_MACHINE_IDENTITY, captured_at=_EARLIER_CAPTURED_AT, model_breakdown=None,
+        )])
+
+        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True, pr=1, force=True), _NOW, [fake_projects.parent])
+
+        degraded_row, recaptured_row = _ledger_rows(ledger_path)
+        assert degraded_row["model_breakdown"] is None
+        assert recaptured_row["model_breakdown"] is not None
+        assert recaptured_row["supersedes"] == _EARLIER_CAPTURED_AT
+        assert recaptured_row["captured_at"] != _EARLIER_CAPTURED_AT
+
+    def test_unforced_rerun_after_a_degrade_skips_the_pr_prints_no_count_line_and_exits_0(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        real_check = _mod.pr_cost._check_model_breakdown_cell
+        _fail_check_on_calls(monkeypatch, {1})
+        with pytest.raises(SystemExit):
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+        monkeypatch.setattr(_mod.pr_cost, "_check_model_breakdown_cell", real_check)
+        capsys.readouterr()
+
+        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        err = capsys.readouterr().err
+        assert "is already captured" in err
+        assert "row(s) recorded without a per-model breakdown" not in err
+        assert len(_ledger_rows(ledger_path)) == 1
+
+    def test_degrade_on_the_first_of_three_branches_then_a_refused_write_leaves_only_the_per_pr_line(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(
+            fake_projects, tmp_path, monkeypatch, branches=("feature-a", "feature-b", "feature-c"),
+        )
+        _fail_check_on_calls(monkeypatch, {1})
+        real_write = _mod.pr_cost_ledger._write_pr_cost_ledger_file
+        write_call_count = 0
+
+        def write_refusing_on_second_call(path, rows):
+            nonlocal write_call_count
+            write_call_count += 1
+            if write_call_count == 2:
+                raise _mod.pr_cost_ledger._PrCostLedgerParseError(
+                    "refusing to write the ledger (ledger unchanged): test double"
+                )
+            return real_write(path, rows)
+
+        monkeypatch.setattr(_mod.pr_cost_ledger, "_write_pr_cost_ledger_file", write_refusing_on_second_call)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        assert exc_info.value.code == 1
+        assert write_call_count == 2
+        captured = capsys.readouterr()
+        err_lines = captured.err.splitlines()
+        assert _per_pr_degrade_line(1) in err_lines
+        assert not any("row(s) recorded without a per-model breakdown" in line for line in err_lines)
+        _assert_no_markers(captured)
+        rows = _ledger_rows(ledger_path)
+        assert [r["pr_number"] for r in rows] == [1]
+        assert rows[0]["model_breakdown"] is None
+
+    def test_failed_check_and_refused_write_on_the_same_branch_prints_no_per_pr_line_and_no_count_line(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+            ledger_path, [_sample_pr_cost_row(pr_number=50, head_branch=_PRIOR_ROW_MARKER)],
+        )
+        _fail_check_on_calls(monkeypatch, {1})
+
+        def refuse_every_write(path, rows):
+            raise _mod.pr_cost_ledger._PrCostLedgerParseError(
+                "refusing to write the ledger (ledger unchanged): test double"
+            )
+
+        monkeypatch.setattr(_mod.pr_cost_ledger, "_write_pr_cost_ledger_file", refuse_every_write)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        err = captured.err
+        assert "refusing to write the ledger (ledger unchanged): test double" in err
+        assert "per-model breakdown failed" not in err
+        assert "row(s) recorded without a per-model breakdown" not in err
+        _assert_no_markers(captured)
+
+    def test_two_degraded_prs_in_one_account_are_listed_in_processing_order_without_an_account_prefix(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        _arrange_record_run(fake_projects, tmp_path, monkeypatch)
+        _fail_check_on_calls(monkeypatch, {1, 2})
+
+        with pytest.raises(SystemExit):
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        err_lines = capsys.readouterr().err.splitlines()
+        assert _count_line(2, "PR #1, PR #2") in err_lines
+
+    def test_all_accounts_degrades_in_both_accounts_are_listed_with_their_account_prefixes(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        for root, branch in zip(roots, ("feature-a", "feature-b"), strict=True):
+            _enable_pr_cost(root.parent)
+            (root / "-home-user-testrepo").mkdir(parents=True)
+            _write_jsonl(root / "-home-user-testrepo" / "sess.jsonl", [
+                _priced("claude-sonnet-5", input=1_000_000, branch=branch),
+            ])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(
+            merged_prs=[_merged_pr(1, "feature-a"), _merged_pr(2, "feature-b")],
+        ))
+        _fail_check_on_calls(monkeypatch, {1, 2})
+
+        with pytest.raises(SystemExit):
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
+
+        assert capsys.readouterr().err.strip().splitlines()[-1] == _count_line(2, "account-1 PR #1, account-2 PR #2")
+
+    def test_disabled_producer_records_an_empty_cell_beside_populated_prior_rows_and_exits_0(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+            _sample_pr_cost_row(pr_number=50, model_breakdown=_sample_model_breakdown()),
+            _sample_pr_cost_row(pr_number=51, model_breakdown=_sample_model_breakdown("claude-opus-5")),
+        ])
+        monkeypatch.setattr(_mod.pr_cost, "_build_model_breakdown_cell", lambda by_model: None)
+
+        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        rows = _ledger_rows(ledger_path)
+        assert [r["pr_number"] for r in rows] == [50, 51, 1]
+        assert rows[0]["model_breakdown"] == _sample_model_breakdown()
+        assert rows[1]["model_breakdown"] == _sample_model_breakdown("claude-opus-5")
+        assert rows[2]["model_breakdown"] is None
+        err = capsys.readouterr().err
+        assert "per-model breakdown failed" not in err
+        assert "row(s) recorded without a per-model breakdown" not in err
+
+
+class TestPrCostRecordWritesAndReportsTheBreakdown:
+    def test_upgrading_run_writes_the_hand_computed_cell_and_prints_no_degrade_lines(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        ledger_path.write_text(_PRE_MODEL_HEADER_LINE + "\n" + _pre_model_row_line(pr_number=50) + "\n")
+
+        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        new_row = _ledger_rows(ledger_path)[-1]
+        zero_group = _zero_group()
+        assert new_row["model_breakdown"] == {
+            "claude-sonnet-5": {
+                "standard": {**zero_group, "input": {"tokens": 1_000_000, "usd_micros": 2_000_000}},
+            },
+        }
+        err = capsys.readouterr().err
+        assert "per-model breakdown failed" not in err
+        assert "row(s) recorded without a per-model breakdown" not in err
+
+    def test_ledger_created_by_a_record_run_has_mode_0600(self, fake_projects, tmp_path, monkeypatch):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        assert not ledger_path.exists()
+
+        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        assert stat.S_IMODE(ledger_path.stat().st_mode) == 0o600
+
+    def test_unpriced_only_branch_records_an_empty_object_cell_distinct_from_not_recorded(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        _write_jsonl(fake_projects / "sess-0.jsonl", [_priced("claude-test-unpriced", input=500, branch="feature-a")])
+
+        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        assert ledger_path.read_text().splitlines()[1].split("\t")[-1] == "{}"
+        recorded_row = _ledger_rows(ledger_path)[0]
+        assert recorded_row["model_breakdown"] == {}
+        assert recorded_row["model_breakdown"] is not None
+        assert "per-model breakdown failed" not in capsys.readouterr().err
+
+    def test_unpriced_model_name_reaches_neither_the_ledger_nor_stderr(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        _write_jsonl(fake_projects / "sess-0.jsonl", [
+            _priced("claude-sonnet-5", input=1_000, branch="feature-a"),
+            _priced("claude-test-unpriced", input=777, branch="feature-a"),
+        ])
+
+        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        assert "claude-test-unpriced" not in ledger_path.read_text()
+        captured = capsys.readouterr()
+        assert "claude-test-unpriced" not in captured.err + captured.out
+        assert _ledger_rows(ledger_path)[0]["unpriced_tokens"] == 777
+
+
+class TestPrCostReadModeAndExportOutputScope:
+    def test_read_mode_console_output_never_contains_a_model_key_from_a_populated_cell(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        distinctive_model_key = "claude-test-keymarkzz"
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+            _sample_pr_cost_row(model_breakdown=_sample_model_breakdown(distinctive_model_key)),
+        ])
+
+        _mod.pr_cost._pr_cost_report(_pr_cost_args(), _NOW, [fake_projects.parent])
+
+        captured = capsys.readouterr()
+        assert "No rows recorded yet" not in captured.out
+        assert distinctive_model_key not in captured.out + captured.err
+
+    def test_export_console_output_omits_the_model_key_that_the_export_file_carries(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        distinctive_model_key = "claude-test-keymarkzz"
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+            _sample_pr_cost_row(model_breakdown=_sample_model_breakdown(distinctive_model_key)),
+        ])
+        out_path = tmp_path / "export.tsv"
+
+        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        captured = capsys.readouterr()
+        assert distinctive_model_key not in captured.out + captured.err
+        assert distinctive_model_key in out_path.read_text()
+
+
+def _run_read_record_and_export(fake_projects, tmp_path, capsys, export_name: str) -> list[tuple[str, int | None, str]]:
+    """Runs read mode, --record, and export in turn. Returns (mode, exit code or None, stderr) for each."""
+    outcomes = []
+    for mode in ("read", "record", "export"):
+        capsys.readouterr()
+        exit_code = None
+        try:
+            if mode == "export":
+                _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(tmp_path / export_name)))
+            else:
+                _mod.pr_cost._pr_cost_report(_pr_cost_args(record=(mode == "record")), _NOW, [fake_projects.parent])
+        except SystemExit as exc:
+            exit_code = exc.code
+        outcomes.append((mode, exit_code, capsys.readouterr().err))
+    return outcomes
+
+
+class TestPrCostPrescribedHandEdits:
+    @staticmethod
+    def _current_line_with_cell(cell: str) -> str:
+        cells = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(pr_number=50)).split("\t")
+        cells[-1] = cell
+        return "\t".join(cells)
+
+    @pytest.mark.parametrize(
+        "broken_cell_or_tail,expected_fragments",
+        [
+            pytest.param(f"{_REJECTED_MARKER} not json", ("line 2", "model_breakdown"), id="corrupt-populated-cell"),
+            pytest.param(None, ("line 2", "append a tab to this line"), id="editor-stripped-trailing-tab"),
+        ],
+    )
+    def test_each_mode_refuses_the_broken_ledger_unchanged_and_accepts_it_after_the_prescribed_edit(
+        self, fake_projects, tmp_path, monkeypatch, capsys, broken_cell_or_tail, expected_fragments,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        header = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
+        if broken_cell_or_tail is None:
+            broken_line = self._current_line_with_cell("")[:-1]  # the editor stripped the trailing tab
+            fixed_line = broken_line + "\t"
+        else:
+            broken_line = self._current_line_with_cell(broken_cell_or_tail)
+            fixed_line = self._current_line_with_cell("")  # blank the cell, keeping its tab
+        ledger_path.write_text(header + "\n" + broken_line + "\n")
+        before_bytes = ledger_path.read_bytes()
+
+        for mode, exit_code, err in _run_read_record_and_export(fake_projects, tmp_path, capsys, "broken-export.tsv"):
+            assert exit_code not in (None, 0), mode
+            for fragment in expected_fragments:
+                assert fragment in err, (mode, fragment)
+            assert _REJECTED_MARKER not in err, mode
+        assert ledger_path.read_bytes() == before_bytes
+        assert not (tmp_path / "broken-export.tsv").exists()
+
+        ledger_path.write_text(header + "\n" + fixed_line + "\n")
+        for mode, exit_code, err in _run_read_record_and_export(fake_projects, tmp_path, capsys, "fixed-export.tsv"):
+            assert exit_code in (None, 0), (mode, err)
+        assert [r["pr_number"] for r in _ledger_rows(ledger_path)] == [50, 1]
+        assert (tmp_path / "fixed-export.tsv").exists()
+
+
+class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
+    """Six runs that must leave a pre-model ledger's bytes unchanged, plus an unrecognized-header ledger."""
+
+    @staticmethod
+    def _seed_pre_model_ledger(ledger_path: Path, **row_overrides) -> bytes:
+        ledger_path.write_text(_PRE_MODEL_HEADER_LINE + "\n" + _pre_model_row_line(**row_overrides) + "\n")
+        return ledger_path.read_bytes()
+
+    @staticmethod
+    def _assert_untouched(ledger_path: Path, before_bytes: bytes, captured) -> None:
+        assert ledger_path.read_bytes() == before_bytes
+        assert list(ledger_path.parent.glob(".pr-cost-ledger-*.tmp")) == []
+        assert "upgraded" not in captured.err
+
+    def test_unconsented_record_leaves_the_file_unchanged(self, fake_projects, tmp_path, monkeypatch, capsys):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        (tmp_path / ".pr-cost-enabled").unlink()
+        before_bytes = self._seed_pre_model_ledger(ledger_path)
+
+        with pytest.raises(SystemExit):
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        self._assert_untouched(ledger_path, before_bytes, capsys.readouterr())
+
+    def test_consented_record_that_only_skips_an_already_captured_pr_leaves_the_file_unchanged(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        before_bytes = self._seed_pre_model_ledger(ledger_path, pr_number=1, machine="c0ffee01")
+
+        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        captured = capsys.readouterr()
+        assert "is already captured" in captured.err
+        self._assert_untouched(ledger_path, before_bytes, captured)
+
+    def test_read_mode_leaves_the_file_unchanged(self, fake_projects, tmp_path, monkeypatch, capsys):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        before_bytes = self._seed_pre_model_ledger(ledger_path)
+
+        _mod.pr_cost._pr_cost_report(_pr_cost_args(), _NOW, [fake_projects.parent])
+
+        self._assert_untouched(ledger_path, before_bytes, capsys.readouterr())
+
+    def test_export_leaves_the_file_unchanged(self, fake_projects, tmp_path, monkeypatch, capsys):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        before_bytes = self._seed_pre_model_ledger(ledger_path)
+
+        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(tmp_path / "export.tsv")))
+
+        self._assert_untouched(ledger_path, before_bytes, capsys.readouterr())
+
+    def test_record_refused_by_the_git_tracked_path_check_leaves_the_file_unchanged(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        before_bytes = self._seed_pre_model_ledger(ledger_path)
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(
+            merged_prs=[_merged_pr(1, "feature-a")], git_tracked=True,
+        ))
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+
+        assert exc_info.value.code == 2
+        self._assert_untouched(ledger_path, before_bytes, capsys.readouterr())
+
+    def test_all_accounts_run_leaves_the_account_that_is_not_opted_in_unchanged(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        roots = _two_declared_roots(tmp_path, monkeypatch)
+        opted_in_root, not_opted_in_root = roots
+        _enable_pr_cost(opted_in_root.parent)
+        (opted_in_root / "-home-user-testrepo").mkdir(parents=True)
+        _write_jsonl(opted_in_root / "-home-user-testrepo" / "sess.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-a"),
+        ])
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "feature-a")]))
+        not_opted_in_ledger = not_opted_in_root.parent / "pr-cost-ledger.tsv"
+        before_bytes = self._seed_pre_model_ledger(not_opted_in_ledger)
+
+        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
+
+        captured = capsys.readouterr()
+        assert "account-2 is not opted in" in captured.err
+        assert not_opted_in_ledger.read_bytes() == before_bytes
+        assert list(not_opted_in_ledger.parent.glob(".pr-cost-ledger-*.tmp")) == []
+        assert "upgraded account-2" not in captured.err
+
+    def test_unrecognized_header_is_refused_by_read_mode_record_and_export_with_bytes_and_mtime_unchanged(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
+        ledger_path.write_text("a-header-from-nowhere\tmodel_breakdown\n" + _pre_model_row_line() + "\n")
+        before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
+
+        for mode, exit_code, err in _run_read_record_and_export(fake_projects, tmp_path, capsys, "export.tsv"):
+            assert exit_code not in (None, 0), mode
+            assert "missing or mismatched pr-cost ledger header row" in err, mode
+        assert ledger_path.read_bytes() == before_bytes
+        assert ledger_path.stat().st_mtime_ns == before_mtime_ns

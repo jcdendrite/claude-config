@@ -17,6 +17,7 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path, PurePosixPath
 
 import _config
@@ -218,6 +219,93 @@ def _pr_cost_asof_window_ok(merged_at_iso: str, window_days: float, now: datetim
     return now.timestamp() - merged_ts >= window_days * 86400
 
 
+def _usd_to_micros(dollars: float) -> int:
+    """Integer micro-dollars the ledger's own six-decimal rendering of `dollars` denotes."""
+    return int(Decimal(f"{dollars:.6f}").scaleb(6))
+
+
+def _build_model_breakdown_cell(by_model: dict) -> dict:
+    """The model_breakdown cell value for one branch's cost._new_pr_cost_agg "by_model": each leaf's
+    float dollars converted once to integer micro-dollars."""
+    return {
+        model: {
+            variant: {
+                token_class: {"tokens": leaf["tokens"], "usd_micros": _usd_to_micros(leaf["dollars"])}
+                for token_class, leaf in leaves_by_class.items()
+            }
+            for variant, leaves_by_class in leaves_by_variant.items()
+        }
+        for model, leaves_by_variant in by_model.items()
+    }
+
+
+# The closed set of rules _check_model_breakdown_cell can fail on, in check order, each with the cause its per-PR line prints.
+# Transcript data reaches "shape" through a negative token count, and "dollars" through token counts so large that float
+# summation order alone moves a class total by more than the rounding tolerance. The other rules are claude-config defects.
+_MODEL_BREAKDOWN_CHECK_CAUSES: dict[str, str] = {
+    "shape": "malformed transcript data or a claude-config defect",
+    "model-membership": "a claude-config defect",
+    "label-membership": "a claude-config defect",
+    "tokens": "a claude-config defect",
+    "dollars": "malformed transcript data or a claude-config defect",
+}
+_MODEL_BREAKDOWN_CHECK_RULES: tuple[str, ...] = tuple(_MODEL_BREAKDOWN_CHECK_CAUSES)
+
+
+class _ModelBreakdownCheckError(Exception):
+    """A model_breakdown cell failed one _MODEL_BREAKDOWN_CHECK_RULES check. The exception's text is the
+    rule alone, never a key or value. An unknown rule raises KeyError here, inside the check and before any write."""
+
+    def __init__(self, rule: str) -> None:
+        super().__init__(rule)
+        self.rule = rule
+        self.cause = _MODEL_BREAKDOWN_CHECK_CAUSES[rule]
+
+
+def _check_model_breakdown_cell(cell: dict | None, row: dict) -> None:
+    """Raises _ModelBreakdownCheckError on the first failing rule, so the tool never writes a cell it would
+    refuse to read or one that disagrees with the row's own per-class scalars. A None cell (nothing recorded)
+    skips every check."""
+    if cell is None:
+        return
+
+    try:
+        decoded_back = pr_cost_ledger._decode_model_breakdown_cell(pr_cost_ledger._encode_model_breakdown_cell(cell), 0)
+        is_shape_valid = decoded_back == cell
+    except pr_cost_ledger._PrCostLedgerParseError:
+        is_shape_valid = False
+    if not is_shape_valid:
+        raise _ModelBreakdownCheckError("shape")
+
+    if any(model not in pricing._MODEL_BASE_INPUT_RATES for model in cell):
+        raise _ModelBreakdownCheckError("model-membership")
+
+    groups = [leaves_by_class for leaves_by_variant in cell.values() for leaves_by_class in leaves_by_variant.values()]
+    if any(variant not in pricing._PRICING_VARIANTS for leaves_by_variant in cell.values() for variant in leaves_by_variant):
+        raise _ModelBreakdownCheckError("label-membership")
+    if any(set(leaves_by_class) != set(pricing._TOKEN_CLASSES) for leaves_by_class in groups):
+        raise _ModelBreakdownCheckError("label-membership")
+
+    if any(
+        sum(leaves_by_class[token_class]["tokens"] for leaves_by_class in groups) != row[f"{token_class}_tokens"]
+        for token_class in pricing._TOKEN_CLASSES
+    ):
+        raise _ModelBreakdownCheckError("tokens")
+
+    # N leaves and the scalar each round by at most half a micro-dollar, so their integer gap is at most (N + 1) // 2.
+    group_count = len(groups)
+    tolerance_micros = 0 if group_count <= 1 else (group_count + 1) // 2
+    if any(
+        abs(
+            sum(leaves_by_class[token_class]["usd_micros"] for leaves_by_class in groups)
+            - _usd_to_micros(row[f"{token_class}_usd"])
+        )
+        > tolerance_micros
+        for token_class in pricing._TOKEN_CLASSES
+    ):
+        raise _ModelBreakdownCheckError("dollars")
+
+
 def _new_pr_cost_row(
     *, host: str, pinned_repo: str, pr: dict, branch: str, agg: dict, enrichment: dict | None,
     join_confidence: str, status: str, machine: str, captured_at: str, supersedes: str,
@@ -273,6 +361,7 @@ def _new_pr_cost_row(
         "distinct_file_extensions": proxies["distinct_file_extensions"],
         "tests_changed": proxies["tests_changed"], "plan_file_added": proxies["plan_file_added"],
         "risk_surface_flag": proxies["risk_surface_flag"],
+        "model_breakdown": _build_model_breakdown_cell(agg["by_model"]),
     }
 
 
@@ -343,8 +432,15 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
     discovery are account-independent (never scoped by CLAUDE_CONFIG_DIR).
     Everything else -- local corpus scan, per-branch enrichment (rate-limit/
     network failures degrade that branch's row instead of aborting), and the
-    ledger read/print/write -- loops once per resolved root. Every
-    stdout/stderr path below routes branch/repo values through
+    ledger read/print/write -- loops once per resolved root. A --record row
+    whose model_breakdown fails _check_model_breakdown_cell is still written,
+    with an empty cell; after that row's write the loop prints a per-PR line,
+    a ledger rewritten from an older header prints one upgrade notice, and a
+    run that finished every branch with such a row prints a count line and
+    exits 1. A refused write exits 1 at once and suppresses that row's per-PR
+    line, any upgrade notice, and the count line; earlier branches' lines have
+    already printed.
+    Every stdout/stderr path below routes branch/repo values through
     _assign_root_scoped_redact_label -- no raw branch name or repo value is
     ever printed. There is deliberately no --no-redact escape hatch for this
     subcommand, unlike cost/subagents.
@@ -421,6 +517,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
     branch_map: dict[tuple[int, str], str] = {}  # shared across accounts; key already includes ordinal
 
     recorded = skipped_no_sentinel = skipped_other = 0
+    rows_without_breakdown: list[str] = []
     for root in roots:
         account_config_dir = root.parent
         ordinal = redact_ordinals[root.resolve()]
@@ -727,13 +824,21 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
                         supersedes=(already["captured_at"] if already else ""),
                         plan_glob=plan_glob, risk_globs=risk_globs, ordinal=ordinal, branch_map=branch_map,
                     )
+                    # A failed check degrades this row to an empty cell instead of costing its scalars or the run's
+                    # remaining branches; the loop reports it after the write.
+                    failed_breakdown_check: _ModelBreakdownCheckError | None = None
+                    try:
+                        _check_model_breakdown_cell(new_row["model_breakdown"], new_row)
+                    except _ModelBreakdownCheckError as exc:
+                        failed_breakdown_check = exc
+                        new_row["model_breakdown"] = None
                     try:
                         updated_rows = pr_cost_ledger._append_pr_cost_ledger_row(current_rows, new_row, already, force)
                     except ValueError as exc:
                         print(f"pr-cost: {exc}", file=sys.stderr)
                         sys.exit(1)
                     try:
-                        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, updated_rows)
+                        ledger_was_upgraded = pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, updated_rows)
                     except pr_cost_ledger._PrCostLedgerParseError as exc:
                         print(f"pr-cost: {exc}", file=sys.stderr)
                         sys.exit(1)
@@ -742,6 +847,24 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             existing_rows = updated_rows
             account_recorded_a_row = True
             print(f"pr-cost: recorded PR #{resolved_pr['number']} / {machine_identity}")
+            if ledger_was_upgraded:
+                ledger_label = f"account-{ordinal}'s ledger" if all_accounts else "the ledger"
+                print(
+                    f"pr-cost: upgraded {ledger_label} to the current header -- older claude-config checkouts"
+                    " refuse this file until they are updated, and there is no supported downgrade; see"
+                    " docs/pr-cost.md in the claude-config repo",
+                    file=sys.stderr,
+                )
+            if failed_breakdown_check is not None:
+                print(
+                    f"pr-cost:   PR #{resolved_pr['number']}: per-model breakdown failed its {failed_breakdown_check.rule}"
+                    f" check ({failed_breakdown_check.cause}) -- recorded the row without it;"
+                    " see docs/pr-cost.md",
+                    file=sys.stderr,
+                )
+                rows_without_breakdown.append(
+                    f"{f'account-{ordinal} ' if all_accounts else ''}PR #{resolved_pr['number']}"
+                )
 
         if account_recorded_a_row:
             recorded += 1  # counts accounts that wrote a row, not total rows written
@@ -757,3 +880,12 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
             f"pr-cost: recorded {recorded} of {len(roots)} declared accounts"
             f" ({skipped_no_sentinel} not opted in, {skipped_other} skipped)"
         )
+    if rows_without_breakdown:
+        print(
+            f"pr-cost: {len(rows_without_breakdown)} row(s) recorded without a per-model breakdown"
+            f" ({', '.join(rows_without_breakdown)}); those rows are valid -- once the cause is fixed, re-capture each"
+            " with --record --force --pr N and this run's account flags, only while every session of that PR is still"
+            " inside cleanupPeriodDays (see docs/pr-cost.md)",
+            file=sys.stderr,
+        )
+        sys.exit(1)

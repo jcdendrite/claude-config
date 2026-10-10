@@ -7,6 +7,88 @@ from pathlib import Path
 
 from transcript_analysis import ledger_common, pr_cost_export, pr_cost_ledger
 
+# Frozen ledger header lines, oldest first, hand-written: the single test-side source for every older header.
+# Never derive an entry from the live column tuple. When a column is added, append the outgoing header
+# line to this tuple.
+_PRE_HOST_HEADER_LINE = "\t".join((
+    "repo", "pr_number", "machine",
+    "head_branch", "merged_at", "rate_stamp", "captured_at", "join_confidence", "supersedes", "status",
+    "cache_read_usd", "cache_write_5m_usd", "cache_write_1h_usd", "output_usd", "input_usd",
+    "cache_read_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens", "input_tokens",
+    "unpriced_turns", "unpriced_tokens", "turn_count", "session_count",
+    "opus_dollars", "opus_dollar_share_pct", "sum_context_at_turn", "mean_context_at_turn",
+    "additions", "deletions", "changed_files", "commit_count", "review_comment_count",
+    "distinct_top_level_dirs", "distinct_file_extensions", "tests_changed", "plan_file_added", "risk_surface_flag",
+))
+_PRE_MODEL_HEADER_LINE = "\t".join((
+    "host", "repo", "pr_number", "machine",
+    "head_branch", "merged_at", "rate_stamp", "captured_at", "join_confidence", "supersedes", "status",
+    "cache_read_usd", "cache_write_5m_usd", "cache_write_1h_usd", "output_usd", "input_usd",
+    "cache_read_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens", "input_tokens",
+    "unpriced_turns", "unpriced_tokens", "turn_count", "session_count",
+    "opus_dollars", "opus_dollar_share_pct", "sum_context_at_turn", "mean_context_at_turn",
+    "additions", "deletions", "changed_files", "commit_count", "review_comment_count",
+    "distinct_top_level_dirs", "distinct_file_extensions", "tests_changed", "plan_file_added", "risk_surface_flag",
+))
+_FROZEN_PR_COST_HEADER_LINES: tuple[str, ...] = (_PRE_HOST_HEADER_LINE, _PRE_MODEL_HEADER_LINE)
+
+# Hand-written data rows under each frozen header. Cells are pairwise distinct within a row and from the other row's,
+# except the three bool cells, which can take only two values.
+_PRE_HOST_ROW_LINE = "\t".join((
+    "legacy-org/legacy-repo", "91", "ab12cd34",
+    "account-1/branch-9", "2025-12-01T00:00:00Z", "2026-07-01", "2025-12-05T00:00:00Z", "medium",
+    "2025-12-02T00:00:00Z", "degraded_network",
+    "0.100000", "0.200000", "0.300000", "0.400000", "0.500000",
+    "11", "22", "33", "44", "55",
+    "6", "7", "8", "3",
+    "0.123457", "12.500000", "9000", "1125.000000",
+    "71", "72", "73", "74", "75",
+    "4", "5", "false", "true", "true",
+))
+_PRE_MODEL_ROW_LINE = "\t".join((
+    "ghe.example.com", "other-org/other-repo", "21", "ef56ab78",
+    "account-2/branch-3", "2026-02-01T00:00:00Z", "2026-08-02", "2026-02-09T00:00:00Z", "low",
+    "", "degraded_rate_limit",
+    "1.100000", "1.200000", "1.300000", "1.400000", "1.500000",
+    "101", "202", "303", "404", "505",
+    "16", "17", "18", "13",
+    "1.234568", "22.500000", "19000", "2125.000000",
+    "81", "82", "83", "84", "85",
+    "14", "15", "true", "false", "false",
+))
+
+# Each row line above as the typed row the parser must return, written out by column name and not derived from any tuple.
+_PRE_HOST_ROW_PARSED = {
+    "host": "github.com", "repo": "legacy-org/legacy-repo", "pr_number": 91, "machine": "ab12cd34",
+    "head_branch": "account-1/branch-9", "merged_at": "2025-12-01T00:00:00Z", "rate_stamp": "2026-07-01",
+    "captured_at": "2025-12-05T00:00:00Z", "join_confidence": "medium", "supersedes": "2025-12-02T00:00:00Z",
+    "status": "degraded_network",
+    "cache_read_usd": 0.1, "cache_write_5m_usd": 0.2, "cache_write_1h_usd": 0.3, "output_usd": 0.4, "input_usd": 0.5,
+    "cache_read_tokens": 11, "cache_write_5m_tokens": 22, "cache_write_1h_tokens": 33, "output_tokens": 44,
+    "input_tokens": 55,
+    "unpriced_turns": 6, "unpriced_tokens": 7, "turn_count": 8, "session_count": 3,
+    "opus_dollars": 0.123457, "opus_dollar_share_pct": 12.5, "sum_context_at_turn": 9000, "mean_context_at_turn": 1125.0,
+    "additions": 71, "deletions": 72, "changed_files": 73, "commit_count": 74, "review_comment_count": 75,
+    "distinct_top_level_dirs": 4, "distinct_file_extensions": 5,
+    "tests_changed": False, "plan_file_added": True, "risk_surface_flag": True,
+    "model_breakdown": None,
+}
+_PRE_MODEL_ROW_PARSED = {
+    "host": "ghe.example.com", "repo": "other-org/other-repo", "pr_number": 21, "machine": "ef56ab78",
+    "head_branch": "account-2/branch-3", "merged_at": "2026-02-01T00:00:00Z", "rate_stamp": "2026-08-02",
+    "captured_at": "2026-02-09T00:00:00Z", "join_confidence": "low", "supersedes": "",
+    "status": "degraded_rate_limit",
+    "cache_read_usd": 1.1, "cache_write_5m_usd": 1.2, "cache_write_1h_usd": 1.3, "output_usd": 1.4, "input_usd": 1.5,
+    "cache_read_tokens": 101, "cache_write_5m_tokens": 202, "cache_write_1h_tokens": 303, "output_tokens": 404,
+    "input_tokens": 505,
+    "unpriced_turns": 16, "unpriced_tokens": 17, "turn_count": 18, "session_count": 13,
+    "opus_dollars": 1.234568, "opus_dollar_share_pct": 22.5, "sum_context_at_turn": 19000, "mean_context_at_turn": 2125.0,
+    "additions": 81, "deletions": 82, "changed_files": 83, "commit_count": 84, "review_comment_count": 85,
+    "distinct_top_level_dirs": 14, "distinct_file_extensions": 15,
+    "tests_changed": True, "plan_file_added": False, "risk_surface_flag": False,
+    "model_breakdown": None,
+}
+
 
 def _enable_pr_cost(config_dir: Path, identity: str = "c0ffee01") -> None:
     """Opt an account into pr-cost --record and seed its machine identity.
@@ -179,8 +261,8 @@ def _argv_carries_repo_pin(cmd: list[str], pinned_repo: str) -> bool:
 
 def _sample_pr_cost_row(**overrides) -> dict:
     """A complete, valid pr-cost ledger row dict covering every column and
-    type (str, int, float, bool) -- the base fixture for round-trip, append,
-    and malformed-content tests."""
+    type (str, int, float, bool, JSON cell -- model_breakdown defaults to None, not recorded) -- the base
+    fixture for round-trip, append, and malformed-content tests."""
     row: dict = {
         "host": "github.com", "repo": "owner/repo", "pr_number": 42, "machine": "ci1",
         "head_branch": "account-1/branch-1", "merged_at": "2026-01-01T00:00:00Z",
@@ -197,6 +279,7 @@ def _sample_pr_cost_row(**overrides) -> dict:
         "additions": 42, "deletions": 10, "changed_files": 3, "commit_count": 4, "review_comment_count": 1,
         "distinct_top_level_dirs": 2, "distinct_file_extensions": 3,
         "tests_changed": True, "plan_file_added": True, "risk_surface_flag": False,
+        "model_breakdown": None,
     }
     row.update(overrides)
     assert set(row) == set(pr_cost_ledger._PR_COST_LEDGER_COLUMNS), "sample row must cover every ledger column exactly"
@@ -204,11 +287,36 @@ def _sample_pr_cost_row(**overrides) -> dict:
 
 
 def _legacy_row_line(**overrides) -> str:
-    """Returns a _sample_pr_cost_row(**overrides), formatted and stripped of
-    its host cell. Host is always _PR_COST_LEDGER_COLUMNS' first cell, so
-    dropping it reproduces the legacy (pre-host-column) row shape without a
-    second column-ordering implementation to keep in sync."""
-    return "\t".join(pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(**overrides)).split("\t")[1:])
+    """Returns a _sample_pr_cost_row(**overrides) rendered under the frozen pre-host
+    header's columns -- no host cell, no model_breakdown cell."""
+    return pr_cost_ledger._format_pr_cost_ledger_row(
+        _sample_pr_cost_row(**overrides), columns=_PRE_HOST_HEADER_LINE.split("\t"),
+    )
+
+
+def _pre_model_row_line(**overrides) -> str:
+    """Returns a _sample_pr_cost_row(**overrides) rendered under the frozen pre-model
+    header's columns -- no model_breakdown cell."""
+    return pr_cost_ledger._format_pr_cost_ledger_row(
+        _sample_pr_cost_row(**overrides), columns=_PRE_MODEL_HEADER_LINE.split("\t"),
+    )
+
+
+def _sample_model_breakdown(model: str = "claude-sonnet-5") -> dict:
+    """A model_breakdown cell value for one model, one standard-variant group, consistent with
+    _sample_pr_cost_row's per-class scalars. Written as a literal, not computed through
+    pr_cost._usd_to_micros."""
+    return {
+        model: {
+            "standard": {
+                "cache_read": {"tokens": 1000, "usd_micros": 1_500_000},
+                "cache_write_5m": {"tokens": 200, "usd_micros": 250_000},
+                "cache_write_1h": {"tokens": 100, "usd_micros": 100_000},
+                "output": {"tokens": 500, "usd_micros": 2_000_000},
+                "input": {"tokens": 300, "usd_micros": 500_000},
+            },
+        },
+    }
 
 
 def _parse_pr_cost_export_provenance_line(line: str) -> dict:

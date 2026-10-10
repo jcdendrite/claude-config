@@ -2303,6 +2303,58 @@ class TestPriceTurnSpeedGeoMultipliers:
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 3.0 * 2.2)
 
 
+_PRICING_VARIANT_USAGE_CASES = [
+    pytest.param({}, "standard", id="neither-field-present"),
+    pytest.param({"speed": "fast"}, "fast", id="fast"),
+    pytest.param({"inference_geo": "us"}, "us_geo", id="us-geo"),
+    pytest.param({"speed": "fast", "inference_geo": "us"}, "fast_us_geo", id="fast-and-us-geo"),
+    pytest.param({"speed": "standard"}, "standard", id="speed-standard"),
+    pytest.param({"speed": None}, "standard", id="speed-none"),
+    pytest.param({"speed": "FAST"}, "standard", id="speed-uppercase"),
+    pytest.param({"inference_geo": "global"}, "standard", id="geo-global"),
+    pytest.param({"inference_geo": "US"}, "standard", id="geo-uppercase"),
+    pytest.param({"inference_geo": ""}, "standard", id="geo-empty"),
+    pytest.param({"inference_geo": None}, "standard", id="geo-none"),
+    pytest.param({"speed": "FAST", "inference_geo": "us"}, "us_geo", id="uppercase-speed-with-us-geo"),
+    pytest.param({"speed": "fast", "inference_geo": "US"}, "fast", id="fast-with-uppercase-geo"),
+]
+
+
+class TestPricingVariant:
+    """pricing._pricing_variant labels a turn by the multiplier conditions _price_turn applies, so
+    pr-cost's per-model cells file each turn under the variant its dollars were priced with."""
+
+    @pytest.mark.parametrize("extra_usage_fields,expected_label", _PRICING_VARIANT_USAGE_CASES)
+    def test_label_for_each_speed_and_geo_combination_and_near_miss(self, extra_usage_fields, expected_label):
+        usage = {**_priced("claude-sonnet-5", input=1_000)["message"]["usage"], **extra_usage_fields}
+        assert _mod.pricing._pricing_variant(usage) == expected_label
+
+    @pytest.mark.parametrize("extra_usage_fields,expected_label", _PRICING_VARIANT_USAGE_CASES)
+    def test_price_turn_dollars_equal_standard_dollars_times_the_multipliers_the_label_implies(
+        self, extra_usage_fields, expected_label,
+    ):
+        """Keeps _pricing_variant from diverging from _price_turn for the two multiplier conditions that exist
+        today, pinned with exact == and a fractional-cent token mix. Applies the multipliers in _price_turn's
+        order. A multiplier condition added to _price_turn later is not visible to this test."""
+        standard_usage = _priced(
+            "claude-sonnet-5", input=123_457, output=7_891, cache_read=3_333_333, ephemeral_1h=45_671, ephemeral_5m=98_765,
+        )["message"]["usage"]
+        usage = {**standard_usage, **extra_usage_fields}
+        label = _mod.pricing._pricing_variant(usage)
+        assert label == expected_label
+
+        standard_dollars, _context, _unpriced = _mod._price_turn("claude-sonnet-5", standard_usage)
+        actual_dollars, _context, _unpriced = _mod._price_turn("claude-sonnet-5", usage)
+
+        for token_class in _mod.pricing._TOKEN_CLASSES:
+            expected = standard_dollars[token_class]
+            if label in ("fast", "fast_us_geo"):
+                expected = expected * _mod.pricing._FAST_MODE_RATE_MULTIPLIER
+            if label in ("us_geo", "fast_us_geo"):
+                expected = expected * _mod.pricing._INFERENCE_GEO_US_RATE_MULTIPLIER
+            assert actual_dollars[token_class] == expected, token_class
+
+
 class TestReportableUnpricedModelIds:
     """Direct unit tests for pricing._reportable_unpriced_model_ids, the
     shared predicate TestExcludedSpendBanner's _cost_report fixtures also
