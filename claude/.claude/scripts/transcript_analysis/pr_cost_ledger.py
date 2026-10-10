@@ -61,7 +61,7 @@ _PR_COST_LEDGER_LEGACY_HOST_DEFAULT = "github.com"
 # Every recognized header line, mapped to that header's own column tuple.
 # _parse_pr_cost_ledger_file_text reads a row under its file's header, then
 # fills each current column the header lacks from _PR_COST_LEDGER_COLUMN_DEFAULTS
-# -- see docs/pr-cost.md's backward-compat contract for a new column.
+# -- see docs/pr-cost.md § "Schema" for how a new column is added.
 _PR_COST_LEDGER_COLUMNS_BY_HEADER_LINE: dict[str, tuple[str, ...]] = {
     "\t".join(columns): columns
     for columns in (_PR_COST_LEDGER_COLUMNS, _PR_COST_LEDGER_PRE_MODEL_COLUMNS, _PR_COST_LEDGER_LEGACY_COLUMNS)
@@ -293,12 +293,13 @@ def _current_cells_from_file_row(cells: list[str], file_columns: tuple[str, ...]
 
 def _unrecognized_header_message(first_line: str | None) -> str:
     """The refusal for a file whose first line is no recognized header (None: the file has no lines). The
-    newer-version hint appears only when the line extends the current header, the shape a later column
-    produces; the other causes are named without echoing the line."""
+    newer-version hint appears only when the line extends the current header with non-blank text, the shape a
+    later column produces; the other causes are named without echoing the line."""
     message = "missing or mismatched pr-cost ledger header row"
     if first_line is None:
         return f"{message} (the file is empty)"
-    if first_line.startswith(_PR_COST_LEDGER_HEADER_LINE + "\t"):
+    header_prefix = _PR_COST_LEDGER_HEADER_LINE + "\t"
+    if first_line.startswith(header_prefix) and first_line.removeprefix(header_prefix).strip():
         return (
             f"{message} (if a newer claude-config wrote this file, update this checkout"
             " -- see docs/pr-cost.md in the claude-config repo)"
@@ -503,7 +504,11 @@ def _write_pr_cost_ledger_file(ledger_path: Path, rows: list[dict]) -> bool:
     not flush the drive cache, so a power loss can still leave a zero-length file.
     """
     prior_rows, prior_header_is_current = _read_prior_pr_cost_ledger(ledger_path)
-    new_text = "\n".join([_PR_COST_LEDGER_HEADER_LINE] + [_format_pr_cost_ledger_row(r) for r in rows]) + "\n"
+    try:
+        formatted_rows = [_format_pr_cost_ledger_row(r) for r in rows]
+    except _PrCostLedgerParseError as exc:
+        raise _PrCostLedgerParseError(f"{_PR_COST_WRITE_REFUSED_PREFIX}{exc}") from None
+    new_text = "\n".join([_PR_COST_LEDGER_HEADER_LINE] + formatted_rows) + "\n"
     fd, tmp_name = tempfile.mkstemp(dir=str(ledger_path.parent), prefix=".pr-cost-ledger-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
@@ -512,7 +517,7 @@ def _write_pr_cost_ledger_file(ledger_path: Path, rows: list[dict]) -> bool:
             os.fsync(f.fileno())
         written_text = Path(tmp_name).read_text()
         if written_text != new_text:
-            raise _PrCostLedgerParseError("write verification mismatch -- refusing to publish")
+            raise _PrCostLedgerParseError(f"{_PR_COST_WRITE_REFUSED_PREFIX}write verification mismatch")
         try:
             staged_rows = _parse_pr_cost_ledger_file_text(written_text)  # fails loud on the canonical parser before publishing
         except _PrCostLedgerParseError as exc:

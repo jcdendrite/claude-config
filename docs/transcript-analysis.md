@@ -1087,7 +1087,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable). Refuses (exit 2) whenever more than one root resolves, since this subcommand durably writes.
-- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the opt-in sentinel `~/.claude/.pr-cost-enabled`. It can exit 1 after a completed run when a row was recorded without its per-model breakdown, per `docs/pr-cost.md` § "Row status".
+- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the opt-in sentinel `~/.claude/.pr-cost-enabled`. It can exit 1 after a completed run when a row was recorded without its per-model breakdown, per `docs/pr-cost.md` § "Write-time check failures".
 - `--pr N` — target exactly one PR number instead of every branch with local corpus activity.
 - `--machine-label LABEL` — narrows read mode's uncaptured-PR listing to one machine: an opaque token matching `^[a-z0-9]{1,8}$`. Refused (exit 1) together with `--record` — machine identity is generated and persisted automatically there (see `docs/pr-cost.md`'s "Machine identity").
 - `--force` — with `--record` and `--pr`, append a correcting row for an already-captured PR instead of refusing.
@@ -1097,7 +1097,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 
 **Default (read) output.** Every row currently in the ledger file, followed by every merged PR with local-corpus activity that no row has captured yet — the gap between "recorded" and "still recoverable," mirroring `cost-ledger`'s own uncaptured-week listing.
 
-**Two modes, one sentinel.** Read mode makes only the calls discovery already needs, so it stays cheap enough to run often as a capture-trigger check. `--record` is gated behind `~/.claude/.pr-cost-enabled` precisely because it durably writes branch names and a repo identifier to an external file, unlike the weekly ledger's aggregate-only rows — `install.sh` prompts for both sentinels together.
+**Two modes, one sentinel.** Read mode makes only the calls discovery already needs, so it stays cheap enough to run often as a capture-trigger check. `--record` is gated behind `~/.claude/.pr-cost-enabled` precisely because it durably writes the at-rest data listed in `docs/pr-cost.md` § "Data" to an external file, unlike the weekly ledger's aggregate-only rows — `install.sh` prompts for both sentinels together.
 
 **When to reach for it.** Run in read mode routinely to catch merged PRs about to age out of the local transcript window; run `--record` once a PR clears the as-of window to capture its row permanently before that happens.
 

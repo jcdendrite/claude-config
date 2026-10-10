@@ -14,10 +14,16 @@ from pathlib import Path
 import pytest
 
 from ._pr_cost_helpers import (
+    _COUNT_LINE_STEM,
+    _LEDGER_DIR_MARKER,
+    _PER_PR_DEGRADE_STEM,
     _PRE_MODEL_HEADER_LINE,
+    _PRIOR_ROW_MARKER,
+    _UPGRADE_NOTICE_STEM,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
     _make_mkstemp_create_0644,
+    _merged_pr,
     _pr_cost_args,
     _pr_cost_export_args,
     _pre_model_row_line,
@@ -896,8 +902,6 @@ class TestPrCostAsofWindowOk:
 _NOW = datetime(2026, 8, 10, tzinfo=UTC)
 _TOKEN_CLASS_NAMES = ("cache_read", "cache_write_5m", "cache_write_1h", "output", "input")
 _REJECTED_MARKER = "zzmarkerzz"  # passes the model_breakdown key rule, so it can stand in any key position
-_LEDGER_DIR_MARKER = "zzledgerdirmarkerzz"  # names the ledger's directory; must never reach captured output
-_PRIOR_ROW_MARKER = "zzpriorrowmarkerzz"  # sits in a prior row's head_branch cell; must never reach captured output
 # The cause each check rule prints, hand-written: "shape" and "dollars" are the rules transcript data can reach.
 _TRANSCRIPT_OR_DEFECT = "malformed transcript data or a claude-config defect"
 _CAUSE_BY_RULE = {
@@ -913,13 +917,6 @@ _ZERO_SCALARS = {
     "cache_read_usd": 0.0, "cache_write_5m_usd": 0.0, "cache_write_1h_usd": 0.0, "output_usd": 0.0, "input_usd": 0.0,
     "cache_read_tokens": 0, "cache_write_5m_tokens": 0, "cache_write_1h_tokens": 0, "output_tokens": 0, "input_tokens": 0,
 }
-
-
-def _merged_pr(number: int, branch: str) -> dict:
-    return {
-        "number": number, "headRefName": branch, "additions": 1, "deletions": 1,
-        "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
-    }
 
 
 def _zero_group() -> dict:
@@ -950,7 +947,18 @@ def _row_from_agg(agg: dict) -> dict:
     )
 
 
+@pytest.fixture
+def _assume_hand_computed_dollar_rates():
+    """Fails with the assumption named, not an opaque micro-dollar mismatch, when a rate-table refresh moves
+    a rate or multiplier the hand-computed literals in the tests that request this fixture rest on."""
+    assert _mod.pricing._model_rates("claude-sonnet-5")["input"] == 2.0, "the literals assume this rate"
+    assert _mod.pricing._model_rates("claude-opus-5")["output"] == 25.0, "the literals assume this rate"
+    assert _mod.pricing._FAST_MODE_RATE_MULTIPLIER == 2, "the literals assume this multiplier"
+    assert _mod.pricing._INFERENCE_GEO_US_RATE_MULTIPLIER == 1.1, "the literals assume this multiplier"
+
+
 class TestPrCostBranchTotalsByModel:
+    @pytest.mark.usefixtures("_assume_hand_computed_dollar_rates")
     def test_two_models_across_all_four_variants_accumulate_into_the_expected_cell(self, fake_projects):
         sidechain_opus_turn = _priced("claude-opus-5", output=100_000, branch="feature-a")
         sidechain_opus_turn["isSidechain"] = True
@@ -1477,14 +1485,14 @@ def _fail_check_on_calls(monkeypatch, failing_call_numbers: set[int], rule: str 
 
 def _per_pr_degrade_line(pr_number: int, rule: str = "dollars") -> str:
     return (
-        f"pr-cost:   PR #{pr_number}: per-model breakdown failed its {rule} check ({_CAUSE_BY_RULE[rule]})"
+        f"pr-cost:   PR #{pr_number}: {_PER_PR_DEGRADE_STEM} its {rule} check ({_CAUSE_BY_RULE[rule]})"
         " -- recorded the row without it; see docs/pr-cost.md"
     )
 
 
 def _count_line(count: int, entries: str) -> str:
     return (
-        f"pr-cost: {count} row(s) recorded without a per-model breakdown ({entries}); those rows are valid --"
+        f"pr-cost: {count} {_COUNT_LINE_STEM} ({entries}); those rows are valid --"
         " once the cause is fixed, re-capture each with --record --force --pr N and this run's account flags,"
         " only while every session of that PR is still inside cleanupPeriodDays (see docs/pr-cost.md)"
     )
@@ -1656,7 +1664,7 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
 
         err = capsys.readouterr().err
         assert "is already captured" in err
-        assert "row(s) recorded without a per-model breakdown" not in err
+        assert _COUNT_LINE_STEM not in err
         assert len(_ledger_rows(ledger_path)) == 1
 
     def test_degrade_on_the_first_of_three_branches_then_a_refused_write_leaves_only_the_per_pr_line(
@@ -1688,7 +1696,7 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         captured = capsys.readouterr()
         err_lines = captured.err.splitlines()
         assert _per_pr_degrade_line(1) in err_lines
-        assert not any("row(s) recorded without a per-model breakdown" in line for line in err_lines)
+        assert not any(_COUNT_LINE_STEM in line for line in err_lines)
         _assert_no_markers(captured)
         rows = _ledger_rows(ledger_path)
         assert [r["pr_number"] for r in rows] == [1]
@@ -1717,8 +1725,8 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         captured = capsys.readouterr()
         err = captured.err
         assert "refusing to write the ledger (ledger unchanged): test double" in err
-        assert "per-model breakdown failed" not in err
-        assert "row(s) recorded without a per-model breakdown" not in err
+        assert _PER_PR_DEGRADE_STEM not in err
+        assert _COUNT_LINE_STEM not in err
         _assert_no_markers(captured)
 
     def test_two_degraded_prs_in_one_account_are_listed_in_processing_order_without_an_account_prefix(
@@ -1771,11 +1779,12 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         assert rows[1]["model_breakdown"] == _sample_model_breakdown("claude-opus-5")
         assert rows[2]["model_breakdown"] is None
         err = capsys.readouterr().err
-        assert "per-model breakdown failed" not in err
-        assert "row(s) recorded without a per-model breakdown" not in err
+        assert _PER_PR_DEGRADE_STEM not in err
+        assert _COUNT_LINE_STEM not in err
 
 
 class TestPrCostRecordWritesAndReportsTheBreakdown:
+    @pytest.mark.usefixtures("_assume_hand_computed_dollar_rates")
     def test_upgrading_run_writes_the_hand_computed_cell_and_prints_no_degrade_lines(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
@@ -1792,8 +1801,8 @@ class TestPrCostRecordWritesAndReportsTheBreakdown:
             },
         }
         err = capsys.readouterr().err
-        assert "per-model breakdown failed" not in err
-        assert "row(s) recorded without a per-model breakdown" not in err
+        assert _PER_PR_DEGRADE_STEM not in err
+        assert _COUNT_LINE_STEM not in err
 
     def test_ledger_created_by_a_record_run_has_mode_0600_even_when_mkstemp_creates_0644(
         self, fake_projects, tmp_path, monkeypatch,
@@ -1818,7 +1827,7 @@ class TestPrCostRecordWritesAndReportsTheBreakdown:
         recorded_row = _ledger_rows(ledger_path)[0]
         assert recorded_row["model_breakdown"] == {}
         assert recorded_row["model_breakdown"] is not None
-        assert "per-model breakdown failed" not in capsys.readouterr().err
+        assert _PER_PR_DEGRADE_STEM not in capsys.readouterr().err
 
     def test_unpriced_model_name_reaches_neither_the_ledger_nor_stderr(
         self, fake_projects, tmp_path, monkeypatch, capsys,
@@ -1942,7 +1951,7 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
     def _assert_untouched(ledger_path: Path, before_bytes: bytes, captured) -> None:
         assert ledger_path.read_bytes() == before_bytes
         assert list(ledger_path.parent.glob(".pr-cost-ledger-*.tmp")) == []
-        assert "upgraded" not in captured.err
+        assert _UPGRADE_NOTICE_STEM not in captured.err
 
     def test_unconsented_record_leaves_the_file_unchanged(self, fake_projects, tmp_path, monkeypatch, capsys):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
@@ -2022,7 +2031,7 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         assert "account-2 is not opted in" in captured.err
         assert not_opted_in_ledger.read_bytes() == before_bytes
         assert list(not_opted_in_ledger.parent.glob(".pr-cost-ledger-*.tmp")) == []
-        assert "upgraded account-2" not in captured.err
+        assert f"{_UPGRADE_NOTICE_STEM}account-2" not in captured.err
 
     def test_unrecognized_header_is_refused_by_read_mode_record_and_export_with_bytes_and_mtime_unchanged(
         self, fake_projects, tmp_path, monkeypatch, capsys,

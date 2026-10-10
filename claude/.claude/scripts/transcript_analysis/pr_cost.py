@@ -239,10 +239,7 @@ def _build_model_breakdown_cell(by_model: dict) -> dict:
     }
 
 
-# The closed set of rules _check_model_breakdown_cell can fail on, in check order, each with the cause its per-PR line prints.
-# Transcript data reaches "shape" through a negative token count. It also reaches "shape" through a leaf above 2**63 - 1.
-# Transcript data reaches "dollars" through token counts so large that float summation order alone moves a class total
-# by more than the rounding tolerance. The other rules are claude-config defects.
+# Closed set of check rules, in check order, each with the cause its per-PR line prints.
 _MODEL_BREAKDOWN_CHECK_CAUSES: dict[str, str] = {
     "shape": "malformed transcript data or a claude-config defect",
     "model-membership": "a claude-config defect",

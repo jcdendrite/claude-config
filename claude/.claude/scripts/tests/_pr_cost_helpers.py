@@ -92,6 +92,33 @@ _PRE_MODEL_ROW_PARSED = {
 }
 
 
+_LEDGER_DIR_MARKER = "zzledgerdirmarkerzz"  # names the ledger's directory; must never reach captured output
+_PRIOR_ROW_MARKER = "zzpriorrowmarkerzz"  # sits in a prior row's head_branch cell; must never reach captured output
+
+# Stems of the run-output lines the positive tests pin in full. Each positive-line builder and each
+# "not printed" check starts from the same stem, so rewording a message moves both.
+_PER_PR_DEGRADE_STEM = "per-model breakdown failed"
+_COUNT_LINE_STEM = "row(s) recorded without a per-model breakdown"
+_UPGRADE_NOTICE_STEM = "pr-cost: upgraded "
+_UPGRADE_NOTICE_FRAGMENT = (
+    "to the current header -- older claude-config checkouts refuse this file until they are updated,"
+    " and there is no supported downgrade; see docs/pr-cost.md in the claude-config repo"
+)
+
+
+def _upgrade_notice_line(ledger_label: str) -> str:
+    """The stderr line announcing an upgraded ledger; ledger_label is "the ledger", or "account-N's ledger"
+    under --all-accounts."""
+    return f"{_UPGRADE_NOTICE_STEM}{ledger_label} {_UPGRADE_NOTICE_FRAGMENT}"
+
+
+def _merged_pr(number: int, branch: str) -> dict:
+    return {
+        "number": number, "headRefName": branch, "additions": 1, "deletions": 1,
+        "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
+    }
+
+
 def _enable_pr_cost(config_dir: Path, identity: str = "c0ffee01") -> None:
     """Opt an account into pr-cost --record and seed its machine identity.
     pr-cost has no shared opt-in fixture the way cost-ledger's

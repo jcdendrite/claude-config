@@ -6,6 +6,7 @@ import fcntl
 import importlib.util
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -17,20 +18,26 @@ import pytest
 
 from ._pr_cost_helpers import (
     _FROZEN_PR_COST_HEADER_LINES,
+    _LEDGER_DIR_MARKER,
     _PRE_HOST_HEADER_LINE,
     _PRE_HOST_ROW_LINE,
     _PRE_HOST_ROW_PARSED,
     _PRE_MODEL_HEADER_LINE,
     _PRE_MODEL_ROW_LINE,
     _PRE_MODEL_ROW_PARSED,
+    _PRIOR_ROW_MARKER,
+    _UPGRADE_NOTICE_FRAGMENT,
+    _UPGRADE_NOTICE_STEM,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
     _legacy_row_line,
     _make_mkstemp_create_0644,
+    _merged_pr,
     _pr_cost_args,
     _pre_model_row_line,
     _sample_model_breakdown,
     _sample_pr_cost_row,
+    _upgrade_notice_line,
 )
 from .conftest import _priced, _two_declared_roots, _write_jsonl
 
@@ -274,6 +281,17 @@ class TestParsePrCostLedgerFileTextMalformed:
         with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
             _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
         assert "update this checkout" not in str(exc_info.value)
+
+    @pytest.mark.parametrize("trailing", [
+        pytest.param("", id="nothing-after-the-tab"),
+        pytest.param(" ", id="space-after-the-tab"),
+        pytest.param("\t", id="second-tab"),
+    ])
+    def test_current_header_followed_by_a_tab_and_no_text_gets_no_newer_version_hint(self, trailing):
+        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\t" + trailing + "\n" + self._valid_line() + "\n"
+        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        assert str(exc_info.value) == "missing or mismatched pr-cost ledger header row (unrecognized first line)"
 
     def test_mismatched_header_raises(self):
         # Dropping a middle column (not the last) keeps this header distinct from every recognized frozen header.
@@ -557,8 +575,8 @@ class TestDecodeModelBreakdownCell:
         assert "line 2" in message
         assert "model_breakdown" in message
         assert _CELL_MARKER not in message.lower()
-        for linked_exception in (exc_info.value.__cause__, exc_info.value.__context__):
-            assert linked_exception is None or _CELL_MARKER not in str(linked_exception).lower()
+        assert exc_info.value.__cause__ is None
+        assert exc_info.value.__context__ is None
 
     def test_message_format_is_line_then_fixed_rule(self):
         with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
@@ -636,6 +654,12 @@ class TestDecodeModelBreakdownCell:
     def test_every_priced_model_id_satisfies_the_key_rule(self, model_id):
         cell = _single_group_cell(model=model_id)
         assert _mod.pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
+
+    @pytest.mark.parametrize("model_id", sorted(_mod.pricing._MODEL_BASE_INPUT_RATES))
+    def test_every_priced_model_id_matches_the_vendor_model_id_grammar(self, model_id):
+        """Table keys persist verbatim in ledger rows and exports, so only vendor-published IDs may be keys.
+        The family list below is the review checkpoint: a new family's first key fails here until a reviewer adds it."""
+        assert re.fullmatch(r"claude-(opus|sonnet|haiku|fable)(-[0-9]+)+", model_id)
 
     def test_pricing_variant_labels_equal_the_hand_written_literal(self):
         assert _mod.pricing._PRICING_VARIANTS == ("standard", "fast", "us_geo", "fast_us_geo"), (
@@ -758,10 +782,34 @@ class TestWritePrCostLedgerFileVerificationFailure:
             return real_read_text(self, *a, **kw) + "CORRUPTED"
 
         monkeypatch.setattr(Path, "read_text", corrupting_read_text)
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="write verification mismatch"):
+        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
             _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [])
+        assert str(exc_info.value) == "refusing to write the ledger (ledger unchanged): write verification mismatch"
         assert not ledger_path.exists()
         assert list(tmp_path.glob(".pr-cost-ledger-*.tmp")) == []
+
+    @pytest.mark.parametrize(
+        "separator",
+        [pytest.param("\t", id="tab"), pytest.param("\n", id="newline"), pytest.param("\r", id="carriage-return")],
+    )
+    def test_row_cell_containing_a_tab_or_line_break_is_refused_with_the_write_refusal_prefix_and_no_temp_file(
+        self, tmp_path, separator,
+    ):
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=1)])
+        before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
+
+        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+                _sample_pr_cost_row(pr_number=1),
+                _sample_pr_cost_row(pr_number=2, head_branch=f"separator{separator}in-branch"),
+            ])
+
+        assert str(exc_info.value) == (
+            "refusing to write the ledger (ledger unchanged): "
+            "column 'head_branch' contains a tab or newline -- refusing to write a corrupt row"
+        )
+        _assert_ledger_untouched(ledger_path, before_bytes, before_mtime_ns)
 
     def test_replace_failure_propagates_leaving_the_ledger_unchanged_and_no_temp_file(self, tmp_path, monkeypatch):
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
@@ -1159,6 +1207,27 @@ class TestPriorRowsPreservedComparison:
     def test_difference_that_vanishes_at_the_ledgers_precision_passes(self, column, prior_value, staged_value):
         self._refuse_if_rows_differ_in(column, prior_value, staged_value)
 
+    @pytest.mark.parametrize(
+        "changed_staged_index,expected_ordinal",
+        [
+            pytest.param(0, 1, id="mismatch-at-an-earlier-ordinal-than-the-truncation"),
+            pytest.param(1, 2, id="mismatch-at-the-last-row-before-the-truncation-boundary"),
+            pytest.param(None, 3, id="clean-truncation-names-the-first-lost-ordinal"),
+        ],
+    )
+    def test_staged_rows_shorter_than_prior_name_the_first_ordinal_that_differs_or_is_lost(
+        self, changed_staged_index, expected_ordinal,
+    ):
+        prior_rows = [_sample_pr_cost_row(pr_number=number) for number in (1, 2, 3)]
+        staged_rows = [dict(row) for row in prior_rows[:2]]
+        if changed_staged_index is not None:
+            staged_rows[changed_staged_index]["head_branch"] = "account-1/changed-branch"
+
+        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            _mod.pr_cost_ledger._refuse_if_prior_rows_not_preserved(prior_rows, staged_rows)
+
+        assert str(exc_info.value) == _drop_refusal(expected_ordinal)
+
     def test_writer_whose_formatter_drops_a_decimal_is_refused_with_the_ledger_unchanged(self, tmp_path, monkeypatch):
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(cache_read_usd=0.123457)])
@@ -1222,21 +1291,6 @@ class TestWritePrCostLedgerFileReturnsWhetherItUpgraded:
         assert stat.S_IMODE(ledger_path.stat().st_mode) == mode
 
 
-_UPGRADE_NOTICE_FRAGMENT = (
-    "to the current header -- older claude-config checkouts refuse this file until they are updated,"
-    " and there is no supported downgrade; see docs/pr-cost.md in the claude-config repo"
-)
-_PRIOR_ROW_MARKER = "zzpriorrowmarkerzz"
-_LEDGER_DIR_MARKER = "zzledgerdirmarkerzz"
-
-
-def _merged_pr(number: int, branch: str) -> dict:
-    return {
-        "number": number, "headRefName": branch, "additions": 1, "deletions": 1,
-        "changedFiles": 1, "mergedAt": "2026-01-01T00:00:00Z",
-    }
-
-
 class TestRecordUpgradeNotice:
     def test_two_branches_into_a_pre_model_ledger_print_the_notice_exactly_once(
         self, fake_projects, tmp_path, monkeypatch, capsys,
@@ -1259,7 +1313,7 @@ class TestRecordUpgradeNotice:
 
         captured = capsys.readouterr()
         assert captured.err.count(_UPGRADE_NOTICE_FRAGMENT) == 1
-        assert "upgraded the ledger " in captured.err
+        assert _upgrade_notice_line("the ledger") in captured.err
         assert len(_mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())) == 3
         for marker in (_PRIOR_ROW_MARKER, _LEDGER_DIR_MARKER):
             assert marker not in captured.err
@@ -1287,9 +1341,9 @@ class TestRecordUpgradeNotice:
         )
 
         captured = capsys.readouterr()
-        assert captured.err.count(f"upgraded account-1's ledger {_UPGRADE_NOTICE_FRAGMENT}") == 1
-        assert captured.err.count(f"upgraded account-2's ledger {_UPGRADE_NOTICE_FRAGMENT}") == 1
-        assert captured.err.count("upgraded ") == 2
+        assert captured.err.count(_upgrade_notice_line("account-1's ledger")) == 1
+        assert captured.err.count(_upgrade_notice_line("account-2's ledger")) == 1
+        assert captured.err.count(_UPGRADE_NOTICE_STEM) == 2
         assert _PRIOR_ROW_MARKER not in captured.err + captured.out
 
     def test_a_current_header_ledger_prints_no_notice(self, fake_projects, tmp_path, monkeypatch, capsys):
@@ -1302,7 +1356,7 @@ class TestRecordUpgradeNotice:
 
         _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
-        assert "upgraded" not in capsys.readouterr().err
+        assert _UPGRADE_NOTICE_STEM not in capsys.readouterr().err
 
     def test_a_refused_write_prints_the_refusal_and_no_notice(
         self, fake_projects, tmp_path, monkeypatch, capsys,
@@ -1331,7 +1385,7 @@ class TestRecordUpgradeNotice:
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
         assert "refusing to write the ledger" in captured.err
-        assert "upgraded" not in captured.err
+        assert _UPGRADE_NOTICE_STEM not in captured.err
         for marker in (_PRIOR_ROW_MARKER, _LEDGER_DIR_MARKER):
             assert marker not in captured.err + captured.out
 
