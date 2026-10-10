@@ -1,7 +1,7 @@
 #!/bin/bash
 # hook-class: informational
-# PostToolUse Bash hook: shows the approved plan's absolute path in the
-# engineer's terminal after `marker.sh write plan-review` records an approval.
+# PostToolUse Bash hook: after `marker.sh write plan-review` records a marker,
+# shows the absolute path of each plan it covers in the engineer's terminal.
 # It relays the `plan-review marker covers: <absolute path>` lines that
 # marker.sh prints, as a systemMessage only.
 # It emits no additionalContext because the Bash tool result already carries
@@ -45,7 +45,7 @@
 #     whole list.
 #   - An active plan whose name does not end in `.md` (for example `.txt`,
 #     which marker.sh enumerates) is withheld, so it suppresses the whole list.
-#   - A hand-run `write plan-review` announces as an approval.
+#   - A hand-run `write plan-review` shows the same line a review's approval does.
 #   - A command whose marker.sh path contains a space or other character
 #     outside the trigger's path class announces nothing.
 #   - A repo path containing a space or other character outside the path
