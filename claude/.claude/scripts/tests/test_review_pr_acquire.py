@@ -273,9 +273,7 @@ def _gh_shim_source(
 
 
 def _read_calls(call_log: Path) -> list[list[str]]:
-    if not call_log.exists():
-        return []
-    return [json.loads(line)["args"] for line in call_log.read_text().splitlines() if line]
+    return [entry["args"] for entry in _logged_gh_calls(call_log)]
 
 
 def _is_status_check_call(call: list[str]) -> bool:
@@ -583,6 +581,8 @@ class TestStatusCheckRollupPassThrough:
         assert "statusCheckRollup" not in main_call[main_call.index("--json") + 1].split(",")
         status_check_calls = [c for c in pr_view_calls if _is_status_check_call(c)]
         assert len(status_check_calls) == 1
+        # The checks call must target the validated OWNER/REPO and PR number, like the metadata call.
+        assert status_check_calls[0][:5] == main_call[:5] == ["pr", "view", PR_NUMBER, "-R", OWNER_REPO]
         requested_fields = status_check_calls[0][status_check_calls[0].index("--json") + 1].split(",")
         assert set(requested_fields) == {"headRefOid", "statusCheckRollup"}
         assert "checks" not in json.loads(result.stdout)
@@ -599,7 +599,7 @@ class TestStatusCheckRollupPassThrough:
         assert document["statusCheckRollupAvailable"] is True
         assert "check status" not in result.stderr
 
-    def test_null_status_check_rollup_from_gh_is_normalized_to_an_empty_list(self, isolated_home, tmp_path):
+    def test_a_null_rollup_on_a_successful_fetch_is_read_as_an_empty_list(self, isolated_home, tmp_path):
         result, _ = _run(
             isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, null_status_check_rollup=True,
         )
@@ -624,8 +624,8 @@ class TestStatusCheckRollupUnavailable:
     """Check status is read-only context, so a failed fetch of it degrades the
     document instead of aborting the run."""
 
-    def _run_with_a_failing_checks_call(self, isolated_home, tmp_path, **shim_kwargs):
-        shim_kwargs.setdefault("checks_required_token", CHECKS_OVERRIDE_TOKEN)
+    def _run_with_an_ambient_token(self, isolated_home, tmp_path, **shim_kwargs):
+        """Metadata carrying one file and one commit, with an ambient GH_TOKEN and no override."""
         return _run(
             isolated_home, [PR_IDENTITY], tmp_path, extra_env={"GH_TOKEN": AMBIENT_TOKEN},
             head_ref_oid="a" * 40, capped_files=["a.py"], capped_commits=["c1"], **shim_kwargs,
@@ -634,7 +634,9 @@ class TestStatusCheckRollupUnavailable:
     def test_a_checks_call_the_token_cannot_read_gives_null_and_flag_false_and_still_writes_everything(
         self, isolated_home, tmp_path
     ):
-        result, _ = self._run_with_a_failing_checks_call(isolated_home, tmp_path)
+        result, _ = self._run_with_an_ambient_token(
+            isolated_home, tmp_path, checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
 
         assert result.returncode == 0, result.stderr
         document = json.loads(result.stdout)
@@ -649,13 +651,17 @@ class TestStatusCheckRollupUnavailable:
     def test_the_availability_flag_follows_the_completeness_flags_at_the_head_of_the_document(
         self, isolated_home, tmp_path
     ):
-        result, _ = self._run_with_a_failing_checks_call(isolated_home, tmp_path)
+        result, _ = self._run_with_an_ambient_token(
+            isolated_home, tmp_path, checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
         assert list(json.loads(result.stdout))[:3] == [
             "filesComplete", "commitsComplete", "statusCheckRollupAvailable",
         ]
 
     def test_the_degraded_note_precedes_the_backstop_path_line_which_stays_last(self, isolated_home, tmp_path):
-        result, _ = self._run_with_a_failing_checks_call(isolated_home, tmp_path)
+        result, _ = self._run_with_an_ambient_token(
+            isolated_home, tmp_path, checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
 
         stderr_lines = result.stderr.splitlines()
         context_file = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.context.json"
@@ -668,7 +674,9 @@ class TestStatusCheckRollupUnavailable:
     def test_an_ambient_token_failure_hints_that_fine_grained_pats_cannot_read_check_status(
         self, isolated_home, tmp_path
     ):
-        result, _ = self._run_with_a_failing_checks_call(isolated_home, tmp_path)
+        result, _ = self._run_with_an_ambient_token(
+            isolated_home, tmp_path, checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
         assert "Possible cause: fine-grained PATs cannot read check status" in result.stderr
         assert "for a github.com PR, set CI_CHECKS_GH_TOKEN" in result.stderr
 
@@ -680,8 +688,8 @@ class TestStatusCheckRollupUnavailable:
     def test_a_cap_kill_is_not_blamed_on_the_token_and_only_124_is_named_a_timeout(
         self, isolated_home, tmp_path, exit_status, status_wording, hints_at_fine_grained_pats
     ):
-        result, _ = self._run_with_a_failing_checks_call(
-            isolated_home, tmp_path, checks_required_token=None, checks_exit_status=exit_status,
+        result, _ = self._run_with_an_ambient_token(
+            isolated_home, tmp_path, checks_exit_status=exit_status,
         )
         assert result.returncode == 0, result.stderr
         document = json.loads(result.stdout)
@@ -690,32 +698,53 @@ class TestStatusCheckRollupUnavailable:
         assert f"the fetch {status_wording}." in result.stderr
         assert ("fine-grained PATs cannot read check status" in result.stderr) is hints_at_fine_grained_pats
 
-    def test_the_checks_call_runs_under_the_same_cap_as_the_metadata_call(self, isolated_home, tmp_path):
+    @pytest.mark.parametrize(
+        "exit_status,status_wording",
+        [(124, "timed out"), (137, "failed (exit 137)")],
+        ids=["cap-kill-124", "sigkill-137"],
+    )
+    def test_a_cap_kill_with_the_override_engaged_gets_no_token_hint(
+        self, isolated_home, tmp_path, exit_status, status_wording
+    ):
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            extra_env={"GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN},
+            checks_exit_status=exit_status,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["statusCheckRollupAvailable"] is False
+        status_check_credentials = [
+            (entry["gh_token"], entry["gh_host"])
+            for entry in _logged_gh_calls(call_log) if _is_status_check_call(entry["args"])
+        ]
+        assert status_check_credentials == [(CHECKS_OVERRIDE_TOKEN, "github.com")]
+        assert f"the fetch {status_wording}." in result.stderr
+        assert "Possible cause" not in result.stderr
+        assert "CI_CHECKS_GH_TOKEN" not in result.stderr
+
+    def test_the_checks_call_runs_under_a_positive_cap(self, isolated_home, tmp_path):
         """A hung check-status fetch must not block the run it exists to
-        keep alive."""
+        keep alive, so the call is capped with a positive value."""
         timeout_log = tmp_path / "timeout_calls.jsonl"
         result, _ = _run(
             isolated_home, [PR_IDENTITY], tmp_path, timeout_log=timeout_log, head_ref_oid="a" * 40,
         )
         assert result.returncode == 0, result.stderr
         # Each logged argv is `-k 2 SECONDS gh ARGS...`.
-        capped_pr_view_calls = [
-            (argv[2], argv[4:]) for argv in map(json.loads, timeout_log.read_text().splitlines())
-            if argv[3:6] == ["gh", "pr", "view"]
+        seconds_by_status_check_call = [
+            argv[2] for argv in map(json.loads, timeout_log.read_text().splitlines())
+            if argv[3] == "gh" and _is_status_check_call(argv[4:])
         ]
-        seconds_by_status_check_call = [seconds for seconds, gh_args in capped_pr_view_calls if _is_status_check_call(gh_args)]
-        seconds_by_metadata_call = [seconds for seconds, gh_args in capped_pr_view_calls if not _is_status_check_call(gh_args)]
         assert len(seconds_by_status_check_call) == 1
         assert int(seconds_by_status_check_call[0]) > 0
-        assert seconds_by_status_check_call == seconds_by_metadata_call
 
     def test_a_head_that_moved_between_the_two_calls_marks_check_status_unavailable(
         self, isolated_home, tmp_path
     ):
         """Checks read from a newer head would describe commits the rest of the
         document does not."""
-        result, _ = self._run_with_a_failing_checks_call(
-            isolated_home, tmp_path, checks_required_token=None,
+        result, _ = self._run_with_an_ambient_token(
+            isolated_home, tmp_path,
             checks_head_ref_oid="b" * 40, status_check_rollup=[{"__typename": "CheckRun", "name": "ci"}],
         )
         assert result.returncode == 0, result.stderr
@@ -738,18 +767,23 @@ class TestStatusCheckRollupUnavailable:
             '{"headRefOid": "' + "a" * 40 + '", "statusCheckRollup": {}}',
             '{"headRefOid": "' + "a" * 40 + '", "statusCheckRollup": "passing"}',
             '{"headRefOid": "' + "a" * 40 + '", "statusCheckRollup": 0}',
+            '{"headRefOid": "' + "a" * 40 + '", "statusCheckRollup": false}',
+            '{"headRefOid": "", "statusCheckRollup": []}',
+            "null",
+            "5",
             "",
         ],
         ids=[
             "not-json", "not-an-object", "no-rollup-key", "no-head",
-            "rollup-is-an-object", "rollup-is-a-string", "rollup-is-a-number", "exit-0-with-empty-stdout",
+            "rollup-is-an-object", "rollup-is-a-string", "rollup-is-a-number",
+            "rollup-is-false", "empty-head", "top-level-null", "top-level-scalar", "exit-0-with-empty-stdout",
         ],
     )
     def test_an_unusable_checks_response_is_unavailable_not_an_empty_list(
         self, isolated_home, tmp_path, raw_stdout
     ):
-        result, _ = self._run_with_a_failing_checks_call(
-            isolated_home, tmp_path, checks_required_token=None, checks_raw_stdout=raw_stdout,
+        result, _ = self._run_with_an_ambient_token(
+            isolated_home, tmp_path, checks_raw_stdout=raw_stdout,
         )
         assert result.returncode == 0, result.stderr
         document = json.loads(result.stdout)
@@ -911,6 +945,7 @@ class TestStatusCheckRollupTokenContainment:
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout)["statusCheckRollupAvailable"] is False
         assert "CI_CHECKS_GH_TOKEN was used for this fetch and it still failed" in result.stderr
+        assert "Possible cause: CI_CHECKS_GH_TOKEN belongs to a different account" in result.stderr
 
 
 class TestContextAssemblyOfOversizedLists:
@@ -938,6 +973,7 @@ class TestContextAssemblyOfOversizedLists:
     def test_a_status_check_rollup_past_the_single_argument_limit_assembles_and_leaves_no_temp_dir(
         self, isolated_home, tmp_path
     ):
+        """Exercises assembly of a large rollup without temp-dir leftovers."""
         oversized_rollup = [{"__typename": "CheckRun", "name": "ci", "detailsUrl": "x" * 300_000}]
         scratch_root = tmp_path / "scratch"
         scratch_root.mkdir()

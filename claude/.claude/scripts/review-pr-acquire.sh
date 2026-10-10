@@ -37,13 +37,16 @@ aborts instead.
 fetch fails, times out, returns an unusable response, or returns a head other
 than the metadata call's. Then statusCheckRollup is null. An empty list is a
 successful fetch that found no registered checks. The run still exits 0 and
-prints one stderr line.
+prints one additional stderr line.
 
 Environment: CI_CHECKS_GH_TOKEN, when set, authenticates only the check-status
-fetch, and only when the PR's own url is on github.com. See docs/scripts.md's
-ci-watch.sh entry.
+fetch, and only when the PR's own url is on github.com.
 The token is sent to github.com whenever the PR url is on github.com, without
 checking that it was issued for github.com.
+It is the session's ambient value, not resynced via direnv, so it may belong to
+a different account than the PR's repo.
+Running this script with xtrace on, however enabled (bash -x, SHELLOPTS, BASH_ENV), prints the token to stderr.
+See docs/scripts.md's ci-watch.sh entry for why a session on a fine-grained PAT needs CI_CHECKS_GH_TOKEN.
 
 Also writes this session's provenance file (mode "acquired").
 review-pr-checkout.sh and review-pr-diff.sh each rewrite it (mode
@@ -114,7 +117,8 @@ fi
 PR_URL=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.url // empty' 2>/dev/null) || PR_URL=""
 
 # Read-only context that nothing branches on, so a failed fetch degrades instead of aborting (why it is a separate call: REFERENCES.md).
-# The override token and its pinned GH_HOST ride per-call prefix assignments, never an export, and never reach argv or output.
+# The override token and its pinned GH_HOST ride per-call prefix assignments, never an export, and never reach a child process's argv.
+# With xtrace on, every line that expands the token prints it to stderr.
 fetch_status_check_rollup() {
   _lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid,statusCheckRollup 2>/dev/null
 }
@@ -126,7 +130,7 @@ status_check_failure_hint() {
     return 0
   fi
   case "$CHECKS_TOKEN_SOURCE" in
-    override) printf 'CI_CHECKS_GH_TOKEN was used for this fetch and it still failed.' ;;
+    override) printf "CI_CHECKS_GH_TOKEN was used for this fetch and it still failed. Possible cause: CI_CHECKS_GH_TOKEN belongs to a different account than the PR's repo." ;;
     withheld) printf 'Possible cause: CI_CHECKS_GH_TOKEN is set but was not sent because the PR is not reported on github.com.' ;;
     *) printf "Possible cause: fine-grained PATs cannot read check status; for a github.com PR, set CI_CHECKS_GH_TOKEN (see docs/scripts.md's ci-watch.sh entry)." ;;
   esac
@@ -149,9 +153,10 @@ if [[ "$CHECKS_FETCH_STATUS" -ne 0 ]]; then
   if [[ -n "$CHECKS_FAILURE_HINT" ]]; then
     CHECKS_UNAVAILABLE_NOTE+=" $CHECKS_FAILURE_HINT"
   fi
-# Line 1 is the response's headRefOid and line 2 the rollup as compact JSON, a null read as an empty list.
+# Line 1 is the response's headRefOid and line 2 the rollup as compact JSON.
+# A null rollup on a successful fetch is read as an empty list; whether gh emits null on a partial read is unconfirmed.
 elif ! CHECKS_RESPONSE_LINES=$(printf '%s' "$CHECKS_VIEW_JSON" | _lib_jq -er '
-    select(type == "object" and ((.headRefOid | type) == "string") and (.headRefOid | length) > 0
+    select(((.headRefOid | type) == "string") and .headRefOid != ""
       and has("statusCheckRollup") and ((.statusCheckRollup | type) == "array" or .statusCheckRollup == null))
     | .headRefOid, ((.statusCheckRollup // []) | tojson)' 2>/dev/null); then
   CHECKS_UNAVAILABLE_NOTE="the fetch returned no usable headRefOid and statusCheckRollup."

@@ -25,10 +25,8 @@
 #                           API. Resolved via direnv and withheld on a
 #                           cross-host mismatch — see docs/scripts.md's
 #                           CI_CHECKS_GH_TOKEN entry for the full mechanism.
-#                           review-pr-acquire.sh also reads it, for its
-#                           check-status fetch, but shares neither the direnv
-#                           resync nor its cross-host mismatch gate (acquire
-#                           gates on the PR url; see its usage text).
+#                           review-pr-acquire.sh also reads it; see its entry
+#                           in docs/scripts.md.
 #   GH_HOST             -- optional; tells `gh` which host to target. Needed
 #                           when a GHE host is supplied only via direnv and
 #                           was never registered via `gh auth login`, so
