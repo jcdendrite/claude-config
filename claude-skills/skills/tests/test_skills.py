@@ -1674,6 +1674,79 @@ class TestPrDescriptionDefaultTemplateWiring:
         assert _bullet_pointer_names(one_reworded) == ["A test plan"]
 
 
+class TestBranchManagementWorktreeEnsureWiring:
+    """Wiring tripwire, not a behavioral test: the script's checks, states and
+    exit codes are validated behaviorally by
+    claude/.claude/scripts/tests/test_worktree_ensure.py (real subprocess
+    execution against worktree-ensure.sh). This class only proves the skill
+    body still names the script, its call form, its output protocol and the
+    failure rule the script's header leaves to the skill."""
+
+    @staticmethod
+    def _collapsed(text: str) -> str:
+        """SKILL.md is hard-wrapped, so collapse each whitespace run before a substring test."""
+        return " ".join(text.split())
+
+    def _assert_body_contains(self, phrase: str) -> None:
+        body = self._collapsed(_skill_body("branch-management"))
+        assert self._collapsed(phrase) in body, f"branch-management/SKILL.md lost: {phrase!r}"
+
+    def test_script_exists(self):
+        assert (SCRIPTS_DIR / "worktree-ensure.sh").is_file()
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            pytest.param("~/.claude/scripts/worktree-ensure.sh '<branch>'", id="call-form"),
+            pytest.param("./install.sh", id="missing-script-remedy"),
+            pytest.param("ASCII letters, digits, `.`, `_`, `/` and `-`", id="branch-name-character-set"),
+            pytest.param("`next:`", id="next-line-marker"),
+            pytest.param("`created `", id="created-state"),
+            pytest.param("`existing `", id="existing-state"),
+            pytest.param("`current `", id="current-state"),
+            pytest.param(
+                "Commands that write are the engineer's to run, wherever they are suggested",
+                id="writing-command-bar",
+            ),
+            pytest.param("Never fall back to a hand-typed `git worktree add`", id="no-hand-typed-add"),
+            pytest.param("correct the call and rerun once", id="exit-2-single-rerun"),
+            pytest.param("A second exit 2", id="exit-2-second-occurrence"),
+            pytest.param("goes to the engineer", id="exit-2-escalation"),
+            pytest.param("On `current`, skip `EnterWorktree`.", id="skip-enter-worktree-on-current"),
+            pytest.param("`usage`: call the script with exactly one argument.", id="usage-bullet"),
+            pytest.param("`bad-name`: rewrite the name within the set in step 1.", id="bad-name-bullet"),
+            pytest.param(
+                "`in-main`: ask the engineer to switch the main checkout to another branch, then rerun.",
+                id="in-main-bullet",
+            ),
+            # test_require_worktree_for_git_writes.py accepts a gate denial for these names
+            # as a known limitation because this rule tells the agent to rename the branch.
+            pytest.param(
+                "when the name is `git` or ends in `/git`: rename the branch",
+                id="rename-a-branch-the-gate-reads-as-a-git-command",
+            ),
+        ],
+    )
+    def test_skill_body_keeps_script_protocol_phrase(self, phrase):
+        self._assert_body_contains(phrase)
+
+    @pytest.mark.parametrize("state", ["created", "existing", "current"])
+    def test_state_word_the_skill_instructs_on_is_in_the_script_stdout_grammar(self, state):
+        script_text = (SCRIPTS_DIR / "worktree-ensure.sh").read_text()
+        stdout_grammar = re.search(r"^# Stdout on exit 0.*?^# On exit 1 or 2", script_text, re.S | re.M)
+        assert stdout_grammar, "worktree-ensure.sh header lost its stdout grammar paragraph"
+        assert re.search(rf"\b{state}\b", stdout_grammar.group(0))
+        assert f"`{state} `" in self._collapsed(_skill_body("branch-management"))
+
+    @pytest.mark.parametrize("token", ["usage", "bad-name", "in-main"])
+    def test_failure_token_the_skill_instructs_on_is_in_the_script_token_list(self, token):
+        script_text = (SCRIPTS_DIR / "worktree-ensure.sh").read_text()
+        token_list = re.search(r"^# Tokens:(.*?)\.$", script_text, re.S | re.M)
+        assert token_list, "worktree-ensure.sh header lost its token list"
+        assert token in re.findall(r"[a-z]+(?:-[a-z]+)*", token_list.group(1))
+        assert f"`{token}`:" in self._collapsed(_skill_body("branch-management"))
+
+
 class TestPrDescriptionCostSectionWiring:
     """Wiring tripwire, not a behavioral test: the `## Cost (list-price
     estimate)` section's actual runtime behavior -- sentinel absent or mode
