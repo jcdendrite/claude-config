@@ -908,8 +908,8 @@ class TestRequireWorktreeForGitWrites:
 
     def test_main_tree_deny_points_at_worktree_ensure_script(self, isolated_home, opted_in_repo):
         """GH-1234: the main-tree deny names the one script that creates or finds a
-        worktree, with the missing-script remedy and the branch-name character set,
-        and restates no worktree-creation command of its own."""
+        worktree, with the missing-script remedy and the branch-name character set.
+        The creation command lives only in the script."""
         reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=opted_in_repo)
 
         assert reason is not None
@@ -917,6 +917,16 @@ class TestRequireWorktreeForGitWrites:
         assert "install.sh" in reason
         assert "ASCII letters, digits, ., _, / and -" in reason
         assert "worktree add" not in reason
+
+    def test_main_tree_deny_names_timeout_parameter_not_a_command_prefix(self, isolated_home, opted_in_repo):
+        """GH-1234: the hint tells the agent to set the Bash tool's timeout parameter. The
+        reading "with the Bash tool's maximum timeout" invites a `timeout N <path>` prefix,
+        which the reviewer gate's command-word match does not see."""
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=opted_in_repo)
+
+        assert reason is not None
+        assert "timeout parameter" in reason
+        assert "with the Bash tool's maximum timeout" not in reason
 
     @pytest.mark.parametrize(
         "branch",

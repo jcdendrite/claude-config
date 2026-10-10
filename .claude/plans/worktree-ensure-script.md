@@ -195,7 +195,7 @@ Order of operations:
 
 **Beyond the Ask.** Items outside the Ask and their basis:
 - the architect's rulings (row 48), its agreement on the layout boundary (row 86), and its extension of that boundary to a `.git` symlink (row 78);
-- the engineer's selections (rows 59, 71, 82, 84, 85, 86, 87);
+- the engineer's selections (rows 59, 71, 82, 84, 85, 86, 87, and row 91 with Decision record 92);
 - the orchestrator's `[unverified]` readings of row 80: dropping the locale chain and folding `stale-ancestor` into `path-in-use` (rows 88, 89);
 - the items applied under row 74's general go-ahead as the dispatching session read it, including `LC_ALL=C` and the Bash `timeout` instruction (row 79);
 - Verification step 5's `git worktree remove` of the session's own probe, which the session proposes and the engineer approves at the default-mode permission prompt, with `git branch -D` left to the engineer. The engineer asked why the agent could not use the permission prompt for this; the proposal is the orchestrator's reading of that question `[unverified]`.
@@ -203,7 +203,7 @@ Order of operations:
 **Dispatch split.** One `code-writer` dispatch, run after Verification step 1.
 - Every file depends on the script's name, its output lines, its tokens and its exit codes. Splitting would mean restating that contract in every prompt.
 - Point the dispatch at this Approach above the ledger, Critical files, and Verification steps 2–3. The ledger and Out of scope are reviewer reference, not dispatch instructions.
-- The first implementation commit lands files 1–10 together, so no commit has a deny message naming a script that does not exist.
+- The first implementation commit lands files 1–11 together, so no commit has a deny message naming a script that does not exist.
 
 ### Assumption ledger
 
@@ -394,6 +394,19 @@ As a result, the copies drift apart, and every session whose working directory i
     So a create in these layouts can exit 0 with the worktree inside or beside the git directory, though a fresh bare clone stops at `no-origin-head`. No `.git` test on the first record separates them all, because the `.git`-named variants pass it. The engineer ruled the bare, absorbed-submodule and `--separate-git-dir` layouts out of scope (row 86). Treating the `.git`-symlink layouts the same way is the architect consult's extension, resting on the round-7 probes above. [unverified: relayed by the dispatching session]
 79. Row 74's relayed list. The adversarial reviewer's simplifications, as the dispatching session relayed them: `LC_ALL=C`; three target tokens; the first record as `<canon-main>`; no `mkdir -p`; the fourth concurrency window; the narrowed where-git-runs claim; the `in-main` remedy; and the token rule. The Bash `timeout` instruction came in as a round-5 specialist fix. Both `LC_ALL=C` and the `timeout` instruction were applied under row 74 as the dispatching session read it. Neither was an engineer selection. The list's claim that the test conftest forces `LC_ALL=C` did not check out (row 68). [unverified]
 90. `docs/` is in neither stow package, so `docs/scripts.md` is not under `~/.claude/`. Every consumer installs from a claude-config checkout, and a stowed script resolves into that checkout, so the engineer whose agent ran the script has the file there. [verified: `claude/.claude/scripts/stow-packages.sh:4-27`, which lists the packages `claude` and `claude-skills` and resolves the checkout through the stowed symlink]
+91. The reviewer-tree-mutation gate denies `worktree-ensure.sh` by command word for review-only agents (Critical files item 11).
+    - Round 17's staff-platform-engineer found that the gate passed the call, because it contains no git word, while the worktree gate's `:438` message advertises it. [verified: `deny-reviewer-tree-mutation.sh:410-457`; `require-worktree-for-git-writes.sh:438`]
+    - The architect and a Fable consult both read the finding as an enforcement-invariant gap the cooperative-threat-model waiver does not cover, since our own deny message steers a cooperative agent into the call. [unverified: relayed by the dispatching session]
+    - The engineer's words and what they cover are in Decision record 92.
+    - The residual is a class: any command whose command word, after the gate's command-word resolution in `_lib.sh`, is not the script. The members are wrappers outside the runner skip list (`bash`, `sh`, `source`, `timeout N`, `exec`, `nohup`, `setsid`), syntax the fragment splitter does not unwrap (a brace group `{ <path> x; }`, `then` and `do` bodies, a bare `&`), and a glob- or variable-built command word. The `:438` hint, once item 5 lands, names the Bash tool's `timeout` parameter, so it no longer invites the `timeout N` prefix.
+    - Set aside:
+      - widening the shared runner list in `_lib.sh`, which also serves `deny-repo-relocation.sh`;
+      - a signal inside the script that detects a review-only caller (the agent type is a hook-input field, not an environment variable `[unverified]`);
+      - naming the sibling git-writing stowed scripts (no deny message advertises git-writing scripts);
+      - hiding the hint from review-only callers, which duplicates who-may-write knowledge into the WHERE-gate, while the reviewer gate already denies every call that reaches `:438`;
+      - closing `timeout` or `bash` in code, or widening the shared runner list for them;
+      - extra pins for `./`, quote-split, uppercase and `GH-7/git` forms, and a contract test tying the two script-name literals, all deferred as gold-plating.
+    - [unverified: whether the harness shows the model both blocking hooks' stderr in one turn]
 
 **Decision record** (the engineer's words, with one line on what each covers, and the readings built on them):
 
@@ -428,6 +441,12 @@ As a result, the copies drift apart, and every session whose working directory i
 87. [engineer-verified: "Yes"], said after the engineer was told the architect agreed and was shown the full scope of this pass. Covers: proceeding with that scope. What the scope listed is the dispatching session's account. [unverified]
 88. The orchestrator reads row 80 as covering dropping the widening-locale chain (row 83). The step 1 export that remains came in under row 74 (row 79), not under this reading. staff-sdet and staff-platform-engineer took that position in round 6. The adversarial reviewer did not address it. [unverified: the orchestrator's reading]
 89. The orchestrator reads row 80 as covering folding `stale-ancestor` into the stray form of `path-in-use`. Row 82's quote covers only the sibling `no-start-point` drop, and row 71's "2 sure" has no recorded option text. [unverified: the orchestrator's reading]
+92. The reviewer-gate deny of `worktree-ensure.sh` (row 91, item 11) and the `:438` hint wording:
+    - [engineer-verified: "I think we need to fix this in this PR… what does Fable think?"]. Covers: fixing the gap in this PR, and asking Fable.
+    - [engineer-verified: "Yes, implement (Recommended)"], and [engineer-verified: "Accept both gaps (Recommended)"]. These are option labels, answers to a question that offered, as the session's own proposal, accepting `bash <path>` and `timeout N <path>` as known gaps `[unverified: the dispatching session's account]`. The labels cover implementing the deny and accepting the gaps the question offered. That "both" refers to `bash <path>` and `timeout N <path>` is the session's reading of the label. [unverified]
+    - [engineer-verified: "Rewording the hint makes sense. Does the architect agree?"]. Covers: rewording the hint. That the architect agreed is relayed by the dispatching session. [unverified]
+    - [engineer-verified: "Ok reword plus deny accept class and stop as you recommend"], said after the session described a residual class (wrappers outside the runner skip list in `_lib.sh`'s command-word resolution, for example `bash`, `sh`, `source` and `timeout N`) and recommended: reword the hint, keep the single deny, accept the class, add nothing else `[unverified: the dispatching session's account of what the engineer was shown]`. The traced class is wider than that description (row 91). The quote covers exactly: reword the hint at `require-worktree-for-git-writes.sh:438`, keep the one by-name deny (item 11), accept the residual as that class, and add no further layers. It does not cover more.
+    - Item 6's `timeout`-parameter pin and step 3's three item-11 mutants are the author's reading of "reword", not separately quoted. The engineer may read "stop" more narrowly. [unverified: the author's reading]
 
 **Mechanisms** (M19 and M21 are retired):
 - M1. One script is the recipe's only home. anchors: root, row1, row6, G2. Lighter alternatives, each set aside:
@@ -452,17 +471,18 @@ As a result, the copies drift apart, and every session whose working directory i
 - M10. The output, exit-code, token-rule and failure-rule contract. anchors: row10, row37, row40, row47, row51, row53, row54, row64, row90.
 - M11. Source the two libs. An inline `symbolic-ref` (row 11) and copied helpers are set aside. anchors: row7, row10, row11.
 - M12. The five decision functions in `_worktree-lib.sh`. anchors: row46, row47.
-- M13. The hook `:438` pointer. anchors: row19, row20, row21, row22, row41, row75.
+- M13. The hook `:438` pointer. anchors: row19, row20, row21, row22, row41, row75, row91.
 - M14. The SKILL.md protocol rewrite. anchors: row5, row6, row19, row26, row41, row53, row54, row73, row75.
 - M15. Tests stay in their own domains, with real git wherever git behavior is under test. anchors: row19, row22, row43, row44, row57, row68, row69, row83.
 - M16. No `settings.json` change. anchors: row23, row42, G5.
 - M17. The D1 scope rule. anchors: row21, row27, row28, row31.
 - M18. The CHANGELOG bullet and the `docs/scripts.md` entry. anchors: G2, G4, row41, row42, row64, row65, row90.
 - M20. Refuse ref-name conflicts before any write. anchors: row50, row59.
+- M22. The reviewer gate denies `worktree-ensure.sh` by command word (item 11), because the `:438` hint advertises a script that has no git word. The residual is the wrapper class, accepted. (The number M21 is retired and not reused.) Set aside, as row 91 lists. anchors: row19, row20, row91.
 
 ## Critical files
 
-All files go in one `code-writer` dispatch. Write test files 3, 4, 6 and 8 first (red, Verification step 2), then files 2, 1, 5, 7, 9 and 10. `conftest.py` does not change. Row, G and M references and `[verified]`/`[unverified]` tags, here and in the Approach, are plan annotations and appear in no shipped file.
+All files go in one `code-writer` dispatch. Write test files 3, 4, 6, 8 and item 11's test file first (red, Verification step 2), then files 2, 1, 5, 7, 9, 10 and item 11's hook and docs. `conftest.py` does not change. Row, G and M references and `[verified]`/`[unverified]` tags, here and in the Approach, are plan annotations and appear in no shipped file.
 
 1. **New:** `claude/.claude/scripts/worktree-ensure.sh`. Run `chmod +x` on disk, and stage it with `git add --chmod=+x`. `git add --chmod` sets only the index bit, and the tests exec the file directly.
    - The header follows the Approach's Header bullet. It also holds:
@@ -624,19 +644,22 @@ All files go in one `code-writer` dispatch. Write test files 3, 4, 6 and 8 first
        - an absent target.
    - Describe: a detached record; a record holding a branch; a locked record whose directory is missing; and a prunable record whose directory is present, which shows git's reason and the prune remedy text.
 5. `claude/.claude/hooks/require-worktree-for-git-writes.sh:438` only. Today it restates the creation command. Afterwards it points at the script.
-   - Replace the "cd into … or create one with '…' (allowed from any tree)" clause. Draft wording: "run ~/.claude/scripts/worktree-ensure.sh '<branch>' with the Bash tool's maximum timeout, typing the branch name in place of <branch> inside the quotes, and make the step it prints your next call. Branch names use only ASCII letters, digits, ., _, / and -; rewrite a name outside that set instead of quoting around it. If that script does not exist, tell the engineer to re-run ./install.sh".
+   - Replace the "cd into … or create one with '…' (allowed from any tree)" clause. Draft wording: "run ~/.claude/scripts/worktree-ensure.sh '<branch>' as the whole Bash command, with the Bash tool call's timeout parameter set to its maximum, typing the branch name in place of <branch> inside the quotes, and make the step it prints your next call. Branch names use only ASCII letters, digits, ., _, / and -; rewrite a name outside that set instead of quoting around it. If that script does not exist, tell the engineer to re-run ./install.sh".
+   - The draft uses no backticks anywhere, so the hook's double-quoted string needs no escaping and the script call stays byte-exact, with no delimiter beside it.
+   - The wording names the tool's `timeout` parameter and not a command prefix, because a bare "maximum timeout" invites `timeout N <path>`, which the reviewer gate's command-word match does not see (row 91).
    - Remove the `${REPO_GIT_COMMON_DIR%/*}` interpolation.
    - Keep the "See claude-config README" pointer and `_lib_stray_marker_hint`.
    - Avoid "untracked", "isolation" and "spawn an agent" (row 22).
    - `:337` stays untouched.
    - Gate: `claude-hook-review:claude-hook-review`.
 6. `claude/.claude/hooks/tests/test_require_worktree_for_git_writes.py`:
-   - Replace `_recipe_from_reason` (`:914-922`) with `_script_call_from_reason`. It extracts the `<path>/worktree-ensure.sh '<branch>'` token from the reason, whatever its path, and asserts that a match exists.
+   - Replace `_recipe_from_reason` (`:914-922`) with `_script_call_from_reason`. It extracts the `<path>/worktree-ensure.sh '<branch>'` token from the reason, whatever its path, and asserts that a match exists. The extractor's regex (`\S*worktree-ensure\.sh '[^']*'`) and the exact-equality assertion below are unchanged, because the draft hint puts no backtick or other delimiter beside the call.
    - Replace the four-route `test_main_tree_deny_suggests_main_root_path` (`:976`) with one main-tree deny test: `git commit -m foo` from the main root. The test asserts four things:
      - the extracted call equals the hard-coded `~/.claude/scripts/worktree-ensure.sh '<branch>'`;
      - the reason contains `install.sh`;
      - the reason contains the character-set phrase;
      - the reason contains no `worktree add`.
+   - Pin the hint's parameter phrasing (row 91): the reason contains "timeout parameter", and does not contain the wrapper-prefix reading "with the Bash tool's maximum timeout".
    - Rewrite `test_main_tree_deny_recipe_is_allowed_on_main_tree` (`:938`) as the allow test for cwd = main root.
      - Drop its `main_checkout` parametrization, since `spaced_main_root` is deleted.
      - It takes the call from a live deny reason through the extractor and fills `<branch>` inside the single quotes with each of three names:
@@ -705,6 +728,20 @@ All files go in one `code-writer` dispatch. Write test files 3, 4, 6 and 8 first
     - Re-run `./install.sh` (or re-stow) when `~/.claude/scripts` is a real directory (G4). Until then, the deny message says so.
 
     Replace the bullet's "Live on `git pull` with no re-install" claim.
+11. `claude/.claude/hooks/deny-reviewer-tree-mutation.sh` and `claude/.claude/hooks/tests/test_deny_reviewer_tree_mutation.py` (row 91):
+    - Gate: `claude-hook-review:claude-hook-review` on `deny-reviewer-tree-mutation.sh`.
+    - One `if _lib_fragment_invokes_tool "$fragment" worktree-ensure.sh` in the Bash arm, after the terraform/tofu block. It matches the command word only, so `cat`, `grep` and `bash -n` of the script stay allowed.
+    - The residual is a class: any command whose command word, after the gate's command-word resolution in `_lib.sh`, is not the script. The members are wrappers outside the runner skip list (`bash`, `sh`, `source`, `timeout N`, `exec`, `nohup`, `setsid`), syntax the fragment splitter does not unwrap (a brace group `{ <path> x; }`, `then` and `do` bodies, a bare `&`), and a glob- or variable-built command word. The class is accepted (Decision record 92). The header calls it "undecidable" and makes no tracker claim for wrappers (`deny-reviewer-tree-mutation.sh:69,84`).
+    - The header explains the deny in one sentence and states the residual as that class.
+    - Tests, in `TestWorktreeEnsureDeniedByName` plus one parametrize row:
+      - Deny, six forms: the hint's byte-exact form, an absolute path, a relative path, the bare name, a second command after `cd … &&`, and `env X=1 <path>`.
+      - A deny-reason test asserts the script name, "does not apply to review-only agents" and the sanctioned-alternative sentence.
+      - A `worktree-ensure-arm` row in the existing reason-sentence parametrize asserts the same reason text.
+      - Allow for callers outside the review-only set: `None`, `main`, `code-writer` and `general-purpose`.
+      - Allow for reads: `cat`, `grep` and `bash -n` of the script.
+      - Pin `bash <path>` and `timeout N <path>` as allowed, as two examples of the accepted class.
+    - `docs/hooks.md` gets the class wording in the reviewer-gate entry, including that the script "fetches refs".
+    - `docs/hooks.md:150` and the docstring of `test_reviewer_worktree_ensure_behind_unlisted_wrapper_allowed` drop the GH-1103 wrapper claim, matching the header. The docstring's "flip to deny when GH-1103 closes the gap" becomes: flips only if the runner skip list changes. Neither surface names a tracker for wrappers. The `CHANGELOG.md` bullet gets one sentence that says the gate denies the script "by command word". `docs/scripts.md` gets none, because the gate's behavior is documented once, with the gate.
 
 **Consumers checked and unchanged.** staff-backend-engineer's rounds 1–2 cited these lines, unless the ledger verifies them: `require-worktree-for-git-writes.sh:337`; `require-worktree-for-file-writes.sh:149`, `:172`; `plan-it/SKILL.md:21`; `transcript_analysis/denials.py:152`; `test_transcript_review_trace.py:1754`; `marker.sh:201`, `:204`; `nudge-worktree-anchor.sh:150`; `CLAUDE.md:51-54`; `claude/.claude/CLAUDE.md:172`; `README.md:267-307`; `CONTRIBUTING.md:13-16`; `docs/skills.md:16`; `docs/hooks.md:148`; `branch-management/REFERENCES.md`; `git-feature-branch-sync/SKILL.md:19`; `test_require_worktree_for_git_writes.py:215-221`; `_lib.sh:2697`; `evals/fixtures/*.jsonl`; `test_config_lib.py:2454`; and `docs/worktree-bash-guard.md`.
 
@@ -725,14 +762,15 @@ Step 1 runs in the session before the dispatch, because it can change what files
      - If the call succeeds, `current` stays exact equality, and a subdirectory gets `existing`.
      - If the call refuses, `current` covers the root and every path under it, compared with the trailing slash. File 3's lifecycle case and file 4's subdirectory case then expect `current`.
      - If the probe cannot run, keep exact equality. File 7 then adds one sentence: an `EnterWorktree` refusal that names the working directory means the session is already in the worktree.
-2. **Red.** The dispatch writes files 3, 4, 6 and 8 first, and runs them against two kinds of stub:
+2. **Red.** The dispatch writes files 3, 4, 6, 8 and item 11's test file first, and runs them against two kinds of stub:
    - a `worktree-ensure.sh` that exits 0 with empty stdout, made executable on disk with `chmod +x`;
    - lib functions that print nothing.
 
-   The command is `<main-checkout>/.venv/bin/pytest claude/.claude/scripts/tests/test_worktree_ensure.py claude/.claude/scripts/tests/test_worktree_lib.py claude/.claude/hooks/tests/test_require_worktree_for_git_writes.py claude-skills/skills/tests/test_skills.py::TestBranchManagementWorktreeEnsureWiring`. Expected at red:
+   The command is `<main-checkout>/.venv/bin/pytest claude/.claude/scripts/tests/test_worktree_ensure.py claude/.claude/scripts/tests/test_worktree_lib.py claude/.claude/hooks/tests/test_require_worktree_for_git_writes.py claude/.claude/hooks/tests/test_deny_reviewer_tree_mutation.py claude-skills/skills/tests/test_skills.py::TestBranchManagementWorktreeEnsureWiring`. Expected at red:
    - Every subprocess case fails on its own exit-code or stdout assertion, which comes before any state assertion. No case fails on a missing or non-executable file.
    - Every lib case fails except the controls that expect nothing. Each control shares a parametrization with a positive case that fails.
-   - The hook deny test and all three allow cases fail, because the extractor finds no script call in the old reason.
+   - The hook deny test and all three allow cases pass at red. Commit `cc0addc2` already holds the extractor and a hint that points at the script. The one new test in file 6 that fails red is the `timeout`-parameter pin, because the hint is unchanged and still reads "with the Bash tool's maximum timeout".
+   - Item 11's deny cases, its deny-reason test, and its allow, read and accepted-class cases all pass at red, because the working tree already holds the reviewer hook's `worktree-ensure.sh` arm. Red-first evidence for item 11 is step 3's first item-11 mutant (the new `if` removed), which requires reverting the arm.
    - The wiring tripwire fails on every SKILL.md assertion, while its existence check passes against the stub.
 
    The dispatch returns that output, then removes the stubs.
@@ -755,7 +793,11 @@ Step 1 runs in the session before the dispatch, because it can change what files
      - the `-L` arm dropped from step 6's stray `.git` test: file 4's target-check stray-form case for a dangling `.git` symlink at an ancestor, on `path-in-use`;
      - the `initializing` test removed from the lookup: the `add-unfinished` case, on its token;
      - the fetch moved above step 5: the `ref-conflict` case, which then gets `fetch-failed` because its remote was moved away.
-   - After the loop, it diffs files 1 and 2 against the copies and reruns step 2's command.
+   - **Item 11 mutants,** run the same way against a scratch copy of `deny-reviewer-tree-mutation.sh` and `require-worktree-for-git-writes.sh`:
+     - the new `if` removed: the `TestWorktreeEnsureDeniedByName` deny cases;
+     - the command-word match switched to any-token: the `cat`, `grep` and `bash -n` read-allow cases and the two accepted-class pins;
+     - the `:438` hint wording reverted to the "maximum timeout" phrasing: the parameter-phrasing pin in file 6.
+   - After the loop, it diffs files 1 and 2 and the two hooks against the copies and reruns step 2's command.
    - It returns:
      - the mutant output, with the green output;
      - `git --version`;
@@ -765,8 +807,8 @@ Step 1 runs in the session before the dispatch, because it can change what files
 4. **Scoped suite and lint**, from this worktree:
    - `<main-checkout>/.venv/bin/python3 claude/.claude/scripts/select-tests.py`;
    - `<main-checkout>/.venv/bin/pytest claude-skills/skills/tests/test_skills.py -k test_scripts_are_executable`;
-   - `<main-checkout>/.venv/bin/ruff check` on files 3, 4, 6 and 8;
-   - `<main-checkout>/.venv/bin/shellcheck` on the script, `_worktree-lib.sh` and the hook;
+   - `<main-checkout>/.venv/bin/ruff check` on files 3, 4, 6, 8 and item 11's test file;
+   - `<main-checkout>/.venv/bin/shellcheck` on the script, `_worktree-lib.sh`, `require-worktree-for-git-writes.sh` and `deny-reviewer-tree-mutation.sh`;
    - `test -x claude/.claude/scripts/worktree-ensure.sh`. After staging, `git ls-files -s claude/.claude/scripts/worktree-ensure.sh` shows `100755`.
 5. **Live run through the harness**, after the dispatch, from this session with no agent in flight, and with the Bash tool's maximum `timeout`.
    - Call this worktree's own `claude/.claude/scripts/worktree-ensure.sh` by absolute path. `~/.claude/scripts/` does not carry the script until merge, or, in real-directory consumers, until re-stow.
@@ -796,11 +838,13 @@ Step 1 runs in the session before the dispatch, because it can change what files
      - the hook and the hook test;
      - SKILL.md and `test_skills.py`;
      - `docs/scripts.md` and `CHANGELOG.md`;
+     - `deny-reviewer-tree-mutation.sh` and `test_deny_reviewer_tree_mutation.py`;
+     - `docs/hooks.md`;
      - this plan file.
 
      `--untracked` covers the files not yet staged and honors `.gitignore`, so `agent-reviews/` stays out (row 58).
    - Run `grep -oE '\b[A-Z]{2,}-[0-9]+\b'` on this plan file. Every hit must start with a prefix on `deny-private-project-refs.sh`'s allowlist (`:424`).
-7. **Review gates.** Run `/skill-review` on SKILL.md, then `claude-hook-review:claude-hook-review` on the hook, then `/code-review` over the whole diff.
+7. **Review gates.** Run `/skill-review` on SKILL.md, then `claude-hook-review:claude-hook-review` on both hooks (`require-worktree-for-git-writes.sh` and `deny-reviewer-tree-mutation.sh`), then `/code-review` over the whole diff.
 8. **Engineer-run bash 3.2 check, before merge.** CI has no bash 3.2 job (row 47).
    - The engineer uses macOS `/bin/bash`, or any bash 3.2 binary already on hand. The session fetches none.
    - Run `bash -n` on `worktree-ensure.sh` and `_worktree-lib.sh`.
@@ -827,6 +871,7 @@ Step 1 runs in the session before the dispatch, because it can change what files
   - removing, unlocking or pruning the record that `missing`, `add-unfinished` or `path-in-use` names;
   - moving or removing a stray `.git` directory `path-in-use` names;
   - removing a stale ref lock behind `fetch-failed` (row 64).
+- **The reviewer gate's other command shapes.** Any command whose command word, after the gate's command-word resolution in `_lib.sh`, is not the script. The members are wrappers outside the runner skip list (`bash`, `sh`, `source`, `timeout N`, `exec`, `nohup`, `setsid`), syntax the fragment splitter does not unwrap (a brace group `{ <path> x; }`, `then` and `do` bodies, a bare `&`), and a glob- or variable-built command word still reaches the script from a review-only agent. The engineer accepted the class as the session described it (Decision record 92). The non-wrapper members rest on the author's trace of `_lib.sh`, not on that description. The other git-writing stowed scripts are not named, and that rests on the quote's "add nothing else", not on the class acceptance. Whether GH-1103's scope covers wrappers is `[unverified: issue body not read]`; repo text describes it as the gate's closed enumeration (`deny-reviewer-tree-mutation.sh:69,84`).
 - **Serializing concurrent same-branch runs.** No lock is added. The create-only ref settles them (row 45).
 - **The same-user window.** Step 6 is not re-run before the add, and the window spans the fetch (row 40).
 - **Case-insensitive filesystems.** Two branch names that differ only by case map to one path, and the comparisons are case-sensitive (row 50).

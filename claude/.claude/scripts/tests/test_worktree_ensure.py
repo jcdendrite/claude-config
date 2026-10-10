@@ -35,6 +35,8 @@ git upgrade in one of them points at git's behavior before the script:
 
 The `initializing` lock reason is hand-seeded in the `add-unfinished` case.
 No test observes the literal real git writes during an in-flight add.
+The script's unsetting of `GIT_WORK_TREE` is unobserved: no test exports it, and it was
+not shown to change the outcome of `worktree list` or `worktree add`.
 """
 from __future__ import annotations
 
@@ -368,6 +370,39 @@ class TestArgumentsAndName:
 
         _assert_refused_output(_run_script(not_a_repo, [_BRANCH]), 1, "no-repo")
 
+    @pytest.mark.parametrize(
+        ("missing_lib", "named_in_message"),
+        [(Path("hooks") / "_lib.sh", "hooks/_lib.sh"), (Path("scripts") / "_worktree-lib.sh", "_worktree-lib.sh")],
+        ids=["hooks-lib-missing", "worktree-lib-missing"],
+    )
+    def test_partial_install_missing_a_sibling_lib_is_no_repo(self, tmp_path, missing_lib, named_in_message):
+        """Each source guard ends on the token line the skill reads, not a free-form message."""
+        install_dir = tmp_path / "partial-install"
+        claude_dir = _SCRIPT.parent.parent
+        for relative in (
+            Path("scripts") / "worktree-ensure.sh",
+            Path("scripts") / "_worktree-lib.sh",
+            Path("hooks") / "_lib.sh",
+            Path("hooks") / "_config.sh",
+        ):
+            (install_dir / relative).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(claude_dir / relative, install_dir / relative)
+        (install_dir / missing_lib).unlink()
+        not_a_repo = tmp_path / "plain-directory"
+        not_a_repo.mkdir()
+
+        result = subprocess.run(
+            [str(install_dir / "scripts" / "worktree-ensure.sh"), _BRANCH],
+            cwd=str(not_a_repo),
+            env=_clean_env(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        _assert_refused_output(result, 1, "no-repo")
+        assert named_in_message in _last_stderr_line(result)
+
 
 # ---------------------------------------------------------------------------
 # Successful states
@@ -520,12 +555,10 @@ class TestFetch:
 # ---------------------------------------------------------------------------
 
 
-def _environment_variants(main: Path, unrelated_repo: Path) -> dict[str, dict[str, str]]:
+def _environment_variants(unrelated_repo: Path, scratch_index: Path) -> dict[str, dict[str, str]]:
     return {
-        "git-dir": {"GIT_DIR": str(main / ".git")},
-        "git-work-tree": {"GIT_WORK_TREE": str(main)},
-        "git-common-dir": {"GIT_COMMON_DIR": str(main / ".git")},
-        "git-index-file": {"GIT_INDEX_FILE": str(main / ".git" / "index")},
+        "git-common-dir-of-an-unrelated-repo": {"GIT_COMMON_DIR": str(unrelated_repo / ".git")},
+        "git-index-file": {"GIT_INDEX_FILE": str(scratch_index)},
         "git-dir-of-an-unrelated-repo": {"GIT_DIR": str(unrelated_repo / ".git")},
     }
 
@@ -533,14 +566,15 @@ def _environment_variants(main: Path, unrelated_repo: Path) -> dict[str, dict[st
 class TestEnvironment:
     @pytest.mark.parametrize(
         "variant",
-        ["git-dir", "git-work-tree", "git-common-dir", "git-index-file", "git-dir-of-an-unrelated-repo"],
+        ["git-common-dir-of-an-unrelated-repo", "git-index-file", "git-dir-of-an-unrelated-repo"],
     )
     def test_inherited_git_variables_do_not_redirect_the_script(self, tmp_path, variant):
         fixture = _make_fixture(tmp_path)
         unrelated_base = tmp_path / "unrelated"
         unrelated_base.mkdir()
         unrelated_repo, _ = _make_repo_with_remote(unrelated_base)
-        env = _clean_env(**_environment_variants(fixture.main, unrelated_repo)[variant])
+        scratch_index = tmp_path / "inherited-index"
+        env = _clean_env(**_environment_variants(unrelated_repo, scratch_index)[variant])
         target = _expected_target(fixture.main, _BRANCH)
         main_state_before = _main_checkout_state(fixture.main)
 
@@ -549,7 +583,11 @@ class TestEnvironment:
         _assert_ready(created, "created", target)
         assert _main_checkout_state(fixture.main) == main_state_before
         assert f"worktree {target}\n" in _git(fixture.main, "worktree", "list", "--porcelain")
-        if variant == "git-dir":
+        if variant == "git-index-file":
+            # A leaked GIT_INDEX_FILE makes the add's checkout write its index there, not in the new worktree.
+            assert not scratch_index.exists()
+            assert _git(target, "status", "--porcelain") == ""
+        if variant == "git-dir-of-an-unrelated-repo":
             _assert_ready(_run_script(fixture.main, [_BRANCH], env=env), "existing", target)
             _assert_ready(_run_script(target, [_BRANCH], env=env), "current", target)
 

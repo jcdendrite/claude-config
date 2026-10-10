@@ -117,8 +117,9 @@ class TestFileWriteTools:
             write_input("/repo/src/main.py", agent_type="staff-sdet"),
             bash_input("sed -i s/a/b/ src/x", agent_type="staff-sdet"),
             bash_input("cat > src/x", agent_type="staff-sdet"),
+            bash_input("~/.claude/scripts/worktree-ensure.sh x", agent_type="staff-sdet"),
         ],
-        ids=["write-arm", "bash-arm", "raw-write-target-arm"],
+        ids=["write-arm", "bash-arm", "raw-write-target-arm", "worktree-ensure-arm"],
     )
     def test_deny_reason_names_sanctioned_alternative(self, payload):
         reason = run_hook_reason(HOOK, payload)
@@ -558,6 +559,69 @@ class TestBashInPlaceEditFamily:
             )
             == "deny"
         )
+
+
+class TestWorktreeEnsureDeniedByName:
+    """worktree-ensure.sh fetches refs and creates a branch and a worktree but
+    contains no git word, so the gate denies it by command word. The worktree
+    gate's main-tree deny message advertises it, which a review-only agent
+    must not follow."""
+
+    HINT_FORM = "~/.claude/scripts/worktree-ensure.sh 'GH-1/x'"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            HINT_FORM,
+            "/home/user/.claude/scripts/worktree-ensure.sh GH-1/x",
+            "claude/.claude/scripts/worktree-ensure.sh GH-1/x",
+            "worktree-ensure.sh GH-1/x",
+            "cd /tmp/x && ~/.claude/scripts/worktree-ensure.sh GH-1/x",
+            "env X=1 ~/.claude/scripts/worktree-ensure.sh GH-1/x",
+        ],
+        ids=["hint-form", "absolute-path", "in-repo-relative", "bare-name", "after-cd", "env-assignment-prefix"],
+    )
+    def test_reviewer_worktree_ensure_denied(self, command):
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_reviewer_worktree_ensure_deny_reason_names_script_and_alternative(self):
+        reason = run_hook_reason(HOOK, bash_input(self.HINT_FORM, agent_type="staff-sdet"))
+        assert reason is not None
+        assert "worktree-ensure.sh" in reason
+        assert "does not apply to review-only agents" in reason
+        assert SCRATCH_NO_RETRY_SENTENCE in reason, "denial reason lost the sanctioned-alternative text"
+
+    @pytest.mark.parametrize("agent_type", [None, "main", "code-writer", "general-purpose"])
+    def test_non_review_only_caller_worktree_ensure_allowed(self, agent_type):
+        assert run_hook(HOOK, bash_input(self.HINT_FORM, agent_type=agent_type)) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat ~/.claude/scripts/worktree-ensure.sh",
+            "grep -n x ~/.claude/scripts/worktree-ensure.sh",
+            "bash -n ~/.claude/scripts/worktree-ensure.sh",
+        ],
+        ids=["cat", "grep", "bash-n"],
+    )
+    def test_reviewer_reading_worktree_ensure_allowed(self, command):
+        # Command-word match only: the script name as an argument is a read.
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash ~/.claude/scripts/worktree-ensure.sh x",
+            "timeout 600 ~/.claude/scripts/worktree-ensure.sh x",
+        ],
+        ids=["bash-wrapper", "timeout-wrapper"],
+    )
+    def test_reviewer_worktree_ensure_behind_unlisted_wrapper_allowed(self, command):
+        """Examples of the accepted class, not a complete list: any command whose command
+        word is not the script, such as a wrapper outside the shared runner skip list,
+        the same class as the `bash -c` gap in TestKnownGapBypass. Both flip to "deny"
+        only if the runner skip list changes."""
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
 
 
 class TestRawWriteTargetGap:

@@ -19,9 +19,9 @@
 #      `missing` or `outside`.
 #   4. Refuses a local branch of that name or a path-prefix conflict with one, then any
 #      path condition at <main>/.claude/worktrees/<branch> that would make git fail.
-#   5. Fetch of that one ref, with no tag following and no submodule recursion: writes
-#      refs/remotes/origin/<default>, FETCH_HEAD and objects in the shared repository, and
-#      git's automatic maintenance may then run.
+#   5. Fetch of that one ref. It follows no tags and recurses into no submodules.
+#      It writes refs/remotes/origin/<default>, FETCH_HEAD and objects in the shared repository.
+#      Git's automatic maintenance may then run.
 #   6. Add: `worktree add --no-track -b` writes the new branch, its administrative entry,
 #      and the target directory with any missing parents.
 #   7. Re-reads the worktree list. That state decides success, not git's exit status,
@@ -47,8 +47,10 @@
 # Exit codes:
 #   0  the worktree is ready
 #   1  a state or failure to report to the engineer
-#   2  usage or bad-name; with no `worktree-ensure.sh:` line, a shell syntax error in the call
-#      or a script file bash cannot parse (statements before the error may have run)
+#   2  the `usage` or `bad-name` token
+#   2  with no `worktree-ensure.sh:` line: a shell syntax error in the call
+#   2  with no `worktree-ensure.sh:` line: a script file bash cannot parse
+#      Statements before a parse error may already have run.
 #   127 with no `worktree-ensure.sh:` line: the script is missing
 #   A run the caller's timeout killed ends with no such line and may leave the new branch,
 #   a worktree record locked `initializing`, or a complete worktree.
@@ -77,13 +79,11 @@ CANON_CWD=$(pwd -P) || die no-repo "the working directory cannot be resolved"
 
 # shellcheck source=../hooks/_lib.sh
 if ! . "$(dirname "$0")/../hooks/_lib.sh"; then
-  printf '%s: could not source hooks/_lib.sh; re-run ./install.sh\n' "$SCRIPT_NAME" >&2
-  exit 1
+  die no-repo "could not source hooks/_lib.sh; re-run ./install.sh"
 fi
 # shellcheck source=_worktree-lib.sh
 if ! . "$(dirname "$0")/_worktree-lib.sh"; then
-  printf '%s: could not source _worktree-lib.sh; re-run ./install.sh\n' "$SCRIPT_NAME" >&2
-  exit 1
+  die no-repo "could not source _worktree-lib.sh; re-run ./install.sh"
 fi
 
 if [ "$#" -ne 1 ]; then
