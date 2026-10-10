@@ -739,7 +739,9 @@ class TestDenyGateLabelConformance:
 
 # ---------------------------------------------------------------------------
 # _denial_cause_kind — pins the denial-cause axis against every gate hook's
-# current wording. Every fixture literal below is copied from the working
+# wording as of each fixture's authoring. TestDenialCauseKind's docstring
+# names which fixtures are frozen and which are current snapshots. Every
+# fixture literal below is copied from the working
 # tree as it stands at authoring time — never re-derived via git show/git
 # merge-base, which would resolve to a later rewrite's text. A historical
 # transcript keeps its original wording forever, so a fixture reflecting
@@ -988,8 +990,10 @@ _HELPER_PROC_FIXTURES: tuple[tuple[str, str], ...] = (
      "letting an unscanned PR body bypass the backtick-escape scan."),
 )
 
-# A frozen, older deny-encode preamble (_lib.sh's _lib_emit_deny jq-degrade path),
-# wrapping a parse-failure reason to prove deny-encode's cascade precedence
+# Frozen deny-encode preamble (_lib.sh's _lib_emit_deny jq-degrade path).
+# It lacks the sentence about a timeout rejecting -k and routes the install
+# through the shell escape instead of a separate terminal.
+# It wraps a parse-failure reason to prove deny-encode's cascade precedence
 # over an input-parse fragment embedded in the same message.
 _DENY_ENCODE_FIXTURE = (
     "Hook gate could not encode its deny reason: jq is missing from PATH, failed, or timed "
@@ -1110,9 +1114,15 @@ _FIELD_SHIFT_DENY_MESSAGE = (
 class TestDenialCauseKind:
     """Pins _denial_cause_kind's four infra markers plus its behavioral
     fallback against real and hand-transcribed denial wording. No test here
-    may call git show/git merge-base — every fixture literal is the hook's
-    current wording, copied once from the working tree, so a green run
-    here is evidence about today's text specifically."""
+    may call git show/git merge-base. _LIB_SOURCE_FIXTURES,
+    _INPUT_PARSE_FIXTURES, _HELPER_PROC_FIXTURES, _BEHAVIORAL_FIXTURES, and
+    _DENY_ENCODE_FIXTURE are frozen wording. _HELPER_PROC_CURRENT_WORDING_FIXTURES
+    and _DENY_ENCODE_CURRENT_WORDING_FIXTURE are hand-transcribed snapshots of
+    the hooks' wording at the time of writing. Of the fixtures, only
+    _INPUT_PARSE_CURRENT_WORDING_SHARP_CASES is verified against the real
+    hook, as is the subprocess test below. A green run proves the frozen
+    wording still classifies and the snapshots classify, not that the hooks
+    still emit that text."""
 
     @pytest.mark.parametrize("hook_name,message", _LIB_SOURCE_FIXTURES)
     def test_bootstrap_wording_classifies_lib_source(self, hook_name, message):

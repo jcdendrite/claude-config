@@ -94,8 +94,7 @@ These rules govern every text surface you author — chat replies, PR bodies, co
   - Headers earn their place only past ~15 lines.
 
   Match a code block's language tag to what is actually inside it. In terminal output, avoid markdown tables where width-wrapping would break them.
-- **Be as concise as possible without losing meaning.** Excess tokens make your output difficult for a human to read and for agents to keep in context.
-- **Cut every sentence that adds no information.** Keep the why when it is non-obvious. Never drop or flatten a fact, number, decision, hedge, or conditional to shorten a sentence — keep the content and accept the longer sentence.
+- **Cut every sentence that adds no information.** Excess tokens cost human reading time and agent context. Keep the why when it is non-obvious. Never drop or flatten a fact, number, decision, hedge, or conditional to shorten a sentence — keep the content and accept the longer sentence.
 - **One idea per sentence, one term per concept.** Split a compound claim instead of chaining it into a run-on. Hold the chosen term for the whole document — elegant variation reads as a second thing, not a second word for the same thing.
 - **Active voice, plain verbs, no noun stacks.** Passive only when the actor is unknown or irrelevant to the reader. A verb or prepositional phrase in place of a stacked-noun phrase.
 
