@@ -74,7 +74,7 @@ entries needed.
 
 ### Heavy command output — run inline
 
-Run checks (tests, lint, typecheck, build) via the parent's Bash tool — never delegate. Harness
+Run checks (tests, lint, typecheck, build), including runs scoped to a single test file or test name while debugging, via the parent's Bash tool — never delegate. Harness
 output truncates past a threshold, so the returned preview tends to miss the failure. See
 `subagent-delegation/REFERENCES.md` §
 "Heavy command output — harness truncation and check-suite sizes" for the threshold and sizes.
@@ -87,8 +87,6 @@ output truncates past a threshold, so the returned preview tends to miss the fai
 - **Setup and state-mutating commands run inline too** (db resets, migrations,
   container start/stop, seed scripts, package installs). There is no charter
   boundary that requires splitting setup from checks.
-- Commands scoped to a single test file or single test name during interactive
-  debugging also stay inline.
 - On overflow, the harness persists full output to a `tool-results/`
   file and returns only a ~2 KB preview (the *first* 2 KB, usually the
   startup banner) — grep/sed the persisted file for what you need.
@@ -110,12 +108,7 @@ reads mapping an unfamiliar area — dispatch it rather than running inline:
 
 Dispatch any exploratory read immediately, even a single command — a
 "~3-query" rule of thumb is only a trailing indicator, since by the
-third command multiple turns of output have already landed in context.
-
-This does not apply to *comprehension* reads: when you need a file's
-content in your own reasoning — to write or modify it, review it, or
-design against it — read it directly. The split is locate-and-report
-(delegable) vs. read-and-reason (not).
+third command multiple turns of output have already landed in context. Comprehension reads (Step 1) stay inline: the split is locate-and-report (delegable) vs. read-and-reason (not).
 
 ### Debug-investigation probe → `general-purpose` or `Explore`
 
@@ -195,3 +188,12 @@ scoped to one step and each step's result stays visible in the orchestrator's ow
 This does not conflict with per-phase `code-writer` dispatch above: dispatching one plan phase's bounded
 implementation work is not a gate loop, even across several phases dispatched in sequence — each phase dispatch
 returns to the parent, which reviews it before the next one goes out.
+
+`review-orchestrator` is that bounded per-step split for `/code-review`, used only when the user explicitly asks for it: one round per dispatch, with this session sequencing the rounds. Stage the review target, then dispatch in the foreground with `model: sonnet` and without worktree isolation. After every dispatch, relay the return to the user verbatim, which keeps its `Spawn decisions:` line and any skipped reviewer as visible as in an inline round. A return that lacks a `Fix paths:` or `HALT:` item, or no return at all, stops: relay what arrived and tell the user to check `git status` for unstaged edits that no return names. Otherwise follow these steps in order:
+
+1. Persist: with a PR open, run the PR-open path in `code-review/SKILL.md` § "Review-findings persistence" yourself, because the agent skips that section. A failed `render` or `gh pr edit` stops and relays the script's or gate's reason.
+2. Stage: when `Fix paths:` names files, validate every entry before staging any. An entry passes only if it matches, character for character, a path that `git status --porcelain --untracked-files=all` lists. It also passes only if it holds no single or double quote. Any other entry stops the loop with the index untouched. That includes a path porcelain v1 C-quotes (one holding whitespace or another unusual character), which the user stages. Then stage every entry in one `git add -- ':(top,literal)<path>'` call. Write each as a single-quoted, root-anchored literal pathspec, so neither this session's working directory nor glob or pathspec magic in the text changes what is staged. If that call fails, stop and tell the user to check `git diff --cached --name-only`, since the index may be partly staged. Each entry is a path relative to the repo root, and a rename lists both its old and its new path. Staging retires any marker written before the fix, because the marker keys on the staged-diff hash.
+3. Check: unless an earlier step stopped, run `~/.claude/scripts/marker.sh check code-review` bare, exactly as written, because the marker-script-shape gate denies an appended `; echo $?`. Any exit other than 0 or 1 stops and shows the user its stderr.
+4. Decide on the `check` outcome. "Stop" means one thing here: dispatch nothing more, start no review, tell the user the cause, and wait for them. A stop at the Persist, Stage or Check step still follows the relay, so the user has seen every `HALT:` entry.
+   - `no-match`: with any `HALT:` entry, name the paths just staged, then run `/code-review` inline in this session at once, which asks, logs and carries by the skill's own rules. With no `HALT:` entry and a fix just staged, dispatch the next round, which reviews the fix. With neither, stop and point the user to the relayed `Marker:` item. That item covers a failed marker write, an agent that ended early, and a `check` that degraded to no-match. An uncomputable hash, a timeout or an empty staged diff reads as no-match.
+   - `match`: done only when the return has `Fix paths: none` and `HALT: none`, because a marker then covers the staged state. Any other `match` stops: tell the user that a marker covers a staged fix no round reviewed or a `HALT:` entry nobody decided, so inline `/code-review` would skip at its Step 0.1 and a commit would pass without either, and ask them to decide each halted entry before any commit.

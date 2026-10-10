@@ -194,7 +194,7 @@ if [ -n "$TARGET_PATH" ] && [ "$TOOL_NAME" != "ExitPlanMode" ]; then
     # agent-reviews/ directory and are never staged. Blocking them forces the
     # reviewer into a full-inline fallback that loses all context savings.
     # Exact prefix match only: "foo-agent-reviews/" does not satisfy this.
-    # _lib_realpath_m resolves .. lexically but not symlinks, so a symlinked repo path can normalize REAL_REPO/REAL_TARGET along different chains and false-deny a legitimate write; same limitation as the repo-boundary check below.
+    # _lib_realpath_m resolves both ".." components and symlinks to their true filesystem location. Its portable fallback fails on a dangling symlink instead, the resolution-failure case above. REAL_REPO/REAL_TARGET are therefore already canonical here and in the repo-boundary check below, so a symlinked repo path or a symlink aliasing into agent-reviews/ cannot spoof either check.
     if [[ "$REAL_TARGET" == "$REAL_REPO"/agent-reviews/* ]]; then
       exit 0
     fi

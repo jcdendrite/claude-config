@@ -783,9 +783,12 @@ MARKER_SPLIT_BY_QUOTES = '~/.claude/scripts/mark""er.sh'
 # reviewer, and a harness built-in.
 NO_GATE_RELEASE_AGENTS = ["code-writer", "staff-sdet", "ciso-reviewer", "Explore"]
 
-# Agent types that keep the documented delegation escape hatch: both carry the
-# full tool set, so they can genuinely run a review skill themselves.
-GATE_RELEASE_ALLOWED_AGENTS = ["general-purpose", "claude"]
+# Agent types that may release a review gate. general-purpose/claude keep the
+# documented delegation escape hatch: both carry the full tool set, so they
+# can genuinely run a review skill themselves. review-orchestrator runs the
+# review skill itself, so it is deliberately absent from
+# _LIB_NO_GATE_RELEASE_AGENTS and can write the marker for the skill it ran.
+GATE_RELEASE_ALLOWED_AGENTS = ["general-purpose", "claude", "review-orchestrator"]
 
 
 class TestGateReleaseAuthority:
@@ -954,7 +957,7 @@ class TestGateReleaseAuthority:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_full_tool_set_agents_may_still_write(self, agent_type):
+    def test_gate_release_agents_may_still_write(self, agent_type):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -1112,7 +1115,7 @@ class TestGateReleaseAuthority:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_quote_split_write_allowed_for_full_tool_set_agents(self, agent_type):
+    def test_quote_split_write_allowed_for_gate_release_agents(self, agent_type):
         """The command-word arm gates on agent authority, not just command
         shape: the same quote-split write that denies for a no-gate-release
         agent above must not deny here. (This command's overall verdict is
@@ -1399,7 +1402,7 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_full_tool_set_agents_may_redirect_into_a_marker_path(self, agent_type):
+    def test_gate_release_agents_may_redirect_into_a_marker_path(self, agent_type):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -1796,7 +1799,7 @@ class TestGateReleaseAuthorityFileWrites:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_full_tool_set_agents_may_write_markers(self, marker_home, agent_type):
+    def test_gate_release_agents_may_write_markers(self, marker_home, agent_type):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -2288,7 +2291,7 @@ class TestGateReleaseRawDetectorOnQuotedAndLargeCommands:
         SCRIPT_NAME_SPLIT_MARKER_WRITES,
         ids=SCRIPT_NAME_SPLIT_MARKER_WRITE_IDS,
     )
-    def test_full_tool_set_agent_allowed_for_the_same_split_script_name(self, agent_type, command):
+    def test_gate_release_agent_allowed_for_the_same_split_script_name(self, agent_type, command):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -2356,7 +2359,7 @@ class TestGateReleaseRawDetectorOnQuotedAndLargeCommands:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_full_tool_set_agent_allowed_for_the_same_large_command(self, agent_type):
+    def test_gate_release_agent_allowed_for_the_same_large_command(self, agent_type):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -2388,10 +2391,16 @@ LEDGER_APPEND_ENGINEER_BACKSLASH_NEWLINE_ARGS = LEDGER_APPEND_ENGINEER_ARGS.repl
     "--engineer-quote", "--engineer-\\\nquote"
 )
 
-# Agent-type strings that sit in no roster: the two full-tool-set built-ins and
-# a plugin-shaped name. The engineer-row and ledger-state predicates apply to
-# them; the roster's `append` predicate does not.
-NON_ROSTER_AGENT_TYPES = ["general-purpose", "claude", "someplugin:agent"]
+# Agent-type strings that sit in no roster: the two full-tool-set built-ins, the
+# shipped review-orchestrator agent, and a plugin-shaped name. The engineer-row
+# and ledger-state predicates apply to them; the roster's `append` predicate
+# does not.
+NON_ROSTER_AGENT_TYPES = [
+    "general-purpose",
+    "claude",
+    "review-orchestrator",
+    "someplugin:agent",
+]
 
 # Every op of review-ledger.sh, and whether the hook denies it to the roster.
 LEDGER_SCRIPT_OPS_GATED_FOR_ROSTER = {

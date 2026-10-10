@@ -78,15 +78,16 @@ DIFF_INPUT_CONTRACT_SHARED_SENTENCES = (
 # When a new non-reviewer agent is added, add it here; the
 # test_no_uncategorized_agents test will fail until it is categorized.
 NON_REVIEWER_AGENTS = [
-    "code-writer.md",     # implementer; self-reviews its own output, not a dispatcher-spawned reviewer
-    "Explore.md",         # same-named override of the harness built-in; read-only search, not a reviewer
-    "plan-architect.md",  # non-reviewer planning agent; design synthesis plus ad hoc Opus consults on explicit ask
+    "code-writer.md",           # implementer; self-reviews its own output, not a dispatcher-spawned reviewer
+    "Explore.md",               # same-named override of the harness built-in; read-only search, not a reviewer
+    "plan-architect.md",        # non-reviewer planning agent; design synthesis plus ad hoc Opus consults on explicit ask
+    "review-orchestrator.md",   # runs one /code-review round in its own context; returns a summary
 ]
 
 # Maximum description length for agent frontmatter.
 # The full agent roster loads into every session's Agent-tool schema, so each
 # description is a per-session token cost. 1000 is a regression guard with
-# headroom above the current max (786 chars) — raise deliberately with rationale
+# headroom above the current max (901 chars) — raise deliberately with rationale
 # if a longer description is genuinely needed.
 AGENT_DESCRIPTION_MAX_CHARS = 1000
 
@@ -96,9 +97,10 @@ AGENT_DESCRIPTION_MAX_CHARS = 1000
 # above AND add its expected model here — test_expected_model_map_is_complete
 # will fail until both are updated.
 NON_REVIEWER_MODELS = {
-    "code-writer.md": "sonnet",       # implementer
-    "Explore.md": "sonnet",           # same-named built-in override
-    "plan-architect.md": "opus",      # frontmatter-pinned; see CLAUDE.md Model & Effort Routing
+    "code-writer.md": "sonnet",           # implementer
+    "Explore.md": "sonnet",               # same-named built-in override
+    "plan-architect.md": "opus",          # frontmatter-pinned; see CLAUDE.md Model & Effort Routing
+    "review-orchestrator.md": "sonnet",   # orchestration that follows a skill verbatim; open calls go to the human
 }
 
 # Expected effort tier per agent. Mirrors NON_REVIEWER_MODELS's role for
@@ -122,6 +124,7 @@ EXPECTED_EFFORT = {
     "skill-fidelity-reviewer.md": "medium",
     "ciso-reviewer.md": "xhigh",
     "code-writer.md": "high",
+    "review-orchestrator.md": "high",
     "staff-analytics-engineer.md": "xhigh",
     "staff-backend-engineer.md": "xhigh",
     "staff-data-engineer.md": "xhigh",
@@ -635,17 +638,18 @@ class TestAgentFrontmatter:
 # `Explore` moved out of this set once `agents/Explore.md` shipped as a
 # same-named override of the harness built-in: its `tools:` frontmatter is now
 # on disk and checkable the same way as any other file-backed no-gate-release
-# member (no `Skill`, no `Task`), so it no longer needs the mandate exemption
+# member (no `Skill`, no `Agent` or `Task`), so it no longer needs the mandate exemption
 # below. If `Explore.md` is ever deleted, `Explore` goes back in this set.
 #
 # Two platform assumptions ride on the remaining exemption, neither checkable
 # from this repo — record them here so they are searchable rather than silent:
 #   - What tools the harness grants `Plan`. There is no registry to read, so
 #     the mandate grounding is what the deny actually rests on.
-#   - That a subagent cannot itself invoke Task. If that ever changes, `Plan`
-#     could delegate a marker write to a full-tool-set agent and release a
-#     gate, which is exactly what the Task assertion below closes for the
-#     file-backed members. Re-derive this exemption if it does.
+#   - That `Plan` holds no dispatch tool (`Agent` or `Task`). An agent file
+#     can declare one (review-orchestrator.md declares `Agent`), and with one,
+#     `Plan` could delegate a marker write to a full-tool-set agent and release
+#     a gate, which is exactly what the dispatch-tool assertion below closes
+#     for the file-backed members.
 HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS = {"Plan"}
 
 
@@ -668,7 +672,7 @@ class TestNoGateReleaseRosterSync:
     these agents on the stated grounds that none of them could have run the
     review a gate demands, so any marker they write asserts a review that
     could not have happened. For the file-backed members that grounding is
-    tool absence (no `Skill`, and no `Task` to delegate it with); for the
+    tool absence (no `Skill`, and no `Agent` or `Task` to delegate it with); for the
     harness built-ins it is mandate, which no frontmatter records. Only the
     first kind is checkable here, so it is asserted rather than verified by
     hand at review time, and the second is pinned as a closed exemption set.
@@ -723,8 +727,9 @@ class TestNoGateReleaseRosterSync:
                 f"remove it from the roster and re-derive the boundary."
             )
 
-    def test_roster_members_do_not_carry_the_task_tool(self):
-        """Task absence is what closes the delegate-to-a-full-tool-set escape.
+    def test_roster_members_do_not_carry_a_dispatch_tool(self):
+        """Dispatch-tool absence (`Agent` or `Task`) is what closes the
+        delegate-to-a-full-tool-set escape.
 
         Denying these agents a direct marker write accomplishes nothing if they
         can dispatch a subagent that is allowed to make one — `general-purpose`
@@ -737,19 +742,20 @@ class TestNoGateReleaseRosterSync:
             if name in HARNESS_BUILTIN_NO_GATE_RELEASE_AGENTS:
                 continue
             declared = self._declared_tools(name)
-            assert "Task" not in declared, (
-                f"{name}.md declares the Task tool, but it is listed in "
+            dispatch_tools = declared & {"Agent", "Task"}
+            assert not dispatch_tools, (
+                f"{name}.md declares {sorted(dispatch_tools)}, but it is listed in "
                 f"_LIB_NO_GATE_RELEASE_AGENTS. A member that can dispatch a "
                 f"subagent can have that subagent write the marker instead, "
                 f"which reopens the gate-release path this roster closes. "
-                f"Either drop Task from this agent, or remove it from the "
-                f"roster and re-derive the boundary."
+                f"Either drop the dispatch tool from this agent, or remove it "
+                f"from the roster and re-derive the boundary."
             )
 
     def test_explore_tools_are_exactly_read_grep_glob(self):
         """Pins Explore.md's own no-Write/Edit/Bash design guarantee.
 
-        The Skill/Task-absence checks above are roster-wide and can't assert
+        The Skill and dispatch-tool absence checks above are roster-wide and can't assert
         this: code-writer.md is also on the roster and legitimately carries
         Write/Edit/Bash. Explore's read-only guarantee needs its own
         assertion, or a future edit adding Bash back passes every other test
@@ -766,7 +772,7 @@ class TestNoGateReleaseRosterSync:
         """Pins plan-architect.md's own no-Write/Edit/Bash design guarantee.
 
         The gate-bypass argument for this agent rests entirely on tool
-        absence (no Write to trip require-plan-review.sh, no Skill/Task to
+        absence (no Write to trip require-plan-review.sh, no Skill, Agent or Task to
         delegate a gate release). A future edit widening its tools would
         pass every other test here while silently reopening that trap.
         """
@@ -829,6 +835,70 @@ def _review_only_agents() -> list[str]:
         check=True,
     )
     return [line for line in result.stdout.splitlines() if line]
+
+
+class TestReviewOrchestratorRosterPlacement:
+    """review-orchestrator may release a review gate, because it genuinely runs
+    the review skill itself. That capability rests on its absence from
+    _LIB_NO_GATE_RELEASE_AGENTS.
+    """
+
+    def test_declared_tools_are_exactly_the_documented_set(self):
+        """Its absence from _LIB_NO_GATE_RELEASE_AGENTS rests on holding `Skill`
+        (to run the review) and `Agent` (to dispatch code-writer and the
+        reviewers), so the set is pinned by equality, not by Edit/Write absence."""
+        assert TestNoGateReleaseRosterSync._declared_tools("review-orchestrator") == {
+            "Skill",
+            "Agent",
+            "Read",
+            "Grep",
+            "Glob",
+            "Bash",
+        }, (
+            "review-orchestrator.md's tools: line changed. It must stay exactly "
+            "Skill, Agent, Read, Grep, Glob, Bash: Skill and Agent are why it is "
+            "off _LIB_NO_GATE_RELEASE_AGENTS, and omitting Edit and Write steers "
+            "fixes to code-writer. See "
+            "docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
+        )
+
+    def test_absent_from_no_gate_release_agents(self):
+        """review-orchestrator genuinely runs the review skill it is dispatched
+        for, so — unlike every _LIB_NO_GATE_RELEASE_AGENTS member — it may
+        release the gate that skill's marker guards. Adding it there, or to
+        _LIB_REVIEW_ONLY_AGENTS, which that roster is built from, would
+        silently strip the capability the whole design depends on."""
+        assert "review-orchestrator" not in _no_gate_release_agents()
+
+    @staticmethod
+    def _description() -> str:
+        return parse_frontmatter(AGENTS_DIR / "review-orchestrator.md")["description"]
+
+    def test_description_pins_explicit_request_trigger(self):
+        assert "TRIGGER only when the user explicitly asks" in self._description(), (
+            "review-orchestrator must fire only on an explicit user request "
+            "until the post-merge dogfood passes. See "
+            "docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
+        )
+
+    def test_description_points_to_dispatch_protocol_skill(self):
+        assert "subagent-delegation" in self._description(), (
+            "review-orchestrator's dispatch protocol lives in the "
+            "subagent-delegation skill, so its description must point there. "
+            "See docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
+        )
+
+    def test_description_has_exactly_one_trigger_clause(self):
+        description = self._description()
+        trigger_clauses = description.count("TRIGGER") - description.count(
+            "DO NOT TRIGGER"
+        )
+        assert trigger_clauses == 1, (
+            f"review-orchestrator's description has {trigger_clauses} TRIGGER "
+            "clauses outside DO NOT TRIGGER; exactly one (the explicit-request "
+            "clause) is allowed until the post-merge dogfood passes. See "
+            "docs/design-decisions/review-orchestrator-gate-release-decoupling.md."
+        )
 
 
 class TestWriteWithoutBashAgentsAreReviewOnlyConfined:
