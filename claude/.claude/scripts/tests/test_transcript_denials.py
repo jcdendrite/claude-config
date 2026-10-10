@@ -1114,15 +1114,18 @@ _FIELD_SHIFT_DENY_MESSAGE = (
 class TestDenialCauseKind:
     """Pins _denial_cause_kind's four infra markers plus its behavioral
     fallback against real and hand-transcribed denial wording. No test here
-    may call git show/git merge-base. _LIB_SOURCE_FIXTURES,
-    _INPUT_PARSE_FIXTURES, _HELPER_PROC_FIXTURES, _BEHAVIORAL_FIXTURES, and
-    _DENY_ENCODE_FIXTURE are frozen wording. _HELPER_PROC_CURRENT_WORDING_FIXTURES
-    and _DENY_ENCODE_CURRENT_WORDING_FIXTURE are hand-transcribed snapshots of
-    the hooks' wording at the time of writing. Of the fixtures, only
-    _INPUT_PARSE_CURRENT_WORDING_SHARP_CASES is verified against the real
-    hook, as is the subprocess test below. A green run proves the frozen
-    wording still classifies and the snapshots classify, not that the hooks
-    still emit that text."""
+    may call git show/git merge-base.
+
+    - Frozen wording: _LIB_SOURCE_FIXTURES, _INPUT_PARSE_FIXTURES,
+      _HELPER_PROC_FIXTURES, _BEHAVIORAL_FIXTURES, and _DENY_ENCODE_FIXTURE.
+    - Hand-transcribed snapshots of the hooks' wording at the time of writing:
+      _HELPER_PROC_CURRENT_WORDING_FIXTURES,
+      _DENY_ENCODE_CURRENT_WORDING_FIXTURE, and _FIELD_SHIFT_DENY_MESSAGE.
+    - Verified against the real hook:
+      _INPUT_PARSE_CURRENT_WORDING_SHARP_CASES and the subprocess tests below.
+
+    A green run proves the frozen wording still classifies and the snapshots
+    classify, not that the hooks still emit that text."""
 
     @pytest.mark.parametrize("hook_name,message", _LIB_SOURCE_FIXTURES)
     def test_bootstrap_wording_classifies_lib_source(self, hook_name, message):
@@ -1216,19 +1219,29 @@ class TestDenialCauseKind:
         accidentally giving it an infra marker."""
         assert _mod.denials._denial_cause_kind(_FIELD_SHIFT_DENY_MESSAGE) == "behavioral"
 
-    def test_agent_authored_path_with_cause_fragment_misclassifies_helper_proc(self):
+    def test_agent_authored_path_with_cause_fragment_misclassifies_helper_proc(self, tmp_path):
         """Recorded limitation, adversarial case: an agent-controlled Read
         path containing a cause-marker substring reclassifies a genuinely
         behavioral env-read denial as helper-proc in this derived aggregate.
-        The gate still denies in real time and the raw record is unchanged;
+        The real deny-env-reads.sh echoes the path into its message and
+        denies on the dotenv basename alone, so the path need not exist. The
+        gate still denies in real time and the raw record is unchanged;
         review-trace's own cause= line recovers the individual event."""
-        file_path = "/tmp/failing closed.env"
-        message = (
-            f"Read of '{file_path}' denied by env-read gate. Dotenv files commonly hold "
-            "secrets; reading pulls them into Claude's conversation context. If this is a "
-            "non-secret template, rename it to .env.example, .env.template, or .env.sample. "
-            f"Otherwise inspect it with a shell command (e.g. `! cat {file_path}`) instead of "
-            "the Read tool. (Allowlist: ~/.claude/hooks/deny-env-reads.sh)"
+        # Control: the same real denial with a marker-free path is behavioral, so only
+        # the path fragment below can flip it to helper-proc.
+        control_path = tmp_path / "project" / ".env"
+        control_message = run_hook_reason(
+            HOOKS_DIR / "deny-env-reads.sh",
+            {"tool_name": "Read", "tool_input": {"file_path": str(control_path)}},
         )
+        assert control_message is not None
+        assert _mod.denials._denial_cause_kind(control_message) == "behavioral"
+        file_path = tmp_path / "failing closed" / ".env"
+        message = run_hook_reason(
+            HOOKS_DIR / "deny-env-reads.sh",
+            {"tool_name": "Read", "tool_input": {"file_path": str(file_path)}},
+        )
+        assert message is not None
+        assert "failing closed" in message
         assert _mod.denials._denial_cause_kind(message) == "helper-proc"
 

@@ -19,8 +19,7 @@ paths:
   `~/.claude/skills/review-permissions/SKILL.md` checklist items 1–9.
   Use exact-match rules (`Bash(pytest)`, `Bash(npm run verify)`) instead.
 - A `permissions.deny` rule blocks only the command or tool-call shape it
-  names. Verify each other route to the same capability is closed, or accept it
-  as open (e.g. a
-  `Bash(cat X)` deny leaves `Read(X)`, `head X`, and `cat ./X` open). Pair a
-  bare deny with prose naming the alternative — see
-  `~/.claude/skills/review-permissions/SKILL.md` checklist item 23.
+  names. Verify each other route to the same capability is closed, or accept
+  it as open (e.g. a `Bash(cat X)` deny leaves `Read(X)`, `head X`, and
+  `cat ./X` open). Pair a bare deny with prose naming the alternative (see
+  the `review-permissions` checklist, item 23).

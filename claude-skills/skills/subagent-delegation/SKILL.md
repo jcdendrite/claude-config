@@ -128,7 +128,7 @@ When root-causing a check or test failure requires a read-heavy probe — findin
 how existing tests handle a pattern, locating the relevant convention, mapping
 an analogous code shape — dispatch that probe as an objective, using the same
 Explore/general-purpose split as Codebase discovery above. Pass an explicit
-`model: sonnet` per `CLAUDE.md`'s Model Routing rule on both — even on
+`model: sonnet` per `CLAUDE.md`'s Model & Effort Routing rule on both — even on
 `Explore`, whose `Explore.md` pin is a request, not a guarantee.
 
 > "Diagnose why [test/check] fails; report root cause + minimal evidence + proposed fix."
