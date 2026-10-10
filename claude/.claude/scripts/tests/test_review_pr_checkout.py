@@ -29,17 +29,22 @@ from helpers import (
 )
 
 from .conftest import (
+    _BASE_FROM_ORIGIN_MAIN,
     GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
     _assert_finish_and_clear_stale_each_empty_the_active_directory,
     _assert_gh_calls_are_read_only,
     _build_repo_with_pr_ref,
+    _git_shim_that_fails_on_subcommand,
     _git_shim_that_fails_on_worktree_subcommand,
     _install_audit_script,
     _install_audit_script_that_runs,
+    _origin_main_sha,
     _provenance_fields,
+    _push_new_base_commit,
     _pythonpath_env_that_forges_a_clean_audit,
     _review_pr_audit_limit,
     _seed_session,
+    _shim_match_count,
     _shimmed_env,
 )
 
@@ -55,16 +60,6 @@ _SUBPROCESS_TIMEOUT_SECONDS = 60
 
 # The only `gh api` endpoints the script reads: the PR resource and its file listing.
 _KNOWN_API_ENDPOINT = re.compile(r"repos/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pulls/[0-9]+(/files\?per_page=100)?")
-
-
-def _origin_main_sha(repo: Path) -> str | None:
-    """The commit origin/main points at in repo, or None when repo has no
-    such ref (a test whose cwd is not the PR repo)."""
-    resolved = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", "origin/main"], cwd=repo, capture_output=True, text=True,
-        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-    )
-    return resolved.stdout.strip() or None
 
 
 def _independent_git_diff(
@@ -114,13 +109,18 @@ def _push_pr_head_commit(repo: Path, files: dict[str, str]) -> tuple[str, str]:
 
 
 def _printed_worktree_path(result: subprocess.CompletedProcess) -> Path:
-    """The worktree path, the first of the two lines a successful run prints."""
+    """The worktree path, the first of the three lines a successful run prints."""
     return Path(result.stdout.splitlines()[0])
 
 
 def _printed_diff_path(result: subprocess.CompletedProcess) -> Path:
-    """The diff file path, the second of the two lines a successful run prints."""
+    """The diff file path, the second of the three lines a successful run prints."""
     return Path(result.stdout.splitlines()[1])
+
+
+def _printed_base_ref_oid(result: subprocess.CompletedProcess) -> str:
+    """The baseRefOid, the third of the three lines a successful run prints."""
+    return result.stdout.splitlines()[2]
 
 
 def _review_worktrees(repo: Path) -> list[Path]:
@@ -169,13 +169,6 @@ def repo_with_pr_ref(tmp_path):
 _SAME_AS_REQUEST = "__SAME_AS_REQUEST__"
 
 _ALLOWLISTED_ASSOCIATIONS = ["MEMBER", "OWNER", "COLLABORATOR", "CONTRIBUTOR"]
-
-# Sentinel default for `_run`'s base_ref_oid: "the commit origin/main points
-# at in the repo under test" -- the base commit _build_repo_with_pr_ref's PR
-# branched from -- so a test that does not care about the base still reaches
-# a successful diff. None omits baseRefOid from the shimmed gh reply.
-_BASE_FROM_ORIGIN_MAIN = "__BASE_FROM_ORIGIN_MAIN__"
-
 
 def _is_listing_call(call: list[str], suffix: str) -> bool:
     """True for a `gh api` call to the pulls listing ending in `suffix`,
@@ -675,51 +668,6 @@ class TestTrustClassificationRefuses:
         assert result.returncode == 0, result.stderr
         assert _local_pr_ref_names(repo) != ""
 
-    def test_pr_into_a_non_default_base_refuses_before_any_fetch(
-        self, isolated_home, repo_with_pr_ref, tmp_path
-    ):
-        """The audit sees only the PR's changed files, so a stacked PR whose
-        base already holds an execution-surface file passes the audit clean
-        while the checkout writes that file. The script never sees base
-        content, so the refusal keys on the base branch alone."""
-        _install_audit_script(isolated_home)
-        repo, pr_sha = repo_with_pr_ref
-        result, call_log = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"],
-            base_ref_name="feature-base", base_default_branch="main",
-        )
-        assert result.returncode == 3
-        assert "review-pr-diff.sh" in result.stderr
-        assert "feature-base" in result.stderr
-        assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
-        assert _local_pr_ref_names(repo) == ""
-        assert _review_worktrees(repo) == []
-
-    @pytest.mark.parametrize(
-        "base_ref_name",
-        ["Main", "refs/heads/main", " main", "main "],
-        ids=["case-variant", "refs-heads-prefix", "leading-space", "trailing-space"],
-    )
-    def test_base_branch_comparison_is_exact_not_normalized(
-        self, isolated_home, repo_with_pr_ref, tmp_path, base_ref_name
-    ):
-        """Git ref names are case-sensitive, so a base that differs from the
-        default branch only by case, prefix, or whitespace is a different
-        branch and is refused."""
-        _install_audit_script(isolated_home)
-        repo, pr_sha = repo_with_pr_ref
-        result, call_log = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"],
-            base_ref_name=base_ref_name, base_default_branch="main",
-        )
-        assert result.returncode == 3, result.stderr
-        assert "review-pr-diff.sh" in result.stderr
-        assert not any(_is_listing_call(c, "/files") for c in _read_calls(call_log))
-        assert _local_pr_ref_names(repo) == ""
-        assert _review_worktrees(repo) == []
-
     @pytest.mark.parametrize(
         "missing_field", ["base_ref_name", "base_default_branch"],
     )
@@ -782,6 +730,783 @@ class TestTrustClassificationRefuses:
         )
         assert result.returncode == 2, "an operational failure is not a trust refusal"
         assert _review_worktrees(repo) == []
+
+
+_STACKED_BASE_BRANCH = "feature-base"
+_STACKED_BASE_NAMES = {"base_ref_name": _STACKED_BASE_BRANCH, "base_default_branch": "main"}
+_DEFAULT_BRANCH_LOCAL_REF = f"refs/review-pr/pr-{PR_NUMBER}-default"
+# The jq filter review_pr_nul_names_to_json passes, which only that decode step carries.
+_NUL_SPLIT_JQ_FILTER = (
+    r'split("\u0000") | if length == 0 or .[-1] == "" then .[:-1] else error("unterminated final name") end'
+)
+
+
+def _git_bytes(repo: Path, *args: bytes | str, stdin: bytes | None = None) -> bytes:
+    """Runs git in repo and returns its stdout. Arguments may be bytes, so a
+    path no filesystem or terminal can spell still reaches git intact."""
+    return subprocess.run(
+        [b"git", *(arg if isinstance(arg, bytes) else arg.encode() for arg in args)],
+        cwd=repo, input=stdin, capture_output=True, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+    ).stdout
+
+
+def _commit_index_entries(repo: Path, entries: dict[bytes, bytes | None], message: str) -> str:
+    """Commits `entries` (path to content; None removes the path) on repo's
+    HEAD through the index, so a path with a newline or invalid UTF-8 lands in
+    the tree without any worktree file. Returns the new commit's SHA."""
+    for path, content in entries.items():
+        if content is None:
+            _git_bytes(repo, "update-index", "--force-remove", "--", path)
+            continue
+        blob_oid = _git_bytes(repo, "hash-object", "-w", "--stdin", stdin=content).strip()
+        _git_bytes(repo, "update-index", "--add", "--cacheinfo", b"100644," + blob_oid + b"," + path)
+    _git_bytes(repo, "commit", "-q", "-m", message)
+    return _git_bytes(repo, "rev-parse", "HEAD").decode().strip()
+
+
+def _build_stacked_repo(
+    tmp_path: Path,
+    *,
+    base_entries: dict[bytes, bytes | None],
+    lower_base_entries: dict[bytes, bytes | None] | None = None,
+    base_entries_after_fork: dict[bytes, bytes | None] | None = None,
+) -> tuple[Path, str, str]:
+    """A repo whose PR (refs/pull/42/head, adding pr_file.txt) sits on the
+    `feature-base` branch of origin, which sits on main, the default branch.
+    `base_entries` are committed on feature-base and never on main.
+    `lower_base_entries` add a `lower-base` branch between main and
+    feature-base. `base_entries_after_fork` advance feature-base past the
+    commit the PR forked from, so the PR's head does not contain them.
+    Returns (repo, pr_sha, base_sha) with base_sha feature-base's tip on
+    origin and the working copy back on main."""
+    repo, _ = _build_repo_with_pr_ref(tmp_path)
+    main_sha = _origin_main_sha(repo)
+    _git_bytes(repo, "checkout", "-q", "--detach", main_sha)
+    if lower_base_entries:
+        _commit_index_entries(repo, lower_base_entries, "lower base commit")
+        _git_bytes(repo, "push", "-q", "origin", "+HEAD:refs/heads/lower-base")
+    fork_sha = _commit_index_entries(repo, base_entries, "base commit")
+    _git_bytes(repo, "push", "-q", "origin", f"+HEAD:refs/heads/{_STACKED_BASE_BRANCH}")
+    pr_sha = _commit_index_entries(repo, {b"pr_file.txt": b"pr change\n"}, "stacked pr commit")
+    _git_bytes(repo, "push", "-q", "origin", f"+HEAD:refs/pull/{PR_NUMBER}/head")
+    base_sha = fork_sha
+    if base_entries_after_fork:
+        _git_bytes(repo, "checkout", "-q", "-f", "--detach", fork_sha)
+        base_sha = _commit_index_entries(repo, base_entries_after_fork, "base commit after the fork")
+        _git_bytes(repo, "push", "-q", "origin", f"+HEAD:refs/heads/{_STACKED_BASE_BRANCH}")
+    _git_bytes(repo, "checkout", "-q", "-f", "main")
+    _git_bytes(repo, "clean", "-fdq")
+    return repo, pr_sha, base_sha
+
+
+def _default_branch_ref_exists(repo: Path) -> bool:
+    return _DEFAULT_BRANCH_LOCAL_REF in _local_pr_ref_names(repo)
+
+
+def _install_jq_shim_that_misdecodes_nul_names(tmp_path: Path, decoded_names: list[str]) -> Path:
+    """A `jq` PATH shim that answers the NUL-split decode with `decoded_names`
+    after reading all of stdin, so the git before it gets no SIGPIPE, and runs
+    the real jq for every other call."""
+    real_jq = shutil.which("jq")
+    assert real_jq is not None, "the real jq binary is required to delegate to"
+    jq_shim_dir = tmp_path / "jq-shim"
+    jq_shim_dir.mkdir()
+    jq_shim = jq_shim_dir / "jq"
+    jq_shim.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json
+        import os
+        import sys
+        if {_NUL_SPLIT_JQ_FILTER!r} in sys.argv[1:]:
+            sys.stdin.buffer.read()
+            print(json.dumps({decoded_names!r}))
+            sys.exit(0)
+        os.execv({real_jq!r}, ["jq", *sys.argv[1:]])
+    """))
+    jq_shim.chmod(0o755)
+    return jq_shim_dir
+
+
+def _install_python_path_shim(tmp_path: Path, tool: str, body: str) -> Path:
+    """A PATH shim named `tool` whose Python source is `body`. Returns its directory."""
+    shim_dir = tmp_path / f"{tool}-shim"
+    shim_dir.mkdir()
+    shim = shim_dir / tool
+    shim.write_text("#!/usr/bin/env python3\n" + textwrap.dedent(body))
+    shim.chmod(0o755)
+    return shim_dir
+
+
+def _install_wc_shim_printing(tmp_path: Path, printed_text: str) -> Path:
+    """A `wc` PATH shim that reads all of stdin, so the git before it gets no SIGPIPE, and prints `printed_text`."""
+    return _install_python_path_shim(
+        tmp_path, "wc", f"import sys\nsys.stdin.buffer.read()\nprint({printed_text!r})\n",
+    )
+
+
+def _install_tr_shim_that_fails_unless_locale_is_c(tmp_path: Path) -> Path:
+    """A `tr` PATH shim that fails as BSD `tr` does on invalid UTF-8 under a
+    UTF-8 locale unless `LC_ALL=C` is in its environment, and runs the real
+    `tr` otherwise."""
+    real_tr = shutil.which("tr")
+    assert real_tr is not None, "the real tr binary is required to delegate to"
+    return _install_python_path_shim(tmp_path, "tr", f"""\
+        import os
+        import sys
+        if os.environ.get("LC_ALL") != "C":
+            sys.stderr.write("tr: Illegal byte sequence" + chr(10))
+            sys.exit(1)
+        os.execv({real_tr!r}, ["tr", *sys.argv[1:]])
+    """)
+
+
+def _install_jq_shim_that_fails_the_nul_split_decode(tmp_path: Path, exit_status: int) -> Path:
+    """A `jq` PATH shim that exits `exit_status` for the NUL-split decode and runs the real jq for every other call."""
+    real_jq = shutil.which("jq")
+    assert real_jq is not None, "the real jq binary is required to delegate to"
+    return _install_python_path_shim(tmp_path, "jq", f"""\
+        import os
+        import sys
+        if {_NUL_SPLIT_JQ_FILTER!r} in sys.argv[1:]:
+            sys.stdin.buffer.read()
+            sys.exit({exit_status})
+        os.execv({real_jq!r}, ["jq", *sys.argv[1:]])
+    """)
+
+
+def _install_git_shim_that_prints_a_partial_name_then_fails_the_name_run(tmp_path: Path, exit_status: int) -> Path:
+    """A `git` PATH shim whose second `diff --name-only` run (the name-listing
+    run) prints one name with no terminating NUL and exits `exit_status`, as a
+    cap kill does mid-output. Every other invocation reaches the real git."""
+    real_git = shutil.which("git")
+    assert real_git is not None, "the real git binary is required to delegate to"
+    name_run_count_file = tmp_path / "partial-name-run-count"
+    return _install_python_path_shim(tmp_path, "git", f"""\
+        import os
+        import sys
+        if "--name-only" in sys.argv[1:]:
+            with open({str(name_run_count_file)!r}, "a") as count_file:
+                count_file.write("run" + chr(10))
+            if len(open({str(name_run_count_file)!r}).read().splitlines()) == 2:
+                sys.stdout.write("partial-name")
+                sys.stdout.flush()
+                sys.exit({exit_status})
+        os.execv({real_git!r}, ["git", *sys.argv[1:]])
+    """)
+
+
+def _install_shims_that_record_whether_the_name_run_finished_before_the_decode(tmp_path: Path) -> tuple[Path, Path]:
+    """`git` and `jq` PATH shims in one directory. The git shim delays its second
+    `diff --name-only` run (the name-listing run), then writes a marker file.
+    The jq shim appends `finished` or `running` to a record on each NUL-split
+    decode, by whether that marker exists. Returns (shim directory, record)."""
+    real_git = shutil.which("git")
+    real_jq = shutil.which("jq")
+    assert real_git is not None and real_jq is not None, "the real git and jq binaries are required to delegate to"
+    shim_dir = tmp_path / "ordering-shims"
+    shim_dir.mkdir()
+    name_run_finished_marker = tmp_path / "name-run-finished"
+    decode_record = tmp_path / "decode-record"
+    name_run_count_file = tmp_path / "ordering-name-run-count"
+    (shim_dir / "git").write_text("#!/usr/bin/env python3\n" + textwrap.dedent(f"""\
+        import subprocess
+        import sys
+        import time
+        is_name_run = False
+        if "--name-only" in sys.argv[1:]:
+            with open({str(name_run_count_file)!r}, "a") as count_file:
+                count_file.write("run" + chr(10))
+            is_name_run = len(open({str(name_run_count_file)!r}).read().splitlines()) == 2
+        if is_name_run:
+            time.sleep(0.3)
+        status = subprocess.run([{real_git!r}, *sys.argv[1:]]).returncode
+        if is_name_run:
+            open({str(name_run_finished_marker)!r}, "w").close()
+        sys.exit(status)
+    """))
+    (shim_dir / "jq").write_text("#!/usr/bin/env python3\n" + textwrap.dedent(f"""\
+        import os
+        import sys
+        if {_NUL_SPLIT_JQ_FILTER!r} in sys.argv[1:]:
+            with open({str(decode_record)!r}, "a") as record:
+                record.write(("finished" if os.path.exists({str(name_run_finished_marker)!r}) else "running") + chr(10))
+        os.execv({real_jq!r}, ["jq", *sys.argv[1:]])
+    """))
+    for shim in (shim_dir / "git", shim_dir / "jq"):
+        shim.chmod(0o755)
+    return shim_dir, decode_record
+
+
+def _git_shim_that_prints_for_subcommand(tmp_path: Path, args_glob: str, printed_text: str) -> Path:
+    """A `git` PATH shim that prints `printed_text` and exits 0 for any
+    invocation whose space-joined arguments match the bash glob `args_glob`,
+    and delegates every other invocation to the real git binary."""
+    shim_dir = tmp_path / "git_shim_printing_on_subcommand"
+    shim_dir.mkdir()
+    git_shim = shim_dir / "git"
+    git_shim.write_text(
+        f'#!/usr/bin/env bash\nif [[ "$*" == {args_glob.replace(" ", chr(92) + " ")} ]]; then\n'
+        f"  printf '%s\\n' {shlex.quote(printed_text)}\n  exit 0\nfi\n"
+        f'exec {shlex.quote(shutil.which("git"))} "$@"\n'
+    )
+    git_shim.chmod(0o755)
+    return shim_dir
+
+
+class TestStackedBaseDeltaAudit:
+    """A PR whose base branch is not the default branch audits every path its
+    head changes from the default branch, because the checkout writes the
+    whole head tree and the base can carry a file the PR's own file list never
+    names. The audit fails closed: a tooling failure exits 2, a stop exits 3."""
+
+    def test_clean_delta_checks_out_and_prints_the_base_object_name(self, isolated_home, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(tmp_path, base_entries={b"base_only.txt": b"base\n"})
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 0, result.stderr
+        worktree_dir = _printed_worktree_path(result)
+        assert [worktree_dir] == _review_worktrees(repo)
+        assert (worktree_dir / "base_only.txt").exists(), "the checkout writes the whole head tree, base files included"
+        assert (worktree_dir / "pr_file.txt").exists()
+        assert re.fullmatch(r"[0-9a-f]{40}", _printed_base_ref_oid(result)), "a full-hex object name on the third line"
+        assert _printed_base_ref_oid(result) == base_sha
+        diff_bytes = _printed_diff_path(result).read_bytes()
+        assert b"+pr change" in diff_bytes
+        assert b"base_only.txt" not in diff_bytes, "the diff is against the base commit, not the default branch"
+        assert diff_bytes == _independent_git_diff(repo, base_sha, pr_sha, isolated_home).stdout
+        assert _default_branch_ref_exists(repo)
+
+    def test_a_default_base_pr_creates_no_default_branch_ref(self, isolated_home, repo_with_pr_ref, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=["pr_file.txt"])
+        assert result.returncode == 0, result.stderr
+        assert not _default_branch_ref_exists(repo)
+        assert _local_pr_ref_names(repo).count("refs/review-pr/") == 1, "only the PR's own ref"
+
+    @pytest.mark.parametrize(
+        "base_ref_name",
+        ["Main", "refs/heads/main", " main", "main "],
+        ids=["case-variant", "refs-heads-prefix", "leading-space", "trailing-space"],
+    )
+    def test_base_branch_comparison_is_exact_not_normalized(
+        self, isolated_home, repo_with_pr_ref, tmp_path, base_ref_name
+    ):
+        """Git ref names are case-sensitive, so a base that differs from the
+        default branch only by case, prefix, or whitespace is a different
+        branch: the delta audit runs for it, which leaves the default-branch ref."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            base_ref_name=base_ref_name, base_default_branch="main",
+        )
+        assert result.returncode == 0, result.stderr
+        assert _default_branch_ref_exists(repo)
+
+    def test_a_flagged_file_added_on_the_base_stops_with_exit_three_and_no_worktree(self, isolated_home, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(tmp_path, base_entries={b".mcp.json": b"{}\n"})
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 3, result.stderr
+        assert "review-pr-diff.sh" in result.stderr
+        assert '".mcp.json"' in result.stderr
+        assert _STACKED_BASE_BRANCH in result.stderr
+        assert "no refs/pull" not in result.stderr, "the PR's ref was fetched before this stop"
+        assert result.stdout == ""
+        assert _review_worktrees(repo) == []
+        assert not (isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.diff").exists()
+
+    def test_a_flagged_file_the_base_removed_after_the_fork_still_stops_before_the_base_fetch(
+        self, isolated_home, tmp_path
+    ):
+        """The head tree still holds the file the base dropped after the PR
+        forked, so a list built from the base commit would miss it. The stop
+        happens before the base commit is fetched."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(
+            tmp_path, base_entries={b".mcp.json": b"{}\n"}, base_entries_after_fork={b".mcp.json": None},
+        )
+        control_base_listing = _git_bytes(repo, "ls-tree", "-r", "--name-only", base_sha).decode()
+        control_head_listing = _git_bytes(repo, "ls-tree", "-r", "--name-only", pr_sha).decode()
+        assert ".mcp.json" not in control_base_listing, "control: the base commit no longer holds the file"
+        assert ".mcp.json" in control_head_listing, "control: the PR's head still holds it"
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, f"*fetch origin {base_sha}", exit_status=1)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, path_prefix=shim_dir,
+            **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 3, result.stderr
+        assert '".mcp.json"' in result.stderr
+        assert _shim_match_count(shim_dir) == 0
+        assert _review_worktrees(repo) == []
+
+    def test_a_flagged_file_on_the_lower_of_two_stacked_bases_stops(self, isolated_home, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(
+            tmp_path, lower_base_entries={b".mcp.json": b"{}\n"}, base_entries={b"upper_base.txt": b"upper\n"},
+        )
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 3, result.stderr
+        assert '".mcp.json"' in result.stderr
+        assert _review_worktrees(repo) == []
+
+    def test_a_flagged_name_with_a_newline_and_non_ascii_stops_on_one_json_escaped_line(
+        self, isolated_home, tmp_path
+    ):
+        """Pins `-z` and a flagged name that is not first in the listing. Without
+        `-z`, git quotes the name with a leading quote character, so the audit's
+        `.claude/hooks/` prefix match misses it and the run checks out. `+` sorts
+        before `.`, so the ordinary name comes first."""
+        _install_audit_script(isolated_home)
+        flagged_name = ".claude/hooks/café\nx.sh"
+        repo, pr_sha, base_sha = _build_stacked_repo(
+            tmp_path,
+            base_entries={b"+ordinary.txt": b"ordinary\n", flagged_name.encode(): b"#!/bin/sh\n"},
+        )
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 3, result.stderr
+        assert json.dumps(flagged_name) in result.stderr
+        assert "\nx.sh" not in result.stderr, "the name's second half must not start a line of its own"
+        assert "+ordinary.txt" not in result.stderr
+        assert _review_worktrees(repo) == []
+
+    def test_a_flagged_name_that_is_invalid_utf8_stops(self, isolated_home, tmp_path):
+        """jq replaces invalid UTF-8 with U+FFFD rather than failing, so the
+        name count holds and the `.claude/hooks/` prefix still matches. The
+        counting pipeline needs `LC_ALL=C`, which BSD `tr` requires on such
+        bytes. A `tr` shim fails without it and the run sets a UTF-8 locale, so
+        the pin holds on any host."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(
+            tmp_path, base_entries={b".claude/hooks/\xff.sh": b"#!/bin/sh\n"},
+        )
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha,
+            path_prefix=_install_tr_shim_that_fails_unless_locale_is_c(tmp_path),
+            extra_env={"LC_ALL": "en_US.UTF-8"}, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 3, result.stderr
+        assert "\\ufffd" in result.stderr
+        assert _review_worktrees(repo) == []
+
+    @pytest.mark.parametrize(
+        ("fail_only_match_number", "failed_run_wording", "expected_match_count"),
+        [(None, "counting run", 1), (1, "counting run", 1), (2, "name-listing run", 2)],
+        ids=["every-run", "only-the-counting-run", "only-the-name-run"],
+    )
+    def test_a_failing_name_listing_run_exits_two_with_no_worktree(
+        self, isolated_home, repo_with_pr_ref, tmp_path, fail_only_match_number, failed_run_wording, expected_match_count
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        shim_dir = _git_shim_that_fails_on_subcommand(
+            tmp_path, "* diff --name-only *", exit_status=1, fail_only_match_number=fail_only_match_number,
+        )
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 2, result.stderr
+        assert f"the {failed_run_wording}" in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr
+        assert _shim_match_count(shim_dir) == expected_match_count
+        assert result.stdout == ""
+        assert _review_worktrees(repo) == []
+
+    def test_a_head_with_no_merge_base_against_the_default_branch_exits_two(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, _ = repo_with_pr_ref
+        unrelated_head_sha = _push_unrelated_root_commit(repo, ref=f"refs/pull/{PR_NUMBER}/head")
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=unrelated_head_sha, files=["a.py"], **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "the counting run" in result.stderr
+        assert "exited 128 (often no merge base between the default branch and the head)" in result.stderr
+        assert result.stdout == ""
+        assert _review_worktrees(repo) == []
+
+    @pytest.mark.parametrize(
+        ("fail_only_match_number", "failed_run_wording"),
+        [(1, "counting run"), (2, "name-listing run")],
+        ids=["counting-run", "name-listing-run"],
+    )
+    def test_a_cap_killed_diff_run_exits_two_with_the_cap_note_and_no_merge_base_hint(
+        self, isolated_home, repo_with_pr_ref, tmp_path, fail_only_match_number, failed_run_wording
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        shim_dir = _git_shim_that_fails_on_subcommand(
+            tmp_path, "* diff --name-only *", exit_status=124, fail_only_match_number=fail_only_match_number,
+        )
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 2, result.stderr
+        assert f"the {failed_run_wording}" in result.stderr
+        assert "exited 124, consistent with the 30s cap firing" in result.stderr
+        assert "no merge base" not in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr
+        assert result.stdout == ""
+        assert _review_worktrees(repo) == []
+
+    def test_a_cap_killed_name_run_that_printed_part_of_a_name_reports_the_cap_not_the_decoder(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """A run killed mid-name leaves an unterminated final name. The decoder never
+        sees it, so the message names git's status instead of a bare decoder failure."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            path_prefix=_install_git_shim_that_prints_a_partial_name_then_fails_the_name_run(tmp_path, 124),
+            **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "the name-listing run of git diff exited 124, consistent with the 30s cap firing" in result.stderr
+        assert "decoding" not in result.stderr
+        assert result.stdout == ""
+        assert _review_worktrees(repo) == []
+
+    def test_the_decode_starts_only_after_the_name_listing_run_has_finished(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """A decoder started beside git would spend its own 5s cap while git runs under
+        the 30s cap. The git shim delays its name run, so a decode started beside it
+        sees git still running."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        shim_dir, decode_record = _install_shims_that_record_whether_the_name_run_finished_before_the_decode(tmp_path)
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 0, result.stderr
+        assert decode_record.read_text().splitlines() == ["finished"]
+
+    def test_a_failing_decode_exits_two_naming_the_decoder_and_its_nul_handling(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            path_prefix=_install_jq_shim_that_fails_the_nul_split_decode(tmp_path, exit_status=5),
+            **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "the decoding of the name-listing run's output failed or timed out" in result.stderr
+        assert "jq that truncates raw input at NUL" in result.stderr
+        assert "verified on jq 1.8.2" in result.stderr
+        assert "the name-listing run of git diff" not in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr
+        assert result.stdout == ""
+        assert _review_worktrees(repo) == []
+
+    @pytest.mark.parametrize(
+        ("outcome", "expected_returncode", "expected_stderr_fragment"),
+        [
+            ("checkout", 0, ""),
+            ("git-failure", 2, "the name-listing run of git diff exited 1"),
+            ("decode-failure", 2, "the decoding of the name-listing run's output failed or timed out"),
+            ("audit-stop", 3, "passive-execution audit stopped"),
+        ],
+    )
+    def test_the_name_run_temp_directory_is_removed_on_every_exit_path(
+        self, isolated_home, tmp_path, outcome, expected_returncode, expected_stderr_fragment
+    ):
+        _install_audit_script(isolated_home)
+        flagged_entries = {b".mcp.json": b"{}\n"} if outcome == "audit-stop" else {b"base_only.txt": b"base\n"}
+        repo, pr_sha, base_sha = _build_stacked_repo(tmp_path, base_entries=flagged_entries)
+        scratch_dir = tmp_path / "scratch-tmpdir"
+        scratch_dir.mkdir()
+        shim_dir = {
+            "checkout": None,
+            "git-failure": _git_shim_that_fails_on_subcommand(
+                tmp_path, "* diff --name-only *", exit_status=1, fail_only_match_number=2,
+            ),
+            "decode-failure": _install_jq_shim_that_fails_the_nul_split_decode(tmp_path, exit_status=5),
+            "audit-stop": None,
+        }[outcome]
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, path_prefix=shim_dir,
+            extra_env={"TMPDIR": str(scratch_dir)}, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == expected_returncode, result.stderr
+        assert expected_stderr_fragment in result.stderr
+        assert list(scratch_dir.iterdir()) == []
+
+    def test_an_unusable_temp_directory_exits_two_before_any_worktree_exists(self, isolated_home, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(tmp_path, base_entries={b"base_only.txt": b"base\n"})
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha,
+            extra_env={"TMPDIR": str(tmp_path / "no-such-tmpdir")}, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "could not create a temporary directory for the name-listing run" in result.stderr
+        assert "Abort with no worktree created." in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr
+        assert result.stdout == ""
+        assert _review_worktrees(repo) == []
+
+    def test_a_counting_run_that_prints_no_integer_exits_two(self, isolated_home, repo_with_pr_ref, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=_install_wc_shim_printing(tmp_path, "many"),
+            **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "the counting run did not print an integer" in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr
+        assert result.stdout == ""
+        assert _review_worktrees(repo) == []
+
+    def test_a_default_ref_that_does_not_resolve_exits_two(self, isolated_home, repo_with_pr_ref, tmp_path):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        shim_dir = _git_shim_that_fails_on_subcommand(
+            tmp_path, "*rev-parse --verify --quiet refs/review-pr/*-default*", exit_status=1,
+        )
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 2, result.stderr
+        assert f"{_DEFAULT_BRANCH_LOCAL_REF} did not resolve to a commit" in result.stderr
+        assert _shim_match_count(shim_dir) == 1
+        assert "review-pr-diff.sh" not in result.stderr
+        assert result.stdout == ""
+        assert _review_worktrees(repo) == []
+
+    def test_a_default_ref_that_resolves_to_something_but_a_full_hex_name_exits_two(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The resolved value reaches a git revision argument, so an option-shaped one must stop first."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        shim_dir = _git_shim_that_prints_for_subcommand(
+            tmp_path, "*rev-parse --verify --quiet refs/review-pr/*-default*", "--upload-pack=option-shaped",
+        )
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 2, result.stderr
+        assert f"{_DEFAULT_BRANCH_LOCAL_REF} did not resolve to a commit with a full hex object name" in result.stderr
+        assert result.stdout == ""
+        assert _review_worktrees(repo) == []
+
+    def test_an_audit_with_a_verdict_for_the_pr_files_but_none_for_the_delta_exits_two_with_delta_wording(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The stand-in answers its first call, over the PR's file list, with the
+        clean document and its second, over the delta, with nothing."""
+        audit_call_record = tmp_path / "audit-calls"
+        _install_audit_script_that_runs(
+            isolated_home,
+            "import os\n"
+            f"first_call = not os.path.exists({str(audit_call_record)!r})\n"
+            f"open({str(audit_call_record)!r}, 'a').write('call\\n')\n"
+            "if first_call:\n"
+            "    print('{\"stop\": false, \"matches\": []}')\n",
+        )
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 2, result.stderr
+        assert len(audit_call_record.read_text().splitlines()) == 2, "the delta reached the audit"
+        assert "returned no verdict" in result.stderr
+        assert "were not audited" in result.stderr
+        assert "before any fetch of the PR's ref" not in result.stderr
+        assert "the PR's file list" not in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr
+        assert _review_worktrees(repo) == []
+
+    @pytest.mark.parametrize(
+        "default_branch",
+        ["a..b", "a b", "a:b", "a~1", "a@{b", "a.lock", "a\x01b"],
+        ids=["double-dot", "space", "colon", "tilde", "at-brace", "lock-suffix", "control-character"],
+    )
+    def test_a_default_branch_name_git_rejects_as_a_ref_name_exits_two_before_any_fetch_of_it(
+        self, isolated_home, repo_with_pr_ref, tmp_path, default_branch
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*fetch origin refs/heads/*", exit_status=1)
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir,
+            base_ref_name=_STACKED_BASE_BRANCH, base_default_branch=default_branch,
+        )
+        assert result.returncode == 2, result.stderr
+        assert json.dumps(default_branch) in result.stderr, "the API-sourced name prints as an ASCII-only JSON string"
+        assert "\x01" not in result.stderr
+        assert "not a valid git ref name" in result.stderr
+        assert _shim_match_count(shim_dir) == 0
+        assert not _default_branch_ref_exists(repo)
+        assert _review_worktrees(repo) == []
+
+    def test_an_api_sourced_base_branch_name_prints_json_escaped_in_a_failure_message(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_ref_name = "feature\x01‮extra"
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*fetch origin refs/heads/*", exit_status=1)
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir,
+            base_ref_name=base_ref_name, base_default_branch="main",
+        )
+        assert result.returncode == 2, result.stderr
+        assert '"feature\\u0001\\u202eextra"' in result.stderr
+        assert "\x01" not in result.stderr
+        assert "‮" not in result.stderr
+
+    def test_a_default_branch_name_shaped_like_a_fetch_option_is_never_read_as_one(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """`--upload-pack=<command>` is a valid ref component, so only the
+        `refs/heads/` prefix on the fetch refspec keeps it from being parsed as
+        a fetch option that runs the command. The command ends in `;`, so it
+        still runs when the refspec's `:<destination>` is appended to it."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        upload_pack_ran_sentinel = tmp_path / "upload-pack-ran"
+        option_shaped_name = f"--upload-pack=touch${{IFS}}{upload_pack_ran_sentinel};"
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            base_ref_name=_STACKED_BASE_BRANCH, base_default_branch=option_shaped_name,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "not a valid git ref name" not in result.stderr, "the name must reach the fetch"
+        assert not upload_pack_ran_sentinel.exists(), "the name must not run as a fetch option"
+        assert not _default_branch_ref_exists(repo)
+        assert _review_worktrees(repo) == []
+
+        subprocess.run(
+            ["git", "fetch", "origin", option_shaped_name],
+            cwd=repo, capture_output=True, check=False, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert upload_pack_ran_sentinel.exists(), "control: an unprefixed fetch of the name does run the command"
+
+    @pytest.mark.parametrize("default_branch", ["release/1.x", "-lead"], ids=["slash", "leading-dash"])
+    def test_a_valid_unusual_default_branch_name_proceeds_on_a_clean_delta(
+        self, isolated_home, repo_with_pr_ref, tmp_path, default_branch
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        subprocess.run(
+            ["git", "push", "-q", "origin", f"+{_origin_main_sha(repo)}:refs/heads/{default_branch}"],
+            cwd=repo, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            base_ref_name=_STACKED_BASE_BRANCH, base_default_branch=default_branch,
+        )
+        assert result.returncode == 0, result.stderr
+        assert _default_branch_ref_exists(repo)
+        assert [_printed_worktree_path(result)] == _review_worktrees(repo)
+
+    @pytest.mark.parametrize(
+        ("exit_status", "expect_cap_note"), [(1, False), (124, True)], ids=["plain_failure", "cap_kill_status"]
+    )
+    def test_a_failing_default_branch_fetch_exits_two_with_no_worktree(
+        self, isolated_home, repo_with_pr_ref, tmp_path, exit_status, expect_cap_note
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*fetch origin refs/heads/*", exit_status=exit_status)
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=shim_dir, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 2, result.stderr
+        assert f'the fetch of default branch "main" from origin exited {exit_status}' in result.stderr
+        assert ("consistent with the 30s cap firing" in result.stderr) is expect_cap_note
+        assert "review-pr-diff.sh" not in result.stderr
+        assert _shim_match_count(shim_dir) == 1
+        assert not _default_branch_ref_exists(repo)
+        assert _review_worktrees(repo) == []
+
+    def test_a_name_list_shorter_than_the_counted_names_exits_two_instead_of_auditing_it(
+        self, isolated_home, tmp_path
+    ):
+        """A decoder that drops names would hand the audit a list that omits
+        the flagged one. The shim returns only a benign name for a delta that
+        also holds `.claude/hooks/x.sh`, so a missing count check would audit
+        the benign name alone, exit 0 and fail this test."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(
+            tmp_path, base_entries={b".claude/hooks/x.sh": b"#!/bin/sh\n"},
+        )
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha,
+            path_prefix=_install_jq_shim_that_misdecodes_nul_names(tmp_path, ["README.md"]), **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "has 1 entries but the counting run found 2 names" in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr
+        assert _review_worktrees(repo) == []
+
+    def test_a_left_padded_name_count_still_checks_out(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """BSD `wc -c` left-pads its count. A `wc` shim pads it on any host, so
+        this pins review_pr_bare_count's wiring where GNU `wc` would not."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        wc_shim_dir = tmp_path / "wc-shim"
+        wc_shim_dir.mkdir()
+        wc_ran_record = tmp_path / "wc-ran"
+        wc_shim = wc_shim_dir / "wc"
+        wc_shim.write_text(textwrap.dedent(f"""\
+            #!/usr/bin/env python3
+            import sys
+            open({str(wc_ran_record)!r}, "a").write("ran" + chr(10))
+            print("%8d" % len(sys.stdin.buffer.read()))
+        """))
+        wc_shim.chmod(0o755)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], path_prefix=wc_shim_dir, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 0, result.stderr
+        assert wc_ran_record.exists(), "control: the padding shim counted the names"
+        assert [_printed_worktree_path(result)] == _review_worktrees(repo)
 
 
 class TestProvenanceWrite:
@@ -855,35 +1580,6 @@ class TestProvenanceWrite:
         assert not provenance.exists()
 
 
-def _push_new_base_commit(repo: Path, tmp_path: Path) -> str:
-    """Pushes a commit adding base_only.txt to origin's main from a separate
-    clone, so the commit is absent from `repo`'s object store, and returns
-    its SHA. The PR branched before this commit, so a three-dot diff against
-    it must leave base_only.txt out."""
-    origin_url = subprocess.run(
-        ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=True,
-        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-    ).stdout.strip()
-    clone = tmp_path / "base-clone"
-    for command in (
-        ["git", "clone", "-q", "-b", "main", origin_url, str(clone)],
-        ["git", "-C", str(clone), "config", "user.email", "test@test.com"],
-        ["git", "-C", str(clone), "config", "user.name", "test"],
-    ):
-        subprocess.run(command, check=True, capture_output=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS)
-    (clone / "base_only.txt").write_text("base moved\n")
-    for command in (
-        ["git", "-C", str(clone), "add", "base_only.txt"],
-        ["git", "-C", str(clone), "commit", "-q", "-m", "base moved"],
-        ["git", "-C", str(clone), "push", "-q", "origin", "main"],
-    ):
-        subprocess.run(command, check=True, capture_output=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS)
-    return subprocess.run(
-        ["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
-        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-    ).stdout.strip()
-
-
 class TestReviewDiffFile:
     """review-pr-checkout.sh writes the PR's three-dot diff to the session's
     .diff artifact and prints that path after the worktree path, so the review
@@ -900,7 +1596,8 @@ class TestReviewDiffFile:
             head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=moved_base_sha,
         )
         assert result.returncode == 0, result.stderr
-        assert len(result.stdout.splitlines()) == 2, "worktree path, then diff path"
+        assert len(result.stdout.splitlines()) == 3, "worktree path, diff path, then base object name"
+        assert _printed_base_ref_oid(result) == moved_base_sha
 
         diff_file = _printed_diff_path(result)
         assert diff_file == isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.diff"
@@ -915,34 +1612,31 @@ class TestReviewDiffFile:
         first_pr_view = next(c for c in _read_calls(call_log) if c[:2] == ["pr", "view"])
         assert "headRefOid,baseRefOid" in first_pr_view
 
-    @pytest.mark.parametrize(
-        "base_ref_oid",
-        [
-            None,
-            "",
-            "main",
-            "abc123",
-            "--upload-pack=option-shaped",
-            "G" * 40,
-            "a" * 41,
-            "a" * 63,
-            "a" * 65,
-            "A" * 40,
-            "a" * 40 + "\n--upload-pack=option-shaped",
-        ],
-        ids=[
-            "omitted", "empty", "branch-name", "short-hex", "option-shaped", "non-hex",
-            "41-hex", "63-hex", "65-hex", "uppercase-hex", "40-hex-then-option-line",
-        ],
-    )
-    def test_base_ref_oid_that_is_not_a_full_hex_object_name_aborts_before_any_fetch(
-        self, isolated_home, repo_with_pr_ref, tmp_path, base_ref_oid
+    def test_an_option_shaped_base_ref_oid_aborts_before_any_fetch(
+        self, isolated_home, repo_with_pr_ref, tmp_path
     ):
+        """The input matrix for review_pr_is_full_hex_oid lives in
+        test_review_pr_lib.py. This pins that the script runs the check before
+        the value reaches a `git fetch` argument."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_ref_oid,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid="--upload-pack=option-shaped",
+        )
+        assert result.returncode == 2, result.stderr
+        assert "baseRefOid" in result.stderr
+        assert result.stdout == ""
+        assert _local_pr_ref_names(repo) == ""
+        assert _review_worktrees(repo) == []
+
+    def test_an_omitted_base_ref_oid_aborts_before_any_fetch(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """A `gh pr view` reply without the field reads as empty through the script's `// empty`."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=None,
         )
         assert result.returncode == 2, result.stderr
         assert "baseRefOid" in result.stderr
@@ -1041,7 +1735,7 @@ class TestReviewDiffFile:
         )
 
         assert result.returncode == 0, result.stderr
-        assert len(result.stdout.splitlines()) == 2, "worktree path, then diff path"
+        assert len(result.stdout.splitlines()) == 3, "worktree path, diff path, then base object name"
         assert trace_marker not in result.stdout + result.stderr
         assert _printed_diff_path(result).read_bytes() == expected_diff
 
@@ -1242,8 +1936,8 @@ class TestReviewDiffFile:
         assert _printed_diff_path(result).read_text().strip() == ""
 
 
-def _push_unrelated_root_commit(repo: Path) -> str:
-    """Pushes a parentless commit to a new branch on origin and returns its
+def _push_unrelated_root_commit(repo: Path, ref: str = "refs/heads/unrelated-root") -> str:
+    """Force-pushes a parentless commit to `ref` on origin and returns its
     SHA. The base fetch for it succeeds, while a three-dot diff against any
     commit of the PR's own history has no merge base and fails."""
     empty_tree = subprocess.run(
@@ -1255,44 +1949,10 @@ def _push_unrelated_root_commit(repo: Path) -> str:
         check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     ).stdout.strip()
     subprocess.run(
-        ["git", "push", "-q", "origin", f"{root_sha}:refs/heads/unrelated-root"], cwd=repo, check=True,
+        ["git", "push", "-q", "origin", f"+{root_sha}:{ref}"], cwd=repo, check=True,
         timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
     return root_sha
-
-
-def _git_shim_that_fails_on_subcommand(
-    tmp_path: Path, args_glob: str, *, exit_status: int, fail_only_first_match: bool = False
-) -> Path:
-    """A `git` PATH shim that fails any invocation whose space-joined
-    arguments match the bash glob `args_glob` with `exit_status` and a
-    synthetic stderr line, and delegates every other invocation to the real
-    git binary. With `fail_only_first_match`, only the first matching
-    invocation fails and later matches reach the real git.
-    Each matching invocation appends one line to `matches.log` in the returned
-    directory, so a test can count them."""
-    shim_dir = tmp_path / "git_shim_on_subcommand"
-    shim_dir.mkdir()
-    match_log = shim_dir / "matches.log"
-    spaces_escaped_glob = args_glob.replace(" ", "\\ ")
-    real_git = shlex.quote(shutil.which("git"))
-    git_shim = shim_dir / "git"
-    git_shim.write_text(
-        f'#!/usr/bin/env bash\nif [[ "$*" == {spaces_escaped_glob} ]]; then\n'
-        f'  matched_before=0\n  [[ -s {shlex.quote(str(match_log))} ]] && matched_before=1\n'
-        f'  echo "$*" >> {shlex.quote(str(match_log))}\n'
-        f'  if [[ {int(fail_only_first_match)} == 1 && $matched_before == 1 ]]; then exec {real_git} "$@"; fi\n'
-        f'  echo "synthetic git failure" >&2\n  exit {exit_status}\nfi\n'
-        f'exec {real_git} "$@"\n'
-    )
-    git_shim.chmod(0o755)
-    return shim_dir
-
-
-def _shim_match_count(shim_dir: Path) -> int:
-    """How many invocations `_git_shim_that_fails_on_subcommand`'s glob matched."""
-    match_log = shim_dir / "matches.log"
-    return len(match_log.read_text().splitlines()) if match_log.exists() else 0
 
 
 def _git_shim_that_points_worktree_add_at_a_missing_ref(tmp_path: Path) -> Path:
@@ -1422,7 +2082,7 @@ class TestReviewDiffStepFailure:
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         shim_dir = _git_shim_that_fails_on_subcommand(
-            tmp_path, "* diff *", exit_status=1, fail_only_first_match=True
+            tmp_path, "* diff *", exit_status=1, fail_only_match_number=1
         )
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
@@ -1782,6 +2442,32 @@ class TestCheckoutRunsNoGitHooks:
         assert fetch_hook_ran_sentinel.exists(), "control: the hook is wired, so its absence above is the -c flag's doing"
 
 
+    def test_no_git_hook_runs_during_the_default_branch_fetch_of_a_stacked_base(self, isolated_home, tmp_path):
+        """The default-branch fetch updates a local ref, which fires reference-transaction."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(tmp_path, base_entries={b"base_only.txt": b"base\n"})
+        fetch_hook_ran_sentinel = tmp_path / "fetch-hook-ran"
+        reference_transaction_hook = repo / ".git" / "hooks" / "reference-transaction"
+        reference_transaction_hook.write_text(f"#!/bin/sh\ntouch '{fetch_hook_ran_sentinel}'\n")
+        reference_transaction_hook.chmod(0o755)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _default_branch_ref_exists(repo)
+        assert not fetch_hook_ran_sentinel.exists(), "the default-branch fetch must run with git hooks disabled"
+
+        # Control: the same hook does fire for a plain fetch of the default branch.
+        subprocess.run(
+            ["git", "fetch", "origin", "refs/heads/main:refs/control/default-branch"],
+            cwd=repo, capture_output=True, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert fetch_hook_ran_sentinel.exists(), "control: the hook is wired, so its absence above is the -c flag's doing"
+
+
 class TestAuditStopAbortsBeforeFetch:
     def test_execution_surface_hit_aborts_with_no_fetch_of_the_pr_ref(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -1795,6 +2481,7 @@ class TestAuditStopAbortsBeforeFetch:
         assert result.returncode == 3, "an audit stop names review-pr-diff.sh, so it exits with the refusal status"
         assert ".mcp.json" in result.stderr
         assert "review-pr-diff.sh" in result.stderr
+        assert f"no refs/pull/{PR_NUMBER}/head fetch was made" in result.stderr
 
         # The property the whole design exists to guarantee: a stop verdict
         # must leave no trace of a fetch, not just report a matching exit code.
@@ -2199,6 +2886,7 @@ class TestAuditThatReturnsNoVerdictIsNotARefusal:
         )
         assert result.returncode == 2, result.stderr
         assert "returned no verdict (exit " in result.stderr
+        assert "the PR's file list was not audited" in result.stderr
         assert "review-pr-diff.sh" not in result.stderr, "a tooling failure must not tell the caller to switch paths"
         assert _local_pr_ref_names(repo) == ""
         assert _review_worktrees(repo) == []

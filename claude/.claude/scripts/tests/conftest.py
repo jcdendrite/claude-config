@@ -526,6 +526,91 @@ def _git_shim_that_fails_on_worktree_subcommand(
     return shim_dir
 
 
+def _git_shim_that_fails_on_subcommand(
+    tmp_path: Path, args_glob: str, *, exit_status: int, fail_only_match_number: int | None = None
+) -> Path:
+    """A `git` PATH shim that fails any invocation whose space-joined
+    arguments match the bash glob `args_glob` with `exit_status` and a
+    synthetic stderr line, and delegates every other invocation to the real
+    git binary. With `fail_only_match_number`, only the Nth matching
+    invocation (1-based) fails and every other match reaches the real git.
+    Each matching invocation appends one line to `matches.log` in the returned
+    directory, so a test can count them."""
+    shim_dir = tmp_path / "git_shim_on_subcommand"
+    shim_dir.mkdir()
+    match_log = shim_dir / "matches.log"
+    spaces_escaped_glob = args_glob.replace(" ", "\\ ")
+    real_git = shlex.quote(shutil.which("git"))
+    if fail_only_match_number is not None and fail_only_match_number < 1:
+        raise ValueError(f"fail_only_match_number is 1-based, got {fail_only_match_number}")
+    failing_match_number = 0 if fail_only_match_number is None else fail_only_match_number
+    git_shim = shim_dir / "git"
+    git_shim.write_text(
+        f'#!/usr/bin/env bash\nif [[ "$*" == {spaces_escaped_glob} ]]; then\n'
+        f'  echo "$*" >> {shlex.quote(str(match_log))}\n'
+        "  match_number=0\n"
+        f'  while IFS= read -r _; do match_number=$((match_number + 1)); done < {shlex.quote(str(match_log))}\n'
+        f'  if [[ {failing_match_number} != 0 && $match_number != {failing_match_number} ]]; then exec {real_git} "$@"; fi\n'
+        f'  echo "synthetic git failure" >&2\n  exit {exit_status}\nfi\n'
+        f'exec {real_git} "$@"\n'
+    )
+    git_shim.chmod(0o755)
+    return shim_dir
+
+
+def _shim_match_count(shim_dir: Path) -> int:
+    """How many invocations `_git_shim_that_fails_on_subcommand`'s glob matched."""
+    match_log = shim_dir / "matches.log"
+    return len(match_log.read_text().splitlines()) if match_log.exists() else 0
+
+
+# Sentinel default for the review-pr checkout test's `_run` base_ref_oid: "the
+# commit origin/main points at in the repo under test" -- the base commit
+# _build_repo_with_pr_ref's PR branched from -- so a test that does not care
+# about the base still reaches a successful diff. None omits baseRefOid from
+# the shimmed gh reply.
+_BASE_FROM_ORIGIN_MAIN = "__BASE_FROM_ORIGIN_MAIN__"
+
+
+def _origin_main_sha(repo: Path) -> str | None:
+    """The commit origin/main points at in repo, or None when repo has no
+    such ref (a test whose cwd is not the PR repo)."""
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "origin/main"], cwd=repo, capture_output=True, text=True,
+        timeout=60,
+    )
+    return resolved.stdout.strip() or None
+
+
+def _push_new_base_commit(repo: Path, tmp_path: Path) -> str:
+    """Pushes a commit adding base_only.txt to origin's main from a separate
+    clone, so the commit is absent from `repo`'s object store, and returns
+    its SHA. The PR branched before this commit, so a three-dot diff against
+    it must leave base_only.txt out."""
+    origin_url = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=True,
+        timeout=60,
+    ).stdout.strip()
+    clone = tmp_path / "base-clone"
+    for command in (
+        ["git", "clone", "-q", "-b", "main", origin_url, str(clone)],
+        ["git", "-C", str(clone), "config", "user.email", "test@test.com"],
+        ["git", "-C", str(clone), "config", "user.name", "test"],
+    ):
+        subprocess.run(command, check=True, capture_output=True, timeout=60)
+    (clone / "base_only.txt").write_text("base moved\n")
+    for command in (
+        ["git", "-C", str(clone), "add", "base_only.txt"],
+        ["git", "-C", str(clone), "commit", "-q", "-m", "base moved"],
+        ["git", "-C", str(clone), "push", "-q", "origin", "main"],
+    ):
+        subprocess.run(command, check=True, capture_output=True, timeout=60)
+    return subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+        timeout=60,
+    ).stdout.strip()
+
+
 def _build_repo_with_pr_ref(
     tmp_path: Path, owner_repo: str = "foo/bar", pr_number: str = "42",
 ) -> tuple[Path, str]:
