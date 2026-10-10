@@ -15,6 +15,8 @@ from datetime import date, timedelta
 
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
+# Labels persist in pr-cost ledger model_breakdown cells; never rename or remove one. Older checkouts read an added label,
+# because the ledger parser checks labels for key shape only.
 _TOKEN_CLASSES: tuple[str, ...] = ("cache_read", "cache_write_5m", "cache_write_1h", "output", "input")
 
 _PRICING_SOURCE_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
@@ -40,8 +42,13 @@ _CACHE_READ_MULTIPLIER_OVERRIDES: dict[str, float] = {
 # Multipliers applied to every dollar class when usage.speed/usage.inference_geo
 # report that outcome, per platform.claude.com/docs/en/build-with-claude/fast-mode
 # and .../about-claude/pricing's data-residency section.
+# A new multiplier condition in _price_turn must also become a _pricing_variant outcome and a _PRICING_VARIANTS label,
+# or pr-cost ledger cells file its turns under the wrong variant.
 _FAST_MODE_RATE_MULTIPLIER = 2
 _INFERENCE_GEO_US_RATE_MULTIPLIER = 1.1
+
+# Same persistence rule as _TOKEN_CLASSES.
+_PRICING_VARIANTS: tuple[str, ...] = ("standard", "fast", "us_geo", "fast_us_geo")
 
 _DEFAULT_REVERIFY_BY = _PRICING_FETCH_DATE + timedelta(days=90)
 
@@ -49,6 +56,8 @@ _DEFAULT_REVERIFY_BY = _PRICING_FETCH_DATE + timedelta(days=90)
 # to message.model. Source: _PRICING_SOURCE_URL, fetched _PRICING_FETCH_DATE.
 # Output/cache-write/cache-read rates are derived from this one base rate per
 # model by _model_rates, so each model needs only its base rate kept current.
+# Keys persist verbatim in pr-cost ledger rows and exports; add vendor-published model IDs only.
+# A key must match pr_cost_ledger._MODEL_BREAKDOWN_KEY_RE, or the ledger cannot read back any row that carries it.
 _MODEL_BASE_INPUT_RATES: dict[str, float] = {
     "claude-opus-5-5": 4.00,
     "claude-opus-5": 5.00,
@@ -551,6 +560,20 @@ def _price_turn(model: str, usage: dict) -> tuple[dict[str, float] | None, int, 
     if usage.get("inference_geo") == "us":
         dollars = {cls: val * _INFERENCE_GEO_US_RATE_MULTIPLIER for cls, val in dollars.items()}
     return dollars, context_at_turn, 0
+
+
+def _pricing_variant(usage: dict) -> str:
+    """The _PRICING_VARIANTS label for the multipliers _price_turn applies to
+    this usage: exact "fast" speed and exact "us" inference_geo, no case-folding."""
+    is_fast = usage.get("speed") == "fast"
+    is_us_geo = usage.get("inference_geo") == "us"
+    if is_fast and is_us_geo:
+        return "fast_us_geo"
+    if is_fast:
+        return "fast"
+    if is_us_geo:
+        return "us_geo"
+    return "standard"
 
 
 def _token_counts(usage: dict) -> dict[str, int]:
