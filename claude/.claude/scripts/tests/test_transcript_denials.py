@@ -741,12 +741,11 @@ class TestDenyGateLabelConformance:
 # _denial_cause_kind — pins the denial-cause axis against every gate hook's
 # wording as of each fixture's authoring. TestDenialCauseKind's docstring
 # names which fixtures are frozen and which are current snapshots. Every
-# fixture literal below is copied from the working
-# tree as it stands at authoring time — never re-derived via git show/git
-# merge-base, which would resolve to a later rewrite's text. A historical
-# transcript keeps its original wording forever, so a fixture reflecting
-# only newer wording would prove nothing about the corpus these tests exist
-# to classify correctly.
+# fixture literal below is copied from the working tree, never re-derived
+# via git show/git merge-base, which would resolve to a later rewrite's
+# text. A historical transcript keeps its original wording forever, so a
+# fixture reflecting only newer wording would prove nothing about the corpus
+# these tests exist to classify correctly.
 # ---------------------------------------------------------------------------
 
 

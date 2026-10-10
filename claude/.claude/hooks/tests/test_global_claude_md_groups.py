@@ -285,7 +285,7 @@ def test_options_rule_splits_across_the_group_boundary():
     lines = _lines()
     main_index = _main_heading_index(lines)
     core_half = "When presenting options, evaluate them"
-    main_half = "Walk through your proposed approach"
+    main_half = "Walk the user through your proposed approach"
     assert _index_of_only_line_containing(lines, core_half) < main_index, (
         f"{_GLOBAL_CLAUDE_MD}: {core_half!r} moved below {_MAIN_HEADING!r}; "
         "dispatched agents present options too."

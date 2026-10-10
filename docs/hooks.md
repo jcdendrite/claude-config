@@ -283,7 +283,7 @@ A roster agent that greps the literal `review-ledger.sh append` is denied. The d
 
 ## Gate deadlock recovery
 
-With `jq` unavailable (missing from `PATH`, failing, or hung past its 5s timeout backstop), every gate hook hard-blocks by design rather than silently allowing. In an interactive session, the recovery route is for the user to install or repair `jq` in a separate terminal, which runs outside the tool-call path these hooks gate; a `PATH` change made there reaches the harness only after the restart described below. A headless or non-interactive run has no such terminal, so `jq` must already be installed in the execution environment beforehand.
+With `jq` unavailable (missing from `PATH`, failing, or hung past its 5s timeout backstop), every gate hook hard-blocks by design rather than silently allowing. In an interactive session, the recovery route is for the user to install or repair `jq` in a separate terminal, which runs outside the tool-call path these hooks gate. A `PATH` change made there reaches the harness only after the restart described below. A headless or non-interactive run has no such terminal, so `jq` must already be installed in the execution environment beforehand.
 
 A `timeout` or `gtimeout` that rejects `-k` is the same kind of hard-block, because `jq` runs under it: `jq` is healthy, yet every gated tool call denies. README.md's Requirements section states which implementations accept `-k`.
 Diagnose with `command -v timeout gtimeout` and `timeout -k 1 1 true; echo $?`, which must print 0. The hooks probe `timeout` first and `gtimeout` only when no `timeout` is on `PATH`, so installing GNU coreutils behind a BusyBox `timeout` that still wins on `PATH` changes nothing.
