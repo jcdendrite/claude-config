@@ -135,8 +135,6 @@ review_pr_is_full_hex_oid() {
 # review_pr_base_is_default_branch BASE_REF_NAME DEFAULT_BRANCH
 # Returns 0 only when both names are non-empty and byte-equal.
 # Returns 1 when either is empty, so two absent names never read as the default branch. The comparison is case-sensitive, as git ref names are.
-# The names and the base object name come from separate API reads, so a base retarget between the reads can pair them wrongly.
-# That race is accepted; the "Stdout carries a fixed token when the base is the default branch" bullet of claude-skills/skills/review-pr/REFERENCES.md records the bound.
 review_pr_base_is_default_branch() {
   [[ -n "$1" && "$1" == "$2" ]]
 }

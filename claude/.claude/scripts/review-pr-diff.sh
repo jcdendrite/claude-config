@@ -6,7 +6,7 @@
 # Mirrors review-pr-checkout.sh's self-derivation discipline (own
 # PR-identity parse, own origin-identity check, own paginated file list,
 # own double headRefOid fetch bracketing the pagination) minus everything
-# that only matters once code lands on disk: no worktree.
+# that only matters once a PR is checked out: no worktree.
 set -euo pipefail
 
 usage() {
@@ -28,7 +28,7 @@ review-pr-checkout.sh uses, but never checks the PR out. In order:
    being paginated, and aborts on drift.
 5. Pipes the file list to audit-execution-surface.py. A stop verdict is
    reported on stderr as a mandatory pre-seeded finding rather than a stop:
-   nothing is landing on disk here for that predicate to protect, and a PR
+   with no checkout, that predicate has nothing to protect, and a PR
    touching .claude/hooks/** or .mcp.json is precisely what an inbound reviewer
    must flag. Each match is one stderr line with the path as an ASCII-only
    JSON string, bounded (review_pr_audit_match_report in _review-pr-lib.sh).
@@ -222,7 +222,7 @@ case "$(review_pr_audit_verdict "$AUDIT_EXIT" "$AUDIT_OUTPUT")" in
   clean) ;;
   stop)
     MATCHES=$(review_pr_audit_match_report "$AUDIT_OUTPUT")
-    echo "review-pr-diff.sh: AUDIT_FINDING -- passive-execution audit matched paths in PR $OWNER_REPO#$PR_NUMBER's file list. Treat this as a mandatory blocking finding in the synthesized review, not a stop -- no checkout means nothing landed on disk. Matched paths:" >&2
+    echo "review-pr-diff.sh: AUDIT_FINDING -- passive-execution audit matched paths in PR $OWNER_REPO#$PR_NUMBER's file list. Treat this as a mandatory blocking finding in the synthesized review, not a stop -- this path checks nothing out. Matched paths:" >&2
     printf '%s\n' "$MATCHES" >&2
     ;;
   *)
@@ -298,6 +298,8 @@ fi
 printf '%s\n' "$DIFF_FILE"
 if [[ -z "$BASE_UNAVAILABLE_CAUSE" ]]; then
   printf '%s\n' "$BASE_REF_OID"
+  # BASE_REF_OID comes from the `gh pr view` read and both branch names from the later REST payload, so a retarget between the two reads can print the token beside another base branch's commit.
+  # That race is accepted; the "Stdout carries a fixed token when the base is the default branch" bullet of claude-skills/skills/review-pr/REFERENCES.md records the bound.
   if review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; then
     printf '%s\n' "$REVIEW_PR_BASE_IS_DEFAULT_BRANCH_TOKEN"
   fi

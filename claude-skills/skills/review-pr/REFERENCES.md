@@ -176,9 +176,10 @@ reviewer full-file context, which the diff alone does not.
 What the no-checkout path gives up against it, named explicitly rather than
 left implicit:
 
-- **No local checks (Step 6 is skipped entirely).** Nothing lands on disk,
-  so there is no tree to run the project's test suite, linter, or build
-  against. Any finding that would only surface by running code is missed.
+- **No local checks (Step 6 is skipped entirely).** The script creates no
+  worktree and checks nothing out, so there is no checkout to run the
+  project's test suite, linter, or build against. Any finding that would only
+  surface by running code is missed.
 - **A stop-shaped signal becomes a mandatory finding instead.** An
   `audit-execution-surface.py` hit on the file list halts
   `review-pr-checkout.sh` before it fetches the PR's ref. On this path, the
@@ -221,10 +222,11 @@ left implicit:
   invoked from a review worktree. A path they mark `-diff` or `binary`
   appears as "Binary files ... differ"; SKILL.md Step 5 says what the
   reviewer does with such a path.
-- **Head content beyond the diff's hunks stays unreadable.** Nothing lands on
-  disk and no head read by object ID exists, so a finding about unchanged
-  lines of a changed file rests on hunk context alone. Base content is
-  readable (see the base-reads section below).
+- **No head content beyond the diff's hunks.** SKILL.md Step 5 makes the diff
+  file the only route to the PR's file contents, and the only head lines that
+  file carries are each hunk's added and context lines. A finding about
+  unchanged lines of a changed file therefore rests on hunk context alone.
+  Base content is readable (see the base-reads section below).
 - **The base commit can be unavailable.** `review-pr-diff.sh` fetches the
   base commit and prints it as a full-hex line only when the fetch succeeded
   and the commit is present locally. Otherwise it writes
@@ -288,11 +290,12 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
 - **Per-file `gh api repos/<owner>/<repo>/contents/<path>?ref=<oid>` was not
   adopted.** It costs one API call per file, returns base64, and cannot grep
   across the tree.
-- **A base worktree for diff-only PRs was not adopted.** An untrusted PR's
-  head stays off disk because the audit exists to keep PR-supplied `CLAUDE.md`,
-  settings, and hooks out of any tree the harness reads. For the base, object-ID
-  reads give the same read access without a worktree to create, name, clean up,
-  or audit. The cost is that each read is a Bash call that may prompt.
+- **A base worktree for diff-only PRs was not adopted.** A diff-only PR's
+  head is never checked out, because the audit exists to keep PR-supplied
+  `CLAUDE.md`, settings, and hooks out of any tree the harness reads. For the
+  base, object-ID reads give the same read access without a worktree to create,
+  name, clean up, or audit. The cost is that each read is a Bash call that may
+  prompt.
 - **Two fixed-shape alternatives are heavier and were not adopted.**
   - A `review-pr-base-read.sh <path>` script: the path still reaches the
     script's argv through a model-written command line, so the quoting exposure
@@ -352,8 +355,8 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   and `review-pr-post.sh`'s hash check prove only that the posted text equals
   the marked text. The human's approval of the exact body is the backstop,
   helped by step 8's listing of dropped claims and `AUDIT_FINDING` paths.
-- **Reviewer subagents get no Bash.** `plan-architect`,
-  `comment-discipline-reviewer`, and `skill-fidelity-reviewer` hold no Bash, so
+- **`plan-architect`, `comment-discipline-reviewer`, and `skill-fidelity-reviewer`
+  get no Bash.** These three hold no Bash, so
   the main session resolves the claims they mark as unchecked.
 
 ## Why the findings-body declaration uses the Write tool, not Bash (Step 7)
@@ -465,20 +468,24 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
     `$TMPDIR` (`/tmp` when unset), with a plain `rm -r` on that specific
     directory.
 - **`review-pr-finish.sh` leaves refs and fetched base objects in the
-  repository.** `review-pr-checkout.sh` fetches the PR's head into
-  `refs/review-pr/pr-<number>`, which keeps that commit and its objects
-  reachable until the ref is deleted with
-  `git update-ref -d refs/review-pr/pr-<number>`. For a PR whose base branch
-  is not the default branch, it also fetches the default branch into
-  `refs/review-pr/pr-<number>-default`, deleted the same way. Those two ref
-  fetches pass `--no-tags`, `--no-write-fetch-head` and an empty `--refmap=`,
-  so they leave no tag, no `FETCH_HEAD` and no remote-tracking ref update
-  behind. Both scripts'
-  `git fetch --no-write-fetch-head -- origin <baseRefOid>` adds the base
-  commit's objects to the shared object store. `review-pr-finish.sh` does not
-  remove them, and an ordinary `git gc` expires them once unreachable (default
-  prune expiry is 2 weeks, per `git-gc(1)`). Each of these fetches is capped
-  only when `timeout` or `gtimeout` is on `PATH`.
+  repository.**
+  - `review-pr-checkout.sh` fetches the PR's head into
+    `refs/review-pr/pr-<number>`, which keeps that commit and its objects
+    reachable until the ref is deleted with
+    `git update-ref -d refs/review-pr/pr-<number>`.
+  - For a PR whose base branch is not the default branch, it also fetches the
+    default branch into `refs/review-pr/pr-<number>-default`, deleted the same
+    way. Both refs stay behind, including after a stacked delta stop.
+  - Those two ref fetches pass `--no-tags`, `--no-write-fetch-head` and an
+    empty `--refmap=`, so they leave no tag, no `FETCH_HEAD` and no
+    remote-tracking ref update behind.
+  - Both scripts' `git fetch --no-write-fetch-head -- origin <baseRefOid>`
+    adds the base commit's objects to the shared object store.
+    `review-pr-finish.sh` does not remove them, and an ordinary `git gc`
+    expires them once unreachable (default prune expiry is 2 weeks, per
+    `git-gc(1)`).
+  - Each of these fetches is capped only when `timeout` or `gtimeout` is on
+    `PATH`.
 - **The stacked-base delta is a three-dot diff.** A file in the head that sits
   in default-branch history but was removed at the default tip is not listed
   by `<default>...<head>`. A two-dot `<default-oid>..<head-oid>` diff would

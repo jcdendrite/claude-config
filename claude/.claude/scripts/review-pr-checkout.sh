@@ -253,7 +253,7 @@ if ! BASE_REF_OID=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefOid // emp
   echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's baseRefOid is missing or is not a full hex object name. Abort before any fetch of the PR's ref." >&2
   exit 2
 fi
-# The stacked-or-default decision above read BASE_REF_NAME from the REST payload, while baseRefOid comes from this read.
+# The stacked-or-default decision below uses BASE_REF_NAME from the REST payload, while baseRefOid comes from this read.
 # A retarget between the two reads would pair a base commit with the other base branch's decision, so the names must agree.
 if ! PR_VIEW_BASE_REF_NAME=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefName // empty' 2>/dev/null) \
   || [[ "$PR_VIEW_BASE_REF_NAME" != "$BASE_REF_NAME" ]]; then

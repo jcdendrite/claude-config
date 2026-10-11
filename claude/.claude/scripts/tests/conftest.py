@@ -645,7 +645,10 @@ def _assert_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction(
     control_repo: Path, commit_sha: str, control_hook_ran_sentinel: Path,
 ) -> None:
     """The control for a hooks-off base fetch: the same fetch with hooks enabled does fire the hook."""
-    subprocess.run(["git", "fetch", "origin", commit_sha], cwd=control_repo, capture_output=True, check=True, timeout=60)
+    subprocess.run(
+        ["git", "fetch", "--no-write-fetch-head", "--", "origin", commit_sha],
+        cwd=control_repo, capture_output=True, check=True, timeout=60,
+    )
     assert control_hook_ran_sentinel.exists(), (
         "control: the hook is not wired, or git no longer fires reference-transaction on a fetch by "
         "object name (git version drift), so the absence above says nothing about the -c flag"

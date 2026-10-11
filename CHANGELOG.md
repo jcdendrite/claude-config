@@ -27,7 +27,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - `review-pr-checkout.sh` prints the base commit as its third stdout line.
   - `review-pr-diff.sh` prints the base commit as line 2 when it fetched the commit.
   - `review-pr-checkout.sh` prints the line `BASE_IS_DEFAULT_BRANCH` as its fourth line, only when the PR's base branch is the base repository's default branch.
-  - `review-pr-diff.sh` prints the same line as its third line, under the same condition.
+  - `review-pr-diff.sh` prints the same line as its third line, under the same condition, provided the base fetch succeeded.
   - The skill counts base content as settled code only when that line is present.
   - A base fetch failure in `review-pr-diff.sh` writes `BASE_UNAVAILABLE <token>` on stderr and exits 0.
   - A stacked run leaves `refs/review-pr/pr-<N>-default` and fetched base objects in the consumer's repository, which `review-pr-finish.sh` does not remove.

@@ -3,7 +3,7 @@ restricted (cross-repo or first-time-contributor) PR that
 review-pr-checkout.sh's trust block refuses. Mirrors
 review-pr-checkout.sh's self-derivation discipline (own PR-identity parse,
 own origin-identity check, own paginated file list, own double headRefOid
-fetch) minus everything that only matters once code lands on disk.
+fetch) minus everything that only matters once a PR is checked out.
 
 The `gh` CLI is replaced by a PATH shim that records every invocation it
 receives, matching test_review_pr_checkout.py's own shim pattern -- git is
@@ -983,8 +983,8 @@ class TestAuditHitReportedNotFatal:
     def test_execution_surface_hit_is_reported_on_stderr_but_exits_zero(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
-        """Distinct from review-pr-checkout.sh's own audit stop: nothing
-        lands on disk here, so the audit predicate has no subject to
+        """Distinct from review-pr-checkout.sh's own audit stop: nothing is
+        checked out here, so the audit predicate has no subject to
         protect, and its hit becomes a mandatory pre-seeded finding
         instead."""
         _install_audit_script(isolated_home)

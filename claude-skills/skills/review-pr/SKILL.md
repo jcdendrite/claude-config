@@ -195,6 +195,6 @@ It takes no argument.
 
 - Run it from the main tree or from a worktree that is not a review worktree. It removes every review worktree of this session, including one the shell stands in.
 - It also removes provenance, the findings body, the diff file (if any), the context backstop, and the completion marker.
-- Refs (`refs/review-pr/pr-<N>` and, for a stacked PR, `refs/review-pr/pr-<N>-default`) and fetched base objects outlive it (`REFERENCES.md`, Known gaps).
+- Refs (`refs/review-pr/pr-<N>` and, for a stacked PR, `refs/review-pr/pr-<N>-default`) and fetched base objects outlive it.
 
 Run this before removing anything yourself.
