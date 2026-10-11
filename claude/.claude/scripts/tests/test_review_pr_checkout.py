@@ -190,6 +190,7 @@ _ALLOWLISTED_ASSOCIATIONS = ["MEMBER", "OWNER", "COLLABORATOR", "CONTRIBUTOR"]
 # Sentinel default for pr_view_base_ref_name: "the base branch the REST payload reports".
 _SAME_AS_REST_BASE_REF = "__SAME_AS_REST_BASE_REF__"
 
+
 def _is_listing_call(call: list[str], suffix: str) -> bool:
     """True for a `gh api` call to the pulls listing ending in `suffix`,
     whatever query string it carries."""
@@ -221,20 +222,24 @@ def _gh_shim_source(
     pr_view_base_ref_name_second: str | None = None,
 ) -> str:
     """gh shim recording every invocation, dispatching on the invocation's own
-    first word(s): `gh pr view` builds a JSON object from only the fields its
-    `--json` list names, out of `headRefOid` (`head_ref_oid`, or
-    `head_ref_oid_second` from the SECOND call onward, modeling a force-push
-    between the initial fetch and the pre-audit re-fetch), `baseRefOid`
-    (omitted when `base_ref_oid` is None) and `baseRefName`, and exits 97
-    without `--json` or for any other field. It prints that object, or, when
-    the call carries `--jq`, the real jq's `-r` output of that expression over
-    it, so a field the script did not ask for never reaches it and a changed
-    expression changes what it parses. gh evaluates `--jq` in-process and
-    prints each result on its own line; that one-line-per-value form for a
-    comma expression is modeled here, not independently re-verified against
-    gh. `gh api
-    .../pulls/N` returns the trust-classification payload; `gh api
-    .../files --paginate ...` prints `files`.
+    first word(s).
+    `gh pr view` builds a JSON object from only the fields its `--json` list
+    names, out of `headRefOid` (`head_ref_oid`, or `head_ref_oid_second` from
+    the SECOND call onward, modeling a force-push between the initial fetch and
+    the pre-audit re-fetch), `baseRefOid` (omitted when `base_ref_oid` is None)
+    and `baseRefName`.
+    `gh pr view` exits 97 without `--json`.
+    `gh pr view` exits 97 for any field other than those three.
+    `gh pr view` prints that object, or, when the call carries `--jq`, the real
+    jq's `-r` output of that expression over it.
+    The object holds only the requested fields, and the real jq evaluates the
+    script's own expression over it, so a changed expression changes what it
+    parses.
+    gh evaluates `--jq` in-process and prints each result on its own line.
+    That one-line-per-value form for a comma expression is modeled here, not
+    independently re-verified against gh.
+    `gh api .../pulls/N` returns the trust-classification payload.
+    `gh api .../files --paginate ...` prints `files`.
     `head_repo_full_name`/`base_repo_full_name` default to
     `_SAME_AS_REQUEST`, echoing the request path's own owner/repo, so a test
     that doesn't care about trust classification reaches checkout for any
@@ -903,9 +908,8 @@ def _default_branch_ref_exists(repo: Path) -> bool:
 
 
 def _install_jq_shim_that_misdecodes_nul_names(tmp_path: Path, decoded_names: list[str]) -> Path:
-    """A `jq` PATH shim that answers the NUL-split decode with `decoded_names`
-    after reading all of stdin, so the git before it gets no SIGPIPE, and runs
-    the real jq for every other call."""
+    """A `jq` PATH shim that drains stdin and answers the NUL-split decode with
+    `decoded_names`, and runs the real jq for every other call."""
     real_jq = shutil.which("jq")
     assert real_jq is not None, "the real jq binary is required to delegate to"
     jq_shim_dir = tmp_path / "jq-shim"

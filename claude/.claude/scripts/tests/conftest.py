@@ -564,11 +564,11 @@ def _shim_match_count(shim_dir: Path) -> int:
     return len(match_log.read_text().splitlines()) if match_log.exists() else 0
 
 
-# Sentinel default for the review-pr checkout test's `_run` base_ref_oid: "the
-# commit origin/main points at in the repo under test" -- the base commit
-# _build_repo_with_pr_ref's PR branched from -- so a test that does not care
-# about the base still reaches a successful diff. None omits baseRefOid from
-# the shimmed gh reply.
+# Sentinel default for `base_ref_oid` in the review-pr checkout and diff-only
+# tests' `_run`: "the commit origin/main points at in the repo under test" --
+# the base commit _build_repo_with_pr_ref's PR branched from -- so a test that
+# does not care about the base still reaches a successful base fetch. None
+# omits baseRefOid from the shimmed gh reply.
 _BASE_FROM_ORIGIN_MAIN = "__BASE_FROM_ORIGIN_MAIN__"
 
 

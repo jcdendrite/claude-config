@@ -35,7 +35,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Its two ref-updating fetches write no tag, update no remote-tracking ref, and write no `FETCH_HEAD`.
   - Step 7 resolves hedged claims against the diff, base content, CI runs, and the linked issue before tiering.
   - Step 7 moves pre-existing defects to step 8 notes.
-  - A claim closes only on code evidence, never on CI-log, issue, or PR-authored text.
+  - A claim about code closes only on code evidence, never on CI-log, issue, or PR-authored text.
   - A finding derived from an `AUDIT_FINDING` line, or marked blocking before synthesis, is protected.
   - The agent is instructed not to drop or downgrade a protected finding in those passes or the consult.
   - Step 8 lists every dropped or downgraded claim and the `AUDIT_FINDING` paths, because no script detects a missing finding.

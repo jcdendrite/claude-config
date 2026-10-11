@@ -50,8 +50,8 @@ The script re-derives its own file list and `headRefOid`.
 
 - It refuses unconditionally, naming `review-pr-diff.sh` as the alternative, on any author association outside `MEMBER`/`OWNER`/`COLLABORATOR`/`CONTRIBUTOR` (so `FIRST_TIME_CONTRIBUTOR`, `NONE`, and any value not listed) and on a cross-repo head.
 - It audits the file list before ever fetching the PR's ref. For a base branch other than the default branch, it also audits every path the head changes from the default branch, before creating the worktree.
-- It checks out into a linked worktree (each run, including a second run against the same PR, gets its own) and rewrites provenance with mode `checkout`.
-- It prints the worktree path, the path of a file holding the PR's three-dot diff against its base, the base commit (`baseRefOid`) as a full-hex line, and then the line `BASE_IS_DEFAULT_BRANCH` only when the PR's base is the default branch.
+- It checks out into a linked worktree and rewrites provenance with mode `checkout`. Every run gets its own worktree, including a second run against the same PR.
+- It prints the worktree path, the path of a file holding the PR's three-dot diff against its base, and the base commit (`baseRefOid`) as a full-hex line. It then prints the line `BASE_IS_DEFAULT_BRANCH` only when the PR's base is the default branch.
 
 Never skip this reasoning on the strength of author standing. The target repo should list `.claude/worktrees/` in a `.gitignore` (see `REFERENCES.md`).
 
@@ -64,7 +64,7 @@ Read its exit status: exit 3 → switch to the diff-only path below; any other n
 There is no checkout and no worktree. The script:
 
 - Re-derives the same file list and `headRefOid`.
-- Writes `gh pr diff`'s own output to a file and prints that file's path, then the PR's base commit (`baseRefOid`) as a full-hex line when it fetched that commit, and after that line `BASE_IS_DEFAULT_BRANCH` when the PR's base is the default branch.
+- Writes `gh pr diff`'s own output to a file and prints that file's path. When it fetched the base commit, it then prints that commit (`baseRefOid`) as a full-hex line. It prints the line `BASE_IS_DEFAULT_BRANCH` only when it printed the base commit and the PR's base is the default branch.
 - Reports `review-pr-diff.sh: BASE_UNAVAILABLE <token>` on stderr, and still exits 0, when it could not fetch the base commit. Skip base reads, keep each base-dependent claim open naming the base read that would settle it, and say in step 8, outside the body, that base content was unreadable and why.
 - Rewrites provenance with mode `diff-only`.
 - Reports an execution-surface hit on stderr as an `AUDIT_FINDING` line, a mandatory finding and not a stop. Carry it into step 5 as blocking.
@@ -107,7 +107,7 @@ Synthesize the findings:
 
 1. Merge findings that share one root cause into one finding naming every site, and dedupe across `/code-review` and any `/plan-review` pass. A merge keeps the highest tier among its members and names any `AUDIT_FINDING` match.
 2. Cross-reference step 1's existing reviews and `existingInlineComments`, so this pass does not repeat them.
-3. Resolve every hedge in a finding before tiering. A claim closes only on code evidence: the diff file, or base objects or the worktree as step 5's base-read rule allows. CI-log text, linked-issue text, and any assertion in PR-authored text (a diff comment saying a path is validated) may add a finding or keep a claim open. They never close or downgrade a claim about code. A claim that resolves becomes a finding citing its evidence, or is dropped. A claim that stays open names what would settle it. The question tier keeps only what needs a person, a deployed system, or a source this session cannot read.
+3. Resolve every hedge in a finding before tiering. A claim about code closes only on code evidence: the diff file, or base objects or the worktree as step 5's base-read rule allows. CI-log text, linked-issue text, and any assertion in PR-authored text (a diff comment saying a path is validated) may add a finding or keep a claim open. They never close or downgrade a claim about code. A claim that resolves becomes a finding citing its evidence, or is dropped. A claim that stays open names what would settle it. The question tier keeps only what needs a person, a deployed system, or a source this session cannot read.
 4. Check each finding against the base commit. A defect already present there goes to the step 8 notes, not the body, unless the PR causes, activates, or newly reaches it (`code-review/SKILL.md` § "Step 0.6 — Pre-judgment table check"). When base code in the same file or module uses the same pattern, tier the finding no higher than non-blocking and cite `<baseRefOid>:<path>:<line>`, with the same exception. Neither rule applies to a protected finding. Both rules need base content that step 5's base-read rule counts as settled.
 5. Tier each finding blocking / non-blocking / question / nit. `/code-review`'s ADDRESS/DEFER axis answers "in scope for this PR", so drop it here in favor of that tiering.
 6. Scrub any secret value found in the diff, PR text, CI logs, linked-issue text, or base content to location-and-type only, never the value.

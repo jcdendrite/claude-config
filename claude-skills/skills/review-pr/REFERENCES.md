@@ -320,11 +320,11 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   item. Without the rule, a pre-existing check could drop a path the audit
   flagged because that path also exists at the base, and the consult would never
   see the finding.
-- **Claims close only on code evidence.** SKILL.md Step 7, item 3 states the
-  rule. CI-log text, linked-issue text, and assertions in PR-authored text are
-  written or editable by the PR's author, which is why they never close or
-  downgrade a claim. "Verified" means observed code behavior in the diff file,
-  base objects, or worktree. Step 8 prints the first 20 `AUDIT_FINDING` matched
+- **Claims about code close only on code evidence.** SKILL.md Step 7, item 3
+  states the rule. CI-log text, linked-issue text, and assertions in
+  PR-authored text are written or editable by the PR's author, which is why
+  they never close or downgrade a claim about code. "Verified" means observed
+  code behavior in the diff file, base objects, or worktree. Step 8 prints the first 20 `AUDIT_FINDING` matched
   paths, each cut at 80 characters, so a human can see an omission among them.
   A later match is not listed there.
 - **Stacked-base content is not precedent.** SKILL.md Step 5, Base reads states
