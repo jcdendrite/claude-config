@@ -9,6 +9,7 @@
 # Provides:
 #   REVIEW_PR_FILE_NAMES_JQ_FILTER  — the `gh api --jq` filter that prints each file name as one JSON string per line
 #   REVIEW_PR_COMMIT_SHAS_JQ_FILTER — the `gh api --jq` filter that prints each commit SHA on its own line
+#   REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS — the cap in seconds on one `git fetch` of a PR ref, a base commit or a default branch
 #   REVIEW_PR_REVIEWS_JQ_FILTER     — the `gh api --jq` filter that keeps each review with a non-empty body as one {id, author, state, body} object per line
 #   REVIEW_PR_INLINE_COMMENTS_JQ_FILTER — the `gh api --jq` filter that prints each inline comment as one {author, path, line, body} object per line
 #   review_pr_rest_changed_files    — the REST payload's changed_files count, validated as an integer
@@ -56,6 +57,10 @@ REVIEW_PR_REVIEWS_JQ_FILTER='.[] | select(.body != "") | {id, author: .user.logi
 # A deleted account's null `.user` gives a null author, and a null `line` stays null.
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_INLINE_COMMENTS_JQ_FILTER='.[] | {author: .user.login, path, line, body}'
+
+# A git fetch is a network transfer, not a local read. No protocol or vendor limit backs the value.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS=30
 
 # The audit's `json.dumps({"stop": False, "matches": []})` output, which it prints for a file list with no match.
 REVIEW_PR_AUDIT_CLEAN_DOCUMENT='{"stop": false, "matches": []}'

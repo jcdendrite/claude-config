@@ -337,17 +337,14 @@ audit_paths_or_exit "$FILES_JSON" \
 # contributor might already have locally, so this fetch can never collide
 # with or overwrite an unrelated ref.
 LOCAL_REF="refs/review-pr/pr-$PR_NUMBER"
-# 30s, matching the files-listing budget above: a network fetch, not a local
-# read.
-GH_FETCH_TIMEOUT_SECONDS=30
-if _lib_capped_for "$GH_FETCH_TIMEOUT_SECONDS" git -C "$REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/pull/$PR_NUMBER/head:$LOCAL_REF" --force >/dev/null 2>&1; then
+if _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/pull/$PR_NUMBER/head:$LOCAL_REF" --force >/dev/null 2>&1; then
   FETCH_STATUS=0
 else
   FETCH_STATUS=$?
 fi
 if [[ "$FETCH_STATUS" -ne 0 ]]; then
   if _lib_status_consistent_with_cap_kill "$FETCH_STATUS"; then
-    echo "review-pr-checkout.sh: could not fetch refs/pull/$PR_NUMBER/head for PR $OWNER_REPO#$PR_NUMBER from origin: git fetch exited $FETCH_STATUS, consistent with the ${GH_FETCH_TIMEOUT_SECONDS}s cap firing. Abort." >&2
+    echo "review-pr-checkout.sh: could not fetch refs/pull/$PR_NUMBER/head for PR $OWNER_REPO#$PR_NUMBER from origin: git fetch exited $FETCH_STATUS, consistent with the ${REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS}s cap firing. Abort." >&2
   else
     echo "review-pr-checkout.sh: could not fetch refs/pull/$PR_NUMBER/head for PR $OWNER_REPO#$PR_NUMBER from origin. Abort." >&2
   fi
@@ -427,13 +424,13 @@ if [[ "$BASE_REF_NAME" != "$BASE_DEFAULT_BRANCH" ]]; then
   fi
 
   DEFAULT_LOCAL_REF="refs/review-pr/pr-$PR_NUMBER-default"
-  if _lib_capped_for "$GH_FETCH_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/heads/$BASE_DEFAULT_BRANCH:$DEFAULT_LOCAL_REF" --force >/dev/null 2>&1; then
+  if _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/heads/$BASE_DEFAULT_BRANCH:$DEFAULT_LOCAL_REF" --force >/dev/null 2>&1; then
     DEFAULT_FETCH_STATUS=0
   else
     DEFAULT_FETCH_STATUS=$?
   fi
   if [[ "$DEFAULT_FETCH_STATUS" -ne 0 ]]; then
-    exit_delta_unaudited "the fetch of default branch $BASE_DEFAULT_BRANCH_ESCAPED from origin $(review_pr_git_status_description "$DEFAULT_FETCH_STATUS" "$GH_FETCH_TIMEOUT_SECONDS")"
+    exit_delta_unaudited "the fetch of default branch $BASE_DEFAULT_BRANCH_ESCAPED from origin $(review_pr_git_status_description "$DEFAULT_FETCH_STATUS" "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS")"
   fi
   DEFAULT_OID=$(_lib_capped git -C "$MAIN_REPO_ROOT" rev-parse --verify --quiet "$DEFAULT_LOCAL_REF^{commit}" 2>/dev/null) || DEFAULT_OID=""
   # The value reaches a git revision argument below, so only a full hex object name passes, as for BASE_REF_OID.
@@ -499,14 +496,15 @@ review_pr_resolve_session_and_pid "review-pr-checkout.sh" " -- cannot name the w
 # own commits, so the base commit may be absent locally.
 # The diff compares two fetched commits, so it runs before the worktree exists
 # and a failure leaves none behind.
-if BASE_FETCH_OUTPUT=$(_lib_capped_for "$GH_FETCH_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "$BASE_REF_OID" 2>&1); then
+# --no-write-fetch-head keeps it to object transfer, and `--` ends option parsing before the remote and object name.
+if BASE_FETCH_OUTPUT=$(_lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null fetch --no-write-fetch-head -- origin "$BASE_REF_OID" 2>&1); then
   BASE_FETCH_STATUS=0
 else
   BASE_FETCH_STATUS=$?
 fi
 if [[ "$BASE_FETCH_STATUS" -ne 0 ]]; then
   if _lib_status_consistent_with_cap_kill "$BASE_FETCH_STATUS"; then
-    echo "review-pr-checkout.sh: could not fetch baseRefOid $BASE_REF_OID for PR $OWNER_REPO#$PR_NUMBER from origin: git fetch exited $BASE_FETCH_STATUS, consistent with the ${GH_FETCH_TIMEOUT_SECONDS}s cap firing: $BASE_FETCH_OUTPUT. Abort with no worktree created." >&2
+    echo "review-pr-checkout.sh: could not fetch baseRefOid $BASE_REF_OID for PR $OWNER_REPO#$PR_NUMBER from origin: git fetch exited $BASE_FETCH_STATUS, consistent with the ${REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS}s cap firing: $BASE_FETCH_OUTPUT. Abort with no worktree created." >&2
   else
     echo "review-pr-checkout.sh: could not fetch baseRefOid $BASE_REF_OID for PR $OWNER_REPO#$PR_NUMBER from origin: $BASE_FETCH_OUTPUT. Abort with no worktree created." >&2
   fi

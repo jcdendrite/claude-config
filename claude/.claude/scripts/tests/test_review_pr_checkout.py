@@ -750,6 +750,20 @@ def _git_bytes(repo: Path, *args: bytes | str, stdin: bytes | None = None) -> by
     ).stdout
 
 
+def _git_commit_is_present(repo: Path, commit_sha: str) -> bool:
+    return subprocess.run(
+        ["git", "cat-file", "-e", f"{commit_sha}^{{commit}}"], cwd=repo, capture_output=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+    ).returncode == 0
+
+
+def _head_and_index(repo: Path) -> tuple[bytes, bytes, bytes]:
+    """HEAD, the index and the tracked-file working-tree changes of repo."""
+    return (
+        _git_bytes(repo, "rev-parse", "HEAD"), _git_bytes(repo, "ls-files", "--stage"), _git_bytes(repo, "diff"),
+    )
+
+
 def _commit_index_entries(repo: Path, entries: dict[bytes, bytes | None], message: str) -> str:
     """Commits `entries` (path to content; None removes the path) on repo's
     HEAD through the index, so a path with a newline or invalid UTF-8 lands in
@@ -1038,7 +1052,9 @@ class TestStackedBaseDeltaAudit:
         control_head_listing = _git_bytes(repo, "ls-tree", "-r", "--name-only", pr_sha).decode()
         assert ".mcp.json" not in control_base_listing, "control: the base commit no longer holds the file"
         assert ".mcp.json" in control_head_listing, "control: the PR's head still holds it"
-        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, f"*fetch origin {base_sha}", exit_status=1)
+        shim_dir = _git_shim_that_fails_on_subcommand(
+            tmp_path, f"*fetch --no-write-fetch-head -- origin {base_sha}", exit_status=1
+        )
 
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
@@ -2049,7 +2065,7 @@ class TestReviewDiffStepFailure:
         provenance = write_review_pr_provenance(
             isolated_home, PR_IDENTITY, pr_sha, 999, mode="acquired", session_id=SID
         )
-        args_glob = f"*fetch origin {base_sha}" if step == "base_fetch" else "* diff *"
+        args_glob = f"*fetch --no-write-fetch-head -- origin {base_sha}" if step == "base_fetch" else "* diff *"
         shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, args_glob, exit_status=exit_status)
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
@@ -2159,7 +2175,8 @@ class TestReviewDiffStepFailure:
         assert result.returncode == 0, result.stderr
         invocations = _recorded_git_invocations(shim_dir)
         base_sha = _origin_main_sha(repo)
-        for step_marker in (" fetch origin refs/pull/", f" fetch origin {base_sha} ", " diff ", " worktree add "):
+        base_fetch_marker = f" fetch --no-write-fetch-head -- origin {base_sha} "
+        for step_marker in (" fetch origin refs/pull/", base_fetch_marker, " diff ", " worktree add "):
             assert any(step_marker in f" {args} " for args, _ in invocations), f"no git call matched {step_marker!r}"
         for args, variable_names in invocations:
             leaked = {name for name in variable_names if name.startswith(("GIT_TRACE", "GIT_CURL_VERBOSE"))}
@@ -2399,9 +2416,6 @@ class TestAuditCleanProceedsToCheckout:
 
 
 class TestCheckoutRunsNoGitHooks:
-    # The base fetch's `-c core.hooksPath=/dev/null` has no test here. A fetch
-    # by object name updates no ref, so it fires no reference-transaction hook
-    # and no sentinel observes the flag.
     def test_no_git_hook_runs_during_the_pr_ref_fetch_or_the_worktree_add(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
@@ -2441,6 +2455,77 @@ class TestCheckoutRunsNoGitHooks:
         )
         assert fetch_hook_ran_sentinel.exists(), "control: the hook is wired, so its absence above is the -c flag's doing"
 
+    def test_no_git_hook_runs_during_the_base_fetch_of_a_commit_absent_locally(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """A fetch by object name fires reference-transaction on git 2.56, so a
+        sentinel hook observes a base fetch run without
+        `-c core.hooksPath=/dev/null`. A separate clone fetching the same commit
+        with hooks enabled is the control."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        control_repo = tmp_path / "control-repo"
+        origin_url = subprocess.run(
+            ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "clone", "-q", origin_url, str(control_repo)], check=True, capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        hook_ran_sentinel = tmp_path / "hook-ran"
+        control_hook_ran_sentinel = tmp_path / "control-hook-ran"
+        for hook_repo, sentinel in ((repo, hook_ran_sentinel), (control_repo, control_hook_ran_sentinel)):
+            hook = hook_repo / ".git" / "hooks" / "reference-transaction"
+            hook.write_text(f"#!/bin/sh\ntouch '{sentinel}'\n")
+            hook.chmod(0o755)
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
+        assert not hook_ran_sentinel.exists(), "the base fetch must run with git hooks disabled"
+
+        subprocess.run(
+            ["git", "fetch", "origin", base_sha], cwd=control_repo, capture_output=True, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert control_hook_ran_sentinel.exists(), (
+            "control: the hook is not wired, or git no longer fires reference-transaction on a fetch by "
+            "object name (git version drift), so the absence above says nothing about the -c flag"
+        )
+
+    def test_the_base_fetch_leaves_head_index_and_fetch_head_as_the_pr_ref_fetch_left_them(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The PR-ref fetch legitimately writes FETCH_HEAD and a local ref. The base fetch runs after it, so a
+        FETCH_HEAD naming the base commit would mean the base fetch wrote it."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        head_and_index_before = _head_and_index(repo)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
+        fetch_head = repo / ".git" / "FETCH_HEAD"
+        assert pr_sha in fetch_head.read_text(), "control: the PR-ref fetch wrote FETCH_HEAD"
+        assert base_sha not in fetch_head.read_text(), "the base fetch must not write FETCH_HEAD"
+        assert _head_and_index(repo) == head_and_index_before
+
+        subprocess.run(
+            ["git", "fetch", "origin", base_sha], cwd=repo, capture_output=True, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert base_sha in fetch_head.read_text(), "control: a plain fetch of the same object name does write it"
 
     def test_no_git_hook_runs_during_the_default_branch_fetch_of_a_stacked_base(self, isolated_home, tmp_path):
         """The default-branch fetch updates a local ref, which fires reference-transaction."""

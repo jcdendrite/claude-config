@@ -12,7 +12,9 @@ left real (not shimmed).
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
@@ -21,16 +23,21 @@ import pytest
 from helpers import SCRIPTS_DIR
 
 from .conftest import (
+    _BASE_FROM_ORIGIN_MAIN,
     GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
     _assert_finish_and_clear_stale_each_empty_the_active_directory,
     _assert_gh_calls_are_read_only,
     _build_repo_with_pr_ref,
+    _git_shim_that_fails_on_subcommand,
     _install_audit_script,
     _install_audit_script_that_runs,
+    _origin_main_sha,
     _provenance_fields,
+    _push_new_base_commit,
     _pythonpath_env_that_forges_a_clean_audit,
     _review_pr_audit_limit,
     _seed_session,
+    _shim_match_count,
     _shimmed_env,
 )
 
@@ -89,9 +96,13 @@ def _gh_shim_source(
     fail_rest: bool = False,
     files_failure_exit_status: int = 1,
     head_ref_oid_third: str | None = None,
+    base_ref_oid: str | None = None,
 ) -> str:
     """gh shim recording every invocation, matching
-    test_review_pr_checkout.py's own shim shape. `diff_text` defaults to a
+    test_review_pr_checkout.py's own shim shape. A `gh pr view` call carrying
+    `--jq` prints the headRefOid alone, as the script's re-fetches expect; one
+    without it prints the JSON reply holding headRefOid and, unless
+    `base_ref_oid` is None, baseRefOid. `diff_text` defaults to a
     structurally valid diff matching `files` (one `diff --git` header per
     file) unless explicitly overridden. `fail_diff` exits 1 on the `gh pr
     diff` call, printing `diff_error_text` to stderr if given -- models a
@@ -121,6 +132,7 @@ def _gh_shim_source(
         HEAD_REF_OID = {head_ref_oid!r}
         HEAD_REF_OID_SECOND = {head_ref_oid_second!r}
         HEAD_REF_OID_THIRD = {head_ref_oid_third!r}
+        BASE_REF_OID = {base_ref_oid!r}
         FILES = {list(files or [])!r}
         DIFF_TEXT = {resolved_diff_text!r}
         FAIL_PR_VIEW = {fail_pr_view!r}
@@ -152,8 +164,16 @@ def _gh_shim_source(
                 oid = HEAD_REF_OID_SECOND
             if HEAD_REF_OID_THIRD is not None and prior_pr_view_calls >= 2:
                 oid = HEAD_REF_OID_THIRD
+            if "--jq" in args:
+                if oid:
+                    print(oid)
+                sys.exit(0)
+            reply = {{}}
             if oid:
-                print(oid)
+                reply["headRefOid"] = oid
+            if BASE_REF_OID is not None:
+                reply["baseRefOid"] = BASE_REF_OID
+            print(json.dumps(reply))
             sys.exit(0)
         if args[:2] == ["pr", "diff"]:
             if FAIL_DIFF:
@@ -205,6 +225,16 @@ def _review_worktrees(repo: Path) -> list[Path]:
     return sorted(worktrees_dir.glob("review-pr-*")) if worktrees_dir.is_dir() else []
 
 
+def _printed_diff_path(result: subprocess.CompletedProcess) -> Path:
+    """The diff file's path, which is stdout line 1 of a successful run."""
+    return Path(result.stdout.splitlines()[0])
+
+
+def _printed_base_ref_oid(result: subprocess.CompletedProcess) -> str:
+    """The base commit's full hex object name, which is stdout line 2 when the base fetch succeeded."""
+    return result.stdout.splitlines()[1]
+
+
 def _run(
     cwd: Path,
     home: Path,
@@ -224,10 +254,19 @@ def _run(
     fail_rest: bool = False,
     files_failure_exit_status: int = 1,
     head_ref_oid_third: str | None = None,
+    base_ref_oid: str | None = _BASE_FROM_ORIGIN_MAIN,
     extra_env: dict | None = None,
+    path_prefix: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
+    """Runs the script. `base_ref_oid` defaults to the commit origin/main
+    points at in `cwd`, which origin already holds, so a test that does not care
+    about the base still reaches a successful base fetch. None omits baseRefOid
+    from the gh reply. `path_prefix` puts a shim directory ahead of the gh shim
+    on PATH."""
     _seed_session(home, SID)
     call_log = tmp_path / "gh_calls.jsonl"
+    if base_ref_oid == _BASE_FROM_ORIGIN_MAIN:
+        base_ref_oid = _origin_main_sha(cwd)
     env = {
         **_shimmed_env(
             tmp_path,
@@ -235,7 +274,7 @@ def _run(
                 call_log, head_ref_oid, files, diff_text, fail_pr_view, fail_files,
                 head_ref_oid_second, fail_diff, diff_error_text,
                 changed_files, omit_changed_files, fail_rest, files_failure_exit_status,
-                head_ref_oid_third,
+                head_ref_oid_third, base_ref_oid,
             ),
         ),
         "HOME": str(home),
@@ -243,6 +282,8 @@ def _run(
     env.pop("CLAUDE_CONFIG_DIR", None)
     if extra_env:
         env.update(extra_env)
+    if path_prefix is not None:
+        env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
         ["bash", str(SCRIPT), *args], cwd=cwd, env=env, capture_output=True, text=True,
         timeout=_SUBPROCESS_TIMEOUT_SECONDS,
@@ -291,7 +332,7 @@ class TestOriginCaseInsensitiveMatch:
             head_ref_oid=pr_sha, files=["a.py"],
         )
         assert result.returncode == 0, result.stderr
-        diff_path = Path(result.stdout.strip())
+        diff_path = _printed_diff_path(result)
         assert diff_path == isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.diff"
         assert diff_path.exists()
 
@@ -446,7 +487,7 @@ class TestEmptyDiffIsRefused:
             repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=[], diff_text="",
         )
         assert result.returncode == 0, result.stderr
-        assert Path(result.stdout.strip()).exists()
+        assert _printed_diff_path(result).exists()
 
 
 class TestNoCheckoutNoWorktreeNoLocalRef:
@@ -460,7 +501,7 @@ class TestNoCheckoutNoWorktreeNoLocalRef:
         )
         assert result.returncode == 0, result.stderr
 
-        diff_path = Path(result.stdout.strip())
+        diff_path = _printed_diff_path(result)
         assert diff_path == isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.diff"
         assert diff_path.exists()
         assert "diff --git a/a.py b/a.py" in diff_path.read_text()
@@ -474,6 +515,313 @@ class TestNoCheckoutNoWorktreeNoLocalRef:
 
         assert _local_pr_ref_names(repo) == "", "diff-only mode must never fetch a local PR ref"
         assert _review_worktrees(repo) == []
+
+
+_FULL_HEX_OBJECT_NAME = re.compile(r"[0-9a-f]{40}")
+
+
+def _commit_is_present(repo: Path, commit_sha: str) -> bool:
+    return subprocess.run(
+        ["git", "cat-file", "-e", f"{commit_sha}^{{commit}}"], cwd=repo, capture_output=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+    ).returncode == 0
+
+
+def _git_output(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+    ).stdout
+
+
+def _repo_state_snapshot(repo: Path) -> dict[str, str]:
+    """HEAD, every ref, the index and the working tree of `repo`, as git reports them."""
+    return {
+        "head": _git_output(repo, "rev-parse", "HEAD") + _git_output(repo, "symbolic-ref", "-q", "HEAD"),
+        "refs": _git_output(repo, "for-each-ref"),
+        "index": _git_output(repo, "ls-files", "--stage"),
+        "working_tree": _git_output(repo, "status", "--porcelain", "--untracked-files=all")
+        + _git_output(repo, "diff"),
+    }
+
+
+def _assert_diff_and_provenance_written(home: Path, result: subprocess.CompletedProcess, head_sha: str) -> None:
+    """The path on stdout line 1 holds the shim's `a.py` diff, and the provenance records the head."""
+    diff_path = _printed_diff_path(result)
+    assert diff_path == home / ".claude" / ".review-pr-active.d" / f"{SID}.diff"
+    assert "diff --git a/a.py b/a.py" in diff_path.read_text()
+    provenance = home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
+    fields = _provenance_fields(provenance)
+    assert fields["head_ref_oid"] == head_sha
+    assert fields["mode"] == "diff-only"
+
+
+def _install_jq_shim_that_fails_the_base_ref_oid_read(tmp_path: Path) -> Path:
+    """A `jq` PATH shim that exits 1 only for the script's baseRefOid read and
+    runs the real jq for every other call."""
+    real_jq = shutil.which("jq")
+    assert real_jq is not None, "the real jq binary is required to delegate to"
+    jq_shim_dir = tmp_path / "jq-shim"
+    jq_shim_dir.mkdir()
+    jq_shim = jq_shim_dir / "jq"
+    jq_shim.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import os
+        import sys
+        if sys.argv[1:] == ["-r", ".baseRefOid // empty"]:
+            sys.stdin.buffer.read()
+            sys.exit(1)
+        os.execv({real_jq!r}, ["jq", *sys.argv[1:]])
+    """))
+    jq_shim.chmod(0o755)
+    return jq_shim_dir
+
+
+class TestBaseCommitFetch:
+    """The script fetches the PR's baseRefOid by object name and prints it as
+    stdout line 2. A base that cannot be fetched degrades only the base."""
+
+    def test_a_base_commit_absent_locally_is_fetched_and_printed_as_a_full_hex_line(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        assert not _commit_is_present(repo, base_sha), "control: the base commit is absent before the run"
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _commit_is_present(repo, base_sha), "the run fetched the base commit"
+        assert len(result.stdout.splitlines()) == 2
+        assert _FULL_HEX_OBJECT_NAME.fullmatch(_printed_base_ref_oid(result))
+        assert _printed_base_ref_oid(result) == base_sha
+        assert "BASE_UNAVAILABLE" not in result.stderr
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+        first_pr_view = next(c for c in _read_calls(call_log) if c[:2] == ["pr", "view"])
+        assert "headRefOid,baseRefOid" in first_pr_view
+        assert "--jq" not in first_pr_view
+
+    def test_the_base_fetch_leaves_head_refs_index_working_tree_and_fetch_head_untouched(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        state_before = _repo_state_snapshot(repo)
+        fetch_head = repo / ".git" / "FETCH_HEAD"
+        assert not fetch_head.exists(), "control: no fetch has written FETCH_HEAD yet"
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _commit_is_present(repo, base_sha), "the base fetch ran"
+        assert _repo_state_snapshot(repo) == state_before
+        assert not fetch_head.exists(), "the base fetch must not write FETCH_HEAD"
+
+        subprocess.run(
+            ["git", "fetch", "origin", base_sha], cwd=repo, capture_output=True, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert fetch_head.exists(), "control: a plain fetch of the same object name does write FETCH_HEAD"
+
+    def test_a_fetch_that_exits_zero_without_the_commit_degrades_the_base(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        shim_dir = _git_shim_that_fails_on_subcommand(
+            tmp_path, f"*fetch --no-write-fetch-head -- origin {base_sha}", exit_status=0
+        )
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha, path_prefix=shim_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _shim_match_count(shim_dir) == 1, "control: the base fetch reached git and exited 0"
+        assert not _commit_is_present(repo, base_sha), "control: the shimmed fetch left the commit absent"
+        assert "BASE_UNAVAILABLE fetch-failed" in result.stderr
+        assert len(result.stdout.splitlines()) == 1, "the unfetched object name is never offered on line 2"
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+    def test_an_option_shaped_base_ref_oid_is_never_passed_to_git_fetch(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The input matrix for review_pr_is_full_hex_oid lives in
+        test_review_pr_lib.py. This pins that the script runs the check before
+        the value reaches a `git fetch` argument."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        upload_pack_ran_sentinel = tmp_path / "upload-pack-ran"
+        upload_pack_script = tmp_path / "upload-pack.sh"
+        upload_pack_script.write_text(f"#!/bin/sh\ntouch '{upload_pack_ran_sentinel}'\nexec git upload-pack \"$@\"\n")
+        upload_pack_script.chmod(0o755)
+        option_shaped_base_ref_oid = f"--upload-pack={upload_pack_script}"
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=option_shaped_base_ref_oid,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "BASE_UNAVAILABLE not-hex" in result.stderr
+        assert not upload_pack_ran_sentinel.exists(), "the value must not run as a fetch option"
+        assert len(result.stdout.splitlines()) == 1
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+        subprocess.run(
+            ["git", "fetch", "origin", option_shaped_base_ref_oid],
+            cwd=repo, capture_output=True, check=False, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert upload_pack_ran_sentinel.exists(), "control: an unguarded fetch of the value does run the script"
+
+    @pytest.mark.parametrize("base_ref_oid", [None, ""], ids=["field-absent", "field-empty"])
+    def test_a_missing_base_ref_oid_degrades_the_base_without_a_fetch(
+        self, isolated_home, repo_with_pr_ref, tmp_path, base_ref_oid
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*fetch*", exit_status=1)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_ref_oid, path_prefix=shim_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "BASE_UNAVAILABLE missing" in result.stderr
+        assert _shim_match_count(shim_dir) == 0
+        assert len(result.stdout.splitlines()) == 1
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+    @pytest.mark.parametrize(
+        ("exit_status", "expected_cause"), [(1, "fetch-failed"), (124, "fetch-timed-out")],
+        ids=["plain-failure", "cap-kill-status"],
+    )
+    def test_a_failing_base_fetch_degrades_the_base_and_never_echoes_git_output(
+        self, isolated_home, repo_with_pr_ref, tmp_path, exit_status, expected_cause
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _origin_main_sha(repo)
+        shim_dir = _git_shim_that_fails_on_subcommand(
+            tmp_path, f"*fetch --no-write-fetch-head -- origin {base_sha}", exit_status=exit_status
+        )
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha, path_prefix=shim_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _shim_match_count(shim_dir) == 1, "control: the base fetch reached git"
+        assert f"BASE_UNAVAILABLE {expected_cause}" in result.stderr
+        other_cause = "fetch-timed-out" if expected_cause == "fetch-failed" else "fetch-failed"
+        assert other_cause not in result.stderr
+        assert "synthetic git failure" not in result.stderr, "git's own output must never reach stderr"
+        assert len(result.stdout.splitlines()) == 1
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+    def test_a_failed_base_ref_oid_read_degrades_the_base_and_keeps_the_head(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], path_prefix=_install_jq_shim_that_fails_the_base_ref_oid_read(tmp_path),
+        )
+        assert result.returncode == 0, result.stderr
+        assert "BASE_UNAVAILABLE missing" in result.stderr
+        assert len(result.stdout.splitlines()) == 1
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+    def test_a_missing_head_ref_oid_still_aborts_even_with_a_usable_base(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, _ = repo_with_pr_ref
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*fetch*", exit_status=1)
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=None, files=["a.py"], path_prefix=shim_dir,
+        )
+
+        assert result.returncode == 2, result.stderr
+        assert "current headRefOid" in result.stderr
+        assert [c[:2] for c in _read_calls(call_log)] == [["pr", "view"]], "the abort comes right after the first read"
+        assert "BASE_UNAVAILABLE" not in result.stderr
+        assert result.stdout == ""
+        assert _shim_match_count(shim_dir) == 0
+
+    def test_a_degraded_base_followed_by_a_failing_diff_fetch_still_aborts_with_empty_stdout(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=None, fail_diff=True,
+        )
+
+        assert result.returncode == 2, result.stderr
+        assert "BASE_UNAVAILABLE missing" in result.stderr, "control: the base degraded before the diff failed"
+        assert "gh pr diff failed or timed out" in result.stderr
+        assert result.stdout == ""
+        assert not (isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.diff").exists()
+
+
+class TestBaseFetchRunsNoGitHooks:
+    def test_no_git_hook_runs_during_the_base_fetch(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """On git 2.56 a fetch by object name fires `reference-transaction`, so
+        a sentinel hook observes a base fetch run without
+        `-c core.hooksPath=/dev/null`. A separate clone fetching the same commit
+        with hooks enabled is the control."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        control_repo = tmp_path / "control-repo"
+        origin_url = subprocess.run(
+            ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "clone", "-q", origin_url, str(control_repo)], check=True, capture_output=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        hook_ran_sentinel = tmp_path / "hook-ran"
+        control_hook_ran_sentinel = tmp_path / "control-hook-ran"
+        for hook_repo, sentinel in ((repo, hook_ran_sentinel), (control_repo, control_hook_ran_sentinel)):
+            hook = hook_repo / ".git" / "hooks" / "reference-transaction"
+            hook.write_text(f"#!/bin/sh\ntouch '{sentinel}'\n")
+            hook.chmod(0o755)
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _commit_is_present(repo, base_sha), "the base fetch ran"
+        assert not hook_ran_sentinel.exists(), "the base fetch must run with git hooks disabled"
+
+        subprocess.run(
+            ["git", "fetch", "origin", base_sha], cwd=control_repo, capture_output=True, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert control_hook_ran_sentinel.exists(), (
+            "control: the hook is not wired, or git no longer fires reference-transaction on a fetch by "
+            "object name (git version drift), so the absence above says nothing about the -c flag"
+        )
 
 
 class TestArtifactCleanup:
@@ -527,7 +875,7 @@ class TestAuditHitReportedNotFatal:
         assert result.returncode == 0, result.stderr
         assert "AUDIT_FINDING" in result.stderr
         assert ".mcp.json" in result.stderr
-        diff_path = Path(result.stdout.strip())
+        diff_path = _printed_diff_path(result)
         assert diff_path.exists()
 
 
@@ -659,7 +1007,7 @@ class TestAuditThatReturnsNoVerdictIsNotAFinding:
         assert result.returncode == 0, result.stderr
         assert "AUDIT_FINDING" in result.stderr
         assert '"a.py": stand-in reason' in result.stderr
-        assert Path(result.stdout.strip()).exists()
+        assert _printed_diff_path(result).exists()
 
 
 class TestAuditThatExitsCleanWithoutAVerdictIsNotClean:
@@ -708,7 +1056,7 @@ class TestDiffTextIsWrittenAsFetched:
             head_ref_oid=pr_sha, files=["link.txt"], diff_text=typechange_diff,
         )
         assert result.returncode == 0, result.stderr
-        assert Path(result.stdout.strip()).read_text().count("diff --git a/link.txt b/link.txt") == 2
+        assert _printed_diff_path(result).read_text().count("diff --git a/link.txt b/link.txt") == 2
 
 
 class TestChangedFilesPrecheck:
@@ -741,7 +1089,7 @@ class TestChangedFilesPrecheck:
             head_ref_oid=pr_sha, files=three_hundred_files,
         )
         assert result.returncode == 0, result.stderr
-        assert Path(result.stdout.strip()).exists()
+        assert _printed_diff_path(result).exists()
 
     def test_missing_changed_files_count_aborts_before_the_listing(
         self, isolated_home, repo_with_pr_ref, tmp_path
