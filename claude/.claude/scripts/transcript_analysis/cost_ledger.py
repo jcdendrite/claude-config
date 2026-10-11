@@ -560,9 +560,8 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         )
         sys.exit(1)
     if not cost_ledger_recording_enabled:
-        # Worded generically ("not opted in"), not as a missing-sentinel-file
-        # claim: an explicit cost_ledger_recording = false in
-        # claude-config.toml reaches this branch with no sentinel file involved.
+        # Worded generically because an explicit cost_ledger_recording = false
+        # in claude-config.toml also reaches this branch.
         print(
             "cost-ledger: --record is not opted in (cost_ledger_recording) --"
             " see docs/cost-ledger.md",

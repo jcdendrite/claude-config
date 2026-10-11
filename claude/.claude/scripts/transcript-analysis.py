@@ -4696,7 +4696,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--record", action="store_true",
         help=(
             "Append the current ISO week's row. Requires the cost_ledger_recording config key"
-            " to resolve true (legacy-fallback mechanics: docs/config-file.md)."
+            " to resolve true (set via ./install.sh or claude-config.toml; legacy-file fallback: docs/config-file.md)."
         ),
     )
     p_cost_ledger.add_argument(
@@ -4739,7 +4739,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--record", action="store_true",
         help=(
             "Capture ledger rows for eligible merged PRs. Requires the pr_cost_recording config key"
-            " to resolve true (legacy-fallback mechanics: docs/config-file.md)."
+            " to resolve true (set via ./install.sh or claude-config.toml; legacy-file fallback: docs/config-file.md)."
         ),
     )
     p_pr_cost.add_argument(
