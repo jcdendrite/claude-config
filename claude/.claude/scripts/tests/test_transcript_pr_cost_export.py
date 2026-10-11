@@ -13,10 +13,14 @@ from pathlib import Path
 import pytest
 
 from ._pr_cost_helpers import (
+    _PRE_MODEL_HEADER_LINE,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
+    _parse_pr_cost_export_provenance_line,
     _parse_pr_cost_export_row,
     _pr_cost_export_args,
+    _pre_model_row_line,
+    _sample_model_breakdown,
     _sample_pr_cost_row,
 )
 from .conftest import _two_declared_roots
@@ -193,10 +197,64 @@ class TestRedactPrCostRowForExportColumnShape:
             "distinct_top_level_dirs", "distinct_file_extensions",
             "tests_changed", "plan_file_added", "risk_surface_flag",
         }
-        triaged = tokenized | date_truncated | renamed_to_correction_count | approved_passthrough
+        # Documentation only: it passes through un-tokenized, and TestPrCostExportModelBreakdown pins that
+        # decision. It stays DO-NOT-PUBLISH because it rides an export row.
+        model_bearing_row_level = {"model_breakdown"}
+        triaged = (
+            tokenized | date_truncated | renamed_to_correction_count | approved_passthrough | model_bearing_row_level
+        )
         assert triaged == set(_mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS), (
             "a new ledger column would silently reach the cross-account export unredacted "
             "unless triaged above"
+        )
+
+
+class TestPrCostExportModelBreakdown:
+    def test_model_key_in_a_source_cell_passes_through_the_export_byte_identical(
+        self, tmp_path, fake_projects, monkeypatch,
+    ):
+        """Pins the decision to pass model_breakdown through un-tokenized: a combiner needs keys that stay stable
+        across exports. A later tokenizing change must fail here, deliberately."""
+        _enable_pr_cost(tmp_path)
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        literal_model_id = "claude-test-literal"
+        source_row = _sample_pr_cost_row(model_breakdown=_sample_model_breakdown(literal_model_id))
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [source_row])
+        source_cell = ledger_path.read_text().splitlines()[1].split("\t")[-1]
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        exported_cell = _parse_pr_cost_export_row(out_path.read_text().splitlines()[2])["model_breakdown"]
+        assert literal_model_id in exported_cell
+        assert exported_cell == source_cell
+
+    def test_export_before_and_after_a_no_new_row_rewrite_has_identical_data_rows_and_corpus_digest(
+        self, tmp_path, fake_projects, monkeypatch,
+    ):
+        _enable_pr_cost(tmp_path)
+        ledger_path = tmp_path / "pr-cost-ledger.tsv"
+        monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
+        ledger_path.write_text(_PRE_MODEL_HEADER_LINE + "\n" + _pre_model_row_line(pr_number=11) + "\n")
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        before_path = tmp_path / "before.tsv"
+        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(before_path)))
+
+        old_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, old_rows)
+        assert ledger_path.read_text().splitlines()[0] == _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
+        after_path = tmp_path / "after.tsv"
+        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(after_path)))
+
+        before_lines = before_path.read_text().splitlines()
+        after_lines = after_path.read_text().splitlines()
+        assert before_lines[2:] == after_lines[2:]
+        assert len(after_lines[2:]) == 1
+        assert (
+            _parse_pr_cost_export_provenance_line(before_lines[0])["corpus"]
+            == _parse_pr_cost_export_provenance_line(after_lines[0])["corpus"]
         )
 
 

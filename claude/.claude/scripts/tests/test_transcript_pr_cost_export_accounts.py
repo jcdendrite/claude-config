@@ -10,12 +10,16 @@ from pathlib import Path
 import pytest
 
 from ._pr_cost_helpers import (
+    _PRE_HOST_HEADER_LINE,
+    _PRE_MODEL_HEADER_LINE,
     _enable_pr_cost,
     _fake_pr_cost_subprocess_run,
     _legacy_row_line,
     _parse_pr_cost_export_provenance_line,
     _parse_pr_cost_export_row,
     _pr_cost_export_args,
+    _pre_model_row_line,
+    _sample_model_breakdown,
     _sample_pr_cost_row,
 )
 from .conftest import _two_declared_roots
@@ -481,6 +485,45 @@ class TestPrCostExportLegacyHeader:
         assert "legacy_header_accounts=1" in lines[0]
         assert len(lines[2:]) == 1
         assert _parse_pr_cost_export_row(lines[2])["host"] == "account-1/host-1"
+
+
+class TestPrCostExportMixedSchemaAccounts:
+    def test_pre_host_pre_model_and_current_accounts_export_together_and_only_the_pre_host_one_counts_as_legacy(
+        self, tmp_path, monkeypatch,
+    ):
+        """account-1 holds a pre-host ledger, account-2 a pre-model one, account-3 a current one with a
+        populated model_breakdown. legacy_header_accounts counts the pre-host ledger only."""
+        account_dirs = []
+        for name in ("acct-a", "acct-b", "acct-c"):
+            account_dir = tmp_path / name
+            (account_dir / "projects").mkdir(parents=True)
+            (account_dir / ".pr-cost-enabled").touch()
+            account_dirs.append(account_dir)
+        acct_a, acct_b, acct_c = account_dirs
+        (acct_a / "pr-cost-ledger.tsv").write_text(_PRE_HOST_HEADER_LINE + "\n" + _legacy_row_line(pr_number=1) + "\n")
+        (acct_b / "pr-cost-ledger.tsv").write_text(
+            _PRE_MODEL_HEADER_LINE + "\n" + _pre_model_row_line(pr_number=2) + "\n"
+        )
+        source_breakdown = _sample_model_breakdown("claude-test-literal")
+        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+            acct_c / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=3, model_breakdown=source_breakdown)],
+        )
+        source_cell = (acct_c / "pr-cost-ledger.tsv").read_text().splitlines()[1].split("\t")[-1]
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
+        roots_file = tmp_path / "roots"
+        roots_file.write_text(f"{acct_b}\n{acct_c}\n")
+        monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
+        monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
+        out_path = tmp_path / "export.tsv"
+
+        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+
+        lines = out_path.read_text().splitlines()
+        assert _parse_pr_cost_export_provenance_line(lines[0])["legacy_header_accounts"] == "1"
+        exported_rows = [_parse_pr_cost_export_row(line) for line in lines[2:]]
+        assert [row["account"] for row in exported_rows] == ["account-1", "account-2", "account-3"]
+        assert [row["model_breakdown"] for row in exported_rows] == ["", "", source_cell]
 
 
 class TestPrCostExportProvenanceLine:

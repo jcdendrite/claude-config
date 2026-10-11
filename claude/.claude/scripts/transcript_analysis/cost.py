@@ -98,6 +98,8 @@ def _new_pr_cost_agg() -> dict:
     return {
         "dollars": dict.fromkeys(pricing._TOKEN_CLASSES, 0.0),
         "tokens": dict.fromkeys(pricing._TOKEN_CLASSES, 0),
+        # {model: {pricing variant: {token class: {"tokens": int, "dollars": float}}}}, priced turns only.
+        "by_model": {},
         "unpriced_turns": 0, "unpriced_tokens": 0,
         "turn_count": 0, "sessions": set(), "opus_dollars": 0.0, "sum_context_at_turn": 0,
         "session_starts": [], "session_starts_seen": set(), "last_activity_ts": 0.0,
@@ -125,6 +127,12 @@ def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]
     branch. A record with no parseable timestamp contributes to neither
     field (mirrors _session_branch_index's own exclusion) but still counts
     toward every other aggregate below.
+
+    Each agg's "by_model" (shape: see _new_pr_cost_agg) gets one leaf update
+    per priced turn, beside the agg's own per-class "dollars"/"tokens" totals,
+    so the leaves summed across models equal those totals up to
+    float-summation order. An unpriced turn never
+    reaches "by_model": its model identity is deliberately not recorded.
     """
     branch_totals: dict[str, dict] = defaultdict(_new_pr_cost_agg)
     unbranched_totals: dict = _new_pr_cost_agg()
@@ -163,9 +171,13 @@ def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]
                 continue
 
             token_counts = pricing._token_counts(usage)
+            model_leaves = agg["by_model"].setdefault(model, {}).setdefault(pricing._pricing_variant(usage), {})
             for cls in pricing._TOKEN_CLASSES:
                 agg["dollars"][cls] += dollars_by_class[cls]
                 agg["tokens"][cls] += token_counts[cls]
+                leaf = model_leaves.setdefault(cls, {"tokens": 0, "dollars": 0.0})
+                leaf["tokens"] += token_counts[cls]
+                leaf["dollars"] += dollars_by_class[cls]
             if render._fam(model) == "opus":
                 agg["opus_dollars"] += sum(dollars_by_class.values())
 
