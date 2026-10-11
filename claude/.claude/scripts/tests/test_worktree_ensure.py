@@ -689,14 +689,23 @@ class TestRefusals:
         assert "docs/scripts.md" in message
         assert "worktree add" not in message
 
-    def test_ref_conflict_names_the_existing_branch(self, tmp_path):
+    def test_ref_conflict_names_the_existing_branch_when_it_is_a_prefix_of_the_request(self, tmp_path):
         fixture = _make_fixture(tmp_path)
         _git(fixture.main, "branch", "GH-1")
 
         result, before, after = _run_refusal(fixture, "GH-1/new")
 
         _assert_refused(result, 1, "ref-conflict", before, after)
-        assert "GH-1" in _message_text(result, tmp_path)
+        assert "'GH-1'" in _message_text(result, tmp_path)
+
+    def test_ref_conflict_names_the_existing_branch_when_it_lies_beneath_the_request(self, tmp_path):
+        fixture = _make_fixture(tmp_path)
+        _git(fixture.main, "branch", "GH-8/new")
+
+        result, before, after = _run_refusal(fixture, "GH-8")
+
+        _assert_refused(result, 1, "ref-conflict", before, after)
+        assert "existing branch 'GH-8/new'" in _message_text(result, tmp_path)
 
     def test_symlinked_worktrees_directory_is_refused_and_nothing_appears_behind_it(self, tmp_path):
         fixture = _make_fixture(tmp_path)
