@@ -31,13 +31,17 @@ from helpers import (
 from .conftest import (
     _BASE_FROM_ORIGIN_MAIN,
     GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
+    _assert_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction,
     _assert_finish_and_clear_stale_each_empty_the_active_directory,
     _assert_gh_calls_are_read_only,
     _build_repo_with_pr_ref,
+    _git_commit_is_present,
     _git_shim_that_fails_on_subcommand,
     _git_shim_that_fails_on_worktree_subcommand,
     _install_audit_script,
     _install_audit_script_that_runs,
+    _install_reference_transaction_sentinel_hook,
+    _install_reference_transaction_sentinel_hooks,
     _origin_main_sha,
     _provenance_fields,
     _push_new_base_commit,
@@ -145,6 +149,15 @@ def _registered_worktree_paths(repo: Path) -> list[Path]:
     return [Path(line.removeprefix("worktree ")).resolve() for line in listing.splitlines() if line.startswith("worktree ")]
 
 
+def _ref_objects(repo: Path) -> dict[str, str]:
+    """Every ref of repo, tags and remote-tracking refs included, mapped to the object it names."""
+    listing = subprocess.run(
+        ["git", "for-each-ref", "--format=%(refname) %(objectname)"], cwd=repo, capture_output=True, text=True,
+        check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+    ).stdout
+    return {refname: objectname for refname, objectname in (line.split(" ") for line in listing.splitlines())}
+
+
 def _local_pr_ref_names(repo: Path) -> str:
     return subprocess.run(
         ["git", "for-each-ref", "refs/review-pr"], cwd=repo, capture_output=True, text=True, check=True,
@@ -174,6 +187,9 @@ _SAME_AS_REQUEST = "__SAME_AS_REQUEST__"
 
 _ALLOWLISTED_ASSOCIATIONS = ["MEMBER", "OWNER", "COLLABORATOR", "CONTRIBUTOR"]
 
+# Sentinel default for pr_view_base_ref_name: "the base branch the REST payload reports".
+_SAME_AS_REST_BASE_REF = "__SAME_AS_REST_BASE_REF__"
+
 def _is_listing_call(call: list[str], suffix: str) -> bool:
     """True for a `gh api` call to the pulls listing ending in `suffix`,
     whatever query string it carries."""
@@ -182,9 +198,11 @@ def _is_listing_call(call: list[str], suffix: str) -> bool:
 
 def _gh_shim_source(
     call_log: Path,
+    *,
     head_ref_oid: str | None = None,
     files: list[str] | None = None,
     fail_pr_view: bool = False,
+    fail_pr_view_second: bool = False,
     fail_files: bool = False,
     partial_files_then_fail: list[str] | None = None,
     head_ref_oid_second: str | None = None,
@@ -199,13 +217,22 @@ def _gh_shim_source(
     base_ref_oid: str | None = None,
     base_ref_name: str | None = "main",
     base_default_branch: str | None = "main",
+    pr_view_base_ref_name: str | None = _SAME_AS_REST_BASE_REF,
+    pr_view_base_ref_name_second: str | None = None,
 ) -> str:
     """gh shim recording every invocation, dispatching on the invocation's own
-    first word(s): `gh pr view ... --json headRefOid` returns `head_ref_oid`
-    (`head_ref_oid_second` from the SECOND call onward, modeling a force-push
-    between the initial fetch and the pre-audit re-fetch); a `gh pr view`
-    carrying no `--jq` prints the JSON object `{"headRefOid", "baseRefOid"}`
-    instead, with `baseRefOid` omitted when `base_ref_oid` is None; `gh api
+    first word(s): `gh pr view` builds a JSON object from only the fields its
+    `--json` list names, out of `headRefOid` (`head_ref_oid`, or
+    `head_ref_oid_second` from the SECOND call onward, modeling a force-push
+    between the initial fetch and the pre-audit re-fetch), `baseRefOid`
+    (omitted when `base_ref_oid` is None) and `baseRefName`, and exits 97
+    without `--json` or for any other field. It prints that object, or, when
+    the call carries `--jq`, the real jq's `-r` output of that expression over
+    it, so a field the script did not ask for never reaches it and a changed
+    expression changes what it parses. gh evaluates `--jq` in-process and
+    prints each result on its own line; that one-line-per-value form for a
+    comma expression is modeled here, not independently re-verified against
+    gh. `gh api
     .../pulls/N` returns the trust-classification payload; `gh api
     .../files --paginate ...` prints `files`.
     `head_repo_full_name`/`base_repo_full_name` default to
@@ -213,7 +240,8 @@ def _gh_shim_source(
     that doesn't care about trust classification reaches checkout for any
     owner/repo. `head_repo_full_name=None` models a deleted-fork PR (REST
     `head.repo` null); `author_association=None` models a null value.
-    `fail_*` flags exit 1 on the matching call only.
+    `fail_*` flags exit 1 on the matching call only; `fail_pr_view_second`
+    exits 1 on the SECOND `gh pr view` call onward.
     `partial_files_then_fail` prints those filenames, then exits 1, modeling
     `--paginate` failing after emitting a page. `malformed_trust_check` exits 0
     but prints non-JSON. `fail_files` and `partial_files_then_fail` exit
@@ -224,22 +252,32 @@ def _gh_shim_source(
     drops the field.
     `base_ref_name` and `base_default_branch` are the REST payload's `base.ref`
     and `base.repo.default_branch`; a value of None drops that field.
+    `pr_view_base_ref_name` is the `baseRefName` a `gh pr view` reports (the
+    REST `base.ref` by default, None drops it); `pr_view_base_ref_name_second`,
+    when set, replaces it from the SECOND `gh pr view` call onward, modeling a
+    retarget between the initial read and the pre-audit re-fetch.
     The files listing prints one JSON string per line when the call carries
     the `@json` jq filter, and raw names otherwise: raw UTF-8, with a control
     character rendered in caret notation as gh 2.100.0 is modeled to do (see
     the shim constant in conftest.py). The listing call must carry
     `--paginate` and `per_page=100`; the shim exits 97 otherwise."""
+    view_base_ref_name = base_ref_name if pr_view_base_ref_name == _SAME_AS_REST_BASE_REF else pr_view_base_ref_name
+    real_jq = shutil.which("jq")
+    assert real_jq is not None, "the real jq binary is required to evaluate a --jq expression"
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import json
         import os
+        import subprocess
         import sys
 
         CALL_LOG = {str(call_log)!r}
+        REAL_JQ = {real_jq!r}
         HEAD_REF_OID = {head_ref_oid!r}
         HEAD_REF_OID_SECOND = {head_ref_oid_second!r}
         FILES = {list(files or [])!r}
         FAIL_PR_VIEW = {fail_pr_view!r}
+        FAIL_PR_VIEW_SECOND = {fail_pr_view_second!r}
         FAIL_FILES = {fail_files!r}
         PARTIAL_FILES_THEN_FAIL = {list(partial_files_then_fail or [])!r}
         AUTHOR_ASSOCIATION = {author_association!r}
@@ -254,6 +292,8 @@ def _gh_shim_source(
         BASE_REF_OID = {base_ref_oid!r}
         BASE_REF_NAME = {base_ref_name!r}
         BASE_DEFAULT_BRANCH = {base_default_branch!r}
+        PR_VIEW_BASE_REF_NAME = {view_base_ref_name!r}
+        PR_VIEW_BASE_REF_NAME_SECOND = {pr_view_base_ref_name_second!r}
         {GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE}
         args = sys.argv[1:]
         prior_pr_view_calls = 0
@@ -270,21 +310,36 @@ def _gh_shim_source(
         with open(CALL_LOG, "a") as f:
             f.write(json.dumps(record) + chr(10))
         if args[:2] == ["pr", "view"]:
-            if FAIL_PR_VIEW:
+            if FAIL_PR_VIEW or (FAIL_PR_VIEW_SECOND and prior_pr_view_calls >= 1):
                 sys.exit(1)
             oid = HEAD_REF_OID
             if HEAD_REF_OID_SECOND is not None and prior_pr_view_calls >= 1:
                 oid = HEAD_REF_OID_SECOND
-            if "--jq" in args:
-                if oid:
-                    print(oid)
-                sys.exit(0)
-            reply = {{}}
+            view_base_name = PR_VIEW_BASE_REF_NAME
+            if PR_VIEW_BASE_REF_NAME_SECOND is not None and prior_pr_view_calls >= 1:
+                view_base_name = PR_VIEW_BASE_REF_NAME_SECOND
+            available = {{}}
             if oid:
-                reply["headRefOid"] = oid
+                available["headRefOid"] = oid
             if BASE_REF_OID is not None:
-                reply["baseRefOid"] = BASE_REF_OID
-            print(json.dumps(reply))
+                available["baseRefOid"] = BASE_REF_OID
+            if view_base_name is not None:
+                available["baseRefName"] = view_base_name
+            if "--json" not in args:
+                print("shim: gh pr view without --json", file=sys.stderr)
+                sys.exit(97)
+            requested = args[args.index("--json") + 1].split(",")
+            unknown = [field for field in requested if field not in ("headRefOid", "baseRefOid", "baseRefName")]
+            if unknown:
+                print("shim: gh pr view asked for fields it does not model: " + ",".join(unknown), file=sys.stderr)
+                sys.exit(97)
+            reply = json.dumps({{field: available[field] for field in requested if field in available}})
+            if "--jq" in args:
+                jq_run = subprocess.run([REAL_JQ, "-r", args[args.index("--jq") + 1]], input=reply.encode(), capture_output=True)
+                sys.stdout.buffer.write(jq_run.stdout)
+                sys.stdout.flush()
+                sys.exit(jq_run.returncode)
+            print(reply)
             sys.exit(0)
         if args[:1] == ["api"] and len(args) >= 2 and not args[1].split("?")[0].endswith("/files"):
             if FAIL_TRUST_CHECK:
@@ -355,6 +410,7 @@ def _run(
     head_ref_oid: str | None = None,
     files: list[str] | None = None,
     fail_pr_view: bool = False,
+    fail_pr_view_second: bool = False,
     fail_files: bool = False,
     partial_files_then_fail: list[str] | None = None,
     head_ref_oid_second: str | None = None,
@@ -369,6 +425,8 @@ def _run(
     base_ref_oid: str | None = _BASE_FROM_ORIGIN_MAIN,
     base_ref_name: str | None = "main",
     base_default_branch: str | None = "main",
+    pr_view_base_ref_name: str | None = _SAME_AS_REST_BASE_REF,
+    pr_view_base_ref_name_second: str | None = None,
     extra_env: dict | None = None,
     path_prefix: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
@@ -383,10 +441,27 @@ def _run(
         **_shimmed_env(
             tmp_path,
             _gh_shim_source(
-                call_log, head_ref_oid, files, fail_pr_view, fail_files, partial_files_then_fail,
-                head_ref_oid_second, author_association, head_repo_full_name, base_repo_full_name,
-                fail_trust_check, malformed_trust_check, changed_files, omit_changed_files,
-                files_failure_exit_status, base_ref_oid, base_ref_name, base_default_branch,
+                call_log,
+                head_ref_oid=head_ref_oid,
+                files=files,
+                fail_pr_view=fail_pr_view,
+                fail_pr_view_second=fail_pr_view_second,
+                fail_files=fail_files,
+                partial_files_then_fail=partial_files_then_fail,
+                head_ref_oid_second=head_ref_oid_second,
+                author_association=author_association,
+                head_repo_full_name=head_repo_full_name,
+                base_repo_full_name=base_repo_full_name,
+                fail_trust_check=fail_trust_check,
+                malformed_trust_check=malformed_trust_check,
+                changed_files=changed_files,
+                omit_changed_files=omit_changed_files,
+                files_failure_exit_status=files_failure_exit_status,
+                base_ref_oid=base_ref_oid,
+                base_ref_name=base_ref_name,
+                base_default_branch=base_default_branch,
+                pr_view_base_ref_name=pr_view_base_ref_name,
+                pr_view_base_ref_name_second=pr_view_base_ref_name_second,
             ),
         ),
         "HOME": str(home),
@@ -755,13 +830,6 @@ def _git_bytes(repo: Path, *args: bytes | str, stdin: bytes | None = None) -> by
     ).stdout
 
 
-def _git_commit_is_present(repo: Path, commit_sha: str) -> bool:
-    return subprocess.run(
-        ["git", "cat-file", "-e", f"{commit_sha}^{{commit}}"], cwd=repo, capture_output=True,
-        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-    ).returncode == 0
-
-
 def _head_and_index(repo: Path) -> tuple[bytes, bytes, bytes]:
     """HEAD, the index and the tracked-file working-tree changes of repo."""
     return (
@@ -789,6 +857,8 @@ def _build_stacked_repo(
     base_entries: dict[bytes, bytes | None],
     lower_base_entries: dict[bytes, bytes | None] | None = None,
     base_entries_after_fork: dict[bytes, bytes | None] | None = None,
+    default_entries_before_fork: dict[bytes, bytes | None] | None = None,
+    default_entries_after_fork: dict[bytes, bytes | None] | None = None,
 ) -> tuple[Path, str, str]:
     """A repo whose PR (refs/pull/42/head, adding pr_file.txt) sits on the
     `feature-base` branch of origin, which sits on main, the default branch.
@@ -796,11 +866,17 @@ def _build_stacked_repo(
     `lower_base_entries` add a `lower-base` branch between main and
     feature-base. `base_entries_after_fork` advance feature-base past the
     commit the PR forked from, so the PR's head does not contain them.
+    `default_entries_before_fork` are committed on main before the stack
+    forks, so every branch of the stack holds them; `default_entries_after_fork`
+    advance main past the fork, so the PR's head lacks them.
     Returns (repo, pr_sha, base_sha) with base_sha feature-base's tip on
     origin and the working copy back on main."""
     repo, _ = _build_repo_with_pr_ref(tmp_path)
     main_sha = _origin_main_sha(repo)
     _git_bytes(repo, "checkout", "-q", "--detach", main_sha)
+    if default_entries_before_fork:
+        main_sha = _commit_index_entries(repo, default_entries_before_fork, "default branch commit before the fork")
+        _git_bytes(repo, "push", "-q", "origin", "+HEAD:refs/heads/main")
     if lower_base_entries:
         _commit_index_entries(repo, lower_base_entries, "lower base commit")
         _git_bytes(repo, "push", "-q", "origin", "+HEAD:refs/heads/lower-base")
@@ -813,6 +889,10 @@ def _build_stacked_repo(
         _git_bytes(repo, "checkout", "-q", "-f", "--detach", fork_sha)
         base_sha = _commit_index_entries(repo, base_entries_after_fork, "base commit after the fork")
         _git_bytes(repo, "push", "-q", "origin", f"+HEAD:refs/heads/{_STACKED_BASE_BRANCH}")
+    if default_entries_after_fork:
+        _git_bytes(repo, "checkout", "-q", "-f", "--detach", main_sha)
+        _commit_index_entries(repo, default_entries_after_fork, "default branch commit after the fork")
+        _git_bytes(repo, "push", "-q", "origin", "+HEAD:refs/heads/main")
     _git_bytes(repo, "checkout", "-q", "-f", "main")
     _git_bytes(repo, "clean", "-fdq")
     return repo, pr_sha, base_sha
@@ -1008,23 +1088,18 @@ class TestStackedBaseDeltaAudit:
         assert not _default_branch_ref_exists(repo)
         assert _local_pr_ref_names(repo).count("refs/review-pr/") == 1, "only the PR's own ref"
 
-    @pytest.mark.parametrize(
-        "base_ref_name",
-        ["Main", "refs/heads/main", " main", "main "],
-        ids=["case-variant", "refs-heads-prefix", "leading-space", "trailing-space"],
-    )
-    def test_base_branch_comparison_is_exact_not_normalized(
-        self, isolated_home, repo_with_pr_ref, tmp_path, base_ref_name
-    ):
-        """Git ref names are case-sensitive, so a base that differs from the
-        default branch only by case, prefix, or whitespace is a different
-        branch: the delta audit runs for it, which leaves the default-branch ref."""
+    def test_base_branch_comparison_is_exact_not_normalized(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """A base that differs from the default branch only by a trailing space
+        is a different branch: the delta audit runs for it, which leaves the
+        default-branch ref. The space must survive the name's extraction from
+        the API payload. One wiring case; the comparison's near-miss matrix is
+        in test_review_pr_lib.py."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["pr_file.txt"],
-            base_ref_name=base_ref_name, base_default_branch="main",
+            base_ref_name="main ", base_default_branch="main",
         )
         assert result.returncode == 0, result.stderr
         assert _default_branch_ref_exists(repo)
@@ -1105,6 +1180,80 @@ class TestStackedBaseDeltaAudit:
         assert result.returncode == 3, result.stderr
         assert '".mcp.json"' in result.stderr
         assert _review_worktrees(repo) == []
+
+    def test_a_flagged_file_on_the_default_branch_before_the_fork_is_outside_the_delta_and_checks_out(
+        self, isolated_home, tmp_path
+    ):
+        """Repositories that use Claude Code carry flagged paths on their default
+        branch. The head holds them, but they are default-branch history, so
+        auditing the whole head tree instead of the delta would stop every PR."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(
+            tmp_path,
+            base_entries={b"base_only.txt": b"base\n"},
+            default_entries_before_fork={b".mcp.json": b"{}\n", b".claude/hooks/guard.sh": b"#!/bin/sh\n"},
+        )
+        control_head_listing = _git_bytes(repo, "ls-tree", "-r", "--name-only", pr_sha).decode().splitlines()
+        assert ".mcp.json" in control_head_listing, "control: the PR's head holds the flagged file"
+        assert ".claude/hooks/guard.sh" in control_head_listing
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 0, result.stderr
+        assert [_printed_worktree_path(result)] == _review_worktrees(repo)
+        assert (_printed_worktree_path(result) / ".mcp.json").exists()
+
+    def test_a_flagged_file_added_to_the_default_branch_after_the_fork_is_outside_the_delta_and_checks_out(
+        self, isolated_home, tmp_path
+    ):
+        """The default branch advanced past the fork. A tip-to-tip listing would
+        report the flagged file as a deletion the head makes, though the head
+        never touched it."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(
+            tmp_path,
+            base_entries={b"base_only.txt": b"base\n"},
+            default_entries_after_fork={b".mcp.json": b"{}\n"},
+        )
+        default_tip_listing = _git_bytes(repo, "ls-tree", "-r", "--name-only", "origin/main").decode().splitlines()
+        head_listing = _git_bytes(repo, "ls-tree", "-r", "--name-only", pr_sha).decode().splitlines()
+        assert ".mcp.json" in default_tip_listing, "control: the default branch tip holds the flagged file"
+        assert ".mcp.json" not in head_listing, "control: the PR's head lacks it"
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, **_STACKED_BASE_NAMES,
+        )
+        assert result.returncode == 0, result.stderr
+        assert [_printed_worktree_path(result)] == _review_worktrees(repo)
+        assert not (_printed_worktree_path(result) / ".mcp.json").exists()
+
+    def test_a_second_run_replaces_a_default_branch_ref_the_first_run_left_even_after_a_history_rewrite(
+        self, isolated_home, tmp_path
+    ):
+        """The default-branch ref outlives a run, so a second review of the same
+        PR meets it. The fetch forces the ref, because a default branch whose
+        history was rewritten is not a fast-forward of the old ref."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(
+            tmp_path, base_entries={b"base_only.txt": b"base\n"}, default_entries_after_fork={b"later.txt": b"y\n"},
+        )
+        run_arguments = dict(head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, **_STACKED_BASE_NAMES)
+        first, _ = _run(repo, isolated_home, [PR_IDENTITY], tmp_path, **run_arguments)
+        assert first.returncode == 0, first.stderr
+        replaced_default_tip = _git_bytes(repo, "rev-parse", _DEFAULT_BRANCH_LOCAL_REF).decode().strip()
+
+        _git_bytes(repo, "checkout", "-q", "-f", "--detach", f"{replaced_default_tip}^")
+        rewritten_default_tip = _commit_index_entries(repo, {b"rewritten.txt": b"z\n"}, "rewritten default branch commit")
+        _git_bytes(repo, "push", "-q", "--force", "origin", "+HEAD:refs/heads/main")
+        _git_bytes(repo, "checkout", "-q", "-f", "main")
+        assert rewritten_default_tip != replaced_default_tip
+
+        second, _ = _run(repo, isolated_home, [PR_IDENTITY], tmp_path, **run_arguments)
+        assert second.returncode == 0, second.stderr
+        assert _git_bytes(repo, "rev-parse", _DEFAULT_BRANCH_LOCAL_REF).decode().strip() == rewritten_default_tip
 
     def test_a_flagged_name_with_a_newline_and_non_ascii_stops_on_one_json_escaped_line(
         self, isolated_home, tmp_path
@@ -1263,7 +1412,7 @@ class TestStackedBaseDeltaAudit:
         assert result.returncode == 2, result.stderr
         assert "the decoding of the name-listing run's output failed or timed out" in result.stderr
         assert "jq that truncates raw input at NUL" in result.stderr
-        assert "verified on jq 1.8.2" in result.stderr
+        assert "claude-config's README.md jq version bullet" in result.stderr
         assert "the name-listing run of git diff" not in result.stderr
         assert "review-pr-diff.sh" not in result.stderr
         assert result.stdout == ""
@@ -1655,7 +1804,7 @@ class TestReviewDiffFile:
             timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         )
         first_pr_view = next(c for c in _read_calls(call_log) if c[:2] == ["pr", "view"])
-        assert "headRefOid,baseRefOid" in first_pr_view
+        assert "headRefOid,baseRefOid,baseRefName" in first_pr_view
 
     def test_an_option_shaped_base_ref_oid_aborts_before_any_fetch(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -2458,9 +2607,7 @@ class TestCheckoutRunsNoGitHooks:
         post_checkout_hook.chmod(0o755)
         # The PR-ref fetch updates a local ref, which fires reference-transaction.
         fetch_hook_ran_sentinel = tmp_path / "fetch-hook-ran"
-        reference_transaction_hook = repo / ".git" / "hooks" / "reference-transaction"
-        reference_transaction_hook.write_text(f"#!/bin/sh\ntouch '{fetch_hook_ran_sentinel}'\n")
-        reference_transaction_hook.chmod(0o755)
+        _install_reference_transaction_sentinel_hook(repo, fetch_hook_ran_sentinel)
 
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
@@ -2495,21 +2642,9 @@ class TestCheckoutRunsNoGitHooks:
         with hooks enabled is the control."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        control_repo = tmp_path / "control-repo"
-        origin_url = subprocess.run(
-            ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=True,
-            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-        ).stdout.strip()
-        subprocess.run(
-            ["git", "clone", "-q", origin_url, str(control_repo)], check=True, capture_output=True,
-            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        control_repo, hook_ran_sentinel, control_hook_ran_sentinel = _install_reference_transaction_sentinel_hooks(
+            repo, tmp_path
         )
-        hook_ran_sentinel = tmp_path / "hook-ran"
-        control_hook_ran_sentinel = tmp_path / "control-hook-ran"
-        for hook_repo, sentinel in ((repo, hook_ran_sentinel), (control_repo, control_hook_ran_sentinel)):
-            hook = hook_repo / ".git" / "hooks" / "reference-transaction"
-            hook.write_text(f"#!/bin/sh\ntouch '{sentinel}'\n")
-            hook.chmod(0o755)
         base_sha = _push_new_base_commit(repo, tmp_path)
 
         result, _ = _run(
@@ -2520,52 +2655,16 @@ class TestCheckoutRunsNoGitHooks:
         assert result.returncode == 0, result.stderr
         assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
         assert not hook_ran_sentinel.exists(), "the base fetch must run with git hooks disabled"
-
-        subprocess.run(
-            ["git", "fetch", "origin", base_sha], cwd=control_repo, capture_output=True, check=True,
-            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        _assert_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction(
+            control_repo, base_sha, control_hook_ran_sentinel
         )
-        assert control_hook_ran_sentinel.exists(), (
-            "control: the hook is not wired, or git no longer fires reference-transaction on a fetch by "
-            "object name (git version drift), so the absence above says nothing about the -c flag"
-        )
-
-    def test_the_base_fetch_leaves_head_index_and_fetch_head_as_the_pr_ref_fetch_left_them(
-        self, isolated_home, repo_with_pr_ref, tmp_path
-    ):
-        """The PR-ref fetch legitimately writes FETCH_HEAD and a local ref. The base fetch runs after it, so a
-        FETCH_HEAD naming the base commit would mean the base fetch wrote it."""
-        _install_audit_script(isolated_home)
-        repo, pr_sha = repo_with_pr_ref
-        base_sha = _push_new_base_commit(repo, tmp_path)
-        head_and_index_before = _head_and_index(repo)
-
-        result, _ = _run(
-            repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha,
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
-        fetch_head = repo / ".git" / "FETCH_HEAD"
-        assert pr_sha in fetch_head.read_text(), "control: the PR-ref fetch wrote FETCH_HEAD"
-        assert base_sha not in fetch_head.read_text(), "the base fetch must not write FETCH_HEAD"
-        assert _head_and_index(repo) == head_and_index_before
-
-        subprocess.run(
-            ["git", "fetch", "origin", base_sha], cwd=repo, capture_output=True, check=True,
-            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-        )
-        assert base_sha in fetch_head.read_text(), "control: a plain fetch of the same object name does write it"
 
     def test_no_git_hook_runs_during_the_default_branch_fetch_of_a_stacked_base(self, isolated_home, tmp_path):
         """The default-branch fetch updates a local ref, which fires reference-transaction."""
         _install_audit_script(isolated_home)
         repo, pr_sha, base_sha = _build_stacked_repo(tmp_path, base_entries={b"base_only.txt": b"base\n"})
         fetch_hook_ran_sentinel = tmp_path / "fetch-hook-ran"
-        reference_transaction_hook = repo / ".git" / "hooks" / "reference-transaction"
-        reference_transaction_hook.write_text(f"#!/bin/sh\ntouch '{fetch_hook_ran_sentinel}'\n")
-        reference_transaction_hook.chmod(0o755)
+        _install_reference_transaction_sentinel_hook(repo, fetch_hook_ran_sentinel)
 
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
@@ -2582,6 +2681,77 @@ class TestCheckoutRunsNoGitHooks:
             cwd=repo, capture_output=True, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         )
         assert fetch_hook_ran_sentinel.exists(), "control: the hook is wired, so its absence above is the -c flag's doing"
+
+
+class TestFetchesLeaveOnlyTheirOwnRef:
+    def test_no_fetch_leaves_head_index_or_fetch_head_changed(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """The PR-ref fetch and the base fetch each skip FETCH_HEAD, so a
+        run writes none."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        fetch_head = repo / ".git" / "FETCH_HEAD"
+        assert not fetch_head.exists(), "control: no fetch has written FETCH_HEAD yet"
+        head_and_index_before = _head_and_index(repo)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
+        assert _local_pr_ref_names(repo).count("refs/review-pr/") == 1, "control: the PR-ref fetch ran"
+        assert not fetch_head.exists(), "no fetch in the run may write FETCH_HEAD"
+        assert _head_and_index(repo) == head_and_index_before
+
+        subprocess.run(
+            ["git", "fetch", "origin", base_sha], cwd=repo, capture_output=True, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert base_sha in fetch_head.read_text(), "control: a plain fetch of the same object name does write it"
+
+    def test_the_ref_updating_fetches_of_a_stacked_run_write_no_tag_and_no_fetch_head(self, isolated_home, tmp_path):
+        """Both `src:dst` fetches would otherwise fetch the tags that point into
+        the history they bring, leaving refs outside refs/review-pr/. Origin's
+        default branch is ahead of the clone's remote-tracking ref, so a fetch
+        that also updated that ref would show in the ref snapshot."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(tmp_path, base_entries={b"base_only.txt": b"base\n"})
+        origin_main_sha = _origin_main_sha(repo)
+        _git_bytes(repo, "push", "-q", "origin", f"{pr_sha}:refs/tags/pr-tag", f"{origin_main_sha}:refs/tags/default-tag")
+        _push_new_base_commit(repo, tmp_path)
+        _git_bytes(repo, "config", "--add", "remote.origin.fetch", "+refs/pull/*/head:refs/remotes/origin/pr/*")
+        refs_before = _ref_objects(repo)
+        assert "refs/remotes/origin/main" in refs_before, "control: the clone tracks origin's default branch"
+        assert f"refs/remotes/origin/pr/{PR_NUMBER}" not in refs_before, "control: no pull-ref tracking ref exists yet"
+        fetch_head = repo / ".git" / "FETCH_HEAD"
+        assert not fetch_head.exists(), "control: no fetch has written FETCH_HEAD yet"
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _default_branch_ref_exists(repo), "control: the default-branch fetch ran"
+        assert _git_bytes(repo, "tag", "--list") == b"", "no tag may land outside refs/review-pr/"
+        assert not fetch_head.exists(), "neither ref-updating fetch may write FETCH_HEAD"
+        refs_after = _ref_objects(repo)
+        refs_added_or_moved = {refname for refname, objectname in refs_after.items() if refs_before.get(refname) != objectname}
+        assert refs_added_or_moved == {f"refs/review-pr/pr-{PR_NUMBER}", f"refs/review-pr/pr-{PR_NUMBER}-default"}
+        assert refs_before.keys() <= refs_after.keys(), "no ref may be deleted"
+
+        # Control: a plain fetch of the same refs does bring both tags, so their absence above is the flags' doing.
+        _git_bytes(repo, "fetch", "origin", f"refs/pull/{PR_NUMBER}/head:refs/control/pr", "refs/heads/main:refs/control/default")
+        assert _git_bytes(repo, "tag", "--list").decode().split() == ["default-tag", "pr-tag"]
+        refs_after_control = _ref_objects(repo)
+        assert refs_after_control["refs/remotes/origin/main"] != refs_before["refs/remotes/origin/main"], (
+            "control: without --refmap= the configured refspec also moves the remote-tracking ref"
+        )
+        assert f"refs/remotes/origin/pr/{PR_NUMBER}" in refs_after_control, (
+            "control: without --refmap= the configured pull-ref refspec also writes its tracking ref"
+        )
 
 
 class TestAuditStopAbortsBeforeFetch:
@@ -2751,7 +2921,7 @@ class TestHeadRefOidDriftDuringFileListFetch:
         repo, pr_sha = repo_with_pr_ref
         result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, head_ref_oid_second="f" * 40, files=["src/app.py"],
+            head_ref_oid=pr_sha, head_ref_oid_second="f" * 40, files=[".mcp.json"],
         )
         assert result.returncode == 2, result.stderr
         assert "force-push" in result.stderr
@@ -2766,6 +2936,124 @@ class TestHeadRefOidDriftDuringFileListFetch:
             "headRefOid must be fetched twice: once before the file list, "
             "once to re-verify it before the audit runs"
         )
+
+
+# A branch name holding a non-ASCII character and a space, composed (U+00E9), to be compared byte for byte.
+_UNUSUAL_BASE_BRANCH = "caf\u00e9 branch"
+
+
+class TestBaseBranchRetargetDuringReads:
+    """The stacked-or-default decision reads the base branch from the REST
+    payload, so a retarget between that read and the later `gh pr view` reads
+    must abort rather than skip the stacked delta audit."""
+
+    def _assert_aborted_before_any_ref_fetch(self, result, repo, expected_stderr_fragment):
+        assert result.returncode == 2, result.stderr
+        assert expected_stderr_fragment in result.stderr
+        assert result.stdout == ""
+        assert _local_pr_ref_names(repo) == "", "an undecided base must never fetch refs/pull/<N>/head"
+        assert _review_worktrees(repo) == []
+
+    def test_a_base_branch_that_differs_between_the_rest_payload_and_the_base_oid_read_aborts(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            base_ref_name="main", base_default_branch="main", pr_view_base_ref_name=_STACKED_BASE_BRANCH,
+        )
+        self._assert_aborted_before_any_ref_fetch(result, repo, "a retarget between the two reads")
+
+    def test_a_base_oid_read_that_carries_no_base_branch_name_aborts(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], pr_view_base_ref_name=None,
+        )
+        self._assert_aborted_before_any_ref_fetch(result, repo, "a retarget between the two reads")
+
+    def test_a_retarget_during_the_file_list_fetch_aborts_before_the_audit(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=[".mcp.json"], pr_view_base_ref_name_second=_STACKED_BASE_BRANCH,
+        )
+        self._assert_aborted_before_any_ref_fetch(result, repo, "a retarget race between the self-fetches")
+        assert f'"{_STACKED_BASE_BRANCH}"' in result.stderr
+        assert len([c for c in _read_calls(call_log) if c[:2] == ["pr", "view"]]) == 2
+
+    def test_a_base_branch_that_holds_across_every_read_checks_out(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """Control: the same shim without a retarget reaches a worktree, so the aborts above are the retarget's doing.
+        The shim answers only the fields and the `--jq` expression the script sends, so this also pins that the
+        re-fetch asks for both values and parses the head first and the base second."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], pr_view_base_ref_name_second="main",
+        )
+        assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize(
+        "recheck_shim_knobs",
+        [
+            pytest.param({"pr_view_base_ref_name_second": ""}, id="recheck_prints_the_head_line_and_no_base_line"),
+            pytest.param({"fail_pr_view_second": True}, id="recheck_gh_exits_non_zero"),
+        ],
+    )
+    def test_a_recheck_that_returns_no_base_branch_aborts_as_unreadable_not_as_a_retarget(
+        self, isolated_home, repo_with_pr_ref, tmp_path, recheck_shim_knobs
+    ):
+        """A re-fetch that cannot be read says so, because the operator's next step differs from a retarget's."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=[".mcp.json"], **recheck_shim_knobs,
+        )
+        self._assert_aborted_before_any_ref_fetch(result, repo, "could not re-fetch")
+        assert "retarget" not in result.stderr
+        assert len([c for c in _read_calls(call_log) if c[:2] == ["pr", "view"]]) == 2
+
+    def test_an_unusual_base_branch_name_that_holds_across_the_reads_checks_out(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """Control for the byte-exact cases below: a non-ASCII name with a space, equal on every read, is not a retarget."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_name=_UNUSUAL_BASE_BRANCH,
+        )
+        assert result.returncode == 0, result.stderr
+
+    @pytest.mark.parametrize(
+        "pr_view_base_ref_name",
+        [
+            pytest.param("cafe\u0301 branch", id="same_text_in_decomposed_unicode"),
+            pytest.param("caf\u00e9  branch", id="a_second_space"),
+            pytest.param("caf\u00e9\u00a0branch", id="a_no_break_space_for_the_space"),
+        ],
+    )
+    def test_a_base_branch_name_that_differs_by_bytes_alone_between_the_two_reads_aborts(
+        self, isolated_home, repo_with_pr_ref, tmp_path, pr_view_base_ref_name
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            base_ref_name=_UNUSUAL_BASE_BRANCH, pr_view_base_ref_name=pr_view_base_ref_name,
+        )
+        self._assert_aborted_before_any_ref_fetch(result, repo, "a retarget between the two reads")
 
 
 class TestMalformedGhApiOutput:

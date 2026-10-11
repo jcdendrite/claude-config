@@ -132,7 +132,9 @@ review_pr_is_full_hex_oid() {
 # review_pr_base_is_default_branch BASE_REF_NAME DEFAULT_BRANCH
 # Returns 0 only when both names are non-empty and byte-equal.
 # Returns 1 when either is empty, so two absent names never read as the default branch. The comparison is case-sensitive, as git ref names are.
-# The names and the base object name come from separate API reads, so a base retarget between the reads can pair them wrongly; that race is accepted because agents and repositories are assumed cooperative.
+# The names and the base object name come from separate API reads, so a base retarget between the reads can pair them wrongly.
+# review-pr-diff.sh accepts that race, and review-pr-checkout.sh closes one-way retargets only; both are in the "Stdout carries a fixed token when the base is the default branch" bullet of claude-skills/skills/review-pr/REFERENCES.md.
+# The round-trip residual is the retarget bullet under "Known gaps and operator choices" in the same file.
 review_pr_base_is_default_branch() {
   [[ -n "$1" && "$1" == "$2" ]]
 }
@@ -141,7 +143,7 @@ review_pr_base_is_default_branch() {
 # Reads NUL-terminated names on stdin and prints them as one compact JSON array, in order.
 # Empty stdin prints [].
 # Returns 1 when jq fails or the input does not end in NUL, so an unterminated final name is never dropped.
-# Relies on a `jq -R -s` that keeps NUL bytes (verified on jq 1.8.2); a jq that truncates at NUL leaves the final name unterminated, so this returns 1.
+# Relies on a `jq -R -s` that keeps NUL bytes (README.md's `jq` version bullet names the verified version); a jq that truncates at NUL leaves the final name unterminated, so this returns 1.
 review_pr_nul_names_to_json() {
   _lib_jq -R -s -c 'split("\u0000") | if length == 0 or .[-1] == "" then .[:-1] else error("unterminated final name") end' 2>/dev/null || return 1
 }

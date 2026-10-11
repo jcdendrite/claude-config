@@ -60,6 +60,12 @@ match list still holds.
   rate-limited from a network failure means parsing stderr text, which is
   version-fragile across `gh` releases. The script prefers aborting on any
   non-zero exit over branching on a parsed failure cause.
+- **The script's worst-case wall time exceeds the Bash tool's default
+  timeout.** Its seven capped `gh` calls sum to 150 seconds: the two
+  `gh pr view` calls and the REST call at 10 seconds each, and the four
+  paginated calls (files, commits, reviews, inline comments) at 30 seconds
+  each. The tool's default timeout is 120000 ms, so SKILL.md Step 1 sets
+  `timeout: 600000` for it.
 
 ## Execution-surface file list (Step 2 / `audit-execution-surface.py`)
 
@@ -232,10 +238,29 @@ left implicit:
   `review-pr-checkout.sh` prints the same text as an optional fourth line,
   after the worktree path, the diff path, and the base commit. Neither script
   prints it otherwise. The session matches the line's text on the script's own
-  stdout, so a diff or PR body that contains the text cannot supply it. The
-  two names come from separate API reads, so a base retarget between the reads
-  can pair them wrongly. The scripts accept that race because agents and
-  repositories are assumed cooperative.
+  stdout, so a diff or PR body that contains the text cannot supply it.
+  `review-pr-checkout.sh` takes the base branch name from the REST payload,
+  requires `gh pr view`'s `baseRefName` to equal it beside `baseRefOid` and
+  again after the file list, and exits 2 on a mismatch, so a one-way retarget
+  between the reads cannot skip the stacked delta audit.
+  - `review-pr-diff.sh` reads its base commit from the `gh pr view` call and
+    both base names from the `.base.ref` and `.base.repo.default_branch` reads
+    of `PR_REST_JSON`, so a base retarget between the two reads can pair them
+    wrongly.
+  - A token printed in error lets a non-default branch's content count as
+    settled code, because SKILL.md makes the token the only gate for that. A
+    token missing in error only leaves claims open.
+  - The race is accepted because its impact is bounded.
+    - The retarget must land between two reads. A PR author needs no write
+      access to choose which existing base-repository branch supplies the base
+      content.
+    - The effect is to close or demote unprotected findings against that
+      branch's content, through step 7 rules 3 and 4.
+    - Rule 4 states "Neither rule applies to a protected finding", and step 8
+      lists "Every finding or claim a step 7 pass dropped, downgraded, or
+      moved, with its evidence source."
+    - A same-repo writer who can write that branch is the attacker the "Known
+      gaps and operator choices" section already accepts.
 
 ## Base reads by object ID (Step 5)
 
@@ -447,7 +472,10 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
   reachable until the ref is deleted with
   `git update-ref -d refs/review-pr/pr-<number>`. For a PR whose base branch
   is not the default branch, it also fetches the default branch into
-  `refs/review-pr/pr-<number>-default`, deleted the same way. Both scripts'
+  `refs/review-pr/pr-<number>-default`, deleted the same way. Those two ref
+  fetches pass `--no-tags`, `--no-write-fetch-head` and an empty `--refmap=`,
+  so they leave no tag, no `FETCH_HEAD` and no remote-tracking ref update
+  behind. Both scripts'
   `git fetch --no-write-fetch-head -- origin <baseRefOid>` adds the base
   commit's objects to the shared object store. `review-pr-finish.sh` does not
   remove them, and an ordinary `git gc` expires them once unreachable (default
@@ -463,10 +491,25 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
   no verdict all exit 2, and exit-2 messages never name `review-pr-diff.sh`.
   SKILL.md Step 2 tells the human they may re-run the script or ask for the
   diff-only path.
-- **The NUL-split name decode was verified on jq 1.8.2 only.** A jq that
+- **The NUL-split name decode depends on the `jq` version.** README.md's
+  `jq` version bullet names the verified version. A jq that
   truncates at a NUL byte fails at the decode ("unterminated final name"), so
   every stacked PR with a non-empty delta exits 2 on it. An empty delta still
   passes.
+- **A retarget away from the default branch and back skips the stacked delta
+  audit.**
+  - It must land while the paginated file list is being read, so all three
+    base-name reads stay equal and the file list can describe another base.
+  - Closing it needs an audit keyed only on object IDs, such as an
+    unconditional `DEFAULT_OID...FETCHED_SHA` audit.
+  - That audit was not adopted. The attacker is a same-repo author with write
+    access, who already has the quieter bypass in the "Git-tracked symlinks are not defended against" section above.
+  - An unconditional audit would also add a default-branch fetch and the NUL
+    decode dependence to every PR.
+  - The paginated listing must still match `changed_files` in length
+    (`review_pr_file_count_matches`). A skipped audit lets flagged
+    execution-surface paths that the head shares with the stacked base reach
+    the checkout unaudited.
 - **The post gate is a cooperative-mistake check.** The checks `review-pr-post.sh`
   makes are listed in its usage text.
   - `review-pr-post.sh` consumes the completion marker with `unlink(1)`, an

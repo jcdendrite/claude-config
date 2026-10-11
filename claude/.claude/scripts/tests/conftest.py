@@ -611,6 +611,47 @@ def _push_new_base_commit(repo: Path, tmp_path: Path) -> str:
     ).stdout.strip()
 
 
+def _git_commit_is_present(repo: Path, commit_sha: str) -> bool:
+    return subprocess.run(
+        ["git", "cat-file", "-e", f"{commit_sha}^{{commit}}"], cwd=repo, capture_output=True, timeout=60,
+    ).returncode == 0
+
+
+def _install_reference_transaction_sentinel_hook(repo: Path, sentinel: Path) -> None:
+    """Installs in repo a `reference-transaction` hook that touches `sentinel`."""
+    hook = repo / ".git" / "hooks" / "reference-transaction"
+    hook.write_text(f"#!/bin/sh\ntouch '{sentinel}'\n")
+    hook.chmod(0o755)
+
+
+def _install_reference_transaction_sentinel_hooks(repo: Path, tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Clones repo's origin into tmp_path/control-repo, then installs in both
+    repo and the clone a `reference-transaction` hook that touches a sentinel
+    file. Returns (control_repo, repo's sentinel, the clone's sentinel)."""
+    control_repo = tmp_path / "control-repo"
+    origin_url = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=True,
+        timeout=60,
+    ).stdout.strip()
+    subprocess.run(["git", "clone", "-q", origin_url, str(control_repo)], check=True, capture_output=True, timeout=60)
+    hook_ran_sentinel = tmp_path / "hook-ran"
+    control_hook_ran_sentinel = tmp_path / "control-hook-ran"
+    for hook_repo, sentinel in ((repo, hook_ran_sentinel), (control_repo, control_hook_ran_sentinel)):
+        _install_reference_transaction_sentinel_hook(hook_repo, sentinel)
+    return control_repo, hook_ran_sentinel, control_hook_ran_sentinel
+
+
+def _assert_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction(
+    control_repo: Path, commit_sha: str, control_hook_ran_sentinel: Path,
+) -> None:
+    """The control for a hooks-off base fetch: the same fetch with hooks enabled does fire the hook."""
+    subprocess.run(["git", "fetch", "origin", commit_sha], cwd=control_repo, capture_output=True, check=True, timeout=60)
+    assert control_hook_ran_sentinel.exists(), (
+        "control: the hook is not wired, or git no longer fires reference-transaction on a fetch by "
+        "object name (git version drift), so the absence above says nothing about the -c flag"
+    )
+
+
 def _build_repo_with_pr_ref(
     tmp_path: Path, owner_repo: str = "foo/bar", pr_number: str = "42",
 ) -> tuple[Path, str]:

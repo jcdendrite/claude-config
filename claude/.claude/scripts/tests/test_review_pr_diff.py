@@ -25,12 +25,15 @@ from helpers import SCRIPTS_DIR
 from .conftest import (
     _BASE_FROM_ORIGIN_MAIN,
     GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
+    _assert_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction,
     _assert_finish_and_clear_stale_each_empty_the_active_directory,
     _assert_gh_calls_are_read_only,
     _build_repo_with_pr_ref,
+    _git_commit_is_present,
     _git_shim_that_fails_on_subcommand,
     _install_audit_script,
     _install_audit_script_that_runs,
+    _install_reference_transaction_sentinel_hooks,
     _origin_main_sha,
     _provenance_fields,
     _push_new_base_commit,
@@ -83,6 +86,7 @@ def _diff_text_for(files: list[str]) -> str:
 
 def _gh_shim_source(
     call_log: Path,
+    *,
     head_ref_oid: str | None = None,
     files: list[str] | None = None,
     diff_text: str | None = None,
@@ -100,8 +104,8 @@ def _gh_shim_source(
     base_ref_name: str | None = "main",
     base_default_branch: str | None = "main",
 ) -> str:
-    """gh shim recording every invocation, matching
-    test_review_pr_checkout.py's own shim shape. A `gh pr view` call carrying
+    """gh shim recording every invocation and returning fixed replies whatever
+    fields are requested. A `gh pr view` call carrying
     `--jq` prints the headRefOid alone, as the script's re-fetches expect; one
     without it prints the JSON reply holding headRefOid and, unless
     `base_ref_oid` is None, baseRefOid. `diff_text` defaults to a
@@ -292,10 +296,23 @@ def _run(
         **_shimmed_env(
             tmp_path,
             _gh_shim_source(
-                call_log, head_ref_oid, files, diff_text, fail_pr_view, fail_files,
-                head_ref_oid_second, fail_diff, diff_error_text,
-                changed_files, omit_changed_files, fail_rest, files_failure_exit_status,
-                head_ref_oid_third, base_ref_oid, base_ref_name, base_default_branch,
+                call_log,
+                head_ref_oid=head_ref_oid,
+                files=files,
+                diff_text=diff_text,
+                fail_pr_view=fail_pr_view,
+                fail_files=fail_files,
+                head_ref_oid_second=head_ref_oid_second,
+                fail_diff=fail_diff,
+                diff_error_text=diff_error_text,
+                changed_files=changed_files,
+                omit_changed_files=omit_changed_files,
+                fail_rest=fail_rest,
+                files_failure_exit_status=files_failure_exit_status,
+                head_ref_oid_third=head_ref_oid_third,
+                base_ref_oid=base_ref_oid,
+                base_ref_name=base_ref_name,
+                base_default_branch=base_default_branch,
             ),
         ),
         "HOME": str(home),
@@ -541,13 +558,6 @@ class TestNoCheckoutNoWorktreeNoLocalRef:
 _FULL_HEX_OBJECT_NAME = re.compile(r"[0-9a-f]{40}")
 
 
-def _commit_is_present(repo: Path, commit_sha: str) -> bool:
-    return subprocess.run(
-        ["git", "cat-file", "-e", f"{commit_sha}^{{commit}}"], cwd=repo, capture_output=True,
-        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-    ).returncode == 0
-
-
 def _git_output(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=repo, capture_output=True, text=True, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
@@ -613,7 +623,7 @@ class TestBaseCommitFetch:
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         base_sha = _push_new_base_commit(repo, tmp_path)
-        assert not _commit_is_present(repo, base_sha), "control: the base commit is absent before the run"
+        assert not _git_commit_is_present(repo, base_sha), "control: the base commit is absent before the run"
 
         result, call_log = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
@@ -621,7 +631,7 @@ class TestBaseCommitFetch:
         )
 
         assert result.returncode == 0, result.stderr
-        assert _commit_is_present(repo, base_sha), "the run fetched the base commit"
+        assert _git_commit_is_present(repo, base_sha), "the run fetched the base commit"
         stdout_lines = result.stdout.splitlines()
         assert len(stdout_lines) == 3, "diff path, base object name, then the default-branch token"
         assert stdout_lines[2] == _BASE_IS_DEFAULT_BRANCH_TOKEN
@@ -712,20 +722,11 @@ class TestBaseCommitFetch:
         assert result.returncode == 0, result.stderr
         assert result.stdout.splitlines()[1:] == [base_sha, _BASE_IS_DEFAULT_BRANCH_TOKEN]
 
-    @pytest.mark.parametrize(
-        ("base_ref_name", "base_default_branch"),
-        [
-            ("main", "trunk"),
-            ("Main", "main"),
-            ("refs/heads/main", "main"),
-            (" main", "main"),
-            ("main ", "main"),
-        ],
-        ids=["main-is-not-the-default", "case-variant", "refs-heads-prefix", "leading-space", "trailing-space"],
-    )
     def test_a_base_branch_that_is_not_exactly_the_default_prints_no_token(
-        self, isolated_home, repo_with_pr_ref, tmp_path, base_ref_name, base_default_branch
+        self, isolated_home, repo_with_pr_ref, tmp_path
     ):
+        """A trailing space must survive the name's extraction from the API payload.
+        One wiring case; the comparison's near-miss matrix is in test_review_pr_lib.py."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         base_sha = _push_new_base_commit(repo, tmp_path)
@@ -733,7 +734,7 @@ class TestBaseCommitFetch:
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
             head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
-            base_ref_name=base_ref_name, base_default_branch=base_default_branch,
+            base_ref_name="main ", base_default_branch="main",
         )
 
         assert result.returncode == 0, result.stderr
@@ -756,7 +757,7 @@ class TestBaseCommitFetch:
         )
 
         assert result.returncode == 0, result.stderr
-        assert _commit_is_present(repo, base_sha), "the base fetch ran"
+        assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
         assert _repo_state_snapshot(repo) == state_before
         assert not fetch_head.exists(), "the base fetch must not write FETCH_HEAD"
 
@@ -783,7 +784,7 @@ class TestBaseCommitFetch:
 
         assert result.returncode == 0, result.stderr
         assert _shim_match_count(shim_dir) == 1, "control: the base fetch reached git and exited 0"
-        assert not _commit_is_present(repo, base_sha), "control: the shimmed fetch left the commit absent"
+        assert not _git_commit_is_present(repo, base_sha), "control: the shimmed fetch left the commit absent"
         assert "BASE_UNAVAILABLE fetch-failed" in result.stderr
         assert len(result.stdout.splitlines()) == 1, "the unfetched object name is never offered on line 2"
         assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout, "the token needs the base fetch"
@@ -926,21 +927,9 @@ class TestBaseFetchRunsNoGitHooks:
         with hooks enabled is the control."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        control_repo = tmp_path / "control-repo"
-        origin_url = subprocess.run(
-            ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=True,
-            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-        ).stdout.strip()
-        subprocess.run(
-            ["git", "clone", "-q", origin_url, str(control_repo)], check=True, capture_output=True,
-            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        control_repo, hook_ran_sentinel, control_hook_ran_sentinel = _install_reference_transaction_sentinel_hooks(
+            repo, tmp_path
         )
-        hook_ran_sentinel = tmp_path / "hook-ran"
-        control_hook_ran_sentinel = tmp_path / "control-hook-ran"
-        for hook_repo, sentinel in ((repo, hook_ran_sentinel), (control_repo, control_hook_ran_sentinel)):
-            hook = hook_repo / ".git" / "hooks" / "reference-transaction"
-            hook.write_text(f"#!/bin/sh\ntouch '{sentinel}'\n")
-            hook.chmod(0o755)
         base_sha = _push_new_base_commit(repo, tmp_path)
 
         result, _ = _run(
@@ -949,16 +938,10 @@ class TestBaseFetchRunsNoGitHooks:
         )
 
         assert result.returncode == 0, result.stderr
-        assert _commit_is_present(repo, base_sha), "the base fetch ran"
+        assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
         assert not hook_ran_sentinel.exists(), "the base fetch must run with git hooks disabled"
-
-        subprocess.run(
-            ["git", "fetch", "origin", base_sha], cwd=control_repo, capture_output=True, check=True,
-            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
-        )
-        assert control_hook_ran_sentinel.exists(), (
-            "control: the hook is not wired, or git no longer fires reference-transaction on a fetch by "
-            "object name (git version drift), so the absence above says nothing about the -c flag"
+        _assert_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction(
+            control_repo, base_sha, control_hook_ran_sentinel
         )
 
 

@@ -33,11 +33,12 @@ audit, and the checkout need rather than trusting them as arguments. In order:
    review-pr-diff.sh as the path to use instead.
 3. Fetches the PR's own full, paginated file list (one JSON string per file
    name, so a name holding a newline decodes intact) and its current
-   headRefOid and baseRefOid directly from `gh`. Aborts on a baseRefOid that
-   is not a full hex object name, and on a listing whose length differs from
-   the PR's own `changed_files` count.
-4. Re-fetches headRefOid to catch a force-push landing while the file list was
-   being paginated.
+   headRefOid and baseRefOid directly from `gh`, together with the base branch
+   name that read carries. Aborts on a baseRefOid that is not a full hex object
+   name, on a base branch name that differs from step 2's, and on a listing
+   whose length differs from the PR's own `changed_files` count.
+4. Re-fetches headRefOid and the base branch name to catch a force-push or a
+   retarget landing while the file list was being paginated.
 5. Pipes the file list to audit-execution-surface.py. A stop verdict exits 3
    before any fetch of the PR's ref, naming the matched paths and reasons on
    stderr, one line per match with the path as an ASCII-only JSON string,
@@ -84,13 +85,13 @@ Only an exit-0 run prints the diff path on stdout, and the caller reads the diff
 from that output alone. review-pr-finish.sh removes the diff file a failed run
 leaves behind.
 
-Worst-case wall time: the per-step caps sum to 250 seconds on the success path
-(10 for the two local git reads, 60 for the four gh calls, 50 for ten jq
+Worst-case wall time: the per-step caps sum to 255 seconds on the success path
+(10 for the two local git reads, 60 for the four gh calls, 55 for eleven jq
 calls, 30 for the PR-ref fetch, 10 for two more local git reads, 30 for the
-base fetch, 30 for the diff, 30 for worktree add) and 310 on the worst failure
+base fetch, 30 for the diff, 30 for worktree add) and 315 on the worst failure
 path (a failed worktree add followed by its two capped cleanups). A PR whose
-base branch is not the default branch adds 120 seconds to each path, for 370 and
-430 (5 for the ref-name check, 30 for the default-branch fetch, 5 for resolving
+base branch is not the default branch adds 120 seconds to each path, for 375 and
+435 (5 for the ref-name check, 30 for the default-branch fetch, 5 for resolving
 it, 30 for the counting git run, 30 for the name-listing git run, 20 for four jq
 calls). The name-listing run writes to a temporary file that the decoding jq
 reads only after git has finished, so those two caps add rather than overlap.
@@ -238,7 +239,7 @@ fi
 # 10s: a network GET carrying no payload, the same budget review-pr-post.sh
 # uses for its own gh pr view identity re-fetch.
 GH_PR_VIEW_TIMEOUT_SECONDS=10
-PR_VIEW_JSON=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid,baseRefOid 2>/dev/null) || PR_VIEW_JSON=""
+PR_VIEW_JSON=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid,baseRefOid,baseRefName 2>/dev/null) || PR_VIEW_JSON=""
 if ! HEAD_REF_OID=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.headRefOid // empty' 2>/dev/null) \
   || [[ -z "$HEAD_REF_OID" ]]; then
   echo "review-pr-checkout.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's current headRefOid. Abort before any fetch of the PR's ref." >&2
@@ -250,6 +251,13 @@ fi
 if ! BASE_REF_OID=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefOid // empty' 2>/dev/null) \
   || ! review_pr_is_full_hex_oid "$BASE_REF_OID"; then
   echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's baseRefOid is missing or is not a full hex object name. Abort before any fetch of the PR's ref." >&2
+  exit 2
+fi
+# The stacked-or-default decision above read BASE_REF_NAME from the REST payload, while baseRefOid comes from this read.
+# A retarget between the two reads would pair a base commit with the other base branch's decision, so the names must agree.
+if ! PR_VIEW_BASE_REF_NAME=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefName // empty' 2>/dev/null) \
+  || [[ "$PR_VIEW_BASE_REF_NAME" != "$BASE_REF_NAME" ]]; then
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's base branch reads as $(review_pr_ascii_json_string "$BASE_REF_NAME") from the REST payload but as $(review_pr_ascii_json_string "$PR_VIEW_BASE_REF_NAME") alongside baseRefOid (or the second read failed) -- a retarget between the two reads, so whether the base is the default branch is undecided. Abort before any fetch of the PR's ref." >&2
   exit 2
 fi
 
@@ -287,15 +295,21 @@ if ! LISTED_FILES_COUNT=$(review_pr_file_count_matches "$FILES_JSON" "$CHANGED_F
   exit 2
 fi
 
-# Re-fetch headRefOid after the file list to catch a force-push during
-# pagination, before the audit runs against a possibly-stale list.
-HEAD_REF_OID_RECHECK=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID_RECHECK=""
-if [[ -z "$HEAD_REF_OID_RECHECK" ]]; then
-  echo "review-pr-checkout.sh: could not re-fetch PR $OWNER_REPO#$PR_NUMBER's headRefOid to confirm the file list above is still current. Abort before any fetch of the PR's ref." >&2
+# Re-fetch headRefOid and the base branch after the file list to catch a force-push or a retarget during
+# pagination, before the audit runs against a possibly-stale list. The two values print one per line.
+HEAD_AND_BASE_RECHECK=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid,baseRefName --jq '.headRefOid, .baseRefName' 2>/dev/null) || HEAD_AND_BASE_RECHECK=""
+HEAD_REF_OID_RECHECK=$(printf '%s\n' "$HEAD_AND_BASE_RECHECK" | sed -n '1p')
+BASE_REF_NAME_RECHECK=$(printf '%s\n' "$HEAD_AND_BASE_RECHECK" | sed -n '2p')
+if [[ -z "$HEAD_REF_OID_RECHECK" || -z "$BASE_REF_NAME_RECHECK" ]]; then
+  echo "review-pr-checkout.sh: could not re-fetch PR $OWNER_REPO#$PR_NUMBER's headRefOid and base branch to confirm the file list above is still current. Abort before any fetch of the PR's ref." >&2
   exit 2
 fi
 if [[ "$HEAD_REF_OID_RECHECK" != "$HEAD_REF_OID" ]]; then
   echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's headRefOid changed from $HEAD_REF_OID to $HEAD_REF_OID_RECHECK while its file list was being fetched -- a force-push race between the two self-fetches. Abort before any fetch of the PR's ref." >&2
+  exit 2
+fi
+if [[ "$BASE_REF_NAME_RECHECK" != "$BASE_REF_NAME" ]]; then
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's base branch changed from $(review_pr_ascii_json_string "$BASE_REF_NAME") to $(review_pr_ascii_json_string "$BASE_REF_NAME_RECHECK") while its file list was being fetched -- a retarget race between the self-fetches, so the file list and the stacked-base decision may describe different bases. Abort before any fetch of the PR's ref." >&2
   exit 2
 fi
 
@@ -338,8 +352,12 @@ audit_paths_or_exit "$FILES_JSON" \
 # Local ref namespace scoped to this script, distinct from any branch name a
 # contributor might already have locally, so this fetch can never collide
 # with or overwrite an unrelated ref.
+# --no-tags stops git's default fetch of tags that point into the fetched history.
+# --no-write-fetch-head leaves FETCH_HEAD alone.
+# An empty --refmap= makes git ignore the remote's configured fetch refspecs (git-fetch(1)), which would otherwise also update a matching remote-tracking ref.
+# Together the fetch writes only this ref among this repository's refs, tags and FETCH_HEAD.
 LOCAL_REF="refs/review-pr/pr-$PR_NUMBER"
-if _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/pull/$PR_NUMBER/head:$LOCAL_REF" --force >/dev/null 2>&1; then
+if _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/pull/$PR_NUMBER/head:$LOCAL_REF" --force --no-tags --no-write-fetch-head --refmap= >/dev/null 2>&1; then
   FETCH_STATUS=0
 else
   FETCH_STATUS=$?
@@ -397,7 +415,7 @@ exit_delta_unaudited() {
 }
 
 # Closes the decode and count-match failures, which a jq that truncates raw input at NUL produces.
-JQ_NUL_NOTE="a jq that truncates raw input at NUL may cause this; the NUL handling was verified on jq 1.8.2"
+JQ_NUL_NOTE="a jq that truncates raw input at NUL may cause this; claude-config's README.md jq version bullet names the verified version"
 
 # delta_diff_status_description STATUS
 # Describes a failed delta diff run's status, adding the usual cause for git's own failure status 128.
@@ -425,8 +443,9 @@ if ! review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; t
     exit 2
   fi
 
+  # --no-tags, --no-write-fetch-head and --refmap= as for LOCAL_REF above.
   DEFAULT_LOCAL_REF="refs/review-pr/pr-$PR_NUMBER-default"
-  if _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/heads/$BASE_DEFAULT_BRANCH:$DEFAULT_LOCAL_REF" --force >/dev/null 2>&1; then
+  if _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/heads/$BASE_DEFAULT_BRANCH:$DEFAULT_LOCAL_REF" --force --no-tags --no-write-fetch-head --refmap= >/dev/null 2>&1; then
     DEFAULT_FETCH_STATUS=0
   else
     DEFAULT_FETCH_STATUS=$?

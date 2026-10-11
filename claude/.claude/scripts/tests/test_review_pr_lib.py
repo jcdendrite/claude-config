@@ -298,6 +298,8 @@ class TestBaseIsDefaultBranch:
             ("", "main"),
             ("main", ""),
             ("Main", "main"),
+            ("refs/heads/main", "main"),
+            (" main", "main"),
             ("main2", "main"),
             ("main", "main2"),
             ("main ", "main"),
@@ -307,13 +309,23 @@ class TestBaseIsDefaultBranch:
         ],
         ids=[
             "different", "both-empty", "base-empty", "default-empty", "case-only-difference",
-            "base-has-default-as-prefix", "default-has-base-as-prefix", "trailing-space",
+            "refs-heads-prefix", "leading-space", "base-has-default-as-prefix", "default-has-base-as-prefix", "trailing-space",
             "default-is-a-star-glob-matching-base",
             "default-is-a-bracket-glob-matching-base", "default-is-a-question-glob-matching-base",
         ],
     )
     def test_anything_but_two_equal_non_empty_names_is_not(self, base_ref_name, default_branch):
         assert _call("review_pr_base_is_default_branch", base_ref_name, default_branch)[0] == 1
+
+
+class TestBaseIsDefaultBranchToken:
+    def test_the_skill_text_names_the_token_the_scripts_print(self):
+        """The session matches the token's text on the scripts' stdout, so a rename in one place must reach the other."""
+        result = _run_bash('printf "%s" "$REVIEW_PR_BASE_IS_DEFAULT_BRANCH_TOKEN"')
+        assert result.returncode == 0, result.stderr
+        token = result.stdout
+        assert token, "control: the library defines a non-empty token"
+        assert f"`{token}`" in (SKILLS_DIR / "review-pr" / "SKILL.md").read_text()
 
 
 class TestNulNamesToJson:
