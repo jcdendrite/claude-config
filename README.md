@@ -407,10 +407,10 @@ See [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) for the fire predicat
 `./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
 
 ```bash
-touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.cost-ledger-enabled"
+printf 'cost_ledger_recording = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-See [`docs/cost-ledger.md`](docs/cost-ledger.md) for the schema and recording mechanics.
+See [`docs/cost-ledger.md`](docs/cost-ledger.md) for the schema and recording mechanics, and [`docs/config-file.md`](docs/config-file.md) for the file's hand-edit contract.
 
 ### Repo relocation
 

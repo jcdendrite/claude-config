@@ -2,7 +2,7 @@
 
 `transcript-analysis.py` is an analysis toolkit for Claude Code transcripts. By default it scans the union of the active profile's `<config-dir>/projects/*/*.jsonl` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) and every config dir declared in `~/.claude/transcript-config-dirs`, not just the active profile alone — except `cost --summary`, which is scoped to this repository on the active account only — see "Corpus scope: the declared-roots file" below. Run it directly from the shell — there is no `~/.local/bin/` wrapper.
 
-All subcommands are local-only reads except `pr-link` (calls `gh`), `judgment-pair --out` (writes to a specified file), and `cost-ledger --record` (writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default, overridable via `COST_LEDGER_PATH`, gated on an opt-in sentinel — see the `cost-ledger` section below). No other subcommand writes to disk.
+All subcommands are local-only reads except `pr-link` (calls `gh`), `judgment-pair --out` (writes to a specified file), and `cost-ledger --record` (writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default, overridable via `COST_LEDGER_PATH`, gated on the `cost_ledger_recording` config key — see the `cost-ledger` section below). No other subcommand writes to disk.
 
 For question-driven routing ("which subcommand answers X?"), use the `/transcript-analysis` skill. This page is the per-subcommand reference: flags, output shape, and when to reach for each one.
 
@@ -1087,7 +1087,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable). Refuses (exit 2) whenever more than one root resolves, since this subcommand durably writes.
-- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the opt-in sentinel `~/.claude/.pr-cost-enabled`. It can exit 1 after a completed run when a row was recorded without its per-model breakdown, per `docs/pr-cost.md` § "Write-time check failures".
+- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the `pr_cost_recording` config key to resolve true (legacy-fallback mechanics: `docs/config-file.md`). It can exit 1 after a completed run when a row was recorded without its per-model breakdown, per `docs/pr-cost.md` § "Write-time check failures".
 - `--pr N` — target exactly one PR number instead of every branch with local corpus activity.
 - `--machine-label LABEL` — narrows read mode's uncaptured-PR listing to one machine: an opaque token matching `^[a-z0-9]{1,8}$`. Refused (exit 1) together with `--record` — machine identity is generated and persisted automatically there (see `docs/pr-cost.md`'s "Machine identity").
 - `--force` — with `--record` and `--pr`, append a correcting row for an already-captured PR instead of refusing.
@@ -1097,7 +1097,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 
 **Default (read) output.** Every row currently in the ledger file, followed by every merged PR with local-corpus activity that no row has captured yet — the gap between "recorded" and "still recoverable," mirroring `cost-ledger`'s own uncaptured-week listing.
 
-**Two modes, one sentinel.** Read mode makes only the calls discovery already needs, so it stays cheap enough to run often as a capture-trigger check. `--record` is gated behind `~/.claude/.pr-cost-enabled` precisely because it durably writes the at-rest data listed in `docs/pr-cost.md` § "Data" to an external file, unlike the weekly ledger's aggregate-only rows — `install.sh` prompts for both sentinels together.
+**Two modes, one opt-in key.** Read mode makes only the calls discovery already needs, so it stays cheap enough to run often as a capture-trigger check. `--record` is gated behind the `pr_cost_recording` config key precisely because it durably writes the at-rest data listed in `docs/pr-cost.md` § "Data" to an external file, unlike the weekly ledger's aggregate-only rows — `install.sh` prompts for both opt-in keys together.
 
 **When to reach for it.** Run in read mode routinely to catch merged PRs about to age out of the local transcript window; run `--record` once a PR clears the as-of window to capture its row permanently before that happens.
 
@@ -1111,7 +1111,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 - `--out PATH` — required; the destination TSV. Refused if it already exists (never overwritten). There is deliberately no stdout fallback — stdout inside a Claude Code session is captured into that session's own transcript.
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable).
 
-**Default output.** There is no read-mode/`--record` split like `pr-cost`'s — every invocation writes the export file, honoring each account's existing `~/.claude/.pr-cost-enabled` sentinel (an account without it contributes zero rows).
+**Default output.** There is no read-mode/`--record` split like `pr-cost`'s — every invocation writes the export file, honoring each account's existing `pr_cost_recording` config key (an account whose key resolves false or unset contributes zero rows).
 
 **When to reach for it.** Before a cross-account or cross-repo cost analysis that needs to leave the machine it was captured on, or before comparing per-PR cost figures across more than one declared account in one artifact.
 

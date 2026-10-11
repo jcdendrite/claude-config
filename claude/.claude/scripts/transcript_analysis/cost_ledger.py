@@ -560,14 +560,12 @@ def _cost_ledger_report(args: argparse.Namespace, today: date, roots: Sequence[P
         )
         sys.exit(1)
     if not cost_ledger_recording_enabled:
-        # Hardcodes the conventional ~/.claude path rather than the resolved
-        # config dir -- same don't-print-a-resolved-home-rooted-path
-        # discipline as the ledger-file-missing message above, applied to a
-        # fixed docstring instead of an f-string since CLAUDE_CONFIG_DIR
-        # overrides are rare enough that the canonical hint reads clearer.
+        # Worded generically ("not opted in"), not as a missing-sentinel-file
+        # claim: an explicit cost_ledger_recording = false in
+        # claude-config.toml reaches this branch with no sentinel file involved.
         print(
-            "cost-ledger: --record requires the opt-in sentinel ~/.claude/.cost-ledger-enabled"
-            " -- see docs/cost-ledger.md",
+            "cost-ledger: --record is not opted in (cost_ledger_recording) --"
+            " see docs/cost-ledger.md",
             file=sys.stderr,
         )
         sys.exit(1)
