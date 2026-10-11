@@ -54,11 +54,13 @@ review-pr-checkout.sh uses, but never checks the PR out. In order:
 
 Prints the diff file's path on stdout as line 1 of a successful run. When the
 base fetch succeeded it also prints the baseRefOid as a full hex object name on
-line 2. When it did not, stdout holds the path alone.
+line 2, and when the PR's base branch is also the base repository's default
+branch, the fixed token BASE_IS_DEFAULT_BRANCH on line 3. When the base fetch did
+not succeed, stdout holds the path alone, and the token is never printed.
 
-Worst-case wall time: the per-step caps sum to 170 seconds on a run whose audit
-is clean (15 for the three local git reads, 100 for the six gh calls, 25 for
-five jq calls, 30 for the base fetch) and 185 when the audit reports a finding
+Worst-case wall time: the per-step caps sum to 180 seconds on a run whose audit
+is clean (15 for the three local git reads, 100 for the six gh calls, 35 for
+seven jq calls, 30 for the base fetch) and 195 when the audit reports a finding
 (three more jq calls).
 Each cap kill adds up to 2 seconds of SIGKILL grace. The diff write and the
 provenance write are uncapped, as is the audit script. The session lookup's
@@ -162,6 +164,9 @@ if ! CHANGED_FILES_COUNT=$(review_pr_rest_changed_files "$PR_REST_JSON"); then
   echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER's REST payload carried no usable changed_files count (malformed response). Abort." >&2
   exit 2
 fi
+# The base branch names only decide whether the default-branch token prints, so an unreadable field degrades to no token instead of aborting.
+BASE_REF_NAME=$(printf '%s' "$PR_REST_JSON" | _lib_jq -r '.base.ref // empty' 2>/dev/null) || BASE_REF_NAME=""
+BASE_DEFAULT_BRANCH=$(printf '%s' "$PR_REST_JSON" | _lib_jq -r '.base.repo.default_branch // empty' 2>/dev/null) || BASE_DEFAULT_BRANCH=""
 
 # The changed-file ceiling of GitHub's diff endpoint: `gh pr diff` cannot
 # serve a PR past it, so a named stop here beats a bare gh failure below.
@@ -293,4 +298,7 @@ fi
 printf '%s\n' "$DIFF_FILE"
 if [[ -z "$BASE_UNAVAILABLE_CAUSE" ]]; then
   printf '%s\n' "$BASE_REF_OID"
+  if review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; then
+    printf '%s\n' "$REVIEW_PR_BASE_IS_DEFAULT_BRANCH_TOKEN"
+  fi
 fi

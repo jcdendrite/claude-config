@@ -279,6 +279,43 @@ class TestIsFullHexOid:
         assert _call("review_pr_is_full_hex_oid", oid)[0] == 1
 
 
+class TestBaseIsDefaultBranch:
+    def test_equal_names_are_the_default_branch(self):
+        assert _call("review_pr_base_is_default_branch", "main", "main")[0] == 0
+
+    def test_a_name_with_a_slash_equal_on_both_sides_is_the_default_branch(self):
+        assert _call("review_pr_base_is_default_branch", "release/1.x", "release/1.x")[0] == 0
+
+    @pytest.mark.parametrize("glob_name", ["m*", "[m]ain", "ma?n"])
+    def test_glob_metacharacters_compare_as_literal_text(self, glob_name):
+        assert _call("review_pr_base_is_default_branch", glob_name, glob_name)[0] == 0
+
+    @pytest.mark.parametrize(
+        ("base_ref_name", "default_branch"),
+        [
+            ("feature", "main"),
+            ("", ""),
+            ("", "main"),
+            ("main", ""),
+            ("Main", "main"),
+            ("main2", "main"),
+            ("main", "main2"),
+            ("main ", "main"),
+            ("main", "m*"),
+            ("main", "[m]ain"),
+            ("main", "ma?n"),
+        ],
+        ids=[
+            "different", "both-empty", "base-empty", "default-empty", "case-only-difference",
+            "base-has-default-as-prefix", "default-has-base-as-prefix", "trailing-space",
+            "default-is-a-star-glob-matching-base",
+            "default-is-a-bracket-glob-matching-base", "default-is-a-question-glob-matching-base",
+        ],
+    )
+    def test_anything_but_two_equal_non_empty_names_is_not(self, base_ref_name, default_branch):
+        assert _call("review_pr_base_is_default_branch", base_ref_name, default_branch)[0] == 1
+
+
 class TestNulNamesToJson:
     def test_names_keep_their_order_and_a_newline_inside_a_name(self):
         status, output = _call_with_stdin("review_pr_nul_names_to_json", b"a b\0x\ny\0-lead\0")

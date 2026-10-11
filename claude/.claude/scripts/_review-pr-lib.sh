@@ -16,6 +16,8 @@
 #   review_pr_decode_file_names     — the @json stream decoded into one JSON array
 #   review_pr_file_count_matches    — a decoded listing's length equals the expected count
 #   review_pr_is_full_hex_oid       — a value is a full SHA-1 or SHA-256 lowercase hex object name
+#   REVIEW_PR_BASE_IS_DEFAULT_BRANCH_TOKEN — the fixed stdout line the checkout and diff scripts print when the PR's base branch is the repository's default branch
+#   review_pr_base_is_default_branch — a PR's base branch name equals the repository's default branch name, both non-empty
 #   review_pr_nul_names_to_json     — NUL-terminated names on stdin decoded into one JSON array
 #   review_pr_bare_count            — a command's printed count trimmed of surrounding whitespace and validated as an integer
 #   review_pr_ascii_json_string     — an attacker-chosen string printed as one ASCII-only JSON string, for a message
@@ -61,6 +63,10 @@ REVIEW_PR_INLINE_COMMENTS_JQ_FILTER='.[] | {author: .user.login, path, line, bod
 # A git fetch is a network transfer, not a local read. No protocol or vendor limit backs the value.
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS=30
+
+# The fixed text that review-pr-checkout.sh and review-pr-diff.sh print on their own stdout line when the base is the default branch.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_BASE_IS_DEFAULT_BRANCH_TOKEN='BASE_IS_DEFAULT_BRANCH'
 
 # The audit's `json.dumps({"stop": False, "matches": []})` output, which it prints for a file list with no match.
 REVIEW_PR_AUDIT_CLEAN_DOCUMENT='{"stop": false, "matches": []}'
@@ -121,6 +127,14 @@ review_pr_file_count_matches() {
 # Anchored with no newline allowance, so a value with a trailing line, such as one carrying an option on the second line, fails.
 review_pr_is_full_hex_oid() {
   [[ "$1" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]
+}
+
+# review_pr_base_is_default_branch BASE_REF_NAME DEFAULT_BRANCH
+# Returns 0 only when both names are non-empty and byte-equal.
+# Returns 1 when either is empty, so two absent names never read as the default branch. The comparison is case-sensitive, as git ref names are.
+# The names and the base object name come from separate API reads, so a base retarget between the reads can pair them wrongly; that race is accepted because agents and repositories are assumed cooperative.
+review_pr_base_is_default_branch() {
+  [[ -n "$1" && "$1" == "$2" ]]
 }
 
 # review_pr_nul_names_to_json

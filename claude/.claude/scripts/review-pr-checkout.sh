@@ -76,8 +76,10 @@ audit, and the checkout need rather than trusting them as arguments. In order:
     the verified headRefOid, this session's Claude PID, the mode), never
     trusting review-pr-acquire.sh's mode "acquired" write.
 
-Prints three lines on stdout on a successful run: the worktree's absolute path,
-the diff file's absolute path, then the baseRefOid as a full hex object name.
+Prints three or four lines on stdout on a successful run: the worktree's
+absolute path, the diff file's absolute path, then the baseRefOid as a full hex
+object name, then the fixed token BASE_IS_DEFAULT_BRANCH only when the PR's base
+branch is the base repository's default branch.
 Only an exit-0 run prints the diff path on stdout, and the caller reads the diff
 from that output alone. review-pr-finish.sh removes the diff file a failed run
 leaves behind.
@@ -411,7 +413,7 @@ delta_diff_status_description() {
 # list never names. The delta is the head's changes from the default branch.
 # The delta runs head-side, after the PR-ref fetch: a base-side list would miss a
 # file that was on the base when the PR forked and was later removed from it.
-if [[ "$BASE_REF_NAME" != "$BASE_DEFAULT_BRANCH" ]]; then
+if ! review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; then
   # Both names come from the API, so messages print them through review_pr_ascii_json_string.
   BASE_DEFAULT_BRANCH_ESCAPED=$(review_pr_ascii_json_string "$BASE_DEFAULT_BRANCH")
   BASE_REF_NAME_ESCAPED=$(review_pr_ascii_json_string "$BASE_REF_NAME")
@@ -592,3 +594,6 @@ if ! _lib_write_review_pr_provenance "$PROVENANCE" \
 fi
 
 printf '%s\n%s\n%s\n' "$WORKTREE_DIR" "$DIFF_FILE" "$BASE_REF_OID"
+if review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; then
+  printf '%s\n' "$REVIEW_PR_BASE_IS_DEFAULT_BRANCH_TOKEN"
+fi

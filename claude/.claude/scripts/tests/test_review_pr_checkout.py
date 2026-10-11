@@ -109,18 +109,22 @@ def _push_pr_head_commit(repo: Path, files: dict[str, str]) -> tuple[str, str]:
 
 
 def _printed_worktree_path(result: subprocess.CompletedProcess) -> Path:
-    """The worktree path, the first of the three lines a successful run prints."""
+    """The worktree path, the first line a successful run prints."""
     return Path(result.stdout.splitlines()[0])
 
 
 def _printed_diff_path(result: subprocess.CompletedProcess) -> Path:
-    """The diff file path, the second of the three lines a successful run prints."""
+    """The diff file path, the second line a successful run prints."""
     return Path(result.stdout.splitlines()[1])
 
 
 def _printed_base_ref_oid(result: subprocess.CompletedProcess) -> str:
-    """The baseRefOid, the third of the three lines a successful run prints."""
+    """The baseRefOid, the third line a successful run prints."""
     return result.stdout.splitlines()[2]
+
+
+# The fixed fourth line a run prints only when the PR's base branch is the base repository's default branch.
+_BASE_IS_DEFAULT_BRANCH_TOKEN = "BASE_IS_DEFAULT_BRANCH"
 
 
 def _review_worktrees(repo: Path) -> list[Path]:
@@ -667,6 +671,7 @@ class TestTrustClassificationRefuses:
         )
         assert result.returncode == 0, result.stderr
         assert _local_pr_ref_names(repo) != ""
+        assert result.stdout.splitlines()[3:] == [_BASE_IS_DEFAULT_BRANCH_TOKEN]
 
     @pytest.mark.parametrize(
         "missing_field", ["base_ref_name", "base_default_branch"],
@@ -987,6 +992,8 @@ class TestStackedBaseDeltaAudit:
         assert (worktree_dir / "pr_file.txt").exists()
         assert re.fullmatch(r"[0-9a-f]{40}", _printed_base_ref_oid(result)), "a full-hex object name on the third line"
         assert _printed_base_ref_oid(result) == base_sha
+        assert len(result.stdout.splitlines()) == 3, "a base other than the default branch prints no token line"
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
         diff_bytes = _printed_diff_path(result).read_bytes()
         assert b"+pr change" in diff_bytes
         assert b"base_only.txt" not in diff_bytes, "the diff is against the base commit, not the default branch"
@@ -1021,6 +1028,26 @@ class TestStackedBaseDeltaAudit:
         )
         assert result.returncode == 0, result.stderr
         assert _default_branch_ref_exists(repo)
+        assert len(result.stdout.splitlines()) == 3, "a near-miss base prints no token line"
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
+
+    def test_a_base_named_main_prints_no_token_when_the_default_branch_is_another_name(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The token follows the repository's reported default branch, not the
+        name `main`: a PR based on `main` is stacked when the default is `trunk`."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        _git_bytes(repo, "push", "-q", "origin", f"+{_origin_main_sha(repo)}:refs/heads/trunk")
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            base_ref_name="main", base_default_branch="trunk",
+        )
+        assert result.returncode == 0, result.stderr
+        assert _default_branch_ref_exists(repo), "control: the stacked delta audit ran"
+        assert len(result.stdout.splitlines()) == 3
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
 
     def test_a_flagged_file_added_on_the_base_stops_with_exit_three_and_no_worktree(self, isolated_home, tmp_path):
         _install_audit_script(isolated_home)
@@ -1612,7 +1639,9 @@ class TestReviewDiffFile:
             head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=moved_base_sha,
         )
         assert result.returncode == 0, result.stderr
-        assert len(result.stdout.splitlines()) == 3, "worktree path, diff path, then base object name"
+        stdout_lines = result.stdout.splitlines()
+        assert len(stdout_lines) == 4, "worktree path, diff path, base object name, then the default-branch token"
+        assert stdout_lines[3] == _BASE_IS_DEFAULT_BRANCH_TOKEN
         assert _printed_base_ref_oid(result) == moved_base_sha
 
         diff_file = _printed_diff_path(result)
@@ -1751,7 +1780,9 @@ class TestReviewDiffFile:
         )
 
         assert result.returncode == 0, result.stderr
-        assert len(result.stdout.splitlines()) == 3, "worktree path, diff path, then base object name"
+        stdout_lines = result.stdout.splitlines()
+        assert len(stdout_lines) == 4, "worktree path, diff path, base object name, then the default-branch token"
+        assert stdout_lines[3] == _BASE_IS_DEFAULT_BRANCH_TOKEN
         assert trace_marker not in result.stdout + result.stderr
         assert _printed_diff_path(result).read_bytes() == expected_diff
 

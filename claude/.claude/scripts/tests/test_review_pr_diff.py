@@ -97,6 +97,8 @@ def _gh_shim_source(
     files_failure_exit_status: int = 1,
     head_ref_oid_third: str | None = None,
     base_ref_oid: str | None = None,
+    base_ref_name: str | None = "main",
+    base_default_branch: str | None = "main",
 ) -> str:
     """gh shim recording every invocation, matching
     test_review_pr_checkout.py's own shim shape. A `gh pr view` call carrying
@@ -111,8 +113,11 @@ def _gh_shim_source(
     `gh api .../pulls/N` (no trailing `/files`) returns the REST payload's
     own `changed_files`, which defaults to `len(files)` and is set apart
     from `files` to model a truncated or padded listing (`omit_changed_files`
-    drops it, `fail_rest` exits 1). The files listing prints one JSON string
-    per line under the `@json` jq filter, as real `gh --jq` does for a
+    drops it, `fail_rest` exits 1). `base_ref_name` and `base_default_branch`
+    are the REST payload's `base.ref` and `base.repo.default_branch`; a value
+    of None drops that field, independently of `omit_changed_files`. The files
+    listing prints one JSON string per line under the `@json` jq filter, as
+    real `gh --jq` does for a
     string result: raw UTF-8, with a control character rendered in caret
     notation, as gh 2.100.0 is modeled to do (see the shim constant in
     conftest.py). The listing call must carry `--paginate` and
@@ -133,6 +138,8 @@ def _gh_shim_source(
         HEAD_REF_OID_SECOND = {head_ref_oid_second!r}
         HEAD_REF_OID_THIRD = {head_ref_oid_third!r}
         BASE_REF_OID = {base_ref_oid!r}
+        BASE_REF_NAME = {base_ref_name!r}
+        BASE_DEFAULT_BRANCH = {base_default_branch!r}
         FILES = {list(files or [])!r}
         DIFF_TEXT = {resolved_diff_text!r}
         FAIL_PR_VIEW = {fail_pr_view!r}
@@ -186,6 +193,13 @@ def _gh_shim_source(
             if FAIL_REST:
                 sys.exit(1)
             payload = {{}} if OMIT_CHANGED_FILES else {{"changed_files": CHANGED_FILES}}
+            base_repo = {{}}
+            if BASE_DEFAULT_BRANCH is not None:
+                base_repo["default_branch"] = BASE_DEFAULT_BRANCH
+            base = {{"repo": base_repo}}
+            if BASE_REF_NAME is not None:
+                base["ref"] = BASE_REF_NAME
+            payload["base"] = base
             print(json.dumps(payload))
             sys.exit(0)
         if args[:1] == ["api"]:
@@ -235,6 +249,10 @@ def _printed_base_ref_oid(result: subprocess.CompletedProcess) -> str:
     return result.stdout.splitlines()[1]
 
 
+# Stdout line 3, printed after a successful base fetch only when the PR's base branch is the repository's default branch.
+_BASE_IS_DEFAULT_BRANCH_TOKEN = "BASE_IS_DEFAULT_BRANCH"
+
+
 def _run(
     cwd: Path,
     home: Path,
@@ -255,14 +273,17 @@ def _run(
     files_failure_exit_status: int = 1,
     head_ref_oid_third: str | None = None,
     base_ref_oid: str | None = _BASE_FROM_ORIGIN_MAIN,
+    base_ref_name: str | None = "main",
+    base_default_branch: str | None = "main",
     extra_env: dict | None = None,
     path_prefix: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     """Runs the script. `base_ref_oid` defaults to the commit origin/main
     points at in `cwd`, which origin already holds, so a test that does not care
     about the base still reaches a successful base fetch. None omits baseRefOid
-    from the gh reply. `path_prefix` puts a shim directory ahead of the gh shim
-    on PATH."""
+    from the gh reply. `base_ref_name` and `base_default_branch` default to the
+    same branch, and None drops that field from the REST payload. `path_prefix`
+    puts a shim directory ahead of the gh shim on PATH."""
     _seed_session(home, SID)
     call_log = tmp_path / "gh_calls.jsonl"
     if base_ref_oid == _BASE_FROM_ORIGIN_MAIN:
@@ -274,7 +295,7 @@ def _run(
                 call_log, head_ref_oid, files, diff_text, fail_pr_view, fail_files,
                 head_ref_oid_second, fail_diff, diff_error_text,
                 changed_files, omit_changed_files, fail_rest, files_failure_exit_status,
-                head_ref_oid_third, base_ref_oid,
+                head_ref_oid_third, base_ref_oid, base_ref_name, base_default_branch,
             ),
         ),
         "HOME": str(home),
@@ -555,9 +576,14 @@ def _assert_diff_and_provenance_written(home: Path, result: subprocess.Completed
     assert fields["mode"] == "diff-only"
 
 
-def _install_jq_shim_that_fails_the_base_ref_oid_read(tmp_path: Path) -> Path:
-    """A `jq` PATH shim that exits 1 only for the script's baseRefOid read and
-    runs the real jq for every other call."""
+_BASE_REF_OID_JQ_FILTER = ".baseRefOid // empty"
+_BASE_REF_NAME_JQ_FILTER = ".base.ref // empty"
+_BASE_DEFAULT_BRANCH_JQ_FILTER = ".base.repo.default_branch // empty"
+
+
+def _install_jq_shim_that_fails_the_read(tmp_path: Path, failing_jq_filter: str) -> Path:
+    """A `jq` PATH shim that exits 1 only for the script's `jq -r` read of
+    `failing_jq_filter` and runs the real jq for every other call."""
     real_jq = shutil.which("jq")
     assert real_jq is not None, "the real jq binary is required to delegate to"
     jq_shim_dir = tmp_path / "jq-shim"
@@ -567,7 +593,7 @@ def _install_jq_shim_that_fails_the_base_ref_oid_read(tmp_path: Path) -> Path:
         #!/usr/bin/env python3
         import os
         import sys
-        if sys.argv[1:] == ["-r", ".baseRefOid // empty"]:
+        if sys.argv[1:] == ["-r", {failing_jq_filter!r}]:
             sys.stdin.buffer.read()
             sys.exit(1)
         os.execv({real_jq!r}, ["jq", *sys.argv[1:]])
@@ -578,7 +604,8 @@ def _install_jq_shim_that_fails_the_base_ref_oid_read(tmp_path: Path) -> Path:
 
 class TestBaseCommitFetch:
     """The script fetches the PR's baseRefOid by object name and prints it as
-    stdout line 2. A base that cannot be fetched degrades only the base."""
+    stdout line 2, then the default-branch token as line 3 when the base branch
+    is the default branch. A base that cannot be fetched degrades only the base."""
 
     def test_a_base_commit_absent_locally_is_fetched_and_printed_as_a_full_hex_line(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -595,7 +622,9 @@ class TestBaseCommitFetch:
 
         assert result.returncode == 0, result.stderr
         assert _commit_is_present(repo, base_sha), "the run fetched the base commit"
-        assert len(result.stdout.splitlines()) == 2
+        stdout_lines = result.stdout.splitlines()
+        assert len(stdout_lines) == 3, "diff path, base object name, then the default-branch token"
+        assert stdout_lines[2] == _BASE_IS_DEFAULT_BRANCH_TOKEN
         assert _FULL_HEX_OBJECT_NAME.fullmatch(_printed_base_ref_oid(result))
         assert _printed_base_ref_oid(result) == base_sha
         assert "BASE_UNAVAILABLE" not in result.stderr
@@ -603,6 +632,113 @@ class TestBaseCommitFetch:
         first_pr_view = next(c for c in _read_calls(call_log) if c[:2] == ["pr", "view"])
         assert "headRefOid,baseRefOid" in first_pr_view
         assert "--jq" not in first_pr_view
+
+    def test_a_base_branch_other_than_the_default_prints_the_base_without_the_token(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+            base_ref_name="feature/stacked", base_default_branch="main",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert len(result.stdout.splitlines()) == 2, "the diff path and the base object name alone"
+        assert _printed_base_ref_oid(result) == base_sha
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
+
+    @pytest.mark.parametrize(
+        ("base_ref_name", "base_default_branch"),
+        [(None, "main"), ("main", None), (None, None)],
+        ids=["base-ref-absent", "default-branch-absent", "both-absent"],
+    )
+    def test_an_unreadable_base_branch_name_prints_no_token_and_does_not_abort(
+        self, isolated_home, repo_with_pr_ref, tmp_path, base_ref_name, base_default_branch
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+            base_ref_name=base_ref_name, base_default_branch=base_default_branch,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert len(result.stdout.splitlines()) == 2, "the diff path and the base object name alone"
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+    @pytest.mark.parametrize(
+        "failing_jq_filter", [_BASE_REF_NAME_JQ_FILTER, _BASE_DEFAULT_BRANCH_JQ_FILTER],
+        ids=["base-ref-read", "default-branch-read"],
+    )
+    def test_a_failed_base_branch_name_read_prints_no_token_and_does_not_abort(
+        self, isolated_home, repo_with_pr_ref, tmp_path, failing_jq_filter
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+            path_prefix=_install_jq_shim_that_fails_the_read(tmp_path, failing_jq_filter),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[1:] == [base_sha], "the base object name alone follows the diff path"
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+    def test_a_default_branch_with_a_slash_in_its_name_prints_the_token(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+            base_ref_name="release/1.x", base_default_branch="release/1.x",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[1:] == [base_sha, _BASE_IS_DEFAULT_BRANCH_TOKEN]
+
+    @pytest.mark.parametrize(
+        ("base_ref_name", "base_default_branch"),
+        [
+            ("main", "trunk"),
+            ("Main", "main"),
+            ("refs/heads/main", "main"),
+            (" main", "main"),
+            ("main ", "main"),
+        ],
+        ids=["main-is-not-the-default", "case-variant", "refs-heads-prefix", "leading-space", "trailing-space"],
+    )
+    def test_a_base_branch_that_is_not_exactly_the_default_prints_no_token(
+        self, isolated_home, repo_with_pr_ref, tmp_path, base_ref_name, base_default_branch
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+            base_ref_name=base_ref_name, base_default_branch=base_default_branch,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[1:] == [base_sha]
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
 
     def test_the_base_fetch_leaves_head_refs_index_working_tree_and_fetch_head_untouched(
         self, isolated_home, repo_with_pr_ref, tmp_path
@@ -650,6 +786,7 @@ class TestBaseCommitFetch:
         assert not _commit_is_present(repo, base_sha), "control: the shimmed fetch left the commit absent"
         assert "BASE_UNAVAILABLE fetch-failed" in result.stderr
         assert len(result.stdout.splitlines()) == 1, "the unfetched object name is never offered on line 2"
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout, "the token needs the base fetch"
         _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
 
     def test_an_option_shaped_base_ref_oid_is_never_passed_to_git_fetch(
@@ -737,7 +874,8 @@ class TestBaseCommitFetch:
         repo, pr_sha = repo_with_pr_ref
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
-            head_ref_oid=pr_sha, files=["a.py"], path_prefix=_install_jq_shim_that_fails_the_base_ref_oid_read(tmp_path),
+            head_ref_oid=pr_sha, files=["a.py"],
+            path_prefix=_install_jq_shim_that_fails_the_read(tmp_path, _BASE_REF_OID_JQ_FILTER),
         )
         assert result.returncode == 0, result.stderr
         assert "BASE_UNAVAILABLE missing" in result.stderr
