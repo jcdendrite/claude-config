@@ -4,8 +4,9 @@ used only by this command, and REVIEW_SKILLS.
 REVIEW_SKILLS is the round-opening skill set. The shim's cmd_judgment_pair
 back-imports REVIEW_SKILLS for its own default.
 
-This module detects per-branch review-round windows across both the `Skill`
-tool_use and `/slash` invocation shapes. It attributes each round's dollars
+This module detects per-branch review-round windows across three invocation
+shapes: the `Skill` tool_use, the `/slash` tag, and an `Agent`/`Task` spawn of
+an agent type in _ROUND_OPEN_AGENT_SKILLS. It attributes each round's dollars
 recursively, via corpus._index_subagent_dispatches' toolUseId join.
 
 Imports corpus, pricing, redaction, render, and scope by module (attribute
@@ -64,32 +65,90 @@ def _round_skill_name(raw: str) -> str:
     return normalized.rsplit(":", 1)[-1]
 
 
+# Agent types whose main-thread dispatch runs a review skill in the agent's own transcript, mapped to that skill.
+_ROUND_OPEN_AGENT_SKILLS: dict[str, str] = {"review-orchestrator": "code-review"}
+
+
+def spawn_round_skill(block: dict) -> str | None:
+    """The review skill a spawn tool_use block opens a round for, or None.
+
+    A block opens a round when its tool name is an Agent/Task spawn and its
+    input["subagent_type"], normalized through _round_skill_name, is a key of
+    _ROUND_OPEN_AGENT_SKILLS. Anything else returns None, including a block
+    that is not a dict, an input that is not a dict and a subagent_type that is
+    not a str, so a stray non-object in a content list cannot abort a scan.
+
+    Public (no leading underscore): author_outcome.py is a further consumer.
+    Reads only input["subagent_type"]; see _round_open_skill's OUTPUT
+    INVARIANT for the fields that must never be extracted.
+    """
+    if not isinstance(block, dict) or block.get("type") != "tool_use":
+        return None
+    if block.get("name") not in pricing._SPAWN_TOOL_NAMES:
+        return None
+    block_input = block.get("input")
+    if not isinstance(block_input, dict):
+        return None
+    subagent_type = block_input.get("subagent_type")
+    if not isinstance(subagent_type, str):
+        return None
+    return _ROUND_OPEN_AGENT_SKILLS.get(_round_skill_name(subagent_type))
+
+
+def _assistant_content_blocks(rec: dict) -> list:
+    return (rec.get("message") or {}).get("content") or []
+
+
+def _skill_block_round_skill(blocks: list) -> str | None:
+    """The REVIEW_SKILLS member the first round-opening `Skill` tool_use in
+    `blocks` names, or None."""
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        if block.get("name") != "Skill":
+            continue
+        raw_skill = (block.get("input") or {}).get("skill") or ""
+        matched = _round_skill_name(raw_skill)
+        if matched in _REVIEW_SKILL_SET:
+            return matched
+    return None
+
+
+def _spawn_block_round_skill(blocks: list) -> str | None:
+    """The skill the first round-opening spawn block in `blocks` maps to, or None."""
+    for block in blocks:
+        skill = spawn_round_skill(block)
+        if skill is not None:
+            return skill
+    return None
+
+
 def _round_open_skill(rec: dict) -> str | None:
     """The REVIEW_SKILLS member this main-thread record opens a round for,
     or None.
 
-    Two disjoint invocation shapes: a `Skill` tool_use's input.skill, and a
-    `/slash` user record's <command-name> tag.
+    Three invocation shapes: a `Skill` tool_use's input.skill, a `/slash` user
+    record's <command-name> tag, and an Agent/Task spawn block of an agent type
+    in _ROUND_OPEN_AGENT_SKILLS (see spawn_round_skill). The `Skill` and spawn
+    shapes are both assistant-record shapes and can share one record, so the
+    order is per record: every block is tried against the `Skill` shape first,
+    and the spawn blocks only when no `Skill` block opens a round. A record
+    therefore opens at most one round.
 
     OUTPUT INVARIANT: only input["skill"] is ever read from a Skill
     tool_use block, mirroring cmd_skill_invocation's own comment
     (transcript-analysis.py:2311-2323). input["args"] can carry an absolute
-    local path and must never be extracted or surfaced here.
+    local path and must never be extracted or surfaced here. From an
+    Agent/Task tool_use block only input["subagent_type"] is extracted.
+    input["prompt"] and input["description"] carry free text and must never be
+    extracted or surfaced here.
     """
     if rec.get("isSidechain"):
         return None
     rtype = rec.get("type")
     if rtype == "assistant":
-        for block in (rec.get("message") or {}).get("content") or []:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            if block.get("name") != "Skill":
-                continue
-            raw_skill = (block.get("input") or {}).get("skill") or ""
-            matched = _round_skill_name(raw_skill)
-            if matched in _REVIEW_SKILL_SET:
-                return matched
-        return None
+        blocks = _assistant_content_blocks(rec)
+        return _skill_block_round_skill(blocks) or _spawn_block_round_skill(blocks)
     if rtype == "user":
         content_raw = (rec.get("message") or {}).get("content", "")
         content_str = content_raw if isinstance(content_raw, str) else render._content_text(content_raw)
@@ -101,6 +160,19 @@ def _round_open_skill(rec: dict) -> str | None:
     return None
 
 
+def round_opened_by_spawn(rec: dict) -> bool:
+    """True iff this record opens its round through a spawn block rather than
+    a `Skill` block, the same per-record order _round_open_skill applies.
+
+    Public (no leading underscore): the review-bench miner skips such a round,
+    and must agree with _round_open_skill about which shape opened it.
+    """
+    if rec.get("isSidechain") or rec.get("type") != "assistant":
+        return False
+    blocks = _assistant_content_blocks(rec)
+    return _skill_block_round_skill(blocks) is None and _spawn_block_round_skill(blocks) is not None
+
+
 def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     """Every (open_idx, window_end, skill) round window in one session's
     (already deduped, main-thread-only) records.
@@ -109,14 +181,20 @@ def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     (transcript-analysis.py:2166-2197). window_end is the index of the next
     fresh user prompt or the next round-open record, whichever comes first
     (exclusive of window_end itself). The window is inclusive of its own
-    opening record. No cross-path dedup is needed between the two
-    invocation shapes. They are disjoint by construction: a Skill tool_use
-    lives on an assistant record, a /slash tag lives on a user record.
+    opening record. No cross-path dedup is needed between the invocation
+    shapes. A record opens at most one round by _round_open_skill's per-record
+    order, so a record holding both a `Skill` block and a spawn block is one
+    round, and a /slash tag lives on a user record.
 
-    Public (no leading underscore): author_outcome.py is a second consumer,
-    reading only each window's own open_idx/skill (its own outcome-span
-    definition is not this function's window_end -- see
-    docs/transcript-analysis.md's author-outcome section).
+    Public (no leading underscore): author_outcome.py and the review-bench
+    miner (evals/review_bench/mine_review_rounds.py, which also calls
+    round_opened_by_spawn) are further consumers. author_outcome.py reads only
+    each window's own open_idx/skill (its own outcome-span definition is not
+    this function's window_end -- see docs/transcript-analysis.md's
+    author-outcome section).
+
+    cmd_judgment_pair keeps its own `Skill`-only matcher, so it deliberately
+    does not open a round on a spawn block.
     """
     n = len(records)
     windows: list[tuple[int, int, str]] = []
@@ -260,7 +338,9 @@ def compute_review_round_costs(
 
     Rounds are detected on the main thread only. A review skill run inside a
     dispatched subagent is already priced as that dispatch's own cost, so
-    counting it as its own round would double-count its dollars.
+    counting it as its own round would double-count its dollars. That includes
+    a review-orchestrator's own `Skill` call: the dispatch itself opens the
+    round, so that call never opens a second one.
 
     Computes every review-skill round window, its main-thread plus
     recursively-priced subagent dollars, and each touched branch's total

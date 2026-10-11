@@ -179,8 +179,11 @@ def _review_trace_session_events(
 
     Signal 1 (skill invocations) detects both invocation shapes: a `Skill`
     tool_use block on an assistant record, and a `/slash`-command
-    <command-name> tag on a user record. This mirrors _round_open_skill's
-    (review_rounds.py) own two-shape detection for review-round-cost.
+    <command-name> tag on a user record. These are the two shapes this
+    mirrors from _round_open_skill (review_rounds.py). review-round-cost also
+    opens a round on a `review-orchestrator` dispatch. review-trace needs no
+    such shape, because it merges subagent transcripts and so sees the
+    orchestrator's own `Skill` call.
 
     Shared by cmd_review_trace's timeline printer and compute_deny_summary_data
     so the denial/friction detection and dedup rules exist in one place rather

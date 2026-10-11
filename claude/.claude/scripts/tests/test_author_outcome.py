@@ -24,6 +24,7 @@ from .conftest import (
     _write_branch_ledger_file,
     _write_jsonl,
     _write_ledger_file,
+    _write_subagent_dispatch,
 )
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
@@ -60,8 +61,11 @@ def _seed_ledger(fake_projects: Path, session_id: str, rows: list[dict]) -> Path
     return _write_ledger_file(_config_dir_root(fake_projects), session_id, rows)
 
 
+_MARKER_WRITE_COMMAND = "marker.sh write code-review"
+
+
 def _marker_write_use(tool_id: str) -> dict:
-    return _bash_use(tool_id, "marker.sh write code-review")
+    return _bash_use(tool_id, _MARKER_WRITE_COMMAND)
 
 
 def _dispatch_start(tool_id: str, ts: str, *, agent_type: str = "code-writer", tool_name: str = "Agent") -> dict:
@@ -101,6 +105,40 @@ class TestIsCleanMarkerWrite:
             ["oops"],
         ]
         assert ao._is_clean_marker_write(command) is True
+
+    def test_cd_then_marker_write_matches_the_marker_segment_not_the_first_one(self):
+        assert ao._is_clean_marker_write(f"cd /tmp/work && {_MARKER_WRITE_COMMAND}") is True
+
+    def test_marker_write_after_a_semicolon_matches(self):
+        assert ao._is_clean_marker_write(f"echo ready ; {_MARKER_WRITE_COMMAND}") is True
+
+    def test_short_circuited_false_and_marker_write_matches_though_it_never_ran_characterization(self):
+        assert ao._is_clean_marker_write(f"false && {_MARKER_WRITE_COMMAND}") is True
+
+    def test_heredoc_body_text_with_an_operator_before_the_call_matches_characterization(self):
+        assert ao._is_clean_marker_write(f"cat <<EOF\nnote && {_MARKER_WRITE_COMMAND}\nEOF") is True
+
+    def test_marker_write_with_trailing_arguments_matches_because_later_arguments_are_not_checked(self):
+        assert ao._is_clean_marker_write(f"{_MARKER_WRITE_COMMAND} --note wip") is True
+
+    def test_marker_write_after_a_double_pipe_matches(self):
+        assert ao._is_clean_marker_write(f"false || {_MARKER_WRITE_COMMAND}") is True
+
+    def test_marker_write_after_a_single_pipe_matches(self):
+        assert ao._is_clean_marker_write(f"echo ready | {_MARKER_WRITE_COMMAND}") is True
+
+    def test_marker_write_naming_a_different_skill_does_not_match(self):
+        assert ao._is_clean_marker_write("marker.sh write plan-review") is False
+
+    def test_marker_call_whose_second_token_is_not_write_does_not_match(self):
+        assert ao._is_clean_marker_write("marker.sh read code-review") is False
+
+    def test_marker_text_inside_a_quoted_argument_does_not_match(self):
+        command = f'git commit -m "{_MARKER_WRITE_COMMAND}"'
+        assert ao._is_clean_marker_write(command) is False
+
+    def test_marker_text_after_another_commands_name_does_not_match(self):
+        assert ao._is_clean_marker_write(f"echo {_MARKER_WRITE_COMMAND}") is False
 
 
 class TestRoundHasMarkerWrite:
@@ -2551,3 +2589,952 @@ class TestCmdAuthorOutcomeReport:
         _mod.cmd_author_outcome(self._args())
         out = capsys.readouterr().out
         assert "Failure share: 0 of 0 resolved dispatches (0.0%)" in out
+
+
+_ORCHESTRATOR_AGENT_TYPE = "review-orchestrator"
+
+
+def _orchestrator_spawn(tool_id: str, ts: str) -> dict:
+    return _dispatch_start(tool_id, ts, agent_type=_ORCHESTRATOR_AGENT_TYPE)
+
+
+def _write_orchestrator_transcript(
+    fake_projects: Path, session_id: str, tool_use_id: str, records: list[dict],
+    *, description: str = "review",
+) -> None:
+    """Write one review-orchestrator dispatch's transcript and sidecar in the
+    session's flat subagents/ directory. Every record is stamped isSidechain
+    the way the harness writes a subagent transcript, so no caller can omit it."""
+    for rec in records:
+        rec["isSidechain"] = True
+    _write_subagent_dispatch(
+        fake_projects, session_id, f"agent-{tool_use_id}", tool_use_id, records,
+        agent_type=_ORCHESTRATOR_AGENT_TYPE, description=description,
+    )
+
+
+class TestOrchestratorDispatchIsARoundOpen:
+    """A main-thread review-orchestrator dispatch is a code-review round-open,
+    so it takes a ledger block and the dispatches before it attribute to it."""
+
+    def test_inline_round_plus_orchestrator_round_is_no_mismatch_and_each_round_classifies_its_dispatch(
+        self, fake_projects,
+    ):
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="ADDRESS"),
+            _ledger_row(round=2, disposition="CLEAN", finding="", rationale=""),
+        ])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _dispatch_start("a2", "2026-08-01T10:03:00.000Z"),
+            _dispatch_complete("a2", "2026-08-01T10:03:30.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:04:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 0
+        assert result["outcomes"][ao._OUTCOME_FAILURE] == 1
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+
+    def test_dispatch_before_an_orchestrator_round_attributes_to_it_not_to_the_later_inline_round(
+        self, fake_projects,
+    ):
+        """The two rounds carry different dispositions, so identical outcomes
+        under either attribution cannot pass this test."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="ADDRESS"),
+            _ledger_row(round=2, disposition="CLEAN", finding="", rationale=""),
+        ])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:04:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+
+        assert result["outcomes"][ao._OUTCOME_FAILURE] == 1
+        assert result["outcomes"][ao._OUTCOME_PASS] == 0
+
+    def test_halted_orchestrator_stays_a_round_open_whatever_its_transcript_holds_characterization(
+        self, fake_projects,
+    ):
+        """Characterization: a main-thread orchestrator dispatch is a round-open
+        even when its readable transcript holds no skill call, no marker write
+        and no ledger block, so a filter on the round-open set that depends on
+        the orchestrator's transcript content turns this red. Another round-keyed
+        block in the session then makes the halted round a round-number mismatch,
+        which excludes the session's dispatches from the headline."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="ADDRESS")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _asst("claude-sonnet-5", branch="feat", ts="2026-08-01T10:04:00.000Z", content=[_skill_block("s1", "code-review")]),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _asst(
+                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:10.000Z",
+                content=[{"type": "text", "text": "HALT: required tools not held"}],
+            ),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects))
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        assert sum(result["outcomes"].values()) == 0
+
+    def test_halted_orchestrator_in_a_ledger_less_session_reads_unattributed_not_a_mismatch_characterization(
+        self, fake_projects,
+    ):
+        """Characterization: with no round-keyed ledger block anywhere in the
+        session, the round-number check is not evaluated, so a halted
+        orchestrator round reads UNATTRIBUTED and the mismatch counter stays 0.
+        now= is pinned inside the sweep window because the fixture's dates are
+        fixed, and the real clock would flag the session possibly swept."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _asst(
+                "claude-sonnet-5", branch="feat", ts="2026-08-01T10:01:10.000Z",
+                content=[{"type": "text", "text": "HALT: required tools not held"}],
+            ),
+        ])
+
+        result = ao.compute_author_outcomes(
+            _session_iter(fake_projects), now=corpus._parse_ts("2026-08-01T11:00:00.000Z"),
+        )
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 0
+        assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 1
+
+
+# Inside the 30-day sweep floor of every fixture date below, so a ledger-less
+# session is never flagged possibly swept by the real clock.
+_NOW_INSIDE_SWEEP_FLOOR = corpus._parse_ts("2026-08-01T11:00:00.000Z")
+
+# Prefix of every string value in the leak-tripwire fixture that the
+# projection must not extract. Plain ASCII, so no escaping can hide it in output.
+_LEAK_SENTINEL = "LEAKSENTINEL"
+
+# requestIds of the two same-requestId runs the leak tripwire plants to fire
+# pricing.dedup_turns_by_request_id's stderr diagnostics.
+_DRIFTED_RUN_REQUEST_ID = "req-drifted-run"
+_MATCHING_GAP_RUN_REQUEST_ID = "req-matching-gap-run"
+
+
+def _sonnet_asst(ts: str, content: list, *, request_id: str | None = None) -> dict:
+    return _asst("claude-sonnet-5", branch="feat", ts=ts, content=content, request_id=request_id)
+
+
+def _inline_code_review_round(tool_id: str, ts: str) -> dict:
+    return _sonnet_asst(ts, [_skill_block(tool_id, "code-review")])
+
+
+def _collect_orchestrator_spawns(fake_projects: Path, *, agent_type: str = "code-writer") -> list:
+    ((jsonl, raw_records),) = list(_session_iter(fake_projects))
+    records = ao.pricing.dedup_turns_by_request_id(raw_records)
+    return ao._orchestrator_spawns(jsonl, records, ao._code_review_rounds(records), agent_type, ao.Counter())
+
+
+def _plant_orchestrator_transcript_without_records(
+    fake_projects: Path, session_id: str, tool_use_id: str, kind: str,
+) -> None:
+    """Make an orchestrator dispatch whose transcript yields no records, in one
+    of the four ways that happens. The unreadable and sidecar-only kinds write
+    the sidecar by hand, because _write_subagent_dispatch writes the transcript
+    as a file."""
+    subagents_dir = fake_projects / session_id / "subagents"
+    if kind == "no_sidecar":
+        return
+    if kind == "empty_transcript":
+        _write_orchestrator_transcript(fake_projects, session_id, tool_use_id, [])
+        return
+    subagents_dir.mkdir(parents=True, exist_ok=True)
+    (subagents_dir / f"agent-{tool_use_id}.meta.json").write_text(json.dumps({
+        "agentType": _ORCHESTRATOR_AGENT_TYPE, "description": "review",
+        "toolUseId": tool_use_id, "spawnDepth": 1,
+    }))
+    if kind == "unreadable_transcript":
+        (subagents_dir / f"agent-{tool_use_id}.jsonl").mkdir()
+    else:
+        assert kind == "sidecar_without_transcript"
+
+
+class TestOrchestratorTranscriptProjection:
+    """author-outcome reads a main-thread review-orchestrator dispatch's own
+    transcript for the clean-marker write and the nested dispatches of --agent."""
+
+    def test_clean_marker_write_in_the_orchestrator_transcript_makes_a_ledger_less_round_pass(self, fake_projects):
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _sonnet_asst("2026-08-01T10:01:30.000Z", [_marker_write_use("m1")]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+        assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 1
+
+    def test_clean_marker_write_in_a_non_orchestrator_dispatch_transcript_is_not_read(self, fake_projects):
+        """The code-writer spawn sits on the round-open record itself, so only
+        the spawn predicate, not the round-open index, keeps it out."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _sonnet_asst("2026-08-01T10:00:00.000Z", [
+                _skill_block("s1", "code-review"), _agent_use("w1", "code-writer"),
+            ]),
+            _dispatch_complete("w1", "2026-08-01T10:02:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-w1", "w1",
+            [_asst("claude-sonnet-5", sidechain=True, ts="2026-08-01T10:01:00.000Z", content=[_marker_write_use("m1")])],
+            agent_type="code-writer",
+        )
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 0
+        assert result["outcomes"][ao._OUTCOME_UNRESOLVED] == 1
+
+    def test_clean_marker_write_is_read_only_for_the_round_whose_span_holds_the_spawn(self, fake_projects):
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _dispatch_start("a2", "2026-08-01T10:03:00.000Z"),
+            _dispatch_complete("a2", "2026-08-01T10:03:30.000Z"),
+            _orchestrator_spawn("o2", "2026-08-01T10:04:00.000Z"),
+            _dispatch_complete("o2", "2026-08-01T10:05:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:06:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _sonnet_asst("2026-08-01T10:01:30.000Z", [{"type": "text", "text": "findings"}]),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o2", [
+            _sonnet_asst("2026-08-01T10:04:30.000Z", [_marker_write_use("m1")]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 1
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+        assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 1
+
+    def test_plan_review_record_holding_an_orchestrator_spawn_collects_no_spawn(self, fake_projects):
+        """The record opens plan-review, so it is no code-review round-open:
+        its transcript is not scanned into the preceding code-review round's
+        marker span, and its nested dispatch attributes to no round."""
+        session_id = "sess-1"
+        records = [
+            _inline_code_review_round("s1", "2026-08-01T10:00:00.000Z"),
+            _sonnet_asst("2026-08-01T10:01:00.000Z", [
+                _agent_use("o1", _ORCHESTRATOR_AGENT_TYPE), _skill_block("s2", "plan-review"),
+            ]),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ]
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", records)
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _sonnet_asst("2026-08-01T10:01:30.000Z", [_marker_write_use("m1")]),
+            _dispatch_start("n1", "2026-08-01T10:01:40.000Z"),
+            _dispatch_complete("n1", "2026-08-01T10:01:50.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        skills_opened = [skill for _open_idx, _window_end, skill in ao.review_rounds.detect_round_windows(records)]
+        assert skills_opened == ["code-review", "plan-review"]
+        assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 0
+        assert sum(result["outcomes"].values()) == 0
+
+    def test_skill_opened_code_review_round_still_collects_its_records_orchestrator_spawn(self, fake_projects):
+        """A record holding a `Skill` code-review block and an orchestrator
+        spawn opens one code-review round. The spawn is still collected, so its
+        transcript's marker write classifies that round and its nested
+        code-writer attributes to the next round-open. The next round has no
+        marker write, so a nested dispatch attributed to the first round would
+        read PASS instead of UNATTRIBUTED."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _sonnet_asst("2026-08-01T10:00:00.000Z", [
+                _skill_block("s1", "code-review"), _agent_use("o1", _ORCHESTRATOR_AGENT_TYPE),
+            ]),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _inline_code_review_round("s2", "2026-08-01T10:03:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _sonnet_asst("2026-08-01T10:00:30.000Z", [_marker_write_use("m1")]),
+            _dispatch_start("n1", "2026-08-01T10:00:40.000Z"),
+            _dispatch_complete("n1", "2026-08-01T10:00:50.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 1
+        assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 1
+        assert sum(result["outcomes"].values()) == 1
+
+    def test_orchestrator_spawn_on_a_sidechain_main_file_record_is_not_collected(self, fake_projects):
+        """_round_open_skill never opens a round on a sidechain record, and the
+        round-open index is the only sidechain filter _orchestrator_spawns has."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _inline_code_review_round("s1", "2026-08-01T10:00:00.000Z"),
+            _asst(
+                "claude-sonnet-5", branch="feat", sidechain=True, ts="2026-08-01T10:01:00.000Z",
+                content=[_agent_use("o1", _ORCHESTRATOR_AGENT_TYPE)],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _sonnet_asst("2026-08-01T10:01:30.000Z", [_marker_write_use("m1")]),
+            _dispatch_start("n1", "2026-08-01T10:01:40.000Z"),
+            _dispatch_complete("n1", "2026-08-01T10:01:50.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 0
+        assert sum(result["outcomes"].values()) == 0
+
+    def test_two_spawns_in_one_record_are_two_entries_sharing_one_round_open(self, fake_projects):
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _sonnet_asst("2026-08-01T10:00:00.000Z", [
+                _agent_use("o1", _ORCHESTRATOR_AGENT_TYPE), _agent_use("o2", _ORCHESTRATOR_AGENT_TYPE),
+            ]),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _dispatch_complete("o2", "2026-08-01T10:02:10.000Z"),
+            _inline_code_review_round("s1", "2026-08-01T10:03:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _dispatch_start("n1", "2026-08-01T10:00:30.000Z"),
+            _dispatch_complete("n1", "2026-08-01T10:00:40.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o2", [
+            _sonnet_asst("2026-08-01T10:00:20.000Z", [_marker_write_use("m1")]),
+            _dispatch_start("n2", "2026-08-01T10:00:30.000Z"),
+            _dispatch_complete("n2", "2026-08-01T10:00:40.000Z"),
+        ])
+
+        spawns = _collect_orchestrator_spawns(fake_projects)
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert [spawn.spawn_idx for spawn in spawns] == [0, 0]
+        assert [spawn.has_clean_marker_write for spawn in spawns] == [False, True]
+        assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 1
+        assert result["data_quality"][ao._DQ_CO_AUTHORED_ROUNDS] == 1
+
+
+class TestOrchestratorNestedDispatchAttribution:
+    """A nested dispatch of --agent in an orchestrator transcript joins the
+    round-keyed outcome walk with the orchestrator's spawn position as its
+    completion and its own tool_use timestamp as its start."""
+
+    def test_nested_code_writer_attributes_to_the_round_after_the_orchestrator_round(self, fake_projects):
+        """The nested reviewer dispatches are not --agent typed and must not
+        count. The authoring_agent of each round is declared so the cross-check
+        compares a real value: round 1 has no attributed dispatch, round 2 has
+        the nested code-writer."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="ADDRESS", authoring_agent="inline"),
+            _ledger_row(round=2, disposition="CLEAN", finding="", rationale="", authoring_agent="code-writer"),
+        ])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _orchestrator_spawn("o2", "2026-08-01T10:10:00.000Z"),
+            _dispatch_complete("o2", "2026-08-01T10:11:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:12:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _dispatch_start("r1", "2026-08-01T10:01:10.000Z", agent_type="staff-backend-engineer"),
+            _dispatch_complete("r1", "2026-08-01T10:01:20.000Z"),
+            _dispatch_start("n1", "2026-08-01T10:01:30.000Z"),
+            _dispatch_complete("n1", "2026-08-01T10:01:40.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o2", [
+            _dispatch_start("r2", "2026-08-01T10:10:10.000Z", agent_type="staff-backend-engineer"),
+            _dispatch_complete("r2", "2026-08-01T10:10:20.000Z"),
+            _sonnet_asst("2026-08-01T10:10:30.000Z", [_marker_write_use("m1")]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+        assert sum(result["outcomes"].values()) == 1
+        assert result["data_quality"][ao._DQ_UNDECIDABLE] == 0
+        assert result["data_quality"][ao._DQ_CO_AUTHORED_ROUNDS] == 0
+        assert result["data_quality"][ao._DQ_AUTHORING_AGENT_INCONSISTENT] == 0
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 0
+
+    def test_nested_dispatch_with_no_tool_result_in_the_orchestrator_transcript_is_undecidable(self, fake_projects):
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _dispatch_start("n1", "2026-08-01T10:01:30.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_UNDECIDABLE] == 1
+        assert sum(result["outcomes"].values()) == 0
+
+    def test_nested_completion_is_the_spawn_position_not_the_main_thread_tool_result(self, fake_projects):
+        """Pins the completion rule on a synthetic record order: a synchronous
+        spawn blocks the main thread and a background spawn's tool_result is an
+        immediate acknowledgement, so no real transcript separates the two
+        rules. An inline round opens between the spawn and a late main-thread
+        tool_result for the orchestrator, and the nested dispatch attributes to
+        that in-between round."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="CLEAN", finding="", rationale=""),
+            _ledger_row(round=2, disposition="ADDRESS"),
+        ])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _inline_code_review_round("s1", "2026-08-01T10:02:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:03:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _dispatch_start("n1", "2026-08-01T10:01:30.000Z"),
+            _dispatch_complete("n1", "2026-08-01T10:01:40.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["outcomes"][ao._OUTCOME_FAILURE] == 1
+        assert result["outcomes"][ao._OUTCOME_UNRESOLVED] == 0
+
+    def test_since_filters_on_the_nested_dispatchs_own_timestamp(self, fake_projects):
+        """The spawn precedes --since and one nested dispatch starts at or after
+        it: only that one is in scope. The earlier nested dispatch pins that the
+        filter reads each nested dispatch's own timestamp."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:04:00.000Z"),
+            _inline_code_review_round("s1", "2026-08-01T10:05:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:06:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _dispatch_start("n0", "2026-08-01T10:01:30.000Z"),
+            _dispatch_complete("n0", "2026-08-01T10:01:40.000Z"),
+            _dispatch_start("n1", "2026-08-01T10:03:00.000Z"),
+            _dispatch_complete("n1", "2026-08-01T10:03:10.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(
+            _session_iter(fake_projects), since_ts=corpus._parse_ts("2026-08-01T10:02:00.000Z"),
+            now=_NOW_INSIDE_SWEEP_FLOOR,
+        )
+
+        assert sum(result["outcomes"].values()) == 1
+
+    def test_nested_dispatch_with_an_empty_id_counts_under_the_malformed_id_counter(self, fake_projects):
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _dispatch_start("", "2026-08-01T10:01:30.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_MALFORMED_DISPATCH_ID] == 1
+
+
+class TestOrchestratorIndicesFollowRequestIdDedup:
+    """No other fixture plants a same-requestId pair ahead of the index under
+    test, so raw and deduped record indices never differ there. These cases
+    plant such a pair, so a position read from the undeduped list lands on a
+    different record than the deduped one."""
+
+    def test_spawn_after_a_same_request_id_record_keeps_its_deduped_position(self, fake_projects):
+        """The text record and the spawn record merge into one turn, so the
+        spawn's deduped index sits one below its raw index. The inline round
+        opens directly after it, so a raw spawn index would move the marker
+        write into the next round's span and the nested dispatch would find no
+        later round-open: UNRESOLVED instead of UNATTRIBUTED."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _sonnet_asst("2026-08-01T10:00:00.000Z", [{"type": "text", "text": "reviewing"}], request_id="req-spawn"),
+            _sonnet_asst(
+                "2026-08-01T10:00:10.000Z", [_agent_use("o1", _ORCHESTRATOR_AGENT_TYPE)], request_id="req-spawn",
+            ),
+            _inline_code_review_round("s1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _sonnet_asst("2026-08-01T10:00:30.000Z", [_marker_write_use("m1")]),
+            _dispatch_start("n1", "2026-08-01T10:00:40.000Z"),
+            _dispatch_complete("n1", "2026-08-01T10:00:50.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 1
+        assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 1
+        assert result["outcomes"][ao._OUTCOME_UNRESOLVED] == 0
+        assert sum(result["outcomes"].values()) == 1
+
+    @pytest.mark.parametrize(("since_ts", "expected_in_scope"), [
+        # After both pair records: a timestamp read from the pair's second raw
+        # record (before the cutoff) would drop the nested dispatch.
+        ("2026-08-01T10:01:30.000Z", 1),
+        # After the nested dispatch, before its tool_result: a timestamp read
+        # from the tool_result record (after the cutoff) would keep it.
+        ("2026-08-01T10:01:45.000Z", 0),
+    ])
+    def test_since_reads_the_nested_dispatch_timestamp_after_a_same_request_id_pair(
+        self, fake_projects, since_ts, expected_in_scope,
+    ):
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _orchestrator_spawn("o1", "2026-08-01T10:00:30.000Z"),
+            _inline_code_review_round("s1", "2026-08-01T10:03:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:04:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _sonnet_asst("2026-08-01T10:01:00.000Z", [{"type": "text", "text": "reviewing"}], request_id="req-pair"),
+            _sonnet_asst("2026-08-01T10:01:20.000Z", [{"type": "text", "text": "diff read"}], request_id="req-pair"),
+            _dispatch_start("n0", "2026-08-01T10:01:40.000Z"),
+            _dispatch_complete("n0", "2026-08-01T10:01:50.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(
+            _session_iter(fake_projects), since_ts=corpus._parse_ts(since_ts), now=_NOW_INSIDE_SWEEP_FLOOR,
+        )
+
+        assert sum(result["outcomes"].values()) == expected_in_scope
+
+
+class TestOrchestratorMarkerAttemptedNotConfirmed:
+    @pytest.mark.parametrize("marker_path", ["inline", "orchestrator"])
+    def test_failed_clean_marker_write_reads_as_pass_characterization(self, fake_projects, marker_path):
+        """Characterization: the marker signal is "attempted, not confirmed".
+        A clean-marker write whose paired tool_result is an error still reads
+        the round as PASS in a ledger-less session, on the inline path and on
+        the orchestrator path alike. A confirmed-write rule added to either
+        path turns that path's case red and forces a deliberate decision."""
+        session_id = "sess-1"
+        failed_marker_result = _user_msg(
+            [{**_tool_result("m1", "denied"), "is_error": True}], branch="feat", ts="2026-08-01T10:03:00.000Z",
+        )
+        marker_attempt = _sonnet_asst("2026-08-01T10:02:00.000Z", [_marker_write_use("m1")])
+        if marker_path == "inline":
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+                _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+                _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+                _inline_code_review_round("s1", "2026-08-01T10:01:00.000Z"),
+                marker_attempt,
+                failed_marker_result,
+                _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+            ])
+        else:
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+                _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+                _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+                _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+                _dispatch_complete("o1", "2026-08-01T10:04:00.000Z"),
+                _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+            ])
+            _write_orchestrator_transcript(fake_projects, session_id, "o1", [marker_attempt, failed_marker_result])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+        assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 1
+
+
+class TestOrchestratorUnreadableTranscriptCounter:
+    """Each spawn whose transcript yields no records counts once under
+    _DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE, whatever else the session is."""
+
+    def _session_with_one_orchestrator_round(self, fake_projects, session_id: str = "sess-1") -> None:
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+
+    def test_key_is_registered_as_the_last_data_quality_key(self):
+        assert ao._DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE in ao._DATA_QUALITY_KEYS
+        assert ao._DATA_QUALITY_KEYS[-1] == ao._DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE
+
+    def test_report_prints_the_counter_line_last_in_the_data_quality_block(self, fake_projects, capsys):
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="CLEAN", finding="", rationale="")])
+        self._session_with_one_orchestrator_round(fake_projects)
+
+        _mod.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
+
+        output_lines = capsys.readouterr().out.splitlines()
+        data_quality_block = output_lines[output_lines.index("Data quality") + 1:]
+        assert "orchestrator dispatches with no readable transcript records" in data_quality_block[-1]
+        assert data_quality_block[-1].split()[-1] == "1"
+
+    @pytest.mark.parametrize("spawn_id", [None, ["o1"]], ids=["id_absent", "id_not_a_string"])
+    def test_spawn_block_with_no_usable_id_counts_once_without_raising(self, fake_projects, spawn_id):
+        """A block with no string id cannot join a sidecar. It counts here, not
+        under the malformed-dispatch-id counter, and its transcript is never
+        read even though one exists under the id the tool_result names."""
+        session_id = "sess-1"
+        spawn_record = _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z")
+        spawn_block = spawn_record["message"]["content"][0]
+        if spawn_id is None:
+            del spawn_block["id"]
+        else:
+            spawn_block["id"] = spawn_id
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            spawn_record,
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _sonnet_asst("2026-08-01T10:01:30.000Z", [_marker_write_use("m1")]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE] == 1
+        assert result["data_quality"][ao._DQ_MALFORMED_DISPATCH_ID] == 0
+        assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 0
+
+    @pytest.mark.parametrize(
+        "transcript_kind",
+        ["no_sidecar", "sidecar_without_transcript", "unreadable_transcript", "empty_transcript"],
+    )
+    def test_spawn_with_no_readable_transcript_records_counts_once(self, fake_projects, transcript_kind):
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="CLEAN", finding="", rationale="")])
+        self._session_with_one_orchestrator_round(fake_projects)
+        _plant_orchestrator_transcript_without_records(fake_projects, session_id, "o1", transcript_kind)
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 0
+        assert result["data_quality"][ao._DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE] == 1
+
+    def test_readable_transcript_does_not_count(self, fake_projects):
+        session_id = "sess-1"
+        self._session_with_one_orchestrator_round(fake_projects)
+        _write_orchestrator_transcript(fake_projects, session_id, "o1", [
+            _sonnet_asst("2026-08-01T10:01:30.000Z", [{"type": "text", "text": "findings"}]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE] == 0
+
+    def test_spawn_before_since_still_counts(self, fake_projects):
+        self._session_with_one_orchestrator_round(fake_projects)
+
+        result = ao.compute_author_outcomes(
+            _session_iter(fake_projects), since_ts=corpus._parse_ts("2026-08-01T10:30:00.000Z"),
+            now=_NOW_INSIDE_SWEEP_FLOOR,
+        )
+
+        assert result["data_quality"][ao._DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE] == 1
+
+    def test_round_number_mismatched_session_still_counts(self, fake_projects):
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [
+            _ledger_row(round=1, disposition="CLEAN", finding="", rationale=""),
+            _ledger_row(round=2, disposition="CLEAN", finding="", rationale=""),
+        ])
+        self._session_with_one_orchestrator_round(fake_projects)
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        assert result["data_quality"][ao._DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE] == 1
+
+    def test_two_spawns_in_one_record_count_twice(self, fake_projects):
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="CLEAN", finding="", rationale="")])
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _sonnet_asst("2026-08-01T10:01:00.000Z", [
+                _agent_use("o1", _ORCHESTRATOR_AGENT_TYPE), _agent_use("o2", _ORCHESTRATOR_AGENT_TYPE),
+            ]),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _dispatch_complete("o2", "2026-08-01T10:02:10.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE] == 2
+
+
+class TestOrchestratorDispatchIndexBuiltOncePerSession:
+    @staticmethod
+    def _spy_on_dispatch_index_builds(monkeypatch) -> list[Path]:
+        real_index = corpus._index_subagent_dispatches
+        built_for: list[Path] = []
+
+        def _counting_index(jsonl):
+            built_for.append(jsonl)
+            return real_index(jsonl)
+
+        monkeypatch.setattr(corpus, "_index_subagent_dispatches", _counting_index)
+        return built_for
+
+    def test_session_with_no_orchestrator_spawn_builds_no_index(self, fake_projects, monkeypatch):
+        built_for = self._spy_on_dispatch_index_builds(monkeypatch)
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            _inline_code_review_round("s1", "2026-08-01T10:01:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+
+        ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert built_for == []
+
+    def test_two_spawns_on_separate_records_build_the_index_once(self, fake_projects, monkeypatch):
+        built_for = self._spy_on_dispatch_index_builds(monkeypatch)
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+            _orchestrator_spawn("o2", "2026-08-01T10:03:00.000Z"),
+            _dispatch_complete("o2", "2026-08-01T10:04:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+
+        ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert len(built_for) == 1
+
+    def test_two_sessions_reusing_a_tool_use_id_each_build_an_index_and_read_their_own_transcript(
+        self, fake_projects, monkeypatch,
+    ):
+        """Both sessions name their spawn "o1". Only sess-1's transcript holds a
+        clean-marker write, so an index shared across sessions would give both
+        or neither sessions' rounds a marker write."""
+        built_for = self._spy_on_dispatch_index_builds(monkeypatch)
+        for session_id in ("sess-1", "sess-2"):
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+                _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+                _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+                _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z"),
+                _dispatch_complete("o1", "2026-08-01T10:02:00.000Z"),
+                _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+            ])
+        _write_orchestrator_transcript(fake_projects, "sess-1", "o1", [
+            _sonnet_asst("2026-08-01T10:01:30.000Z", [_marker_write_use("m1")]),
+        ])
+        _write_orchestrator_transcript(fake_projects, "sess-2", "o1", [
+            _sonnet_asst("2026-08-01T10:01:30.000Z", [{"type": "text", "text": "findings"}]),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert sorted(jsonl.stem for jsonl in built_for) == ["sess-1", "sess-2"]
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+        assert result["outcomes"][ao._OUTCOME_UNATTRIBUTED] == 1
+        assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 1
+
+
+class TestOrchestratorTranscriptLeakTripwire:
+    """Allowlist: every string value in the orchestrator transcript, the
+    orchestrator spawn block and the sidecar that the projection does not
+    extract carries _LEAK_SENTINEL, and none of it may reach output."""
+
+    @staticmethod
+    def _sentinel(label: str) -> str:
+        return f"{_LEAK_SENTINEL}-{label}"
+
+    def _sentinel_laden_nested_dispatch(self, tool_id: str, ts: str, agent_type: str) -> dict:
+        record = _dispatch_start(tool_id, ts, agent_type=agent_type)
+        record["message"]["content"][0]["input"].update({
+            "prompt": self._sentinel(f"{tool_id}-prompt"),
+            "description": self._sentinel(f"{tool_id}-description"),
+            "name": self._sentinel(f"{tool_id}-name"),
+        })
+        return record
+
+    def _orchestrator_records(self) -> list[dict]:
+        """The harness-shaped transcript: dispatch prompt, reasoning text, a
+        Skill call with args, a non-marker Bash call, the clean-marker write, a
+        nested reviewer and a nested code-writer, each with a result. The
+        extracted fields (name, id, subagent_type, the marker command,
+        timestamps, tool_use_id, type, requestId) carry no sentinel."""
+        sentinel = self._sentinel
+        records = [
+            _user_msg(sentinel("dispatch-prompt"), branch=sentinel("branch"), ts="2026-08-01T10:01:05.000Z"),
+            _asst(
+                sentinel("model"), branch=sentinel("branch"), ts="2026-08-01T10:01:10.000Z", request_id="req-1",
+                content=[
+                    {"type": "text", "text": sentinel("reasoning")},
+                    {"type": "tool_use", "id": "sk1", "name": "Skill",
+                     "input": {"skill": sentinel("skill"), "args": sentinel("skill-args")}},
+                ],
+            ),
+            _user_msg([_tool_result("sk1", sentinel("skill-result"))], branch=sentinel("branch"), ts="2026-08-01T10:01:11.000Z"),
+            _asst(
+                sentinel("model"), branch=sentinel("branch"), ts="2026-08-01T10:01:12.000Z", request_id="req-2",
+                content=[_bash_use("b1", sentinel("bash-command"))],
+            ),
+            _user_msg([_tool_result("b1", sentinel("bash-result"))], branch=sentinel("branch"), ts="2026-08-01T10:01:13.000Z"),
+            self._sentinel_laden_nested_dispatch("r1", "2026-08-01T10:01:20.000Z", "staff-backend-engineer"),
+            _user_msg(
+                [_tool_result("r1", sentinel("reviewer-findings"))], branch=sentinel("branch"), ts="2026-08-01T10:01:25.000Z",
+            ),
+            self._sentinel_laden_nested_dispatch("n1", "2026-08-01T10:01:30.000Z", "code-writer"),
+            _user_msg([_tool_result("n1", sentinel("writer-result"))], branch=sentinel("branch"), ts="2026-08-01T10:01:35.000Z"),
+            _asst(
+                sentinel("model"), branch=sentinel("branch"), ts="2026-08-01T10:01:40.000Z", request_id="req-3",
+                content=[_marker_write_use("m1")],
+            ),
+        ]
+        for position, record in enumerate(records):
+            record["uuid"] = sentinel(f"uuid-{position}")
+            record["parentUuid"] = sentinel(f"parent-uuid-{position}")
+        return records
+
+    def _plant_session_with_orchestrator(self, fake_projects, orchestrator_records: list[dict]) -> None:
+        """A ledgered session: a main-thread code-writer dispatch, then one
+        sentinel-laden orchestrator spawn whose transcript is orchestrator_records."""
+        session_id = "sess-1"
+        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="CLEAN", finding="", rationale="")])
+        spawn_record = _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z")
+        spawn_record["message"]["content"][0]["input"].update({
+            "prompt": self._sentinel("spawn-prompt"),
+            "description": self._sentinel("spawn-description"),
+            "name": self._sentinel("spawn-name"),
+        })
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _dispatch_start("a1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("a1", "2026-08-01T10:00:30.000Z"),
+            spawn_record,
+            _user_msg([_tool_result("o1", self._sentinel("spawn-result"))], branch="feat", ts="2026-08-01T10:02:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_transcript(
+            fake_projects, session_id, "o1", orchestrator_records,
+            description=self._sentinel("sidecar-description"),
+        )
+
+    def test_no_untouched_orchestrator_string_reaches_output_or_the_collected_spawns(
+        self, fake_projects, capsys,
+    ):
+        self._plant_session_with_orchestrator(fake_projects, self._orchestrator_records())
+
+        spawns = _collect_orchestrator_spawns(fake_projects)
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+        _mod.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
+        captured = capsys.readouterr()
+
+        # The arm ran: the spawn's transcript was read for its clean-marker write
+        # and its nested code-writer, and the main-thread dispatch attributed to its round.
+        assert len(spawns) == 1
+        assert spawns[0].has_clean_marker_write is True
+        assert [completion_idx for _start_ts, completion_idx in spawns[0].nested_dispatches] == [spawns[0].spawn_idx]
+        assert result["outcomes"][ao._OUTCOME_PASS] == 1
+        assert result["outcomes"][ao._OUTCOME_UNRESOLVED] == 1
+        assert ao._OrchestratorSpawn._fields == ("spawn_idx", "has_clean_marker_write", "nested_dispatches")
+        for surfaced in (captured.out, captured.err, repr(result), repr(spawns)):
+            assert _LEAK_SENTINEL not in surfaced
+
+    def _request_id_diagnostic_records(self) -> list[dict]:
+        """Two same-requestId runs that make pricing.dedup_turns_by_request_id
+        print its stderr diagnostics: a contiguous run whose input usage
+        drifts, and a non-contiguous run whose usage matches. The requestIds
+        are the one allowed transcript-derived string, so they carry no
+        sentinel. Every other free-text field does."""
+        sentinel = self._sentinel
+
+        def _run_member(label: str, request_id: str, ts: str, usage: dict) -> dict:
+            record = _asst(
+                sentinel("model"), branch=sentinel("branch"), ts=ts, request_id=request_id,
+                content=[{"type": "text", "text": sentinel(f"{label}-text")}],
+            )
+            record["message"]["usage"] = usage
+            record["uuid"] = sentinel(f"{label}-uuid")
+            record["parentUuid"] = sentinel(f"{label}-parent-uuid")
+            return record
+
+        interleaved_result = _user_msg(
+            [_tool_result("gap-tool", sentinel("gap-result"))], branch=sentinel("branch"), ts="2026-08-01T10:01:52.000Z",
+        )
+        interleaved_result["uuid"] = sentinel("gap-result-uuid")
+        matching_usage = {"input_tokens": 50, "output_tokens": 5}
+        return [
+            _run_member("drift-1", _DRIFTED_RUN_REQUEST_ID, "2026-08-01T10:01:50.000Z", {"input_tokens": 100}),
+            _run_member("drift-2", _DRIFTED_RUN_REQUEST_ID, "2026-08-01T10:01:51.000Z", {"input_tokens": 200}),
+            _run_member("gap-1", _MATCHING_GAP_RUN_REQUEST_ID, "2026-08-01T10:01:51.500Z", matching_usage),
+            interleaved_result,
+            _run_member("gap-2", _MATCHING_GAP_RUN_REQUEST_ID, "2026-08-01T10:01:53.000Z", matching_usage),
+        ]
+
+    def test_only_the_request_id_reaches_stderr_when_the_dedup_diagnostics_fire(
+        self, fake_projects, capsys, monkeypatch,
+    ):
+        """pricing.dedup_turns_by_request_id prints a stderr diagnostic naming a
+        requestId, rate-limited once per process per kind. Both limiters are
+        reset so each diagnostic fires on the orchestrator transcript's runs."""
+        monkeypatch.setattr(ao.pricing, "_usage_drift_warned", False)
+        monkeypatch.setattr(ao.pricing, "_non_contiguous_merge_notices_logged", set())
+        self._plant_session_with_orchestrator(
+            fake_projects, self._orchestrator_records() + self._request_id_diagnostic_records(),
+        )
+
+        _collect_orchestrator_spawns(fake_projects)
+        ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+        _mod.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
+        captured = capsys.readouterr()
+
+        diagnostics = [line for line in captured.err.splitlines() if line.startswith(("WARNING:", "NOTICE:"))]
+        assert len(diagnostics) == 2, "both diagnostics must fire, or the test guards nothing"
+        assert any(f"requestId {_DRIFTED_RUN_REQUEST_ID!r}" in line for line in diagnostics)
+        assert any(f"requestId {_MATCHING_GAP_RUN_REQUEST_ID!r}" in line for line in diagnostics)
+        assert _LEAK_SENTINEL not in captured.err
+        assert _LEAK_SENTINEL not in captured.out
+        for request_id in (_DRIFTED_RUN_REQUEST_ID, _MATCHING_GAP_RUN_REQUEST_ID):
+            assert request_id not in captured.out
