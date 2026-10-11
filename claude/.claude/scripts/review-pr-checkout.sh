@@ -484,7 +484,8 @@ if ! review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; t
   if ! DELTA_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/review-pr-checkout.XXXXXX"); then
     exit_delta_unaudited "could not create a temporary directory for the name-listing run"
   fi
-  trap 'rm -rf -- "${DELTA_TMP_DIR:?}"' EXIT
+  # `|| true` keeps a failed cleanup from replacing the exit status the script chose, because errexit applies inside the trap.
+  trap 'rm -rf -- "${DELTA_TMP_DIR:?}" || true' EXIT
   DELTA_NAMES_FILE="$DELTA_TMP_DIR/names"
   if _lib_capped_for "$GIT_DIFF_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" "${DELTA_DIFF_ARGS[@]}" >"$DELTA_NAMES_FILE" 2>/dev/null; then
     DELTA_NAMES_STATUS=0

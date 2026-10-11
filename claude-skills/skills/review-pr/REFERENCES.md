@@ -64,8 +64,11 @@ match list still holds.
   timeout.** Its seven capped `gh` calls sum to 150 seconds: the two
   `gh pr view` calls and the REST call at 10 seconds each, and the four
   paginated calls (files, commits, reviews, inline comments) at 30 seconds
-  each. The tool's default timeout is 120000 ms, so SKILL.md Step 1 sets
-  `timeout: 600000` for it.
+  each. The tool's default timeout is 120000 ms and its documented maximum is
+  600000 ms, so SKILL.md Step 1 sets `timeout: 600000` for it.
+  The usage text of `review-pr-checkout.sh` and `review-pr-diff.sh` each state a
+  "Worst-case wall time" that exceeds the default, so Step 1 sets the same
+  timeout for them.
 
 ## Execution-surface file list (Step 2 / `audit-execution-surface.py`)
 
@@ -232,17 +235,19 @@ left implicit:
   output is never echoed, because it can carry remote URLs into a posted body.
   A missing `headRefOid` still exits 2.
 - **Stdout carries a fixed token when the base is the default branch.**
-  `review-pr-diff.sh` prints `BASE_IS_DEFAULT_BRANCH` on line 3, after the path
-  and the base commit, only when the base fetch succeeded and the PR's base
-  branch name equals the base repository's default branch name.
-  `review-pr-checkout.sh` prints the same text as an optional fourth line,
-  after the worktree path, the diff path, and the base commit. Neither script
-  prints it otherwise. The session matches the line's text on the script's own
-  stdout, so a diff or PR body that contains the text cannot supply it.
-  `review-pr-checkout.sh` takes the base branch name from the REST payload,
-  requires `gh pr view`'s `baseRefName` to equal it beside `baseRefOid` and
-  again after the file list, and exits 2 on a mismatch, so a one-way retarget
-  between the reads cannot skip the stacked delta audit.
+  - `review-pr-diff.sh` prints `BASE_IS_DEFAULT_BRANCH` on line 3, after the
+    path and the base commit.
+  - It prints the token only when the base fetch succeeded and the PR's base
+    branch name equals the base repository's default branch name.
+  - `review-pr-checkout.sh` prints the same text as an optional fourth line,
+    after the worktree path, the diff path, and the base commit.
+  - Neither script prints the token otherwise.
+  - The session matches the line's text on the script's own stdout, so a diff
+    or PR body that contains the text cannot supply it.
+  - `review-pr-checkout.sh` takes the base branch name from the REST payload.
+    It requires `gh pr view`'s `baseRefName` to equal that name beside
+    `baseRefOid` and again after the file list, and exits 2 on a mismatch, so a
+    one-way retarget between the reads cannot skip the stacked delta audit.
   - `review-pr-diff.sh` reads its base commit from the `gh pr view` call and
     both base names from the `.base.ref` and `.base.repo.default_branch` reads
     of `PR_REST_JSON`, so a base retarget between the two reads can pair them
@@ -307,31 +312,25 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
 
 ## Step 7's controls
 
-- **Protected findings.** A finding is protected when it derives from an
-  `AUDIT_FINDING` line, or when a reviewer or the session marks it blocking
-  before the step-7 list runs. The mark must exist before the passes that could
-  lower it, because tiering is the list's fifth item. The agent is instructed
-  not to drop, downgrade, or move a protected finding in any step-7 pass or the
-  consult, and the precedent cap does not apply to it. Without the rule, a
-  pre-existing check could drop a path the audit flagged because that path also
-  exists at the base, and the consult would never see the finding. Evidence
-  against a protected finding goes beside it in step 8, and only the human
-  removes or downgrades it.
-- **Claims close only on code evidence.** CI-log text, linked-issue text, and
-  assertions in PR-authored text are written or editable by the PR's author, so
-  they may add a finding or keep a claim open and never close or downgrade one.
-  "Verified" means observed code behavior in the diff file, base objects, or
-  worktree. Step 8 lists every finding or claim a pass dropped, downgraded, or
-  moved with its evidence source, and prints the `AUDIT_FINDING` matched paths verbatim, so a
-  human can see an omission.
-- **Stacked-base content is not precedent.** SKILL.md Step 5 counts base
-  content as settled only when the script printed `BASE_IS_DEFAULT_BRANCH`.
-  Without that line the base branch is not the default branch, so its content
-  is unmerged and may be written by the PR's author. Such content may add a
-  finding or keep a claim open, and no finding is downgraded, moved, or closed
-  on it. The rule also excludes worktree files the diff file does not name,
-  because on a stacked PR they equal the base objects. The session works out
-  nothing itself: absence of the line is the whole signal.
+- **Protected findings.** SKILL.md Step 7 defines the rule. The mark must exist
+  before the passes that could lower it, because tiering is the list's fifth
+  item. Without the rule, a pre-existing check could drop a path the audit
+  flagged because that path also exists at the base, and the consult would never
+  see the finding.
+- **Claims close only on code evidence.** SKILL.md Step 7, item 3 states the
+  rule. CI-log text, linked-issue text, and assertions in PR-authored text are
+  written or editable by the PR's author, which is why they never close or
+  downgrade a claim. "Verified" means observed code behavior in the diff file,
+  base objects, or worktree. Step 8 prints the first 20 `AUDIT_FINDING` matched
+  paths, each cut at 80 characters, so a human can see an omission among them.
+  A later match is not listed there.
+- **Stacked-base content is not precedent.** SKILL.md Step 5, Base reads states
+  the rule. A stacked base is unmerged and may be written by the PR's author.
+  The session cannot tell it from a base the script could not verify, so
+  without the token line it treats the base as unsettled. The rule also excludes
+  worktree files the diff file does not name, because on a stacked PR they equal
+  the merge-base content, which can differ from `baseRefOid`. The session works
+  out nothing itself: absence of the line is the whole signal.
 - **Per-finding `Edit`s are the record of the consult.** The transcript then
   holds the pre-consult `Write`, the consult dispatch, and every change as an
   old/new pair. Two weaker records fail: cuts recalled from memory leave nothing
@@ -353,10 +352,9 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   and `review-pr-post.sh`'s hash check prove only that the posted text equals
   the marked text. The human's approval of the exact body is the backstop,
   helped by step 8's listing of dropped claims and `AUDIT_FINDING` paths.
-- **Reviewer subagents keep their current inputs.** `plan-architect` holds no
-  Bash, and neither do `comment-discipline-reviewer` and
-  `skill-fidelity-reviewer`, so the main session resolves the claims they mark
-  as unchecked.
+- **Reviewer subagents get no Bash.** `plan-architect`,
+  `comment-discipline-reviewer`, and `skill-fidelity-reviewer` hold no Bash, so
+  the main session resolves the claims they mark as unchecked.
 
 ## Why the findings-body declaration uses the Write tool, not Bash (Step 7)
 

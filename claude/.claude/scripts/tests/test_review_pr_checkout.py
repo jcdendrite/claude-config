@@ -1181,6 +1181,25 @@ class TestStackedBaseDeltaAudit:
         assert '".mcp.json"' in result.stderr
         assert _review_worktrees(repo) == []
 
+    def test_a_failed_temp_directory_cleanup_does_not_change_the_stop_exit_status(self, isolated_home, tmp_path):
+        """The EXIT trap removes the name-listing directory under errexit, so an
+        unguarded failing `rm` would replace the stop's exit status 3."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(
+            tmp_path, base_entries={b".mcp.json": b"{}\n"},
+        )
+        scratch_dir = tmp_path / "scratch-tmpdir"
+        scratch_dir.mkdir()
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha,
+            path_prefix=_shim_that_fails(tmp_path, "rm"), extra_env={"TMPDIR": str(scratch_dir)},
+            **_STACKED_BASE_NAMES,
+        )
+        assert "synthetic rm failure" in result.stderr, "control: the cleanup ran the failing rm"
+        assert len(list(scratch_dir.glob("review-pr-checkout.*"))) == 1, "control: the failed rm left the directory"
+        assert result.returncode == 3, result.stderr
+
     def test_a_flagged_file_on_the_default_branch_before_the_fork_is_outside_the_delta_and_checks_out(
         self, isolated_home, tmp_path
     ):
@@ -1573,7 +1592,7 @@ class TestStackedBaseDeltaAudit:
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        base_ref_name = "feature\x01‮extra"
+        base_ref_name = "feature\x01\u202eextra"
         shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*fetch origin refs/heads/*", exit_status=1)
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
@@ -1583,7 +1602,7 @@ class TestStackedBaseDeltaAudit:
         assert result.returncode == 2, result.stderr
         assert '"feature\\u0001\\u202eextra"' in result.stderr
         assert "\x01" not in result.stderr
-        assert "‮" not in result.stderr
+        assert "\u202e" not in result.stderr
 
     def test_a_default_branch_name_shaped_like_a_fetch_option_is_never_read_as_one(
         self, isolated_home, repo_with_pr_ref, tmp_path

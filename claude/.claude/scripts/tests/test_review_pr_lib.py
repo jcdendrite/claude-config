@@ -12,11 +12,16 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR
+from helpers import CLAUDE_DIR, HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR
 
-from .conftest import _base_test_env, _review_pr_audit_limit
+# claude/.claude/ itself, so `hooks.tests...` below resolves, as in test_review_ledger_lib.py.
+sys.path.insert(0, str(CLAUDE_DIR))
+from hooks.tests.test_config_lib import _locale_that_widens_ascii_ranges  # noqa: E402
+
+from .conftest import _base_test_env, _review_pr_audit_limit  # noqa: E402
 
 _LIB = SCRIPTS_DIR / "_review-pr-lib.sh"
 _HOOKS_LIB = HOOKS_DIR / "_lib.sh"
@@ -33,15 +38,16 @@ def _sourced_script(script_body: str) -> str:
     return f'set -euo pipefail\n. "{_HOOKS_LIB}"\n. "{_LIB}"\n{script_body}\n'
 
 
-def _run_bash(script_body: str, *args: str) -> subprocess.CompletedProcess:
+def _run_bash(script_body: str, *args: str, env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     """Run script_body sourced as in _sourced_script. args arrive as "$1",
-    "$2", ... so a test input never needs shell quoting."""
+    "$2", ... so a test input never needs shell quoting. env_overrides is
+    applied over the base test environment."""
     return subprocess.run(
         ["bash", "-c", _sourced_script(script_body), "bash", *args],
         capture_output=True,
         text=True,
         check=False,
-        env=_base_test_env(),
+        env={**_base_test_env(), **(env_overrides or {})},
         timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
 
@@ -278,6 +284,21 @@ class TestIsFullHexOid:
     def test_anything_else_is_refused(self, oid):
         assert _call("review_pr_is_full_hex_oid", oid)[0] == 1
 
+    def test_a_locale_that_widens_bracket_ranges_does_not_widen_the_hex_class(self):
+        """Under a locale where `[0-9a-f]` accepts a non-ASCII letter, the
+        helper still refuses it. The script first asserts, in the same shell,
+        that the range form accepts the probe, so a locale that does not widen
+        fails here instead of passing."""
+        premise_failed = 3
+        result = _run_bash(
+            f'[[ "$1" =~ ^[0-9a-f]+$ ]] || exit {premise_failed}\nreview_pr_is_full_hex_oid "$1"',
+            "\u00e9" * 40,
+            env_overrides={"LC_ALL": _locale_that_widens_ascii_ranges()},
+        )
+
+        assert result.returncode != premise_failed, "the range form rejects the probe, so this locale does not widen it"
+        assert result.returncode == 1, result.stderr
+
 
 class TestBaseIsDefaultBranch:
     def test_equal_names_are_the_default_branch(self):
@@ -378,7 +399,7 @@ class TestAsciiJsonString:
             ("café", '"caf\\u00e9"'),
             ("a\x80b", '"a\\u0080b"'),
             ("a\x9fb", '"a\\u009fb"'),
-            ("a‮b", '"a\\u202eb"'),
+            ("a\u202eb", '"a\\u202eb"'),
             ("\U0001f600", '"\\ud83d\\ude00"'),
         ],
         ids=[

@@ -24,10 +24,21 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - **Migration:** `--record --force --pr N`, with the run's account flags, re-captures a PR, and the new row gains the breakdown. It recomputes the whole PR from surviving transcripts and becomes its current row, so use it only while every session of that PR is still inside `cleanupPeriodDays`. It is also the follow-up for a row recorded without its breakdown, once the cause is fixed.
 - **`/review-pr` now resolves checkable claims before presenting, can read the base commit in diff-only mode, and checks out a trusted stacked PR.** The audit-then-checkout script no longer refuses a base branch other than the default branch.
   - Instead, `review-pr-checkout.sh` audits every path the head changes from the default branch, fail-closed, before creating the worktree. A stop exits 3 and names `review-pr-diff.sh`, and a failed audit step exits 2.
-  - `review-pr-checkout.sh` prints the base commit as a third stdout line, and `review-pr-diff.sh` prints it as line 2 when it fetched the commit. Each script then prints the line `BASE_IS_DEFAULT_BRANCH`, as a fourth line and a third line respectively, only when the PR's base branch is the base repository's default branch. The skill counts base content as settled code only when that line is present. A base fetch failure in `review-pr-diff.sh` writes `BASE_UNAVAILABLE <token>` on stderr and exits 0.
+  - `review-pr-checkout.sh` prints the base commit as its third stdout line.
+  - `review-pr-diff.sh` prints the base commit as line 2 when it fetched the commit.
+  - `review-pr-checkout.sh` prints the line `BASE_IS_DEFAULT_BRANCH` as its fourth line, only when the PR's base branch is the base repository's default branch.
+  - `review-pr-diff.sh` prints the same line as its third line, under the same condition.
+  - The skill counts base content as settled code only when that line is present.
+  - A base fetch failure in `review-pr-diff.sh` writes `BASE_UNAVAILABLE <token>` on stderr and exits 0.
   - A stacked run leaves `refs/review-pr/pr-<N>-default` and fetched base objects in the consumer's repository, which `review-pr-finish.sh` does not remove.
-  - `review-pr-checkout.sh` exits 2 before fetching the PR's ref when the PR's base branch reads differently across its own reads. Its two ref-updating fetches write no tag, update no remote-tracking ref, and write no `FETCH_HEAD`.
-  - Step 7 resolves hedged claims against the diff, base content, CI runs, and the linked issue before tiering, and moves pre-existing defects to step 8 notes. A claim closes only on code evidence, never on CI-log, issue, or PR-authored text. A finding derived from an `AUDIT_FINDING` line, or marked blocking before synthesis, is protected: the agent is instructed not to drop or downgrade it in those passes or the consult. Step 8 lists every dropped or downgraded claim and the `AUDIT_FINDING` paths, because no script detects a missing finding.
+  - `review-pr-checkout.sh` exits 2 before fetching the PR's ref when the PR's base branch reads differently across its own reads.
+  - Its two ref-updating fetches write no tag, update no remote-tracking ref, and write no `FETCH_HEAD`.
+  - Step 7 resolves hedged claims against the diff, base content, CI runs, and the linked issue before tiering.
+  - Step 7 moves pre-existing defects to step 8 notes.
+  - A claim closes only on code evidence, never on CI-log, issue, or PR-authored text.
+  - A finding derived from an `AUDIT_FINDING` line, or marked blocking before synthesis, is protected.
+  - The agent is instructed not to drop or downgrade a protected finding in those passes or the consult.
+  - Step 8 lists every dropped or downgraded claim and the `AUDIT_FINDING` paths, because no script detects a missing finding.
   - The `plan-architect` consult now reads the drafted body, and each correction applies as its own `Edit` after the session verifies it, with a further consult after every edit round.
   - The findings body follows a posted-text hygiene list with no review-process wording.
 - **`/plan-it`'s push offer now pins what the push publishes, and says when it skips the offer or a step fails.** **Supersedes** the push-offer sub-bullet of the "`/plan-review` approval now shows the approved plan's absolute path" entry below.

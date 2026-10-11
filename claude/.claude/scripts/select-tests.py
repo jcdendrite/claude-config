@@ -152,7 +152,8 @@ MARKER_CLEAR_STALE_PY = "claude/.claude/scripts/marker-clear-stale.py"
 REVIEW_PR_AUDIT_SCRIPT = "claude-skills/skills/review-pr/audit-execution-surface.py"
 
 # SCRIPTS_TESTS_DIR's test_review_pr_post.py reads this exact file by path, to
-# compare its literal script invocations against the settings allow entries.
+# compare its literal script invocations against the settings allow entries,
+# and test_review_pr_lib.py reads it for the BASE_IS_DEFAULT_BRANCH token.
 REVIEW_PR_SKILL_MD = "claude-skills/skills/review-pr/SKILL.md"
 
 # test_doc_counts.py reads the SKILL.md frontmatter of every name-only skill
@@ -230,6 +231,7 @@ SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_author_outcome.py",
     "claude/.claude/scripts/tests/test_config_parser_parity.py",
     "claude/.claude/scripts/tests/test_review_ledger_lib.py",
+    "claude/.claude/scripts/tests/test_review_pr_lib.py",
 })
 
 CODE_REVIEW_SKILL_MD = "claude-skills/skills/code-review/SKILL.md"

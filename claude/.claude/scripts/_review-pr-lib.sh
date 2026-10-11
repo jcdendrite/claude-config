@@ -122,19 +122,21 @@ review_pr_file_count_matches() {
   [[ "$listed_count" == "$2" ]]
 }
 
+# Spells out each lowercase hex digit instead of using ranges, so a locale whose collation puts non-ASCII letters inside a range does not widen the class.
+_REVIEW_PR_HEX_CHAR_REGEX='[0123456789abcdef]'
+
 # review_pr_is_full_hex_oid VALUE
 # Returns 0 only when VALUE is a full SHA-1 (40) or SHA-256 (64) lowercase hex object name.
 # Anchored with no newline allowance, so a value with a trailing line, such as one carrying an option on the second line, fails.
 review_pr_is_full_hex_oid() {
-  [[ "$1" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]
+  [[ "$1" =~ ^${_REVIEW_PR_HEX_CHAR_REGEX}{40}(${_REVIEW_PR_HEX_CHAR_REGEX}{24})?$ ]]
 }
 
 # review_pr_base_is_default_branch BASE_REF_NAME DEFAULT_BRANCH
 # Returns 0 only when both names are non-empty and byte-equal.
 # Returns 1 when either is empty, so two absent names never read as the default branch. The comparison is case-sensitive, as git ref names are.
 # The names and the base object name come from separate API reads, so a base retarget between the reads can pair them wrongly.
-# review-pr-diff.sh accepts that race, and review-pr-checkout.sh closes one-way retargets only; both are in the "Stdout carries a fixed token when the base is the default branch" bullet of claude-skills/skills/review-pr/REFERENCES.md.
-# The round-trip residual is the retarget bullet under "Known gaps and operator choices" in the same file.
+# That race is accepted; the "Stdout carries a fixed token when the base is the default branch" bullet of claude-skills/skills/review-pr/REFERENCES.md records the bound.
 review_pr_base_is_default_branch() {
   [[ -n "$1" && "$1" == "$2" ]]
 }

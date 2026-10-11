@@ -536,7 +536,7 @@ def _git_shim_that_fails_on_subcommand(
     invocation (1-based) fails and every other match reaches the real git.
     Each matching invocation appends one line to `matches.log` in the returned
     directory, so a test can count them."""
-    shim_dir = tmp_path / "git_shim_on_subcommand"
+    shim_dir = tmp_path / f"git_shim_on_subcommand_{uuid.uuid4().hex}"
     shim_dir.mkdir()
     match_log = shim_dir / "matches.log"
     spaces_escaped_glob = args_glob.replace(" ", "\\ ")
