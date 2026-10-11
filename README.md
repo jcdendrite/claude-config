@@ -402,7 +402,7 @@ See [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) for the fire predicat
 
 ### Cost ledger recording
 
-`transcript-analysis.py cost-ledger --record` appends the current ISO week's cost and efficiency figures, aggregated across every project's transcripts in scope (all accounts declared in `~/.claude/transcript-config-dirs`; `--this-repo` narrows), to a local ledger file (by default `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cost-ledger.md`). The row outlives Claude Code's rolling transcript cleanup and stays outside this repo. Off by default; a week not recorded while its transcripts are still on disk can't be recovered later.
+`transcript-analysis.py cost-ledger --record` appends the current ISO week's cost and efficiency figures to a local ledger file outside this repo. The row aggregates every project's transcripts in scope, which by default includes every account declared in `~/.claude/transcript-config-dirs`. `--this-repo` narrows the project set. The row outlives Claude Code's rolling transcript cleanup. Off by default; a week not recorded while its transcripts are still on disk can't be recovered later.
 
 `./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
 
@@ -410,7 +410,7 @@ See [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) for the fire predicat
 printf '\ncost_ledger_recording = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-See [`docs/cost-ledger.md`](docs/cost-ledger.md) for the schema and recording mechanics, and [`docs/config-file.md`](docs/config-file.md) for the file's hand-edit contract.
+See [`docs/cost-ledger.md`](docs/cost-ledger.md) for the ledger's default location, schema, and recording mechanics, and [`docs/config-file.md`](docs/config-file.md) for the file's hand-edit contract.
 
 ### Repo relocation
 
