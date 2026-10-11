@@ -71,14 +71,6 @@ def _session_iter(fake_projects):
     return corpus.iter_sessions(fake_projects.parent, "*")
 
 
-def _nested_subagent_session_id(top_session_id: str, top_agent_id: str) -> str:
-    """The session_id argument that makes _write_subagent_dispatch write
-    under <top_session_id>/subagents/<top_agent_id>/subagents/ -- a nested
-    dispatch's own subagents/ directory, one level below the top-level
-    dispatch's own."""
-    return f"{top_session_id}/{corpus.SUBAGENT_SUBDIR}/{top_agent_id}"
-
-
 def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
     """Active profile (acct-a) plus one declared root (acct-b, via
     TRANSCRIPT_CONFIG_DIRS_FILE) -- the minimal setup resolve_scan_roots
@@ -215,9 +207,10 @@ class TestComputeReviewRoundCosts:
         assert data["rounds"][0]["main_dollars"] == pytest.approx(0.20 + 0.40)
 
     def test_nested_dispatch_from_inside_a_subagent_is_priced_into_the_round(self, fake_projects):
-        """An Agent/Task tool_use inside a subagent's own transcript, with
-        its own meta.json living in that subagent's own subagents/
-        directory, is priced into the same round as its parent dispatch."""
+        """An Agent/Task tool_use inside a subagent's own transcript, whose
+        meta.json (spawnDepth 2) sits in the session's own flat subagents/
+        directory beside its parent dispatch's, is priced into the same
+        round as its parent dispatch."""
         session_id = "sess-1"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _priced(
@@ -232,10 +225,9 @@ class TestComputeReviewRoundCosts:
         )  # $0.20, also spawns nested n1
         nested_spawn_rec["isSidechain"] = True
         _write_subagent_dispatch(fake_projects, session_id, "agent-1", "a1", [nested_spawn_rec])
-        nested_session_id = _nested_subagent_session_id(session_id, "agent-1")
         nested_rec = _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:20.000Z")  # $1.00
         nested_rec["isSidechain"] = True
-        _write_subagent_dispatch(fake_projects, nested_session_id, "agent-2", "n1", [nested_rec])
+        _write_subagent_dispatch(fake_projects, session_id, "agent-2", "n1", [nested_rec], spawn_depth=2)
 
         data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
         assert len(data["rounds"]) == 1
@@ -465,16 +457,42 @@ class TestComputeReviewRoundCosts:
         )
         dup_rec["isSidechain"] = True
         _write_subagent_dispatch(fake_projects, session_id, "agent-1", "a1", [dup_rec])
-        nested_session_id = _nested_subagent_session_id(session_id, "agent-1")
         nested_rec = _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:20.000Z")  # $1.00
         nested_rec["isSidechain"] = True
-        _write_subagent_dispatch(fake_projects, nested_session_id, "agent-dup", "dup", [nested_rec])
+        _write_subagent_dispatch(fake_projects, session_id, "agent-dup", "dup", [nested_rec], spawn_depth=2)
 
         data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
         assert len(data["rounds"]) == 1
         r = data["rounds"][0]
         assert r["agent_dollars"] == pytest.approx(1.00)  # "dup" priced once, not twice
         assert r["agents"] == 2  # dispatch a1 itself, plus "dup" counted once
+
+    def test_dispatch_whose_transcript_respawns_its_own_tool_use_id_is_priced_once(self, fake_projects):
+        """A dispatch whose own transcript spawns its own toolUseId resolves
+        through the session's single flat dispatch index to itself. The
+        walk terminates there: the dispatch is priced once, counted once,
+        and is not reported dangling."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        self_spawn_rec = _priced(
+            "claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:10.000Z",
+            content=[_agent_use("a1", "staff-sdet")],
+        )  # $1.00, spawns its own toolUseId
+        self_spawn_rec["isSidechain"] = True
+        _write_subagent_dispatch(fake_projects, session_id, "agent-1", "a1", [self_spawn_rec])
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        assert len(data["rounds"]) == 1
+        r = data["rounds"][0]
+        assert r["agent_dollars"] == pytest.approx(1.00)  # priced once, not recursed into
+        assert r["agents"] == 1
+        assert r["dangling"] == 0
 
     def test_inline_sidechain_record_does_not_corrupt_last_branch_for_branch_totals(self, fake_projects):
         """An isSidechain record's own gitBranch can be an isolation:"worktree"
@@ -785,10 +803,9 @@ def _corpus_nested_dispatch(fake_projects) -> None:
     )
     nested_spawn_rec["isSidechain"] = True
     _write_subagent_dispatch(fake_projects, session_id, "agent-1", "a1", [nested_spawn_rec])
-    nested_session_id = _nested_subagent_session_id(session_id, "agent-1")
     nested_rec = _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:20.000Z")
     nested_rec["isSidechain"] = True
-    _write_subagent_dispatch(fake_projects, nested_session_id, "agent-2", "n1", [nested_rec])
+    _write_subagent_dispatch(fake_projects, session_id, "agent-2", "n1", [nested_rec], spawn_depth=2)
 
 
 def _corpus_slash_path_open(fake_projects) -> None:

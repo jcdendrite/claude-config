@@ -178,9 +178,9 @@ def _price_dispatch(
     """Price one subagent dispatch and recurse into every Agent/Task spawn
     inside its own transcript.
 
-    Recursion works via corpus._index_subagent_dispatches' recursive
-    layout: a subagent's own jsonl resolves its *own* nested subagents/
-    directory the same way a session's jsonl does.
+    Recursion reuses the session's own dispatch_index (see
+    corpus._index_subagent_dispatches for why one index covers nested
+    dispatches).
 
     `visited` is a toolUseId set shared across one session's whole recursive
     walk. A colliding toolUseId (a corrupted/retried-dispatch shape) is
@@ -212,7 +212,6 @@ def _price_dispatch(
     if records is None:
         return 0.0, 0, 1, 0
     records = pricing.dedup_turns_by_request_id(records)
-    nested_index, _meta_errors = corpus._index_subagent_dispatches(jsonl_path)
 
     dollars = 0.0
     unpriced_turns = 0
@@ -238,7 +237,7 @@ def _price_dispatch(
             if not nested_tool_use_id:
                 continue
             n_dollars, n_unpriced, n_dangling, n_resolved = _price_dispatch(
-                nested_tool_use_id, nested_index, visited,
+                nested_tool_use_id, dispatch_index, visited,
             )
             dollars += n_dollars
             unpriced_turns += n_unpriced

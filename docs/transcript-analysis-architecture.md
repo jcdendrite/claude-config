@@ -54,10 +54,10 @@ name from the shim.
 JSONL transcript read/parse and session iteration: `iter_sessions`, `read_session_file`,
 `SUBAGENT_SUBDIR` (the `<session_id>/subagents/*.jsonl` split-transcript convention), `_parse_ts`,
 and `_index_subagent_dispatches` (one session's toolUseId → paired subagent `.jsonl`/requested-model
-join, reused recursively by `review_rounds.py`'s nested-dispatch descent since the function's own
-`jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR` layout resolves identically for a subagent's own
-transcript file). No dependency on scope resolution, redaction, or pricing — every other module
-(and the shim) builds on this one.
+join; the harness writes every nested dispatch's `.meta.json` into the session's own flat
+`subagents/` directory, so one session's index also resolves a dispatch spawned from inside another
+subagent, and `review_rounds.py`'s nested-dispatch descent reuses it). No dependency on scope
+resolution, redaction, or pricing — every other module (and the shim) builds on this one.
 
 Also owns `split_command_segments` (tokenize a raw shell command, then split on `&&`/`||`/`;`/`|`)
 as the single source of truth for two consumers: the shim's own mutating-git classifier, and

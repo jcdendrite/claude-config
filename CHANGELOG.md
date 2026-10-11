@@ -6,6 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`review-round-cost` prices a dispatch spawned from inside another subagent into its round, instead of counting it dangling at $0.** The harness records every nested dispatch in the session's own flat `subagents/` directory, which the per-session dispatch index already covers. Figures are recomputed retroactively from surviving transcripts, so a re-run can differ from an earlier figure for a round holding a nested dispatch: higher `agent $`, higher `agents`, lower `Dangling dispatches`. See `docs/transcript-analysis.md` § "review-round-cost".
 - **The `pr-cost` ledger gains a trailing `model_breakdown` column, and the first `--record` that writes a row upgrades an existing ledger to it.** The cell holds tokens and integer micro-dollars per priced model, pricing variant, and token class, so a later subcommand can re-price mixed-model rows under a common rate table.
   - **Ledger:** rows recorded earlier read as "not recorded" and are never assigned an estimated split.
   - **Ledger:** the upgrade rewrites the file under the new header, prints a stderr notice, and has no supported downgrade.
