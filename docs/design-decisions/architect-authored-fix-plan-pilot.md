@@ -41,9 +41,9 @@ reviewed before the measurement does.
 
 ## Why `MODE=consult`, and the departure from the round-cap precedent
 
-`MODE=consult` is reused and no new `plan-architect` mode is added;
-`plan-architect.md` is untouched, because its description already admits a
-skill-prescribed consult. `MODE=consult` asks for conversational prose that
+`MODE=consult` is reused, and no new mode is added. `plan-architect.md` is
+untouched because its description already admits a skill-prescribed consult.
+`MODE=consult` asks for conversational prose that
 commits to a recommendation. It does not bar numbered rows and a foundation
 line inside that prose, so a prose-wrapped table is the expected return.
 
@@ -83,6 +83,20 @@ primary source supplies one. Each stop names the condition the return
 failed, which leaves the evidence for any later retry decision in the
 transcript. The cost is that a malformed return interrupts the human.
 
+## Which findings the fix shape replaces
+
+`DISPOSITION_RULE:code-review-fix-plan-pilot` in
+`claude-skills/skills/code-review/SKILL.md` defines which findings a row's fix
+shape replaces. This section records only why.
+
+The carve-out reuses the barred-row classification rather than defining a
+second set, so one judgment per finding decides both a barred row's stop and
+whether an ADDRESS row's fix shape applies. Those are the findings the rules
+will not leave unfixed without a human stop, and the table's shape check does
+not test whether a fix shape closes the hole a finding states. Nothing wider
+is carved out: on every other finding, a security-class one included, the fix
+shape applies unchecked.
+
 ## Placement
 
 The engineer chose a `DISPOSITION_RULE` region in the base file, gated at
@@ -110,8 +124,8 @@ runtime by the config key.
 - **Load.** Every stow consumer loads the region on every `/code-review`.
   `_PINNED_FIX_PLAN_PILOT_CLAUSE` in
   `claude-skills/skills/tests/test_skills.py` holds its exact text.
-- **Line-gate headroom.** The region spends most of the headroom under
-  `check-skill-length.sh`'s 500-line cap on `code-review/SKILL.md`.
+- **Line gate.** The region's lines count against `check-skill-length.sh`'s
+  500-line cap on `code-review/SKILL.md`, a file every consumer loads.
 - **One `config-get.sh` call per round with a reviewer-spawned finding**,
   which may prompt for permission, because neither `config-get.sh` nor
   `review-ledger.sh` has a `permissions.allow` entry. `/code-review` already
@@ -134,9 +148,9 @@ are logged and the round's outcome tags.
 
 ## Schema scaffold: the explicit `false` row
 
-`docs/config-file.md` § "Migration" states that a scaffolded explicit row
-shadows the schema default. For this key, flipping the default to `true` later
-needs a row migration.
+Flipping this key's default to `true` later reaches no scaffolded account
+without a row migration. `docs/config-file.md` § "Migration" is canonical for
+the scaffold.
 
 ## Known gaps
 
@@ -165,6 +179,31 @@ needs a row migration.
   shape check does not judge a row against them. A DEFER row that names a
   closed-list criterion with a barred rationale, such as "pre-existing gap",
   is a valid row and logs as DEFER.
+- **A security-class finding is decided by criterion name too.** A DEFER or
+  KEEP row on one is barred only where the enforcement-invariant rule or a
+  loaded project layer bars it, which matches the default arm. The engineer
+  kept this.
+- **No untrusted-data rule or row delimiter.** Findings, diff and plan text
+  reach the consult with no rule marking them as data, and a row is
+  recognized by its line prefix alone. Findings and diff already reach every
+  reviewer and `code-writer` the same way, and a delimiter the model picks
+  would add a mechanism for no gain.
+- **An ADDRESS row's files are not confined** before the `code-writer`
+  dispatch. The heavier-mechanism rule's outside-the-diff limb is the only
+  route away. The engineer kept this.
+- **No quoting rule for architect-derived text** in the ledger append
+  arguments. The ledger section's single-quote form for every value is the
+  only guard. The engineer kept this.
+- **A table-decided row can authorize a commit.** A finding logged DEFER or
+  SETTLED counts as resolved for the commit gate
+  (`code-review/SKILL.md` § "Step — Record review completion"), so a DEFER or
+  KEEP row that passes the shape check can authorize a commit over its
+  finding.
+- **Rows whose fix shape was not applied are unlabeled.** An ADDRESS row on a
+  finding barred from DEFER carries the reviewer's Suggested fix but logs with
+  the same `fix-plan:` prefix and round tag as any other table-decided row, so
+  the pre-registered rule must re-derive such rows from the finding text or
+  count them as treated.
 - **Measurement contamination.** Key-on dispatches write the round-3 latch
   and count as consults in `review-trace`, so measurements of either must
   exclude key-on accounts.
@@ -184,14 +223,40 @@ The key stays off on every account until all four exist:
 - A deny/allow fixture pair, run against the region with its result recorded
   in the pre-registration follow-up: an enforcement-invariant finding with a
   DEFER or KEEP row yields a stop, and the same finding with an ADDRESS row in
-  an otherwise valid table proceeds. The region's barred-row stop is pinned as
-  text only.
+  an otherwise valid table proceeds with the reviewer's Suggested fix and no
+  architect fix shape. Where a project layer is loaded, a finding it bars
+  from DEFER is run the same way.
+  A mixed-table fixture is read back alongside the pair: a valid table whose
+  row 1 is an ADDRESS on an unbarred finding and whose row 2 is an ADDRESS on
+  a barred (enforcement-invariant) finding. The barred finding names a
+  "Required control". Each row's architect fix shape differs from that
+  finding's reviewer fix, so a wrong reading can fail. In one dispatch,
+  `code-writer` carries row 1's architect fix shape. It carries row 2's
+  reviewer Suggested fix and no architect fix shape for row 2. The fixture is
+  a manual read-back, with no test code.
+  The region's barred-row stop is pinned as text only.
 
-**Enable, check, disable.** Hand-edit `architect_fix_plan_pilot = true` in
-`<config-dir>/claude-config.toml`. Check with
-`claude/.claude/scripts/config-get.sh architect_fix_plan_pilot` (the installed
-copy is in the config dir's `scripts/`); exit 0 means on. Disable by setting
-`false`. The key applies per account.
+The engineer who enables the key runs the fixture pair and the mixed-table
+fixture and records their result in the pre-registration follow-up. Each
+recorded result cites every row's fix text from the `code-writer` dispatch
+prompt, which is the evidence artifact. That record is the sign-off.
+
+The `fix-plan:` rationale prefix is advisory, unchecked free text unless the
+pre-enable reader checks it. Without that check, an omitted prefix makes a
+table-decided row read as an orchestrator-decided one.
+
+**Enable, check, disable.** Hand-edit `architect_fix_plan_pilot = true` in the
+`claude-config.toml` of the account's config dir being enabled. The value must
+be bare `true`. Check from any shell with:
+
+```bash
+CLAUDE_CONFIG_DIR=<absolute path of that config dir> claude/.claude/scripts/config-get.sh architect_fix_plan_pilot
+```
+
+Or run `config-get.sh architect_fix_plan_pilot` inside that account's session.
+The installed copy is in the config dir's `scripts/`. Exit 0 means on. A
+stderr warning from the check means the row was rejected and the key reads
+`false`. Disable by setting `false`. The key applies per account.
 
 **The hold is open-ended.** The engineer accepted no removal backstop if the
 key is never enabled. The round-2 pilot's record fixed its gates before its
@@ -211,7 +276,9 @@ every read. Keep the per-key tests, which still hold for an inert row:
 
 `test_fresh_home_with_no_state_file_exits_1` in that class asserts the `false`
 default independently of the hand-typed pins. Keep this record so the schema's
-docs-anchor never dangles. Set the key `false` on any account that enabled it.
+docs-anchor never dangles. Reverting the merge commit is not the rollback: it
+deletes the schema row while accounts keep their scaffolded row, so every
+config read warns. Set the key `false` on any account that enabled it.
 
 **Adopt.** A follow-up supersedes the
 [§42](code-review-fix-route-plan-architect.md) and
