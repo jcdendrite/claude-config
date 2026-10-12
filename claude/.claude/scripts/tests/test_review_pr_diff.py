@@ -87,6 +87,10 @@ def _diff_text_for(files: list[str]) -> str:
     return "".join(parts)
 
 
+# Sentinel default for pr_view_base_ref_name: "the base branch the REST payload reports".
+_SAME_AS_REST_BASE_REF = "__SAME_AS_REST_BASE_REF__"
+
+
 def _gh_shim_source(
     call_log: Path,
     *,
@@ -106,12 +110,14 @@ def _gh_shim_source(
     base_ref_oid: str | None = None,
     base_ref_name: str | None = "main",
     base_default_branch: str | None = "main",
+    pr_view_base_ref_name: str | None = _SAME_AS_REST_BASE_REF,
 ) -> str:
     """gh shim recording every invocation and returning fixed replies whatever
     fields are requested. A `gh pr view` call carrying
     `--jq` prints the headRefOid alone, as the script's re-fetches expect; one
     without it prints the JSON reply holding headRefOid and, unless
-    `base_ref_oid` is None, baseRefOid. `diff_text` defaults to a
+    `base_ref_oid` is None, baseRefOid, and, unless the `baseRefName` it
+    reports is None, baseRefName. `diff_text` defaults to a
     structurally valid diff matching `files` (one `diff --git` header per
     file) unless explicitly overridden. `fail_diff` exits 1 on the `gh pr
     diff` call, printing `diff_error_text` to stderr if given -- models a
@@ -122,7 +128,9 @@ def _gh_shim_source(
     from `files` to model a truncated or padded listing (`omit_changed_files`
     drops it, `fail_rest` exits 1). `base_ref_name` and `base_default_branch`
     are the REST payload's `base.ref` and `base.repo.default_branch`; a value
-    of None drops that field, independently of `omit_changed_files`. The files
+    of None drops that field, independently of `omit_changed_files`.
+    `pr_view_base_ref_name` is the `baseRefName` the non-`--jq` `gh pr view`
+    reply reports (the REST `base.ref` by default, None drops it). The files
     listing prints one JSON string per line under the `@json` jq filter, as
     real `gh --jq` does for a
     string result: raw UTF-8, with a control character rendered in caret
@@ -134,6 +142,7 @@ def _gh_shim_source(
     replaces the headRefOid from the THIRD `gh pr view` call onward, modeling a
     force-push during the diff fetch."""
     resolved_diff_text = diff_text if diff_text is not None else _diff_text_for(files or [])
+    view_base_ref_name = base_ref_name if pr_view_base_ref_name == _SAME_AS_REST_BASE_REF else pr_view_base_ref_name
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import json
@@ -146,6 +155,7 @@ def _gh_shim_source(
         HEAD_REF_OID_THIRD = {head_ref_oid_third!r}
         BASE_REF_OID = {base_ref_oid!r}
         BASE_REF_NAME = {base_ref_name!r}
+        PR_VIEW_BASE_REF_NAME = {view_base_ref_name!r}
         BASE_DEFAULT_BRANCH = {base_default_branch!r}
         FILES = {list(files or [])!r}
         DIFF_TEXT = {resolved_diff_text!r}
@@ -187,6 +197,8 @@ def _gh_shim_source(
                 reply["headRefOid"] = oid
             if BASE_REF_OID is not None:
                 reply["baseRefOid"] = BASE_REF_OID
+            if PR_VIEW_BASE_REF_NAME is not None:
+                reply["baseRefName"] = PR_VIEW_BASE_REF_NAME
             print(json.dumps(reply))
             sys.exit(0)
         if args[:2] == ["pr", "diff"]:
@@ -282,6 +294,7 @@ def _run(
     base_ref_oid: str | None = _BASE_FROM_ORIGIN_MAIN,
     base_ref_name: str | None = "main",
     base_default_branch: str | None = "main",
+    pr_view_base_ref_name: str | None = _SAME_AS_REST_BASE_REF,
     extra_env: dict | None = None,
     path_prefix: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
@@ -289,7 +302,9 @@ def _run(
     points at in `cwd`, which origin already holds, so a test that does not care
     about the base still reaches a successful base fetch. None omits baseRefOid
     from the gh reply. `base_ref_name` and `base_default_branch` default to the
-    same branch, and None drops that field from the REST payload. `path_prefix`
+    same branch, and None drops that field from the REST payload.
+    `pr_view_base_ref_name` is the `baseRefName` the `gh pr view` reply
+    reports, defaulting to `base_ref_name`; None drops it. `path_prefix`
     puts a shim directory ahead of the gh shim on PATH."""
     _seed_session(home, SID)
     call_log = tmp_path / "gh_calls.jsonl"
@@ -316,6 +331,7 @@ def _run(
                 base_ref_oid=base_ref_oid,
                 base_ref_name=base_ref_name,
                 base_default_branch=base_default_branch,
+                pr_view_base_ref_name=pr_view_base_ref_name,
             ),
         ),
         "HOME": str(home),
@@ -590,7 +606,7 @@ def _assert_diff_and_provenance_written(home: Path, result: subprocess.Completed
 
 
 _BASE_REF_OID_JQ_FILTER = ".baseRefOid // empty"
-_BASE_REF_NAME_JQ_FILTER = ".base.ref // empty"
+_BASE_REF_NAME_JQ_FILTER = ".baseRefName // empty"
 _BASE_DEFAULT_BRANCH_JQ_FILTER = ".base.repo.default_branch // empty"
 
 
@@ -643,7 +659,7 @@ class TestBaseCommitFetch:
         assert "BASE_UNAVAILABLE" not in result.stderr
         _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
         first_pr_view = next(c for c in _read_calls(call_log) if c[:2] == ["pr", "view"])
-        assert "headRefOid,baseRefOid" in first_pr_view
+        assert "headRefOid,baseRefOid,baseRefName" in first_pr_view
         assert "--jq" not in first_pr_view
 
     def test_a_base_branch_other_than_the_default_prints_the_base_without_the_token(
@@ -663,6 +679,35 @@ class TestBaseCommitFetch:
         assert len(result.stdout.splitlines()) == 2, "the diff path and the base object name alone"
         assert _printed_base_ref_oid(result) == base_sha
         assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
+
+    @pytest.mark.parametrize(
+        ("base_default_branch", "pr_view_base_ref_name", "expect_token"),
+        [("main", "feature/stacked", False), ("feature/stacked", "feature/stacked", True), ("main", None, False)],
+        ids=[
+            "gh-pr-view-base-differs-from-rest-default",
+            "gh-pr-view-base-matches-rest-default",
+            "gh-pr-view-base-absent-while-rest-base-matches-default",
+        ],
+    )
+    def test_the_token_follows_the_base_branch_name_from_the_gh_pr_view_reply(
+        self, isolated_home, repo_with_pr_ref, tmp_path, base_default_branch, pr_view_base_ref_name, expect_token
+    ):
+        """The REST `base.ref` is "main" in every case, so only the `gh pr view`
+        `baseRefName` can decide the token."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+            base_ref_name="main", base_default_branch=base_default_branch,
+            pr_view_base_ref_name=pr_view_base_ref_name,
+        )
+
+        assert result.returncode == 0, result.stderr
+        expected_lines_after_diff_path = [base_sha, _BASE_IS_DEFAULT_BRANCH_TOKEN] if expect_token else [base_sha]
+        assert result.stdout.splitlines()[1:] == expected_lines_after_diff_path
 
     @pytest.mark.parametrize(
         ("base_ref_name", "base_default_branch"),
@@ -728,7 +773,7 @@ class TestBaseCommitFetch:
     def test_a_base_branch_that_is_not_exactly_the_default_prints_no_token(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
-        """A trailing space must survive the name's extraction from the API payload.
+        """A trailing space must survive the name's extraction from the `gh pr view` reply.
         One wiring case; the comparison's near-miss matrix is in test_review_pr_lib.py."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref

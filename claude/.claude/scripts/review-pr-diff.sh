@@ -17,10 +17,11 @@ Self-derives the PR's own file list and headRefOid, the same discipline
 review-pr-checkout.sh uses, but never checks the PR out. In order:
 1. Checks that <owner>/<repo> matches this worktree's own origin remote,
    aborting before any gh call on a mismatch.
-2. Fetches the PR's current headRefOid and baseRefOid in one `gh pr view` call,
-   and its REST `changed_files` count. Stops naming the limit when the PR
-   changes more than 300 files, a limit third parties report for GitHub's diff
-   endpoint (see claude-skills/skills/review-pr/REFERENCES.md).
+2. Fetches the PR's current headRefOid, baseRefOid, and baseRefName in one
+   `gh pr view` call, and its REST `changed_files` count and default branch.
+   Stops naming the limit when the PR changes more than 300 files, a limit
+   third parties report for GitHub's diff endpoint (see
+   claude-skills/skills/review-pr/REFERENCES.md).
 3. Fetches the full, paginated file list (one JSON string per file name, so a
    name holding a newline stays one name) and aborts when its length differs
    from `changed_files`.
@@ -141,7 +142,7 @@ if [[ ! -f "$AUDIT_SCRIPT" ]]; then
   exit 2
 fi
 
-PR_VIEW_JSON=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid,baseRefOid 2>/dev/null) || PR_VIEW_JSON=""
+PR_VIEW_JSON=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid,baseRefOid,baseRefName 2>/dev/null) || PR_VIEW_JSON=""
 HEAD_REF_OID=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.headRefOid // empty' 2>/dev/null) || HEAD_REF_OID=""
 if [[ -z "$HEAD_REF_OID" ]]; then
   echo "review-pr-diff.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's current headRefOid. Abort." >&2
@@ -149,6 +150,8 @@ if [[ -z "$HEAD_REF_OID" ]]; then
 fi
 # A baseRefOid that cannot be read degrades the base only: the diff and the audit do not depend on it.
 BASE_REF_OID=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefOid // empty' 2>/dev/null) || BASE_REF_OID=""
+# The base branch name only decides whether the default-branch token prints, so an unreadable field degrades to no token instead of aborting.
+BASE_REF_NAME=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefName // empty' 2>/dev/null) || BASE_REF_NAME=""
 
 # The PR's own file count, from the REST payload (snake_case, unlike the
 # camelCase `changedFiles` of `gh pr view --json`). Ground truth for the
@@ -164,8 +167,6 @@ if ! CHANGED_FILES_COUNT=$(review_pr_rest_changed_files "$PR_REST_JSON"); then
   echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER's REST payload carried no usable changed_files count (malformed response). Abort." >&2
   exit 2
 fi
-# The base branch names only decide whether the default-branch token prints, so an unreadable field degrades to no token instead of aborting.
-BASE_REF_NAME=$(printf '%s' "$PR_REST_JSON" | _lib_jq -r '.base.ref // empty' 2>/dev/null) || BASE_REF_NAME=""
 BASE_DEFAULT_BRANCH=$(printf '%s' "$PR_REST_JSON" | _lib_jq -r '.base.repo.default_branch // empty' 2>/dev/null) || BASE_DEFAULT_BRANCH=""
 
 # The changed-file ceiling of GitHub's diff endpoint: `gh pr diff` cannot
@@ -299,8 +300,6 @@ fi
 printf '%s\n' "$DIFF_FILE"
 if [[ -z "$BASE_UNAVAILABLE_CAUSE" ]]; then
   printf '%s\n' "$BASE_REF_OID"
-  # BASE_REF_OID comes from the `gh pr view` read and both branch names from the later REST payload, so a retarget between the two reads can print the token beside another base branch's commit.
-  # That race is accepted; the "Stdout carries a fixed token when the base is the default branch" bullet of claude-skills/skills/review-pr/REFERENCES.md records the bound.
   if review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; then
     printf '%s\n' "$REVIEW_PR_BASE_IS_DEFAULT_BRANCH_TOKEN"
   fi

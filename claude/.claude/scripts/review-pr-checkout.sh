@@ -545,9 +545,9 @@ else
 fi
 if [[ "$DIFF_STATUS" -ne 0 ]]; then
   if _lib_status_consistent_with_cap_kill "$DIFF_STATUS"; then
-    # A cap kill exits 2, which review-pr's SKILL.md Step 2 treats as final: this
-    # path has no fallback, so the message tells the caller to report and stop.
-    echo "review-pr-checkout.sh: git diff $BASE_REF_OID...$FETCHED_SHA exited $DIFF_STATUS, consistent with the ${GIT_DIFF_TIMEOUT_SECONDS}s cap firing. Nothing was written and no worktree was created. This path has no fallback for a diff over the cap: report this to the user and stop." >&2
+    # A cap kill exits 2, which review-pr's SKILL.md Step 2 reports and stops on,
+    # leaving the human to re-run or ask for the diff-only path.
+    echo "review-pr-checkout.sh: git diff $BASE_REF_OID...$FETCHED_SHA exited $DIFF_STATUS, consistent with the ${GIT_DIFF_TIMEOUT_SECONDS}s cap firing. No worktree was created and no diff file was written. This path does not switch to the diff-only path itself: report this to the user and stop, and the user may re-run the script or ask for the diff-only path." >&2
   else
     # The first run discards stderr so a warning cannot mix into the diff
     # text. A rerun with stdout discarded recovers git's own diagnostic, and

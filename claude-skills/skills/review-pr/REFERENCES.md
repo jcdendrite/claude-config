@@ -1,9 +1,9 @@
 # References — review-pr
 
 Not loaded at skill runtime. Consult when editing the skill,
-`review-pr-acquire.sh`/`review-pr-diff.sh`, or `audit-execution-surface.py`
-to verify a `gh` field name, a truncation caveat, or the execution-surface
-match list still holds.
+`review-pr-acquire.sh`/`review-pr-diff.sh`/`review-pr-checkout.sh`,
+`_review-pr-lib.sh`, or `audit-execution-surface.py` to verify a `gh` field
+name, a truncation caveat, or the execution-surface match list still holds.
 
 ## What `review-pr-acquire.sh` fetches (Step 1)
 
@@ -249,25 +249,19 @@ left implicit:
   - `review-pr-checkout.sh` takes the base branch name from the REST payload.
     It requires `gh pr view`'s `baseRefName` to equal that name beside
     `baseRefOid` and again after the file list, and exits 2 on a mismatch, so a
-    one-way retarget between the reads cannot skip the stacked delta audit.
-  - `review-pr-diff.sh` reads its base commit from the `gh pr view` call and
-    both base names from the `.base.ref` and `.base.repo.default_branch` reads
-    of `PR_REST_JSON`, so a base retarget between the two reads can pair them
-    wrongly.
+    one-way retarget between the reads cannot skip the stacked delta audit. The
+    attacker left in that window is the one the "Known gaps and operator
+    choices" section accepts.
+  - `review-pr-diff.sh` reads the base branch name from the same `gh pr view`
+    response as `baseRefOid`, and only the default branch name from the REST
+    payload. No later read that a PR retarget can change feeds the token, so it
+    has no recheck after the file list. The diff file is not bound to the base
+    the token describes: `gh pr diff` renders against the base the PR has when
+    it runs. That GitHub serves the two fields of one response
+    consistently is unverified, and `review-pr-checkout.sh` relies on the same.
   - A token printed in error lets a non-default branch's content count as
     settled code, because SKILL.md makes the token the only gate for that. A
     token missing in error only leaves claims open.
-  - The race is accepted because its impact is bounded.
-    - The retarget must land between two reads. A PR author needs no write
-      access to choose which existing base-repository branch supplies the base
-      content.
-    - The effect is to close or demote unprotected findings against that
-      branch's content, through step 7 rules 3 and 4.
-    - Rule 4 states "Neither rule applies to a protected finding", and step 8
-      lists "Every finding or claim a step 7 pass dropped, downgraded, or
-      moved, with its evidence source."
-    - A same-repo writer who can write that branch is the attacker the "Known
-      gaps and operator choices" section already accepts.
 
 ## Base reads by object ID (Step 5)
 
@@ -337,10 +331,11 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
 - **Stacked-base content is not precedent.** SKILL.md Step 5, Base reads states
   the rule. A stacked base is unmerged and may be written by the PR's author.
   The session cannot tell it from a base the script could not verify, so
-  without the token line it treats the base as unsettled. The rule also excludes
-  worktree files the diff file does not name, because on a stacked PR they equal
-  the merge-base content, which can differ from `baseRefOid`. The session works
-  out nothing itself: absence of the line is the whole signal.
+  without the token line it treats the base as unsettled. Worktree files the
+  diff file does not name, and unchanged regions of files it does name, follow
+  the merge base, which can differ from `baseRefOid`. That limit holds even
+  when the token prints. The session works out nothing about the base itself:
+  the token line is its only signal.
 - **Per-finding `Edit`s are the record of the consult.** The transcript then
   holds the pre-consult `Write`, the consult dispatch, and every change as an
   old/new pair. Two weaker records fail: cuts recalled from memory leave nothing
