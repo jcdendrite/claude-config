@@ -102,9 +102,7 @@ _OUTCOME_KEYS = (_OUTCOME_FAILURE, _OUTCOME_PASS, _OUTCOME_UNRESOLVED, _OUTCOME_
 _DQ_CO_AUTHORED_ROUNDS = "rounds co-authored by >1 dispatch"
 _DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW = "rounds with a clean marker write but no round-keyed ledger rows"
 _DQ_ROUND_NUMBER_MISMATCH = "sessions whose ledger round sequence doesn't match the transcript's round-opens"
-_DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS = (
-    "sessions with fewer ledger blocks than round-opens (a round-open with no ledger block)"
-)
+_DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS = "mismatched sessions with fewer ledger blocks than round-opens"
 _DQ_LEDGER_POSSIBLY_SWEPT = (
     "sessions with a code-review round, no attributed ledger row, no opened session-keyed ledger file,"
     " and a first round older than the sweep floor"
@@ -678,11 +676,10 @@ def _orchestrator_spawns(
     one record give two entries sharing one spawn_idx.
 
     The session's dispatch index is built at most once, and only when a spawn
-    exists. Each transcript is parsed, scanned and dropped before the next, so
-    only derived facts stay in memory. A spawn whose transcript yields no
-    records is counted under _DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE, whatever
-    --since says. So is a spawn block whose `id` is absent or not a str, which
-    cannot be joined to a sidecar.
+    exists. A spawn whose transcript yields no records is counted under
+    _DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE, whatever --since says. So is a
+    spawn block whose `id` is absent or not a str, which cannot be joined to
+    a sidecar.
     """
     round_open_indices = {open_idx for open_idx, _span_end in code_review_rounds}
     dispatch_index: dict[str, tuple[Path, str | None]] | None = None

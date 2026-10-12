@@ -1188,8 +1188,7 @@ def _pooled_compute_review_round_costs(*args, **kwargs) -> dict:
 def cmd_review_round_cost(args: argparse.Namespace) -> None:
     """Per-branch review-round dollar cost.
 
-    Opens a round at every `code-review`/`plan-review`/`ready-for-review`
-    invocation, both the `Skill` tool_use path and the `/slash` path.
+    Opens a round wherever detect_round_windows does.
     Closes it at the next round-open or the next fresh user prompt,
     whichever comes first. See compute_review_round_costs's own docstring
     for how each round's dollars are priced.
