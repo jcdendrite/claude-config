@@ -120,6 +120,17 @@ runtime by the config key.
 - **The project layer** was rejected by the engineer, quoted verbatim: "The
   project layer is a terrible idea for the record. It is biased by the line
   cap."
+- **A config-gated name-only skill** (the shape `pr-description` uses to gate
+  `tighten-prose`) was not chosen. The base file would carry only a gate, but
+  the behavior would cite about ten base-file rules from a new skill, five of
+  them written as "above" or "below". It would also need a new skill
+  directory, a `skillOverrides` entry with its name-only count pin, a
+  retargeted whole-region pin and anchor, and another plan-review and
+  skill-review round. Keeping the region costs every consumer 3,421 bytes more
+  per `/code-review` and leaves 4 lines of headroom in `code-review/SKILL.md`.
+  Only a revert ends either cost. The reasoning is from the architect consult
+  on the fifth cumulative review, with the byte figure corrected to the
+  measured size. It is not the engineer's.
 - **Respecting a loaded project layer's rules is not placement.** The
   dispatch carries the layer's path when Step 0.5 loaded one, and the
   barred-row item names the layer as a source beside the enforcement-invariant
@@ -218,9 +229,14 @@ the scaffold.
   `code-review/SKILL.md` § "Step — Record review completion" ties the commit
   marker to the staged-diff hash. It is conditional on the orchestrator
   matching a spawn row for a reviewer that covers the finding, and on a
-  reviewer re-finding a still-open hole. Nothing pins or tests it. The claim
-  that approval of the fix falls to the next review of the staged diff is a
-  design reading and adds no new approval step.
+  reviewer re-finding a still-open hole. Nothing pins or tests it.
+- **The pilot offers KEEP more widely than the default arm does.** The default
+  arm's keep reaches a finding whose fix would undo an earlier fix. The pilot
+  marks any payload finding at an earlier round's site, including a block a
+  live DEFER or SETTLED decision names. The deciding
+  architect may have written that earlier fix, and no orchestrator-disagreement
+  stop applies. A DEFER row, checked by criterion name only, could end the same
+  finding, so narrowing KEEP would not close it.
 - **A Rejected heavier-mechanism consult can end an enforcement-invariant
   finding with no fix and no stop.** The rule's Rejected bullet says only
   "No second dispatch and no plan edit", so the finding's disposition after
@@ -251,30 +267,24 @@ The key stays off on every account until all four exist:
   project layer is loaded, a finding it bars from DEFER is run the same way.
   The region's barred-row stop is pinned as text only.
 
-The engineer who enables the key runs the fixture pair and records its result
-in the pre-registration follow-up. The allow-path fixture is constructed so the
-architect's fix shape differs from the reviewer's Suggested fix. Each recorded
-result cites every ADDRESS row's fix text from the `code-writer` dispatch
-prompt, which is the evidence artifact. That evidence shows the dispatch
-prompt carries the architect's fix text and not the reviewer's. That record is
+The engineer who enables the key runs the fixture pair. The allow-path fixture
+is constructed so the architect's fix shape differs from the reviewer's
+Suggested fix. Each recorded result cites every ADDRESS row's fix text from the
+`code-writer` dispatch prompt, which is the evidence artifact. That record is
 the sign-off.
 
 The `fix-plan:` rationale prefix is advisory, unchecked free text unless the
 pre-enable reader checks it. Without that check, an omitted prefix makes a
 table-decided row read as an orchestrator-decided one.
 
-**Enable, check, disable.** Hand-edit `architect_fix_plan_pilot = true` in the
-`claude-config.toml` of the account's config dir being enabled. The value must
-be bare `true`. Check from any shell with:
-
-```bash
-CLAUDE_CONFIG_DIR=<absolute path of that config dir> claude/.claude/scripts/config-get.sh architect_fix_plan_pilot
-```
-
-Or run `config-get.sh architect_fix_plan_pilot` inside that account's session.
-The installed copy is in the config dir's `scripts/`. Exit 0 means on. A
-stderr warning from the check means the row was rejected and the key reads
-`false`. Disable by setting `false`. The key applies per account.
+**Enable, check, disable.** Hand-edit the key as
+`docs/config-file.md` § "Writing a value" describes.
+Check it as
+`docs/config-file.md` § "Querying a value" describes.
+The value must be bare `true`, and exit 0 means on. A stderr warning from the
+check means the row was rejected and the key reads `false`. Disable by setting
+`false`. The key applies per account, and the check reads the config dir of the
+invoking shell, so run it for the account being enabled.
 
 **The hold is open-ended.** The engineer accepted no removal backstop if the
 key is never enabled. The round-2 pilot's record fixed its gates before its
@@ -282,9 +292,10 @@ sentinel existed and also carried a stopping rule; this pilot fixes gates
 before enabling but ships no stopping rule.
 
 **Revert contract.** Delete the region, its pin constants and test class, its
-anchor-set entry. Keep `test_every_config_get_key_named_in_a_skill_is_in_the_config_schema`,
-which still covers the call sites that outlive the region. Set the config-schema audit's Call site
-for this key to none. Keep the key row inert at default `false`, because
+anchor-set entry. Keep
+`test_every_config_get_key_named_in_a_skill_is_in_the_config_schema`, which
+still covers the call sites that outlive the region. Set the config-schema
+audit's Call site for this key to none. Keep the key row inert at default `false`, because
 deleting a schema row makes every scaffolded `claude-config.toml` warn on
 every read. Keep the per-key tests, which still hold for an inert row:
 

@@ -145,10 +145,11 @@ class TestArchitectFixPlanPilotGate:
     def test_relative_claude_config_dir_exits_3_with_empty_stdout_not_a_silent_enable(
         self, tmp_path: Path
     ) -> None:
-        """Security regression: an unresolvable config dir (status 2 in
-        config-get.sh) must exit 3 with no stdout. Falling through would print
-        an empty VALUE, and "" != "false" would enable the pilot on a mis-set
-        environment even though a state file elsewhere reads true."""
+        """An unresolvable config dir (status 2 in config-get.sh) exits 3 with
+        no stdout. test_config_py.py already pins the exit code; this case
+        adds the empty-stdout assertion on the pilot key's real row. Falling
+        through would print an empty VALUE, and "" != "false" would enable the
+        pilot on a mis-set environment."""
         scripts_dir = _isolated_scripts_dir(tmp_path, _CONFIG_KEYS_PSV.read_text())
         (self._config_dir(tmp_path) / "claude-config.toml").write_text(f"{self._KEY} = true\n")
 
