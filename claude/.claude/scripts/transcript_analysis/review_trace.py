@@ -182,8 +182,9 @@ def _review_trace_session_events(
     <command-name> tag on a user record. These are the two shapes this
     mirrors from _round_open_skill (review_rounds.py). review-round-cost also
     opens a round on a `review-orchestrator` dispatch. review-trace needs no
-    such shape, because it merges subagent transcripts and so sees the
-    orchestrator's own `Skill` call.
+    such shape. cmd_review_trace reads every session with
+    include_subagents=True, which merges subagent transcripts, so the records
+    here include the orchestrator's own `Skill` call.
 
     Shared by cmd_review_trace's timeline printer and compute_deny_summary_data
     so the denial/friction detection and dedup rules exist in one place rather

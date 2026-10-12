@@ -645,9 +645,10 @@ def _nested_dispatches_of_transcript(
 ) -> list[tuple[float | None, int | None]]:
     """(start_ts, completion_idx) for each dispatch of `agent_type`
     in one orchestrator transcript. completion_idx is the orchestrator's own
-    spawn_idx -- the nested dispatch completes at its orchestrator's position,
-    so it attributes to the first round-open after the orchestrator's round --
-    when the transcript holds a paired tool_result for it, else None."""
+    spawn_idx when the transcript holds a paired tool_result for the dispatch,
+    else None. The nested dispatch completes at its orchestrator's position.
+    It therefore attributes to the first round-open after the orchestrator's
+    round."""
     tool_result_index = _build_tool_result_index_map(transcript_records, skip_sidechain=False)
     return [
         (
