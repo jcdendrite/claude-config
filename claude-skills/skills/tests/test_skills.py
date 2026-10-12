@@ -6019,6 +6019,11 @@ class TestCodeReviewDeferInvariantRegionPin:
 _CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR = "DISPOSITION_RULE:code-review-fix-plan-pilot"
 _CODE_REVIEW_DEFER_CRITERIA_HEADING = "**DEFER criteria (closed list).**"
 _CODE_REVIEW_INVALID_DEFER_HEADING = "**Invalid DEFER rationales.**"
+_CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING = (
+    "**A fix that would introduce a mechanism heavier, more privileged, or "
+    "wider-scope than the surface already under review is a design question, "
+    "not a fix.**"
+)
 
 # The whole fix-plan pilot region, pinned by exact equality so any edit to it is a visible
 # change to this constant. The mid-sentence "- " tokens are SKILL.md's verdict bullets after
@@ -6048,8 +6053,8 @@ _PINNED_FIX_PLAN_PILOT_CLAUSE = (
     "reasoning and not-verified notes go outside the rows, that no "
     "other line starts like a row, and that a finding it cannot "
     "commit to gets no row. For payload findings a valid table "
-    "decides, this consult replaces the heavier-mechanism and "
-    "contradiction consults. Relay the return verbatim and validate "
+    "decides, this consult replaces the contradiction consult. "
+    "Relay the return verbatim and validate "
     "it by the list below; never re-litigate a row. Each stop names "
     "every condition the return failed. Nothing re-dispatches "
     "automatically. Only the human may re-dispatch or send the "
@@ -6066,9 +6071,9 @@ _PINNED_FIX_PLAN_PILOT_CLAUSE = (
     "`foundation: sound`. Text outside the rows and `foundation:` "
     "lines decides nothing. The table is then the disposition. One "
     "`code-writer` carries its ADDRESS rows, if any, each fix shape "
-    "replacing the Suggested fix unless DEFER is barred as below. A fix "
-    "that trips the heavier-mechanism limbs takes that rule's endorsed "
-    "follow-up instead. Log each row as the ledger section below "
+    "replacing the Suggested fix. A fix "
+    "that trips the heavier-mechanism limbs takes that rule instead. "
+    "Log each row as the ledger section below "
     "and a loaded project layer prescribe. Log a KEEP as the "
     "contradiction route logs a consult's keep. Log an ADDRESS or "
     "fresh DEFER of a repeat with the `--ref <id>` that route "
@@ -6129,8 +6134,9 @@ class TestCodeReviewFixPlanPilotRegionPin:
 
     def test_cited_referents_still_exist(self) -> None:
         """The region cites "the round-cap consult's first verdict", "that
-        rule's endorsed follow-up" and "invalid DEFER rationales below" by
-        position and name, and none of those is otherwise pinned."""
+        rule" (the heavier-mechanism rule, consult through Rejected outcome and
+        disagreement stop) and "invalid DEFER rationales below" by position and
+        name, and none of those is otherwise pinned."""
         skill_md_path = _skill_file("code-review")
         round_cap_text = _normalized_anchor_text(
             skill_md_path, "DISPOSITION_RULE:code-review-round-cap-consult-verdict"
@@ -6145,10 +6151,23 @@ class TestCodeReviewFixPlanPilotRegionPin:
         heavier_mechanism_text = _normalized_anchor_text(
             skill_md_path, "DISPOSITION_RULE:code-review-new-primitive-route"
         )
-        assert "**Endorsed" in heavier_mechanism_text, (
-            f"{skill_md_path}: the heavier-mechanism region no longer has an "
-            "`Endorsed` follow-up"
+        assert heavier_mechanism_text.startswith(
+            _CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING
+        ), (
+            f"{skill_md_path}: the heavier-mechanism region must open with "
+            f"{_CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING!r}"
         )
+        # A limb-tripping ADDRESS row takes the whole rule, so its Rejected outcome and its
+        # orchestrator-disagreement stop must survive too.
+        for heavier_mechanism_clause in (
+            "**Rejected",
+            "A disagreement between the orchestrator and the returned recommendation "
+            "is a blocking stop-and-ask to the human",
+        ):
+            assert heavier_mechanism_clause in heavier_mechanism_text, (
+                f"{skill_md_path}: the heavier-mechanism region must still contain "
+                f"{heavier_mechanism_clause!r}"
+            )
         raw_text = skill_md_path.read_text()
         pilot_end = raw_text.find(
             f"<!-- {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} end -->"
@@ -6174,6 +6193,33 @@ class TestCodeReviewFixPlanPilotRegionPin:
         assert key_match.group(1) in config_schema(), (
             f"{key_match.group(1)!r} is not a key in config-keys.psv"
         )
+
+
+def test_every_config_get_key_named_in_a_skill_is_in_the_config_schema() -> None:
+    """Every `config-get.sh <key>` a shipped SKILL.md invokes names a schema key."""
+    schema_keys = config_schema()
+    call_sites: list[tuple[Path, str]] = []
+    for skill_md_path in _all_skill_md_paths():
+        for key_match in re.finditer(
+            r"config-get\.sh ([a-z0-9_]+)", skill_md_path.read_text()
+        ):
+            call_sites.append((skill_md_path, key_match.group(1)))
+    # pr-description and transcript-analysis each carry one call site.
+    # The pilot region adds a third; the floor excludes it so removing the
+    # region leaves this test green.
+    minimum_call_sites = 2
+    assert len(call_sites) >= minimum_call_sites, (
+        f"found {len(call_sites)} config-get.sh call sites across shipped skills; "
+        f"expected at least {minimum_call_sites}, so the pattern may have drifted"
+    )
+    unknown_keys = [
+        f"{skill_md_path}: {key}"
+        for skill_md_path, key in call_sites
+        if key not in schema_keys
+    ]
+    assert not unknown_keys, (
+        f"config-get.sh keys not in config-keys.psv: {unknown_keys}"
+    )
 
 
 _CODE_REVIEW_RIPPLE_HEADING = "## Ripple effect triage"

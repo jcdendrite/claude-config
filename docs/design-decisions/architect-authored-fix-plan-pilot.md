@@ -89,13 +89,25 @@ transcript. The cost is that a malformed return interrupts the human.
 `claude-skills/skills/code-review/SKILL.md` defines which findings a row's fix
 shape replaces. This section records only why.
 
-The carve-out reuses the barred-row classification rather than defining a
-second set, so one judgment per finding decides both a barred row's stop and
-whether an ADDRESS row's fix shape applies. Those are the findings the rules
-will not leave unfixed without a human stop, and the table's shape check does
-not test whether a fix shape closes the hole a finding states. Nothing wider
-is carved out: on every other finding, a security-class one included, the fix
-shape applies unchecked.
+An ADDRESS row's fix shape replaces the Suggested fix on every finding, a
+barred one included. The table's shape check does not test whether a fix shape
+closes the hole a finding states. The engineer objected to a carve-out that
+kept the reviewer's Suggested fix on barred findings: "Why wouldn’t we have the
+architect’s fix be subject to approval by the reviewer."
+
+A consult of the Fable 5 model, dispatched by the session, read the next
+review of the staged diff as the place approval of the fix falls. That is a
+design reading, and it adds no new approval step.
+
+Two of the engineer's proposals were not adopted. The reasons are that
+consult's, not the engineer's.
+
+- **A separate adversarial briefing for the consult.** A fresh dispatch is
+  already a different context. An extra briefing line would make the pilot's
+  consult prompt differ from a key-off round's.
+- **Reviewer pre-approval of the architect's fix.** It adds a dispatch type, a
+  return grammar and an undefined reject branch. It also has a Sonnet
+  reviewer judge an Opus fix against its own proposal.
 
 ## Placement
 
@@ -199,11 +211,23 @@ the scaffold.
   (`code-review/SKILL.md` § "Step — Record review completion"), so a DEFER or
   KEEP row that passes the shape check can authorize a commit over its
   finding.
-- **Rows whose fix shape was not applied are unlabeled.** An ADDRESS row on a
-  finding barred from DEFER carries the reviewer's Suggested fix but logs with
-  the same `fix-plan:` prefix and round tag as any other table-decided row, so
-  the pre-registered rule must re-derive such rows from the finding text or
-  count them as treated.
+- **An ADDRESS row on an enforcement-invariant finding reaches `code-writer`
+  with only a shape check.** Closure then rests on the next staged-diff
+  review. That review exists: `subagent-delegation/SKILL.md` keeps the
+  `/code-review` re-run with the parent after the `code-writer` fix, and
+  `code-review/SKILL.md` § "Step — Record review completion" ties the commit
+  marker to the staged-diff hash. It is conditional on the orchestrator
+  matching a spawn row for a reviewer that covers the finding, and on a
+  reviewer re-finding a still-open hole. Nothing pins or tests it. The claim
+  that approval of the fix falls to the next review of the staged diff is a
+  design reading and adds no new approval step.
+- **A Rejected heavier-mechanism consult can end an enforcement-invariant
+  finding with no fix and no stop.** The rule's Rejected bullet says only
+  "No second dispatch and no plan edit", so the finding's disposition after
+  it is unstated. The commit marker rule blocks the commit but asks no
+  question and logs no `--enforcement-invariant` stop. The key-off arm has
+  the same text. The fix is one general clause on that bullet, as a follow-up
+  to the rule itself.
 - **Measurement contamination.** Key-on dispatches write the round-3 latch
   and count as consults in `review-trace`, so measurements of either must
   exclude key-on accounts.
@@ -223,23 +247,17 @@ The key stays off on every account until all four exist:
 - A deny/allow fixture pair, run against the region with its result recorded
   in the pre-registration follow-up: an enforcement-invariant finding with a
   DEFER or KEEP row yields a stop, and the same finding with an ADDRESS row in
-  an otherwise valid table proceeds with the reviewer's Suggested fix and no
-  architect fix shape. Where a project layer is loaded, a finding it bars
-  from DEFER is run the same way.
-  A mixed-table fixture is read back alongside the pair: a valid table whose
-  row 1 is an ADDRESS on an unbarred finding and whose row 2 is an ADDRESS on
-  a barred (enforcement-invariant) finding. The barred finding names a
-  "Required control". Each row's architect fix shape differs from that
-  finding's reviewer fix, so a wrong reading can fail. In one dispatch,
-  `code-writer` carries row 1's architect fix shape. It carries row 2's
-  reviewer Suggested fix and no architect fix shape for row 2. The fixture is
-  a manual read-back, with no test code.
+  an otherwise valid table proceeds with the architect's fix shape. Where a
+  project layer is loaded, a finding it bars from DEFER is run the same way.
   The region's barred-row stop is pinned as text only.
 
-The engineer who enables the key runs the fixture pair and the mixed-table
-fixture and records their result in the pre-registration follow-up. Each
-recorded result cites every row's fix text from the `code-writer` dispatch
-prompt, which is the evidence artifact. That record is the sign-off.
+The engineer who enables the key runs the fixture pair and records its result
+in the pre-registration follow-up. The allow-path fixture is constructed so the
+architect's fix shape differs from the reviewer's Suggested fix. Each recorded
+result cites every ADDRESS row's fix text from the `code-writer` dispatch
+prompt, which is the evidence artifact. That evidence shows the dispatch
+prompt carries the architect's fix text and not the reviewer's. That record is
+the sign-off.
 
 The `fix-plan:` rationale prefix is advisory, unchecked free text unless the
 pre-enable reader checks it. Without that check, an omitted prefix makes a
@@ -264,15 +282,16 @@ sentinel existed and also carried a stopping rule; this pilot fixes gates
 before enabling but ships no stopping rule.
 
 **Revert contract.** Delete the region, its pin constants and test class, its
-anchor-set entry and its wiring test. Set the config-schema audit's Call site
+anchor-set entry. Keep `test_every_config_get_key_named_in_a_skill_is_in_the_config_schema`,
+which still covers the call sites that outlive the region. Set the config-schema audit's Call site
 for this key to none. Keep the key row inert at default `false`, because
 deleting a schema row makes every scaffolded `claude-config.toml` warn on
 every read. Keep the per-key tests, which still hold for an inert row:
 
 - The hand-typed schema pins in `test_config_py.py` (known set and defaults,
   per-account resolution, bool type, empty prompt description).
-- `TestArchitectFixPlanPilotGate` in `test_config_get.py`, with its docstring's
-  reference to `SKILL.md` reworded.
+- `TestArchitectFixPlanPilotGate` in `test_config_get.py`, whose class
+  docstring must no longer cite the deleted region.
 
 `test_fresh_home_with_no_state_file_exits_1` in that class asserts the `false`
 default independently of the hand-typed pins. Keep this record so the schema's
@@ -286,7 +305,10 @@ config read warns. Set the key `false` on any account that enabled it.
 overturns neither, so no supersession edit is made now.
 
 **Key-off check.** A key-off round with a reviewer-spawned finding shows one
-`config-get.sh architect_fix_plan_pilot` read and no `fix-plan:` tag.
+`config-get.sh architect_fix_plan_pilot` read that exits 1 and no `fix-plan:`
+tag. The check passes only on an observed exit 1. A read that exits with any
+other code, or yields none, also leaves no tag, so on any account only the
+read's exit code in the transcript tells it from key-off.
 
 ## Sources
 
