@@ -248,6 +248,9 @@ instead once you know it's there.
 See `config-get.sh`'s own header for the exit-code table — the exit code
 is the sole authority, and the effective value is also printed to stdout
 for a human, but never trust stdout alone.
+The query resolves `<config-dir>` from the invoking shell's
+`CLAUDE_CONFIG_DIR`, so check another account by setting it to that account's
+absolute config dir or by running the query inside that account's session.
 This is the query surface skill prose uses instead of learning the file's
 internal format (`pr-description/SKILL.md`, `transcript-analysis/SKILL.md`).
 

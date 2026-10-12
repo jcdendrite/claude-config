@@ -126,11 +126,10 @@ runtime by the config key.
   them written as "above" or "below". It would also need a new skill
   directory, a `skillOverrides` entry with its name-only count pin, a
   retargeted whole-region pin and anchor, and another plan-review and
-  skill-review round. Keeping the region costs every consumer 3,421 bytes more
-  per `/code-review` and leaves 4 lines of headroom in `code-review/SKILL.md`.
-  Only a revert ends either cost. The reasoning is from the architect consult
-  on the fifth cumulative review, with the byte figure corrected to the
-  measured size. It is not the engineer's.
+  skill-review round. Keeping the region costs every consumer its pinned bytes
+  on each `/code-review` and spends lines against `code-review/SKILL.md`'s
+  500-line cap. Only a revert ends either cost. The reasoning is an architect
+  consult's, not the engineer's.
 - **Respecting a loaded project layer's rules is not placement.** The
   dispatch carries the layer's path when Step 0.5 loaded one, and the
   barred-row item names the layer as a source beside the enforcement-invariant
@@ -232,10 +231,10 @@ the scaffold.
   reviewer re-finding a still-open hole. Nothing pins or tests it.
 - **The pilot offers KEEP more widely than the default arm does.** The default
   arm's keep reaches a finding whose fix would undo an earlier fix. The pilot
-  marks any payload finding at an earlier round's site, including a block a
-  live DEFER or SETTLED decision names. The deciding
-  architect may have written that earlier fix, and no orchestrator-disagreement
-  stop applies. A DEFER row, checked by criterion name only, could end the same
+  marks any payload finding at an earlier round's site that reaches the
+  payload, meaning a block an earlier fix edited or a live DEFER decision
+  names. The deciding architect may have written that earlier fix, and no
+  orchestrator-disagreement stop applies. A DEFER row, checked by criterion name only, could end the same
   finding, so narrowing KEEP would not close it.
 - **A Rejected heavier-mechanism consult can end an enforcement-invariant
   finding with no fix and no stop.** The rule's Rejected bullet says only
@@ -326,7 +325,7 @@ read's exit code in the transcript tells it from key-off.
 - #1213 (the pilot), #1187 (the review-only role this would supersede on
   adopt), #1211 (the baseline).
 - `.claude/plans/architect-authored-fix-plan.md` — the plan, with the
-  assumption ledger behind each claim above.
+  assumption ledger behind the claims above that it holds.
 - [round3-consult-verdict-routing.md](round3-consult-verdict-routing.md) —
   the precedent departed from.
 - [round2-consult-trigger-pilot-revert.md](round2-consult-trigger-pilot-revert.md)
