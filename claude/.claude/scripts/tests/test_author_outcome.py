@@ -490,7 +490,7 @@ class TestRoundNumberMismatch:
             _ledger_row(round=2, disposition="DEFER"),
             _ledger_row(round=1, disposition="ADDRESS"),
         ]
-        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is not None
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) == ao._MISMATCH_OTHER
 
     def test_zero_round_opens_with_a_round_keyed_row_is_a_mismatch(self):
         """round_open_count=0 (the transcript's own round-open detector
@@ -499,7 +499,7 @@ class TestRoundNumberMismatch:
         this must resolve to a mismatch reason rather than slip through as
         the legacy-only-ledger None case above."""
         rows = [_ledger_row(round=1, disposition="ADDRESS")]
-        assert ao._round_number_mismatch(_entries(rows), round_open_count=0) is not None
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=0) == ao._MISMATCH_OTHER
 
     def test_bool_round_only_ledger_is_not_a_mismatch(self):
         """round=True/False are JSON booleans, not round numbers -- Python's
@@ -533,7 +533,7 @@ class TestRoundNumberMismatch:
             (1, _ledger_row(round=1, disposition="ADDRESS")),
             (0, _ledger_row(round=2, disposition="DEFER")),
         ]
-        assert ao._round_number_mismatch(entries, round_open_count=2) is not None
+        assert ao._round_number_mismatch(entries, round_open_count=2) == ao._MISMATCH_OTHER
 
     def test_same_file_reusing_a_round_non_contiguously_is_a_mismatch_by_true_identity(self):
         """File 0 claims round 1, file 1's own unrelated round 2 sits between
@@ -547,7 +547,7 @@ class TestRoundNumberMismatch:
             (1, _ledger_row(round=2, disposition="DEFER")),
             (0, _ledger_row(round=1, disposition="ADDRESS")),
         ]
-        assert ao._round_number_mismatch(entries, round_open_count=2) is not None
+        assert ao._round_number_mismatch(entries, round_open_count=2) == ao._MISMATCH_OTHER
 
     def test_round_shared_by_two_files_with_a_third_files_row_interleaved_is_a_mismatch(self):
         """The complementary case to the same-file reuse above: round 1 is
@@ -561,7 +561,7 @@ class TestRoundNumberMismatch:
             (2, _ledger_row(round=5, disposition="DEFER")),
             (1, _ledger_row(round=1, disposition="DEFER")),
         ]
-        assert ao._round_number_mismatch(entries, round_open_count=2) is not None
+        assert ao._round_number_mismatch(entries, round_open_count=2) == ao._MISMATCH_OTHER
 
     def test_round_shared_by_non_adjacent_files_zero_and_two_is_a_mismatch(self):
         """3 distinct file_index values, with the colliding round claimed
@@ -573,7 +573,7 @@ class TestRoundNumberMismatch:
             (1, _ledger_row(round=2, disposition="DEFER")),
             (2, _ledger_row(round=1, disposition="DEFER")),
         ]
-        assert ao._round_number_mismatch(entries, round_open_count=2) is not None
+        assert ao._round_number_mismatch(entries, round_open_count=2) == ao._MISMATCH_OTHER
 
     def test_equal_round_values_in_two_files_with_matching_block_count_is_a_mismatch(self):
         """Two files each claiming round 1, against two round-opens: the
@@ -583,7 +583,7 @@ class TestRoundNumberMismatch:
             (0, _ledger_row(round=1, disposition="DEFER")),
             (1, _ledger_row(round=1, disposition="DEFER")),
         ]
-        assert ao._round_number_mismatch(entries, round_open_count=2) is not None
+        assert ao._round_number_mismatch(entries, round_open_count=2) == ao._MISMATCH_OTHER
 
     def test_later_session_on_a_branch_starting_above_round_one_is_not_a_mismatch(self):
         """Rounds are branch-scoped, so a session's first round can be 3:

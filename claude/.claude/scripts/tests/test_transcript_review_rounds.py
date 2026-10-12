@@ -1321,14 +1321,24 @@ class TestOrchestratorDispatchFreeTextNeverSurfaces:
         for surface in surfaces:
             assert _LEAK_SENTINEL_PREFIX not in surface
 
-    def test_review_round_cost_never_prints_or_returns_dispatch_free_text(self, fake_projects, capsys):
+    def test_review_round_cost_never_prints_or_returns_dispatch_free_text(self, fake_projects, capsys, monkeypatch):
         self._write_corpus(fake_projects)
+        costs_seen_by_command: list[dict] = []
+        real_compute_review_round_costs = review_rounds.compute_review_round_costs
+
+        def _recording_compute_review_round_costs(*args, **kwargs):
+            costs = real_compute_review_round_costs(*args, **kwargs)
+            costs_seen_by_command.append(costs)
+            return costs
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_costs", _recording_compute_review_round_costs)
 
         _mod.cmd_review_round_cost(_review_round_cost_args())
         captured = capsys.readouterr()
-        costs = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
 
-        # The orchestrator round was priced with its dispatch and its nested reviewer.
+        # The command priced the orchestrator round with its dispatch and its nested reviewer.
+        assert len(costs_seen_by_command) == 1
+        costs = costs_seen_by_command[0]
         assert [round_entry["skill"] for round_entry in costs["rounds"]] == ["code-review"]
         assert costs["rounds"][0]["agents"] == 2
         self._assert_prefix_absent(captured.out, captured.err, repr(costs))

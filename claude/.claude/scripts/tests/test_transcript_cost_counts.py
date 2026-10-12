@@ -150,9 +150,10 @@ class TestCostCounts:
     def test_main_thread_review_orchestrator_dispatch_renders_as_a_code_review_round_with_its_caption(
         self, fake_projects, capsys,
     ):
-        """The caption text is a literal here, not read from
-        _COST_COUNTS_ROUNDS_CAPTION, so a reworded or reverted caption turns
-        this red. The caption is public PR-body text."""
+        """Both caption texts are literals here, not read from
+        _COST_COUNTS_ROUNDS_CAPTION or _COST_COUNTS_SPAWNS_CAPTION, so a
+        reworded or reverted caption turns this red. The captions are public
+        PR-body text."""
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("o1", "review-orchestrator")]),
         ])
@@ -164,6 +165,12 @@ class TestCostCounts:
         assert (
             "Each invocation of a review skill, and each main-thread `review-orchestrator` dispatch,"
             " is one round, whether or not it produced findings."
+            " Counts reflect this section's last render; a review round that ran afterward may not"
+            " be included yet."
+        ) in out
+        assert (
+            "Counts main-thread dispatches only; an agent spawned from inside another agent is not"
+            " counted."
         ) in out
 
     def test_untracked_subagent_type_is_withheld_under_this_repo(

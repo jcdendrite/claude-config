@@ -587,10 +587,10 @@ def _write_subagent_dispatch(
     dispatch — _write_subagent_jsonl (above) writes only the .jsonl, never the
     meta.json sidecar reviewer-yield's and subagent-mix's dispatch joins read.
     Matches the real on-disk shape: {"agentType", "description", "toolUseId",
-    "spawnDepth"}. Every dispatch lands in the session's own flat subagents/
-    directory whatever its spawn_depth: the harness writes a dispatch spawned
-    from inside another subagent there too, distinguished only by a spawn_depth
-    above 1. requested_model, when given, adds meta.json's own "model" key —
+    "spawnDepth"}. spawn_depth marks a nested dispatch with a value above 1;
+    where nested dispatches are written on disk is described in
+    corpus._index_subagent_dispatches.
+    requested_model, when given, adds meta.json's own "model" key —
     absent by default, matching a dispatch that requested no explicit model."""
     _write_subagent_jsonl(proj, session_id, agent_id, records)
     subdir = proj / session_id / SUBAGENT_SUBDIR
