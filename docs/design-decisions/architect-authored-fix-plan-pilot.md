@@ -23,8 +23,7 @@ only why the pilot has this shape.
 three further grounds, and the pilot engages all four:
 
 - **Volume.** A key-on round with a non-empty payload costs one Opus
-  dispatch, so key-on volume is bounded by round count, the basis of §42's
-  ceiling. Default-off keeps that volume out of every account that has not
+  dispatch. Default-off keeps that volume out of every account that has not
   opted in. §42's published figures are cited by reference, not recomputed
   here.
 - **Relocating the scope argument.** Without the key, nothing moves. With it,
@@ -156,9 +155,7 @@ runtime by the config key.
   the pilot.
 - **A per-account key.** An opted-in account runs the pilot in every repo it
   reviews, while the key-on versus key-off comparison counts this repository
-  only. That includes `/code-review` under `/review-pr`, whose standing
-  override, not this region, keeps ADDRESS rows from reaching `code-writer`,
-  as for the default arm.
+  only. That includes `/code-review` under `/review-pr`.
 
 ## Ledger and observability
 
@@ -298,12 +295,11 @@ every read. Keep the per-key tests, which still hold for an inert row:
   per-account resolution, bool type, empty prompt description).
 - `TestArchitectFixPlanPilotGate` in `test_config_get.py`.
 
-Then run `git grep -n architect_fix_plan_pilot` and edit every sentence it
-finds that still describes the pilot as live, including the audit's
-Fail-direction bullet. Add a status line under this record's provenance line
-saying the key is inert, and a new CHANGELOG entry for the revert.
+Then edit every sentence that still describes the pilot as live, including
+the audit's Fail-direction bullet. Add a status line under this record's
+provenance line saying the key is inert, and a new CHANGELOG entry for the revert.
 
-`test_fresh_home_with_no_state_file_exits_1` in that class asserts the `false`
+`test_fresh_home_with_no_state_file_exits_1` asserts the `false`
 default independently of the hand-typed pins. Keep this record so the schema's
 docs-anchor never dangles. Reverting the merge commit is not the rollback: it
 deletes the schema row while accounts keep their scaffolded row, so every
