@@ -60,7 +60,7 @@ REVIEW_PR_REVIEWS_JQ_FILTER='.[] | select(.body != "") | {id, author: .user.logi
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_INLINE_COMMENTS_JQ_FILTER='.[] | {author: .user.login, path, line, body}'
 
-# A git fetch is a network transfer, not a local read. No protocol or vendor limit backs the value.
+# A git fetch is a network transfer, not a local read. No protocol or vendor limit backs the value. The value assumes a clone that already holds most of the fetched history.
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS=30
 

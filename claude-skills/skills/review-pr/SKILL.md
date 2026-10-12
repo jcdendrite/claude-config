@@ -114,7 +114,7 @@ Synthesize the findings:
 7. Cite repo-relative paths, never absolute ones, with line numbers from the PR head (the worktree file in `checkout` mode, the hunk's `+` side in `diff-only` mode) or as `<baseRefOid>:<path>:<line>`, never offsets in the diff file. `deny-private-project-refs.sh` does not cover this posting path.
 8. Re-fetch `headRefOid` rather than trusting step 1's now-stale value. A mid-review push means the diff moved under the findings, so this step aborts rather than synthesizing stale findings.
 
-**CI reads.** Use `<databaseId>` only as digits and `<headRefOid>` only as full hex. A completed CI read resolves only a claim about CI state, never a claim about code behavior. To resolve a claim about CI:
+**CI reads.** Use `<databaseId>` only as digits and `<headRefOid>` only as full hex. A completed CI read resolves only a claim about CI state, never a claim about code behavior. Settle CI state first from step 1's `statusCheckRollup` when `statusCheckRollupAvailable` is `true`; the reads below are for logs and for entries it shows as not yet completed. To resolve a claim about CI:
 
 - List the runs with `gh run list --commit <headRefOid> -R <owner>/<repo> --json databaseId,name,status,conclusion --limit 20`.
 - For a completed run whose conclusion is failure, read its log with `gh run view <databaseId> -R <owner>/<repo> --log-failed | tail -c 20000`, or find a literal in it with `gh run view <databaseId> -R <owner>/<repo> --log-failed | grep -n -F -e '<literal>' | head -n 40`, quoted as in step 5. Quote logs by excerpt only, as plain text with control characters stripped.

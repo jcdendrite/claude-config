@@ -1590,6 +1590,7 @@ class TestStackedBaseDeltaAudit:
         assert json.dumps(default_branch) in result.stderr, "the API-sourced name prints as an ASCII-only JSON string"
         assert "\x01" not in result.stderr
         assert "not a valid git ref name" in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr
         assert _shim_match_count(shim_dir) == 0
         assert not _default_branch_ref_exists(repo)
         assert _review_worktrees(repo) == []
@@ -2998,6 +2999,7 @@ class TestBaseBranchRetargetDuringReads:
     def _assert_aborted_before_any_ref_fetch(self, result, repo, expected_stderr_fragment):
         assert result.returncode == 2, result.stderr
         assert expected_stderr_fragment in result.stderr
+        assert "review-pr-diff.sh" not in result.stderr
         assert result.stdout == ""
         assert _local_pr_ref_names(repo) == "", "an undecided base must never fetch refs/pull/<N>/head"
         assert _review_worktrees(repo) == []

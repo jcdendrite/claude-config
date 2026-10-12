@@ -273,9 +273,8 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   git-grep(1); read from the manual, not run).
 - **Single quotes keep a PR-derived string literal.** Inside them the shell
   treats every character literally, and a single quote cannot occur inside them
-  (POSIX Shell Command Language, quoting; recalled, not reopened). A string
-  that holds `'`, a newline, or another control character is never passed to
-  Bash, so its content is treated as unread.
+  (POSIX Shell Command Language, quoting; recalled, not reopened). SKILL.md
+  Step 5's "Base reads" paragraph defines which strings never reach Bash.
 - **The scripts fetch the base commit, not the session.** A fetch the session
   writes copies a model-transcribed object ID with no hex validation, no
   `core.hooksPath` pin, and no time cap. The scripts validate the ID with
@@ -307,12 +306,11 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
 - **Residual.** The quoting rule is prose. A command that double-quotes a name
   would expand `$(...)`. The harness shows the full command only in a
   permission mode that prompts, not under an allowlist or auto mode.
-- **Numeric and hex placeholders are validated by instruction.** `<n>` and
-  `<databaseId>` are digits only. `<headRefOid>` and `<baseRefOid>` are full hex
-  before use in a command. The model transcribes each from a document it read,
-  so nothing mechanical checks the transcription. A CI-log excerpt is quoted as
-  plain text with control characters stripped, because the human approves the
-  displayed body.
+- **Numeric and hex placeholders are validated by instruction.** SKILL.md
+  Steps 5 and 7 state the digits-only and full-hex rules and the CI-log
+  control-character strip. The model transcribes each placeholder from a
+  document it read, so nothing mechanical checks the transcription. The human
+  approves the displayed body.
 
 ## Step 7's controls
 
