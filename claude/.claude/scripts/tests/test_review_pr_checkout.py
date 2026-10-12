@@ -831,8 +831,7 @@ class TestProvenanceWrite:
         findings_body = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.body"
         findings_body.write_text(f"**[Claude Code]** # findings\n\n{_ATTRIBUTION_TRAILER}\n")
 
-        marker_env = {"HOME": str(isolated_home)}
-        marker_env.pop("CLAUDE_CONFIG_DIR", None)
+        marker_env = {"HOME": str(isolated_home), "PATH": os.environ["PATH"]}
         marker_result = subprocess.run(
             ["bash", str(SCRIPTS_DIR / "marker.sh"), "write", "review-pr"],
             cwd=worktree_dir, env=marker_env, capture_output=True, text=True,
