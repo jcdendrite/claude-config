@@ -35,6 +35,7 @@ from .conftest import (
     _assert_finish_and_clear_stale_each_empty_the_active_directory,
     _assert_gh_calls_are_read_only,
     _build_repo_with_pr_ref,
+    _fetch_argument_lines,
     _fetch_askpass_values,
     _fetch_terminal_prompt_values,
     _git_commit_is_present,
@@ -1161,9 +1162,7 @@ class TestStackedBaseDeltaAudit:
         control_head_listing = _git_bytes(repo, "ls-tree", "-r", "--name-only", pr_sha).decode()
         assert ".mcp.json" not in control_base_listing, "control: the base commit no longer holds the file"
         assert ".mcp.json" in control_head_listing, "control: the PR's head still holds it"
-        shim_dir = _git_shim_that_fails_on_subcommand(
-            tmp_path, f"*fetch --no-write-fetch-head -- origin {base_sha}", exit_status=1
-        )
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, _base_fetch_args_glob(base_sha), exit_status=1)
 
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
@@ -2252,6 +2251,13 @@ def _recorded_git_invocations(shim_dir: Path) -> list[tuple[str, set[str]]]:
 _TRACE_FAILURE_STEPS = ["base_fetch", "diff", "worktree_add"]
 
 
+def _base_fetch_args_glob(base_sha: str) -> str:
+    """The args glob of the script's base fetch. The base_fetch failure rows of
+    TestReviewDiffStepFailure prove it matches the real fetch, so a zero shim
+    count against it means the fetch was not made."""
+    return f"*fetch --no-write-fetch-head --recurse-submodules=no -- origin {base_sha}"
+
+
 class TestReviewDiffStepFailure:
     """A failure of the base fetch or the diff aborts before the worktree
     exists, leaves no diff file, and leaves the acquire step's provenance
@@ -2272,7 +2278,7 @@ class TestReviewDiffStepFailure:
         provenance = write_review_pr_provenance(
             isolated_home, PR_IDENTITY, pr_sha, 999, mode="acquired", session_id=SID
         )
-        args_glob = f"*fetch --no-write-fetch-head -- origin {base_sha}" if step == "base_fetch" else "* diff *"
+        args_glob = _base_fetch_args_glob(base_sha) if step == "base_fetch" else "* diff *"
         shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, args_glob, exit_status=exit_status)
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path,
@@ -2382,7 +2388,7 @@ class TestReviewDiffStepFailure:
         assert result.returncode == 0, result.stderr
         invocations = _recorded_git_invocations(shim_dir)
         base_sha = _origin_main_sha(repo)
-        base_fetch_marker = f" fetch --no-write-fetch-head -- origin {base_sha} "
+        base_fetch_marker = f" fetch --no-write-fetch-head --recurse-submodules=no -- origin {base_sha} "
         for step_marker in (" fetch origin refs/pull/", base_fetch_marker, " diff ", " worktree add "):
             assert any(step_marker in f" {args} " for args, _ in invocations), f"no git call matched {step_marker!r}"
         for args, variable_names in invocations:
@@ -2730,6 +2736,28 @@ class TestFetchesNeverPromptForCredentials:
         assert result.returncode == 0, result.stderr
         assert _fetch_terminal_prompt_values(shim_dir) == ["0", "0", "0"]
         assert _fetch_askpass_values(shim_dir) == ["/ambient/git-askpass /ambient/ssh-askpass"] * 3
+
+
+class TestFetchesSkipSubmoduleRecursion:
+    """Each network fetch is invoked with --recurse-submodules=no."""
+
+    def test_every_network_fetch_of_a_stacked_run_skips_submodule_recursion(self, isolated_home, tmp_path):
+        """A populated submodule must not make a correct fetch fail, so each fetch opts out of recursing into it."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(tmp_path, base_entries={b"base_only.txt": b"base\n"})
+        shim_dir = _git_shim_that_logs_terminal_prompt_on_fetch(tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, path_prefix=shim_dir,
+            **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 0, result.stderr
+        fetch_argument_lines = _fetch_argument_lines(shim_dir)
+        assert len(fetch_argument_lines) == 3, "control: the PR-ref, default-branch and base fetches all ran"
+        for fetch_arguments in fetch_argument_lines:
+            assert "--recurse-submodules=no" in fetch_arguments.split(" "), fetch_arguments
 
 
 class TestFetchesLeaveOnlyTheirOwnRef:

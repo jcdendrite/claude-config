@@ -33,6 +33,8 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - A stacked run leaves `refs/review-pr/pr-<N>-default` and fetched base objects in the consumer's repository, which `review-pr-finish.sh` does not remove.
   - `review-pr-checkout.sh` exits 2 before fetching the PR's ref when the PR's base branch reads differently across its own reads.
   - Its two ref-updating fetches write no tag, update no remote-tracking ref, and write no `FETCH_HEAD`.
+  - Every network fetch in `review-pr-checkout.sh` and `review-pr-diff.sh` fails instead of waiting at a git credential prompt on the terminal. A passphrase or host-key prompt from ssh itself is not suppressed.
+  - None of those fetches recurses into submodules, so a submodule's fetch failure cannot fail them.
   - Step 7 resolves hedged claims against the diff, base content, CI runs, and the linked issue before tiering.
   - Step 7 moves pre-existing defects to step 8 notes.
   - A claim about code closes only on code evidence, never on CI-log, issue, or PR-authored text.

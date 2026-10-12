@@ -356,9 +356,10 @@ audit_paths_or_exit "$FILES_JSON" \
 # --no-write-fetch-head leaves FETCH_HEAD alone.
 # An empty --refmap= makes git ignore the remote's configured fetch refspecs (git-fetch(1)), which would otherwise also update a matching remote-tracking ref.
 # Together the fetch writes only this ref among this repository's refs, tags and FETCH_HEAD.
+# --recurse-submodules=no keeps git from also fetching into a populated submodule, whose failure would fail this fetch.
 # GIT_TERMINAL_PROMPT=0 on each network fetch makes git fail instead of prompting on the terminal itself; prompts that ssh raises are not covered.
 LOCAL_REF="refs/review-pr/pr-$PR_NUMBER"
-if GIT_TERMINAL_PROMPT=0 _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/pull/$PR_NUMBER/head:$LOCAL_REF" --force --no-tags --no-write-fetch-head --refmap= >/dev/null 2>&1; then
+if GIT_TERMINAL_PROMPT=0 _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/pull/$PR_NUMBER/head:$LOCAL_REF" --force --no-tags --no-write-fetch-head --refmap= --recurse-submodules=no >/dev/null 2>&1; then
   FETCH_STATUS=0
 else
   FETCH_STATUS=$?
@@ -444,9 +445,9 @@ if ! review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; t
     exit 2
   fi
 
-  # --no-tags, --no-write-fetch-head and --refmap= as for LOCAL_REF above.
+  # --no-tags, --no-write-fetch-head, --refmap= and --recurse-submodules=no as for LOCAL_REF above.
   DEFAULT_LOCAL_REF="refs/review-pr/pr-$PR_NUMBER-default"
-  if GIT_TERMINAL_PROMPT=0 _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/heads/$BASE_DEFAULT_BRANCH:$DEFAULT_LOCAL_REF" --force --no-tags --no-write-fetch-head --refmap= >/dev/null 2>&1; then
+  if GIT_TERMINAL_PROMPT=0 _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null fetch origin "refs/heads/$BASE_DEFAULT_BRANCH:$DEFAULT_LOCAL_REF" --force --no-tags --no-write-fetch-head --refmap= --recurse-submodules=no >/dev/null 2>&1; then
     DEFAULT_FETCH_STATUS=0
   else
     DEFAULT_FETCH_STATUS=$?
@@ -520,7 +521,8 @@ review_pr_resolve_session_and_pid "review-pr-checkout.sh" " -- cannot name the w
 # The diff compares two fetched commits, so it runs before the worktree exists
 # and a failure leaves none behind.
 # --no-write-fetch-head keeps it to object transfer, and `--` ends option parsing before the remote and object name.
-if BASE_FETCH_OUTPUT=$(GIT_TERMINAL_PROMPT=0 _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null fetch --no-write-fetch-head -- origin "$BASE_REF_OID" 2>&1); then
+# --recurse-submodules=no keeps git from also fetching into a populated submodule, whose failure would fail this fetch.
+if BASE_FETCH_OUTPUT=$(GIT_TERMINAL_PROMPT=0 _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null fetch --no-write-fetch-head --recurse-submodules=no -- origin "$BASE_REF_OID" 2>&1); then
   BASE_FETCH_STATUS=0
 else
   BASE_FETCH_STATUS=$?

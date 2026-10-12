@@ -566,12 +566,14 @@ def _shim_match_count(shim_dir: Path) -> int:
 
 def _git_shim_that_logs_terminal_prompt_on_fetch(tmp_path: Path) -> Path:
     """A `git` PATH shim that appends the `GIT_TERMINAL_PROMPT` value (or `unset`) of every
-    `fetch` invocation to `fetch_prompt.log`, and its `GIT_ASKPASS` and `SSH_ASKPASS` values
-    to `fetch_askpass.log`, in the returned directory, then delegates to the real git binary."""
+    `fetch` invocation to `fetch_prompt.log`, its `GIT_ASKPASS` and `SSH_ASKPASS` values
+    to `fetch_askpass.log`, and its space-joined arguments to `fetch_argv.log`, in the
+    returned directory, then delegates to the real git binary."""
     shim_dir = tmp_path / f"git_shim_fetch_prompt_{uuid.uuid4().hex}"
     shim_dir.mkdir()
     prompt_log = shim_dir / "fetch_prompt.log"
     askpass_log = shim_dir / "fetch_askpass.log"
+    argv_log = shim_dir / "fetch_argv.log"
     real_git = shlex.quote(shutil.which("git"))
     git_shim = shim_dir / "git"
     git_shim.write_text(
@@ -579,6 +581,7 @@ def _git_shim_that_logs_terminal_prompt_on_fetch(tmp_path: Path) -> Path:
         "  if [[ $argument == fetch ]]; then\n"
         f'    echo "${{GIT_TERMINAL_PROMPT-unset}}" >> {shlex.quote(str(prompt_log))}\n'
         f'    echo "${{GIT_ASKPASS-unset}} ${{SSH_ASKPASS-unset}}" >> {shlex.quote(str(askpass_log))}\n'
+        f'    echo "$*" >> {shlex.quote(str(argv_log))}\n'
         "    break\n"
         "  fi\n"
         "done\n"
@@ -600,6 +603,13 @@ def _fetch_askpass_values(shim_dir: Path) -> list[str]:
     `_git_shim_that_logs_terminal_prompt_on_fetch`."""
     askpass_log = shim_dir / "fetch_askpass.log"
     return askpass_log.read_text().splitlines() if askpass_log.exists() else []
+
+
+def _fetch_argument_lines(shim_dir: Path) -> list[str]:
+    """The space-joined git arguments of each fetch, in call order, as recorded by
+    `_git_shim_that_logs_terminal_prompt_on_fetch`."""
+    argv_log = shim_dir / "fetch_argv.log"
+    return argv_log.read_text().splitlines() if argv_log.exists() else []
 
 
 # Sentinel default for `base_ref_oid` in the review-pr checkout and diff-only

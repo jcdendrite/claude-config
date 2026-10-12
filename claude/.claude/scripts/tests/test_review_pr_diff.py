@@ -29,6 +29,7 @@ from .conftest import (
     _assert_finish_and_clear_stale_each_empty_the_active_directory,
     _assert_gh_calls_are_read_only,
     _build_repo_with_pr_ref,
+    _fetch_argument_lines,
     _fetch_askpass_values,
     _fetch_terminal_prompt_values,
     _git_commit_is_present,
@@ -822,7 +823,7 @@ class TestBaseCommitFetch:
         repo, pr_sha = repo_with_pr_ref
         base_sha = _push_new_base_commit(repo, tmp_path)
         shim_dir = _git_shim_that_fails_on_subcommand(
-            tmp_path, f"*fetch --no-write-fetch-head -- origin {base_sha}", exit_status=0
+            tmp_path, f"*fetch --no-write-fetch-head --recurse-submodules=no -- origin {base_sha}", exit_status=0
         )
 
         result, _ = _run(
@@ -899,7 +900,7 @@ class TestBaseCommitFetch:
         repo, pr_sha = repo_with_pr_ref
         base_sha = _origin_main_sha(repo)
         shim_dir = _git_shim_that_fails_on_subcommand(
-            tmp_path, f"*fetch --no-write-fetch-head -- origin {base_sha}", exit_status=exit_status
+            tmp_path, f"*fetch --no-write-fetch-head --recurse-submodules=no -- origin {base_sha}", exit_status=exit_status
         )
 
         result, _ = _run(
@@ -1012,6 +1013,28 @@ class TestBaseFetchNeverPromptsForCredentials:
         assert result.returncode == 0, result.stderr
         assert _fetch_terminal_prompt_values(shim_dir) == ["0"]
         assert _fetch_askpass_values(shim_dir) == ["/ambient/git-askpass /ambient/ssh-askpass"]
+
+
+class TestBaseFetchSkipsSubmoduleRecursion:
+    """The base-commit fetch is invoked with --recurse-submodules=no."""
+
+    def test_the_base_fetch_skips_submodule_recursion(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """A populated submodule must not make a correct fetch fail, so the fetch opts out of recursing into it."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        shim_dir = _git_shim_that_logs_terminal_prompt_on_fetch(tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha, path_prefix=shim_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
+        fetch_argument_lines = _fetch_argument_lines(shim_dir)
+        assert len(fetch_argument_lines) == 1, "control: the base fetch ran"
+        assert "--recurse-submodules=no" in fetch_argument_lines[0].split(" "), fetch_argument_lines[0]
 
 
 class TestArtifactCleanup:

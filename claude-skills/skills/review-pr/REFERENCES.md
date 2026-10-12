@@ -472,8 +472,8 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
   - Those two ref fetches pass `--no-tags`, `--no-write-fetch-head` and an
     empty `--refmap=`, so they leave no tag, no `FETCH_HEAD` and no
     remote-tracking ref update behind.
-  - Both scripts' `git fetch --no-write-fetch-head -- origin <baseRefOid>`
-    adds the base commit's objects to the shared object store.
+  - Both scripts' fetch of `<baseRefOid>` adds the base commit's objects to
+    the shared object store.
     `review-pr-finish.sh` does not remove them, and an ordinary `git gc`
     expires them once unreachable (default prune expiry is 2 weeks, per
     `git-gc(1)`).

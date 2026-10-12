@@ -245,10 +245,11 @@ elif ! review_pr_is_full_hex_oid "$BASE_REF_OID"; then
 else
   # core.hooksPath=/dev/null disables hooks: a relative hooksPath resolves inside the repo's own tree.
   # --no-write-fetch-head keeps the fetch to object transfer, leaving the repo's FETCH_HEAD alone.
+  # --recurse-submodules=no keeps git from also fetching into a populated submodule, whose failure would fail this fetch.
   # `--` ends option parsing before the remote and object name, independent of the hex check above.
   # GIT_TERMINAL_PROMPT=0 makes git fail instead of prompting on the terminal itself; prompts that ssh raises are not covered.
   BASE_FETCH_STATUS=0
-  GIT_TERMINAL_PROMPT=0 _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$REPO_ROOT" -c core.hooksPath=/dev/null fetch --no-write-fetch-head -- origin "$BASE_REF_OID" >/dev/null 2>&1 || BASE_FETCH_STATUS=$?
+  GIT_TERMINAL_PROMPT=0 _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$REPO_ROOT" -c core.hooksPath=/dev/null fetch --no-write-fetch-head --recurse-submodules=no -- origin "$BASE_REF_OID" >/dev/null 2>&1 || BASE_FETCH_STATUS=$?
   if _lib_status_consistent_with_cap_kill "$BASE_FETCH_STATUS"; then
     BASE_UNAVAILABLE_CAUSE="fetch-timed-out"
   elif [[ "$BASE_FETCH_STATUS" -ne 0 ]]; then
