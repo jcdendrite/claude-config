@@ -287,6 +287,13 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   `core.hooksPath` pin, and no time cap. The scripts validate the ID with
   `review_pr_is_full_hex_oid`, disable hooks, and cap the fetch. The cap holds
   only when `timeout` or `gtimeout` is on `PATH`.
+- **Every network `git fetch` in `review-pr-checkout.sh` and `review-pr-diff.sh`
+  runs with `GIT_TERMINAL_PROMPT=0`.**
+  Git's own prompts, such as an HTTP(S) credential request, then fail the fetch
+  instead of waiting for terminal input. An ssh passphrase or host-key prompt
+  comes from ssh itself, so it is not suppressed. An ssh origin can still wait
+  until the fetch time cap. `GIT_ASKPASS` and `SSH_ASKPASS` stay untouched, so
+  a configured GUI askpass helper still works.
 - **Per-file `gh api repos/<owner>/<repo>/contents/<path>?ref=<oid>` was not
   adopted.** It costs one API call per file, returns base64, and cannot grep
   across the tree.

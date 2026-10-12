@@ -29,8 +29,11 @@ from .conftest import (
     _assert_finish_and_clear_stale_each_empty_the_active_directory,
     _assert_gh_calls_are_read_only,
     _build_repo_with_pr_ref,
+    _fetch_askpass_values,
+    _fetch_terminal_prompt_values,
     _git_commit_is_present,
     _git_shim_that_fails_on_subcommand,
+    _git_shim_that_logs_terminal_prompt_on_fetch,
     _install_audit_script,
     _install_audit_script_that_runs,
     _install_reference_transaction_sentinel_hooks,
@@ -943,6 +946,27 @@ class TestBaseFetchRunsNoGitHooks:
         _assert_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction(
             control_repo, base_sha, control_hook_ran_sentinel
         )
+
+
+class TestBaseFetchNeverPromptsForCredentials:
+    def test_the_base_fetch_disables_the_terminal_credential_prompt(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """The base-commit fetch sees GIT_TERMINAL_PROMPT=0 over an ambient 1, with GIT_ASKPASS/SSH_ASKPASS unchanged."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        shim_dir = _git_shim_that_logs_terminal_prompt_on_fetch(tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha, path_prefix=shim_dir,
+            extra_env={
+                "GIT_TERMINAL_PROMPT": "1", "GIT_ASKPASS": "/ambient/git-askpass", "SSH_ASKPASS": "/ambient/ssh-askpass",
+            },
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _fetch_terminal_prompt_values(shim_dir) == ["0"]
+        assert _fetch_askpass_values(shim_dir) == ["/ambient/git-askpass /ambient/ssh-askpass"]
 
 
 class TestArtifactCleanup:

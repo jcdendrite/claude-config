@@ -35,9 +35,12 @@ from .conftest import (
     _assert_finish_and_clear_stale_each_empty_the_active_directory,
     _assert_gh_calls_are_read_only,
     _build_repo_with_pr_ref,
+    _fetch_askpass_values,
+    _fetch_terminal_prompt_values,
     _git_commit_is_present,
     _git_shim_that_fails_on_subcommand,
     _git_shim_that_fails_on_worktree_subcommand,
+    _git_shim_that_logs_terminal_prompt_on_fetch,
     _install_audit_script,
     _install_audit_script_that_runs,
     _install_reference_transaction_sentinel_hook,
@@ -2704,6 +2707,28 @@ class TestCheckoutRunsNoGitHooks:
             cwd=repo, capture_output=True, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         )
         assert fetch_hook_ran_sentinel.exists(), "control: the hook is wired, so its absence above is the -c flag's doing"
+
+
+class TestFetchesNeverPromptForCredentials:
+    def test_every_network_fetch_of_a_stacked_run_disables_the_terminal_credential_prompt(
+        self, isolated_home, tmp_path
+    ):
+        """Each fetch sees GIT_TERMINAL_PROMPT=0 over an ambient 1, with GIT_ASKPASS/SSH_ASKPASS unchanged."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(tmp_path, base_entries={b"base_only.txt": b"base\n"})
+        shim_dir = _git_shim_that_logs_terminal_prompt_on_fetch(tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, path_prefix=shim_dir,
+            extra_env={
+                "GIT_TERMINAL_PROMPT": "1", "GIT_ASKPASS": "/ambient/git-askpass", "SSH_ASKPASS": "/ambient/ssh-askpass",
+            }, **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _fetch_terminal_prompt_values(shim_dir) == ["0", "0", "0"]
+        assert _fetch_askpass_values(shim_dir) == ["/ambient/git-askpass /ambient/ssh-askpass"] * 3
 
 
 class TestFetchesLeaveOnlyTheirOwnRef:
