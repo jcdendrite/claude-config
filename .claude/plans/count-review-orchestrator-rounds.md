@@ -322,3 +322,16 @@ Reuse rather than reimplement: `corpus._index_subagent_dispatches`, `corpus._par
 - The miner reading orchestrator reviewers; that belongs to reviewer-yield's follow-up.
 - A nested-layout fallback (row1).
 - `review-orchestrator.md`, `code-review/SKILL.md` and `review-ledger.sh`: read here, never changed.
+
+## Outcome (2026-10-12)
+
+The sections above are the pre-implementation proposal and are left as committed. This section records where the implementation departs from them. Where the two disagree, this section and the code win.
+
+- Status: dispatches 1, 2a and 2b are implemented, and the departures below land in the same PR. The sections above still describe the dispatches as future work.
+- Miner skip rule: the review-bench miner skips a window only when a spawn opened it, through the public helper `review_rounds.round_opened_by_spawn`. It does not skip whenever the open record carries a spawn block. The helper follows `_round_open_skill`'s Skill-first per-record order, so a `plan-review` window whose record also holds an orchestrator spawn is kept.
+- Leak-tripwire proof labels, the marker-characterization line and the dogfood-probe stop wording: superseded as the commit 2 message states. The probe observed the bare `subagent_type` spelling, the parent session id on the orchestrator's ledger rows, and the marker write plus paired nested results. Consecutive-round numbering (row 7) stayed unobserved. Rows 5, 6 and 8 are now verified.
+- cost-counts rounds caption: changed in this PR to name a main-thread `review-orchestrator` dispatch as a round, so the over-count statements in row 22, the Commit 2 section and the Out-of-scope caption bullet no longer apply. Row 22's conclusion that the pre-cleared cost-counts block keeps its scope and shape still holds: the caption is fixed text and the block stays counts-only. The engineer's recorded words on this were "Yeah take all".
+- Two characterization tests were added beyond the Critical files: one that a main-thread `review-orchestrator` spawn opens no judgment pair, and one that review-trace sees the orchestrator's `Skill` call through the merged transcript. Both pin existing behaviour and are green from the start, so neither has a mutation proof. The engineer chose "Keep tests, finish plan edits (Recommended)".
+- `author-outcome` gained a data-quality sub-count of the round-number mismatch total, for sessions with fewer ledger blocks than round-opens.
+- Row 1 holds for the config roots globbed only, not for every per-account state root.
+- Line numbers cited above refer to the pre-implementation files and have shifted.

@@ -663,9 +663,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # file needs review_bench's own tests re-run too. This selects on every
 # agent file rather than only the lenses with a read clause to copy --
 # over-selection is the safe direction.
-# TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH is also a target of this row:
-# test_transcript_review_rounds.py checks that every agent type review_rounds
-# maps to a review skill has an agent file under claude/.claude/agents/.
+# TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH is also a target of this row.
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.

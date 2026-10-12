@@ -12,18 +12,16 @@ from pathlib import Path
 
 import pytest
 from helpers import REPO_ROOT, heading_texts, normalize_heading
-from transcript_analysis import author_outcome, corpus, pricing, render, review_rounds, scope
+from transcript_analysis import corpus, pricing, render, review_rounds, scope
 
 from .conftest import (
     _agent_use,
-    _ledger_row,
     _priced,
     _skill_block,
     _slash_user,
     _tool_result,
     _user_msg,
     _write_jsonl,
-    _write_ledger_file,
     _write_subagent_dispatch,
 )
 from .test_transcript_cost_counts import _cost_counts_args
@@ -974,9 +972,9 @@ def _corpus_non_round_dollar_interleaving(fake_projects) -> None:
 
 def _corpus_orchestrator_dispatch(fake_projects) -> None:
     """A round opened by a review-orchestrator dispatch whose own transcript
-    dispatches a nested reviewer. Smoke coverage only: counts and costs both
-    read detect_round_windows, so this shape cannot turn red from a
-    round-open bug, only from a crash while pricing the dispatch."""
+    dispatches a nested reviewer. A smoke entry in the agreement guard: counts
+    and costs both read detect_round_windows, so this shape cannot turn red
+    from a round-open bug, only from a crash while pricing the dispatch."""
     session_id = "sess-1"
     _write_jsonl(fake_projects / f"{session_id}.jsonl", [
         _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),
@@ -1254,6 +1252,9 @@ class TestOrchestratorDispatchOpensCodeReviewRound:
 
 class TestOrchestratorRoundCosts:
     def test_round_agent_dollars_include_the_orchestrators_flat_depth_two_dispatches(self, fake_projects):
+        """The orchestrator's transcript lives in the session's flat
+        subagents/ directory with isSidechain on every record, so its own Skill
+        call is never a main-thread round-open: the dispatch is the only round."""
         _write_jsonl(fake_projects / "sess-1.jsonl", [
             _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),  # $0.20
             _orchestrator_return_record("o1", ts="2026-08-01T10:01:00.000Z"),
@@ -1288,32 +1289,15 @@ class TestOrchestratorRoundCosts:
         assert len(data["rounds"]) == 1
         assert data["rounds"][0]["main_dollars"] == pytest.approx(0.20 + 0.40)
 
-    def test_orchestrators_own_skill_call_in_its_subagent_transcript_is_not_a_second_round(
-        self, fake_projects, capsys,
-    ):
-        """Characterizes the harness layout: the orchestrator's transcript
-        lives in subagents/ with isSidechain on every record, so its Skill
-        call is never a main-thread round-open."""
-        _write_jsonl(fake_projects / "sess-1.jsonl", [
-            _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),
-            _orchestrator_return_record("o1", ts="2026-08-01T10:01:00.000Z"),
-            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
-        ])
-        _write_orchestrator_subagent_tree(fake_projects, "sess-1")
-
-        _mod.cmd_review_round_cost(_review_round_cost_args())
-
-        assert "Totals: 1 branches, 1 rounds" in capsys.readouterr().out
-
 
 class TestOrchestratorDispatchFreeTextNeverSurfaces:
     """A dispatch's prompt, description and every other input key, its result
     text, its .meta.json description and everything in its transcript carry
-    free text. Only input["subagent_type"] is extracted. Each subcommand test
-    first asserts it saw the orchestrator round, so a corpus that opened no
-    round cannot pass vacuously. The plain --pooled case is the exception: its
-    output withholds the count, and its test asserts the round only on the
-    corpus."""
+    free text. Only input["subagent_type"] is extracted. Each test first asserts
+    from a compute_* return value that the subcommand saw the orchestrator
+    round, so a corpus that opened no round cannot pass vacuously, then
+    matches rendered text only for the sentinel's absence. author-outcome's
+    own tripwire lives in test_author_outcome.py."""
 
     @staticmethod
     def _write_corpus(proj: Path, session_id: str = "sess-1", branch: str = "feat") -> None:
@@ -1342,64 +1326,61 @@ class TestOrchestratorDispatchFreeTextNeverSurfaces:
 
         _mod.cmd_review_round_cost(_review_round_cost_args())
         captured = capsys.readouterr()
-        costs_repr = repr(review_rounds.compute_review_round_costs(_session_iter(fake_projects)))
+        costs = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
 
-        assert "Totals: 1 branches, 1 rounds" in captured.out
-        self._assert_prefix_absent(captured.out, captured.err, costs_repr)
+        # The orchestrator round was priced with its dispatch and its nested reviewer.
+        assert [round_entry["skill"] for round_entry in costs["rounds"]] == ["code-review"]
+        assert costs["rounds"][0]["agents"] == 2
+        self._assert_prefix_absent(captured.out, captured.err, repr(costs))
 
-    @pytest.mark.parametrize("show_withheld", [False, True])
-    def test_pooled_review_round_cost_never_prints_dispatch_free_text(
-        self, tmp_path, monkeypatch, capsys, show_withheld,
-    ):
-        """Plain --pooled withholds every figure of a small pool, so its output
-        cannot show the orchestrator round. --show-withheld prints the Rounds by
-        skill shares, which this test reads to see the round."""
+    def test_pooled_review_round_cost_never_prints_dispatch_free_text(self, tmp_path, monkeypatch, capsys):
+        """--show-withheld prints the figures plain --pooled withholds, so it is
+        the only pooled render path with anything to leak."""
         roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
         self._write_corpus(roots[0] / "-home-user-repo-a", session_id="sess-orchestrator", branch="feat-orchestrator")
-        counts = review_rounds.compute_review_round_counts(corpus.iter_sessions(roots[0], "*"))
+        costs_seen_by_command: list[dict] = []
+        real_compute_review_round_costs = review_rounds.compute_review_round_costs
 
-        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=show_withheld))
+        def _recording_compute_review_round_costs(*args, **kwargs):
+            costs = real_compute_review_round_costs(*args, **kwargs)
+            costs_seen_by_command.append(costs)
+            return costs
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_costs", _recording_compute_review_round_costs)
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
         captured = capsys.readouterr()
 
-        assert counts["code-review"] == 2  # the fixture's inline round plus the orchestrator round
-        assert "Rounds by skill" in captured.out
-        if show_withheld:
-            rounds_by_skill_section = captured.out.split("  Rounds by skill\n")[1]
-            (code_review_line,) = (
-                line for line in rounds_by_skill_section.splitlines() if line.strip().startswith("code-review")
-            )
-            # 3 of 5 pooled rounds; without the orchestrator round it is 2 of 4, 50.0%.
-            assert "60.0%" in code_review_line
+        # The command priced the orchestrator round with its dispatch and nested reviewer.
+        orchestrator_rounds = [
+            round_entry
+            for costs in costs_seen_by_command
+            for round_entry in costs["rounds"]
+            if round_entry["branch_key"][1] == "feat-orchestrator"
+        ]
+        assert [round_entry["skill"] for round_entry in orchestrator_rounds] == ["code-review"]
+        assert orchestrator_rounds[0]["agents"] == 2
         self._assert_prefix_absent(captured.out, captured.err)
 
-    def test_cost_counts_never_prints_dispatch_free_text(self, fake_projects, capsys):
+    def test_cost_counts_never_prints_dispatch_free_text(self, fake_projects, capsys, monkeypatch):
         self._write_corpus(fake_projects)
+        round_counts_seen_by_command: list[dict] = []
+        real_compute_review_round_counts = review_rounds.compute_review_round_counts
+
+        def _recording_compute_review_round_counts(*args, **kwargs):
+            round_counts = real_compute_review_round_counts(*args, **kwargs)
+            round_counts_seen_by_command.append(round_counts)
+            return round_counts
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_counts", _recording_compute_review_round_counts)
 
         _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         captured = capsys.readouterr()
 
-        assert "| code-review | 1 |" in captured.out
+        assert [round_counts["code-review"] for round_counts in round_counts_seen_by_command] == [1]
         self._assert_prefix_absent(captured.out, captured.err)
-
-    def test_author_outcome_never_prints_or_returns_dispatch_free_text(self, fake_projects, capsys):
-        """The seeded ADDRESS row, with sentinel text in its free-text fields,
-        classifies the code-writer dispatch as the round's FAILURE, which is
-        how this test sees the orchestrator round."""
-        self._write_corpus(fake_projects)
-        _write_ledger_file(fake_projects.parent.parent, "sess-1", [_ledger_row(
-            round=1, disposition="ADDRESS", finding=_leak_sentinel("finding"),
-            rationale=_leak_sentinel("rationale"), source=_leak_sentinel("source"),
-        )])
-
-        author_outcome_args = type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})()
-        _mod.cmd_author_outcome(author_outcome_args)
-        captured = capsys.readouterr()
-        outcomes_repr = repr(author_outcome.compute_author_outcomes(_session_iter(fake_projects)))
-
-        assert "Failure share: 1 of 1 resolved dispatches (100.0%)" in captured.out
-        self._assert_prefix_absent(captured.out, captured.err, outcomes_repr)
 
 
 class TestCmdReviewRoundCost:

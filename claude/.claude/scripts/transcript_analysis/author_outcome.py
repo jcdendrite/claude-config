@@ -27,27 +27,32 @@ corpus._index_subagent_dispatches' toolUseId join: for its clean-marker write
 and for the nested dispatches of the `--agent` type, which attribute to the
 round that opens after the orchestrator's spawn.
 
-OUTPUT INVARIANT: the fields read from a main-thread record or an orchestrator
-transcript are:
-- each record's `type`, `requestId` (read by pricing.dedup_turns_by_request_id),
-  `timestamp`, and `isSidechain` on main-thread records;
+OUTPUT INVARIANT: no string read from transcript content or from a ledger
+row's free-text fields reaches output, except the one opaque `requestId` that
+each stderr diagnostic of pricing.dedup_turns_by_request_id carries. Every
+other stderr line (the ledger-file open failure, the reserved `--agent`
+refusal, the scope.* diagnostics) names a path, an option value or a fixed
+message, never transcript or ledger content.
+
+The fields extracted from a main-thread record or an orchestrator transcript are:
+- each record's `type`, `requestId` and `timestamp`, and `isSidechain` on main-thread records;
 - whether `message.content` is a list, and each block's `type`;
 - tool_use `name`, `id` and `input.subagent_type`, the Bash `input.command`
   (read only by the marker matcher), and `tool_result` `tool_use_id`;
-- on main-thread records only, through review_rounds.detect_round_windows: a
-  `Skill` block's `input.skill`, a user record's text (for a /slash tag), and
-  `isMeta` and `isCompactSummary`;
+- on main-thread records only, the round-open fields: a Skill tool_use's
+  `input.skill`, an Agent tool_use's `input.subagent_type`, and a user
+  record's text (matched for a slash-command tag), plus the `isMeta` and
+  `isCompactSummary` flags and the user text that render._is_fresh_user_prompt
+  reads through review_rounds.detect_round_windows;
 - from each subagent sidecar, through corpus._index_subagent_dispatches,
   `toolUseId` and `model`.
 
-Nothing else, in particular `Skill` `input.args`, `prompt`, `description` and
-assistant text blocks, is extracted. pricing.dedup_turns_by_request_id handles
-whole records in memory (they carry `message.usage`, `message.content`, `uuid`,
-`parentUuid` and `timestamp` as well as `requestId`).
+The fields extracted from a ledger row are `session_id`, `round`,
+`event_time`, `disposition` and `authoring_agent`. The row's `finding`,
+`rationale` and `source` are never read.
 
-What reaches output is narrower: counts on stdout, and on stderr the diagnostics
-pricing.dedup_turns_by_request_id prints, each carrying one opaque `requestId`,
-the one transcript-derived string that can reach output.
+Nothing else, in particular `prompt`, `description` and assistant text blocks, is
+extracted. pricing.dedup_turns_by_request_id handles whole records in memory.
 """
 from __future__ import annotations
 
@@ -97,6 +102,9 @@ _OUTCOME_KEYS = (_OUTCOME_FAILURE, _OUTCOME_PASS, _OUTCOME_UNRESOLVED, _OUTCOME_
 _DQ_CO_AUTHORED_ROUNDS = "rounds co-authored by >1 dispatch"
 _DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW = "rounds with a clean marker write but no round-keyed ledger rows"
 _DQ_ROUND_NUMBER_MISMATCH = "sessions whose ledger round sequence doesn't match the transcript's round-opens"
+_DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS = (
+    "sessions with fewer ledger blocks than round-opens (a round-open with no ledger block)"
+)
 _DQ_LEDGER_POSSIBLY_SWEPT = (
     "sessions with a code-review round, no attributed ledger row, no opened session-keyed ledger file,"
     " and a first round older than the sweep floor"
@@ -108,8 +116,9 @@ _DQ_SETTLED_PASS_ROUNDS = "rounds classified PASS with at least one SETTLED row"
 _DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE = "orchestrator dispatches with no readable transcript records"
 _DATA_QUALITY_KEYS = (
     _DQ_CO_AUTHORED_ROUNDS, _DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW, _DQ_ROUND_NUMBER_MISMATCH,
-    _DQ_LEDGER_POSSIBLY_SWEPT, _DQ_UNDECIDABLE, _DQ_AUTHORING_AGENT_INCONSISTENT,
-    _DQ_MALFORMED_DISPATCH_ID, _DQ_SETTLED_PASS_ROUNDS, _DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE,
+    _DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS, _DQ_LEDGER_POSSIBLY_SWEPT, _DQ_UNDECIDABLE,
+    _DQ_AUTHORING_AGENT_INCONSISTENT, _DQ_MALFORMED_DISPATCH_ID, _DQ_SETTLED_PASS_ROUNDS,
+    _DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE,
 )
 
 # review-narrative-ledger's own directory name, one level under a Claude
@@ -193,11 +202,9 @@ def _round_has_marker_write(
 
     The span's main-thread records are read, and so is the transcript of every
     orchestrator spawn whose spawn_idx falls inside the span. The signal is
-    "attempted, not confirmed": a write counts whether or not its paired
-    tool_result is an error, on both paths. It also counts a command that never
-    ran: a short-circuited `false && marker.sh write code-review`, heredoc-body
-    or unbalanced-quote text that tokenizes as an operator followed by the
-    call, or any directory's `marker.sh` with trailing arguments.
+    "attempted, not confirmed"; docs/transcript-analysis.md's author-outcome
+    "Orchestrator rounds" section lists what it counts besides a successful
+    write.
     """
     main_thread_span = [rec for rec in records[open_idx:span_end] if not rec.get("isSidechain")]
     if _records_have_clean_marker_write(main_thread_span):
@@ -443,11 +450,16 @@ def _round_blocks(row_entries: list[tuple[int, dict]]) -> list[list[dict]]:
     ]
 
 
-def _round_number_mismatch(row_entries: list[tuple[int, dict]], round_open_count: int) -> bool:
-    """True if this session's ledger rows -- each tagged with its source
+_MISMATCH_FEWER_BLOCKS = "fewer ledger blocks than round-opens"
+_MISMATCH_OTHER = "more ledger blocks than round-opens, or block round values not strictly increasing"
+
+
+def _round_number_mismatch(row_entries: list[tuple[int, dict]], round_open_count: int) -> str | None:
+    """Why this session's ledger rows -- each tagged with its source
     file's index (see _read_ledger_row_entries_for_session) -- don't map
-    one-to-one, by rank, onto the transcript's own round-opens. The k-th
-    round-open takes the k-th block (see _round_blocks), so a mismatch is:
+    one-to-one, by rank, onto the transcript's own round-opens, or None when
+    they do. The k-th round-open takes the k-th block (see _round_blocks),
+    so a mismatch is:
 
     - a different number of blocks than round-opens (a round-open whose
       round never got a ledger row, or a ledger round with no round-open)
@@ -464,21 +476,29 @@ def _round_number_mismatch(row_entries: list[tuple[int, dict]], round_open_count
     A ledger with zero rows carrying a `round` key at all is not
     evaluated: entirely legacy rows (pre-schema-v2), or no ledger rows for
     this session. There is no schema-v2 sequence to compare, so this
-    always returns False for that case rather than flagging every
-    pre-migration or ledger-less session as a mismatch.
+    returns None for that case rather than flagging every pre-migration
+    or ledger-less session as a mismatch.
 
     A round with no rows makes the block count short, so it counts as a
     mismatch. A stray extra block that makes up for a missing round still
     matches by count and order; docs/transcript-analysis.md records that
     residual.
+
+    Returns _MISMATCH_FEWER_BLOCKS when the session has fewer blocks than
+    round-opens, _MISMATCH_OTHER for any other mismatch, and None when the
+    rows map onto the round-opens.
     """
     blocks = _round_blocks(row_entries)
     if not blocks:
-        return False
-    if len(blocks) != round_open_count:
-        return True
+        return None
+    if len(blocks) < round_open_count:
+        return _MISMATCH_FEWER_BLOCKS
+    if len(blocks) > round_open_count:
+        return _MISMATCH_OTHER
     round_values = [block[0]["round"] for block in blocks]
-    return any(later <= earlier for earlier, later in zip(round_values, round_values[1:], strict=False))
+    if any(later <= earlier for earlier, later in zip(round_values, round_values[1:], strict=False)):
+        return _MISMATCH_OTHER
+    return None
 
 
 def _ledger_possibly_swept(
@@ -746,9 +766,12 @@ def compute_author_outcomes(
         )
         ledger_rows = [row for _file_index, row in ledger_row_entries]
 
-        session_round_mismatch = _round_number_mismatch(ledger_row_entries, len(code_review_rounds))
+        round_mismatch_reason = _round_number_mismatch(ledger_row_entries, len(code_review_rounds))
+        session_round_mismatch = round_mismatch_reason is not None
         if session_round_mismatch:
             data_quality[_DQ_ROUND_NUMBER_MISMATCH] += 1
+        if round_mismatch_reason == _MISMATCH_FEWER_BLOCKS:
+            data_quality[_DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS] += 1
 
         session_ledger_possibly_swept = _ledger_possibly_swept(
             code_review_rounds, ledger_rows, records,

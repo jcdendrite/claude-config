@@ -184,7 +184,7 @@ def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     opening record. No cross-path dedup is needed between the invocation
     shapes. A record opens at most one round by _round_open_skill's per-record
     order, so a record holding both a `Skill` block and a spawn block is one
-    round, and a /slash tag lives on a user record.
+    round. A /slash tag lives on a user record.
 
     Public (no leading underscore): author_outcome.py and the review-bench
     miner (evals/review_bench/mine_review_rounds.py, which also calls

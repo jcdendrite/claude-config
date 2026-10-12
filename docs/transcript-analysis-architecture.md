@@ -189,8 +189,7 @@ round-open positions, dispatch completion ordering, and the `marker.sh write cod
 `_orchestrator_spawns` also projects that spawn's own transcript, when it has readable records,
 into a `_OrchestratorSpawn` of derived facts (the marker write and the nested `--agent`
 dispatches), located through
-`corpus._index_subagent_dispatches`' `toolUseId` join. The session's one flat dispatch index
-resolves it, and it is built at most once per session.
+`corpus._index_subagent_dispatches`' `toolUseId` join.
 
 See `_lib.sh`'s own `_lib_acquire_append_lock`/`_lib_append_json_line_locked`
 docstrings for the append-lock mechanism `review-ledger.sh`'s

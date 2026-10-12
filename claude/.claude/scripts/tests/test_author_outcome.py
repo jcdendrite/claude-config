@@ -439,27 +439,33 @@ class TestRoundNumberMismatch:
             _ledger_row(round=2, disposition="DEFER"),
             _ledger_row(round=3, disposition="DEFER"),
         ]
-        assert ao._round_number_mismatch(_entries(rows), round_open_count=3) is False
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=3) is None
 
     def test_gap_in_sequence_is_a_mismatch(self):
         """Round 2 opened in the transcript but never got a ledger row --
         a gap between the ledger's own round 1 and round 3."""
         rows = [_ledger_row(round=1, disposition="DEFER"), _ledger_row(round=3, disposition="DEFER")]
-        assert ao._round_number_mismatch(_entries(rows), round_open_count=3) is True
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=3) == ao._MISMATCH_FEWER_BLOCKS
+
+    def test_fewer_and_out_of_order_blocks_resolve_to_the_fewer_blocks_reason(self):
+        """Block round values [3, 1] are not increasing, but two blocks against
+        three round-opens is checked first, so the reason is the count one."""
+        rows = [_ledger_row(round=3, disposition="DEFER"), _ledger_row(round=1, disposition="DEFER")]
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=3) == ao._MISMATCH_FEWER_BLOCKS
 
     def test_ledger_round_with_no_corresponding_open_is_a_mismatch(self):
         rows = [_ledger_row(round=1, disposition="DEFER"), _ledger_row(round=5, disposition="DEFER")]
-        assert ao._round_number_mismatch(_entries(rows), round_open_count=1) is True
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=1) == ao._MISMATCH_OTHER
 
     def test_legacy_only_ledger_is_not_a_mismatch(self):
         """Every row predates the round field -- nothing to evaluate a
         sequence against, so this must not flag every pre-migration
         session as a mismatch."""
         rows = [_ledger_row(round=None, disposition="ADDRESS"), _ledger_row(round=None, disposition="DEFER")]
-        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is False
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is None
 
     def test_empty_ledger_is_not_a_mismatch(self):
-        assert ao._round_number_mismatch([], round_open_count=3) is False
+        assert ao._round_number_mismatch([], round_open_count=3) is None
 
     def test_reversed_but_complete_sequence_is_a_mismatch(self):
         """Round rows present in file order 3, 2, 1 -- three blocks for
@@ -471,7 +477,7 @@ class TestRoundNumberMismatch:
             _ledger_row(round=2, disposition="DEFER"),
             _ledger_row(round=1, disposition="DEFER"),
         ]
-        assert ao._round_number_mismatch(_entries(rows), round_open_count=3) is True
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=3) == ao._MISMATCH_OTHER
 
     def test_round_value_reappearing_after_a_later_round_is_a_mismatch(self):
         """Round rows in file order 1, 2, 1 -- a session-resume counter
@@ -484,16 +490,16 @@ class TestRoundNumberMismatch:
             _ledger_row(round=2, disposition="DEFER"),
             _ledger_row(round=1, disposition="ADDRESS"),
         ]
-        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is True
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is not None
 
     def test_zero_round_opens_with_a_round_keyed_row_is_a_mismatch(self):
         """round_open_count=0 (the transcript's own round-open detector
         found no code-review round at all) against a ledger that still
         carries a round-keyed row: one block against zero round-opens, so
-        this must resolve True rather than slip through as the
-        legacy-only-ledger False case above."""
+        this must resolve to a mismatch reason rather than slip through as
+        the legacy-only-ledger None case above."""
         rows = [_ledger_row(round=1, disposition="ADDRESS")]
-        assert ao._round_number_mismatch(_entries(rows), round_open_count=0) is True
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=0) is not None
 
     def test_bool_round_only_ledger_is_not_a_mismatch(self):
         """round=True/False are JSON booleans, not round numbers -- Python's
@@ -502,7 +508,7 @@ class TestRoundNumberMismatch:
         round=None row is, so this must not flag a bool-only ledger as a
         mismatch."""
         rows = [_ledger_row(round=True, disposition="ADDRESS"), _ledger_row(round=False, disposition="DEFER")]
-        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is False
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is None
 
     def test_worktree_switch_without_compaction_across_two_files_is_not_a_mismatch(self):
         """Rounds 1 and 2 both appended from one worktree's file (index 0),
@@ -515,7 +521,7 @@ class TestRoundNumberMismatch:
             (0, _ledger_row(round=2, disposition="DEFER")),
             (1, _ledger_row(round=3, disposition="DEFER")),
         ]
-        assert ao._round_number_mismatch(entries, round_open_count=3) is False
+        assert ao._round_number_mismatch(entries, round_open_count=3) is None
 
     def test_same_round_number_claimed_by_two_different_files_is_a_mismatch(self):
         """A worktree-subagent race: file 0 and file 1 each independently
@@ -527,7 +533,7 @@ class TestRoundNumberMismatch:
             (1, _ledger_row(round=1, disposition="ADDRESS")),
             (0, _ledger_row(round=2, disposition="DEFER")),
         ]
-        assert ao._round_number_mismatch(entries, round_open_count=2) is True
+        assert ao._round_number_mismatch(entries, round_open_count=2) is not None
 
     def test_same_file_reusing_a_round_non_contiguously_is_a_mismatch_by_true_identity(self):
         """File 0 claims round 1, file 1's own unrelated round 2 sits between
@@ -541,7 +547,7 @@ class TestRoundNumberMismatch:
             (1, _ledger_row(round=2, disposition="DEFER")),
             (0, _ledger_row(round=1, disposition="ADDRESS")),
         ]
-        assert ao._round_number_mismatch(entries, round_open_count=2) is True
+        assert ao._round_number_mismatch(entries, round_open_count=2) is not None
 
     def test_round_shared_by_two_files_with_a_third_files_row_interleaved_is_a_mismatch(self):
         """The complementary case to the same-file reuse above: round 1 is
@@ -555,7 +561,7 @@ class TestRoundNumberMismatch:
             (2, _ledger_row(round=5, disposition="DEFER")),
             (1, _ledger_row(round=1, disposition="DEFER")),
         ]
-        assert ao._round_number_mismatch(entries, round_open_count=2) is True
+        assert ao._round_number_mismatch(entries, round_open_count=2) is not None
 
     def test_round_shared_by_non_adjacent_files_zero_and_two_is_a_mismatch(self):
         """3 distinct file_index values, with the colliding round claimed
@@ -567,7 +573,7 @@ class TestRoundNumberMismatch:
             (1, _ledger_row(round=2, disposition="DEFER")),
             (2, _ledger_row(round=1, disposition="DEFER")),
         ]
-        assert ao._round_number_mismatch(entries, round_open_count=2) is True
+        assert ao._round_number_mismatch(entries, round_open_count=2) is not None
 
     def test_equal_round_values_in_two_files_with_matching_block_count_is_a_mismatch(self):
         """Two files each claiming round 1, against two round-opens: the
@@ -577,14 +583,14 @@ class TestRoundNumberMismatch:
             (0, _ledger_row(round=1, disposition="DEFER")),
             (1, _ledger_row(round=1, disposition="DEFER")),
         ]
-        assert ao._round_number_mismatch(entries, round_open_count=2) is True
+        assert ao._round_number_mismatch(entries, round_open_count=2) is not None
 
     def test_later_session_on_a_branch_starting_above_round_one_is_not_a_mismatch(self):
         """Rounds are branch-scoped, so a session's first round can be 3:
         blocks are matched to round-opens by rank, and round values only
         need to increase."""
         rows = [_ledger_row(round=3, disposition="DEFER"), _ledger_row(round=4, disposition="DEFER")]
-        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is False
+        assert ao._round_number_mismatch(_entries(rows), round_open_count=2) is None
 
     def test_legacy_file_merged_with_schema_v2_file_is_not_a_mismatch(self):
         """A legacy-only file (file_index 0, no `round` key at all) merged
@@ -601,7 +607,7 @@ class TestRoundNumberMismatch:
             (1, _ledger_row(round=1, disposition="DEFER")),
             (1, _ledger_row(round=2, disposition="DEFER")),
         ]
-        assert ao._round_number_mismatch(entries, round_open_count=2) is False
+        assert ao._round_number_mismatch(entries, round_open_count=2) is None
 
 
 class TestLedgerPossiblySwept:
@@ -2824,6 +2830,32 @@ class TestOrchestratorTranscriptProjection:
         assert result["data_quality"][ao._DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW] == 0
         assert result["outcomes"][ao._OUTCOME_UNRESOLVED] == 1
 
+    def test_slash_opened_round_collects_no_spawn_even_from_a_spawn_shaped_block_on_its_user_record(
+        self, fake_projects,
+    ):
+        """A /slash tag opens its round on a user record. The assistant-type
+        guard keeps that record's content from being scanned for spawns, so
+        the spawn-shaped block planted beside the tag is neither collected nor
+        counted unreadable."""
+        slash_record_with_spawn_block = _user_msg(
+            [
+                {"type": "text", "text": "<command-name>/code-review</command-name>"},
+                _agent_use("o1", _ORCHESTRATOR_AGENT_TYPE),
+            ],
+            branch="feat", ts="2026-08-01T10:00:00.000Z",
+        )
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            slash_record_with_spawn_block,
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+
+        spawns = _collect_orchestrator_spawns(fake_projects)
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert ao._code_review_rounds([slash_record_with_spawn_block]) == [(0, 1)], "the slash tag must open the round"
+        assert spawns == []
+        assert result["data_quality"][ao._DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE] == 0
+
     def test_clean_marker_write_is_read_only_for_the_round_whose_span_holds_the_spawn(self, fake_projects):
         session_id = "sess-1"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
@@ -3311,7 +3343,114 @@ class TestOrchestratorUnreadableTranscriptCounter:
         assert result["data_quality"][ao._DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE] == 2
 
 
+class TestFewerLedgerBlocksThanRoundOpensCounter:
+    """_DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS is the subset of
+    _DQ_ROUND_NUMBER_MISMATCH whose ledger holds fewer blocks than the
+    transcript has round-opens. Both counters count sessions."""
+
+    def test_key_is_registered_and_printed_directly_after_the_round_number_mismatch_key(self, fake_projects, capsys):
+        keys = ao._DATA_QUALITY_KEYS
+        assert keys.index(ao._DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS) == keys.index(ao._DQ_ROUND_NUMBER_MISMATCH) + 1
+        _seed_ledger(fake_projects, "sess-1", [_ledger_row(round=1, disposition="CLEAN", finding="", rationale="")])
+        _write_jsonl(fake_projects / "sess-1.jsonl", [_inline_code_review_round("s1", "2026-08-01T10:00:00.000Z")])
+
+        _mod.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
+
+        output_lines = capsys.readouterr().out.splitlines()
+        mismatch_line_index = next(
+            index for index, line in enumerate(output_lines) if ao._DQ_ROUND_NUMBER_MISMATCH in line
+        )
+        assert ao._DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS in output_lines[mismatch_line_index + 1]
+
+    def test_session_with_fewer_blocks_than_round_opens_counts_in_both_counters(self, fake_projects):
+        _seed_ledger(fake_projects, "sess-1", [
+            _ledger_row(round=1, disposition="SETTLED"),
+            _ledger_row(round=3, disposition="SETTLED"),
+        ])
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _inline_code_review_round("s1", "2026-08-01T10:00:00.000Z"),
+            _inline_code_review_round("s2", "2026-08-01T10:01:00.000Z"),
+            _inline_code_review_round("s3", "2026-08-01T10:02:00.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        assert result["data_quality"][ao._DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS] == 1
+
+    def test_session_missing_several_blocks_counts_once_in_each_counter(self, fake_projects):
+        """Three round-opens against one block: the counters count the session, not the missing blocks."""
+        _seed_ledger(fake_projects, "sess-1", [_ledger_row(round=1, disposition="SETTLED")])
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _inline_code_review_round("s1", "2026-08-01T10:00:00.000Z"),
+            _inline_code_review_round("s2", "2026-08-01T10:01:00.000Z"),
+            _inline_code_review_round("s3", "2026-08-01T10:02:00.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        assert result["data_quality"][ao._DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS] == 1
+
+    def test_two_sessions_each_missing_a_block_count_twice_in_each_counter(self, fake_projects):
+        for session_id in ("sess-1", "sess-2"):
+            _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="SETTLED")])
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+                _inline_code_review_round("s1", "2026-08-01T10:00:00.000Z"),
+                _inline_code_review_round("s2", "2026-08-01T10:01:00.000Z"),
+            ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 2
+        assert result["data_quality"][ao._DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS] == 2
+
+    def test_orchestrator_halted_before_its_append_then_inline_round_counts_in_both_counters(self, fake_projects):
+        """The orchestrator round-open has no ledger block and the inline round
+        after it has one, so the session has fewer blocks than round-opens."""
+        _seed_ledger(fake_projects, "sess-1", [_ledger_row(round=1, disposition="CLEAN", finding="", rationale="")])
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _orchestrator_spawn("o1", "2026-08-01T10:00:00.000Z"),
+            _dispatch_complete("o1", "2026-08-01T10:01:00.000Z"),
+            _inline_code_review_round("s1", "2026-08-01T10:02:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        assert result["data_quality"][ao._DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS] == 1
+
+    def test_session_with_more_blocks_than_round_opens_counts_only_in_the_round_number_mismatch_counter(
+        self, fake_projects,
+    ):
+        _seed_ledger(fake_projects, "sess-1", [
+            _ledger_row(round=2, disposition="DEFER"),
+            _ledger_row(round=3, disposition="DEFER"),
+        ])
+        _write_jsonl(fake_projects / "sess-1.jsonl", [_inline_code_review_round("s1", "2026-08-01T10:00:00.000Z")])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 1
+        assert result["data_quality"][ao._DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS] == 0
+
+    def test_session_whose_blocks_match_its_round_opens_counts_in_neither_counter(self, fake_projects):
+        _seed_ledger(fake_projects, "sess-1", [_ledger_row(round=1, disposition="CLEAN", finding="", rationale="")])
+        _write_jsonl(fake_projects / "sess-1.jsonl", [_inline_code_review_round("s1", "2026-08-01T10:00:00.000Z")])
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+
+        assert result["data_quality"][ao._DQ_ROUND_NUMBER_MISMATCH] == 0
+        assert result["data_quality"][ao._DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS] == 0
+
+
 class TestOrchestratorDispatchIndexBuiltOncePerSession:
+    """The first two tests pin how often the private corpus._index_subagent_dispatches
+    runs, as a deliberate cost tripwire: each build lists and parses every sidecar
+    in the session, so a per-spawn rebuild is a performance regression. The third
+    test is the behavioral one."""
+
     @staticmethod
     def _spy_on_dispatch_index_builds(monkeypatch) -> list[Path]:
         real_index = corpus._index_subagent_dispatches
@@ -3383,8 +3522,11 @@ class TestOrchestratorDispatchIndexBuiltOncePerSession:
 
 class TestOrchestratorTranscriptLeakTripwire:
     """Allowlist: every string value in the orchestrator transcript, the
-    orchestrator spawn block and the sidecar that the projection does not
-    extract carries _LEAK_SENTINEL, and none of it may reach output."""
+    orchestrator spawn block, the sidecar and the ledger row's free-text
+    fields (finding, rationale, source) that the projection does not extract
+    carries _LEAK_SENTINEL, and none of it may reach output. This is the one
+    author-outcome leak tripwire. The ledger row's free text is seeded on CLEAN,
+    ADDRESS and SETTLED rows."""
 
     @staticmethod
     def _sentinel(label: str) -> str:
@@ -3438,11 +3580,17 @@ class TestOrchestratorTranscriptLeakTripwire:
             record["parentUuid"] = sentinel(f"parent-uuid-{position}")
         return records
 
-    def _plant_session_with_orchestrator(self, fake_projects, orchestrator_records: list[dict]) -> None:
+    def _plant_session_with_orchestrator(
+        self, fake_projects, orchestrator_records: list[dict], *, ledger_disposition: str = "CLEAN",
+    ) -> None:
         """A ledgered session: a main-thread code-writer dispatch, then one
-        sentinel-laden orchestrator spawn whose transcript is orchestrator_records."""
+        sentinel-laden orchestrator spawn whose transcript is orchestrator_records.
+        The round's one ledger row carries ledger_disposition and sentinel free text."""
         session_id = "sess-1"
-        _seed_ledger(fake_projects, session_id, [_ledger_row(round=1, disposition="CLEAN", finding="", rationale="")])
+        _seed_ledger(fake_projects, session_id, [_ledger_row(
+            round=1, disposition=ledger_disposition, finding=self._sentinel("ledger-finding"),
+            rationale=self._sentinel("ledger-rationale"), source=self._sentinel("ledger-source"),
+        )])
         spawn_record = _orchestrator_spawn("o1", "2026-08-01T10:01:00.000Z")
         spawn_record["message"]["content"][0]["input"].update({
             "prompt": self._sentinel("spawn-prompt"),
@@ -3480,6 +3628,31 @@ class TestOrchestratorTranscriptLeakTripwire:
         assert result["outcomes"][ao._OUTCOME_UNRESOLVED] == 1
         assert ao._OrchestratorSpawn._fields == ("spawn_idx", "has_clean_marker_write", "nested_dispatches")
         for surfaced in (captured.out, captured.err, repr(result), repr(spawns)):
+            assert _LEAK_SENTINEL not in surfaced
+
+    @pytest.mark.parametrize(
+        ("ledger_disposition", "expected_round_outcome"),
+        [("ADDRESS", ao._OUTCOME_FAILURE), ("SETTLED", ao._OUTCOME_PASS)],
+    )
+    def test_ledger_free_text_of_an_address_or_settled_row_never_reaches_output(
+        self, fake_projects, capsys, ledger_disposition, expected_round_outcome,
+    ):
+        """_classify_round branches on ADDRESS and SETTLED, so these are the
+        dispositions where a future change would most plausibly echo the row's
+        finding, rationale or source."""
+        self._plant_session_with_orchestrator(
+            fake_projects, self._orchestrator_records(), ledger_disposition=ledger_disposition,
+        )
+
+        result = ao.compute_author_outcomes(_session_iter(fake_projects), now=_NOW_INSIDE_SWEEP_FLOOR)
+        _mod.cmd_author_outcome(type("A", (), {"agent": "code-writer", "since": None, "this_repo": False, "projects": "*"})())
+        captured = capsys.readouterr()
+
+        assert result["outcomes"][expected_round_outcome] == 1, "the ledger row must be classified, or the test guards nothing"
+        if ledger_disposition == "SETTLED":
+            # A clean marker write also yields PASS, so the SETTLED counter is what proves the row was read.
+            assert result["data_quality"][ao._DQ_SETTLED_PASS_ROUNDS] == 1
+        for surfaced in (captured.out, captured.err, repr(result)):
             assert _LEAK_SENTINEL not in surfaced
 
     def _request_id_diagnostic_records(self) -> list[dict]:

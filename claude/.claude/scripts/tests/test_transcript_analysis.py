@@ -6980,6 +6980,20 @@ class TestJudgmentPair:
         out = capsys.readouterr().out
         assert "No judgment pairs found." in out
 
+    def test_review_orchestrator_spawn_opens_no_pair(self, fake_projects, capsys):
+        """cmd_judgment_pair matches `Skill` blocks only, so a main-thread
+        review-orchestrator dispatch is not a round-open here, unlike for
+        review-round-cost."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-20T10:00:00.000Z",
+                  content=[_agent_use("o1", "review-orchestrator")]),
+            _review_asst("Orchestrator summary text.", "2026-05-20T10:01:00.000Z"),
+            _user_reply("Thanks."),
+        ])
+        _mod.cmd_judgment_pair(_judgment_pair_args())
+        out = capsys.readouterr().out
+        assert "No judgment pairs found." in out
+
     def test_tool_result_user_not_taken_as_response(self, fake_projects, capsys):
         """A user record bearing tool_result blocks is skipped; the next real user prompt is used."""
         _write_jsonl(fake_projects / "sess.jsonl", [
