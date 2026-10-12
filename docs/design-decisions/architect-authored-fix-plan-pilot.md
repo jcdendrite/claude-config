@@ -19,12 +19,12 @@ only why the pilot has this shape.
 ## Why default-off
 
 [§42](code-review-fix-route-plan-architect.md) rejected an unconditional
-`plan-architect` consult on every ADDRESS finding on three grounds, and the
-pilot engages each:
+`plan-architect` consult on every ADDRESS finding on a volume ceiling and
+three further grounds, and the pilot engages all four:
 
 - **Volume.** A key-on round with a non-empty payload costs one Opus
-  dispatch, so the ceiling scales with rounds, not with mechanism-proposing
-  fixes. Default-off keeps that volume out of every account that has not
+  dispatch, so key-on volume is bounded by round count, the basis of §42's
+  ceiling. Default-off keeps that volume out of every account that has not
   opted in. §42's published figures are cited by reference, not recomputed
   here.
 - **Relocating the scope argument.** Without the key, nothing moves. With it,
@@ -34,6 +34,10 @@ pilot engages each:
   project layer binding on those rows.
 - **A third genre inside `MODE=consult`.** The pilot adds a row grammar to a
   consult's request, which the next section addresses directly.
+- **Gate, not spawn-everything.** §42 took its dispatch-cost balance from
+  *Ripple effect triage* in `code-review/SKILL.md`. The pilot dispatches on
+  every round with a reviewer-spawned finding, and the account key is its only
+  gate. Adopting the pilot overrides this ground.
 
 Whether an Opus-authored per-round fix plan makes review loops converge with
 fewer disposition errors is untested. The pilot exists so the design can be
@@ -95,7 +99,7 @@ closes the hole a finding states. The engineer objected to a carve-out that
 kept the reviewer's Suggested fix on barred findings: "Why wouldn’t we have the
 architect’s fix be subject to approval by the reviewer."
 
-A consult of the Fable 5 model, dispatched by the session, read the next
+A consult of the Fable 5 model read the next
 review of the staged diff as the place approval of the fix falls. That is a
 design reading, and it adds no new approval step.
 
@@ -125,21 +129,16 @@ runtime by the config key.
   the behavior would cite about ten base-file rules from a new skill, five of
   them written as "above" or "below". It would also need a new skill
   directory, a `skillOverrides` entry with its name-only count pin, a
-  retargeted whole-region pin and anchor, and another plan-review and
-  skill-review round. Keeping the region costs every consumer its pinned bytes
+  retargeted whole-region pin and anchor. Keeping the region costs every consumer its pinned bytes
   on each `/code-review` and spends lines against `code-review/SKILL.md`'s
   500-line cap. Only a revert ends either cost. The reasoning is an architect
   consult's, not the engineer's.
-- **Respecting a loaded project layer's rules is not placement.** The
-  dispatch carries the layer's path when Step 0.5 loaded one, and the
-  barred-row item names the layer as a source beside the enforcement-invariant
-  rule. Without that, a key-off round's orchestrator applies the layer's
-  rules and the pilot's architect never sees them, so a comparison of key-on
-  against key-off rounds would measure the architect plus a loosened rule. The
-  dispatch also carries the base file's DEFER criteria and invalid DEFER
-  rationales, so the architect applies the same rulebook a key-off round's
-  orchestrator applies from its own skill body. The pilot stays in the base
-  file.
+- **Respecting a loaded project layer's rules is not placement.**
+  `DISPOSITION_RULE:code-review-fix-plan-pilot` in
+  `claude-skills/skills/code-review/SKILL.md` states what the dispatch carries
+  and what the barred-row item names. Without that parity, a comparison of
+  key-on against key-off rounds would measure the architect plus a loosened
+  rule. The pilot stays in the base file.
 
 ## Cost to every stow consumer
 
@@ -157,7 +156,9 @@ runtime by the config key.
   the pilot.
 - **A per-account key.** An opted-in account runs the pilot in every repo it
   reviews, while the key-on versus key-off comparison counts this repository
-  only.
+  only. That includes `/code-review` under `/review-pr`, whose standing
+  override, not this region, keeps ADDRESS rows from reaching `code-writer`,
+  as for the default arm.
 
 ## Ledger and observability
 
@@ -186,7 +187,8 @@ the scaffold.
   content without reversing the round-3 decision. Every `MODE=consult`
   dispatch writes the latch the same way, including consults that ask no
   foundation question. The engineer accepted the interaction. The stop makes
-  it visible and does not prevent it.
+  it visible and does not prevent it. Key-on dispatches also count as consults
+  in `review-trace`, so measurements of either must exclude key-on accounts.
 - **A resume between the dispatch's return and the ledger append** can
   re-dispatch.
 - **The round-cap consult's "stop escalating" verdict** has no pilot
@@ -243,9 +245,6 @@ the scaffold.
   question and logs no `--enforcement-invariant` stop. The key-off arm has
   the same text. The fix is one general clause on that bullet, as a follow-up
   to the rule itself.
-- **Measurement contamination.** Key-on dispatches write the round-3 latch
-  and count as consults in `review-trace`, so measurements of either must
-  exclude key-on accounts.
 
 ## Measurement and enabling
 
@@ -280,10 +279,7 @@ table-decided row read as an orchestrator-decided one.
 `docs/config-file.md` § "Writing a value" describes.
 Check it as
 `docs/config-file.md` § "Querying a value" describes.
-The value must be bare `true`, and exit 0 means on. A stderr warning from the
-check means the row was rejected and the key reads `false`. Disable by setting
-`false`. The key applies per account, and the check reads the config dir of the
-invoking shell, so run it for the account being enabled.
+Disable by setting `false`. The key applies per account.
 
 **The hold is open-ended.** The engineer accepted no removal backstop if the
 key is never enabled. The round-2 pilot's record fixed its gates before its
@@ -300,8 +296,12 @@ every read. Keep the per-key tests, which still hold for an inert row:
 
 - The hand-typed schema pins in `test_config_py.py` (known set and defaults,
   per-account resolution, bool type, empty prompt description).
-- `TestArchitectFixPlanPilotGate` in `test_config_get.py`, whose class
-  docstring must no longer cite the deleted region.
+- `TestArchitectFixPlanPilotGate` in `test_config_get.py`.
+
+Then run `git grep -n architect_fix_plan_pilot` and edit every sentence it
+finds that still describes the pilot as live, including the audit's
+Fail-direction bullet. Add a status line under this record's provenance line
+saying the key is inert, and a new CHANGELOG entry for the revert.
 
 `test_fresh_home_with_no_state_file_exits_1` in that class asserts the `false`
 default independently of the hand-typed pins. Keep this record so the schema's
