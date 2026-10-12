@@ -237,13 +237,8 @@ left implicit:
   output is never echoed, because it can carry remote URLs into a posted body.
   A missing `headRefOid` still exits 2.
 - **Stdout carries a fixed token when the base is the default branch.**
-  - `review-pr-diff.sh` prints `BASE_IS_DEFAULT_BRANCH` on line 3, after the
-    path and the base commit.
-  - It prints the token only when the base fetch succeeded and the PR's base
-    branch name equals the base repository's default branch name.
-  - `review-pr-checkout.sh` prints the same text as an optional fourth line,
-    after the worktree path, the diff path, and the base commit.
-  - Neither script prints the token otherwise.
+  - The usage text of `review-pr-checkout.sh` and `review-pr-diff.sh` states
+    which line each prints the token on and when it prints it.
   - The session matches the line's text on the script's own stdout, so a diff
     or PR body that contains the text cannot supply it.
   - `review-pr-checkout.sh` takes the base branch name from the REST payload.
@@ -287,6 +282,12 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   comes from ssh itself, so it is not suppressed. An ssh origin can still wait
   until the fetch time cap. `GIT_ASKPASS` and `SSH_ASKPASS` stay untouched, so
   a configured GUI askpass helper still works.
+- **Stacked-base content is not precedent.** SKILL.md Step 5's "Base reads"
+  paragraph states the rule. A stacked base is unmerged and may be written by
+  the PR's author. The session cannot tell it from a base the script could not
+  verify, so without the token line it treats the base as unsettled. The
+  session works out nothing about the base itself: the token line is its only
+  signal.
 - **Per-file `gh api repos/<owner>/<repo>/contents/<path>?ref=<oid>` was not
   adopted.** It costs one API call per file, returns base64, and cannot grep
   across the tree.
@@ -326,14 +327,6 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   code behavior in the diff file, base objects, or worktree. Step 8 prints the first 20 `AUDIT_FINDING` matched
   paths, each cut at 80 characters, so a human can see an omission among them.
   A later match is not listed there.
-- **Stacked-base content is not precedent.** SKILL.md Step 5, Base reads states
-  the rule. A stacked base is unmerged and may be written by the PR's author.
-  The session cannot tell it from a base the script could not verify, so
-  without the token line it treats the base as unsettled. Worktree files the
-  diff file does not name, and unchanged regions of files it does name, follow
-  the merge base, which can differ from `baseRefOid`. That limit holds even
-  when the token prints. The session works out nothing about the base itself:
-  the token line is its only signal.
 - **Per-finding `Edit`s are the record of the consult.** The transcript then
   holds the pre-consult `Write`, the consult dispatch, and every change as an
   old/new pair. Two weaker records fail: cuts recalled from memory leave nothing

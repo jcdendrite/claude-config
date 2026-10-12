@@ -415,7 +415,7 @@ exit_delta_unaudited() {
   exit 2
 }
 
-# Closes the decode and count-match failures, which a jq that truncates raw input at NUL produces.
+# Note appended to the decode and count-match error messages, naming a jq that truncates raw input at NUL as their cause.
 JQ_NUL_NOTE="a jq that truncates raw input at NUL may cause this; claude-config's README.md jq version bullet names the verified version"
 
 # delta_diff_status_description STATUS
