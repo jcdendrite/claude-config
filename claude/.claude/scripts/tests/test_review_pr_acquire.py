@@ -310,9 +310,11 @@ def _run(
     tmp_path: Path,
     extra_env: dict | None = None,
     timeout_log: Path | None = None,
+    path_prefix: Path | None = None,
     **shim_kwargs,
 ) -> tuple[subprocess.CompletedProcess, Path]:
-    """`timeout_log`, when given, puts a logging `timeout` shim ahead of the real one on PATH."""
+    """`timeout_log`, when given, puts a logging `timeout` shim ahead of the real one on PATH.
+    `path_prefix`, when given, puts that directory ahead of everything else on PATH."""
     _seed_session(home, SID)
     call_log = tmp_path / "gh_calls.jsonl"
     env = {**_shimmed_env(tmp_path, _gh_shim_source(call_log, **shim_kwargs)), "HOME": str(home)}
@@ -324,6 +326,8 @@ def _run(
         timeout_shim.write_text(_timeout_shim_source(timeout_log))
         timeout_shim.chmod(0o755)
         env["PATH"] = f"{timeout_shim_dir}{os.pathsep}{env['PATH']}"
+    if path_prefix is not None:
+        env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
     if extra_env:
         env.update(extra_env)
     result = subprocess.run(
@@ -986,6 +990,29 @@ class TestContextAssemblyOfOversizedLists:
         assert doc["statusCheckRollup"] == oversized_rollup
         assert doc["statusCheckRollupAvailable"] is True
         assert list(scratch_root.iterdir()) == [], "the context-assembly temp directory must be removed on exit"
+
+    def test_a_failed_temp_directory_cleanup_does_not_change_the_backstop_write_failure_exit_status(
+        self, isolated_home, tmp_path
+    ):
+        """The EXIT trap removes the temp directory under errexit, so an
+        unguarded failing `rm` would replace the abort's exit status 2."""
+        backstop_path = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.context.json"
+        backstop_path.mkdir(parents=True)
+        failing_rm_dir = tmp_path / "rm_failing_shim"
+        failing_rm_dir.mkdir()
+        failing_rm = failing_rm_dir / "rm"
+        failing_rm.write_text("#!/usr/bin/env bash\necho 'synthetic rm failure' >&2\nexit 1\n")
+        failing_rm.chmod(0o755)
+        scratch_root = tmp_path / "scratch"
+        scratch_root.mkdir()
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, extra_env={"TMPDIR": str(scratch_root)},
+            path_prefix=failing_rm_dir, head_ref_oid="a" * 40,
+        )
+        assert "could not write the backstop context file" in result.stderr, "control: the abort under test ran"
+        assert "synthetic rm failure" in result.stderr, "control: the cleanup ran the failing rm"
+        assert len(list(scratch_root.glob("review-pr-acquire.*"))) == 1, "control: the failed rm left the directory"
+        assert result.returncode == 2, result.stderr
 
 
 class TestFilesReconciliation:

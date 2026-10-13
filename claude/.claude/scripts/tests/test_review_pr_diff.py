@@ -3,7 +3,7 @@ restricted (cross-repo or first-time-contributor) PR that
 review-pr-checkout.sh's trust block refuses. Mirrors
 review-pr-checkout.sh's self-derivation discipline (own PR-identity parse,
 own origin-identity check, own paginated file list, own double headRefOid
-fetch) minus everything that only matters once code lands on disk.
+fetch) minus everything that only matters once a PR is checked out.
 
 The `gh` CLI is replaced by a PATH shim that records every invocation it
 receives, matching test_review_pr_checkout.py's own shim pattern -- git is
@@ -12,7 +12,9 @@ left real (not shimmed).
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
@@ -21,17 +23,29 @@ import pytest
 from helpers import SCRIPTS_DIR
 
 from .conftest import (
+    _BASE_FROM_ORIGIN_MAIN,
     GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
     _assert_finish_and_clear_stale_each_empty_the_active_directory,
     _assert_gh_calls_are_read_only,
     _build_repo_with_pr_ref,
+    _fetch_argument_lines,
+    _fetch_askpass_values,
+    _fetch_terminal_prompt_values,
+    _git_commit_is_present,
+    _git_shim_that_fails_on_subcommand,
+    _git_shim_that_logs_terminal_prompt_on_fetch,
     _install_audit_script,
     _install_audit_script_that_runs,
+    _install_reference_transaction_sentinel_hooks,
+    _origin_main_sha,
     _provenance_fields,
+    _push_new_base_commit,
     _pythonpath_env_that_forges_a_clean_audit,
     _review_pr_audit_limit,
     _seed_session,
+    _shim_match_count,
     _shimmed_env,
+    _skip_unless_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction,
 )
 
 SCRIPT = SCRIPTS_DIR / "review-pr-diff.sh"
@@ -74,8 +88,13 @@ def _diff_text_for(files: list[str]) -> str:
     return "".join(parts)
 
 
+# Sentinel default for pr_view_base_ref_name: "the base branch the REST payload reports".
+_SAME_AS_REST_BASE_REF = "__SAME_AS_REST_BASE_REF__"
+
+
 def _gh_shim_source(
     call_log: Path,
+    *,
     head_ref_oid: str | None = None,
     files: list[str] | None = None,
     diff_text: str | None = None,
@@ -89,9 +108,17 @@ def _gh_shim_source(
     fail_rest: bool = False,
     files_failure_exit_status: int = 1,
     head_ref_oid_third: str | None = None,
+    base_ref_oid: str | None = None,
+    base_ref_name: str | None = "main",
+    base_default_branch: str | None = "main",
+    pr_view_base_ref_name: str | None = _SAME_AS_REST_BASE_REF,
 ) -> str:
-    """gh shim recording every invocation, matching
-    test_review_pr_checkout.py's own shim shape. `diff_text` defaults to a
+    """gh shim recording every invocation and returning fixed replies whatever
+    fields are requested. A `gh pr view` call carrying
+    `--jq` prints the headRefOid alone, as the script's re-fetches expect; one
+    without it prints the JSON reply holding headRefOid and, unless
+    `base_ref_oid` is None, baseRefOid, and, unless the `baseRefName` it
+    reports is None, baseRefName. `diff_text` defaults to a
     structurally valid diff matching `files` (one `diff --git` header per
     file) unless explicitly overridden. `fail_diff` exits 1 on the `gh pr
     diff` call, printing `diff_error_text` to stderr if given -- models a
@@ -100,8 +127,13 @@ def _gh_shim_source(
     `gh api .../pulls/N` (no trailing `/files`) returns the REST payload's
     own `changed_files`, which defaults to `len(files)` and is set apart
     from `files` to model a truncated or padded listing (`omit_changed_files`
-    drops it, `fail_rest` exits 1). The files listing prints one JSON string
-    per line under the `@json` jq filter, as real `gh --jq` does for a
+    drops it, `fail_rest` exits 1). `base_ref_name` and `base_default_branch`
+    are the REST payload's `base.ref` and `base.repo.default_branch`; a value
+    of None drops that field, independently of `omit_changed_files`.
+    `pr_view_base_ref_name` is the `baseRefName` the non-`--jq` `gh pr view`
+    reply reports (the REST `base.ref` by default, None drops it). The files
+    listing prints one JSON string per line under the `@json` jq filter, as
+    real `gh --jq` does for a
     string result: raw UTF-8, with a control character rendered in caret
     notation, as gh 2.100.0 is modeled to do (see the shim constant in
     conftest.py). The listing call must carry `--paginate` and
@@ -111,6 +143,7 @@ def _gh_shim_source(
     replaces the headRefOid from the THIRD `gh pr view` call onward, modeling a
     force-push during the diff fetch."""
     resolved_diff_text = diff_text if diff_text is not None else _diff_text_for(files or [])
+    view_base_ref_name = base_ref_name if pr_view_base_ref_name == _SAME_AS_REST_BASE_REF else pr_view_base_ref_name
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import json
@@ -121,6 +154,10 @@ def _gh_shim_source(
         HEAD_REF_OID = {head_ref_oid!r}
         HEAD_REF_OID_SECOND = {head_ref_oid_second!r}
         HEAD_REF_OID_THIRD = {head_ref_oid_third!r}
+        BASE_REF_OID = {base_ref_oid!r}
+        BASE_REF_NAME = {base_ref_name!r}
+        PR_VIEW_BASE_REF_NAME = {view_base_ref_name!r}
+        BASE_DEFAULT_BRANCH = {base_default_branch!r}
         FILES = {list(files or [])!r}
         DIFF_TEXT = {resolved_diff_text!r}
         FAIL_PR_VIEW = {fail_pr_view!r}
@@ -152,8 +189,18 @@ def _gh_shim_source(
                 oid = HEAD_REF_OID_SECOND
             if HEAD_REF_OID_THIRD is not None and prior_pr_view_calls >= 2:
                 oid = HEAD_REF_OID_THIRD
+            if "--jq" in args:
+                if oid:
+                    print(oid)
+                sys.exit(0)
+            reply = {{}}
             if oid:
-                print(oid)
+                reply["headRefOid"] = oid
+            if BASE_REF_OID is not None:
+                reply["baseRefOid"] = BASE_REF_OID
+            if PR_VIEW_BASE_REF_NAME is not None:
+                reply["baseRefName"] = PR_VIEW_BASE_REF_NAME
+            print(json.dumps(reply))
             sys.exit(0)
         if args[:2] == ["pr", "diff"]:
             if FAIL_DIFF:
@@ -166,6 +213,13 @@ def _gh_shim_source(
             if FAIL_REST:
                 sys.exit(1)
             payload = {{}} if OMIT_CHANGED_FILES else {{"changed_files": CHANGED_FILES}}
+            base_repo = {{}}
+            if BASE_DEFAULT_BRANCH is not None:
+                base_repo["default_branch"] = BASE_DEFAULT_BRANCH
+            base = {{"repo": base_repo}}
+            if BASE_REF_NAME is not None:
+                base["ref"] = BASE_REF_NAME
+            payload["base"] = base
             print(json.dumps(payload))
             sys.exit(0)
         if args[:1] == ["api"]:
@@ -205,6 +259,20 @@ def _review_worktrees(repo: Path) -> list[Path]:
     return sorted(worktrees_dir.glob("review-pr-*")) if worktrees_dir.is_dir() else []
 
 
+def _printed_diff_path(result: subprocess.CompletedProcess) -> Path:
+    """The diff file's path, which is stdout line 1 of a successful run."""
+    return Path(result.stdout.splitlines()[0])
+
+
+def _printed_base_ref_oid(result: subprocess.CompletedProcess) -> str:
+    """The base commit's full hex object name, which is stdout line 2 when the base fetch succeeded."""
+    return result.stdout.splitlines()[1]
+
+
+# Stdout line 3, printed after a successful base fetch only when the PR's base branch is the repository's default branch.
+_BASE_IS_DEFAULT_BRANCH_TOKEN = "BASE_IS_DEFAULT_BRANCH"
+
+
 def _run(
     cwd: Path,
     home: Path,
@@ -224,18 +292,47 @@ def _run(
     fail_rest: bool = False,
     files_failure_exit_status: int = 1,
     head_ref_oid_third: str | None = None,
+    base_ref_oid: str | None = _BASE_FROM_ORIGIN_MAIN,
+    base_ref_name: str | None = "main",
+    base_default_branch: str | None = "main",
+    pr_view_base_ref_name: str | None = _SAME_AS_REST_BASE_REF,
     extra_env: dict | None = None,
+    path_prefix: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
+    """Runs the script. `base_ref_oid` defaults to the commit origin/main
+    points at in `cwd`, which origin already holds, so a test that does not care
+    about the base still reaches a successful base fetch. None omits baseRefOid
+    from the gh reply. `base_ref_name` and `base_default_branch` default to the
+    same branch, and None drops that field from the REST payload.
+    `pr_view_base_ref_name` is the `baseRefName` the `gh pr view` reply
+    reports, defaulting to `base_ref_name`; None drops it. `path_prefix`
+    puts a shim directory ahead of the gh shim on PATH."""
     _seed_session(home, SID)
     call_log = tmp_path / "gh_calls.jsonl"
+    if base_ref_oid == _BASE_FROM_ORIGIN_MAIN:
+        base_ref_oid = _origin_main_sha(cwd)
     env = {
         **_shimmed_env(
             tmp_path,
             _gh_shim_source(
-                call_log, head_ref_oid, files, diff_text, fail_pr_view, fail_files,
-                head_ref_oid_second, fail_diff, diff_error_text,
-                changed_files, omit_changed_files, fail_rest, files_failure_exit_status,
-                head_ref_oid_third,
+                call_log,
+                head_ref_oid=head_ref_oid,
+                files=files,
+                diff_text=diff_text,
+                fail_pr_view=fail_pr_view,
+                fail_files=fail_files,
+                head_ref_oid_second=head_ref_oid_second,
+                fail_diff=fail_diff,
+                diff_error_text=diff_error_text,
+                changed_files=changed_files,
+                omit_changed_files=omit_changed_files,
+                fail_rest=fail_rest,
+                files_failure_exit_status=files_failure_exit_status,
+                head_ref_oid_third=head_ref_oid_third,
+                base_ref_oid=base_ref_oid,
+                base_ref_name=base_ref_name,
+                base_default_branch=base_default_branch,
+                pr_view_base_ref_name=pr_view_base_ref_name,
             ),
         ),
         "HOME": str(home),
@@ -243,6 +340,8 @@ def _run(
     env.pop("CLAUDE_CONFIG_DIR", None)
     if extra_env:
         env.update(extra_env)
+    if path_prefix is not None:
+        env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
     result = subprocess.run(
         ["bash", str(SCRIPT), *args], cwd=cwd, env=env, capture_output=True, text=True,
         timeout=_SUBPROCESS_TIMEOUT_SECONDS,
@@ -291,7 +390,7 @@ class TestOriginCaseInsensitiveMatch:
             head_ref_oid=pr_sha, files=["a.py"],
         )
         assert result.returncode == 0, result.stderr
-        diff_path = Path(result.stdout.strip())
+        diff_path = _printed_diff_path(result)
         assert diff_path == isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.diff"
         assert diff_path.exists()
 
@@ -446,7 +545,7 @@ class TestEmptyDiffIsRefused:
             repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=[], diff_text="",
         )
         assert result.returncode == 0, result.stderr
-        assert Path(result.stdout.strip()).exists()
+        assert _printed_diff_path(result).exists()
 
 
 class TestNoCheckoutNoWorktreeNoLocalRef:
@@ -460,7 +559,7 @@ class TestNoCheckoutNoWorktreeNoLocalRef:
         )
         assert result.returncode == 0, result.stderr
 
-        diff_path = Path(result.stdout.strip())
+        diff_path = _printed_diff_path(result)
         assert diff_path == isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.diff"
         assert diff_path.exists()
         assert "diff --git a/a.py b/a.py" in diff_path.read_text()
@@ -474,6 +573,491 @@ class TestNoCheckoutNoWorktreeNoLocalRef:
 
         assert _local_pr_ref_names(repo) == "", "diff-only mode must never fetch a local PR ref"
         assert _review_worktrees(repo) == []
+
+
+_FULL_HEX_OBJECT_NAME = re.compile(r"[0-9a-f]{40}")
+
+
+def _git_output(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=True, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+    ).stdout
+
+
+def _repo_state_snapshot(repo: Path) -> dict[str, str]:
+    """HEAD, every ref, the index and the working tree of `repo`, as git reports them."""
+    return {
+        "head": _git_output(repo, "rev-parse", "HEAD") + _git_output(repo, "symbolic-ref", "-q", "HEAD"),
+        "refs": _git_output(repo, "for-each-ref"),
+        "index": _git_output(repo, "ls-files", "--stage"),
+        "working_tree": _git_output(repo, "status", "--porcelain", "--untracked-files=all")
+        + _git_output(repo, "diff"),
+    }
+
+
+def _assert_diff_and_provenance_written(home: Path, result: subprocess.CompletedProcess, head_sha: str) -> None:
+    """The path on stdout line 1 holds the shim's `a.py` diff, and the provenance records the head."""
+    diff_path = _printed_diff_path(result)
+    assert diff_path == home / ".claude" / ".review-pr-active.d" / f"{SID}.diff"
+    assert "diff --git a/a.py b/a.py" in diff_path.read_text()
+    provenance = home / ".claude" / ".review-pr-active.d" / f"{SID}.provenance"
+    fields = _provenance_fields(provenance)
+    assert fields["head_ref_oid"] == head_sha
+    assert fields["mode"] == "diff-only"
+
+
+_BASE_REF_OID_JQ_FILTER = ".baseRefOid // empty"
+_BASE_REF_NAME_JQ_FILTER = ".baseRefName // empty"
+_BASE_DEFAULT_BRANCH_JQ_FILTER = ".base.repo.default_branch // empty"
+
+
+def _install_jq_shim_that_fails_the_read(tmp_path: Path, failing_jq_filter: str) -> Path:
+    """A `jq` PATH shim that exits 1 only for the script's `jq -r` read of
+    `failing_jq_filter` and runs the real jq for every other call."""
+    real_jq = shutil.which("jq")
+    assert real_jq is not None, "the real jq binary is required to delegate to"
+    jq_shim_dir = tmp_path / "jq-shim"
+    jq_shim_dir.mkdir()
+    jq_shim = jq_shim_dir / "jq"
+    jq_shim.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import os
+        import sys
+        if sys.argv[1:] == ["-r", {failing_jq_filter!r}]:
+            sys.stdin.buffer.read()
+            sys.exit(1)
+        os.execv({real_jq!r}, ["jq", *sys.argv[1:]])
+    """))
+    jq_shim.chmod(0o755)
+    return jq_shim_dir
+
+
+class TestBaseCommitFetch:
+    """The script fetches the PR's baseRefOid by object name and prints it as
+    stdout line 2, then the default-branch token as line 3 when the base branch
+    is the default branch. A base that cannot be fetched degrades only the base."""
+
+    def test_a_base_commit_absent_locally_is_fetched_and_printed_as_a_full_hex_line(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        assert not _git_commit_is_present(repo, base_sha), "control: the base commit is absent before the run"
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _git_commit_is_present(repo, base_sha), "the run fetched the base commit"
+        stdout_lines = result.stdout.splitlines()
+        assert len(stdout_lines) == 3, "diff path, base object name, then the default-branch token"
+        assert stdout_lines[2] == _BASE_IS_DEFAULT_BRANCH_TOKEN
+        assert _FULL_HEX_OBJECT_NAME.fullmatch(_printed_base_ref_oid(result))
+        assert _printed_base_ref_oid(result) == base_sha
+        assert "BASE_UNAVAILABLE" not in result.stderr
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+        first_pr_view = next(c for c in _read_calls(call_log) if c[:2] == ["pr", "view"])
+        assert "headRefOid,baseRefOid,baseRefName" in first_pr_view
+        assert "--jq" not in first_pr_view
+
+    def test_a_base_branch_other_than_the_default_prints_the_base_without_the_token(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+            base_ref_name="feature/stacked", base_default_branch="main",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert len(result.stdout.splitlines()) == 2, "the diff path and the base object name alone"
+        assert _printed_base_ref_oid(result) == base_sha
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
+
+    @pytest.mark.parametrize(
+        ("base_default_branch", "pr_view_base_ref_name", "expect_token"),
+        [("main", "feature/stacked", False), ("feature/stacked", "feature/stacked", True), ("main", None, False)],
+        ids=[
+            "gh-pr-view-base-differs-from-rest-default",
+            "gh-pr-view-base-matches-rest-default",
+            "gh-pr-view-base-absent-while-rest-base-matches-default",
+        ],
+    )
+    def test_the_token_follows_the_base_branch_name_from_the_gh_pr_view_reply(
+        self, isolated_home, repo_with_pr_ref, tmp_path, base_default_branch, pr_view_base_ref_name, expect_token
+    ):
+        """The REST `base.ref` is "main" in every case, so only the `gh pr view`
+        `baseRefName` can decide the token."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+            base_ref_name="main", base_default_branch=base_default_branch,
+            pr_view_base_ref_name=pr_view_base_ref_name,
+        )
+
+        assert result.returncode == 0, result.stderr
+        expected_lines_after_diff_path = [base_sha, _BASE_IS_DEFAULT_BRANCH_TOKEN] if expect_token else [base_sha]
+        assert result.stdout.splitlines()[1:] == expected_lines_after_diff_path
+
+    @pytest.mark.parametrize(
+        ("base_ref_name", "base_default_branch"),
+        [(None, "main"), ("main", None), (None, None)],
+        ids=["base-ref-absent", "default-branch-absent", "both-absent"],
+    )
+    def test_an_unreadable_base_branch_name_prints_no_token_and_does_not_abort(
+        self, isolated_home, repo_with_pr_ref, tmp_path, base_ref_name, base_default_branch
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+            base_ref_name=base_ref_name, base_default_branch=base_default_branch,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert len(result.stdout.splitlines()) == 2, "the diff path and the base object name alone"
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+    @pytest.mark.parametrize(
+        "failing_jq_filter", [_BASE_REF_NAME_JQ_FILTER, _BASE_DEFAULT_BRANCH_JQ_FILTER],
+        ids=["base-ref-read", "default-branch-read"],
+    )
+    def test_a_failed_base_branch_name_read_prints_no_token_and_does_not_abort(
+        self, isolated_home, repo_with_pr_ref, tmp_path, failing_jq_filter
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+            path_prefix=_install_jq_shim_that_fails_the_read(tmp_path, failing_jq_filter),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[1:] == [base_sha], "the base object name alone follows the diff path"
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+    def test_a_default_branch_with_a_slash_in_its_name_prints_the_token(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+            base_ref_name="release/1.x", base_default_branch="release/1.x",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[1:] == [base_sha, _BASE_IS_DEFAULT_BRANCH_TOKEN]
+
+    def test_a_base_branch_that_is_not_exactly_the_default_prints_no_token(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """A trailing space must survive the name's extraction from the `gh pr view` reply.
+        One wiring case; the comparison's near-miss matrix is in test_review_pr_lib.py."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+            base_ref_name="main ", base_default_branch="main",
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines()[1:] == [base_sha]
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout
+
+    def test_the_base_fetch_leaves_head_refs_index_working_tree_and_fetch_head_untouched(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        state_before = _repo_state_snapshot(repo)
+        fetch_head = repo / ".git" / "FETCH_HEAD"
+        assert not fetch_head.exists(), "control: no fetch has written FETCH_HEAD yet"
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
+        assert _repo_state_snapshot(repo) == state_before
+        assert not fetch_head.exists(), "the base fetch must not write FETCH_HEAD"
+
+        subprocess.run(
+            ["git", "fetch", "origin", base_sha], cwd=repo, capture_output=True, check=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert fetch_head.exists(), "control: a plain fetch of the same object name does write FETCH_HEAD"
+
+    def test_a_fetch_that_exits_zero_without_the_commit_degrades_the_base(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        shim_dir = _git_shim_that_fails_on_subcommand(
+            tmp_path, f"*fetch --no-write-fetch-head --recurse-submodules=no -- origin {base_sha}", exit_status=0
+        )
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha, path_prefix=shim_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _shim_match_count(shim_dir) == 1, "control: the base fetch reached git and exited 0"
+        assert not _git_commit_is_present(repo, base_sha), "control: the shimmed fetch left the commit absent"
+        assert "BASE_UNAVAILABLE fetch-failed" in result.stderr
+        assert len(result.stdout.splitlines()) == 1, "the unfetched object name is never offered on line 2"
+        assert _BASE_IS_DEFAULT_BRANCH_TOKEN not in result.stdout, "the token needs the base fetch"
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+    def test_an_option_shaped_base_ref_oid_is_never_passed_to_git_fetch(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        """The input matrix for review_pr_is_full_hex_oid lives in
+        test_review_pr_lib.py. This pins that the script runs the check before
+        the value reaches a `git fetch` argument."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        upload_pack_ran_sentinel = tmp_path / "upload-pack-ran"
+        upload_pack_script = tmp_path / "upload-pack.sh"
+        upload_pack_script.write_text(f"#!/bin/sh\ntouch '{upload_pack_ran_sentinel}'\nexec git upload-pack \"$@\"\n")
+        upload_pack_script.chmod(0o755)
+        option_shaped_base_ref_oid = f"--upload-pack={upload_pack_script}"
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=option_shaped_base_ref_oid,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "BASE_UNAVAILABLE not-hex" in result.stderr
+        assert not upload_pack_ran_sentinel.exists(), "the value must not run as a fetch option"
+        assert len(result.stdout.splitlines()) == 1
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+        subprocess.run(
+            ["git", "fetch", "origin", option_shaped_base_ref_oid],
+            cwd=repo, capture_output=True, check=False, timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        )
+        assert upload_pack_ran_sentinel.exists(), "control: an unguarded fetch of the value does run the script"
+
+    @pytest.mark.parametrize("base_ref_oid", [None, ""], ids=["field-absent", "field-empty"])
+    def test_a_missing_base_ref_oid_degrades_the_base_without_a_fetch(
+        self, isolated_home, repo_with_pr_ref, tmp_path, base_ref_oid
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*fetch*", exit_status=1)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_ref_oid, path_prefix=shim_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "BASE_UNAVAILABLE missing" in result.stderr
+        assert _shim_match_count(shim_dir) == 0
+        assert len(result.stdout.splitlines()) == 1
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+    @pytest.mark.parametrize(
+        ("exit_status", "expected_cause"), [(1, "fetch-failed"), (124, "fetch-timed-out")],
+        ids=["plain-failure", "cap-kill-status"],
+    )
+    def test_a_failing_base_fetch_degrades_the_base_and_never_echoes_git_output(
+        self, isolated_home, repo_with_pr_ref, tmp_path, exit_status, expected_cause
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _origin_main_sha(repo)
+        shim_dir = _git_shim_that_fails_on_subcommand(
+            tmp_path, f"*fetch --no-write-fetch-head --recurse-submodules=no -- origin {base_sha}", exit_status=exit_status
+        )
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha, path_prefix=shim_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _shim_match_count(shim_dir) == 1, "control: the base fetch reached git"
+        assert f"BASE_UNAVAILABLE {expected_cause}" in result.stderr
+        other_cause = "fetch-timed-out" if expected_cause == "fetch-failed" else "fetch-failed"
+        assert other_cause not in result.stderr
+        assert "synthetic git failure" not in result.stderr, "git's own output must never reach stderr"
+        assert len(result.stdout.splitlines()) == 1
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+    def test_a_failed_base_ref_oid_read_degrades_the_base_and_keeps_the_head(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"],
+            path_prefix=_install_jq_shim_that_fails_the_read(tmp_path, _BASE_REF_OID_JQ_FILTER),
+        )
+        assert result.returncode == 0, result.stderr
+        assert "BASE_UNAVAILABLE missing" in result.stderr
+        assert len(result.stdout.splitlines()) == 1
+        _assert_diff_and_provenance_written(isolated_home, result, pr_sha)
+
+    def test_a_missing_head_ref_oid_still_aborts_even_with_a_usable_base(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, _ = repo_with_pr_ref
+        shim_dir = _git_shim_that_fails_on_subcommand(tmp_path, "*fetch*", exit_status=1)
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=None, files=["a.py"], path_prefix=shim_dir,
+        )
+
+        assert result.returncode == 2, result.stderr
+        assert "current headRefOid" in result.stderr
+        assert [c[:2] for c in _read_calls(call_log)] == [["pr", "view"]], "the abort comes right after the first read"
+        assert "BASE_UNAVAILABLE" not in result.stderr
+        assert result.stdout == ""
+        assert _shim_match_count(shim_dir) == 0
+
+    def test_a_degraded_base_followed_by_a_failing_diff_fetch_still_aborts_with_empty_stdout(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=None, fail_diff=True,
+        )
+
+        assert result.returncode == 2, result.stderr
+        assert "BASE_UNAVAILABLE missing" in result.stderr, "control: the base degraded before the diff failed"
+        assert "gh pr diff failed or timed out" in result.stderr
+        assert result.stdout == ""
+        assert not (isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.diff").exists()
+
+
+class TestBaseFetchRunsNoGitHooks:
+    def test_no_git_hook_runs_during_the_base_fetch(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """The argv test below is the version-independent pin of the base fetch's
+        `-c core.hooksPath=/dev/null`. This sentinel corroborates it on a git that
+        fires `reference-transaction` for a fetch by object name, and skips on one
+        that does not. A separate clone fetching the same commit with hooks
+        enabled is the control."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        control_repo, hook_ran_sentinel, control_hook_ran_sentinel = _install_reference_transaction_sentinel_hooks(
+            repo, tmp_path
+        )
+        base_sha = _push_new_base_commit(repo, tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
+        assert not hook_ran_sentinel.exists(), "the base fetch must run with git hooks disabled"
+        _skip_unless_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction(
+            control_repo, base_sha, control_hook_ran_sentinel
+        )
+
+    def test_the_base_fetch_passes_the_hooks_off_flag(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """Pins `-c core.hooksPath=/dev/null` by recorded argv, which holds on every git version."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        shim_dir = _git_shim_that_logs_terminal_prompt_on_fetch(tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha, path_prefix=shim_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
+        fetch_argument_lines = _fetch_argument_lines(shim_dir)
+        assert len(fetch_argument_lines) == 1, "control: the base fetch ran"
+        fetch_tokens = fetch_argument_lines[0].split(" ")
+        assert "core.hooksPath=/dev/null" in fetch_tokens, fetch_argument_lines[0]
+        hooks_path_index = fetch_tokens.index("core.hooksPath=/dev/null")
+        assert fetch_tokens[hooks_path_index - 1] == "-c", fetch_argument_lines[0]
+        assert fetch_tokens[hooks_path_index + 1] == "fetch", fetch_argument_lines[0]
+
+
+class TestBaseFetchNeverPromptsForCredentials:
+    def test_the_base_fetch_disables_the_terminal_credential_prompt(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """The base-commit fetch sees GIT_TERMINAL_PROMPT=0 over an ambient 1, with GIT_ASKPASS/SSH_ASKPASS unchanged."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        shim_dir = _git_shim_that_logs_terminal_prompt_on_fetch(tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha, path_prefix=shim_dir,
+            extra_env={
+                "GIT_TERMINAL_PROMPT": "1", "GIT_ASKPASS": "/ambient/git-askpass", "SSH_ASKPASS": "/ambient/ssh-askpass",
+            },
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _fetch_terminal_prompt_values(shim_dir) == ["0"]
+        assert _fetch_askpass_values(shim_dir) == ["/ambient/git-askpass /ambient/ssh-askpass"]
+
+
+class TestBaseFetchSkipsSubmoduleRecursion:
+    """The base-commit fetch is invoked with --recurse-submodules=no."""
+
+    def test_the_base_fetch_skips_submodule_recursion(self, isolated_home, repo_with_pr_ref, tmp_path):
+        """A populated submodule must not make a correct fetch fail, so the fetch opts out of recursing into it."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+        base_sha = _push_new_base_commit(repo, tmp_path)
+        shim_dir = _git_shim_that_logs_terminal_prompt_on_fetch(tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_oid=base_sha, path_prefix=shim_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
+        fetch_argument_lines = _fetch_argument_lines(shim_dir)
+        assert len(fetch_argument_lines) == 1, "control: the base fetch ran"
+        assert "--recurse-submodules=no" in fetch_argument_lines[0].split(" "), fetch_argument_lines[0]
 
 
 class TestArtifactCleanup:
@@ -514,8 +1098,8 @@ class TestAuditHitReportedNotFatal:
     def test_execution_surface_hit_is_reported_on_stderr_but_exits_zero(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
-        """Distinct from review-pr-checkout.sh's own audit stop: nothing
-        lands on disk here, so the audit predicate has no subject to
+        """Distinct from review-pr-checkout.sh's own audit stop: nothing is
+        checked out here, so the audit predicate has no subject to
         protect, and its hit becomes a mandatory pre-seeded finding
         instead."""
         _install_audit_script(isolated_home)
@@ -527,7 +1111,7 @@ class TestAuditHitReportedNotFatal:
         assert result.returncode == 0, result.stderr
         assert "AUDIT_FINDING" in result.stderr
         assert ".mcp.json" in result.stderr
-        diff_path = Path(result.stdout.strip())
+        diff_path = _printed_diff_path(result)
         assert diff_path.exists()
 
 
@@ -659,7 +1243,7 @@ class TestAuditThatReturnsNoVerdictIsNotAFinding:
         assert result.returncode == 0, result.stderr
         assert "AUDIT_FINDING" in result.stderr
         assert '"a.py": stand-in reason' in result.stderr
-        assert Path(result.stdout.strip()).exists()
+        assert _printed_diff_path(result).exists()
 
 
 class TestAuditThatExitsCleanWithoutAVerdictIsNotClean:
@@ -708,7 +1292,7 @@ class TestDiffTextIsWrittenAsFetched:
             head_ref_oid=pr_sha, files=["link.txt"], diff_text=typechange_diff,
         )
         assert result.returncode == 0, result.stderr
-        assert Path(result.stdout.strip()).read_text().count("diff --git a/link.txt b/link.txt") == 2
+        assert _printed_diff_path(result).read_text().count("diff --git a/link.txt b/link.txt") == 2
 
 
 class TestChangedFilesPrecheck:
@@ -741,7 +1325,7 @@ class TestChangedFilesPrecheck:
             head_ref_oid=pr_sha, files=three_hundred_files,
         )
         assert result.returncode == 0, result.stderr
-        assert Path(result.stdout.strip()).exists()
+        assert _printed_diff_path(result).exists()
 
     def test_missing_changed_files_count_aborts_before_the_listing(
         self, isolated_home, repo_with_pr_ref, tmp_path

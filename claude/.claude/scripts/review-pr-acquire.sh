@@ -301,7 +301,8 @@ if ! CONTEXT_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/review-pr-acquire.XXXXXX"); th
   echo "review-pr-acquire.sh: could not create a temp directory for assembling the context document. Abort." >&2
   exit 2
 fi
-trap 'rm -rf -- "${CONTEXT_TMP_DIR:?}"' EXIT
+# `|| true` keeps a failed cleanup from replacing the exit status the script chose, because errexit applies inside the trap.
+trap 'rm -rf -- "${CONTEXT_TMP_DIR:?}" || true' EXIT
 if ! { printf '%s' "$FILES_JSON" > "$CONTEXT_TMP_DIR/files.json" \
   && printf '%s' "$COMMITS_JSON" > "$CONTEXT_TMP_DIR/commits.json" \
   && printf '%s' "$REVIEWS_JSON" > "$CONTEXT_TMP_DIR/reviews.json" \

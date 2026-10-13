@@ -526,6 +526,186 @@ def _git_shim_that_fails_on_worktree_subcommand(
     return shim_dir
 
 
+def _git_shim_that_fails_on_subcommand(
+    tmp_path: Path, args_glob: str, *, exit_status: int, fail_only_match_number: int | None = None
+) -> Path:
+    """A `git` PATH shim that fails any invocation whose space-joined
+    arguments match the bash glob `args_glob` with `exit_status` and a
+    synthetic stderr line, and delegates every other invocation to the real
+    git binary. With `fail_only_match_number`, only the Nth matching
+    invocation (1-based) fails and every other match reaches the real git.
+    Each matching invocation appends one line to `matches.log` in the returned
+    directory, so a test can count them."""
+    shim_dir = tmp_path / f"git_shim_on_subcommand_{uuid.uuid4().hex}"
+    shim_dir.mkdir()
+    match_log = shim_dir / "matches.log"
+    spaces_escaped_glob = args_glob.replace(" ", "\\ ")
+    real_git = shlex.quote(shutil.which("git"))
+    if fail_only_match_number is not None and fail_only_match_number < 1:
+        raise ValueError(f"fail_only_match_number is 1-based, got {fail_only_match_number}")
+    failing_match_number = 0 if fail_only_match_number is None else fail_only_match_number
+    git_shim = shim_dir / "git"
+    git_shim.write_text(
+        f'#!/usr/bin/env bash\nif [[ "$*" == {spaces_escaped_glob} ]]; then\n'
+        f'  echo "$*" >> {shlex.quote(str(match_log))}\n'
+        "  match_number=0\n"
+        f'  while IFS= read -r _; do match_number=$((match_number + 1)); done < {shlex.quote(str(match_log))}\n'
+        f'  if [[ {failing_match_number} != 0 && $match_number != {failing_match_number} ]]; then exec {real_git} "$@"; fi\n'
+        f'  echo "synthetic git failure" >&2\n  exit {exit_status}\nfi\n'
+        f'exec {real_git} "$@"\n'
+    )
+    git_shim.chmod(0o755)
+    return shim_dir
+
+
+def _shim_match_count(shim_dir: Path) -> int:
+    """How many invocations `_git_shim_that_fails_on_subcommand`'s glob matched."""
+    match_log = shim_dir / "matches.log"
+    return len(match_log.read_text().splitlines()) if match_log.exists() else 0
+
+
+def _git_shim_that_logs_terminal_prompt_on_fetch(tmp_path: Path) -> Path:
+    """A `git` PATH shim that appends the `GIT_TERMINAL_PROMPT` value (or `unset`) of every
+    `fetch` invocation to `fetch_prompt.log`, its `GIT_ASKPASS` and `SSH_ASKPASS` values
+    to `fetch_askpass.log`, and its space-joined arguments to `fetch_argv.log`, in the
+    returned directory, then delegates to the real git binary."""
+    shim_dir = tmp_path / f"git_shim_fetch_prompt_{uuid.uuid4().hex}"
+    shim_dir.mkdir()
+    prompt_log = shim_dir / "fetch_prompt.log"
+    askpass_log = shim_dir / "fetch_askpass.log"
+    argv_log = shim_dir / "fetch_argv.log"
+    real_git = shlex.quote(shutil.which("git"))
+    git_shim = shim_dir / "git"
+    git_shim.write_text(
+        '#!/usr/bin/env bash\nfor argument in "$@"; do\n'
+        "  if [[ $argument == fetch ]]; then\n"
+        f'    echo "${{GIT_TERMINAL_PROMPT-unset}}" >> {shlex.quote(str(prompt_log))}\n'
+        f'    echo "${{GIT_ASKPASS-unset}} ${{SSH_ASKPASS-unset}}" >> {shlex.quote(str(askpass_log))}\n'
+        f'    echo "$*" >> {shlex.quote(str(argv_log))}\n'
+        "    break\n"
+        "  fi\n"
+        "done\n"
+        f'exec {real_git} "$@"\n'
+    )
+    git_shim.chmod(0o755)
+    return shim_dir
+
+
+def _fetch_terminal_prompt_values(shim_dir: Path) -> list[str]:
+    """The `GIT_TERMINAL_PROMPT` value each fetch saw, in call order, as recorded by
+    `_git_shim_that_logs_terminal_prompt_on_fetch`."""
+    prompt_log = shim_dir / "fetch_prompt.log"
+    return prompt_log.read_text().splitlines() if prompt_log.exists() else []
+
+
+def _fetch_askpass_values(shim_dir: Path) -> list[str]:
+    """The `GIT_ASKPASS SSH_ASKPASS` pair each fetch saw, in call order, as recorded by
+    `_git_shim_that_logs_terminal_prompt_on_fetch`."""
+    askpass_log = shim_dir / "fetch_askpass.log"
+    return askpass_log.read_text().splitlines() if askpass_log.exists() else []
+
+
+def _fetch_argument_lines(shim_dir: Path) -> list[str]:
+    """The space-joined git arguments of each fetch, in call order, as recorded by
+    `_git_shim_that_logs_terminal_prompt_on_fetch`."""
+    argv_log = shim_dir / "fetch_argv.log"
+    return argv_log.read_text().splitlines() if argv_log.exists() else []
+
+
+# Sentinel default for `base_ref_oid` in the review-pr checkout and diff-only
+# tests' `_run`: "the commit origin/main points at in the repo under test" --
+# the base commit _build_repo_with_pr_ref's PR branched from -- so a test that
+# does not care about the base still reaches a successful base fetch. None
+# omits baseRefOid from the shimmed gh reply.
+_BASE_FROM_ORIGIN_MAIN = "__BASE_FROM_ORIGIN_MAIN__"
+
+
+def _origin_main_sha(repo: Path) -> str | None:
+    """The commit origin/main points at in repo, or None when repo has no
+    such ref (a test whose cwd is not the PR repo)."""
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "origin/main"], cwd=repo, capture_output=True, text=True,
+        timeout=60,
+    )
+    return resolved.stdout.strip() or None
+
+
+def _push_new_base_commit(repo: Path, tmp_path: Path) -> str:
+    """Pushes a commit adding base_only.txt to origin's main from a separate
+    clone, so the commit is absent from `repo`'s object store, and returns
+    its SHA. The PR branched before this commit, so a three-dot diff against
+    it must leave base_only.txt out."""
+    origin_url = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=True,
+        timeout=60,
+    ).stdout.strip()
+    clone = tmp_path / "base-clone"
+    for command in (
+        ["git", "clone", "-q", "-b", "main", origin_url, str(clone)],
+        ["git", "-C", str(clone), "config", "user.email", "test@test.com"],
+        ["git", "-C", str(clone), "config", "user.name", "test"],
+    ):
+        subprocess.run(command, check=True, capture_output=True, timeout=60)
+    (clone / "base_only.txt").write_text("base moved\n")
+    for command in (
+        ["git", "-C", str(clone), "add", "base_only.txt"],
+        ["git", "-C", str(clone), "commit", "-q", "-m", "base moved"],
+        ["git", "-C", str(clone), "push", "-q", "origin", "main"],
+    ):
+        subprocess.run(command, check=True, capture_output=True, timeout=60)
+    return subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+        timeout=60,
+    ).stdout.strip()
+
+
+def _git_commit_is_present(repo: Path, commit_sha: str) -> bool:
+    return subprocess.run(
+        ["git", "cat-file", "-e", f"{commit_sha}^{{commit}}"], cwd=repo, capture_output=True, timeout=60,
+    ).returncode == 0
+
+
+def _install_reference_transaction_sentinel_hook(repo: Path, sentinel: Path) -> None:
+    """Installs in repo a `reference-transaction` hook that touches `sentinel`."""
+    hook = repo / ".git" / "hooks" / "reference-transaction"
+    hook.write_text(f"#!/bin/sh\ntouch '{sentinel}'\n")
+    hook.chmod(0o755)
+
+
+def _install_reference_transaction_sentinel_hooks(repo: Path, tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Clones repo's origin into tmp_path/control-repo, then installs in both
+    repo and the clone a `reference-transaction` hook that touches a sentinel
+    file. Returns (control_repo, repo's sentinel, the clone's sentinel)."""
+    control_repo = tmp_path / "control-repo"
+    origin_url = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=True,
+        timeout=60,
+    ).stdout.strip()
+    subprocess.run(["git", "clone", "-q", origin_url, str(control_repo)], check=True, capture_output=True, timeout=60)
+    hook_ran_sentinel = tmp_path / "hook-ran"
+    control_hook_ran_sentinel = tmp_path / "control-hook-ran"
+    for hook_repo, sentinel in ((repo, hook_ran_sentinel), (control_repo, control_hook_ran_sentinel)):
+        _install_reference_transaction_sentinel_hook(hook_repo, sentinel)
+    return control_repo, hook_ran_sentinel, control_hook_ran_sentinel
+
+
+def _skip_unless_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction(
+    control_repo: Path, commit_sha: str, control_hook_ran_sentinel: Path,
+) -> None:
+    """The control for a hooks-off base fetch: skips if a hooks-enabled fetch by object name fires no
+    reference-transaction hook, as on a git version that does not fire it for that fetch."""
+    subprocess.run(
+        ["git", "fetch", "--no-write-fetch-head", "--", "origin", commit_sha],
+        cwd=control_repo, capture_output=True, check=True, timeout=60,
+    )
+    if control_hook_ran_sentinel.exists():
+        return
+    pytest.skip(
+        "control: this test assumes a hooks-enabled fetch by object name fires reference-transaction, "
+        "but it did not, so the hook is not wired or this git version may not fire it on that fetch"
+    )
+
+
 def _build_repo_with_pr_ref(
     tmp_path: Path, owner_repo: str = "foo/bar", pr_number: str = "42",
 ) -> tuple[Path, str]:
