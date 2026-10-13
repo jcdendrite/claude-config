@@ -1115,11 +1115,8 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
     # is unset. An explicit --projects is an escape hatch for corpus analysis;
     # the caller then owns that the output is no longer publish-safe.
     #
-    # Read-scope does not bound the names under --branches --include-subagents:
-    # a subagent this repo's session dispatched into another repo counts under
-    # the dispatching branch, so its skill names reach the output. Treat the
-    # list as local-only. This extends the cross-repo subagent inclusion that
-    # scope._attributed_branch already applies to spend.
+    # Skill names from --include-subagents can come from a cross-repo subagent,
+    # so treat that output as local-only (docs/transcript-analysis.md, Limits).
     #
     # Supporting rules: only input["skill"] is extracted (never input["args"],
     # which holds absolute paths even for in-scope sessions); and
@@ -4285,7 +4282,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_skill_inv_scope = p_skill_inv.add_mutually_exclusive_group()
     p_skill_inv_scope.add_argument(
         "--projects", default=None, metavar="GLOB",
-        help="Project-dir glob. Default: this repo's own worktrees only (publish-safe). "
+        help="Project-dir glob. Default: this repo's own worktrees only (publish-safe without --include-subagents). "
              "Passing an explicit glob is an escape hatch — output is then not scoped to this repo.",
     )
     p_skill_inv_scope.add_argument(
@@ -4298,7 +4295,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_skill_inv.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
     p_skill_inv.add_argument(
         "--include-subagents", action="store_true",
-        help="Count skill invocations inside spawned subagents too, split by a thread column.",
+        help="Count skill invocations inside spawned subagents too, split by a thread column. "
+             "Output can carry another project's skill names (docs/transcript-analysis.md, Limits).",
     )
     p_skill_inv.set_defaults(func=cmd_skill_invocation)
 

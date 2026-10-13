@@ -17,11 +17,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - **Columns:** every transcript-derived column follows both changes, and the `gh`-sourced columns do not.
   - **Ledger:** existing rows are not re-recorded.
   - **PR body:** it keeps the figures from its last sync, so a body last synced from a checkout that had not yet pulled still follows the earlier attribution.
-- **`subagents`, `skill-pair` and `skill-invocation --include-subagents` now attribute subagent records the same way, `worktree-agent-*` included.**
-  - Provided its records carry the `isSidechain` flag, a subagent's own branch name never becomes a label.
+- **`subagents`, `skill-pair` and `skill-invocation --include-subagents` now attribute subagent records the same way, `worktree-agent-*` included, with the same `isSidechain` condition.**
   - `buckets` and `duration` apply the same attribution to a sidechain record inline in a main transcript file.
   - `review-trace` and the other per-record consumers apply the pre-branch rule to the records they read.
-  - `skill-invocation --include-subagents` can now print skill names from a subagent dispatched into another repo, because its records count under the dispatching branch. Read-scope alone does not bound those names under `--branches`, so treat the list as local-only. This is the same cross-repo subagent inclusion as the spend bullet above, extended to skill names.
+  - `skill-invocation --include-subagents --branches X` can now print skill names from a subagent dispatched into another repo, because its records count under the dispatching branch. Plain `--include-subagents` already printed them. Treat all `skill-invocation --include-subagents` output as local-only.
 - **`/ready-for-review`'s fidelity report (`skill-fidelity-report.sh`) now sees plan-mode skill invocations and architect consults made earlier in the same session on the default branch.**
 - **The `pr-cost` ledger gains a trailing `model_breakdown` column, and the first `--record` that writes a row upgrades an existing ledger to it.** The cell holds tokens and integer micro-dollars per priced model, pricing variant, and token class, so a later subcommand can re-price mixed-model rows under a common rate table.
   - **Ledger:** rows recorded earlier read as "not recorded" and are never assigned an estimated split.

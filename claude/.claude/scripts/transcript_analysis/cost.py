@@ -141,7 +141,7 @@ def _first_main_thread_turns_dollars_by_branch(
     main-thread turns with a usage block, the ingredient _compute_workstream_dollars
     sums into "startup burn". A turn's branch is resolved via scope._attributed_branch,
     so a branch switch mid-session never lets one branch's early turns inflate
-    another's count, and a continuation's leading default-branch turns count
+    another's count, and a later session's leading default-branch turns count
     toward the branch the session enters. A turn whose branch resolves to None
     (a main-thread record with no gitBranch) is excluded, mirroring unbranched_totals' exclusion from this
     function's per-branch result. Mirrors _extract_rearm_session_turns' own

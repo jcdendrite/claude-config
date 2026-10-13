@@ -100,8 +100,10 @@ def _repo_scoped_project_slugs(command_label: str = "skill-invocation") -> list[
     quoted into public PR descriptions, and transcripts under
     ~/.claude/projects/ span every project on the machine. Scoping the read to
     this repository — by *identity*, via `git worktree list`, matched as exact dir
-    names — guarantees no other project's skill names can enter the output. It is
-    deliberately not a path glob: a `<slug>*`-style match scopes by where a dir
+    names — keeps other projects' own sessions out of the read. A subagent file
+    under an in-repo session is read regardless of the repo the subagent worked
+    in, so scoping alone does not bound skill names under `--include-subagents`.
+    The scope is deliberately not a path glob: a `<slug>*`-style match scopes by where a dir
     sits in the path string, which a foreign repo cloned under this repo's
     worktrees/, a sibling `<repo>-fork`, or a lossy-slug collision all defeat. A
     session started in a repo *subdirectory* is a known exception this exactness
