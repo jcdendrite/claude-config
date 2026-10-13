@@ -261,7 +261,7 @@ left implicit:
 ## Base reads by object ID (Step 5)
 
 SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
-`git grep -n -e '<pattern>' <baseRefOid> -- '<path>'`.
+`git --literal-pathspecs grep -n -F -e '<literal>' <baseRefOid> -- '<path>'`.
 
 - **Neither command runs a configured driver.** `git show` prints a blob's
   plain contents and `git grep` applies no textconv by default (git-show(1),
@@ -270,6 +270,11 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   treats every character literally, and a single quote cannot occur inside them
   (POSIX Shell Command Language, quoting; recalled, not reopened). SKILL.md
   Step 5's "Base reads" paragraph defines which strings never reach Bash.
+- **`--literal-pathspecs` and `-F` make the PR-derived path and `<literal>`
+  match verbatim.** Without `--literal-pathspecs`, `git grep` treats the path as a
+  pathspec, so glob characters or a leading `:` select other files
+  (gitglossary(7), "pathspec"). `-F` makes the `<literal>` a fixed string.
+  `git show <oid>:<path>` names one tree entry and needs neither.
 - **The scripts fetch the base commit, not the session.** A fetch the session
   writes copies a model-transcribed object ID with no hex validation, no
   `core.hooksPath` pin, and no time cap. The scripts validate the ID with

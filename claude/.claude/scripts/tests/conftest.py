@@ -689,24 +689,21 @@ def _install_reference_transaction_sentinel_hooks(repo: Path, tmp_path: Path) ->
     return control_repo, hook_ran_sentinel, control_hook_ran_sentinel
 
 
-def _assert_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction(
+def _skip_unless_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction(
     control_repo: Path, commit_sha: str, control_hook_ran_sentinel: Path,
 ) -> None:
-    """The control for a hooks-off base fetch: fails when the CI env var is set, and skips otherwise,
-    if a hooks-enabled fetch by object name fires no reference-transaction hook."""
+    """The control for a hooks-off base fetch: skips if a hooks-enabled fetch by object name fires no
+    reference-transaction hook, as on a git version that does not fire it for that fetch."""
     subprocess.run(
         ["git", "fetch", "--no-write-fetch-head", "--", "origin", commit_sha],
         cwd=control_repo, capture_output=True, check=True, timeout=60,
     )
     if control_hook_ran_sentinel.exists():
         return
-    message = (
+    pytest.skip(
         "control: this test assumes a hooks-enabled fetch by object name fires reference-transaction, "
         "but it did not, so the hook is not wired or this git version may not fire it on that fetch"
     )
-    if os.environ.get("CI"):
-        pytest.fail(message)
-    pytest.skip(message)
 
 
 def _build_repo_with_pr_ref(

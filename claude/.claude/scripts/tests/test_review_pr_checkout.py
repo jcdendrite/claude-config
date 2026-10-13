@@ -31,7 +31,6 @@ from helpers import (
 from .conftest import (
     _BASE_FROM_ORIGIN_MAIN,
     GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
-    _assert_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction,
     _assert_finish_and_clear_stale_each_empty_the_active_directory,
     _assert_gh_calls_are_read_only,
     _build_repo_with_pr_ref,
@@ -54,6 +53,7 @@ from .conftest import (
     _seed_session,
     _shim_match_count,
     _shimmed_env,
+    _skip_unless_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction,
 )
 
 SCRIPT = SCRIPTS_DIR / "review-pr-checkout.sh"
@@ -2668,10 +2668,11 @@ class TestCheckoutRunsNoGitHooks:
     def test_no_git_hook_runs_during_the_base_fetch_of_a_commit_absent_locally(
         self, isolated_home, repo_with_pr_ref, tmp_path
     ):
-        """A fetch by object name fires reference-transaction on git 2.56, so a
-        sentinel hook observes a base fetch run without
-        `-c core.hooksPath=/dev/null`. A separate clone fetching the same commit
-        with hooks enabled is the control."""
+        """The argv test below is the version-independent pin of the base fetch's
+        `-c core.hooksPath=/dev/null`. This sentinel corroborates it on a git that
+        fires `reference-transaction` for a fetch by object name, and skips on one
+        that does not. A separate clone fetching the same commit with hooks
+        enabled is the control."""
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
         control_repo, hook_ran_sentinel, control_hook_ran_sentinel = _install_reference_transaction_sentinel_hooks(
@@ -2687,9 +2688,31 @@ class TestCheckoutRunsNoGitHooks:
         assert result.returncode == 0, result.stderr
         assert _git_commit_is_present(repo, base_sha), "the base fetch ran"
         assert not hook_ran_sentinel.exists(), "the base fetch must run with git hooks disabled"
-        _assert_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction(
+        _skip_unless_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction(
             control_repo, base_sha, control_hook_ran_sentinel
         )
+
+    def test_every_network_fetch_of_a_stacked_run_passes_the_hooks_off_flag(self, isolated_home, tmp_path):
+        """Pins `-c core.hooksPath=/dev/null` by recorded argv, which holds on every git version."""
+        _install_audit_script(isolated_home)
+        repo, pr_sha, base_sha = _build_stacked_repo(tmp_path, base_entries={b"base_only.txt": b"base\n"})
+        shim_dir = _git_shim_that_logs_terminal_prompt_on_fetch(tmp_path)
+
+        result, _ = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_oid=base_sha, path_prefix=shim_dir,
+            **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 0, result.stderr
+        fetch_argument_lines = _fetch_argument_lines(shim_dir)
+        assert len(fetch_argument_lines) == 3, "control: the PR-ref, default-branch and base fetches all ran"
+        for fetch_arguments in fetch_argument_lines:
+            fetch_tokens = fetch_arguments.split(" ")
+            assert "core.hooksPath=/dev/null" in fetch_tokens, fetch_arguments
+            hooks_path_index = fetch_tokens.index("core.hooksPath=/dev/null")
+            assert fetch_tokens[hooks_path_index - 1] == "-c", fetch_arguments
+            assert fetch_tokens[hooks_path_index + 1] == "fetch", fetch_arguments
 
     def test_no_git_hook_runs_during_the_default_branch_fetch_of_a_stacked_base(self, isolated_home, tmp_path):
         """The default-branch fetch updates a local ref, which fires reference-transaction."""
