@@ -7,13 +7,21 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 ### Changed
 
 - **`--branches` and per-branch rows, filtered or not, now credit a session's leading default-branch records to the first branch that same session enters.** This applies to every subcommand the "Pre-branch default-branch attribution" rule block in `docs/transcript-analysis.md` lists as applying it. Planning in a separate session is not moved.
-- **`cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark now attribute every subagent record to the dispatching main thread's branch at that record's time, never its own `gitBranch`.** For example, a subagent still running after a branch switch follows the switch. A dispatched subagent's spend counts toward the dispatching branch whatever repo it worked in, and, provided its records carry the `isSidechain` flag, a subagent's own branch name never becomes a label. A session with no branch-bearing main-thread record leaves its subagent records unbranched.
+- **`cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark now attribute every subagent record to the dispatching main thread's branch at that record's time, never its own `gitBranch`.**
+  - A subagent still running after a branch switch follows the switch.
+  - A dispatched subagent's spend counts toward the dispatching branch whatever repo it worked in.
+  - Provided its records carry the `isSidechain` flag, a subagent's own branch name never becomes a label.
+  - A session with no branch-bearing main-thread record leaves its subagent records unbranched.
 - **PR Cost sections and new `pr-cost --record` rows follow both changes, so a figure can rise or fall.** See `docs/pr-cost.md` § "Pre-branch and subagent attribution" for the cutover and how to compare across it.
   - **Cutover:** it is per checkout, at pull time, and an open PR's Cost figure changes at its next sync.
   - **Columns:** every transcript-derived column follows both changes, and the `gh`-sourced columns do not.
   - **Ledger:** existing rows are not re-recorded.
-  - **PR body:** it keeps the figures from its last sync, so a body last synced from a checkout that had not yet pulled is old-rule.
-- **`subagents`, `skill-pair` and `skill-invocation --include-subagents` now attribute subagent records the same way, `worktree-agent-*` included, with the same `isSidechain` proviso for labels, as do `buckets` and `duration` for a sidechain record inline in a main transcript file.** `review-trace` and the other per-record consumers apply the pre-branch rule to the records they read.
+  - **PR body:** it keeps the figures from its last sync, so a body last synced from a checkout that had not yet pulled still follows the earlier attribution.
+- **`subagents`, `skill-pair` and `skill-invocation --include-subagents` now attribute subagent records the same way, `worktree-agent-*` included.**
+  - Provided its records carry the `isSidechain` flag, a subagent's own branch name never becomes a label.
+  - `buckets` and `duration` apply the same attribution to a sidechain record inline in a main transcript file.
+  - `review-trace` and the other per-record consumers apply the pre-branch rule to the records they read.
+  - `skill-invocation --include-subagents` can now print skill names from a subagent dispatched into another repo, because its records count under the dispatching branch. Read-scope alone does not bound those names under `--branches`, so treat the list as local-only. This is the same cross-repo subagent inclusion as the spend bullet above, extended to skill names.
 - **`/ready-for-review`'s fidelity report (`skill-fidelity-report.sh`) now sees plan-mode skill invocations and architect consults made earlier in the same session on the default branch.**
 - **The `pr-cost` ledger gains a trailing `model_breakdown` column, and the first `--record` that writes a row upgrades an existing ledger to it.** The cell holds tokens and integer micro-dollars per priced model, pricing variant, and token class, so a later subcommand can re-price mixed-model rows under a common rate table.
   - **Ledger:** rows recorded earlier read as "not recorded" and are never assigned an estimated split.

@@ -3877,7 +3877,10 @@ class TestCostPreBranchAndSubagentAttribution:
             # No unpriced turn: it would add an EXCLUDED SPEND banner unrelated to the moved-turns line.
             self._write_prefix_session(projects / "-repo-main", with_prefix=with_prefix, with_unpriced_turn=False)
             _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
-            return [re.sub(r"\d[\d,.]*", "#", line) for line in capsys.readouterr().out.splitlines()]
+            out = capsys.readouterr().out
+            # An empty or no-data report would otherwise compare equal to its twin.
+            assert _extract_md_grand_total(out) > 0
+            return [re.sub(r"\d[\d,.]*", "#", line) for line in out.splitlines()]
 
         with_prefix_lines = summary_shape(tmp_path / "with-prefix", with_prefix=True)
         without_prefix_lines = summary_shape(tmp_path / "without-prefix", with_prefix=False)

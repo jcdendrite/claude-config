@@ -1115,6 +1115,12 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
     # is unset. An explicit --projects is an escape hatch for corpus analysis;
     # the caller then owns that the output is no longer publish-safe.
     #
+    # Read-scope does not bound the names under --branches --include-subagents:
+    # a subagent this repo's session dispatched into another repo counts under
+    # the dispatching branch, so its skill names reach the output. Treat the
+    # list as local-only. This extends the cross-repo subagent inclusion that
+    # scope._attributed_branch already applies to spend.
+    #
     # Supporting rules: only input["skill"] is extracted (never input["args"],
     # which holds absolute paths even for in-scope sessions); and
     # _normalize_skill_name collapses this repo's own worktree-qualified spellings

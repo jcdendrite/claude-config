@@ -46,9 +46,8 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     "Pre-branch default-branch attribution".
     Under --this-repo, a branch prints raw (account-<K>/<branch>) only when
     a main-thread assistant or user record carried that same (root, branch)
-    pair anywhere in the corpus -- any other attributed branch stays opaque,
-    for example one only a main-thread record of another type carried. The
-    attestation reads each record's own gitBranch. It is corpus-wide, not
+    pair anywhere in the corpus -- any other attributed branch stays opaque.
+    The attestation reads each record's own gitBranch. It is corpus-wide, not
     narrowed by --since: a branch used by a real main-thread session outside the
     current --since window still discloses, since the question being
     answered is "did this repo ever use this branch," not "does this

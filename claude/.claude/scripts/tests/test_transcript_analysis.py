@@ -9832,6 +9832,48 @@ class TestFailSeqAttribution:
         assert "No test runs found for the specified branches." in out
 
 
+class TestInlineSidechainRecordsFollowTheDispatchingBranchInBucketsAndDuration:
+    """A sidechain record sitting inline in a main transcript file takes the branch its
+    main thread was on, so neither a foreign tag nor a worktree-agent-* tag becomes a row."""
+
+    def test_buckets_folds_inline_sidechain_records_into_the_dispatching_branch_date_range(
+        self, fake_projects, capsys
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:00:00.000Z"),
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:05:00.000Z"),
+            _asst(_SONNET, branch="foreign-branch", sidechain=True, ts="2026-06-05T10:00:00.000Z"),
+            _asst(_SONNET, branch="worktree-agent-abc123", sidechain=True, ts="2026-06-06T10:00:00.000Z"),
+        ])
+        _mod.cmd_buckets(_branch_args())
+        out = capsys.readouterr().out
+        assert "foreign-branch" not in out
+        assert "worktree-agent" not in out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feature-x", max_labels=8)
+        assert cols["Total"] == "2"  # sidechain records never count as turns
+        assert cols["Sess"] == "1"
+        assert "2026-06-02..2026-06-06" in out
+
+    def test_duration_folds_inline_sidechain_records_into_the_dispatching_branch_span(
+        self, fake_projects, capsys
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(0)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+            _asst(_SONNET, branch="foreign-branch", sidechain=True, ts=_attr_ts(20)),
+            _asst(_SONNET, branch="foreign-branch", sidechain=True, ts=_attr_ts(22)),
+            _asst(_SONNET, branch="worktree-agent-abc123", sidechain=True, ts=_attr_ts(25)),
+            _asst(_SONNET, branch="worktree-agent-abc123", sidechain=True, ts=_attr_ts(27)),
+        ])
+        _mod.cmd_duration(_branch_args())
+        out = capsys.readouterr().out
+        assert "foreign-branch" not in out
+        assert "worktree-agent" not in out
+        cols = _table_cols(out, header_contains="Span(min)", row_contains="feature-x")
+        assert cols["Span(min)"] == "27"  # 12:00 to 12:27, not 12:00 to 12:05
+        assert cols["Active(min)"] == "27"
+
+
 class TestSubagentRecordsFollowTheDispatchingBranch:
     """skill-invocation --include-subagents and skill-pair attribute every subagent
     record to the branch its dispatching main thread was on at the record's time."""
@@ -9895,3 +9937,21 @@ class TestSubagentRecordsFollowTheDispatchingBranch:
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
         assert (cols["Lead"], cols["Main"], cols["Side"]) == ("2", "0", "2")
+
+    def test_foreign_cwd_sidechain_skill_name_counts_under_the_dispatching_branch(
+        self, fake_projects, capsys
+    ):
+        """Pins a disclosed flow: a subagent dispatched into another repo has its skill
+        names counted under the dispatching branch, so --branches X --include-subagents
+        prints them whatever the subagent's own cwd (docs/transcript-analysis.md, Limits)."""
+        session_id = "sess-cross-repo"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+        ])
+        foreign_record = _asst(_SONNET, branch="other-repo-branch", sidechain=True, ts=_attr_ts(3),
+                               content=[_skill_use("f1", "privateco-plugin:internal-runbook")])
+        foreign_record["cwd"] = "/elsewhere/other-repo"
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [foreign_record])
+        out = self._run_skill_invocation(capsys, branches="feature-x")
+        assert re.search(r"^privateco-plugin:internal-runbook\s+sidechain", out, re.MULTILINE), out

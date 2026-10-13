@@ -190,9 +190,14 @@ A pooled total may sum dollars as recorded across differing `rate_stamp` values,
 
 ### Pre-branch and subagent attribution
 
-**What a row follows.** A row captured by a checkout that includes both blocks follows both the "Subagent attribution" and "Pre-branch default-branch attribution" blocks in [`docs/transcript-analysis.md`](transcript-analysis.md). The pre-branch rule counts same-session spend recorded on the default branch before the session enters the branch toward that branch. The subagent rule counts every subagent record toward the branch its dispatching main thread was on at that record's time, whatever repo the subagent worked in.
+**What a row follows.** A row captured by a checkout that includes both blocks follows both the "Subagent attribution" and "Pre-branch default-branch attribution" blocks in [`docs/transcript-analysis.md`](transcript-analysis.md). The pre-branch rule counts same-session spend recorded on the default branch before the session enters the branch toward that branch. The subagent rule counts every subagent record toward the branch its dispatching main thread was on at that record's time, whatever repo the subagent worked in. In this section a *new-rule* row was captured by a checkout that includes both blocks, and an *old-rule* row by a checkout that does not.
 
-**A figure can rise or fall.** Every transcript-derived column follows the rules: every `*_usd` and `*_tokens` column, `unpriced_turns`, `unpriced_tokens`, `turn_count`, `session_count`, `sum_context_at_turn`, `mean_context_at_turn`, `opus_dollars`, `opus_dollar_share_pct` and `model_breakdown`. The `gh`-sourced columns (size, commit and review counts, the plan and risk flags, `distinct_top_level_dirs`, `distinct_file_extensions` and `tests_changed`) do not move. A PR body keeps the figures from its last sync, so a body last synced from a checkout that had not yet pulled is old-rule. Bodies carry no marker of which rule they used.
+**A figure can rise or fall.**
+- Every transcript-derived column follows the rules: every `*_usd` and `*_tokens` column, `unpriced_turns`, `unpriced_tokens`, `turn_count`, `session_count`, `sum_context_at_turn`, `mean_context_at_turn`, `opus_dollars`, `opus_dollar_share_pct` and `model_breakdown`.
+- The `gh`-sourced columns do not move: size, commit and review counts, the plan and risk flags, `distinct_top_level_dirs`, `distinct_file_extensions` and `tests_changed`.
+- A PR body keeps the figures from its last sync.
+- A body last synced from a checkout that does not include both blocks carries old-rule figures.
+- Bodies carry no marker of which rule they used.
 - The pre-branch rule raises the figure of the branch a session enters and lowers a `--branches main` figure. A PR that plans on the default branch before creating its branch is an example, such as a row with `plan_file_added` set.
 - The subagent rule moves three cohorts:
   - A subagent record whose own tag differs from its dispatcher's branch, for example one still running after a switch, moves to the dispatcher's branch.
@@ -200,8 +205,8 @@ A pooled total may sum dollars as recorded across differing `rate_stamp` values,
   - A session with no branch-bearing main-thread record moves its subagent spend from the subagents' own tags to unbranched.
 - The full `cost` report audits only the pre-branch rule's shift, in its `Pre-branch default-branch records credited` line. The subagent rule's shift has no audit line.
 
-**Cutover.** It is per checkout, at pull time, and no column records which rule a row used. An old-rule row was captured by a checkout that did not yet include both blocks, and a new-rule row by one that did.
-- Find the cutover with `git log -S _attribute_pre_branch origin/<default-branch> -- claude/.claude/scripts/transcript_analysis/scope.py`. Empty output means the checkout predates the change. A row whose `captured_at` precedes the first commit that adds the name is old-rule on every machine, unless its capturing checkout already had it from a feature branch.
+**Cutover.** The boundary is a commit, reached per checkout at pull time, and no column records which rule a row used.
+- Find the commit with `git log -S _attribute_pre_branch origin/<default-branch> -- claude/.claude/scripts/transcript_analysis/scope.py`. Empty output means the checkout predates the change. A row whose `captured_at` precedes the first commit that adds the name is old-rule on every machine, unless its capturing checkout already had it from a feature branch.
 - A later row is old-rule on any machine whose checkout had not yet pulled that commit.
 - An old-rule row is neither a lower nor an upper bound on its new-rule figure.
 - An open PR's Cost section changes at its first sync after the pull.
@@ -214,7 +219,9 @@ A pooled total may sum dollars as recorded across differing `rate_stamp` values,
 - A re-capture moves the row to the current `rate_stamp`, so "Comparing rows across rate stamps" still applies to the comparison.
 - Outside the `cleanupPeriodDays` window, exclude the row from cross-cutover dollar comparisons.
 - A re-capture under the same `machine` value supersedes the old-rule row in the export, because the export keeps one row per (host, repo, PR, machine) by full-precision `captured_at`.
-- Rows for one PR under different `machine` values meet Layer 1 of "Combining exports" below instead. A same-date tie there keeps the larger token total, so a re-capture under a different `machine` value can lose to the old-rule row when the new rule lowers the total.
+- Rows for one PR under different `machine` values meet Layer 1 of "Combining exports" below instead.
+- A same-date tie in Layer 1 keeps the larger token total.
+- When a re-capture's token total is lower than the old-rule row's, a re-capture under a different `machine` value can therefore lose to the old-rule row.
 
 ## Refusals
 
