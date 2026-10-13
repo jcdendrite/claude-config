@@ -326,7 +326,7 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   flagged because that path also exists at the base, and the consult would never
   see the finding.
 - **Claims about code close only on code evidence.** SKILL.md Step 7, item 3
-  states the rule. CI-log text, linked-issue text, and assertions in
+  states the rule. CI-log text, ticket text, and assertions in
   PR-authored text are written or editable by the PR's author, which is why
   they never close or downgrade a claim about code. "Verified" means observed
   code behavior in the diff file, base objects, or worktree. Step 8 prints the first 20 `AUDIT_FINDING` matched
@@ -428,21 +428,23 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
   - Its redaction policy also short-circuits unless the clone's `origin.url`
     contains `claude-config`, while `/review-pr` runs in any repository.
   - The control is the Step 8 human approval of the exact body to post.
-- **The linked-issue read in Step 4 trusts the operator's connector.**
-  - The MCP issue read has no equivalent of `gh`'s `-R` repo pin, so it trusts
-    the operator's connector to point at the right project's workspace.
-  - The engineer's confirmation of the exact tracker and key is the only
-    binding: the tracker's source (the `CLAUDE.md` loaded at session start)
-    does not scope which team's issue a PR-authored key names.
+- **The ticket read in Step 4 trusts the engineer's confirmation.**
+  - The session guesses the ticket from PR-authored text, and the PR author
+    controls that text.
+  - The engineer's answer to the `AskUserQuestion` is the only binding on which
+    ticket is read.
   - A confirmation given on reflex weakens that control.
-  - The tracker choice follows `plan-it/SKILL.md` Step 7's "see that project's
-    `CLAUDE.md`, or ask the engineer if undocumented"; that text routes a plan
-    out and is an analogy here.
-  - A connected tool shows what the operator can read, not which tracker the
-    repo uses, and the PR author controls the key.
-  - `[A-Z]{2,}-[0-9]+` is the tracker-ID shape that
-    `deny-private-project-refs.sh` already uses (`docs/hooks.md`).
-  - The MCP lookup is matched by role, never by tool name, per
+  - Every tracker gets the same confirmation, because a connected tool shows
+    what the operator can read, not which tracker the repo uses.
+  - The `gh issue view` read is pinned by `-R` to `origin`'s repo. The lookup
+    for any other tracker, including a GitHub repo other than `origin`'s, has
+    no equivalent pin and trusts the operator's connector to point at the right
+    project's workspace.
+  - Ticket text can reach the findings body, and its tracker's audience can be
+    narrower than the PR's. Step 8 names each body finding that rests on ticket
+    text, so the human approves the exact body knowing which text came from the
+    ticket.
+  - The lookup is matched by role, never by tool name, per
     `linear-formatting/SKILL.md`.
 - **Symlinks at the session-scoped paths are not refused.**
   - Neither the Write tool nor the review-pr scripts refuse a symlink at
