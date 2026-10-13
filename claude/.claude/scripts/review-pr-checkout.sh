@@ -521,7 +521,7 @@ review_pr_resolve_session_and_pid "review-pr-checkout.sh" " -- cannot name the w
 # The diff compares two fetched commits, so it runs before the worktree exists
 # and a failure leaves none behind.
 # --no-write-fetch-head keeps it to object transfer, and `--` ends option parsing before the remote and object name.
-# --recurse-submodules=no keeps git from also fetching into a populated submodule, whose failure would fail this fetch.
+# --recurse-submodules=no as for LOCAL_REF above.
 if BASE_FETCH_OUTPUT=$(GIT_TERMINAL_PROMPT=0 _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$MAIN_REPO_ROOT" -c core.hooksPath=/dev/null fetch --no-write-fetch-head --recurse-submodules=no -- origin "$BASE_REF_OID" 2>&1); then
   BASE_FETCH_STATUS=0
 else

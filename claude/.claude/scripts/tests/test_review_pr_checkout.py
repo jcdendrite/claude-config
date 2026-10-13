@@ -2251,10 +2251,11 @@ _TRACE_FAILURE_STEPS = ["base_fetch", "diff", "worktree_add"]
 
 
 def _base_fetch_args_glob(base_sha: str) -> str:
-    """The args glob of the script's base fetch. The base_fetch failure rows of
+    """The args glob of the script's base fetch, matched by its object-ID operand
+    whatever the flag order. The base_fetch failure rows of
     TestReviewDiffStepFailure prove it matches the real fetch, so a zero shim
     count against it means the fetch was not made."""
-    return f"*fetch --no-write-fetch-head --recurse-submodules=no -- origin {base_sha}"
+    return f"* fetch *{base_sha}*"
 
 
 class TestReviewDiffStepFailure:
