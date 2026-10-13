@@ -423,6 +423,22 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
   - Its redaction policy also short-circuits unless the clone's `origin.url`
     contains `claude-config`, while `/review-pr` runs in any repository.
   - The control is the Step 8 human approval of the exact body to post.
+- **The linked-issue read in Step 4 trusts the operator's connector.**
+  - The MCP issue read has no equivalent of `gh`'s `-R` repo pin, so it trusts
+    the operator's connector to point at the right project's workspace.
+  - The engineer's confirmation of the exact tracker and key is the only
+    binding: the tracker's source (the `CLAUDE.md` loaded at session start)
+    does not scope which team's issue a PR-authored key names.
+  - A confirmation given on reflex weakens that control.
+  - The tracker choice follows `plan-it/SKILL.md` Step 7's "see that project's
+    `CLAUDE.md`, or ask the engineer if undocumented"; that text routes a plan
+    out and is an analogy here.
+  - A connected tool shows what the operator can read, not which tracker the
+    repo uses, and the PR author controls the key.
+  - `[A-Z]{2,}-[0-9]+` is the tracker-ID shape that
+    `deny-private-project-refs.sh` already uses (`docs/hooks.md`).
+  - The MCP lookup is matched by role, never by tool name, per
+    `linear-formatting/SKILL.md`.
 - **Symlinks at the session-scoped paths are not refused.**
   - Neither the Write tool nor the review-pr scripts refuse a symlink at
     `.body`, `.diff`, `.context.json`, `.provenance`, or the completion
