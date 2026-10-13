@@ -271,6 +271,16 @@ class TestTimelineStep:
         sidechain = _record("other", 3, sidechain=True)
         assert _attributed([first_untimed, second_untimed, sidechain], sidechain) == "feature-x"
 
+    def test_sidechain_record_earlier_in_file_order_is_never_the_file_order_fallback_branch(self):
+        """The fallback is a disclosure path: it may only name a branch a main-thread record carried."""
+        foreign_sidechain = _record("foreign-branch", None, sidechain=True)
+        untimed_main = _record("feature-x", None)
+        later_sidechain = _record("other", 3, sidechain=True)
+        records = [foreign_sidechain, untimed_main, later_sidechain]
+
+        assert scope._session_branch_context(records).untimed_main_branch == "feature-x"
+        assert _attributed(records, later_sidechain) == "feature-x"
+
     def test_untimed_main_thread_default_branch_is_not_remapped_for_a_sidechain_record(self):
         first_untimed = _record("main", None)
         second_untimed = _record("feature-x", None)

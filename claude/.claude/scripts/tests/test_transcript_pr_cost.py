@@ -249,6 +249,21 @@ class TestPrCostPreBranchAndSubagentAttribution:
         assert unbranched["turn_count"] == 1
         assert sum(unbranched["dollars"].values()) == pytest.approx(0.40)
 
+    def test_prefix_session_starts_the_branch_at_its_first_default_branch_turn(self, fake_projects):
+        """The branch's session_starts entry for a prefix session is the timestamp of its
+        first turn credited to the branch, which here precedes a second session's first turn."""
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="main", ts="2026-08-01T10:00:00.000Z"),
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-x", ts="2026-08-03T10:00:00.000Z"),
+        ])
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=2_000_000, branch="feature-x", ts="2026-08-02T10:00:00.000Z"),
+        ])
+
+        branch_totals, _unbranched = self._branch_totals(fake_projects)
+        starts = sorted(branch_totals["feature-x"]["session_starts"])
+        assert [session_id for _ts, session_id in starts] == ["sess-a", "sess-b"]
+
     def test_branch_total_equals_cost_branches_summary_dollars(self, tmp_path, monkeypatch, capsys):
         """The PR Cost section (cost --summary) and the pr-cost ledger row
         (branch totals) resolve through one attribution, so they agree."""

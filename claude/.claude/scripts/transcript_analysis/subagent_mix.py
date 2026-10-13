@@ -63,9 +63,11 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     attributing a branch, unlike cmd_subagents, so a subagent's own
     gitBranch never reaches this table.
     A leading default-branch dispatch prints under its session's pre-branch
-    successor, which scope._pre_branch_run takes from the first non-candidate
-    main-thread entry of any record type (after skipping HEAD and worktree-agent-*),
-    so the raw-label justification covers a successor recorded by any main-thread record type.
+    successor.
+    scope._pre_branch_run takes that successor from the first non-candidate
+    main-thread entry of any record type, after skipping HEAD and worktree-agent-*.
+    The raw label is therefore justified for a successor recorded by any
+    main-thread record type.
     A subagent_type prints raw only when it is tracked in this repo's own
     agents/ directory or is a Claude Code built-in
     (_repo_tracked_agent_type_names); every other value stays opaque.

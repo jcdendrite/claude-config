@@ -216,6 +216,25 @@ class TestComputeWorkstreamDollars:
         assert agg["startup_burn_dollars"] == pytest.approx(3.50)
         assert "main" not in workstream
 
+    def test_prefix_session_whose_remapped_start_precedes_another_session_is_the_first_session(self, fake_projects):
+        """sess-a's leading default-branch turn counts toward feature-p, so sess-a starts
+        the branch before sess-b's first turn and sess-b is the one whose first turns are
+        startup burn. Starting sess-a at its first turn on the literal branch would make
+        sess-a the continuation instead."""
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="main", ts="2026-08-01T10:00:00.000Z"),  # $1.00 prefix
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-p", ts="2026-08-03T10:00:00.000Z"),  # $2.00
+        ])
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=2_000_000, branch="feature-p", ts="2026-08-02T10:00:00.000Z"),  # $4.00
+        ])
+
+        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        agg = workstream["feature-p"]
+        assert agg["session_count"] == 2
+        assert agg["total_dollars"] == pytest.approx(7.00)
+        assert agg["startup_burn_dollars"] == pytest.approx(4.00)  # sess-b only; sess-a's $1.00 + $2.00 is excluded
+
     def test_non_first_session_unpriced_turn_consumes_slot_without_adding_dollars(self, fake_projects):
         """An unmodeled-model turn inside a non-first session's first-N-turns
         window consumes one of until_first_n_turns' slots like any other

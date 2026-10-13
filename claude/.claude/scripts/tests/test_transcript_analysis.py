@@ -9665,7 +9665,7 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
         assert feature_cols["Total"] == "5"  # each session's prefix turn plus its turns on the branch
         assert feature_cols["Sess"] == "2"
         assert main_cols["Total"] == "1"  # only the turn after the boundary stays
-        assert main_cols["Sess"] == "1"  # was 2 before the prefix moved
+        assert main_cols["Sess"] == "1"
         assert "2026-06-01..2026-06-02" in out
         assert "2026-06-03..2026-06-03" in out
 
@@ -9736,6 +9736,49 @@ class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
         _mod.cmd_judgment_pair(_judgment_pair_args(branches="feature-x"))
         out = capsys.readouterr().out
         assert "Skill: code-review  branch=feature-x" in out
+
+    def test_user_input_since_window_leaves_a_later_default_branch_prompt_on_the_default_branch(
+        self, fake_projects, capsys
+    ):
+        """main -> X -> main -> Y with --since between X and the second main. The session
+        context is built before the window filter; one built from in-window prompts would
+        see the second main as the leading run and credit its prompt to Y."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("prefix prompt", branch="main", ts="2026-06-01T10:00:00.000Z"),
+            _ui_user("prompt on branch x", branch="feature-x", ts="2026-06-02T10:00:00.000Z"),
+            _ui_user("later prompt on the default branch", branch="main", ts="2026-06-04T10:00:00.000Z"),
+            _ui_user("prompt on branch y", branch="feature-y", ts="2026-06-06T10:00:00.000Z"),
+        ])
+
+        _mod.cmd_user_input(_user_input_args(branches="main", since="2026-06-03"))
+        main_out = capsys.readouterr().out
+        assert "later prompt on the default branch" in main_out
+        _mod.cmd_user_input(_user_input_args(branches="feature-y", since="2026-06-03"))
+        feature_y_out = capsys.readouterr().out
+        assert "prompt on branch y" in feature_y_out
+        assert "later prompt on the default branch" not in feature_y_out
+
+    def test_judgment_pair_since_window_leaves_a_later_default_branch_invocation_on_the_default_branch(
+        self, fake_projects, capsys
+    ):
+        """main -> X -> main -> Y with --since between X and the second main: the second
+        main's invocation stays on main, as a context built from in-window records would
+        not keep it."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _skill_use_rec("code-review", "2026-06-01T10:00:00.000Z", branch="main", tool_id="s1"),
+            _review_asst("Review recorded before the branch existed.", "2026-06-01T10:01:00.000Z", branch="main"),
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:00:00.000Z"),
+            _skill_use_rec("code-review", "2026-06-04T10:00:00.000Z", branch="main", tool_id="s2"),
+            _review_asst("Review recorded on the default branch later.", "2026-06-04T10:01:00.000Z", branch="main"),
+            _asst(_SONNET, branch="feature-y", ts="2026-06-06T10:00:00.000Z"),
+        ])
+
+        _mod.cmd_judgment_pair(_judgment_pair_args(branches="main", since="2026-06-03"))
+        main_out = capsys.readouterr().out
+        assert "Skill: code-review  branch=main" in main_out
+        assert "Review recorded on the default branch later." in main_out
+        _mod.cmd_judgment_pair(_judgment_pair_args(branches="feature-y", since="2026-06-03"))
+        assert "Review recorded on the default branch later." not in capsys.readouterr().out
 
     def test_pr_link_counts_the_prefix_turn_toward_the_branch_model_split(self, fake_projects, monkeypatch, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [

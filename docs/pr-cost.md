@@ -201,12 +201,20 @@ A pooled total may sum dollars as recorded across differing `rate_stamp` values,
 - The full `cost` report audits only the pre-branch rule's shift, in its `Pre-branch default-branch records credited` line. The subagent rule's shift has no audit line.
 
 **Cutover.** It is per checkout, at pull time, and no column records which rule a row used. An old-rule row was captured by a checkout that did not yet include both blocks, and a new-rule row by one that did.
-- Find the cutover with `git log -S _attribute_pre_branch -- claude/.claude/scripts/transcript_analysis/scope.py`. A row whose `captured_at` precedes the first commit that adds the name is old-rule on every machine, unless its capturing checkout already had it from a feature branch.
+- Find the cutover with `git log -S _attribute_pre_branch origin/<default-branch> -- claude/.claude/scripts/transcript_analysis/scope.py`. Empty output means the checkout predates the change. A row whose `captured_at` precedes the first commit that adds the name is old-rule on every machine, unless its capturing checkout already had it from a feature branch.
 - A later row is old-rule on any machine whose checkout had not yet pulled that commit.
 - An old-rule row is neither a lower nor an upper bound on its new-rule figure.
 - An open PR's Cost section changes at its first sync after the pull.
 
-**Comparing dollars across the cutover.** First re-capture the old-rule row with `--record --force --pr N` inside `cleanupPeriodDays`, on the machine that captured it and from a checkout that has already pulled the commit. A re-capture from an unpulled checkout writes another old-rule row, and a PR captured on several machines needs each machine's row re-captured. A new-rule row needs no re-capture. A re-capture moves the row to the current `rate_stamp`, so "Comparing rows across rate stamps" still applies to the comparison. Outside the `cleanupPeriodDays` window, exclude the row from cross-cutover dollar comparisons. A re-capture under the same `machine` value always supersedes the old-rule row in the export, because the export keeps one row per (host, repo, PR, machine) by full-precision `captured_at`. When exports are combined, Layer 1 applies instead to rows for one PR under different `machine` values: on a same-date tie it keeps the larger token total, so a re-capture under a different `machine` value can lose to the old-rule row when the new rule lowers the total.
+**Comparing dollars across the cutover.**
+- Re-capture an old-rule row with `--record --force --pr N` inside `cleanupPeriodDays`, on the machine that captured it and from a checkout that has already pulled the commit.
+- A re-capture from an unpulled checkout writes another old-rule row.
+- A PR captured on several machines needs each machine's row re-captured.
+- A new-rule row needs no re-capture.
+- A re-capture moves the row to the current `rate_stamp`, so "Comparing rows across rate stamps" still applies to the comparison.
+- Outside the `cleanupPeriodDays` window, exclude the row from cross-cutover dollar comparisons.
+- A re-capture under the same `machine` value supersedes the old-rule row in the export, because the export keeps one row per (host, repo, PR, machine) by full-precision `captured_at`.
+- Rows for one PR under different `machine` values meet Layer 1 of "Combining exports" below instead. A same-date tie there keeps the larger token total, so a re-capture under a different `machine` value can lose to the old-rule row when the new rule lowers the total.
 
 ## Refusals
 

@@ -41,12 +41,9 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     _root_scoped_display_label, account-<K>/branch-<N>) since a raw branch
     slug from a foreign account would otherwise be printed.
     _DO_NOT_PUBLISH_BANNER is stamped on stdout and stderr under multi-root.
-    A record's branch is its attributed branch (scope._attributed_branch): a
-    sidechain record takes the branch its dispatching main thread was on at
-    that record's time, never its own gitBranch, and a session's leading
-    default-branch records take the first branch that session enters. A
-    session with no branch-bearing main-thread record contributes no sidechain
-    row.
+    A record's branch is its attributed branch (scope._attributed_branch); the
+    rule is docs/transcript-analysis.md "Subagent attribution" and
+    "Pre-branch default-branch attribution".
     Under --this-repo, a branch prints raw (account-<K>/<branch>) only when
     a main-thread assistant or user record carried that same (root, branch)
     pair anywhere in the corpus -- any other attributed branch stays opaque,

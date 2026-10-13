@@ -946,9 +946,9 @@ def _session_branch_index(records: Sequence[dict]) -> list[tuple[float, str]]:
     """Build one session's sorted (timestamp, gitBranch) index from its own
     main-thread (non-sidechain) records — the timeline _timeline_entry
     resolves every sidechain record's branch against.
-    Built fresh per session, from that session's records alone: this is new
-    machinery, not an extension of cmd_review_trace's position-based
-    carry-forward convention (see its docstring), which never crosses the
+    Built fresh per session, from that session's records alone. Unlike
+    cmd_review_trace's position-based carry-forward (see its docstring), this
+    index is timestamp-ordered and per-session, so it can cross the
     main-file/subagents-subdirectory boundary. A record with no parseable
     timestamp cannot be placed in timestamp order and is excluded, and so is
     a record whose gitBranch is not a string.
@@ -991,6 +991,8 @@ def _pre_branch_run(branch_index: Sequence[tuple[float, str]]) -> _PreBranchRun 
     the first two distinct-branch entries share one, the name order decides
     whether a run exists.
     """
+    # Any tagged main-thread record type feeds the index, so one earlier stale
+    # non-default tag disables the leading run; no observed instance.
     remaining = [(ts, branch) for ts, branch in branch_index if not _names_no_pr_branch(branch)]
     if not remaining or remaining[0][1] not in _DEFAULT_BRANCH_CANDIDATES:
         return None

@@ -384,6 +384,33 @@ class TestSubagentsSince:
         out = capsys.readouterr().out
         assert "No data found." in out
 
+    def test_since_window_leaves_a_later_default_branch_turn_on_the_default_branch(
+        self, fake_projects, capsys, monkeypatch
+    ):
+        """main -> X -> main -> Y with the window starting between X and the second
+        main. The session context is built before the --since check; one built from
+        in-window records would see the second main as the leading run and credit
+        its turn to Y."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+
+        def days_ago(days: float) -> str:
+            return datetime.fromtimestamp(fixed_now - days * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts=days_ago(20)),
+            _asst("claude-opus-4-7", branch="feat-x", ts=days_ago(15)),
+            _asst("claude-opus-4-7", branch="main", ts=days_ago(8)),
+            _asst("claude-opus-4-7", branch="feat-y", ts=days_ago(5)),
+        ])
+
+        _mod.subagents.cmd_subagents(_subagents_args(branches="main", since="10d"))
+        main_cols = _table_cols(capsys.readouterr().out, header_contains="Thread", row_contains="main")
+        assert main_cols["Opus"] == "1"
+        _mod.subagents.cmd_subagents(_subagents_args(branches="feat-y", since="10d"))
+        feat_y_cols = _table_cols(capsys.readouterr().out, header_contains="Thread", row_contains="main")
+        assert feat_y_cols["Opus"] == "1"  # its own turn only, not the second main's
+
     def test_malformed_since_exits_nonzero_naming_subagents(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc_info:
             _mod.subagents.cmd_subagents(_subagents_args(since="not-a-window"))
@@ -721,6 +748,30 @@ class TestSubagentsDeclaredRootsMultiRoot:
         out = capsys.readouterr().out
         assert re.search(r"account-\d+/branch-\d+", out)
         assert "unattested-branch" not in out
+
+    def test_this_repo_prefix_remapped_onto_a_branch_only_a_non_assistant_non_user_record_carried_stays_opaque(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """Deny path through the pre-branch remap: the leading 'main' assistant record
+        is attributed to 'unattested-branch', but the attestation set reads each record's
+        own tag. Only a hook-denial attachment carried 'unattested-branch', so it stays
+        opaque; attesting the attributed branch instead would print it raw."""
+        acct_b = fake_config_dir_factory("acct-b")
+        session_id = "sess-prefix-deny"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts=_attr_ts(1)),
+            _hook_deny("some-hook", branch="unattested-branch", ts=_attr_ts(5)),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True, ts=_attr_ts(8)),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.subagents.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/branch-\d+", out)
+        assert "unattested-branch" not in out
+        assert not re.search(r"account-\d+/main\b", out)
 
     def test_this_repo_branch_carried_only_by_a_main_thread_user_record_prints_raw(
         self, fake_projects, fake_config_dir_factory, capsys
