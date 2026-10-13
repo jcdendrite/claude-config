@@ -17,11 +17,6 @@ from pathlib import Path
 
 from transcript_analysis import corpus, pricing, redaction, render, scope
 
-# The harness's ephemeral-isolation branch name for an `isolation: "worktree"`
-# subagent dispatch (see claude/.claude/CLAUDE.md's Agent Briefing section) —
-# not a claim about which branch the dispatched work belongs to.
-_WORKTREE_AGENT_BRANCH_PREFIX = "worktree-agent-"
-
 # Printed as both render paths' first content line (see _cost_report).
 # The full report prints this sentence directly. --summary wraps it in
 # _LIST_PRICE_CAVEAT_ALERT below. Two-part because readers span subscription,
@@ -36,59 +31,13 @@ _LIST_PRICE_CAVEAT = (
 # alerts render, and a GFM alert cannot nest inside another element.
 _LIST_PRICE_CAVEAT_ALERT = f"> [!IMPORTANT]\n> {_LIST_PRICE_CAVEAT}"
 
-def _session_branch_index(records: Sequence[dict]) -> list[tuple[float, str]]:
-    """Build one session's sorted (timestamp, gitBranch) index from its own
-    main-thread (non-sidechain) records — the carry-forward source
-    _attributed_branch resolves a worktree-agent-* record's branch against.
-    Built fresh per session, from that session's records alone: this is new
-    machinery, not an extension of cmd_review_trace's position-based
-    carry-forward convention (see its docstring), which never crosses the
-    main-file/subagents-subdirectory boundary. A record with no parseable
-    timestamp cannot be placed in timestamp order and is excluded.
-    """
-    index: list[tuple[float, str]] = []
-    for main_rec in records:
-        if bool(main_rec.get("isSidechain")):
-            continue
-        main_branch = main_rec.get("gitBranch")
-        if not main_branch:
-            continue
-        main_ts = corpus._parse_ts(main_rec.get("timestamp"))
-        if main_ts is None:
-            continue
-        index.append((main_ts, main_branch))
-    index.sort()
-    return index
-
-
-def _attributed_branch(rec: dict, branch_index: Sequence[tuple[float, str]]) -> str | None:
-    """Resolve one record's branch for --branches filtering. A record whose
-    own gitBranch starts with _WORKTREE_AGENT_BRANCH_PREFIX is resolved
-    instead against branch_index (see _session_branch_index): the entry with
-    the largest timestamp <= the record's own, falling forward to the
-    index's earliest entry when none precedes it (dispatched before any
-    main-thread activity in the session, or the record itself carries no
-    parseable timestamp), correctly resolving through a mid-session branch
-    switch. Every other record's own gitBranch is returned unchanged.
-    Returns None — the "?" sentinel case (see cmd_review_trace's docstring
-    for the carry-forward convention this reuses) — when branch_index is
-    empty (no main-thread branch-bearing record anywhere in the session) or
-    when rec itself carries no gitBranch at all.
-    """
-    raw_branch = rec.get("gitBranch") or ""
-    if not raw_branch.startswith(_WORKTREE_AGENT_BRANCH_PREFIX):
-        return raw_branch or None
-    if not branch_index:
-        return None
-    rec_ts = corpus._parse_ts(rec.get("timestamp"))
-    if rec_ts is None:
-        return branch_index[0][1]
-    resolved = branch_index[0][1]
-    for entry_ts, entry_branch in branch_index:
-        if entry_ts > rec_ts:
-            break
-        resolved = entry_branch
-    return resolved
+# Full-report-only audit line under --branches: the turns and dollars the
+# pre-branch step (see scope._attribute_pre_branch) moved into the filter set
+# from outside it. Never printed under --summary or --share-only.
+_PRE_BRANCH_MOVED_LINE = (
+    "Pre-branch default-branch records credited to this --branches filter:"
+    " {turns:,} turns, ${dollars:,.2f}"
+)
 
 
 def _new_pr_cost_agg() -> dict:
@@ -108,24 +57,25 @@ def _new_pr_cost_agg() -> dict:
 
 def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]:
     """Single local corpus pass: every main+subagent turn's dollars/tokens,
-    grouped by _attributed_branch, over the whole scan -- run exactly once
+    grouped by scope._attributed_branch, over the whole scan -- run exactly once
     per invocation regardless of how many PRs end up in scope. Mirrors
     _cost_report's own dedup-then-price sequence so pr-cost's numbers are
     derived the same way cost's are.
 
     Returns (branch_totals, unbranched_totals): branch_totals is keyed by
-    each session's raw attributed branch string (never None); a record whose
-    _attributed_branch resolves to None (no gitBranch anywhere in the
-    session, not merely a worktree-agent carry-forward miss) accumulates
-    into the single unbranched_totals aggregate instead of being dropped,
-    unlike `buckets`, which silently skips records with no gitBranch.
+    each session's attributed branch string (never None); a record whose
+    scope._attributed_branch resolves to None (a main-thread record with no
+    gitBranch, or a sidechain record in a session with no branch-bearing
+    main-thread record) accumulates into the single unbranched_totals
+    aggregate instead of being dropped, unlike `buckets`, which silently
+    skips records with no gitBranch.
 
     Each agg's "session_starts" gets one (timestamp, session_id) entry the
     first time that session contributes a turn to this branch -- timestamped
     by that turn's own record, not a separate "session start" concept --
     and "last_activity_ts" tracks the latest turn timestamp seen for that
     branch. A record with no parseable timestamp contributes to neither
-    field (mirrors _session_branch_index's own exclusion) but still counts
+    field (mirrors scope._session_branch_index's own exclusion) but still counts
     toward every other aggregate below.
 
     Each agg's "by_model" (shape: see _new_pr_cost_agg) gets one leaf update
@@ -139,7 +89,7 @@ def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]
 
     for jsonl, records in session_iter:
         records = pricing.dedup_turns_by_request_id(records)  # dedup before pricing (must run first, see pricing.py)
-        branch_index = _session_branch_index(records)
+        branch_context = scope._session_branch_context(records)
         session_id = jsonl.stem
         for rec in records:
             if rec.get("type") != "assistant":
@@ -150,7 +100,7 @@ def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]
             model = (rec.get("message") or {}).get("model", "")
             dollars_by_class, context_at_turn, unpriced_tokens = pricing._price_turn(model, usage)
 
-            branch = _attributed_branch(rec, branch_index)
+            branch = scope._attributed_branch(rec, branch_context)
             agg = branch_totals[branch] if branch is not None else unbranched_totals
 
             rec_ts = corpus._parse_ts(rec.get("timestamp"))
@@ -185,14 +135,15 @@ def _compute_pr_cost_branch_totals(session_iter) -> tuple[dict[str, dict], dict]
 
 
 def _first_main_thread_turns_dollars_by_branch(
-    deduped_records: Sequence[dict], branch_index: Sequence[tuple[float, str]], until_first_n_turns: int,
+    deduped_records: Sequence[dict], branch_context: scope._SessionBranchContext, until_first_n_turns: int,
 ) -> dict[str, float]:
     """Per-branch summed dollars of a session's first `until_first_n_turns`
     main-thread turns with a usage block, the ingredient _compute_workstream_dollars
-    sums into "startup burn". A turn's branch is resolved via _attributed_branch,
+    sums into "startup burn". A turn's branch is resolved via scope._attributed_branch,
     so a branch switch mid-session never lets one branch's early turns inflate
-    another's count. A turn whose branch resolves to None (no gitBranch anywhere in the
-    session) is excluded, mirroring unbranched_totals' exclusion from this
+    another's count, and a continuation's leading default-branch turns count
+    toward the branch the session enters. A turn whose branch resolves to None
+    (a main-thread record with no gitBranch) is excluded, mirroring unbranched_totals' exclusion from this
     function's per-branch result. Mirrors _extract_rearm_session_turns' own
     main_thread_turns filter (main-thread, usage-bearing) without building that
     function's full per-turn tuple list, which this computation doesn't need.
@@ -209,7 +160,7 @@ def _first_main_thread_turns_dollars_by_branch(
         usage = (rec.get("message") or {}).get("usage")
         if not usage:
             continue
-        branch = _attributed_branch(rec, branch_index)
+        branch = scope._attributed_branch(rec, branch_context)
         if branch is None or counted_by_branch[branch] >= until_first_n_turns:
             continue
         model = (rec.get("message") or {}).get("model", "")
@@ -250,7 +201,7 @@ def _compute_workstream_dollars(session_iter, until_first_n_turns: int = 5) -> d
     `until_first_n_turns` main-thread turns), and "last_activity_ts" (the
     latest turn timestamp seen anywhere on the branch). A branch whose every
     turn carries an unparseable timestamp reports session_count 0 despite
-    having corpus activity (mirrors _session_branch_index's own exclusion).
+    having corpus activity (mirrors scope._session_branch_index's own exclusion).
     This session_count is derived from session_starts (timestamp-gated),
     unlike pr-cost's own session_count field (derived from the sessions set
     of every session contributing a priced turn, regardless of timestamp) --
@@ -266,12 +217,12 @@ def _compute_workstream_dollars(session_iter, until_first_n_turns: int = 5) -> d
         for jsonl, records in session_iter:
             deduped = pricing.dedup_turns_by_request_id(records)
             # Derived from `deduped`, not `records` -- mirrors
-            # _compute_pr_cost_branch_totals's own branch_index (computed
+            # _compute_pr_cost_branch_totals's own branch context (computed
             # from its already-deduped records), so the same rec resolves to
             # the same branch in both places.
-            branch_index = _session_branch_index(deduped)
+            branch_context = scope._session_branch_context(deduped)
             session_startup_dollars_by_branch[jsonl.stem] = _first_main_thread_turns_dollars_by_branch(
-                deduped, branch_index, until_first_n_turns
+                deduped, branch_context, until_first_n_turns
             )
             yield jsonl, records
 
@@ -510,7 +461,7 @@ def _print_branch_exclusion_diagnostic(
     *,
     redact: bool,
 ) -> None:
-    """Surface --branches's record-drop path (see _attributed_branch) instead of
+    """Surface --branches's record-drop path (see scope._attributed_branch) instead of
     leaving an excluded branch silently invisible in the report.
 
     No-op when nothing was excluded. Never called under --summary (see
@@ -557,7 +508,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     --share-only takes an early return before the first dollar-emitting print
     site and renders four dimensionless share tables instead; see
     share_only branches and _print_share_only_tables.
-    --branches filters on each record's carry-forward-attributed branch (_attributed_branch), not its literal gitBranch.
+    --branches filters on each record's attributed branch (scope._attributed_branch), not its literal gitBranch:
+    a sidechain record takes its dispatching main thread's branch at its timestamp, and a session's leading
+    default-branch records count toward the first branch it enters. The full report prints the turns and
+    dollars that second step moved into the filter set (_PRE_BRANCH_MOVED_LINE).
     """
     top_n: int = getattr(args, "top", 20) or 20
     redact: bool = not bool(getattr(args, "no_redact", False))
@@ -771,6 +725,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     # drops span -- feeds _print_branch_exclusion_diagnostic below.
     excluded_turns_by_branch: dict[str, int] = defaultdict(int)
     excluded_transcript_ids: set[str] = set()
+    # Turns (and their priced dollars) the pre-branch step moved into the
+    # --branches filter set from outside it -- feeds _PRE_BRANCH_MOVED_LINE.
+    pre_branch_moved_turns = 0
+    pre_branch_moved_dollars = 0.0
     bucket_totals: dict[str, float] = defaultdict(float)
     # Earliest in-scope turn timestamp seen per root ordinal, regardless of
     # --since -- feeds the corpus-coverage warning after the loop below, so a
@@ -815,9 +773,9 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         elif single_root_ordinal is not None:
             account_ordinal = single_root_ordinal
 
-        # Only needed when --branches is active — the carry-forward source
-        # _attributed_branch resolves each worktree-agent-* record against.
-        branch_index = _session_branch_index(records) if branch_filter is not None else None
+        # Only needed when --branches is active. Built from the session's full records,
+        # before the --since window, so a window never changes which entry is first.
+        branch_context = scope._session_branch_context(records) if branch_filter is not None else None
 
         for rec in records:
             if rec.get("type") != "assistant":
@@ -846,12 +804,18 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
             if since_ts is not None and (rec_ts is None or rec_ts < since_ts):
                 continue
 
+            moved_into_filter = False
             if branch_filter is not None:
-                attributed_branch = _attributed_branch(rec, branch_index)
+                attributed_branch = scope._attributed_branch(rec, branch_context)
                 if attributed_branch is None or attributed_branch not in branch_filter:
                     excluded_turns_by_branch[attributed_branch or "?"] += 1
                     excluded_transcript_ids.add(session_id)
                     continue
+                # The attributed branch is in the filter here, so a timeline branch outside it
+                # means the pre-branch step moved the record in.
+                moved_into_filter = scope._timeline_entry(rec, branch_context)[0] not in branch_filter
+                if moved_into_filter:
+                    pre_branch_moved_turns += 1
 
             model = msg.get("model", "")
             dollars_by_class, context_at_turn, turn_unpriced_tokens = pricing._price_turn(model, usage)
@@ -877,6 +841,8 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 _accumulate_per_account_turn(per_account[account_ordinal], dollars_by_class, token_counts, turn_total, model)
             bucket_totals[pricing._context_bucket(context_at_turn)] += turn_total
             session_total += turn_total
+            if moved_into_filter:
+                pre_branch_moved_dollars += turn_total
             priced_turn_count += 1
             if bool(rec.get("isSidechain")):
                 subagent_total += turn_total
@@ -1061,6 +1027,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
 
     if branch_filter is not None and not summary_mode:
         _print_branch_exclusion_diagnostic(excluded_turns_by_branch, excluded_transcript_ids, redact=redact)
+        if pre_branch_moved_turns:
+            print(
+                "\n" + _PRE_BRANCH_MOVED_LINE.format(turns=pre_branch_moved_turns, dollars=pre_branch_moved_dollars)
+            )
 
     if summary_mode:
         return

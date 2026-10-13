@@ -12,6 +12,7 @@ test's monkeypatch.setattr(scope, "PROJECTS_DIR", ...)) would never reach.
 from __future__ import annotations
 
 import argparse
+import bisect
 import errno
 import fnmatch
 import hashlib
@@ -24,6 +25,7 @@ import time
 from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 from _config_dir import (
     TRANSCRIPT_CONFIG_DIRS_LABEL,
@@ -898,6 +900,168 @@ def _single_level_projects_glob(value: str) -> str:
 def _branch_filter(args: argparse.Namespace) -> set[str] | None:
     raw: str | None = getattr(args, "branches", None)
     return {b for b in raw.split(",") if b} if raw else None
+
+
+# The harness's ephemeral-isolation branch name for an `isolation: "worktree"`
+# subagent dispatch (see claude/.claude/CLAUDE.md's Agent Briefing section) —
+# not a claim about which branch the dispatched work belongs to.
+_WORKTREE_AGENT_BRANCH_PREFIX = "worktree-agent-"
+
+# Mirrors _lib_default_branch_or_guess's candidate list in claude/.claude/hooks/_lib.sh.
+_DEFAULT_BRANCH_CANDIDATES: frozenset[str] = frozenset({"main", "master", "develop"})
+
+# What Claude Code records as a record's gitBranch on a detached checkout.
+_DETACHED_HEAD_BRANCH = "HEAD"
+
+
+class _PreBranchRun(NamedTuple):
+    """A session's leading default-branch run: records timestamped before
+    boundary_ts count toward successor_branch, the first real branch the
+    session's main thread enters."""
+
+    successor_branch: str
+    boundary_ts: float
+
+
+class _SessionBranchContext(NamedTuple):
+    """Per-session state every per-record --branches consumer attributes
+    against; build it with _session_branch_context, once per session."""
+
+    branch_index: list[tuple[float, str]]
+    index_timestamps: list[float]
+    pre_branch_run: _PreBranchRun | None
+    # First non-empty main-thread gitBranch in file order; consulted only when
+    # branch_index is empty (no main-thread record carries a parseable timestamp).
+    untimed_main_branch: str | None
+
+
+def _branch_tag(rec: dict) -> str | None:
+    """A record's own gitBranch when it is a non-empty string, else None.
+    A malformed (non-string) tag is treated like an absent one."""
+    tag = rec.get("gitBranch")
+    return tag if tag and isinstance(tag, str) else None
+
+
+def _session_branch_index(records: Sequence[dict]) -> list[tuple[float, str]]:
+    """Build one session's sorted (timestamp, gitBranch) index from its own
+    main-thread (non-sidechain) records — the timeline _timeline_entry
+    resolves every sidechain record's branch against.
+    Built fresh per session, from that session's records alone: this is new
+    machinery, not an extension of cmd_review_trace's position-based
+    carry-forward convention (see its docstring), which never crosses the
+    main-file/subagents-subdirectory boundary. A record with no parseable
+    timestamp cannot be placed in timestamp order and is excluded, and so is
+    a record whose gitBranch is not a string.
+    Entries sort by (timestamp, branch name), so entries sharing a timestamp
+    order by branch name, not by file order.
+    """
+    index: list[tuple[float, str]] = []
+    for main_rec in records:
+        # Skipping sidechain records is a disclosure invariant:
+        # every branch this index yields was recorded by the session's main thread.
+        # That guarantee depends on every subagent-file record carrying the flag (see docs/transcript-analysis.md, Limits).
+        if bool(main_rec.get("isSidechain")):
+            continue
+        main_branch = _branch_tag(main_rec)
+        if main_branch is None:
+            continue
+        main_ts = _parse_ts(main_rec.get("timestamp"))
+        if main_ts is None:
+            continue
+        index.append((main_ts, main_branch))
+    index.sort()
+    return index
+
+
+def _names_no_pr_branch(branch: str) -> bool:
+    """True for a gitBranch no PR can be opened from: a detached checkout or
+    a harness `worktree-agent-*` isolation branch."""
+    return branch == _DETACHED_HEAD_BRANCH or branch.startswith(_WORKTREE_AGENT_BRANCH_PREFIX)
+
+
+def _pre_branch_run(branch_index: Sequence[tuple[float, str]]) -> _PreBranchRun | None:
+    """Find a session's leading default-branch run from its branch index.
+
+    Entries naming no PR branch (_names_no_pr_branch) are skipped. Returns
+    None when no entries remain or the first remaining entry is not a
+    default-branch candidate. Otherwise returns the first remaining
+    non-candidate entry as the run's successor and boundary, or None when
+    the session never leaves the candidates.
+    The index orders entries that share a timestamp by branch name, so when
+    the first two distinct-branch entries share one, the name order decides
+    whether a run exists.
+    """
+    remaining = [(ts, branch) for ts, branch in branch_index if not _names_no_pr_branch(branch)]
+    if not remaining or remaining[0][1] not in _DEFAULT_BRANCH_CANDIDATES:
+        return None
+    for entry_ts, entry_branch in remaining:
+        if entry_branch not in _DEFAULT_BRANCH_CANDIDATES:
+            return _PreBranchRun(entry_branch, entry_ts)
+    return None
+
+
+def _attribute_pre_branch(branch: str | None, ts: float | None, run: _PreBranchRun | None) -> str | None:
+    """Return the run's successor branch when `branch` is a default-branch
+    candidate recorded strictly before the run's boundary; otherwise return
+    `branch` unchanged. An empty or None branch and a None timestamp are
+    never remapped."""
+    if run is None or branch not in _DEFAULT_BRANCH_CANDIDATES or ts is None or ts >= run.boundary_ts:
+        return branch
+    return run.successor_branch
+
+
+def _session_branch_context(records: Sequence[dict]) -> _SessionBranchContext:
+    """Build the per-session attribution context from the session's records.
+    Pass the session's full (deduped) records, before any --since/--until
+    filter, so a window never changes which entry is first."""
+    branch_index = _session_branch_index(records)
+    untimed_main_branch = next(
+        (tag for rec in records if not bool(rec.get("isSidechain")) and (tag := _branch_tag(rec)) is not None),
+        None,
+    )
+    return _SessionBranchContext(
+        branch_index=branch_index,
+        index_timestamps=[entry_ts for entry_ts, _entry_branch in branch_index],
+        pre_branch_run=_pre_branch_run(branch_index),
+        untimed_main_branch=untimed_main_branch,
+    )
+
+
+def _timeline_entry(rec: dict, ctx: _SessionBranchContext) -> tuple[str | None, float | None]:
+    """Resolve one record to (branch, timestamp) before the pre-branch step.
+
+    A main-thread record keeps its own tag and timestamp. A sidechain record
+    never uses its own tag: it takes the main-thread timeline entry with the
+    largest timestamp <= its own, falling forward to the first entry when
+    none precedes it or it carries no parseable timestamp. With an empty
+    timeline it takes the first main-thread branch in file order, with no
+    timestamp, or None when no main-thread record carries a branch.
+    """
+    rec_ts = _parse_ts(rec.get("timestamp"))
+    if not bool(rec.get("isSidechain")):
+        return (_branch_tag(rec), rec_ts)
+    if not ctx.branch_index:
+        return (ctx.untimed_main_branch, None)
+    position = 0 if rec_ts is None else max(bisect.bisect_right(ctx.index_timestamps, rec_ts) - 1, 0)
+    entry_ts, entry_branch = ctx.branch_index[position]
+    return (entry_branch, entry_ts)
+
+
+def _attributed_branch(rec: dict, ctx: _SessionBranchContext) -> str | None:
+    """Resolve one record's branch for --branches filtering: the timeline step
+    (_timeline_entry) followed by the pre-branch step (_attribute_pre_branch).
+    Returns None — the "?" sentinel (see cmd_review_trace's docstring for the
+    carry-forward convention this parallels) — for a main-thread record
+    with no gitBranch, and for a sidechain record in a session with no
+    branch-bearing main-thread record."""
+    return _attribute_pre_branch(*_timeline_entry(rec, ctx), ctx.pre_branch_run)
+
+
+def _attribute_carried_branch(carried: str | None, rec: dict, ctx: _SessionBranchContext) -> str | None:
+    """Apply only the pre-branch step to a branch a positional consumer
+    carried forward from the main thread, using the record's own timestamp
+    so a record with none is never remapped."""
+    return _attribute_pre_branch(carried, _parse_ts(rec.get("timestamp")), ctx.pre_branch_run)
 
 
 def _parse_since_nd_arg(args: argparse.Namespace, subcommand: str) -> tuple[float | None, str | None]:

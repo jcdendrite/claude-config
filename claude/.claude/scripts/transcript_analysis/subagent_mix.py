@@ -60,8 +60,12 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     name.
     Under --this-repo, every branch prints raw (account-<K>/<branch>) with
     no attestation gate: this function excludes isSidechain records before
-    ever reading gitBranch, unlike cmd_subagents, so a subagent's own
+    attributing a branch, unlike cmd_subagents, so a subagent's own
     gitBranch never reaches this table.
+    A leading default-branch dispatch prints under its session's pre-branch
+    successor, which scope._pre_branch_run takes from the first non-candidate
+    main-thread entry of any record type (after skipping HEAD and worktree-agent-*),
+    so the raw-label justification covers a successor recorded by any main-thread record type.
     A subagent_type prints raw only when it is tracked in this repo's own
     agents/ directory or is a Claude Code built-in
     (_repo_tracked_agent_type_names); every other value stays opaque.
@@ -176,10 +180,11 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         session_data: dict[str, dict] = defaultdict(
             lambda: {"spawns": defaultdict(int), "skills": defaultdict(int)}
         )
+        branch_context = scope._session_branch_context(records)
         for rec in records:
             if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
                 continue
-            branch = rec.get("gitBranch") or ""
+            branch = scope._attributed_branch(rec, branch_context) or ""
             if not branch or (branch_filter and branch not in branch_filter):
                 continue
             if since_ts is not None:
@@ -336,20 +341,20 @@ def _spawn_counts_by_agent_type(
     Main-thread dispatches only: excludes isSidechain records before ever
     reading gitBranch, matching cmd_subagent_mix's own exclusion order. So a
     subagent's own gitBranch never reaches this count. branch_filter matches
-    a record's own literal gitBranch, not review_rounds' carry-forward
-    attribution. For a main-thread record the two agree in every case that
-    matters here, since cost._attributed_branch's own carry-forward logic
-    exists only to resolve a worktree-agent-* sidechain record.
+    a record's attributed branch (scope._attributed_branch), so a session's
+    leading default-branch dispatches count toward the first branch it enters,
+    as in review_rounds' carry-forward attribution.
 
     No disclosure gate applied here -- see _partition_spawn_counts_by_disclosure
     for the allowlist partition this raw count feeds.
     """
     counts: dict[str, int] = defaultdict(int)
     for _jsonl, records in session_iter:
+        branch_context = scope._session_branch_context(records)
         for rec in records:
             if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
                 continue
-            branch = rec.get("gitBranch") or ""
+            branch = scope._attributed_branch(rec, branch_context) or ""
             if branch_filter is not None and branch not in branch_filter:
                 continue
             for block in (rec.get("message") or {}).get("content") or []:

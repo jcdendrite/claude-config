@@ -85,13 +85,12 @@ from transcript_analysis.corpus import (
     iter_sessions,
 )
 from transcript_analysis.cost import (
-    # The eleven noqa'd names below are read only via _mod.<name> from test files (unit-testing
+    # The nine noqa'd names below are read only via _mod.<name> from test files (unit-testing
     # a private helper directly, or a monkeypatch retarget). _compute_pr_cost_branch_totals is
     # one of them: pr_cost.py's own code reads it as cost._compute_pr_cost_branch_totals instead.
     # cmd_cost and cmd_cost_trend are the two names this file's own code calls bare -- via
     # p_cost/p_cost_trend.set_defaults below.
     _accumulate_per_account_turn,  # noqa: F401
-    _attributed_branch,  # noqa: F401
     _compute_pr_cost_branch_totals,  # noqa: F401
     _compute_workstream_dollars,  # noqa: F401
     _cost_report,  # noqa: F401
@@ -100,7 +99,6 @@ from transcript_analysis.cost import (
     _print_model_id_table,  # noqa: F401
     _print_thread_table,  # noqa: F401
     _print_token_class_table,  # noqa: F401
-    _session_branch_index,  # noqa: F401
     cmd_cost,
     cmd_cost_trend,
 )

@@ -147,6 +147,38 @@ class TestCostCounts:
         assert "| **total** | **1** |" in out
         assert _mod.subagent_mix._COST_COUNTS_ROUNDS_CAPTION in out
 
+    def test_prefix_round_and_prefix_spawn_count_under_the_entered_branch(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """A round and a spawn recorded on the default branch before the
+        session enters feat-x count toward feat-x, and not toward main."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(
+                "claude-opus-4-7", branch="main", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_use("s1", "code-review")],
+            ),
+            _asst(
+                "claude-opus-4-7", branch="main", ts="2026-08-01T10:01:00.000Z",
+                content=[_agent_use("a1", "staff-sdet")],
+            ),
+            _asst("claude-opus-4-7", branch="feat-x", ts="2026-08-01T10:03:00.000Z"),
+        ])
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat-x", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        entered_out = capsys.readouterr().out
+        assert "| code-review | 1 |" in entered_out
+        assert "| staff-sdet | 1 |" in entered_out
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="main", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        default_out = capsys.readouterr().out
+        assert "| code-review | 0 |" in default_out
+        assert "staff-sdet" not in default_out
+
     def test_untracked_subagent_type_is_withheld_under_this_repo(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):

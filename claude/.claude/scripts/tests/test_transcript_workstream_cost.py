@@ -11,6 +11,7 @@ import pytest
 
 from .conftest import (
     _priced,
+    _user_msg,
     _write_jsonl,
     _write_subagent_jsonl,
 )
@@ -129,7 +130,7 @@ class TestComputeWorkstreamDollars:
     def test_worktree_agent_session_rolls_up_to_its_real_branch(self, fake_projects):
         """A worktree-agent-* labelled subagent record's dollars fold into
         the branch active in its own session at dispatch time -- the same
-        carry-forward _attributed_branch already gives pr-cost, reused here
+        timeline scope._attributed_branch already gives pr-cost, reused here
         via _compute_pr_cost_branch_totals -- rather than creating a
         separate "worktree-agent-*" branch entry."""
         session_id = "sess-carry"
@@ -150,20 +151,23 @@ class TestComputeWorkstreamDollars:
         assert agg["total_dollars"] == pytest.approx(3.00)
 
     def test_non_first_session_that_is_subagent_only_contributes_zero_startup_burn(self, fake_projects):
-        """A non-first session whose only records are sidechain (subagent)
-        turns has zero main-thread turns of its own, so
+        """A non-first session whose only usage-bearing records are sidechain
+        (subagent) turns has zero main-thread turns of its own, so
         _first_main_thread_turns_dollars_by_branch's isSidechain exclusion
-        means it contributes nothing to startup burn. The session's subagent
-        dollars are still priced and counted toward the branch's
-        total_dollars."""
+        means it contributes nothing to startup burn. Its one branch-bearing
+        main-thread record (a user message, no usage) gives the subagent turn
+        a branch to follow. The session's subagent dollars are still priced
+        and counted toward the branch's total_dollars."""
         _write_jsonl(fake_projects / "sess-1.jsonl", [
             _priced("claude-sonnet-5", input=500_000, branch="feature-k", ts="2026-08-01T10:00:00.000Z"),
         ])  # $1.00, first session by time
         subagent_rec = _priced(
-            "claude-sonnet-5", input=1_000_000, branch="feature-k", ts="2026-08-02T10:00:00.000Z",
+            "claude-sonnet-5", input=1_000_000, branch="feature-k", ts="2026-08-02T10:01:00.000Z",
         )  # $2.00
         subagent_rec["isSidechain"] = True
-        _write_jsonl(fake_projects / "sess-2.jsonl", [])  # readable-but-empty main file
+        _write_jsonl(fake_projects / "sess-2.jsonl", [
+            _user_msg("continue", branch="feature-k", ts="2026-08-02T10:00:00.000Z"),
+        ])
         _write_subagent_jsonl(fake_projects, "sess-2", "agent-1", [subagent_rec])
 
         workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
@@ -171,6 +175,46 @@ class TestComputeWorkstreamDollars:
         assert agg["session_count"] == 2
         assert agg["total_dollars"] == pytest.approx(3.00)
         assert agg["startup_burn_dollars"] == pytest.approx(0.0)
+
+    def test_subagent_only_session_with_an_empty_main_file_adds_nothing_to_the_branch(self, fake_projects):
+        """With no branch-bearing main-thread record, the subagent turn has
+        no dispatching branch to follow: it is unbranched, so the branch
+        reports only its first session."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="feature-k", ts="2026-08-01T10:00:00.000Z"),
+        ])  # $1.00
+        subagent_rec = _priced(
+            "claude-sonnet-5", input=1_000_000, branch="feature-k", ts="2026-08-02T10:00:00.000Z",
+        )  # $2.00, unbranched
+        subagent_rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess-2.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess-2", "agent-1", [subagent_rec])
+
+        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        agg = workstream["feature-k"]
+        assert agg["session_count"] == 1
+        assert agg["total_dollars"] == pytest.approx(1.00)
+
+    def test_non_first_prefix_session_startup_burn_includes_its_default_branch_turns(self, fake_projects):
+        """A continuation that opens on the default branch and then enters
+        the workstream's branch: its leading default-branch turns are the
+        cold start, so they count as startup burn for that branch and the
+        session adds nothing to the default branch."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="feature-p", ts="2026-08-01T10:00:00.000Z"),
+        ])  # $1.00, first session by time
+        _write_jsonl(fake_projects / "sess-2.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="main", ts="2026-08-02T10:00:00.000Z"),  # $2.00 prefix
+            _priced("claude-sonnet-5", input=500_000, branch="main", ts="2026-08-02T10:01:00.000Z"),  # $1.00 prefix
+            _priced("claude-sonnet-5", input=250_000, branch="feature-p", ts="2026-08-02T10:02:00.000Z"),  # $0.50
+        ])
+
+        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        agg = workstream["feature-p"]
+        assert agg["session_count"] == 2
+        assert agg["total_dollars"] == pytest.approx(4.50)
+        assert agg["startup_burn_dollars"] == pytest.approx(3.50)
+        assert "main" not in workstream
 
     def test_non_first_session_unpriced_turn_consumes_slot_without_adding_dollars(self, fake_projects):
         """An unmodeled-model turn inside a non-first session's first-N-turns
