@@ -44,7 +44,7 @@ The default differs by subcommand: `skill-invocation` defaults to repo-scoped (s
 
   The trailing `*` picks up both per-worktree project dirs and sessions started in a subdirectory. A stricter `<slug>-*` prefix match is not used because it still collides with a sibling clone like `<repo>-fork`. Because it is a prefix, it also over-includes rows for any other sibling sharing that prefix; for `buckets` that shows up as extra rows in the output, visibly, rather than silently returning nothing.
 - **An orphaned project directory.** If a worktree is removed, its project directory under `<config-dir>/projects/` is not cleaned up automatically, and its slug no longer matches any live `git worktree list` entry — it is silently excluded from `--this-repo`. This is the same behavior `skill-invocation`'s default scope has always had.
-- **A subagent dispatched from another repo's session.** With `--include-subagents`, `--this-repo` does read every subagent file whose *parent* session ran in this repo — that path works. The gap is the inverse: a parent session anchored in a different repo that dispatches a subagent whose own cwd is inside this repo. That subagent's transcript still lives under the *parent's* project directory, so no scope resolved by directory identity — `--this-repo` or otherwise — ever reaches it. More generally, most subagent cwds have no project directory of their own at all, so a name-based match has nothing to find regardless of scope. The fallback is content-based, not directory-based: content-grep across `*/subagents/*.jsonl`, or traverse those files and read each one's own `cwd` field directly. Note that `--include-subagents` is off by default on every subcommand that offers it, so even a correctly-scoped run under-reports subagent work unless it's passed explicitly. For enumerating sessions after a crash rather than analyzing scoped history, see `post-crash-sessions` ([`docs/scripts.md`](scripts.md)). That fallback recovers *scope*, not *branch attribution*. Every subcommand the "Pre-branch default-branch attribution" block under `cost` lists as applying both blocks attributes a subagent record to its dispatching session's main-thread branch, so a subagent that worked in this repo from another repo's session counts under that session's branch. An all-zero result for this repo's branch is therefore expected there, and it is still not proof of zero spend. A subagent this repo's session dispatched into another repo counts toward the dispatching branch here. `review-round-cost`, `cost-counts` and `subagent-mix` never read a subagent record's own tag and credit a dispatch at its spawn record's branch, so the same expectation about an all-zero result applies to them. Subcommands the block does not list, such as `subagents`, `skill-pair` and `skill-invocation --include-subagents`, still filter on a subagent record's own `gitBranch` until the block lists them. That tag can disagree with its `cwd`'s checkout, so an all-zero result from them is inconclusive.
+- **A subagent dispatched from another repo's session.** With `--include-subagents`, `--this-repo` does read every subagent file whose *parent* session ran in this repo — that path works. The gap is the inverse: a parent session anchored in a different repo that dispatches a subagent whose own cwd is inside this repo. That subagent's transcript still lives under the *parent's* project directory, so no scope resolved by directory identity — `--this-repo` or otherwise — ever reaches it. More generally, most subagent cwds have no project directory of their own at all, so a name-based match has nothing to find regardless of scope. The fallback is content-based, not directory-based: content-grep across `*/subagents/*.jsonl`, or traverse those files and read each one's own `cwd` field directly. Note that `--include-subagents` is off by default on every subcommand that offers it, so even a correctly-scoped run under-reports subagent work unless it's passed explicitly. For enumerating sessions after a crash rather than analyzing scoped history, see `post-crash-sessions` ([`docs/scripts.md`](scripts.md)). That fallback recovers *scope*, not *branch attribution*. Every subcommand the "Pre-branch default-branch attribution" block under `cost` lists as applying both blocks attributes a subagent record to its dispatching session's main-thread branch, so a subagent that worked in this repo from another repo's session counts under that session's branch. An all-zero result for this repo's branch is therefore expected there, and it is still not proof of zero spend. A subagent this repo's session dispatched into another repo counts toward the dispatching branch here. `review-round-cost`, `cost-counts` and `subagent-mix` never read a subagent record's own tag and credit a dispatch at its spawn record's branch, so the same expectation about an all-zero result applies to them.
 
 The four gaps are silent under-coverage, not an error: a narrower-than-expected corpus reads identically to "no evidence exists" unless you notice the resolved-scope header's project-dir count is lower than expected. The slug-collision exception in the first gap is the reverse case, silent over-inclusion: the resolved-scope header's project-dir count comes from `git worktree list`, so it does not change, and `cost --summary` prints no such header.
 
@@ -82,7 +82,7 @@ This is the safe way to smoke-test any of these subcommands against synthetic da
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
-- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--branches B1,B2,...` — filter to specific branches (default: all). Attribution follows the "Subagent attribution" and "Pre-branch default-branch attribution" blocks under `cost`. Only a sidechain record that sits inline in a main transcript file reaches `buckets`; the Sess and turn counts come from main-thread records.
 
 **Sample output.**
 ```
@@ -116,7 +116,7 @@ HEAD                                        6   401    3664   1261    2278    12
 **Purpose.** Emit the ordered sequence of test-failure counts per branch/model to distinguish convergent debugging (spike then zeros) from thrashing (sustained oscillation).
 
 **Flags.**
-- `--branches B1,B2,...` *(required)* — branches to analyze
+- `--branches B1,B2,...` *(required)* — branches to analyze. Attribution follows the "Pre-branch default-branch attribution" block under `cost`. The pending test-run pairing still resets on a literal `gitBranch` change, so a test run issued on the last default-branch record is not paired with a result recorded after the switch.
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 
@@ -142,7 +142,7 @@ Sequence: 0 0 5 0 0 0 3 0 0 0 0 0
 **Purpose.** Count correction and frustration signal phrases in user turns, split by model, to surface whether one model generated more rework prompts.
 
 **Flags.**
-- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--branches B1,B2,...` — filter to specific branches (default: all). Attribution follows the "Pre-branch default-branch attribution" block under `cost`.
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 
@@ -167,7 +167,7 @@ Text inside a `<task-notification>` envelope is excluded from matching, because 
 **Purpose.** Decompose branch time into active work spans versus idle gaps.
 
 **Flags.**
-- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--branches B1,B2,...` — filter to specific branches (default: all). Attribution follows the "Subagent attribution" and "Pre-branch default-branch attribution" blocks under `cost`. Span and Active include a session's leading default-branch records once they count toward the branch it enters.
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--gap-minutes N` — threshold (in minutes) for classifying an inter-turn gap as idle (default: 30)
@@ -192,14 +192,14 @@ GH-333/audit-routing-samples-subcommand        1553         112       1442      
 **Purpose.** Show `isSidechain` (subagent) versus main-thread turn counts per branch, split by model family, plus total tool-result bytes per thread — and a second table breaking those same bytes down by the tool name that produced them.
 
 **Flags.**
-- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--branches B1,B2,...` — filter to specific branches (default: all). Attribution follows the "Subagent attribution" and "Pre-branch default-branch attribution" blocks under `cost`.
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--since Nd` — limit both tables to records with timestamp in the last N days (e.g. `35d`). Never narrows the corpus-wide spawn/sidechain-turn counters that feed the format-drift warning — a narrow window can't manufacture a false warning.
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `cost`'s own `--config-dir` (see the `cost` section above):
   - The default resolved config dir is always scanned first; each extra directory must contain its own `projects/` subdirectory.
   - Unlike `cost`, there is no `--no-redact` escape hatch here — under more than one root, branch names are always redacted (`account-<K>/branch-<N>`, stable only within one run), and `DO NOT PUBLISH` prints on stdout and stderr.
-  - **Except** under `--this-repo` (see line 34 above for why it isn't refused together with `--config-dir`), a branch prints raw as `account-<K>/<branch>` when a non-sidechain record attested that same (root, branch) pair anywhere in the corpus (not narrowed by `--since`); a branch seen only on a sidechain record stays opaque, since a subagent's own `gitBranch` can name a different repo than its parent session's.
+  - **Except** under `--this-repo` (see line 34 above for why it isn't refused together with `--config-dir`), a branch prints raw as `account-<K>/<branch>` when a main-thread `assistant` or `user` record carried that same (root, branch) pair anywhere in the corpus (not narrowed by `--since`); any other branch, such as one only a main-thread record of another type carried, stays opaque. The printed branch is the attributed branch, so a subagent's turns print under its dispatching main-thread branch, and, provided its records carry the `isSidechain` flag, every printed branch was recorded by a main-thread record.
   - `--this-repo`'s raw disclosure applies to whichever repo `--this-repo` resolves to for the invoking CWD, not specifically to this repo.
   - Every `mcp__<server>__<tool>` tool name in the byte-by-tool table collapses into one `mcp__*` row regardless of root count — an MCP server name is a per-account integration identifier, not just a multi-root concern.
 
@@ -316,7 +316,7 @@ The second table's columns: `Cited` = dispatches yielding at least one extracted
 
 **Flags.**
 - `--repo OWNER/REPO` — GitHub repository. Default: parsed from this checkout's `origin` remote, with a GitHub Enterprise origin host-qualified so `gh` reaches the right host. With no usable `origin` and no `--repo`, the command exits 1 with a one-line error naming `--repo`. Supplying `--repo` explicitly does not host-qualify the `gh api` comment-count calls the way the auto-derived path does
-- `--branches B1,B2,...` *(required)* — branches to look up
+- `--branches B1,B2,...` *(required)* — branches to look up. Attribution follows the "Pre-branch default-branch attribution" block under `cost`.
 - `--author LOGIN` — filter comment counts to one GitHub login
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
@@ -357,7 +357,7 @@ Each label is this module's own classification of `gh`'s stderr, not `gh`'s own 
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--exclude-projects GLOB` — skip project dirs matching this glob
-- `--branches B1,B2,...` — filter to specific branches
+- `--branches B1,B2,...` — filter to specific branches. Attribution follows the "Subagent attribution" and "Pre-branch default-branch attribution" blocks under `cost`.
 
 **Sample output.**
 ```
@@ -413,7 +413,7 @@ bin          sessions   turns  skill-inv  skill/1k commits  w-skill  wo-skill  n
 **Flags.**
 - `--projects GLOB` — project directory glob. Default: this repo's own worktrees only (publish-safe); an explicit glob is the escape hatch (not repo-scoped).
 - `--this-repo` — explicit no-op: `skill-invocation` already defaults to this repo's own worktrees. Kept so the flag is uniform across every `--projects` subcommand; mutually exclusive with `--projects` like everywhere else.
-- `--branches B1,B2,...` — restrict to named `gitBranch` values (default: all branches in scope).
+- `--branches B1,B2,...` — restrict to the named branches (default: all branches in scope). Attribution follows the "Pre-branch default-branch attribution" block under `cost`, and with `--include-subagents` the "Subagent attribution" block too.
 - `--include-subagents` — also count invocations inside spawned subagents, adding a `thread` column (`main` vs `sidechain`). Off by default so budget analysis stays main-thread-only; the fidelity consumer opts in.
 
 **Sample output** (default scope — this repo, main thread):
@@ -454,7 +454,7 @@ CLASSIFICATION SUMMARY
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above); required before quoting output publicly (see below)
-- `--branches B1,B2,...` — filter to specific branches
+- `--branches B1,B2,...` — filter to specific branches. Attribution follows the "Pre-branch default-branch attribution" block under `cost`.
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
 - `--until DATE` — inclusive end date (`YYYY-MM-DD`)
 - `--deny-only` — restrict to sessions containing at least one hook denial
@@ -462,7 +462,7 @@ CLASSIFICATION SUMMARY
 - `--skill NAME` — restrict skill-invocation matching to one skill name
 - Scope is always the main thread plus every dispatched subagent's own transcript file, merged into one chronological stream — unlike `skill-invocation`, there is no flag to narrow this to main-thread-only. Each event's `thread` field (`main` or `sidechain`) marks which thread it came from.
 
-Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. An event whose branch or model cannot be resolved renders `?`.
+Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. A carried default-branch value recorded before the session's first real branch is credited to that branch, per the "Pre-branch default-branch attribution" block under `cost`. An event whose branch or model cannot be resolved renders `?`.
 
 `line_no` carries two meanings depending on the event's `thread`. For `thread=main` it is the real 1-based line of the main transcript file, accurate only when every earlier line in the file parsed as valid JSON — a malformed earlier line is silently skipped during parsing, shifting every later line's number down by one. For `thread=sidechain` it is only a position in the merged main+subagent stream, indexing no single file — those rows print `line n/a` instead of a number.
 
@@ -471,9 +471,9 @@ Branch and model are resolved *per event*, from the record that produced it — 
 REVIEW TRACE SOURCES (this repo (6 project dirs); 1 root (no ~/.claude/transcript-config-dirs declared))
 
 ### <config-dir>/projects/my-project/abc123.jsonl
-branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=5  architect-consults=1
-  [2026-05-20T10:15:00.000Z] line   45  skill        plan-review  (branch=main model=opus)
-  [2026-05-20T10:16:00.000Z] line   50  consult      plan-architect  (branch=main model=opus)
+branches=my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=5  architect-consults=1
+  [2026-05-20T10:15:00.000Z] line   45  skill        plan-review  (branch=my-feature model=opus)
+  [2026-05-20T10:16:00.000Z] line   50  consult      plan-architect  (branch=my-feature model=opus)
   [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  (branch=my-feature model=sonnet)
   [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet  (branch=my-feature model=sonnet)
   [2026-05-20T10:17:45.000Z] line   n/a  reviewer     staff-sdet  (branch=my-feature model=sonnet thread=sidechain)
@@ -481,7 +481,7 @@ branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spaw
   [2026-05-20T11:02:00.000Z] line  145  skill        code-review  (branch=my-feature model=sonnet)
 ```
 
-The session above opened on `main`, then moved to `my-feature` partway through — the header's `branches=`/`models=` lists both, and each event line carries its own attribution rather than inheriting the session's first-record branch. The `thread=sidechain` row is a reviewer spawned from inside the `staff-sdet` dispatch above it — its `line` prints `n/a` rather than a number, and its timestamp still sorts chronologically alongside the main-thread rows around it.
+The session above opened on `main`, then moved to `my-feature` partway through. The "Pre-branch default-branch attribution" block under `cost` credits its opening events to `my-feature`, so the header's `branches=` lists that one branch. `models=` still shows per-event model attribution, here opus for the opening events and sonnet for the later ones. The `thread=sidechain` row is a reviewer spawned from inside the `staff-sdet` dispatch above it — its `line` prints `n/a` rather than a number, and its timestamp still sorts chronologically alongside the main-thread rows around it.
 
 **When to reach for it.** Audit which sessions hit hook denials (`--deny-only`), or compare review-skill activity before vs. after a convention landed using `--since`/`--until`. The timeline locates sessions; judging whether a review caught a material issue is a qualitative read. A `consult` row has two limits:
 
@@ -558,14 +558,14 @@ interrupted                    1
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
-- `--branches B1,B2,...` — filter to specific branches
+- `--branches B1,B2,...` — filter to specific branches. Attribution follows the "Pre-branch default-branch attribution" block under `cost`.
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
 - `--until DATE` — inclusive end date (`YYYY-MM-DD`)
 - `--skills SKILL1,SKILL2,...` — comma-separated skill names to match (default: `code-review,plan-review,ready-for-review`)
 - `--truncate-chars N` — maximum characters for the review output block (default: 1000)
 - `--out PATH` — write output to this file instead of stdout
 
-`--branches` filters on the invocation record's own `gitBranch`, not a session-wide branch — a session whose branch changes between the review invocation and the user's reply is selected by where the invocation itself happened.
+`--branches` filters on the invocation record's attributed branch, not a session-wide branch — a session whose branch changes between the review invocation and the user's reply is selected by where the invocation itself happened.
 
 **Sample output.**
 ```
@@ -666,27 +666,32 @@ Like `subagents` and `skill-pair`, `cost` calls `_warn_if_subagent_format_drift`
 
 Redacted project labels (`private-project-N`, `account-N`) and the printed corpus fingerprint are **not comparable across two report runs built from different declared-roots files** — a changed corpus (a new session, a removed project dir, a different declared-roots or `--config-dir` set) can renumber every ordinal. Two runs built from the *same* declared-roots file, even from different active profiles, assign the same ordinal to the same physical root and stay comparable — see "Corpus scope: the declared-roots file" above. This comparability guarantee excludes `cost --summary`: it always resolves to one root, so its `account-N` for the active root is not guaranteed to match the ordinal a full (non-`--summary`) run built from the same declared-roots file assigns that same physical root. Treat a run's redacted output as self-contained unless you know the roots file behind it is unchanged; never diff `private-project-3` between two runs without that guarantee and assume it names the same project.
 
-**Subagent attribution.** In every subcommand the next block lists as applying both blocks, every sidechain (subagent) record, `isolation: "worktree"` or not, takes the branch its dispatching session's main thread was on at that record's timestamp. That is the last main-thread record with a branch at or before it. The record falls forward to the session's earliest main-thread branch when it predates every main-thread record or carries no parseable timestamp. When no branch-bearing main-thread record in the session has a parseable timestamp, it takes the first main-thread branch in file order. A session with no branch-bearing main-thread record at all renders `?` (reusing the `?` sentinel `review-trace`/`judgment-pair` already use for "no signal to carry forward") and is excluded from every `--branches`-filtered total. Attribution is scoped to the dispatching session only; a subagent record is never resolved against a *different* session's main-thread history. Provided its records carry the `isSidechain` flag (see Limits), a subagent's own branch name never becomes a label. Its spend counts toward its dispatching session's branch whatever its own tag or `cwd`, including a subagent this repo's session dispatched into another repo. A `worktree-agent-*` record is one case of this rule. For a subagent that worked in this repo from another repo's session, see "A subagent dispatched from another repo's session" above.
+**Subagent attribution.** In every subcommand the next block lists as applying both blocks, every sidechain (subagent) record, `isolation: "worktree"` or not, takes the branch its dispatching session's main thread was on at that record's timestamp. That is the last main-thread record with a branch at or before it. The record falls forward to the session's earliest main-thread branch when it predates every main-thread record or carries no parseable timestamp. When no branch-bearing main-thread record in the session has a parseable timestamp, it takes the first main-thread branch in file order. A session with no branch-bearing main-thread record at all renders `?` (reusing the `?` sentinel `review-trace`/`judgment-pair` already use for "no signal to carry forward") and is excluded from every `--branches`-filtered total. A consumer that prints no `?` column treats such a record as having no branch: `subagents`, `buckets` and `duration` omit it with or without `--branches`, and the `skill-*` filters omit it under `--branches`, while `review-trace` prints `?`. Attribution is scoped to the dispatching session only; a subagent record is never resolved against a *different* session's main-thread history. Provided its records carry the `isSidechain` flag (see Limits), a subagent's own branch name never becomes a label. Its spend counts toward its dispatching session's branch whatever its own tag or `cwd`, including a subagent this repo's session dispatched into another repo. A `worktree-agent-*` record is one case of this rule. For a subagent that worked in this repo from another repo's session, see "A subagent dispatched from another repo's session" above.
 
 **Pre-branch default-branch attribution.** Within one session, a main-thread record tagged with a default-branch candidate (`main`, `master` or `develop`, mirroring `_lib_default_branch_or_guess`'s candidate list in `claude/.claude/hooks/_lib.sh`) and recorded before the main thread first moves to another branch counts toward that first branch. Planning that precedes a feature branch's creation is the usual source. A sidechain record first resolves through "Subagent attribution", and this block then applies to the branch it resolved to, so a subagent that ran during the leading run moves with it.
 - **Skipped entries.** `HEAD` (the tag observed on a detached checkout in local transcripts) and `worktree-agent-*` main-thread entries are never the successor, and they keep their own tag.
 - **Boundary.** Entries sort by timestamp, and entries that share a timestamp sort by branch name, not file order. The first non-candidate main-thread entry sets the successor branch and the boundary timestamp; when the first two distinct-branch entries share a timestamp, the name order decides whether a leading run exists. A record strictly before the boundary moves. A main-thread record at or after it, or with no timestamp, stays. A sidechain record is compared by the timestamp of the timeline entry it resolved to. When two real branches share the boundary timestamp, the same name order picks the successor.
 - **Single successor.** Every candidate entry before the boundary, including a `main` to `develop` hop, folds into that one branch.
 - **First leading run only.** Later default-branch stretches stay on the default branch, and a later move from one real branch to another does not repeat the step.
-- **Conservation.** Each record still lands in exactly one aggregate, so unfiltered totals do not change; only the split between branches moves.
+- **Conservation.** Each record still lands in exactly one aggregate, so unfiltered turn and record totals do not change; only the split between branches moves. `buckets`' per-branch Sess counts are the exception: a session that no longer appears under the default branch stops counting there.
 - **Window.** The leading run is found from the session's full records, before any `--since`/`--until` filter.
 
-These subcommands apply this block, except where the last bullet says otherwise, and this is the only list. Those in the first bullet also apply "Subagent attribution":
+These subcommands apply this block, except where the last bullet says otherwise, and this is the only list. Those in the first two bullets also apply "Subagent attribution":
 - `cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark of `handoff-signal-response` apply both blocks. `pr-cost` and `workstream-cost` share `cost`'s per-branch totals pass, and the benchmark comes from `workstream-cost`'s computation.
+- `subagents`, `skill-invocation --include-subagents` and `skill-pair` read sidechain records, so they apply both blocks. `buckets` and `duration` apply both for a sidechain record that sits inline in a main transcript file.
+- `fail-seq`, `struggle`, `user-input`, `judgment-pair`, `pr-link` and `skill-invocation` without `--include-subagents` exclude sidechain records, so only this block reaches them.
 - `review-round-cost`, `cost-counts` and `subagent-mix` detect rounds and count spawns from main-thread records only, so only this block reaches them, and "Subagent attribution" does not. Review-bench mining (`evals/review_bench`, not a subcommand) joins them through the same round attribution, so a round held before the branch exists joins the branch's group.
-- Round attribution (`review-round-cost`, `cost-counts` round counts, review-bench mining) is positional: it carries the last main-thread branch forward to every record, sidechain records included, and applies only this block to that carried value, using the record's own timestamp (`scope._attribute_carried_branch`).
-- Raw-tag exceptions: `commit-gate` and `rearm-backtest` select whole sessions by the literal tag, and `turn-shape` ends a streak on a literal tag change.
+- Round attribution (`review-round-cost`, `cost-counts` round counts, review-bench mining) and `review-trace` are positional: they carry the last main-thread branch forward to every record, sidechain records included, and apply only this block to that carried value, using the record's own timestamp (`scope._attribute_carried_branch`).
+- Raw-tag exceptions: `commit-gate` and `rearm-backtest` select whole sessions by the literal tag, `turn-shape` ends a streak on a literal tag change, and `fail-seq` resets its pending test-run pairing on one. `subagents` also reads the literal tag of a main-thread `assistant` or `user` record to decide which branches print raw.
 
 The full `cost` report under `--branches` prints one extra line, `Pre-branch default-branch records credited to this --branches filter: <N> turns, $<X>`. It counts only the turns this block moved into the filter set from outside it, so a filter that holds both the default branch and its successor prints nothing for that session. Unpriced turns count toward the turns but not the dollars. It never prints under `--summary` or `--share-only`. The shift from "Subagent attribution" has no audit line.
 
 **Effects.**
 - Startup burn now includes a continuation's cold-start turns on the default branch, so `workstream-cost`'s burn share, its sessions per branch and the `handoff-signal-response` benchmark move.
 - `review-round-cost --pooled`'s branch units move.
+- `duration`'s Span and Active include the leading default-branch records, and `buckets`' Date range for the branch entered starts at them, while the default branch's Sess and turn counts drop.
+- `user-input`'s labels follow the attributed branch, and under `--branches` the prefix's first prompt becomes the branch's initial prompt, so its initial, follow-up and correction counts move. `--branches` is not a content-disclosure boundary for `user-input` and `judgment-pair`: under `--branches X` they now also emit the same session's leading default-branch prompts and reviews. `judgment-pair` scopes which sessions are read with `--this-repo` (see "Scoping to this repo" above); `user-input` has no `--this-repo` and scopes by `--projects GLOB` only.
+- `skill-invocation --include-subagents` and `skill-pair` count a subagent invocation under the dispatching branch, whatever the subagent record's own tag.
 - A subagent record whose own tag differs from its dispatching main thread's branch now takes that branch, for example one still running after a switch.
 - A subagent record with no tag of its own now takes the main thread's branch.
 - A session with no branch-bearing main-thread record leaves its subagent records unbranched.
@@ -698,7 +703,7 @@ The full `cost` report under `--branches` prints one extra line, `Pre-branch def
 - A leading stretch on a detached checkout keeps the `HEAD` tag and is not credited.
 - Main-thread records with no timestamp stay where they are tagged.
 - Planning done in a separate session that stays on the default branch has no same-session successor and is not moved.
-- A session with no branch-bearing main-thread record attributes its subagent records to `?`.
+- A session with no branch-bearing main-thread record attributes its subagent records to `?` in `cost --branches` and `review-trace`. "Subagent attribution" above lists which other consumers omit those records.
 - A subagent this session dispatched counts toward the dispatching branch whatever repo it worked in. The `Scope:` caption's "this repository only" names the sessions read, not each subagent's working directory.
 - Inside a review round's window, the round's own key governs every record.
 - Rounds price a whole dispatch at its spawn record's branch, while per-record consumers split a subagent that straddles a switch.

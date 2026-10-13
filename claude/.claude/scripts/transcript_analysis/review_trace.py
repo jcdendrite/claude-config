@@ -236,7 +236,10 @@ def _review_trace_session_events(
     # dispatching main-thread record, not its own. Applied before the date
     # filter below, so the branch/model attributed to an event is whatever a
     # prior main-thread record last set, including one outside the
-    # --since/--until window.
+    # --since/--until window. The carried branch then takes the pre-branch step
+    # (scope._attribute_carried_branch) at emission, from a context built over
+    # every record so the window never changes which entry is first.
+    branch_context = scope._session_branch_context(records)
     last_branch = ""
     last_model = ""
     pre_regime_tool_result_count = 0
@@ -263,8 +266,8 @@ def _review_trace_session_events(
         thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
 
         if not bool(rec.get("isSidechain")):
-            b = rec.get("gitBranch") or ""
-            if b:
+            b = scope._branch_tag(rec)
+            if b is not None:
                 last_branch = b
             if rec.get("type") == "assistant":
                 m = (rec.get("message") or {}).get("model") or ""
@@ -293,7 +296,7 @@ def _review_trace_session_events(
                 continue
 
         rec_type = rec.get("type", "")
-        evt_branch = last_branch or "?"
+        evt_branch = scope._attribute_carried_branch(last_branch, rec, branch_context) or "?"
         evt_model = render._fam(last_model) if last_model else "?"
 
         # --- Signals 1 + 3: skill invocations and reviewer-agent spawns ---
@@ -642,7 +645,9 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     not from the session's first record: each is the last non-empty value
     carried forward up to that point, so a session that moves from one branch
     (or model) to another attributes each event correctly instead of labelling
-    every event with whatever the session started on. An event whose branch or
+    every event with whatever the session started on. A carried default-branch
+    value recorded before the session's first real branch is credited to that
+    branch (scope._attribute_carried_branch). An event whose branch or
     model cannot be resolved renders '?'. --branches filters the emitted event
     list by this per-event value, not by a single session-wide branch. A
     sidechain event's thread field prints as `thread=sidechain` in the

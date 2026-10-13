@@ -234,6 +234,7 @@ from transcript_analysis.reviewer_yield import (
 from transcript_analysis.scope import (
     _DO_NOT_PUBLISH_BANNER,
     _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR,
+    _attributed_branch,
     _branch_filter,
     _iter_glob_scoped_sessions,
     _iter_scoped_sessions,
@@ -247,6 +248,7 @@ from transcript_analysis.scope import (
     _resolved_scope_header,
     _root_index_for_path,
     _scan_root_transcripts,
+    _session_branch_context,
     _single_level_projects_glob,
 )
 from transcript_analysis.scope import print_resolved_scope as _print_resolved_scope
@@ -350,8 +352,9 @@ def cmd_buckets(args: argparse.Namespace) -> None:
         file_branches: dict[str, dict] = defaultdict(
             lambda: {"opus": 0, "sonnet": 0, "haiku": 0, "other": 0, "ts_min": float("inf"), "ts_max": float("-inf")}
         )
+        branch_context = _session_branch_context(records)
         for rec in records:
-            branch = rec.get("gitBranch") or ""
+            branch = _attributed_branch(rec, branch_context) or ""
             if not branch or (branch_filter and branch not in branch_filter):
                 continue
             ts = _parse_ts(rec.get("timestamp"))
@@ -405,17 +408,24 @@ def cmd_fail_seq(args: argparse.Namespace) -> None:
     branch_runs: dict[str, list[tuple[str, int]]] = defaultdict(list)
 
     for _jsonl, records in session_iter:
+        # Every attributed branch is some record's own tag, so a session with none in the
+        # filter set cannot contribute.
         if not ({r.get("gitBranch", "") for r in records} & branches):
             continue
 
         pending: dict[str, str] = {}  # tool_use_id → model_family
         current_branch: str = ""
+        branch_context = _session_branch_context(records)
 
         for rec in records:
-            branch = rec.get("gitBranch") or ""
-            if branch != current_branch:
+            # The pending-pair reset follows the record's literal tag: it marks a physical
+            # checkout change, which attribution must not hide. Only the filter and the
+            # runs key take the attributed branch.
+            literal_branch = rec.get("gitBranch") or ""
+            if literal_branch != current_branch:
                 pending.clear()
-                current_branch = branch
+                current_branch = literal_branch
+            branch = _attributed_branch(rec, branch_context) or ""
             if branch not in branches or bool(rec.get("isSidechain")):
                 continue
 
@@ -485,8 +495,9 @@ def cmd_struggle(args: argparse.Namespace) -> None:
 
     for _jsonl, records in session_iter:
         last_fam: dict[str, str] = {}
+        branch_context = _session_branch_context(records)
         for rec in records:
-            branch = rec.get("gitBranch") or ""
+            branch = _attributed_branch(rec, branch_context) or ""
             if not branch or (branch_filter and branch not in branch_filter):
                 continue
             if bool(rec.get("isSidechain")):
@@ -656,13 +667,14 @@ def cmd_user_input(args: argparse.Namespace) -> None:
         # Collect fresh prompts for this session, applying all filters.
         session_prompts: list[dict] = []
         is_first_in_session = True
+        branch_context = _session_branch_context(records)
 
         for idx, rec in enumerate(records):
             if not _is_fresh_user_prompt_for_narrative(rec):
                 continue
 
             # Branch filter
-            branch = rec.get("gitBranch") or ""
+            branch = _attributed_branch(rec, branch_context) or ""
             if branch_filter and branch not in branch_filter:
                 continue
 
@@ -845,8 +857,9 @@ def cmd_duration(args: argparse.Namespace) -> None:
     branch_timestamps: dict[str, list[float]] = defaultdict(list)
 
     for _jsonl, records in session_iter:
+        branch_context = _session_branch_context(records)
         for rec in records:
-            branch = rec.get("gitBranch") or ""
+            branch = _attributed_branch(rec, branch_context) or ""
             if not branch or (branch_filter and branch not in branch_filter):
                 continue
             ts = _parse_ts(rec.get("timestamp"))
@@ -886,10 +899,10 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
     Uses _is_fresh_user_prompt() to skip tool-result turns, isMeta injections,
     and isCompactSummary injections when locating the user response.
 
-    --branches filters on the invocation record's own gitBranch, not a single
-    session-wide branch — a session whose branch changes between the
-    invocation and the user response is filtered by where the invocation
-    itself happened.
+    --branches filters on the invocation record's attributed branch
+    (scope._attributed_branch), not a single session-wide branch — a session
+    whose branch changes between the invocation and the user response is
+    filtered by where the invocation itself happened.
     """
     branch_filter = _branch_filter(args)
     roots = _resolve_scan_roots(args)
@@ -907,6 +920,7 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
     for jsonl, records in session_iter:
         proj_label = _derive_proj_label(jsonl)
         session_id_prefix = jsonl.stem[:8]
+        branch_context = _session_branch_context(records)
 
         for rec_idx, rec in enumerate(records):
             line_no = rec_idx + 1  # 1-based line number for output
@@ -929,7 +943,7 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
             if inv_skill is None:
                 continue
 
-            invocation_branch = rec.get("gitBranch") or ""
+            invocation_branch = _attributed_branch(rec, branch_context) or ""
             if branch_filter and invocation_branch not in branch_filter:
                 continue
 
@@ -1083,9 +1097,11 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
       one, so --include-subagents folds those in and adds a thread column keeping the
       two distinguishable rather than silently merged.
 
-    --branches scopes to named gitBranch values; --projects scopes to project dirs and
-    defaults to every project on the machine, which is rarely what a branch-scoped
-    caller wants (branch names are not unique across repos).
+    --branches scopes to named branches, matching each record's attributed branch
+    (scope._attributed_branch): a subagent record counts under the branch its
+    dispatching main thread was on, never its own gitBranch. --projects scopes to
+    project dirs and defaults to every project on the machine, which is rarely what
+    a branch-scoped caller wants (branch names are not unique across repos).
     """
     branch_filter = _branch_filter(args)
     include_subagents = bool(getattr(args, "include_subagents", False))
@@ -1130,13 +1146,15 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
     routed_pairs: dict[tuple[str, str], int] = defaultdict(int)  # (parent, child) -> count
 
     for _jsonl, records in session_iter:
+        # Unfiltered runs never read a branch, so the context is built only for a filter.
+        branch_context = _session_branch_context(records) if branch_filter else None
         for rec in records:
             sidechain = bool(rec.get("isSidechain"))
             if sidechain and not include_subagents:
                 continue
             # Unfiltered runs must still count records that carry no gitBranch,
             # so the branch test applies only when a filter was requested.
-            if branch_filter and (rec.get("gitBranch") or "") not in branch_filter:
+            if branch_context is not None and (_attributed_branch(rec, branch_context) or "") not in branch_filter:
                 continue
             thread = "sidechain" if sidechain else "main"
             rtype = rec.get("type")
@@ -1294,14 +1312,14 @@ def cmd_skill_pair(args: argparse.Namespace) -> None:
         leader_first_ts: float | None = None
         has_main_follower = False
         has_sidechain_follower = False
+        branch_context = _session_branch_context(records) if branch_filter else None
 
         for rec in records:
             if rec.get("type") != "assistant":
                 continue
             if bool(rec.get("isSidechain")):
                 corpus_sidechain_turns += 1
-            branch = rec.get("gitBranch") or ""
-            if branch_filter and branch not in branch_filter:
+            if branch_context is not None and (_attributed_branch(rec, branch_context) or "") not in branch_filter:
                 continue
             is_sidechain = bool(rec.get("isSidechain"))
             for block in ((rec.get("message") or {}).get("content") or []):
@@ -1398,8 +1416,9 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
 
     branch_models: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for _jsonl, records in session_iter:
+        branch_context = _session_branch_context(records)
         for rec in records:
-            branch = rec.get("gitBranch") or ""
+            branch = _attributed_branch(rec, branch_context) or ""
             if branch not in branches or rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
                 continue
             fam = _fam((rec.get("message") or {}).get("model", ""))
@@ -4055,7 +4074,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
-    p_buckets = sub.add_parser("buckets", help="Assistant turns bucketed by gitBranch × model family.")
+    p_buckets = sub.add_parser("buckets", help="Assistant turns bucketed by branch × model family.")
     _add_project_scope_args(p_buckets)
     p_buckets.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
     p_buckets.set_defaults(func=cmd_buckets)
