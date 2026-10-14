@@ -6,6 +6,22 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`--branches` and per-branch rows, filtered or not, now credit a session's leading default-branch records to the first branch that same session enters.** This applies to every subcommand the "Pre-branch default-branch attribution" rule block in `docs/transcript-analysis.md` lists as applying it. Planning in a separate session is not moved.
+- **`cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark now attribute every subagent record to the dispatching main thread's branch at that record's time, never its own `gitBranch`.**
+  - A subagent still running after a branch switch follows the switch.
+  - A dispatched subagent's spend counts toward the dispatching branch whatever repo it worked in.
+  - Provided its records carry the `isSidechain` flag, a subagent's own branch name never becomes a label.
+  - A session with no branch-bearing main-thread record leaves its subagent records unbranched.
+- **PR Cost sections and new `pr-cost --record` rows follow both changes, so a figure can rise or fall.** See `docs/pr-cost.md` § "Pre-branch and subagent attribution" for the cutover and how to compare across it.
+  - **Cutover:** it is per checkout, at pull time, and an open PR's Cost figure changes at its next sync.
+  - **Columns:** every transcript-derived column follows both changes, and the `gh`-sourced columns do not.
+  - **Ledger:** existing rows are not re-recorded.
+  - **PR body:** it keeps the figures from its last sync, so a body last synced from a checkout that had not yet pulled still follows the earlier attribution.
+- **`subagents`, `skill-pair` and `skill-invocation --include-subagents` now attribute subagent records the same way, `worktree-agent-*` included, with the same `isSidechain` condition.**
+  - `buckets` and `duration` apply the same attribution to a sidechain record inline in a main transcript file.
+  - `review-trace` and the other per-record consumers apply the pre-branch rule to the records they read.
+  - `skill-invocation --include-subagents --branches X` can now print skill names from a subagent dispatched into another repo, because its records count under the dispatching branch. Plain `--include-subagents` already printed them. Treat all `skill-invocation --include-subagents` output as local-only.
+- **`/ready-for-review`'s fidelity report (`skill-fidelity-report.sh`) now sees plan-mode skill invocations and architect consults made earlier in the same session on the default branch.**
 - **The `pr-cost` ledger gains a trailing `model_breakdown` column, and the first `--record` that writes a row upgrades an existing ledger to it.** The cell holds tokens and integer micro-dollars per priced model, pricing variant, and token class, so a later subcommand can re-price mixed-model rows under a common rate table.
   - **Ledger:** rows recorded earlier read as "not recorded" and are never assigned an estimated split.
   - **Ledger:** the upgrade rewrites the file under the new header, prints a stderr notice, and has no supported downgrade.
@@ -246,6 +262,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **The full `cost` report under `--branches` prints one audit line for the leading default-branch turns and dollars credited to the filter.** It never prints under `--summary` or `--share-only`, and it audits only the pre-branch shift, not the subagent one.
 - **`review-orchestrator` agent, which runs one `/code-review` round per dispatch in its own context.** Its instructions have it send every fix to `code-writer` and write the code-review marker only on a round with no fix. No hook enforces either rule, and like a `general-purpose` dispatch it can write or activate any marker that `permissions.allow` pre-approves. Its trigger is explicit-request-only: it fires only when you ask for a `/code-review` through it, and no session is told to use it otherwise. The dispatching session's protocol lives in `subagent-delegation`'s gate/review-loop section. See `docs/design-decisions/review-orchestrator-gate-release-decoupling.md`.
   - **Re-run `./install.sh` after pulling if the active config dir's `agents/` is not a folded directory symlink.** A `git pull` alone does not link a new file into an existing stowed directory, so the agent stays unlinked until you re-stow.
 - **`/review-pr` skill and its scripts.** Reviews a PR from a checkout or, for a restricted PR, from its diff alone; the `review-pr-*` scripts under `claude/.claude/scripts/` hold the mechanics. Consumer-visible changes:

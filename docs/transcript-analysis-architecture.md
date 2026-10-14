@@ -69,7 +69,12 @@ Scan-root and project-scope resolution: `PROJECTS_DIR`, `resolve_scan_roots`,
 `print_resolved_scope`, the `--this-repo` project-slug machinery, and the multi-root
 `--config-dir` resolution cost-family subcommands share (`_resolve_cost_roots`,
 `_SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR`). Also owns `_redaction_ordinals` — kept here instead of
-`redaction.py` so `redaction.py`'s dependency on it stays one-directional, not circular.
+`redaction.py` so `redaction.py`'s dependency on it stays one-directional, not circular. Also owns the
+per-record branch attribution that the consumers listed under "Pre-branch default-branch attribution" in `docs/transcript-analysis.md` share: `_session_branch_context` (built once
+per session), `_attributed_branch` (the timeline step for sidechain records, then the pre-branch step) and
+`_attribute_carried_branch` (the pre-branch step alone, for positional consumers).
+The rule itself is documented in `docs/transcript-analysis.md` under "Subagent attribution" and
+"Pre-branch default-branch attribution".
 
 Read reassignable module globals (`scope.PROJECTS_DIR`, `scope.config_dir`,
 `pricing._usage_drift_warned`) via attribute access, never `from module import NAME` — the latter
@@ -154,9 +159,9 @@ pricing, no dispatch index, and no recursion — `subagent_mix.py`'s `cmd_cost_c
 `review_rounds.compute_review_round_counts` for the `### Review rounds` half of its output. Imports `corpus`, `pricing`, `redaction`, `render`,
 and `scope` all by module (attribute access), matching `cost.py`'s convention — deliberately no
 `cost.py` import: a round's own branch is its opening record's own `gitBranch`, carried forward
-when absent, and every record inside that round's window is attributed to it, never
-`cost._attributed_branch`'s worktree-agent-\* resolution, which a main-thread round-opening record
-never needs. `REVIEW_SKILLS`, `compute_review_round_counts`, and `detect_round_windows` are the
+when absent and passed through `scope._attribute_carried_branch`, and every record inside that round's
+window is attributed to it, never `scope._attributed_branch`'s sidechain timeline step, which a
+main-thread round-opening record never needs. `REVIEW_SKILLS`, `compute_review_round_counts`, and `detect_round_windows` are the
 public names here. `REVIEW_SKILLS` is back-imported by the still-unmigrated `cmd_judgment_pair` in
 the shim for its own `--skills` default, one instance of the one-directional exception noted
 above. `_round_skill_name` and `_SLASH_COMMAND_RE` are two more instances, both back-imported by

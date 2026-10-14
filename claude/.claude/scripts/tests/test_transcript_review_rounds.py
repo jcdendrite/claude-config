@@ -480,8 +480,8 @@ class TestComputeReviewRoundCosts:
         """An isSidechain record's own gitBranch can be an isolation:"worktree"
         subagent dispatch's ephemeral worktree-agent-* branch, not this
         session's real one -- it must never become last_branch for
-        branch_totals purposes, mirroring cost.py's _session_branch_index
-        main-thread-only carry-forward. The sidechain record's own dollars
+        branch_totals purposes, mirroring scope._session_branch_index's
+        main-thread-only timeline. The sidechain record's own dollars
         (it is itself a priced assistant record) must land on the real
         branch ("feat"), never a phantom worktree-agent-* bucket."""
         sidechain_rec = _priced(
@@ -876,6 +876,86 @@ _ROUND_SHAPE_CORPUS_BUILDERS = [
     pytest.param(_corpus_branch_carry_forward_mid_window, id="branch_carry_forward_mid_window"),
     pytest.param(_corpus_non_round_dollar_interleaving, id="non_round_dollar_interleaving"),
 ]
+
+
+class TestPreBranchRoundAttribution:
+    """A session's leading default-branch records count toward the first
+    branch it enters, for round keys, round counts and branch totals alike."""
+
+    def _write_prefix_round_session(self, fake_projects) -> None:
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced(  # round open on the default branch, before the session enters feat-x: $0.20
+                "claude-sonnet-5", input=100_000, branch="main", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _priced("claude-sonnet-5", input=200_000, branch="feat-x", ts="2026-08-01T10:02:00.000Z"),  # $0.40, in window
+            _user_msg("thanks", branch="feat-x", ts="2026-08-01T10:03:00.000Z"),  # closes the window
+        ])
+
+    def test_prefix_round_is_keyed_to_the_entered_branch_and_its_window_stays_there(self, fake_projects):
+        self._write_prefix_round_session(fake_projects)
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        assert [r["branch_key"] for r in data["rounds"]] == [(None, "feat-x")]
+        assert data["rounds"][0]["main_dollars"] == pytest.approx(0.20 + 0.40)
+        assert data["branch_totals"] == {(None, "feat-x"): pytest.approx(0.20 + 0.40)}
+
+    def test_prefix_round_counts_under_the_entered_branch_filter_only(self, fake_projects):
+        self._write_prefix_round_session(fake_projects)
+
+        entered = review_rounds.compute_review_round_counts(_session_iter(fake_projects), branch_filter={"feat-x"})
+        default = review_rounds.compute_review_round_counts(_session_iter(fake_projects), branch_filter={"main"})
+        assert entered["code-review"] == 1
+        assert default["code-review"] == 0
+
+    def test_inline_prefix_sidechain_record_outside_any_window_is_remapped_by_its_own_timestamp(self, fake_projects):
+        sidechain_rec = _priced("claude-sonnet-5", input=150_000, branch="main", ts="2026-08-01T10:01:00.000Z")  # $0.30
+        sidechain_rec["isSidechain"] = True
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, branch="main", ts="2026-08-01T10:00:00.000Z"),  # $0.20
+            sidechain_rec,
+            _priced("claude-sonnet-5", input=200_000, branch="feat-x", ts="2026-08-01T10:03:00.000Z"),  # $0.40
+        ])
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        assert data["rounds"] == []
+        assert data["branch_totals"] == {(None, "feat-x"): pytest.approx(0.20 + 0.30 + 0.40)}
+
+    @pytest.mark.parametrize("malformed_tag", [7, ["feat-x"], {"name": "feat-x"}])
+    def test_non_string_branch_tag_is_read_as_absent_so_the_carried_branch_stands(self, fake_projects, malformed_tag):
+        """A malformed tag neither raises (a list or dict cannot key branch_totals)
+        nor becomes a branch label: the record carries the previous branch."""
+        malformed = _priced("claude-sonnet-5", input=100_000, ts="2026-08-01T10:02:00.000Z")  # $0.20
+        malformed["gitBranch"] = malformed_tag
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, branch="main", ts="2026-08-01T10:00:00.000Z"),  # $0.20
+            _priced("claude-sonnet-5", input=100_000, branch="feat-x", ts="2026-08-01T10:01:00.000Z"),  # $0.20
+            malformed,
+        ])
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        assert data["branch_totals"] == {(None, "feat-x"): pytest.approx(0.60)}
+
+    def test_since_window_leaves_a_later_default_branch_round_keyed_to_the_default_branch(self, fake_projects):
+        """main -> X -> main -> Y with since_ts between X and the second main: the
+        second main's round stays on main, as a context built from the full session
+        (not from rounds inside the window) keeps the leading run to the first stretch."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _priced("claude-sonnet-5", input=100_000, branch="main", ts="2026-07-20T10:00:00.000Z"),
+            _priced("claude-sonnet-5", input=100_000, branch="feat-x", ts="2026-07-25T10:00:00.000Z"),
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="main", ts="2026-08-02T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _user_msg("thanks", branch="main", ts="2026-08-02T10:01:00.000Z"),
+            _priced("claude-sonnet-5", input=100_000, branch="feat-y", ts="2026-08-05T10:00:00.000Z"),
+        ])
+        since_ts = corpus._parse_ts("2026-08-01T00:00:00.000Z")
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects), since_ts=since_ts)
+
+        assert [r["branch_key"] for r in data["rounds"]] == [(None, "main")]
 
 
 class TestComputeReviewRoundCounts:

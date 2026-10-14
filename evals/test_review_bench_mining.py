@@ -1590,6 +1590,23 @@ class TestRoundScopeAndCitations:
         assert expected_key in scope_keys
 
 
+class TestCollectRoundEntriesPreBranchAttribution:
+    def test_round_opened_on_the_default_branch_before_the_session_enters_a_branch_joins_that_branch(self, tmp_path):
+        """The group a /plan-review held after branch creation already joins
+        is the group a round held before it joins."""
+        records = [
+            _assistant(branch="main", ts="2026-01-01T00:00:00Z", content=[_skill_use("s1", "plan-review")]),
+            _user("done", branch="main", ts="2026-01-01T00:01:00Z"),
+            _assistant(branch="feat-x", ts="2026-01-01T00:05:00Z"),
+        ]
+        jsonl = tmp_path / "sess-1.jsonl"
+        _write_jsonl(jsonl, records)
+
+        entries = mine_review_rounds._collect_round_entries([(jsonl, records)])
+
+        assert [entry.branch for entry in entries] == ["feat-x"]
+
+
 class TestMainThreadEditedBetween:
     def test_edit_of_a_line_suffixed_citation_target_is_detected(self):
         """A line-suffixed citation (":line", the shape TestMineReviewRoundsCandidates'

@@ -41,12 +41,14 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     _root_scoped_display_label, account-<K>/branch-<N>) since a raw branch
     slug from a foreign account would otherwise be printed.
     _DO_NOT_PUBLISH_BANNER is stamped on stdout and stderr under multi-root.
+    A record's branch is its attributed branch (scope._attributed_branch); the
+    rule is docs/transcript-analysis.md "Subagent attribution" and
+    "Pre-branch default-branch attribution".
     Under --this-repo, a branch prints raw (account-<K>/<branch>) only when
-    a non-sidechain record attested that same (root, branch) pair anywhere
-    in the corpus -- a branch seen only on a sidechain record stays opaque,
-    since a subagent's own gitBranch can silently name a different repo than
-    its parent session's. This attestation is corpus-wide, not narrowed by
-    --since: a branch used by a real main-thread session outside the
+    a main-thread assistant or user record carried that same (root, branch)
+    pair anywhere in the corpus -- any other attributed branch stays opaque.
+    The attestation reads each record's own gitBranch. It is corpus-wide, not
+    narrowed by --since: a branch used by a real main-thread session outside the
     current --since window still discloses, since the question being
     answered is "did this repo ever use this branch," not "does this
     exact record appear in the displayed table." The same is true of
@@ -94,10 +96,10 @@ def cmd_subagents(args: argparse.Namespace) -> None:
     branch_tool_bytes: dict[tuple[int | None, str], dict[str, dict[str, int]]] = defaultdict(
         lambda: {"main": defaultdict(int), "sidechain": defaultdict(int)}
     )
-    # (root_index_or_None, raw gitBranch) pairs a non-sidechain record attested.
-    # --this-repo discloses a branch raw only when it's a member of this set,
-    # since a sidechain record's own gitBranch can silently name a different
-    # repo than its parent session's.
+    # (root_index_or_None, raw gitBranch) pairs a main-thread assistant or user
+    # record carried. --this-repo discloses a branch raw only when it's a member
+    # of this set, so an attributed branch that only another record type carried
+    # fails closed to the opaque label.
     main_thread_branches: set[tuple[int | None, str]] = set()
     corpus_spawns = 0
     corpus_sidechain_turns = 0
@@ -106,6 +108,8 @@ def cmd_subagents(args: argparse.Namespace) -> None:
         root_idx = scope._root_index_for_path(jsonl, resolved_roots) if multi_root else None
         records = pricing.dedup_turns_by_request_id(records)
         corpus_spawns += pricing._count_subagent_spawns(records)
+        # Built before the --since filter so a window never changes which entry is first.
+        branch_context = scope._session_branch_context(records)
         # tool_use id -> tool name, built inline as records are walked in
         # order: a tool_result always follows its own tool_use within the
         # same file, and include_subagents=True appends each subagent file
@@ -125,9 +129,10 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                 for block in ((rec.get("message") or {}).get("content") or []):
                     if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("id"):
                         tool_use_names[block["id"]] = block.get("name") or "unknown"
-                branch = rec.get("gitBranch") or ""
-                if branch and not bool(rec.get("isSidechain")):
-                    main_thread_branches.add((root_idx, branch))
+                own_branch = rec.get("gitBranch") or ""
+                if own_branch and not bool(rec.get("isSidechain")):
+                    main_thread_branches.add((root_idx, own_branch))
+                branch = scope._attributed_branch(rec, branch_context) or ""
                 if not branch or (branch_filter and branch not in branch_filter):
                     continue
                 if since_ts is not None:
@@ -138,9 +143,10 @@ def cmd_subagents(args: argparse.Namespace) -> None:
                 thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
                 branch_data[(root_idx, branch)][thread][fam] += 1
             elif rec_type == "user":
-                branch = rec.get("gitBranch") or ""
-                if branch and not bool(rec.get("isSidechain")):
-                    main_thread_branches.add((root_idx, branch))
+                own_branch = rec.get("gitBranch") or ""
+                if own_branch and not bool(rec.get("isSidechain")):
+                    main_thread_branches.add((root_idx, own_branch))
+                branch = scope._attributed_branch(rec, branch_context) or ""
                 if not branch or (branch_filter and branch not in branch_filter):
                     continue
                 if since_ts is not None:

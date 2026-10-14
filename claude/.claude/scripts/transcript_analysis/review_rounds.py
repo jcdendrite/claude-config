@@ -12,10 +12,12 @@ Imports corpus, pricing, redaction, render, and scope by module (attribute
 access, not by name) — see scope.py's own top-of-file comment for why.
 
 This module never imports cost.py. A round's own branch is the opening
-record's own gitBranch, carried forward when absent. A main-thread
+record's own gitBranch, carried forward when absent, then passed through
+scope._attribute_carried_branch so a session's leading default-branch
+records count toward the first branch it enters. A main-thread
 round-opening record is never a worktree-agent-* sidechain record, so
-cost._attributed_branch's worktree-agent-* resolution is never needed for a
-round's own branch key (see docs/transcript-analysis-architecture.md).
+the sidechain timeline step in scope._attributed_branch is never needed for
+a round's own branch key (see docs/transcript-analysis-architecture.md).
 """
 from __future__ import annotations
 
@@ -142,11 +144,13 @@ def _session_record_branches(records: list[dict], windows: list[tuple[int, int, 
     pricing as a pure function of (records, windows).
 
     Pass 1 carries forward the last non-empty gitBranch from a
-    non-sidechain record at every index, mirroring cost.py's
-    _session_branch_index main-thread-only carry-forward. A sidechain
-    record's own gitBranch can be an isolation:"worktree" dispatch's
-    ephemeral worktree-agent-* branch, not this session's real one, so it
-    is read but never becomes the carried value.
+    non-sidechain record at every index, mirroring scope._session_branch_index's
+    main-thread-only timeline. A sidechain record's own gitBranch can be an
+    isolation:"worktree" dispatch's ephemeral worktree-agent-* branch, not this
+    session's real one, so it is read but never becomes the carried value.
+    Each index's carried value then goes through scope._attribute_carried_branch,
+    which credits the session's leading default-branch records to the first
+    branch the session enters, by that index's own record timestamp.
 
     Pass 2 overwrites every index inside a round's window
     [open_idx, window_end) with that window's own opening-record branch,
@@ -155,14 +159,15 @@ def _session_record_branches(records: list[dict], windows: list[tuple[int, int, 
     changes mid-window. Windows are disjoint and in index order, so this
     never writes one index twice.
     """
+    branch_context = scope._session_branch_context(records)
     branches: list[str] = [""] * len(records)
     last_branch = ""
     for idx, rec in enumerate(records):
         if not rec.get("isSidechain"):
-            branch = rec.get("gitBranch") or ""
+            branch = scope._branch_tag(rec)
             if branch:
                 last_branch = branch
-        branches[idx] = last_branch
+        branches[idx] = scope._attribute_carried_branch(last_branch, rec, branch_context) or ""
     for open_idx, window_end, _skill in windows:
         window_branch = branches[open_idx]
         for idx in range(open_idx, window_end):
@@ -271,7 +276,9 @@ def compute_review_round_costs(
 
     A round's branch is keyed (root_idx, branch). branch is the round's own
     opening record's gitBranch, carried forward from the last non-empty
-    main-thread value when absent, and every record inside that round's
+    main-thread value when absent and credited to the first branch the
+    session enters when it is a leading default-branch record
+    (_session_record_branches), and every record inside that round's
     window — not only the opening record — is attributed to that same
     branch for branch_totals purposes (_session_record_branches), so a
     round's dollars always land in the branch_totals bucket the round
@@ -287,8 +294,8 @@ def compute_review_round_costs(
     single root.
 
     skill_filter/branch_filter/since_ts/until_ts are applied as a final
-    filter over the detected rounds, by the round's own skill / raw branch
-    name / opening timestamp, matching judgment-pair's convention. They do
+    filter over the detected rounds, by the round's own skill / attributed
+    branch name / opening timestamp, matching judgment-pair's convention. They do
     not narrow which records are priced or which windows are detected, so
     branch_totals always reflects each branch's full, unwindowed corpus
     activity and a round's own main_dollars/agent_dollars/agents are
@@ -405,9 +412,10 @@ def compute_review_round_counts(
     call's Skill tool_use can appear in more than one record and count as
     two rounds.
 
-    branch_filter matches a round's own opening record's raw gitBranch,
-    carried forward when absent -- the same attribution
-    compute_review_round_costs uses for branch_key's second element.
+    branch_filter matches a round's own opening record's gitBranch, carried
+    forward when absent and attributed by _session_record_branches -- the
+    same attribution compute_review_round_costs uses for branch_key's second
+    element.
 
     No pricing, no dispatch index, no recursion: unlike
     compute_review_round_costs, this never opens a dispatched subagent's own
