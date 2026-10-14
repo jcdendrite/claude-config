@@ -59,6 +59,16 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Step 8 lists every dropped or downgraded claim and the `AUDIT_FINDING` paths, because no script detects a missing finding.
   - The `plan-architect` consult now reads the drafted body, and each correction applies as its own `Edit` after the session verifies it, with a further consult after every edit round.
   - The findings body follows a posted-text hygiene list with no review-process wording.
+- **`/review-pr` step 7-8 now applies the final consult's corrections before presenting, and an edit after presentation voids earlier approval.** **Supersedes** the clause "with a further consult after every edit round" in the consult sub-bullet of the "`/review-pr` now resolves checkable claims" entry above.
+  - Step 7 runs up to three consults before step 8 presents the body, and the third consult's verified corrections are applied rather than left unapplied.
+  - No consult runs after step 8 presents the body.
+  - The completion marker is written after the last consult and every body change.
+  - Step 8 presents a fresh `Read` of the findings-body file and names its path.
+  - Step 8 shows each `Edit` made after the last consult and not shown at an earlier presentation as a verbatim old/new pair, marked as not reviewed by any consult.
+  - Step 8's summary covers every consult's corrections, including findings added or upgraded, and the session's own proposals not applied.
+  - Any change after step 8 presents the body voids an earlier approval until the human approves the re-presented body.
+  - After the third consult, and after step 8 presents, a fix that clears a marker-write refusal is the one session-initiated change still allowed, beside edits the human asks for. The protected-finding rule bounds it.
+  - New marker-script tests cover a re-write after a body edit and a refused re-write, which leaves the marker's hash unchanged.
 - **`/plan-it`'s push offer now pins what the push publishes, and says when it skips the offer or a step fails.** **Supersedes** the push-offer sub-bullet of the "`/plan-review` approval now shows the approved plan's absolute path" entry below.
   - The offer is made only when the remote has exactly one push URL. Otherwise the session says which condition stopped the offer.
   - The question names the push URL, the branch tip's SHA, the remote branch, and the repository's visibility. Visibility is looked up only for `github.com` push URLs; for any other host the visibility lookup makes no request and the result is reported as unknown and treated as public.

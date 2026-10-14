@@ -341,18 +341,32 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   was read in the conversation (quoted in `docs/case-studies/hashline-edit-format.md`).
   Whether the session's own `Write` counts as that read is unverified, so the
   skill reads the body explicitly.
-- **A consult runs after every round of edits, and the third since the last
-  presentation is final.** Review after every round can loop when each consult
-  proposes another change the session can verify. Counting from the last
-  presentation keeps every edit the human requests under review. Showing the
-  third consult's corrections unapplied keeps every presented body one the
-  consult reviewed.
+- **Up to three consults run before step 8 presents the body, and none
+  after.** Review after every round of edits can loop when each consult
+  proposes another change the session can verify, so the third consult is
+  final. A rule that sends every applied correction back to a consult never
+  ends with all of them applied, so the third consult's verified corrections
+  are applied with no consult after them. The completion marker is written
+  after the last consult and the last change to the body. A change after step 8
+  presents the body gets no consult, so no consult can reverse a change the
+  human asked for. Step 8 shows that change as an old/new pair. A change after
+  step 8 presents the body voids any earlier approval until the human approves
+  the re-presented body, so the human approves the exact bytes that post.
+  Besides the human's own edits, a fix that clears a `marker.sh write` refusal
+  is the one session-initiated change allowed without a consult after the
+  third consult and after step 8 presents, and the protected-finding rule
+  still binds it.
 - **Residual.** The record is the session's own transcript, and every edit is
   session-authored, because `plan-architect` holds no write tool. Nothing
   mechanical detects a finding missing from the body. `marker.sh`'s body check
   and `review-pr-post.sh`'s hash check prove only that the posted text equals
   the marked text. The human's approval of the exact body is the backstop,
-  helped by step 8's listing of dropped claims and `AUDIT_FINDING` paths.
+  helped by step 8's listing of dropped claims and `AUDIT_FINDING` paths. For
+  any `Edit` made after the last consult, the human's reading of the presented
+  text is the only content review. `marker.sh`'s attribution check and
+  credential scan check the body's shape, not its content, so step 8 presents
+  a fresh `Read` of the file and shows each such `Edit` as its verbatim old and
+  new strings.
 - **`plan-architect`, `comment-discipline-reviewer`, and `skill-fidelity-reviewer`
   get no Bash.** These three hold no Bash, so
   the main session resolves the claims they mark as unchecked.
