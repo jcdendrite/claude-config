@@ -76,8 +76,10 @@ Key passage:
 > solved *now*, not the problem that the developer speculates *might*
 > need to be solved in the future."
 
-Grounds criterion #2's ticket-filing requirement when DEFER is
-applied to pre-existing structural debt.
+Grounds surfacing deferred pre-existing structural debt where a
+reader will find it, which criterion #2 does by requiring the DEFER
+row to name where the remediation would land. The source's file-a-bug
+advice maps to the on-request ticket, not to a requirement.
 
 ### Reviewer disposition framing
 

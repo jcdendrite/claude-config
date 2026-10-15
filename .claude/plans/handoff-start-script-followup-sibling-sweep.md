@@ -61,7 +61,7 @@ Rows:
 - Row 2 [assumption]: EM2 was to demote the manual activation, a selection made before plan review showed the premise false for typed `/handoff` [engineer-verified: "Demote activate to a recovery step (Recommended)"] — anchors: root — Superseded by the engineer's later selection in Row 33; kept as history.
 - Row 4 [assumption]: EM6 edits skill sites only and leaves CLAUDE.md alone [engineer-verified: "Why do you want to add to CLAUDE.md? I question that decision." and "Skill sites only, no CLAUDE.md (Recommended)"] — anchors: root — The label names where the rule lives; the evals fixtures and CHANGELOG entries in Critical files are tests and records for that rule, not a second rule surface [unverified].
 - Row 5 [assumption]: the session's option description, not the engineer's words: "amend code-review's DEFER criterion 2 and respond-pr's DEFERRED disposition so an engineer-accepted documented limit satisfies the deferral instead of a ticket" [unverified] — anchors: row4
-- Row 6 [assumption]: the engineer treats a documented limit as enough and wants follow-up tickets weighed before anyone proposes them. Quoted: "yeah documented limit is enough."; "there's a lot of open issues. we need to prioritize"; "sounds like the others can be punted" [unverified] — anchors: row4 — The session relayed these from earlier sessions' transcripts. They are not this session's words, and this design did not re-read the transcripts.
+- Row 6 [assumption]: the engineer treats a documented limit as enough and wants follow-up tickets weighed before anyone proposes them. The session's paraphrase, not engineer words: earlier sessions relayed the engineer's view that a documented limit is enough and that follow-up tickets should be weighed against an existing backlog before being proposed [unverified] — anchors: row4 — The session relayed this from earlier sessions' transcripts. It is not this session's own observation, and this design did not re-read the transcripts.
 - Row 7 [assumption]: "engineer-accepted" in Row 5 means different things in the two skills [unverified; the respond-pr flow is verified at `respond-pr/SKILL.md:32`, `:58`] — anchors: row5, row6
   - For code-review, the deferral is surfaced in the recommendation and in the PR body's deferred-findings table. A ticket is filed only when the engineer asks.
   - For respond-pr, the `none` default is the agent's decision at reply time. Replies post after the step-8 commit, and no step asks the engineer first. The reviewer sees the reply and can ask for a ticket. This widens Row 5's "engineer-accepted" for respond-pr.
@@ -126,13 +126,17 @@ Rows:
   - Re-wrap `_RESPOND_PR_FIXED_EXAMPLE`'s last fragment so no line exceeds the 130-column `line-length` in `pyproject.toml`.
   - In the fixture comment, note that the deferral fixtures guard against classifier tightening, not SKILL.md drift.
 - Row 43 [assumption]: the four defaults the revision chose stand [engineer-verified: "respond-pr 'none' is the agent's call at reply time", "Step 6 writes a one-line limit statement when none exists", "Required other-sites field with 'found, not changed' disclosure", "Criterion-2 DEFER rationale names where the remediation would land"] — anchors: row7, row19, row22, row24, row25, row40, row41 — Each label was selected at plan review after the revision; the option descriptions behind them are the session's wording.
+- Row 44 [assumption]: `code-review/REFERENCES.md`'s criterion-2 grounding line is updated to match the documented-limit rule [engineer-verified: "Edit it here (Recommended)"] — anchors: row19 — Selected at the cumulative review, which found the line still grounding the removed ticket requirement.
+- Row 45 [assumption]: respond-pr gives a comment alleging a security weakness or an enforcement-invariant bypass no special handling; it takes the same dispositions and documented-limit default as any other comment [engineer-verified: "C: no carve-out"] — anchors: row7, row40 — Selected over an always-stop and a stop-only-when-not-fixing option the session proposed after a security review raised the case.
+- Row 46 [assumption]: step 5 shows the one general sentence step 6 sweeps with, in the Plan cell or beside the classification when no table renders [engineer-verified: "Show it (Recommended)"] — anchors: row25
 
 ## Critical files
 
 One `code-writer` dispatch (Row 27):
 - `claude-skills/skills/handoff/SKILL.md`: the pre-edit line-17 paragraph and the moved directory section (Row 36).
 - `claude-skills/skills/code-review/SKILL.md`: the last sentence of line 381 only (Row 19).
-- `claude-skills/skills/respond-pr/SKILL.md`: lines 35, 38, 39, 40, 41, 48, 53, and 125, plus the inserted paragraph (Rows 22, 25).
+- `claude-skills/skills/respond-pr/SKILL.md`: lines 32, 35, 38, 39, 40, 41, 48, 53, and 125, plus the inserted paragraph (Rows 22, 25, 46).
+- `claude-skills/skills/code-review/REFERENCES.md`: the criterion-2 grounding line under the Google pre-existing-problems passage (Row 44).
 - `evals/test_review_bench_mining.py`: the fixture constants and the `TestClassifyReply` parametrize list (Row 42).
 - `CHANGELOG.md`: three bullets at the top of `## [Unreleased]` → `### Changed`, in the file's existing shape of a bold lead sentence with sub-bullets:
   1. **`/handoff` keeps its marker activation as the first step, run as its own Bash call, and now creates the handoffs directory just before drafting.**
@@ -193,7 +197,7 @@ Reuse:
 - **Other skills' activation steps** (plan-review, ready-for-review, ai-instruction-and-memory-files, respond-pr). Each activation fence is followed by prose, not by a second fenced recipe, so the adjacency the root names does not recur [verified: `plan-review/SKILL.md:19-22`, `ready-for-review/SKILL.md:25-28`, `ai-instruction-and-memory-files/SKILL.md:17-20`, `respond-pr/SKILL.md:14-18`].
 - **Subagent reach of handoff's activate and deactivate steps.** This is pre-existing, and this PR changes neither step.
 - **CLAUDE.md**, which the engineer declined (Row 4).
-- **Permissive follow-up mentions.** None of these requires a ticket, and the trace attributes the one skill-driven pushback to criterion 2:
+- **Permissive follow-up mentions.** None of these requires a ticket, and the trace attributes the skill-driven pushback it found to criterion 2:
   - `code-review/SKILL.md:341` ("propose grouping fixes into this PR vs follow-ups").
   - `plan-review/SKILL.md:269` (the reviewer "can … create follow-up tickets").
   - `memory-store-audit`'s "file as issue" verdict.

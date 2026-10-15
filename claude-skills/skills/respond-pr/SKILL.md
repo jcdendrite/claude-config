@@ -29,7 +29,7 @@ Fetch all review comments on the current branch's open pull request and address 
    - **Batched-design choices** — comments that are constraints on one design question, not independent issues (e.g., three comments that all resolve to "pick A or B"; naming conventions across functions; error-handling shape across handlers).
 
    If none apply after a careful read, say so — but the read is required. Per-comment patching that skips this step produces overlapping fixes and diffs reviewers must re-review one thread at a time.
-5. **Classify, then batch.** Assign each unresolved comment to one of the five types below. When there are 3+ unresolved comments, render the classification as a four-column table — Comment (one-line + source link) | Theme (from step 4, or `—`) | Disposition | Plan — before starting any per-comment work; the table forces all comments to be seen at once and ties each one to the cross-cutting themes named in step 4. All code changes across the batch go into a single commit (step 8); all replies are posted after that commit. Required fields are not optional — if a field's value is non-obvious, that is exactly when it earns its keep.
+5. **Classify, then batch.** Assign each unresolved comment to one of the five types below. When there are 3+ unresolved comments, render the classification as a four-column table — Comment (one-line + source link) | Theme (from step 4, or `—`) | Disposition | Plan — before starting any per-comment work; the table forces all comments to be seen at once and ties each one to the cross-cutting themes named in step 4. A `FIXED` comment's Plan cell holds the one general sentence step 6 sweeps with, so the sentence is visible before dispatch. With fewer comments and no table, state that sentence beside the comment's classification. All code changes across the batch go into a single commit (step 8); all replies are posted after that commit. Required fields are not optional — if a field's value is non-obvious, that is exactly when it earns its keep.
 
    - **`FIXED`** — a code change was made.
      Required fields: `disposition` (one of `fixed-as-requested` | `fixed-with-modification` | `fixed-differently`), `rationale` (REQUIRED when disposition ≠ `fixed-as-requested` — explain what was changed and why), `other-sites` (the `file:line` of each other site step 6 fixed for the same point, plus `found, not changed: <file:line>` for each sibling outside the PR's changed files, or `none — searched <what>`), `commit_sha` (filled in after the commit in step 8).
@@ -52,7 +52,18 @@ Fetch all review comments on the current branch's open pull request and address 
    *`EXPLAIN-DESIGN`:*
    > **[Claude Code]** The early return is intentional — when the session token is absent we want a fast 401 with no DB round-trip. The alternative (falling through to a null-check deeper in the stack) would silently succeed for unauthenticated callers in contexts where the token field is optional. `where-documented: auth/middleware.ts:42`
 
-6. Dispatch one `code-writer` covering the whole `FIXED` set as a single batch, not one dispatch per comment — step 4's holistic triage is why the batch is the right unit. For each `FIXED` comment, the prompt states the reviewer's point as one general sentence, naming the construct and the behavior it requires, and has `code-writer` apply the fix wherever that sentence holds in the PR's changed files. `code-writer` searches the whole repository for sites where that sentence holds, edits only those inside the PR's changed files, and returns, per comment, the `file:line` of each site it changed, each site it examined and left unchanged with the reason, and each sibling it found outside the changed files, unedited. The same batch writes, for each `OUT-OF-SCOPE` or `DEFERRED` comment whose `none — documented at` value has no existing line to name, a one-line statement of the limit at the site the comment cites, as a code comment or a doc sentence in that file's own syntax, and returns its `file:line`. Dispatch the batch whenever it has at least one `FIXED` comment or one such statement to write. The parent keeps the commit (step 8) and every reply (step 7). Then, for each unresolved comment:
+6. Dispatch one `code-writer` covering the whole `FIXED` set as a single batch, not one dispatch per comment — step 4's holistic triage is why the batch is the right unit. For each `FIXED` comment, the prompt states the reviewer's point as the one general sentence from step 5's Plan cell (or from step 5's classification when no table renders), naming the construct and the behavior it requires. `code-writer` applies the fix wherever that sentence holds in the PR's changed files.
+
+   `code-writer` searches the whole repository for sites where that sentence holds. It edits only the sites inside the PR's changed files. It returns, per comment:
+   - The `file:line` of each site it changed.
+   - Each site it examined and left unchanged, with the reason.
+   - Each sibling it found outside the changed files, unedited.
+
+   The same batch writes a one-line statement of the limit, for each `OUT-OF-SCOPE` or `DEFERRED` comment whose `none — documented at` value has no existing line to name. It writes the statement at the site the comment cites, as a code comment or a doc sentence in that file's own syntax. It returns the statement's `file:line`.
+
+   Dispatch the batch whenever it has at least one `FIXED` comment or one such statement to write. The parent keeps the commit (step 8) and every reply (step 7).
+
+   Then, for each unresolved comment:
    - Read the referenced file and line to understand the context
    - Apply the classification from step 5
    - For a `FIXED` comment, note the fix in the reply using the `FIXED` field template
