@@ -6,6 +6,13 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`/plan-it`'s push offer now runs one tested script, `plan-push-preflight.py`, instead of following about twenty prose steps.** The push command and the one-push-URL rule are unchanged.
+  - The script prints the question's facts and the exact push command. The question shows both, and the session runs that command only after a yes. The script never pushes.
+  - `gh` requests now go only to the push URL's own host, and only when that host is `github.com` or `GH_HOST`, always host-qualified. For any other push URL, the question says the open-PR check did not run, and no share URL is given.
+  - A branch, remote, owner, or repository name outside a fixed character set stops the offer. So do a push URL the script cannot parse without loss and a plan file missing from the pushed commit.
+  - The commit list ignores replace refs, `log.showSignature`, and `i18n.logOutputEncoding`. Every value the script prints has control, format, and line-separator characters removed.
+  - The question also names `push.gpgSign` and `remote.<remote>.receivepack` when either is set.
+  - If `~/.claude/scripts` is a real directory rather than a symlink into this checkout, re-run `./install.sh` so the new script is linked.
 - **`/review-pr` step 7-8 now applies the final consult's corrections before presenting, and an edit after presentation voids earlier approval.** **Supersedes** the clause "with a further consult after every edit round" in the consult sub-bullet of the "`/review-pr` now resolves checkable claims" entry below.
   - Step 7 runs up to three consults before step 8 presents the body, and the third consult's verified corrections are applied rather than left unapplied.
   - A change after step 8 presents the body gets no consult.

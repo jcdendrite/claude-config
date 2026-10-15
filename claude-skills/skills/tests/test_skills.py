@@ -5462,39 +5462,41 @@ class TestPlanItStep7FallbackToJudgment:
         )
 
 
-# plan-it Step 7 push bullets that decide whether a push happens, where it goes,
-# and what it sends.
+# plan-it Step 7 push bullets the session must follow itself; plan-push-preflight.py's
+# tests cover what the script computes.
 _PINNED_PLAN_IT_PUSH_CONSENT_CLAUSES: dict[str, str] = {
-    "exactly_one_push_url": (
-        "Ask only when `git remote get-url --push --all <remote>` prints exactly "
-        "one URL, since `git push <remote>` publishes to every URL it prints."
+    "runs_preflight_script": (
+        "Before offering, run `python3 ~/.claude/scripts/plan-push-preflight.py "
+        "<repo-relative plan path>`. Offer only when it exits 0 and prints both "
+        "`OFFER: ask` and a `PUSH_COMMAND` line. Otherwise give its "
+        "`STOP_REASON` line in the reply, or the command's error if it printed "
+        "none, instead of skipping the offer silently."
     ),
-    "tip_pinned_to_refs_heads_sha": (
-        "Before asking, resolve the branch tip once with "
-        "`git rev-parse --verify refs/heads/<branch>`, and name that `<sha>` "
-        "and the remote branch `refs/heads/<branch>` in the question."
+    "asks_with_fact_lines": (
+        "Ask the engineer through `AskUserQuestion`, not a closing chat "
+        "question. In the question, give every `FACT` line verbatim and in "
+        "order, then the `PUSH_COMMAND` text as the last line."
     ),
     "no_answer_no_push": "No answer means no push.",
-    "pinned_push_command": (
-        "Push only after a yes, with exactly `git -c push.pushOption= push "
-        "--no-follow-tags --no-recurse-submodules <remote> "
-        "<sha>:refs/heads/<branch>`, where `<sha>` is the literal hex named in "
-        "the question, never a command substitution. Escape every substituted "
-        "value so the shell sees one literal word, in this command and in every "
-        "other command in this list."
+    "push_command_verbatim": (
+        "Push only after a yes, by running the `PUSH_COMMAND` text the question "
+        "showed, exactly as printed, once. A yes covers only that command."
     ),
     "autonomous_shipping_no_waiver": "Autonomous shipping does not waive the question.",
 }
 
+# Every stdout key plan-push-preflight.py emits. The script's own tests pin the emitting side.
+_PLAN_PUSH_PREFLIGHT_OUTPUT_KEYS = ("OFFER", "STOP_REASON", "FACT", "PUSH_COMMAND", "SHARE_COMMAND")
+
 
 class TestPlanItStep7PushConsent:
-    """Pin the plan-it Step 7 push bullets, so a reword that drops the no-answer
-    or autonomous-shipping consent rule, the one-push-URL condition, the
-    `refs/heads/` tip resolution, a flag, the refspec, or the literal-SHA rule
-    of the pinned push command, or its escaping rule fails this test instead of
-    drifting silently. The pins check wording and the bullet's right edge, not
-    runtime behavior. On failure, re-read the guarantee and update the constant
-    only if the new wording preserves it.
+    """Pin the plan-it Step 7 push bullets the session follows itself, so a reword
+    that drops the script gate, the verbatim-`FACT` rule, the rule that the
+    question shows `PUSH_COMMAND`, a consent rule, the run-exactly-once rule, or
+    an output key the script emits fails this test instead of drifting silently.
+    The tests check wording, the bullet's right edge, and key names, not
+    behavior. On failure, re-read the guarantee and update the constant only if
+    the new wording preserves it.
     """
 
     @pytest.mark.parametrize("clause_key", sorted(_PINNED_PLAN_IT_PUSH_CONSENT_CLAUSES))
@@ -5508,6 +5510,13 @@ class TestPlanItStep7PushConsent:
                 f"plan-it/SKILL.md: Step 7's {clause_key!r} push bullet no longer "
                 "matches its pinned clause."
             ),
+        )
+
+    @pytest.mark.parametrize("output_key", _PLAN_PUSH_PREFLIGHT_OUTPUT_KEYS)
+    def test_step7_names_preflight_output_key(self, output_key: str) -> None:
+        raw_section = _raw_heading_section_text(_skill_file("plan-it"), _PLAN_IT_STEP7_HEADING)
+        assert f"`{output_key}" in raw_section, (
+            f"plan-it/SKILL.md: Step 7 no longer names the preflight script's {output_key!r} output key."
         )
 
 
