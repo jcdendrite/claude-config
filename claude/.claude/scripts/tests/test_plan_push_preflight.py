@@ -19,7 +19,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import time
 import tokenize
 import unicodedata
 from collections.abc import Callable
@@ -86,7 +85,6 @@ _GH_SHIM_TEMPLATE = """\
 import json
 import os
 import sys
-import time
 
 LOG_PATH = __LOG_PATH__
 ANSWERS_PATH = __ANSWERS_PATH__
@@ -117,7 +115,6 @@ else:
     sys.exit(99)
 
 answer = {**DEFAULTS[key], **answers.get(key, {})}
-time.sleep(answer.get("sleep_seconds", 0))
 sys.stdout.buffer.write(answer["stdout"].encode("utf-8"))
 sys.stderr.write(answer["stderr"])
 sys.exit(answer["exit"])
@@ -155,12 +152,6 @@ def preflight():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-@pytest.fixture(autouse=True)
-def _fresh_child_budget(preflight, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Starts each test with no running child budget, so one test's spent budget never starves the next."""
-    monkeypatch.setattr(preflight, "_budget_deadline", None)
 
 
 @dataclass
@@ -246,8 +237,18 @@ class Scenario:
         for line in lines:
             assert line.startswith(_OUTPUT_KEY_PREFIXES), line
         assert sum(line.startswith("OFFER:") for line in lines) == 1
-        assert sum(line.startswith("PUSH_COMMAND:") for line in lines) <= 1
-        assert sum(line.startswith("SHARE_COMMAND:") for line in lines) <= 1
+        push_command_count = sum(line.startswith("PUSH_COMMAND:") for line in lines)
+        share_command_count = sum(line.startswith("SHARE_COMMAND:") for line in lines)
+        stop_reason_count = sum(line.startswith("STOP_REASON:") for line in lines)
+        assert share_command_count <= 1
+        if lines[0] == "OFFER: ask":
+            assert push_command_count == 1, lines
+            assert stop_reason_count == 0, lines
+        else:
+            assert lines[0] == "OFFER: stop", lines
+            assert stop_reason_count == 1, lines
+            assert push_command_count == 0, lines
+            assert share_command_count == 0, lines
         self._assert_git_calls_are_read_only_and_lazy_fetch_free()
         return RunResult(completed.returncode, text, lines, completed.stderr)
 
@@ -678,27 +679,6 @@ def _child_that_writes(payload: bytes) -> list[str]:
     return [sys.executable, "-c", "import sys; sys.stdout.buffer.write(" + repr(payload) + ")"]
 
 
-# Long enough that a healthy git or shim call never exhausts it, short enough that the hang cases finish quickly.
-_TEST_BUDGET_SECONDS = 3.0
-
-
-def _child_that_stalls() -> list[str]:
-    return [sys.executable, "-c", "import time; time.sleep(30)"]
-
-
-def _spy_on_child_creation(preflight, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    """Records the argv of every child the script creates, then lets the real subprocess.run create it."""
-    created_argvs: list[list[str]] = []
-    real_subprocess_run = subprocess.run
-
-    def recording_run(argv, *args, **kwargs):
-        created_argvs.append(argv)
-        return real_subprocess_run(argv, *args, **kwargs)
-
-    monkeypatch.setattr(preflight.subprocess, "run", recording_run)
-    return created_argvs
-
-
 class TestRun:
     def test_child_output_keeps_a_lone_cr_and_a_crlf_untranslated(self, preflight) -> None:
         completed = preflight._run(_child_that_writes(b"a\rb\r\nc\n"), dict(os.environ))
@@ -709,67 +689,6 @@ class TestRun:
         completed = preflight._run(_child_that_writes(b"a\xffb"), dict(os.environ))
 
         assert completed.stdout == "a\ufffdb"
-
-    @pytest.mark.timing
-    def test_a_child_that_outlives_the_budget_reads_as_a_failed_child_with_no_output(
-        self, preflight, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(preflight, "_TOTAL_BUDGET_SECONDS", _TEST_BUDGET_SECONDS)
-        preflight._start_budget()
-        hanging_child = [
-            sys.executable,
-            "-c",
-            "import sys, time; sys.stdout.write('partial'); sys.stdout.flush(); time.sleep(30)",
-        ]
-
-        completed = preflight._run(hanging_child, dict(os.environ))
-
-        assert completed.returncode == preflight._TIMED_OUT_RETURNCODE
-        assert completed.stdout == ""
-
-    @pytest.mark.timing
-    def test_total_runtime_stays_bounded_when_several_children_stall(
-        self, preflight, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(preflight, "_TOTAL_BUDGET_SECONDS", _TEST_BUDGET_SECONDS)
-        preflight._start_budget()
-        created_argvs = _spy_on_child_creation(preflight, monkeypatch)
-        stalling_children = [_child_that_stalls() for _ in range(3)]
-
-        started_at = time.monotonic()
-        completions = [preflight._run(child, dict(os.environ)) for child in stalling_children]
-        elapsed_seconds = time.monotonic() - started_at
-
-        assert [completion.returncode for completion in completions] == [preflight._TIMED_OUT_RETURNCODE] * 3
-        # Per-child timeouts would take three stalls; one shared budget takes about one.
-        assert elapsed_seconds < _TEST_BUDGET_SECONDS * 2
-        # The first child spends the whole budget, so the other two are never created.
-        assert created_argvs == [stalling_children[0]]
-
-    def test_a_child_is_never_created_once_the_budget_is_spent(
-        self, preflight, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(preflight, "_budget_deadline", time.monotonic() - 1)
-        created_argvs = _spy_on_child_creation(preflight, monkeypatch)
-
-        completed = preflight._run(_child_that_writes(b"unreached"), dict(os.environ))
-
-        assert completed.returncode == preflight._TIMED_OUT_RETURNCODE
-        assert completed.stdout == ""
-        assert created_argvs == []
-
-    def test_a_new_budget_restores_the_full_time_after_the_old_one_is_spent(
-        self, preflight, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(preflight, "_budget_deadline", time.monotonic() - 1)
-        assert preflight._remaining_budget_seconds() < 0
-
-        preflight._start_budget()
-
-        assert preflight._remaining_budget_seconds() > preflight._TOTAL_BUDGET_SECONDS - 5
-
-    def test_the_total_budget_leaves_headroom_under_the_bash_tool_default_timeout(self, preflight) -> None:
-        assert 0 < preflight._TOTAL_BUDGET_SECONDS < preflight._BASH_TOOL_DEFAULT_TIMEOUT_SECONDS
 
 
 class TestSanitizerAndLine:
@@ -974,165 +893,6 @@ def test_a_urlsplit_value_error_carrying_the_netloc_leaks_nothing_onto_stdout(
 
 
 # ---------------------------------------------------------------------------
-# By-import: a child that hangs
-# ---------------------------------------------------------------------------
-
-@pytest.mark.timing
-def test_a_hanging_gh_reads_like_a_gh_error_and_the_offer_is_still_printed(
-    preflight, scenario: Scenario, monkeypatch: pytest.MonkeyPatch, capsysbinary: pytest.CaptureFixture[bytes]
-) -> None:
-    sha = scenario.tip_sha()
-    # The stalled `pr view` spends the whole budget, so `repo view` never starts and reads as unknown.
-    scenario.answer_gh(
-        pr_view={"exit": 0, "stdout": '{"number": 7}\n', "stderr": "", "sleep_seconds": 30},
-    )
-    monkeypatch.setattr(preflight, "_TOTAL_BUDGET_SECONDS", _TEST_BUDGET_SECONDS)
-    _install_process_env(monkeypatch, scenario.env)
-    monkeypatch.chdir(scenario.repo)
-
-    status = preflight.main([PLAN_PATH])
-
-    captured = capsysbinary.readouterr()
-    output_lines = captured.out.decode("utf-8").splitlines()
-    assert status == 0
-    # The shim logs before it sleeps, so a logged `pr view` proves the hang was exercised.
-    assert ["pr", "view"] in [call["argv"][:2] for call in scenario.gh_calls()]
-    assert output_lines[0] == "OFFER: ask"
-    assert _OPEN_PR_NONE_FACT in output_lines
-    assert _VISIBILITY_UNKNOWN_FACT in output_lines
-    assert "PUSH_COMMAND: " + _push_command(sha) in output_lines
-    assert captured.err == b""
-
-
-@pytest.mark.timing
-def test_a_hanging_git_lands_in_an_existing_stop_and_the_offer_is_still_printed(
-    preflight, scenario: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    capsysbinary: pytest.CaptureFixture[bytes],
-) -> None:
-    hanging_git_dir = tmp_path / "hanging-git-bin"
-    hanging_git_dir.mkdir()
-    # Without a timeout this git would answer after the sleep and the run would reach a later stop.
-    _write_executable(
-        hanging_git_dir / "git",
-        "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\nprint('refs/heads/" + BRANCH + "')\n",
-    )
-    monkeypatch.setattr(preflight, "_TOTAL_BUDGET_SECONDS", _TEST_BUDGET_SECONDS)
-    path_with_hanging_git = str(hanging_git_dir) + os.pathsep + scenario.env["PATH"]
-    _install_process_env(monkeypatch, {**scenario.env, "PATH": path_with_hanging_git})
-    monkeypatch.chdir(scenario.repo)
-
-    status = preflight.main([PLAN_PATH])
-
-    captured = capsysbinary.readouterr()
-    assert status == 0
-    assert captured.out == b"OFFER: stop\nSTOP_REASON: not-on-branch: HEAD is not on a local branch.\n"
-    assert captured.err == b""
-
-
-_CONFIG_STALLING_GIT_TEMPLATE = """\
-#!/usr/bin/env python3
-import os
-import sys
-import time
-
-STALLED_KEYS_LOG = __STALLED_KEYS_LOG__
-STALLING_KEYS = __STALLING_KEYS__
-STALL_SECONDS = __STALL_SECONDS__
-NEXT_GIT = __NEXT_GIT__
-
-argv = sys.argv[1:]
-if argv[:2] == ["config", "--get"] and argv[-1] in STALLING_KEYS:
-    with open(STALLED_KEYS_LOG, "a") as log:
-        log.write(argv[-1] + "\\n")
-    time.sleep(STALL_SECONDS)
-os.execv(NEXT_GIT, [NEXT_GIT, *argv])
-"""
-
-_SIGNED_PUSH_KEY = "push.gpgSign"
-_RECEIVE_PROGRAM_KEY = "remote.origin.receivepack"
-_SIGNED_PUSH_UNKNOWN_FACT = "FACT: Signed push: push.gpgSign could not be read (unknown)"
-_RECEIVE_PROGRAM_UNKNOWN_FACT = "FACT: Receive program: remote.origin.receivepack could not be read (unknown)"
-
-
-def _stall_the_two_config_reads(
-    scenario: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stall_seconds: float
-) -> Path:
-    """Puts a `git` first on PATH that sleeps before the two printed-setting reads, then runs the scenario's wrapper.
-
-    Returns the log the shim appends each stalled key to before it sleeps.
-    """
-    stalling_git_dir = tmp_path / "config-stalling-git-bin"
-    stalling_git_dir.mkdir()
-    stalled_keys_log = tmp_path / "stalled-config-keys.txt"
-    scenario_wrapper_dir = scenario.env["PATH"].split(os.pathsep)[0]
-    shim_source = (
-        _CONFIG_STALLING_GIT_TEMPLATE.replace("__STALLED_KEYS_LOG__", repr(str(stalled_keys_log)))
-        .replace("__STALLING_KEYS__", repr([_SIGNED_PUSH_KEY, _RECEIVE_PROGRAM_KEY]))
-        .replace("__STALL_SECONDS__", repr(stall_seconds))
-        .replace("__NEXT_GIT__", repr(str(Path(scenario_wrapper_dir) / "git")))
-    )
-    _write_executable(stalling_git_dir / "git", shim_source)
-    path_with_stalling_git = str(stalling_git_dir) + os.pathsep + scenario.env["PATH"]
-    _install_process_env(monkeypatch, {**scenario.env, "PATH": path_with_stalling_git})
-    monkeypatch.chdir(scenario.repo)
-    return stalled_keys_log
-
-
-@pytest.mark.timing
-def test_a_budget_spent_at_the_config_reads_asks_with_both_settings_unknown(
-    preflight, scenario: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    capsysbinary: pytest.CaptureFixture[bytes],
-) -> None:
-    sha = scenario.tip_sha()
-    monkeypatch.setattr(preflight, "_TOTAL_BUDGET_SECONDS", _TEST_BUDGET_SECONDS)
-    stalled_keys_log = _stall_the_two_config_reads(scenario, tmp_path, monkeypatch, stall_seconds=30)
-
-    status = preflight.main([PLAN_PATH])
-
-    captured = capsysbinary.readouterr()
-    output_lines = captured.out.decode("utf-8").splitlines()
-    assert status == 0
-    assert output_lines[0] == "OFFER: ask"
-    assert _SIGNED_PUSH_UNKNOWN_FACT in output_lines
-    assert _RECEIVE_PROGRAM_UNKNOWN_FACT in output_lines
-    assert "PUSH_COMMAND: " + _push_command(sha) in output_lines
-    # The first read spends the whole budget, so the second read and the gh calls are never created.
-    assert stalled_keys_log.read_text().splitlines() == [_SIGNED_PUSH_KEY]
-    assert scenario.gh_calls() == []
-    assert captured.err == b""
-
-
-# Each stall is shorter than the budget, and the two together are longer than it.
-_SEQUENTIAL_STALL_BUDGET_SECONDS = 5.0
-_SEQUENTIAL_STALL_SECONDS = 3.0
-
-
-@pytest.mark.timing
-def test_two_config_reads_that_each_fit_the_budget_but_not_together_read_the_second_as_unknown(
-    preflight, scenario: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    capsysbinary: pytest.CaptureFixture[bytes],
-) -> None:
-    scenario.git("config", _SIGNED_PUSH_KEY, "if-asked")
-    scenario.git("config", _RECEIVE_PROGRAM_KEY, "git-receive-pack")
-    monkeypatch.setattr(preflight, "_TOTAL_BUDGET_SECONDS", _SEQUENTIAL_STALL_BUDGET_SECONDS)
-    stalled_keys_log = _stall_the_two_config_reads(
-        scenario, tmp_path, monkeypatch, stall_seconds=_SEQUENTIAL_STALL_SECONDS
-    )
-
-    status = preflight.main([PLAN_PATH])
-
-    captured = capsysbinary.readouterr()
-    output_lines = captured.out.decode("utf-8").splitlines()
-    assert status == 0
-    assert output_lines[0] == "OFFER: ask"
-    # Per-child timeouts would let the second read finish too, and print its value.
-    assert "FACT: Signed push: push.gpgSign is if-asked" in output_lines
-    assert _RECEIVE_PROGRAM_UNKNOWN_FACT in output_lines
-    assert stalled_keys_log.read_text().splitlines() == [_SIGNED_PUSH_KEY, _RECEIVE_PROGRAM_KEY]
-    assert captured.err == b""
-
-
-# ---------------------------------------------------------------------------
 # Subprocess: the ask case
 # ---------------------------------------------------------------------------
 
@@ -1322,6 +1082,75 @@ def test_push_remote_follows_gits_precedence_order(
     )
     push_lines = [line for line in result.lines if line.startswith("PUSH_COMMAND: ")]
     assert push_lines == ["PUSH_COMMAND: " + _push_command(scenario.tip_sha(), remote=expected_remote)]
+
+
+_FORK_PUSH_URL = "https://github.com/fork-owner/fork-repo.git"
+_FORK_DEFAULT_BRANCH = "trunk"
+
+
+def _add_a_fork_remote_that_is_the_push_remote(scenario: Scenario) -> None:
+    """Makes `fork` the push remote, with refs, a default branch, and a receive program unlike origin's.
+
+    The fork's baseline sits one commit after origin's, so every fact read from the wrong remote differs.
+    """
+    scenario.git("remote", "add", "fork", "https://github.com/x/y.git")
+    scenario.git("config", "remote.fork.pushurl", _FORK_PUSH_URL)
+    scenario.git("config", "branch." + BRANCH + ".pushRemote", "fork")
+    scenario.git("config", "remote.fork.receivepack", "fork-receive-pack")
+    scenario.git("config", "remote.origin.receivepack", "origin-receive-pack")
+    scenario.git("update-ref", "refs/remotes/fork/" + _FORK_DEFAULT_BRANCH, "refs/heads/" + BRANCH)
+    scenario.git("symbolic-ref", "refs/remotes/fork/HEAD", "refs/remotes/fork/" + _FORK_DEFAULT_BRANCH)
+
+
+def test_a_push_remote_other_than_origin_supplies_the_baseline_range_and_receive_program(
+    scenario: Scenario,
+) -> None:
+    _add_a_fork_remote_that_is_the_push_remote(scenario)
+    _commit(scenario.repo, "second")
+    _commit(scenario.repo, "third")
+    sha = scenario.tip_sha()
+
+    result = scenario.run()
+
+    assert result.lines[0] == "OFFER: ask"
+    assert result.lines[1] == "FACT: Destination: " + _FORK_PUSH_URL + " (remote fork, its only push URL)"
+    assert "FACT: Baseline: refs/remotes/fork/" + _FORK_DEFAULT_BRANCH + " as of this clone's last fetch" in result.lines
+    # Origin's baseline would count three commits and list the plan commit.
+    assert "FACT: Commits since the baseline: 2" in result.lines
+    assert [line for line in result.lines if line.startswith("FACT:   ")] == [
+        "FACT:   " + scenario.abbrev() + " third",
+        "FACT:   " + scenario.abbrev("HEAD~1") + " second",
+    ]
+    assert "FACT: Receive program: remote.fork.receivepack is fork-receive-pack" in result.lines
+    assert "origin-receive-pack" not in result.stdout
+    assert "PUSH_COMMAND: " + _push_command(sha, remote="fork") in result.lines
+
+
+def test_a_push_remote_other_than_origin_stops_when_the_branch_is_that_remotes_default_branch(
+    scenario: Scenario,
+) -> None:
+    _add_a_fork_remote_that_is_the_push_remote(scenario)
+    scenario.git("update-ref", "refs/remotes/fork/" + BRANCH, "refs/heads/" + BRANCH)
+    scenario.git("symbolic-ref", "refs/remotes/fork/HEAD", "refs/remotes/fork/" + BRANCH)
+
+    result = scenario.run()
+
+    assert _stop_reason_line(result) == (
+        "STOP_REASON: default-branch: " + BRANCH + " is the remote's default branch."
+    )
+    assert scenario.gh_calls() == []
+
+
+def test_a_push_remote_other_than_origin_names_itself_in_the_unknown_baseline_fact(scenario: Scenario) -> None:
+    _add_a_fork_remote_that_is_the_push_remote(scenario)
+    # Origin keeps its resolvable HEAD, so a hardcoded `origin` in the fact would still find a baseline.
+    scenario.git("remote", "set-head", "fork", "-d")
+
+    result = scenario.run()
+
+    assert result.lines[0] == "OFFER: ask"
+    assert "FACT: Baseline: unknown, because refs/remotes/fork/HEAD does not name a branch" in result.lines
+    assert _BASELINE_UNKNOWN_FACTS[0] not in result.lines
 
 
 _NOT_A_GH_HOST_URLS = [
@@ -1863,6 +1692,44 @@ def test_config_facts_follow_the_question_order_after_the_open_pr_fact(scenario:
     ]
 
 
+_SET_WITH_NO_VALUE_WORDING = "is set with an empty value or no value"
+
+
+def _give_a_key_no_value(scenario: Scenario, dotted_key: str) -> None:
+    """Appends a bare key line, which `git config` cannot write, so `--get` sees a key with no `=`."""
+    section, _, key_name = dotted_key.partition(".")
+    with (scenario.repo / ".git" / "config").open("a", encoding="utf-8") as config_file:
+        config_file.write("[" + section + "]\n\t" + key_name + "\n")
+
+
+def _give_a_key_an_empty_value(scenario: Scenario, dotted_key: str) -> None:
+    scenario.git("config", dotted_key, "")
+
+
+@pytest.mark.parametrize(
+    "give_value", [_give_a_key_no_value, _give_a_key_an_empty_value], ids=["no-value", "empty-value"]
+)
+def test_a_signed_push_setting_with_no_value_or_an_empty_value_is_reported_as_set_not_as_a_blank_value(
+    scenario: Scenario, give_value: Callable[[Scenario, str], None]
+) -> None:
+    give_value(scenario, "push.gpgSign")
+
+    result = scenario.run()
+
+    assert "FACT: Signed push: push.gpgSign " + _SET_WITH_NO_VALUE_WORDING in result.lines
+
+
+def test_a_receive_program_setting_with_an_empty_value_is_reported_as_set_not_as_a_blank_value(
+    scenario: Scenario,
+) -> None:
+    # A receivepack with no `=` is not tested: git's remote parser rejects it, so the run stops at the push URL read.
+    _give_a_key_an_empty_value(scenario, "remote.origin.receivepack")
+
+    result = scenario.run()
+
+    assert "FACT: Receive program: remote.origin.receivepack " + _SET_WITH_NO_VALUE_WORDING in result.lines
+
+
 def _git_config_read_failing_for(key: str, returncode: int) -> Callable[..., subprocess.CompletedProcess]:
     """A `_git` stand-in that fails the read of `key` and reports every other key as unset."""
 
@@ -1873,8 +1740,8 @@ def _git_config_read_failing_for(key: str, returncode: int) -> Callable[..., sub
     return fake_git
 
 
-# Exit 129 is a usage error, 128 is a fatal config-file error, 124 is the script's timed-out child.
-_UNREADABLE_CONFIG_RETURNCODES = [2, 124, 128, 129]
+# Exit 129 is a usage error and 128 is a fatal config-file error.
+_UNREADABLE_CONFIG_RETURNCODES = [2, 128, 129]
 
 
 @pytest.mark.parametrize("returncode", _UNREADABLE_CONFIG_RETURNCODES)

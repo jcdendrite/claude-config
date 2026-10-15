@@ -5467,7 +5467,9 @@ class TestPlanItStep7FallbackToJudgment:
 _PINNED_PLAN_IT_PUSH_CONSENT_CLAUSES: dict[str, str] = {
     "runs_preflight_script": (
         "Before offering, run `python3 ~/.claude/scripts/plan-push-preflight.py "
-        "<repo-relative plan path>`. Offer only when it exits 0 and prints both "
+        "<repo-relative plan path>`, passing the path as one single-quoted "
+        "literal word, since double quotes still expand `$(...)`. Offer only "
+        "when it exits 0 and prints both "
         "`OFFER: ask` and a `PUSH_COMMAND` line. Otherwise give its "
         "`STOP_REASON` line in the reply, or the command's error if it printed "
         "none, instead of skipping the offer silently."

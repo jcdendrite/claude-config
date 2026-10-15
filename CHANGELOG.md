@@ -12,7 +12,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - A branch, remote, owner, or repository name outside a fixed character set stops the offer. So do a push URL the script cannot parse without loss and a plan file missing from the pushed commit.
   - The commit list ignores replace refs, `log.showSignature`, and `i18n.logOutputEncoding`. Every value the script prints has control, format, and line-separator characters removed.
   - The question also names `push.gpgSign` and `remote.<remote>.receivepack` when either is set.
-  - If `~/.claude/scripts` is a real directory rather than a symlink into this checkout, re-run `./install.sh` so the new script is linked.
+  - If `~/.claude/scripts` is a real directory rather than a symlink into this checkout, re-run `./install.sh` so the new script is linked. Until then, `/plan-it` Step 7 reports an error and skips the push offer.
 - **`/review-pr` step 7-8 now applies the final consult's corrections before presenting, and an edit after presentation voids earlier approval.** **Supersedes** the clause "with a further consult after every edit round" in the consult sub-bullet of the "`/review-pr` now resolves checkable claims" entry below.
   - Step 7 runs up to three consults before step 8 presents the body, and the third consult's verified corrections are applied rather than left unapplied.
   - A change after step 8 presents the body gets no consult.

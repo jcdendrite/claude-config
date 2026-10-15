@@ -140,7 +140,7 @@ where implementation runs, and there is none.
 
 **Sharing the plan.** This applies only on the branch where the plan file was committed above. Share the plan with the engineer by the plan file's own absolute path. Never open a PR, draft or ready, at plan time. When the plan adds a design document or defines a cross-team contract (a schema shape, enum, or API surface other teams or pipelines depend on), readers outside this session may need lead time, so offer to push the branch with no PR:
 
-- Before offering, run `python3 ~/.claude/scripts/plan-push-preflight.py <repo-relative plan path>`. Offer only when it exits 0 and prints both `OFFER: ask` and a `PUSH_COMMAND` line. Otherwise give its `STOP_REASON` line in the reply, or the command's error if it printed none, instead of skipping the offer silently.
+- Before offering, run `python3 ~/.claude/scripts/plan-push-preflight.py <repo-relative plan path>`, passing the path as one single-quoted literal word, since double quotes still expand `$(...)`. Offer only when it exits 0 and prints both `OFFER: ask` and a `PUSH_COMMAND` line. Otherwise give its `STOP_REASON` line in the reply, or the command's error if it printed none, instead of skipping the offer silently.
 - Ask the engineer through `AskUserQuestion`, not a closing chat question. In the question, give every `FACT` line verbatim and in order, then the `PUSH_COMMAND` text as the last line.
 - No answer means no push.
 - Push only after a yes, by running the `PUSH_COMMAND` text the question showed, exactly as printed, once. A yes covers only that command.
