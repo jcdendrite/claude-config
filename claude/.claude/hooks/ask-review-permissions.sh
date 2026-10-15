@@ -44,7 +44,7 @@ FOLDED_RAW_PATH=$(printf '%s' "$FILE_PATH" | tr '[:upper:]' '[:lower:]')
 
 MATCHED=0
 # Match .claude/settings*.json paths: settings.json, settings.local.json, etc.
-if printf '%s\n' "$FOLDED_RAW_PATH" | grep -qE '\.claude/settings[^/]*\.json$'; then
+if grep -qE '\.claude/settings[^/]*\.json$' <<< "$FOLDED_RAW_PATH"; then
   MATCHED=1
 fi
 
@@ -60,7 +60,7 @@ if [ "$MATCHED" -eq 0 ]; then
       FILE_NORMALIZE_OK=1
       NORMALIZED_PATH=$(_lib_realpath_m "$FILE_PATH" 2>/dev/null) || { NORMALIZED_PATH="$FILE_PATH"; FILE_NORMALIZE_OK=0; }
       FOLDED_NORMALIZED_PATH=$(printf '%s' "$NORMALIZED_PATH" | tr '[:upper:]' '[:lower:]')
-      if printf '%s\n' "$FOLDED_NORMALIZED_PATH" | grep -qE '\.claude/settings[^/]*\.json$'; then
+      if grep -qE '\.claude/settings[^/]*\.json$' <<< "$FOLDED_NORMALIZED_PATH"; then
         MATCHED=1
       fi
 
@@ -85,7 +85,7 @@ if [ "$MATCHED" -eq 0 ]; then
           # _LIB_CONFIG_DIR_ESCAPE_SED_EXPR (_lib.sh) documents the escape
           # class's own coverage and known limitations.
           FOLDED_CONFIG_DIR=$(printf '%s' "$COMPARE_CONFIG_DIR" | tr '[:upper:]' '[:lower:]' | sed "$_LIB_CONFIG_DIR_ESCAPE_SED_EXPR")
-          if printf '%s\n' "$COMPARE_PATH" | grep -qE "^${FOLDED_CONFIG_DIR}/settings[^/]*\.json\$"; then
+          if grep -qE "^${FOLDED_CONFIG_DIR}/settings[^/]*\.json\$" <<< "$COMPARE_PATH"; then
             MATCHED=1
           fi
         fi

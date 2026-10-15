@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    LARGE_MULTILINE_TAIL,
     assert_brought_in_file_hidden_from_gate_base,
     assert_cap_engaged,
     bash_input,
@@ -2178,6 +2179,43 @@ class TestDenyPrivateProjectRefs:
             )
             == "deny"
         )
+
+    @pytest.mark.parametrize(
+        "first_line",
+        [
+            "gh api -X POST 'repos/x/y/issues?title=WIDGET-123'",
+            "gh api repos/x/y/issues/1/comments -f body='Fixes WIDGET-123'",
+        ],
+        ids=["method-flag-only-trigger", "field-flag-only-trigger"],
+    )
+    def test_mutating_gh_api_flag_on_first_line_of_large_multiline_command_is_scanned(
+        self, claude_config_repo, first_line
+    ):
+        """Required regression test: a mutating `gh api` flag on the first
+        line of a multi-line command above pipe capacity still gets its body
+        scanned. The mechanism is in the LARGE_MULTILINE_TAIL comment in
+        tests/helpers.py."""
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(first_line + LARGE_MULTILINE_TAIL),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "tracker-ID tokens" in reason
+
+    def test_chain_tip_survives_large_multiline_command(self, claude_config_repo):
+        """Required regression test: a deny keeps its `&&` / `||` chain hint
+        when the chain operator is on the first line of a multi-line command
+        above pipe capacity. The mechanism is in the LARGE_MULTILINE_TAIL
+        comment in tests/helpers.py."""
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git add . && git commit -m 'Fix WIDGET-1 issue'" + LARGE_MULTILINE_TAIL),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "tracker-ID tokens" in reason
+        assert "Tip: this command chains" in reason
 
     # -- Tracker-vs-blocklist priority -------------------------------------
     # Header invariant (hook lines 83-84): "Tracker-ID matches take

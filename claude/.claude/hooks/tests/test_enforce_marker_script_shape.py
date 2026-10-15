@@ -13,6 +13,7 @@ import pytest
 from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
+    LARGE_MULTILINE_TAIL,
     SCRIPTS_DIR,
     build_path_without,
     run_hook,
@@ -105,12 +106,6 @@ TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh check code-review",
     "~/.claude/scripts/marker.sh check verification",
 ]
-
-# About 320 KB in 32 lines. It must be multi-line: `grep -q` over one unbroken
-# line reads the whole line before it exits, so only a command whose first
-# line matches and whose remainder is large makes a `printf | grep -q`
-# pipeline see SIGPIPE under pipefail. Few lines keep the per-fragment scan fast.
-LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
 
 
 class TestEnforceMarkerScriptShape:
@@ -661,6 +656,15 @@ class TestEnforceMarkerScriptShape:
         """
         cmd = "~/.claude/scripts/../scripts/marker.sh activate code-review"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_traversal_on_first_line_of_large_multiline_marker_command_denied(self):
+        """Required regression test: a `..` path segment on the first line of
+        a multi-line marker command above pipe capacity is still denied. The
+        mechanism is in the LARGE_MULTILINE_TAIL comment in tests/helpers.py."""
+        cmd = "~/.claude/scripts/../scripts/marker.sh write code-review" + LARGE_MULTILINE_TAIL
+        reason = run_hook_reason(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd))
+        assert reason is not None
+        assert "path traversal" in reason
 
 
 class TestDevNullRedirectAllowed:

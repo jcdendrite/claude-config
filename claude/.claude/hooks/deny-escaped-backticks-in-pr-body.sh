@@ -35,9 +35,7 @@
 #   3.2 the `-f` test passes for them inside the reading loop. Accepted debt
 #   shared with deny-pii-in-commits.sh and deny-private-project-refs.sh.
 
-# Every grep -q in this file reads a here-string, never a pipe. Under
-# pipefail, grep exiting at its first match while printf still writes a large
-# multi-line input fails the pipeline, which reads as no match.
+# grep -q reads a here-string, never a pipe: see test_no_pipe_into_early_exit_grep in hooks/tests/test_hook_alignment.py.
 set -uo pipefail
 
 DENY_GATE_LABEL="backtick-escape"

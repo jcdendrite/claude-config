@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    LARGE_MULTILINE_TAIL,
     assert_cap_engaged,
     bash_input,
     build_path_without,
@@ -21,14 +22,6 @@ from helpers import (
 )
 
 STOW_REMINDER_HOOK = HOOKS_DIR / "require-stow-reminder.sh"
-
-# About 320 KB in 32 lines. It must be multi-line and exceed 100 KiB, the size
-# at which the pipe form misses on every run (see
-# .claude/plans/stow-reminder-sigpipe-fix.md row 5), not just pipe capacity:
-# a pipe into `grep -q` returns 141 under pipefail once grep exits on a
-# first-line match before the writer finishes.
-LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
-assert LARGE_MULTILINE_TAIL.count("\n") > 1 and len(LARGE_MULTILINE_TAIL) > 100 * 1024
 
 
 @pytest.fixture

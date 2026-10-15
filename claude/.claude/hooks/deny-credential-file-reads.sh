@@ -53,7 +53,7 @@ fi
 _matches_credential_path() {
   local path="$1"
   # Case-folded (-i): on a case-insensitive-but-case-preserving filesystem (macOS APFS/HFS+, Windows NTFS), `id_RSA` opens the same file as `id_rsa` -- a case-sensitive match here would silently bypass a gate with no other bypass valve.
-  if printf '%s' "$path" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
+  if grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX" <<< "$path"; then
     return 0
   fi
   # Custom-named SSH keys (deploy_key, github_actions_key, ...) have no

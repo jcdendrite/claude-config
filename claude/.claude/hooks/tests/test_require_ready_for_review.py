@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    LARGE_MULTILINE_TAIL,
     SKILLS_DIR,
     assert_cap_engaged,
     assert_gate_handles_traversal_session_id,
@@ -339,6 +340,29 @@ class TestRequireReadyForReview:
             )
             == "deny"
         )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin :old-branch $(echo feature)",
+            "git push --tags $(echo origin feature)",
+        ],
+        ids=["colon-refspec", "tags"],
+    )
+    def test_bypass_push_with_substitution_in_large_multiline_command_still_gated(
+        self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists, command
+    ):
+        """Required regression test: a `$(` on the first line of a multi-line
+        command above pipe capacity still disqualifies the delete-only and
+        tags-only push bypasses. The mechanism is in the LARGE_MULTILINE_TAIL
+        comment in tests/helpers.py."""
+        reason = run_hook_reason(
+            READY_FOR_REVIEW_HOOK,
+            bash_input(command + LARGE_MULTILINE_TAIL, session_id="s"),
+            cwd=repo_on_feature_branch,
+        )
+        assert reason is not None
+        assert "Push to a branch with an open PR" in reason
 
     def test_all_push_fragments_bypassable_still_allowed(
         self, isolated_home, repo_on_feature_branch, fake_gh_pr_exists
