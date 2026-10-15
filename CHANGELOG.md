@@ -19,6 +19,14 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - The commit list ignores replace refs, `log.showSignature`, and `i18n.logOutputEncoding`. Every value the script prints has control, format, and line-separator characters removed.
   - The question also names `push.gpgSign` and `remote.<remote>.receivepack` when either is set.
   - If `~/.claude/scripts` is a real directory rather than a symlink into this checkout, re-run `./install.sh` so the new script is linked. Until then, `/plan-it` Step 7 reports an error and skips the push offer.
+- **`/handoff` keeps its marker activation as the first step, run as its own Bash call, and now creates the handoffs directory just before drafting.**
+  - The two one-line recipes no longer sit next to each other. `enforce-marker-script-shape.sh` denies the activation chained to a non-`marker.sh` command.
+  - A run that the warrant check stops no longer creates the directory.
+- **code-review's DEFER criterion 2 and respond-pr's `OUT-OF-SCOPE`/`DEFERRED` replies take a documented limit by default, and a ticket is filed only on request.**
+  - A criterion-2 DEFER row names where the remediation would land, and the PR body carries it.
+  - A respond-pr `none — documented at <file:line>` reply names a line on the pushed branch, which respond-pr may add to the diff as a one-line limit statement, and says no follow-up is scheduled.
+- **respond-pr `FIXED` replies carry a required `other-sites` field, and step 6 applies each fix at sibling sites in the PR's changed files.**
+  - Siblings found outside those files are listed as `found, not changed` and are not edited.
 - **`/review-pr` step 7-8 now applies the final consult's corrections before presenting, and an edit after presentation voids earlier approval.** **Supersedes** the clause "with a further consult after every edit round" in the consult sub-bullet of the "`/review-pr` now resolves checkable claims" entry below.
   - Step 7 runs up to three consults before step 8 presents the body, and the third consult's verified corrections are applied rather than left unapplied.
   - A change after step 8 presents the body gets no consult.
