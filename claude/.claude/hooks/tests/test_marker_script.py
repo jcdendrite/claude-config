@@ -6169,6 +6169,71 @@ class TestMarkerScriptReviewPr:
         assert lines[2] == expected_hash
         assert lines[3] == "checkout"
 
+    def test_rewrite_after_a_body_edit_replaces_the_marker_hash_with_the_edited_bodys(
+        self, isolated_home, git_repo
+    ):
+        """review-pr-post.sh refuses a body whose sha256 differs from marker
+        line 3, so re-running the write after an edit is the only way to post
+        the edited body. The re-write must replace the stored hash, not leave
+        the first write's hash in place."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._write_findings_body_for_mode(isolated_home, "checkout", sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid)
+        marker = review_pr_completion_marker_path(isolated_home, git_repo, sid)
+        first_write = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert first_write.returncode == 0, first_write.stderr
+        hash_of_body_a = hashlib.sha256(findings_body.read_bytes()).hexdigest()
+        assert marker.read_text().splitlines()[2] == hash_of_body_a
+
+        findings_body.write_text(
+            f"**[Claude Code]** # findings body, softened after approval\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
+        )
+        hash_of_body_b = hashlib.sha256(findings_body.read_bytes()).hexdigest()
+        assert hash_of_body_b != hash_of_body_a
+        rewrite = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert rewrite.returncode == 0, rewrite.stderr
+        lines = marker.read_text().splitlines()
+        assert len(lines) == 4
+        assert lines[2] == hash_of_body_b
+
+    @pytest.mark.parametrize(
+        "refused_body, expected_stderr_fragment",
+        [
+            pytest.param("# edited body, attribution prefix dropped\n", "attribution", id="attribution-check"),
+            pytest.param(
+                "**[Claude Code]** # edited body\n\nleaked: ghp_" + "a" * 36 + f"\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n",
+                "credential shape",
+                id="credential-scan",
+            ),
+        ],
+    )
+    def test_refused_rewrite_leaves_the_marker_covering_the_last_accepted_body(
+        self, isolated_home, git_repo, refused_body, expected_stderr_fragment
+    ):
+        """A re-write whose edited body fails the attribution check or the
+        credential scan exits 2 and must not store the refused body's hash, so
+        the post still refuses it."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._write_findings_body_for_mode(isolated_home, "checkout", sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid)
+        marker = review_pr_completion_marker_path(isolated_home, git_repo, sid)
+        first_write = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert first_write.returncode == 0, first_write.stderr
+        hash_of_accepted_body = hashlib.sha256(findings_body.read_bytes()).hexdigest()
+
+        findings_body.write_text(refused_body)
+        hash_of_refused_body = hashlib.sha256(findings_body.read_bytes()).hexdigest()
+        rewrite = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+
+        assert rewrite.returncode == 2, rewrite.stderr
+        assert expected_stderr_fragment in rewrite.stderr
+        stored_hash = marker.read_text().splitlines()[2]
+        assert stored_hash == hash_of_accepted_body
+        assert stored_hash != hash_of_refused_body
+
     def test_write_refuses_a_body_that_changes_while_the_checks_read_it(
         self, isolated_home, git_repo, tmp_path
     ):
@@ -6202,6 +6267,50 @@ class TestMarkerScriptReviewPr:
         assert result.returncode == 2
         assert "changed while it was being checked" in result.stderr
         assert not review_pr_completion_marker_path(isolated_home, git_repo, sid).exists()
+
+    def test_rewrite_refused_for_a_body_that_changes_while_checked_leaves_the_marker_covering_the_last_accepted_body(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """A re-write refused because the body changed during the checks must
+        not replace the first write's hash. The first write runs the real
+        checks over body A. The body is then edited to a distinct valid body B,
+        so a marker written with the re-write's pre-check hash would differ
+        from A's. The re-write runs a stand-in attribution check that rewrites
+        the body and then passes."""
+        sid = self.SID
+        _seed_session(isolated_home, sid)
+        findings_body = self._write_findings_body_for_mode(isolated_home, "checkout", sid)
+        self._declare_provenance(isolated_home, "foo/bar#42", head_sha(git_repo), mode="checkout", sid=sid)
+        marker = review_pr_completion_marker_path(isolated_home, git_repo, sid)
+        first_write = _run(["write", "review-pr"], cwd=git_repo, home=isolated_home)
+        assert first_write.returncode == 0, first_write.stderr
+        hash_of_body_a = hashlib.sha256(findings_body.read_bytes()).hexdigest()
+
+        findings_body.write_text(
+            f"**[Claude Code]** # findings body, edited after the first write\n\n{REVIEW_PR_ATTRIBUTION_TRAILER}\n"
+        )
+        hash_of_body_b = hashlib.sha256(findings_body.read_bytes()).hexdigest()
+        assert hash_of_body_b != hash_of_body_a
+
+        rewrite = self._write_with_stand_in_check_siblings(
+            tmp_path,
+            isolated_home,
+            git_repo,
+            {
+                "review-pr-check-attribution.sh": (
+                    "#!/usr/bin/env bash\n"
+                    f"printf 'rewritten after the first hash\\n' >> {str(findings_body)!r}\n"
+                )
+            },
+            real_siblings=("review-pr-scan-findings-body.sh",),
+        )
+
+        assert rewrite.returncode == 2
+        assert "changed while it was being checked" in rewrite.stderr
+        hash_of_mutated_body = hashlib.sha256(findings_body.read_bytes()).hexdigest()
+        assert hash_of_mutated_body not in (hash_of_body_a, hash_of_body_b)
+        stored_hash = marker.read_text().splitlines()[2]
+        assert stored_hash == hash_of_body_a
 
     def _write_with_stand_in_check_siblings(
         self, tmp_path, isolated_home, git_repo, sibling_sources, real_siblings
