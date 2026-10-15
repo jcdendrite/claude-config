@@ -274,8 +274,6 @@ class TestGuardSettingsSessionKeys:
         repo, settings_file = settings_repo
         stage_settings(repo, settings_file, '{"model": "opus", "effortLevel": "normal"}\n')
         real_git = shutil.which("git")
-        if not real_git:
-            pytest.skip("git not found in PATH")
         shim_dir = tmp_path / "failing-diff-cached-git"
         shim_dir.mkdir()
         shim = shim_dir / "git"

@@ -80,7 +80,7 @@ Alternatives weighed:
 2. The handoff regex misses `deny-no-op-dispatch.sh:127` and `set-session-title-from-branch.sh:139,154,155`. It would also flag comment lines and `|| grep -q`. [verified: same Grep]
 3. Reachable lines: the input can be multi-line and over 64 KiB under `pipefail`, and a miss changes what the hook does. [verified: reads of each site]
    - `deny-credential-bash-reads.sh:76,85`: a miss allows a command that names a credential path. A deny needs both lines to match.
-   - `deny-credential-file-reads.sh:56`: a miss allows the Read. The gate decides before the Read runs. A real Read path is bounded by `PATH_MAX`, so this site is reachable only by a synthetic input; file-path sites (this one, `consume-migration-token.sh:36`, `validate-migration-filename.sh:76`) are classified by that one rule, and the conversions stay because the lint requires them.
+   - `deny-credential-file-reads.sh:56`: a miss allows the Read. The gate decides before the Read runs. A real Read path is bounded by `PATH_MAX`, so this site is reachable only by a synthetic input. One rule classifies the file-path sites: this one, `consume-migration-token.sh:36`, and `validate-migration-filename.sh:76`. The conversions stay because the lint requires them.
    - `deny-private-project-refs.sh:358-362`: a miss leaves `IS_GH_API=0`, so a mutating `gh api` body is never scanned.
    - `deny-private-project-refs.sh:529`: a miss drops the chain-split tip from a deny that has already fired.
    - `deny-invisible-commit-content.sh:282`: the 141 falls into the "could not evaluate" deny at `:288-290`. The hook still denies, but with the wrong reason.
@@ -105,9 +105,16 @@ Alternatives weighed:
    - `&&|\|\|`
    - `NOOP_*_RE` (`deny-no-op-dispatch.sh:64,70`)
    - `ALLOWLIST_RE` (`set-session-title-from-branch.sh:153`)
-7. A here-string adds one residual failure: if its redirect cannot be created (an unwritable or full `TMPDIR`, which matters on bash 3.2 through 5.0 where every here-string is a temp file, and on 5.1+ above pipe capacity), grep never runs and the status is 1, the same as no match. [verified: reviewers' reading of bash behavior and `docs/hooks.md:299`; not run on bash 3.2]
-   - For input-derived strings the parse step fails first in the main gates: `_lib_parse_tool_input_or_deny` reads `COMMAND` and `FILE_PATH` through a here-string (`_lib.sh:543`) at `deny-credential-file-reads.sh:35`, `deny-credential-bash-reads.sh:55`, `deny-private-project-refs.sh:221`, `deny-invisible-commit-content.sh:185`, `enforce-marker-script-shape.sh:261`, `require-ready-for-review.sh:193`, and `deny-no-op-dispatch.sh:90`. Whether the deny at `:547-549` is reached when that redirect fails is [unverified]: `_lib_parse_overflow` is never initialized, so under `set -u` the likely outcome is an unbound-variable abort with exit 1.
-   - Accepted exceptions, where the string is not one the parse carried: `guard-settings-session-keys.sh:88` (git's staged-name list), `nudge-transcript-toolkit.sh:124` (Write `content`), the semver plugin gates (their parse has no here-string, `plugins/*/hooks/_lib.sh:71`), and the `-ne 1` branch at `deny-invisible-commit-content.sh:282`, which reads a redirect failure as no match. These hooks' posture on an environment failure is already fail-open or informational.
+7. A here-string adds one residual failure: if its temp file cannot be created (for example a full temp filesystem or exhausted file descriptors), grep never runs and the status is 1, read as no match. This matters on bash 3.2 through 5.0, where every here-string is a temp file, and on 5.1+ above pipe capacity. [verified: reviewers' reading of bash behavior and `docs/hooks.md:299`; not run on bash 3.2]
+   - For input-derived strings the parse step fails first in the main gates: `_lib_parse_tool_input_or_deny` reads `COMMAND` and `FILE_PATH` through a here-string (`_lib.sh:543`) at `deny-credential-file-reads.sh:35`, `deny-credential-bash-reads.sh:55`, `deny-private-project-refs.sh:221`, `deny-invisible-commit-content.sh:185`, `enforce-marker-script-shape.sh:261`, `require-ready-for-review.sh:193`, and `deny-no-op-dispatch.sh:90`. When that redirect fails, the deny at `:547-549` is not reached: `_lib_parse_overflow` is never initialized, so under `set -u` the hook aborts with exit 127, a non-blocking exit that allows the call. [verified: reviewer probe on bash 5.2.21 with a file-descriptor limit]
+   - Accepted exceptions, where the string is not one the parse carried:
+     - `guard-settings-session-keys.sh:88` reads git's staged-name list.
+     - `nudge-transcript-toolkit.sh:124` reads Write `content`.
+     - The semver plugin gates have a parse with no here-string (`plugins/*/hooks/_lib.sh:71`).
+     - The `-ne 1` branch at `deny-invisible-commit-content.sh:282` reads a redirect failure as no match.
+     - `ask-review-permissions.sh` (lines 47, 63, 88) sets no `pipefail` and parses through pipes. It had no SIGPIPE hazard before and now depends on a creatable here-string temp file.
+     - `plugins/lovable-cloud/hooks/validate-migration-filename.sh` (line 76) has the same shape and the same new dependency.
+   - These hooks' posture on an environment failure is already fail-open or informational.
    - The PR body records this residual, and records that the new tests ran on bash 5.x only (CI is `ubuntu-24.04`, `tests.yml:25`); bash 3.2 is [unverified].
 8. `_lib_capped` forwards `"$@"` to `_lib_capped_for` (`_lib.sh:49-51`). The current pipe form already relies on the wrapper passing stdin through, and a here-string uses the same stdin. [verified]
 9. At `guard-settings-session-keys.sh:88` the writer is `timeout … git`, not printf. A staged-name list over the pipe capacity with `claude/.claude/settings.json` listed early reproduces the miss. [verified: staff-sdet probe in a scratch repo with `git update-index --index-info`: a 266 KB list missed 5 of 5 runs, a 91 KB list 10 of 10, a 53 KB list 0 of 10] Verification step 1 still confirms it in place.
@@ -145,7 +152,10 @@ Four sequential `code-writer` dispatches do the work. The session commits after 
 - `claude/.claude/tests/helpers.py`:
   - Add `LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)` next to the other shared constants.
   - No import-time assert: a failure there would break import for every test module in every domain.
-  - Add one comment stating the durable facts: the tail must be multi-line with a matching first line and exceed the 64 KiB pipe capacity (100 KiB gives headroom); keep the per-fragment scans fast by keeping the line count low (32 lines); do not use it on a path that reaches `_lib_mask_shell_quotes`, whose quadratic scan nears its 5 s cap on this size. Point at no plan file.
+  - Add one comment stating the durable facts, and point at no plan file:
+    - The tail must be multi-line with a matching first line and exceed the 64 KiB pipe capacity (100 KiB gives headroom).
+    - Keep the per-fragment scans fast by keeping the line count low (32 lines).
+    - Do not use it on a path that reaches `_lib_mask_shell_quotes`, whose quadratic scan nears its 5 s cap on this size.
 - New file `claude/.claude/tests/test_large_multiline_tail.py`: one test asserting the tail has more than one newline and is longer than 100 KiB. This carries the size invariant that the local asserts carried.
 - In each file below, delete the local constant, its comment, and its assert, and import from `helpers`:
   - `claude/.claude/hooks/tests/test_require_stow_reminder.py`
