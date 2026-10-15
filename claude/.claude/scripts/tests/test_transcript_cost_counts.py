@@ -336,6 +336,11 @@ class TestCostCounts:
         ])
 
         _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        assert "| code-review | 1 |" in capsys.readouterr().out
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches=",", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out

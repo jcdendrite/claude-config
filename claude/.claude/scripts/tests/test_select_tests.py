@@ -1018,10 +1018,9 @@ class TestSelectPytestTargets:
 
     def test_agents_dir_change_selects_the_declared_agents_dir_readers(self):
         """Tests that read claude/.claude/agents/*.md by path, not by import,
-        are the declared readers of that directory. Without the cross-domain
-        exception, a change under it falls open to the full suite. The pinned
-        set is those declared readers; the AGENTS_DIR comment on
-        CROSS_DOMAIN_EXCEPTIONS carries the hand-audit caveat."""
+        are selected by the cross-domain exception; without it a change there
+        falls open to the full suite. The AGENTS_DIR comment on
+        CROSS_DOMAIN_EXCEPTIONS carries the hand-audited list."""
         result = _mod.select_pytest_targets(["claude/.claude/agents/code-writer.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
