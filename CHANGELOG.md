@@ -6,6 +6,18 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **`/review-pr` step 7-8 now applies the final consult's corrections before presenting, and an edit after presentation voids earlier approval.** **Supersedes** the clause "with a further consult after every edit round" in the consult sub-bullet of the "`/review-pr` now resolves checkable claims" entry below.
+  - Step 7 runs up to three consults before step 8 presents the body, and the third consult's verified corrections are applied rather than left unapplied.
+  - A change after step 8 presents the body gets no consult.
+  - Between the third consult and step 8's presentation, the only change allowed besides the third consult's corrections is a fix that clears a marker-write refusal.
+  - After step 8 presents the body, the body changes only as the human asks or to clear a marker-write refusal. Any other change is proposed beside the body, including a correction found by a re-check or consult the human asks for.
+  - Any change after step 8 presents the body voids earlier approval, including approval given in the same message, until the human approves the re-presented body.
+  - The protected-finding rule now also binds a fix that clears a marker-write refusal.
+  - The completion marker is written after the last consult and every body change.
+  - Step 8 presents a fresh `Read` of the findings-body file and names its path.
+  - Step 8 shows each `Edit` made after the last consult and not shown at an earlier presentation as a verbatim old/new pair, marked as not reviewed by any consult.
+  - Step 8's summary covers every consult's corrections, including findings added or upgraded, and the session's own proposals not applied.
+  - New marker-script tests cover a re-write after a body edit and a refused re-write, which leaves the marker's hash unchanged.
 - **`--branches` and per-branch rows, filtered or not, now credit a session's leading default-branch records to the first branch that same session enters.** This applies to every subcommand the "Pre-branch default-branch attribution" rule block in `docs/transcript-analysis.md` lists as applying it. Planning in a separate session is not moved.
 - **`cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark now attribute every subagent record to the dispatching main thread's branch at that record's time, never its own `gitBranch`.**
   - A subagent still running after a branch switch follows the switch.
@@ -59,16 +71,6 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Step 8 lists every dropped or downgraded claim and the `AUDIT_FINDING` paths, because no script detects a missing finding.
   - The `plan-architect` consult now reads the drafted body, and each correction applies as its own `Edit` after the session verifies it, with a further consult after every edit round.
   - The findings body follows a posted-text hygiene list with no review-process wording.
-- **`/review-pr` step 7-8 now applies the final consult's corrections before presenting, and an edit after presentation voids earlier approval.** **Supersedes** the clause "with a further consult after every edit round" in the consult sub-bullet of the "`/review-pr` now resolves checkable claims" entry above.
-  - Step 7 runs up to three consults before step 8 presents the body, and the third consult's verified corrections are applied rather than left unapplied.
-  - No consult runs after step 8 presents the body.
-  - The completion marker is written after the last consult and every body change.
-  - Step 8 presents a fresh `Read` of the findings-body file and names its path.
-  - Step 8 shows each `Edit` made after the last consult and not shown at an earlier presentation as a verbatim old/new pair, marked as not reviewed by any consult.
-  - Step 8's summary covers every consult's corrections, including findings added or upgraded, and the session's own proposals not applied.
-  - Any change after step 8 presents the body voids an earlier approval until the human approves the re-presented body.
-  - After the third consult, and after step 8 presents, a fix that clears a marker-write refusal is the one session-initiated change still allowed, beside edits the human asks for. The protected-finding rule bounds it.
-  - New marker-script tests cover a re-write after a body edit and a refused re-write, which leaves the marker's hash unchanged.
 - **`/plan-it`'s push offer now pins what the push publishes, and says when it skips the offer or a step fails.** **Supersedes** the push-offer sub-bullet of the "`/plan-review` approval now shows the approved plan's absolute path" entry below.
   - The offer is made only when the remote has exactly one push URL. Otherwise the session says which condition stopped the offer.
   - The question names the push URL, the branch tip's SHA, the remote branch, and the repository's visibility. Visibility is looked up only for `github.com` push URLs; for any other host the visibility lookup makes no request and the result is reported as unknown and treated as public.

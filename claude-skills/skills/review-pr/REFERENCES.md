@@ -341,21 +341,21 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   was read in the conversation (quoted in `docs/case-studies/hashline-edit-format.md`).
   Whether the session's own `Write` counts as that read is unverified, so the
   skill reads the body explicitly.
-- **Up to three consults run before step 8 presents the body, and none
-  after.** Review after every round of edits can loop when each consult
+- **Up to three consults run before step 8 presents the body, and the
+  session runs none after.** A consult after every round of edits can loop when each consult
   proposes another change the session can verify, so the third consult is
-  final. A rule that sends every applied correction back to a consult never
-  ends with all of them applied, so the third consult's verified corrections
-  are applied with no consult after them. The completion marker is written
-  after the last consult and the last change to the body. A change after step 8
-  presents the body gets no consult, so no consult can reverse a change the
-  human asked for. Step 8 shows that change as an old/new pair. A change after
-  step 8 presents the body voids any earlier approval until the human approves
-  the re-presented body, so the human approves the exact bytes that post.
-  Besides the human's own edits, a fix that clears a `marker.sh write` refusal
-  is the one session-initiated change allowed without a consult after the
-  third consult and after step 8 presents, and the protected-finding rule
-  still binds it.
+  final. Its verified corrections are applied, so the human never approves a
+  body missing a correction the session already verified. A change after
+  step 8 presents the body gets no consult, so no consult can reverse a
+  change the human asked for. Such a change also voids any earlier approval,
+  so the human approves the exact bytes that post. Once the third consult
+  has run or step 8 has presented the body, a fix that clears a
+  `marker.sh write` refusal is the only change the session may make on its
+  own besides the third consult's corrections, because without it a refused
+  write would leave the body unpostable.
+  The protected-finding rule binds that fix too. A re-check or consult the
+  human asks for after step 8 presents only proposes changes, which keeps
+  the refusal fix the session's only change of its own.
 - **Residual.** The record is the session's own transcript, and every edit is
   session-authored, because `plan-architect` holds no write tool. Nothing
   mechanical detects a finding missing from the body. `marker.sh`'s body check
