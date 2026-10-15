@@ -114,10 +114,8 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         args, "subagent-mix", since_attr="since_date", until_attr="until_date"
     )
 
-    # Read once, matching cost's own "never read the clock inside the
-    # per-record loop" rationale -- kept as a plain wall-clock read here
-    # (rather than cost's separate entry/report split) since no
-    # test asserts on stale-pricing output for subagent-mix.
+    # Read once, never inside the per-record loop, matching cost.
+    # Tests reach the STALE PRICING banner by moving pricing._MODEL_RATE_EXPIRES into the past, so no clock injection is needed.
     today = datetime.now(UTC).date()
     total_unpriced_turns = 0
     total_unpriced_tokens = 0

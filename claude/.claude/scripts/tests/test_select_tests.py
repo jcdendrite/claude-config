@@ -1022,11 +1022,15 @@ class TestSelectPytestTargets:
         by import. Without this cross-domain exception, a change under
         claude/.claude/agents/ falls open to the full suite instead of
         selecting the two domains that actually depend on it. Also selects
-        REVIEW_BENCH_TEST_GLOB (see the AGENTS_DIR comment on CROSS_DOMAIN_EXCEPTIONS)."""
+        REVIEW_BENCH_TEST_GLOB, TRANSCRIPT_COST_COUNTS_TEST_PATH,
+        TRANSCRIPT_ANALYSIS_TEST_GLOB, and MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST
+        (see the AGENTS_DIR comment on CROSS_DOMAIN_EXCEPTIONS)."""
         result = _mod.select_pytest_targets(["claude/.claude/agents/code-writer.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
+            _mod.TRANSCRIPT_COST_COUNTS_TEST_PATH, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB,
+            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
         }
 
     def test_rules_dir_change_also_selects_hooks_and_skills_tests(self):
@@ -1952,6 +1956,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
     _mod.SELECT_TESTS_TEST_PATH,
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+    _mod.TRANSCRIPT_COST_COUNTS_TEST_PATH,
     _mod.DOC_COUNTS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,

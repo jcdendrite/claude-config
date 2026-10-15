@@ -1,30 +1,12 @@
-"""Shared git-repo scaffolding helpers for the worktree-cleanup script tests
-(test_cleanup_merged_branches.py, test_cleanup_idle_open_pr_worktrees.py),
-plus suite-wide transcript-corpus isolation (see the autouse fixture below),
-plus the transcript-record fixture builders shared across
-test_transcript_analysis.py, test_transcript_cost.py, test_token_analyzer.py,
-test_context_composition.py, test_transcript_denials.py,
-test_transcript_review_trace.py, test_transcript_read_scope.py,
-test_transcript_ledger_common.py, test_transcript_cost_ledger.py,
-test_transcript_cost_ledger_record_gates.py, test_transcript_gh_cli.py,
-test_transcript_pr_cost_ledger.py, test_transcript_pr_cost.py,
-test_transcript_pr_cost_gh.py, test_transcript_pr_cost_export.py,
-test_transcript_pr_cost_export_accounts.py, test_transcript_cache_rebuild.py,
-test_transcript_cache_rebuild_attribution.py,
-test_transcript_cache_rebuild_switch_delta.py,
-test_transcript_cache_rebuild_ttl_rules.py,
-test_transcript_cache_rebuild_ttl_accumulation.py,
-test_transcript_cache_rebuild_ttl_footing.py, test_transcript_audit_routing.py,
-test_transcript_audit_routing_shape.py, test_transcript_audit_routing_samples.py,
-test_transcript_subagents.py, test_transcript_subagent_mix.py,
-test_transcript_subagent_mix_dollars.py, test_transcript_cost_counts.py,
-test_transcript_handoff_nudge.py, test_transcript_rearm_backtest.py,
-test_transcript_spend_over_threshold.py, test_transcript_plan_boundary.py,
-test_transcript_handoff_signal_response_detection.py,
-test_transcript_handoff_signal_response.py,
-tests/_handoff_nudge_helpers.py, and
-tests/_cache_rebuild_helpers.py (see the extraction rationale on
-_write_jsonl below).
+"""Shared test scaffolding, in three roles:
+
+- git-repo scaffolding for the worktree-cleanup script tests (e.g. test_cleanup_merged_branches.py,
+  test_cleanup_idle_open_pr_worktrees.py);
+- suite-wide transcript-corpus isolation (see the autouse fixture below);
+- transcript-record fixture builders (e.g. for test_transcript_cost.py and tests/_handoff_nudge_helpers.py;
+  see the extraction rationale on _write_jsonl below).
+
+The file names above are examples, not a complete consumer list.
 
 The scaffolding helpers are plain functions, not pytest fixtures — they take
 `tmp_path` (or a repo built from it) as an explicit argument rather than

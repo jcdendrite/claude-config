@@ -108,6 +108,10 @@ WORKTREES_DIR_NAME = "worktrees"
 # prefix), so it gets its own exact-path constant.
 TRANSCRIPT_ANALYSIS_TEST_GLOB = "claude/.claude/scripts/tests/test_transcript_analysis*.py"
 TRANSCRIPT_DENIALS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_denials.py"
+# test_transcript_cost_counts.py reads claude/.claude/agents/ through
+# redaction._REPO_AGENT_DEFINITIONS_DIR, a production constant
+# TestCrossDomainReadCompleteness's scan cannot see.
+TRANSCRIPT_COST_COUNTS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_cost_counts.py"
 
 # test_ticket_reference_discipline.py statically scans every tracked .py and
 # .sh file under claude/ and plugins/ for ticket-prefixed identifiers,
@@ -660,6 +664,11 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # file needs review_bench's own tests re-run too. This selects on every
 # agent file rather than only the lenses with a read clause to copy --
 # over-selection is the safe direction.
+# TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_ANALYSIS_TEST_GLOB, and
+# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST are also targets: each reads the
+# real agents directory without patching it. This list is hand-audited,
+# because the cross-domain scan cannot see a read through a production
+# constant.
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
@@ -744,7 +753,13 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == REVIEW_PR_AUDIT_SCRIPT, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == REVIEW_PR_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
-    (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB)),
+    (
+        lambda p: _is_under(p, AGENTS_DIR),
+        (
+            HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB,
+            TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_ANALYSIS_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+        ),
+    ),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),
