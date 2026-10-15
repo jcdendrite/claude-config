@@ -121,12 +121,16 @@ def _import_aliases(node: ast.ImportFrom) -> str:
 def _unresolvable_sibling_imports(tree: ast.Module, package_names: set[str]) -> list[str]:
     """Import statements that bind a sibling package module in a shape the attribute check cannot resolve.
 
-    Flags `from transcript_analysis import <m> as <a>` for any <m> in package_names, including the
-    no-op `as <m>` spelling (`from transcript_analysis import scope as scope`), since forbidding every
-    `as` on a sibling binding is a simpler rule than telling the no-op spelling apart. Also flags every
-    `ast.Import` of `transcript_analysis` or `transcript_analysis.<m>`, with or without `as`, and every
-    relative `ast.ImportFrom` (`level > 0`, e.g. `from . import scope` or `from .scope import X`), since the
-    attribute check resolves only absolute `from transcript_analysis import <m>` bindings."""
+    Flagged shapes, one per line:
+    - `from transcript_analysis import <m> as <a>` for any <m> in package_names
+    - every `import transcript_analysis` and `import transcript_analysis.<m>`, with or without `as`
+    - every relative `from` import (`level > 0`), e.g. `from . import scope` or `from .scope import X`
+
+    All three are flagged because the attribute check resolves only absolute
+    `from transcript_analysis import <m>` bindings.
+
+    The no-op spelling `from transcript_analysis import scope as scope` is flagged too, since forbidding every
+    `as` on a sibling binding is a simpler rule than telling the no-op spelling apart."""
     unresolvable: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.level > 0:
@@ -187,9 +191,8 @@ def test_production_modules_import_package_siblings_by_module_only():
 
 def test_production_modules_bind_siblings_only_by_unaliased_from_import():
     """test_production_modules_reference_only_real_sibling_attributes resolves only unaliased absolute
-    `from transcript_analysis import <m>` bindings, so no module in PRODUCTION_MODULES may use an aliased
-    `from transcript_analysis import <m> as <a>`, any `import transcript_analysis[.<m>]`, or any relative
-    `from . import ...` / `from .<m> import ...`."""
+    `from transcript_analysis import <m>` bindings, so no module in PRODUCTION_MODULES may bind a sibling
+    in any shape `_unresolvable_sibling_imports` flags."""
     package_names = _package_module_names()
     for filename in PRODUCTION_MODULES:
         tree = ast.parse((PACKAGE_DIR / filename).read_text())

@@ -1016,7 +1016,7 @@ class TestSelectPytestTargets:
         assert result.reason == "empty-diff"
         assert result.target_paths == _mod.FULL_SUITE_TARGETS
 
-    def test_agents_dir_change_also_selects_hooks_and_skills_tests(self):
+    def test_agents_dir_change_selects_the_declared_agents_dir_readers(self):
         """test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
         (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path, not
         by import. Without this cross-domain exception, a change under

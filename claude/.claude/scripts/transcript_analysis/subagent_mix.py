@@ -115,7 +115,6 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     )
 
     # Read once, never inside the per-record loop, matching cost.
-    # Tests reach the STALE PRICING banner by moving pricing._MODEL_RATE_EXPIRES into the past, so no clock injection is needed.
     today = datetime.now(UTC).date()
     total_unpriced_turns = 0
     total_unpriced_tokens = 0

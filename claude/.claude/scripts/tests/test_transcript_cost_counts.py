@@ -93,6 +93,15 @@ class TestSpawnCountsByAgentType:
         counts = _mod.subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-a"})
         assert counts == {"staff-sdet": 1}
 
+    def test_empty_branch_filter_set_excludes_every_spawn(self):
+        """An empty (not None) filter set names no branch, so it counts nothing rather than everything."""
+        sessions = [
+            (Path("a.jsonl"), [
+                _asst("claude-opus-4-7", branch="feat-a", content=[_agent_use("a1", "staff-sdet")]),
+            ]),
+        ]
+        assert _mod.subagent_mix._spawn_counts_by_agent_type(sessions, set()) == {}
+
 
 class TestCostCounts:
     """cost-counts: per-branch review-round and subagent-spawn counts for a
@@ -310,8 +319,35 @@ class TestCostCounts:
             "\n"
             "### Subagent spawns\n"
             "\n"
-            "Counts main-thread dispatches only; an agent spawned from inside another agent is not"
-            " counted.\n"
+            f"{_mod.subagent_mix._COST_COUNTS_SPAWNS_CAPTION}\n"
+            "\n"
+            "No subagent spawns found in scope.\n"
+        ) in out
+        assert "| Agent type | Spawns |" not in out
+
+    def test_empty_branches_list_renders_the_all_zero_state_not_corpus_wide_counts(self, fake_projects, capsys):
+        """`--branches ","` parses to an empty branch set, which excludes every record: the output is the
+        all-zero state, never a corpus-wide count."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(
+                "claude-opus-4-7", branch="feat",
+                content=[_skill_use("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+        ])
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches=",", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert (
+            "| code-review | 0 |\n"
+            "| plan-review | 0 |\n"
+            "| ready-for-review | 0 |\n"
+            "| **total** | **0** |\n"
+            "\n"
+            "### Subagent spawns\n"
+            "\n"
+            f"{_mod.subagent_mix._COST_COUNTS_SPAWNS_CAPTION}\n"
             "\n"
             "No subagent spawns found in scope.\n"
         ) in out

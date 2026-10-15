@@ -665,10 +665,11 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # agent file rather than only the lenses with a read clause to copy --
 # over-selection is the safe direction.
 # TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_ANALYSIS_TEST_GLOB, and
-# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST are also targets: each reads the
-# real agents directory without patching it. This list is hand-audited,
-# because the cross-domain scan cannot see a read through a production
-# constant.
+# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST are also targets. The two exact
+# paths each read the real agents directory without patching it. The glob
+# matches several files and is selected for the one of them that reads it.
+# This list is hand-audited, because the cross-domain scan cannot see a
+# read through a production constant.
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
