@@ -794,7 +794,7 @@ After the last restore, `git diff --exit-code -- claude-skills/skills/plan-it/SK
 - **Allowlisting the preflight call.** `python3 ~/.claude/scripts/plan-push-preflight.py <path>` prompts for permission by design. `permissions.allow` forbids wildcards, and the argument varies per plan. A denial reaches the session as an error, which bullet 1 reports.
 - **`--no-signed` or `--receive-pack` in the push command.** The question names both settings instead (M9).
 - **Naming config that changes only how this machine runs or connects the push**: `core.sshCommand`, `core.hooksPath` and its `pre-push` hook, `remote.<remote>.proxy`, `http.proxy`, and `credential.helper`. These are accepted at the cooperative tier (M9, row 42).
-- **A timeout on the script's `gh` calls.** Today's prose has none. Adding one needs a sourced value, per CLAUDE.md's grounding rule.
+- **A separate timeout on the script's `gh` calls.** The script bounds every child, `gh` included, with one shared total budget derived from the Bash tool's 120000 ms default timeout, minus headroom. A child that outlives the budget reads as a failed child, so a hung `gh` still yields an ask.
 - **Telling a `gh` error apart from "no PR".** Today's semantics are kept, and the fact line says so. The push gate's own `gh pr view` remains the backstop.
 - **A hook backstop for the consent itself,** and a hook test that runs `PUSH_COMMAND` through `require-ready-for-review.sh`. Both are unchanged from PR #1246. The command's shape is unchanged (row 6).
 - **git-lfs and `remote.<remote>.mirror`.** A mirror remote makes the push fail, and the failure bullet reports it.

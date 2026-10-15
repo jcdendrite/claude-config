@@ -19,6 +19,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import tokenize
 import unicodedata
 from collections.abc import Callable
@@ -42,14 +43,31 @@ SECRET_TOKEN = "s3cr3t-token"
 _OUTPUT_KEYS = ("OFFER", "STOP_REASON", "FACT", "PUSH_COMMAND", "SHARE_COMMAND")
 _OUTPUT_KEY_PREFIXES = tuple(key + ": " for key in _OUTPUT_KEYS)
 
-# Git subcommands the script may run with any arguments, because none of them writes.
-_READ_ONLY_GIT_SUBCOMMANDS = frozenset({"rev-parse", "cat-file", "rev-list", "log"})
+# The script's display cap on commit subjects, as the `-n` argument it passes to `git log`.
+_LOG_SUBJECT_CAP = "10"
 
-# Subcommands that can write, allowed only as: the fixed leading arguments, then the stated count of operands.
+_PINNED_LOG_ARGUMENTS = (
+    "log",
+    "--no-decorate",
+    "--no-show-signature",
+    "--no-color",
+    "--encoding=UTF-8",
+    "--format=%h %s",
+    "-n",
+    _LOG_SUBJECT_CAP,
+)
+
+# The only argv shapes the script may run: the fixed leading arguments, then the stated count of operands.
+# Every subcommand is pinned, because `log` and `rev-list` take `--output=<file>` and `config` can write.
+# No operand may start with a dash, so an operand cannot smuggle in an option.
 _EXACT_GIT_ARGV_SHAPES = {
     "config": (("--get",), 1),
     "symbolic-ref": (("--quiet",), 1),
     "remote": (("get-url", "--push", "--all"), 1),
+    "rev-parse": (("--verify", "--quiet"), 1),
+    "cat-file": (("-e",), 1),
+    "rev-list": (("--count",), 1),
+    "log": (_PINNED_LOG_ARGUMENTS[1:], 1),
 }
 
 _USAGE_REASON = (
@@ -137,6 +155,12 @@ def preflight():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture(autouse=True)
+def _fresh_child_budget(preflight, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Starts each test with no running child budget, so one test's spent budget never starves the next."""
+    monkeypatch.setattr(preflight, "_budget_deadline", None)
 
 
 @dataclass
@@ -234,17 +258,16 @@ class Scenario:
 
 
 def _assert_read_only_git_argv(argv: list[str]) -> None:
-    index = 0
-    while argv[index : index + 1] == ["-c"]:
-        index += 2
-    assert index < len(argv), argv
-    subcommand, operands = argv[index], argv[index + 1 :]
-    if subcommand in _EXACT_GIT_ARGV_SHAPES:
-        leading_arguments, operand_count = _EXACT_GIT_ARGV_SHAPES[subcommand]
-        assert len(operands) == len(leading_arguments) + operand_count, argv
-        assert tuple(operands[: len(leading_arguments)]) == leading_arguments, argv
-    else:
-        assert subcommand in _READ_ONLY_GIT_SUBCOMMANDS, argv
+    # The subcommand is argv[0], so a `-c key=value` before it is rejected as an unknown subcommand.
+    assert argv, argv
+    subcommand, operands = argv[0], argv[1:]
+    assert subcommand in _EXACT_GIT_ARGV_SHAPES, argv
+    leading_arguments, operand_count = _EXACT_GIT_ARGV_SHAPES[subcommand]
+    assert len(operands) == len(leading_arguments) + operand_count, argv
+    assert tuple(operands[: len(leading_arguments)]) == leading_arguments, argv
+    # An operand that starts with a dash would be read as an option, such as `--output=<file>`.
+    for operand in operands[len(leading_arguments) :]:
+        assert not operand.startswith("-"), argv
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -386,6 +409,14 @@ _PARSE_OK_CASES = [
     ("https://github.com/o/.github.git", "github.com", "o", ".github", "https://github.com/o/.github.git"),
     ("file:///o/r.git", None, "o", "r", "file:///o/r.git"),
     ("o/r.git", None, "o", "r", "o/r.git"),
+    # Each repo-name character class the pattern accepts: hyphen, underscore, digit, uppercase.
+    ("https://github.com/o/my-repo.git", "github.com", "o", "my-repo", "https://github.com/o/my-repo.git"),
+    ("https://github.com/o/my_repo.git", "github.com", "o", "my_repo", "https://github.com/o/my_repo.git"),
+    ("https://github.com/o/repo2.git", "github.com", "o", "repo2", "https://github.com/o/repo2.git"),
+    ("https://github.com/o/MyRepo.git", "github.com", "o", "MyRepo", "https://github.com/o/MyRepo.git"),
+    # The http and git schemes are accepted by the parser. Neither is on a gh host unless the host says so.
+    ("http://host.example/o/r.git", "host.example", "o", "r", "http://host.example/o/r.git"),
+    ("git://host.example/o/r.git", "host.example", "o", "r", "git://host.example/o/r.git"),
     # A userinfo that names github.com does not make the URL a github.com URL.
     ("https://github.com@git.example.org/o/r.git", "git.example.org", "o", "r", "https://git.example.org/o/r.git"),
     ("github.com@git.example.org:o/r.git", "git.example.org", "o", "r", "git.example.org:o/r.git"),
@@ -422,6 +453,10 @@ _PARSE_FORM_STOP_CASES = [
     "https://github.com/o/r#1",
     "https://github.com/o\\r",
     "https://gîthub.com/o/r",
+    # An empty host, with and without userinfo, and an uppercase scheme urlsplit would lowercase.
+    "https:///owner/repo",
+    "ssh://git@/o/r",
+    "FILE:///o/r.git",
 ]
 
 
@@ -517,7 +552,7 @@ class TestGhHostRule:
 
 
 class TestAllowlists:
-    @pytest.mark.parametrize("branch", ["GH-1/plan-x", "1a"])
+    @pytest.mark.parametrize("branch", ["GH-1/plan-x", "1a", "release-1.2", "feat_x", "a.b_c/d"])
     def test_branch_rule_accepts(self, preflight, branch: str) -> None:
         assert preflight._valid_branch_name(branch) is True
 
@@ -643,6 +678,27 @@ def _child_that_writes(payload: bytes) -> list[str]:
     return [sys.executable, "-c", "import sys; sys.stdout.buffer.write(" + repr(payload) + ")"]
 
 
+# Long enough that a healthy git or shim call never exhausts it, short enough that the hang cases finish quickly.
+_TEST_BUDGET_SECONDS = 3.0
+
+
+def _child_that_stalls() -> list[str]:
+    return [sys.executable, "-c", "import time; time.sleep(30)"]
+
+
+def _spy_on_child_creation(preflight, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Records the argv of every child the script creates, then lets the real subprocess.run create it."""
+    created_argvs: list[list[str]] = []
+    real_subprocess_run = subprocess.run
+
+    def recording_run(argv, *args, **kwargs):
+        created_argvs.append(argv)
+        return real_subprocess_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(preflight.subprocess, "run", recording_run)
+    return created_argvs
+
+
 class TestRun:
     def test_child_output_keeps_a_lone_cr_and_a_crlf_untranslated(self, preflight) -> None:
         completed = preflight._run(_child_that_writes(b"a\rb\r\nc\n"), dict(os.environ))
@@ -654,10 +710,12 @@ class TestRun:
 
         assert completed.stdout == "a\ufffdb"
 
-    def test_a_child_that_outlives_the_timeout_reads_as_a_failed_child_with_no_output(
+    @pytest.mark.timing
+    def test_a_child_that_outlives_the_budget_reads_as_a_failed_child_with_no_output(
         self, preflight, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(preflight, "_CHILD_TIMEOUT_SECONDS", 0.3)
+        monkeypatch.setattr(preflight, "_TOTAL_BUDGET_SECONDS", _TEST_BUDGET_SECONDS)
+        preflight._start_budget()
         hanging_child = [
             sys.executable,
             "-c",
@@ -666,8 +724,52 @@ class TestRun:
 
         completed = preflight._run(hanging_child, dict(os.environ))
 
-        assert completed.returncode != 0
+        assert completed.returncode == preflight._TIMED_OUT_RETURNCODE
         assert completed.stdout == ""
+
+    @pytest.mark.timing
+    def test_total_runtime_stays_bounded_when_several_children_stall(
+        self, preflight, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(preflight, "_TOTAL_BUDGET_SECONDS", _TEST_BUDGET_SECONDS)
+        preflight._start_budget()
+        created_argvs = _spy_on_child_creation(preflight, monkeypatch)
+        stalling_children = [_child_that_stalls() for _ in range(3)]
+
+        started_at = time.monotonic()
+        completions = [preflight._run(child, dict(os.environ)) for child in stalling_children]
+        elapsed_seconds = time.monotonic() - started_at
+
+        assert [completion.returncode for completion in completions] == [preflight._TIMED_OUT_RETURNCODE] * 3
+        # Per-child timeouts would take three stalls; one shared budget takes about one.
+        assert elapsed_seconds < _TEST_BUDGET_SECONDS * 2
+        # The first child spends the whole budget, so the other two are never created.
+        assert created_argvs == [stalling_children[0]]
+
+    def test_a_child_is_never_created_once_the_budget_is_spent(
+        self, preflight, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(preflight, "_budget_deadline", time.monotonic() - 1)
+        created_argvs = _spy_on_child_creation(preflight, monkeypatch)
+
+        completed = preflight._run(_child_that_writes(b"unreached"), dict(os.environ))
+
+        assert completed.returncode == preflight._TIMED_OUT_RETURNCODE
+        assert completed.stdout == ""
+        assert created_argvs == []
+
+    def test_a_new_budget_restores_the_full_time_after_the_old_one_is_spent(
+        self, preflight, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(preflight, "_budget_deadline", time.monotonic() - 1)
+        assert preflight._remaining_budget_seconds() < 0
+
+        preflight._start_budget()
+
+        assert preflight._remaining_budget_seconds() > preflight._TOTAL_BUDGET_SECONDS - 5
+
+    def test_the_total_budget_leaves_headroom_under_the_bash_tool_default_timeout(self, preflight) -> None:
+        assert 0 < preflight._TOTAL_BUDGET_SECONDS < preflight._BASH_TOOL_DEFAULT_TIMEOUT_SECONDS
 
 
 class TestSanitizerAndLine:
@@ -717,7 +819,9 @@ class TestReadOnlyGitArgvGuard:
             ["config", "--get", "push.gpgSign"],
             ["remote", "get-url", "--push", "--all", "origin"],
             ["rev-parse", "--verify", "--quiet", "refs/heads/x^{commit}"],
-            ["log", "-n", "10", "a..b"],
+            ["cat-file", "-e", "abc:.claude/plans/x.md"],
+            ["rev-list", "--count", "a..b"],
+            [*_PINNED_LOG_ARGUMENTS, "a..b"],
         ],
         ids=lambda argv: " ".join(argv[:2]),
     )
@@ -740,6 +844,23 @@ class TestReadOnlyGitArgvGuard:
             ["remote", "get-url", "origin"],
             ["push", "origin"],
             ["ls-remote", "origin"],
+            ["log", "--output=x"],
+            ["log", "--output=x", "-n", _LOG_SUBJECT_CAP, "a..b"],
+            ["log", "-n", _LOG_SUBJECT_CAP, "a..b"],
+            [*_PINNED_LOG_ARGUMENTS, "--output=x"],
+            ["rev-list", "--count"],
+            ["rev-list", "--count", "--output=x"],
+            ["config", "--get", "--file=x"],
+            ["-c", "core.pager=x", "config", "--get", "push.gpgSign"],
+            ["-c", "core.pager=x", "rev-list", "--count", "a..b"],
+            ["rev-list", "--output=x", "a..b"],
+            ["rev-list", "--count", "--output=x", "a..b"],
+            ["rev-parse", "--git-dir"],
+            ["rev-parse", "--verify", "--quiet"],
+            ["rev-parse", "--verify", "refs/heads/x^{commit}"],
+            ["cat-file", "-p", "abc:x"],
+            ["cat-file", "--batch"],
+            ["cat-file", "-e"],
         ],
         ids=repr,
     )
@@ -775,18 +896,12 @@ def _fstring_offenders(source: str) -> list[int]:
 
 class TestPythonFloor:
     def test_script_parses_under_python_311_grammar(self) -> None:
-        """Covers 3.11 grammar except PEP 701 f-strings, which parse accepts.
-
-        Stdlib APIs added after 3.11 are not covered.
-        """
+        """Covers 3.11 grammar except PEP 701 f-strings, which parse accepts."""
         ast.parse(_SCRIPT_PATH.read_text(), feature_version=(3, 11))
 
     @pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 701 f-strings only parse on 3.12+")
     def test_script_has_no_fstring_that_only_python_312_accepts(self) -> None:
-        """Covers the PEP 701 f-string forms that feature_version=(3, 11) accepts.
-
-        Stdlib APIs added after 3.11 are not covered.
-        """
+        """Covers the PEP 701 f-string forms that feature_version=(3, 11) accepts."""
         assert _fstring_offenders('f"{d["k"]}"') != [], "the check must flag a nested string literal"
 
         assert _fstring_offenders(_SCRIPT_PATH.read_text()) == []
@@ -862,19 +977,16 @@ def test_a_urlsplit_value_error_carrying_the_netloc_leaks_nothing_onto_stdout(
 # By-import: a child that hangs
 # ---------------------------------------------------------------------------
 
-# Long enough that a healthy git or shim call never times out, short enough that the hang cases finish quickly.
-_TEST_CHILD_TIMEOUT_SECONDS = 1.5
-
-
+@pytest.mark.timing
 def test_a_hanging_gh_reads_like_a_gh_error_and_the_offer_is_still_printed(
     preflight, scenario: Scenario, monkeypatch: pytest.MonkeyPatch, capsysbinary: pytest.CaptureFixture[bytes]
 ) -> None:
     sha = scenario.tip_sha()
+    # The stalled `pr view` spends the whole budget, so `repo view` never starts and reads as unknown.
     scenario.answer_gh(
         pr_view={"exit": 0, "stdout": '{"number": 7}\n', "stderr": "", "sleep_seconds": 30},
-        repo_view={"exit": 1, "stdout": "", "stderr": "", "sleep_seconds": 30},
     )
-    monkeypatch.setattr(preflight, "_CHILD_TIMEOUT_SECONDS", _TEST_CHILD_TIMEOUT_SECONDS)
+    monkeypatch.setattr(preflight, "_TOTAL_BUDGET_SECONDS", _TEST_BUDGET_SECONDS)
     _install_process_env(monkeypatch, scenario.env)
     monkeypatch.chdir(scenario.repo)
 
@@ -883,6 +995,8 @@ def test_a_hanging_gh_reads_like_a_gh_error_and_the_offer_is_still_printed(
     captured = capsysbinary.readouterr()
     output_lines = captured.out.decode("utf-8").splitlines()
     assert status == 0
+    # The shim logs before it sleeps, so a logged `pr view` proves the hang was exercised.
+    assert ["pr", "view"] in [call["argv"][:2] for call in scenario.gh_calls()]
     assert output_lines[0] == "OFFER: ask"
     assert _OPEN_PR_NONE_FACT in output_lines
     assert _VISIBILITY_UNKNOWN_FACT in output_lines
@@ -890,6 +1004,7 @@ def test_a_hanging_gh_reads_like_a_gh_error_and_the_offer_is_still_printed(
     assert captured.err == b""
 
 
+@pytest.mark.timing
 def test_a_hanging_git_lands_in_an_existing_stop_and_the_offer_is_still_printed(
     preflight, scenario: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     capsysbinary: pytest.CaptureFixture[bytes],
@@ -899,9 +1014,9 @@ def test_a_hanging_git_lands_in_an_existing_stop_and_the_offer_is_still_printed(
     # Without a timeout this git would answer after the sleep and the run would reach a later stop.
     _write_executable(
         hanging_git_dir / "git",
-        "#!/usr/bin/env python3\nimport time\ntime.sleep(3)\nprint('refs/heads/" + BRANCH + "')\n",
+        "#!/usr/bin/env python3\nimport time\ntime.sleep(30)\nprint('refs/heads/" + BRANCH + "')\n",
     )
-    monkeypatch.setattr(preflight, "_CHILD_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(preflight, "_TOTAL_BUDGET_SECONDS", _TEST_BUDGET_SECONDS)
     path_with_hanging_git = str(hanging_git_dir) + os.pathsep + scenario.env["PATH"]
     _install_process_env(monkeypatch, {**scenario.env, "PATH": path_with_hanging_git})
     monkeypatch.chdir(scenario.repo)
@@ -911,6 +1026,109 @@ def test_a_hanging_git_lands_in_an_existing_stop_and_the_offer_is_still_printed(
     captured = capsysbinary.readouterr()
     assert status == 0
     assert captured.out == b"OFFER: stop\nSTOP_REASON: not-on-branch: HEAD is not on a local branch.\n"
+    assert captured.err == b""
+
+
+_CONFIG_STALLING_GIT_TEMPLATE = """\
+#!/usr/bin/env python3
+import os
+import sys
+import time
+
+STALLED_KEYS_LOG = __STALLED_KEYS_LOG__
+STALLING_KEYS = __STALLING_KEYS__
+STALL_SECONDS = __STALL_SECONDS__
+NEXT_GIT = __NEXT_GIT__
+
+argv = sys.argv[1:]
+if argv[:2] == ["config", "--get"] and argv[-1] in STALLING_KEYS:
+    with open(STALLED_KEYS_LOG, "a") as log:
+        log.write(argv[-1] + "\\n")
+    time.sleep(STALL_SECONDS)
+os.execv(NEXT_GIT, [NEXT_GIT, *argv])
+"""
+
+_SIGNED_PUSH_KEY = "push.gpgSign"
+_RECEIVE_PROGRAM_KEY = "remote.origin.receivepack"
+_SIGNED_PUSH_UNKNOWN_FACT = "FACT: Signed push: push.gpgSign could not be read (unknown)"
+_RECEIVE_PROGRAM_UNKNOWN_FACT = "FACT: Receive program: remote.origin.receivepack could not be read (unknown)"
+
+
+def _stall_the_two_config_reads(
+    scenario: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stall_seconds: float
+) -> Path:
+    """Puts a `git` first on PATH that sleeps before the two printed-setting reads, then runs the scenario's wrapper.
+
+    Returns the log the shim appends each stalled key to before it sleeps.
+    """
+    stalling_git_dir = tmp_path / "config-stalling-git-bin"
+    stalling_git_dir.mkdir()
+    stalled_keys_log = tmp_path / "stalled-config-keys.txt"
+    scenario_wrapper_dir = scenario.env["PATH"].split(os.pathsep)[0]
+    shim_source = (
+        _CONFIG_STALLING_GIT_TEMPLATE.replace("__STALLED_KEYS_LOG__", repr(str(stalled_keys_log)))
+        .replace("__STALLING_KEYS__", repr([_SIGNED_PUSH_KEY, _RECEIVE_PROGRAM_KEY]))
+        .replace("__STALL_SECONDS__", repr(stall_seconds))
+        .replace("__NEXT_GIT__", repr(str(Path(scenario_wrapper_dir) / "git")))
+    )
+    _write_executable(stalling_git_dir / "git", shim_source)
+    path_with_stalling_git = str(stalling_git_dir) + os.pathsep + scenario.env["PATH"]
+    _install_process_env(monkeypatch, {**scenario.env, "PATH": path_with_stalling_git})
+    monkeypatch.chdir(scenario.repo)
+    return stalled_keys_log
+
+
+@pytest.mark.timing
+def test_a_budget_spent_at_the_config_reads_asks_with_both_settings_unknown(
+    preflight, scenario: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsysbinary: pytest.CaptureFixture[bytes],
+) -> None:
+    sha = scenario.tip_sha()
+    monkeypatch.setattr(preflight, "_TOTAL_BUDGET_SECONDS", _TEST_BUDGET_SECONDS)
+    stalled_keys_log = _stall_the_two_config_reads(scenario, tmp_path, monkeypatch, stall_seconds=30)
+
+    status = preflight.main([PLAN_PATH])
+
+    captured = capsysbinary.readouterr()
+    output_lines = captured.out.decode("utf-8").splitlines()
+    assert status == 0
+    assert output_lines[0] == "OFFER: ask"
+    assert _SIGNED_PUSH_UNKNOWN_FACT in output_lines
+    assert _RECEIVE_PROGRAM_UNKNOWN_FACT in output_lines
+    assert "PUSH_COMMAND: " + _push_command(sha) in output_lines
+    # The first read spends the whole budget, so the second read and the gh calls are never created.
+    assert stalled_keys_log.read_text().splitlines() == [_SIGNED_PUSH_KEY]
+    assert scenario.gh_calls() == []
+    assert captured.err == b""
+
+
+# Each stall is shorter than the budget, and the two together are longer than it.
+_SEQUENTIAL_STALL_BUDGET_SECONDS = 5.0
+_SEQUENTIAL_STALL_SECONDS = 3.0
+
+
+@pytest.mark.timing
+def test_two_config_reads_that_each_fit_the_budget_but_not_together_read_the_second_as_unknown(
+    preflight, scenario: Scenario, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsysbinary: pytest.CaptureFixture[bytes],
+) -> None:
+    scenario.git("config", _SIGNED_PUSH_KEY, "if-asked")
+    scenario.git("config", _RECEIVE_PROGRAM_KEY, "git-receive-pack")
+    monkeypatch.setattr(preflight, "_TOTAL_BUDGET_SECONDS", _SEQUENTIAL_STALL_BUDGET_SECONDS)
+    stalled_keys_log = _stall_the_two_config_reads(
+        scenario, tmp_path, monkeypatch, stall_seconds=_SEQUENTIAL_STALL_SECONDS
+    )
+
+    status = preflight.main([PLAN_PATH])
+
+    captured = capsysbinary.readouterr()
+    output_lines = captured.out.decode("utf-8").splitlines()
+    assert status == 0
+    assert output_lines[0] == "OFFER: ask"
+    # Per-child timeouts would let the second read finish too, and print its value.
+    assert "FACT: Signed push: push.gpgSign is if-asked" in output_lines
+    assert _RECEIVE_PROGRAM_UNKNOWN_FACT in output_lines
+    assert stalled_keys_log.read_text().splitlines() == [_SIGNED_PUSH_KEY, _RECEIVE_PROGRAM_KEY]
     assert captured.err == b""
 
 
@@ -955,6 +1173,22 @@ def test_github_com_push_url_asks_with_facts_and_both_commands(scenario: Scenari
     assert result.lines == _expected_github_ask_lines(scenario)
     # Both gh calls ran with GH_HOST and GH_REPO removed, although the env sets them.
     assert scenario.gh_calls() == _EXPECTED_GITHUB_GH_CALLS
+
+
+def test_a_hyphenated_repo_name_asks_and_reaches_gh_under_that_name(scenario: Scenario) -> None:
+    scenario.set_push_url("https://github.com/owner/my-repo.git")
+
+    result = scenario.run()
+
+    assert result.lines[0] == "OFFER: ask"
+    assert result.lines[1] == (
+        "FACT: Destination: https://github.com/owner/my-repo.git (remote origin, its only push URL)"
+    )
+    assert [call["argv"] for call in scenario.gh_calls()] == [
+        ["pr", "view", BRANCH, "--repo", "github.com/owner/my-repo", "--json", "number"],
+        ["repo", "view", "github.com/owner/my-repo", "--json", "visibility", "--jq", ".visibility"],
+    ]
+    assert "SHARE_COMMAND: " + _share_command(owner_repo="owner/my-repo") in result.lines
 
 
 def test_a_linked_worktree_checkout_asks_the_same_as_the_main_checkout(scenario: Scenario) -> None:
@@ -1241,6 +1475,11 @@ def _leave_plan_uncommitted_and_tip_without_it(scenario: Scenario) -> None:
     _commit(scenario.repo, "unrelated work")
 
 
+def _stage_plan_and_tip_without_it(scenario: Scenario) -> None:
+    _leave_plan_uncommitted_and_tip_without_it(scenario)
+    scenario.git("add", PLAN_PATH)
+
+
 def _set_push_remote_to_a_dot(scenario: Scenario) -> None:
     scenario.git("config", "branch." + BRANCH + ".pushRemote", ".")
 
@@ -1279,6 +1518,7 @@ _STOP_CASES = [
     pytest.param("branch-name", _rename_branch_to_a_shell_metacharacter_name, id="branch-name"),
     pytest.param("tip", _checkout_orphan_branch, id="tip-unborn-branch"),
     pytest.param("plan-not-in-tip", _leave_plan_uncommitted_and_tip_without_it, id="plan-not-in-tip"),
+    pytest.param("plan-not-in-tip", _stage_plan_and_tip_without_it, id="plan-not-in-tip-staged-only"),
     pytest.param("remote-name", _set_push_remote_to_a_dot, id="remote-name-dot"),
     pytest.param("remote-name", _set_push_remote_with_a_trailing_newline, id="remote-name-trailing-newline"),
     pytest.param("push-url-count", _add_a_second_push_url, id="push-url-count-two"),
@@ -1605,6 +1845,64 @@ def test_config_facts_name_signed_push_and_receive_program_when_set(scenario: Sc
 
     assert "FACT: Signed push: push.gpgSign is if-asked" in result.lines
     assert "FACT: Receive program: remote.origin.receivepack is git-receive-pack" in result.lines
+
+
+def test_config_facts_follow_the_question_order_after_the_open_pr_fact(scenario: Scenario) -> None:
+    scenario.git("config", "push.gpgSign", "if-asked")
+    scenario.git("config", "remote.origin.receivepack", "git-receive-pack")
+    base_lines = _expected_github_ask_lines(scenario)
+    commands = base_lines[-2:]
+
+    result = scenario.run()
+
+    assert result.lines == [
+        *base_lines[:-2],
+        "FACT: Signed push: push.gpgSign is if-asked",
+        "FACT: Receive program: remote.origin.receivepack is git-receive-pack",
+        *commands,
+    ]
+
+
+def _git_config_read_failing_for(key: str, returncode: int) -> Callable[..., subprocess.CompletedProcess]:
+    """A `_git` stand-in that fails the read of `key` and reports every other key as unset."""
+
+    def fake_git(*args: str) -> subprocess.CompletedProcess:
+        assert args[:2] == ("config", "--get"), args
+        return _completed("", returncode=returncode if args[2] == key else 1)
+
+    return fake_git
+
+
+# Exit 129 is a usage error, 128 is a fatal config-file error, 124 is the script's timed-out child.
+_UNREADABLE_CONFIG_RETURNCODES = [2, 124, 128, 129]
+
+
+@pytest.mark.parametrize("returncode", _UNREADABLE_CONFIG_RETURNCODES)
+def test_a_failed_read_of_push_gpgsign_reads_as_unknown_not_unset(
+    preflight, monkeypatch: pytest.MonkeyPatch, returncode: int
+) -> None:
+    monkeypatch.setattr(preflight, "_git", _git_config_read_failing_for("push.gpgSign", returncode))
+
+    assert preflight._config_facts("origin") == ["Signed push: push.gpgSign could not be read (unknown)"]
+
+
+@pytest.mark.parametrize("returncode", _UNREADABLE_CONFIG_RETURNCODES)
+def test_a_failed_read_of_receivepack_reads_as_unknown_not_unset(
+    preflight, monkeypatch: pytest.MonkeyPatch, returncode: int
+) -> None:
+    monkeypatch.setattr(preflight, "_git", _git_config_read_failing_for("remote.origin.receivepack", returncode))
+
+    assert preflight._config_facts("origin") == [
+        "Receive program: remote.origin.receivepack could not be read (unknown)"
+    ]
+
+
+def test_exit_one_from_git_config_means_unset_and_prints_no_config_fact(
+    preflight, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(preflight, "_git", _git_config_read_failing_for("push.gpgSign", 1))
+
+    assert preflight._config_facts("origin") == []
 
 
 def test_config_facts_are_absent_when_the_keys_are_unset(scenario: Scenario) -> None:

@@ -6,6 +6,7 @@ Usage: plan-push-preflight.py <repo-relative path under .claude/plans/ ending in
 It reads git state locally and never pushes. It sends `gh` requests only when the
 push URL's host is `github.com` or the host `GH_HOST` names, and always names that
 host. It reads `GH_HOST` from its own environment only, with no direnv resync.
+All child processes share one time budget, and a child that outlives it reads as a failed child.
 Its URL parser is deliberately stricter than `_lib.sh`'s `_lib_origin_owner_repo`
 and `ci-watch.sh`'s host parsing: any push URL it cannot parse without loss stops
 the offer.
@@ -34,6 +35,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 import urllib.parse
 from typing import NamedTuple
@@ -57,8 +59,14 @@ _ACCEPTED_URL_SCHEMES = frozenset({"https", "http", "ssh", "git", "file"})
 _GITHUB_HOST = "github.com"
 # A display cap that keeps the question short. The count line reports the remainder.
 _SUBJECT_CAP = 10
-# Hang-detection backstop, not a measured worst case. Same value as select-tests.py's _GIT_TIMEOUT_SECONDS.
-_CHILD_TIMEOUT_SECONDS = 15.0
+# The Bash tool kills a command at its default timeout of 120000 ms.
+_BASH_TOOL_DEFAULT_TIMEOUT_SECONDS = 120.0
+# Headroom so the script prints its result before the Bash tool's kill.
+_BUDGET_HEADROOM_SECONDS = 20.0
+# One budget shared by every child, so the script's total runtime stays under the Bash default.
+_TOTAL_BUDGET_SECONDS = _BASH_TOOL_DEFAULT_TIMEOUT_SECONDS - _BUDGET_HEADROOM_SECONDS
+# git-config(1) --get: "Returns error code 1 if the key was not found."
+_GIT_CONFIG_KEY_NOT_FOUND_RETURNCODE = 1
 # GNU timeout(1)'s exit status when the command times out.
 _TIMED_OUT_RETURNCODE = 124
 _EXIT_DECIDED = 0
@@ -68,6 +76,9 @@ _STRIPPED_GH_ENV_VARS = frozenset({"GH_HOST", "GH_REPO"})
 
 _USAGE_SENTENCE = "plan-push-preflight.py <repo-relative path under .claude/plans/ ending in .md>"
 _UNKNOWN_COMMITS_FACT = "Commits since the baseline: unknown, and may be the branch's whole history"
+
+# Monotonic time at which the shared child budget runs out. None until the first child or `_start_budget`.
+_budget_deadline: float | None = None
 
 
 class StopOffer(Exception):
@@ -154,19 +165,34 @@ def _emit(lines: list[str]) -> None:
     sys.stdout.buffer.flush()
 
 
+def _start_budget() -> None:
+    global _budget_deadline
+    _budget_deadline = time.monotonic() + _TOTAL_BUDGET_SECONDS
+
+
+def _remaining_budget_seconds() -> float:
+    if _budget_deadline is None:
+        _start_budget()
+    return _budget_deadline - time.monotonic()
+
+
 def _run(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess:
     """The only place a child process starts. Child stderr is captured and never relayed.
 
     Output is decoded here, not by text mode, because text mode turns a lone CR or CRLF into "\\n".
-    A child that outlives the timeout reads as a failed child with no output.
+    Each child gets the time left in the shared budget. A child that outlives it, or that would start
+    after the budget is spent, reads as a failed child with no output.
     """
+    remaining_seconds = _remaining_budget_seconds()
+    if remaining_seconds <= 0:
+        return subprocess.CompletedProcess(argv, _TIMED_OUT_RETURNCODE, stdout="", stderr="")
     try:
         completed = subprocess.run(
             argv,
             env=env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            timeout=_CHILD_TIMEOUT_SECONDS,
+            timeout=remaining_seconds,
             check=False,
         )
     except subprocess.TimeoutExpired:
@@ -357,11 +383,6 @@ def _read_commit_range(remote: str, sha: str) -> CommitRange | None:
     return CommitRange(int(count_text), _output_lines(log_result.stdout))
 
 
-def _read_config_value(key: str) -> str | None:
-    completed = _git("config", "--get", key)
-    return _output_value(completed.stdout) if completed.returncode == 0 else None
-
-
 def _pr_exists(branch: str, gh_repo_name: str) -> bool:
     return _gh("pr", "view", branch, "--repo", gh_repo_name, "--json", "number").returncode == 0
 
@@ -391,15 +412,25 @@ def _commit_facts(commit_range: CommitRange | None) -> list[str]:
     return facts
 
 
+def _config_fact(label: str, key: str) -> str | None:
+    """The fact line for one setting, or None when git reports the key unset.
+
+    Any other failure reads as unknown, never as unset, because the setting changes what the push does.
+    """
+    completed = _git("config", "--get", key)
+    if completed.returncode == 0:
+        return label + ": " + key + " is " + _output_value(completed.stdout)
+    if completed.returncode == _GIT_CONFIG_KEY_NOT_FOUND_RETURNCODE:
+        return None
+    return label + ": " + key + " could not be read (unknown)"
+
+
 def _config_facts(remote: str) -> list[str]:
-    facts = []
-    gpg_sign = _read_config_value("push.gpgSign")
-    if gpg_sign is not None:
-        facts.append("Signed push: push.gpgSign is " + gpg_sign)
-    receive_program = _read_config_value("remote." + remote + ".receivepack")
-    if receive_program is not None:
-        facts.append("Receive program: remote." + remote + ".receivepack is " + receive_program)
-    return facts
+    facts = [
+        _config_fact("Signed push", "push.gpgSign"),
+        _config_fact("Receive program", "remote." + remote + ".receivepack"),
+    ]
+    return [fact for fact in facts if fact is not None]
 
 
 def _gh_facts(branch: str, push_url: PushUrl, plan_path: str) -> tuple[list[str], str | None]:
@@ -477,6 +508,7 @@ def _decide(argv: list[str]) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    _start_budget()
     try:
         lines = _decide(argv)
         status = _EXIT_DECIDED
