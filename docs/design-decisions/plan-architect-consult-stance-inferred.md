@@ -8,14 +8,14 @@
 
 **Why the agent chooses, not the caller.** There are two reasons:
 
-- **Less complexity.** There is no second literal, and none of the six dispatch sites changes.
+- **Less complexity.** There is no second literal, and no existing `MODE=consult` dispatch site changes.
 - **More objectivity.** A session asked to choose a stance may be less likely to pick an adversarial review of its own proposal. The agent has no stake in that proposal.
 
 **The residual.** The caller still writes the prompt. A caller that leaves its proposal out gets an independent design, not a softer review. A caller that frames its proposal as settled context still meets the body's rule to treat a handed-over approach as a hypothesis, which applies in both stances.
 
 **Why a misread stays safe.** A caller-named verdict leads the return, so a misread stance still answers in the caller's terms. The closing stance line makes a misread visible to the caller and the human without a caller-side literal.
 
-**Rejected.** A `CONSULT=` literal. It changes six callers and puts the choice back with the session whose objectivity the second reason above distrusts.
+**Rejected.** A `CONSULT=` literal. It changes every `MODE=consult` caller and puts the choice back with the session whose objectivity the second reason above distrusts.
 
 ## Sources
 
