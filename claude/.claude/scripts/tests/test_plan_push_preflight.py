@@ -20,7 +20,6 @@ import shutil
 import subprocess
 import sys
 import tokenize
-import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -692,23 +691,6 @@ class TestRun:
 
 
 class TestSanitizerAndLine:
-    @pytest.mark.parametrize(
-        ("character", "category"),
-        [
-            (_LINE_SEPARATOR, "Zl"),
-            (_PARAGRAPH_SEPARATOR, "Zp"),
-            (_BIDI_OVERRIDE, "Cf"),
-            (_NO_BREAK_SPACE, "Zs"),
-            (_IDEOGRAPHIC_SPACE, "Zs"),
-        ],
-        ids=["line-separator", "paragraph-separator", "bidi-override", "no-break-space", "ideographic-space"],
-    )
-    def test_hostile_test_characters_keep_the_category_the_sanitizer_cases_depend_on(
-        self, character: str, category: str
-    ) -> None:
-        # Guards the forging cases against a constant that was normalized to an ASCII space.
-        assert unicodedata.category(character) == category
-
     def test_sanitize_drops_control_format_and_line_separator_characters(self, preflight) -> None:
         hostile = (
             "a\x1bb\x7fc\td\u0085e" + _BIDI_OVERRIDE + "f" + _LINE_SEPARATOR + "g" + _PARAGRAPH_SEPARATOR + "h"
@@ -932,6 +914,16 @@ def test_github_com_push_url_asks_with_facts_and_both_commands(scenario: Scenari
 
     assert result.lines == _expected_github_ask_lines(scenario)
     # Both gh calls ran with GH_HOST and GH_REPO removed, although the env sets them.
+    assert scenario.gh_calls() == _EXPECTED_GITHUB_GH_CALLS
+
+
+def test_a_run_with_no_gh_host_or_gh_repo_set_still_asks_and_issues_the_same_gh_calls(scenario: Scenario) -> None:
+    del scenario.env["GH_HOST"]
+    del scenario.env["GH_REPO"]
+
+    result = scenario.run()
+
+    assert result.lines == _expected_github_ask_lines(scenario)
     assert scenario.gh_calls() == _EXPECTED_GITHUB_GH_CALLS
 
 

@@ -21,10 +21,14 @@ Stop codes: not-on-branch, branch-name, tip, plan-not-in-tip, remote-name,
 push-url-count, push-url-form, push-url-path, default-branch, open-pr, usage,
 internal-error.
 
-Exit status: 0 when the script reached a decision (ask or stop), 1 on an internal
-error (the `internal-error` stop line carries only the exception's type name), and
-2 on a usage error. Every exit with one of these statuses prints an `OFFER` line, and
-nothing on stderr, while stdout is writable. A run ended by a signal prints no `OFFER` line.
+Exit status:
+- 0 when the script reached a decision (ask or stop).
+- 1 on an internal error. The `internal-error` stop line carries only the exception's
+  type name.
+- 2 on a usage error.
+
+Every exit prints one `OFFER` line, and nothing on stderr, while stdout is writable.
+A run ended by a signal prints no `OFFER` line.
 """
 from __future__ import annotations
 
