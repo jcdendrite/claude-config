@@ -64,9 +64,7 @@ Re-dispatch from scratch, rather than repairing inline, on any of these returns:
 
 `plan-architect` is read-only and idempotent, so nothing durable is lost by retrying.
 
-Choose the approach. Always include brief rationale — what alternatives were weighed and why they were set aside. For trivial choices one sentence suffices; no separate alternatives section is needed. Consult `code-review`, `test-conventions`, `verify-sources`, and `ai-instruction-and-memory-files` if their domains are implicated.
-
-**External-pattern grounding.** When invoking an external-doc pattern, quote the literal source lines — not a paraphrase, not a summary, not the section heading. A bare pattern name risks crystallizing a wrong interpretation.
+`claude/.claude/agents/plan-architect.md` § "Design principles" governs how the approach is chosen; the rules below govern what the plan records. Consult `code-review`, `test-conventions`, `verify-sources`, and `ai-instruction-and-memory-files` if their domains are implicated.
 
 **Comment-content discipline.** When a plan prescribes a comment or docstring verbatim, prescribe the durable one-line fact only — the plan's own rationale belongs in the commit message and PR body, per CLAUDE.md §Durable text.
 
@@ -102,8 +100,6 @@ other's.
     - Use the quoted form on every row you add or change. Bare `[engineer-verified]` tags already in committed plans remain valid; treat the whole claim of such a row as protected, as `plan-review` does.
 
 See `plan-it/REFERENCES.md` for a worked example and the full grammar rationale.
-
-**Question the ticket's prescribed approach.** Acceptance criteria often prescribe *how* to implement, not only the outcome. Treat a prescribed approach as a hypothesis, not settled design: when planning it triggers the wrong-foundation tell — compounding patches accreting on one mechanism to force the prescribed approach to work — re-derive the correct design ignoring both the current code and the AC, then surface that re-scope to the user rather than planning around a wrong premise.
 
 Write the plan with these sections:
 

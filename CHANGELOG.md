@@ -25,6 +25,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Step 8 shows each `Edit` made after the last consult and not shown at an earlier presentation as a verbatim old/new pair, marked as not reviewed by any consult.
   - Step 8's summary covers every consult's corrections, including findings added or upgraded, and the session's own proposals not applied.
   - New marker-script tests cover a re-write after a body edit and a refused re-write, which leaves the marker's hash unchanged.
+- **`plan-architect` now has a principal-engineer role and chooses between two consult stances.** Its body carries a `## Design principles` section moved from `plan-it` Step 5, which now cites it.
+  - **Stances:** consult mode reviews a handed-over proposal adversarially, or designs from the problem when none is handed over. The agent picks the stance by its own judgment of the dispatch.
+  - **Rejection:** a rejection names the defect and the rule it breaks, then attaches a replacement design.
+  - **Return order:** a verdict set named by the caller leads the return, and a closing `Stance:` line names the stance taken.
 - **`--branches` and per-branch rows, filtered or not, now credit a session's leading default-branch records to the first branch that same session enters.** This applies to every subcommand the "Pre-branch default-branch attribution" rule block in `docs/transcript-analysis.md` lists as applying it. Planning in a separate session is not moved.
 - **`cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark now attribute every subagent record to the dispatching main thread's branch at that record's time, never its own `gitBranch`.**
   - A subagent still running after a branch switch follows the switch.

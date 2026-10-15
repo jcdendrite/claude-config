@@ -7589,6 +7589,133 @@ def test_review_orchestrator_agent_body_cites_code_review_heading_that_exists(
     )
 
 
+_PLAN_ARCHITECT_PATH = _AGENTS_DIR / "plan-architect.md"
+_PLAN_ARCHITECT_CONSULT_HEADING = "## MODE=consult"
+_PLAN_ARCHITECT_DESIGN_PRINCIPLES_HEADING = "## Design principles"
+
+
+@pytest.mark.parametrize(
+    "phrase, invariant",
+    [
+        pytest.param(
+            "**A caller-named verdict leads.**",
+            "four skill-prescribed consult sites parse the return into a closed "
+            "verdict set, so a caller-named verdict must stay the return's "
+            "opening line",
+            id="caller-named-verdict-leads",
+        ),
+        pytest.param(
+            "**Name the stance last.**",
+            "the stance line must stay after the verdict, or the consult "
+            "callers' verdict parsing reads the stance as the verdict",
+            id="stance-named-last",
+        ),
+        pytest.param(
+            "open with exactly one of those verdicts",
+            "a caller-named verdict set must still lead the return unchanged",
+            id="return-opens-with-one-caller-verdict",
+        ),
+        pytest.param(
+            "`Stance: review` or `Stance: design`, after any caller-named verdict",
+            "the stance line's position after any caller-named verdict is the "
+            "clause the callers' parsing depends on",
+            id="stance-line-after-caller-verdict",
+        ),
+        pytest.param(
+            "**Review stance.**",
+            "consult mode must keep its review stance, which the proposal "
+            "default of the stance-selection paragraph points at",
+            id="review-stance-defined",
+        ),
+        pytest.param(
+            "**Design stance.**",
+            "consult mode must keep its design stance, which the problem "
+            "default of the stance-selection paragraph points at",
+            id="design-stance-defined",
+        ),
+        pytest.param(
+            "**Choose the stance by judgment.**",
+            "the proposal-means-review and problem-means-design defaults live "
+            "in this paragraph, so deleting it orphans both stance labels",
+            id="stance-selection-by-judgment",
+        ),
+    ],
+)
+def test_plan_architect_consult_section_carries_phrase(
+    phrase: str, invariant: str
+) -> None:
+    """Wiring-presence tripwire: the consult section still carries each pinned
+    phrase. Claims presence only, not that the agent obeys it."""
+    consult_section = _heading_section_text(
+        _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_CONSULT_HEADING
+    )
+    assert phrase in consult_section, (
+        f"plan-architect.md's {_PLAN_ARCHITECT_CONSULT_HEADING!r} section no "
+        f"longer carries {phrase!r}: {invariant}."
+    )
+
+
+@pytest.mark.parametrize(
+    "principle_label",
+    [
+        pytest.param(
+            "**Treat a handed-over approach as a hypothesis.**",
+            id="handed-over-approach-is-hypothesis",
+        ),
+        pytest.param(
+            "**Weigh alternatives, then commit.**", id="weigh-alternatives-then-commit"
+        ),
+        pytest.param(
+            "**Ground claims in what you read.**", id="ground-claims-in-reading"
+        ),
+    ],
+)
+def test_plan_architect_design_principles_section_carries_label(
+    principle_label: str,
+) -> None:
+    principles_section = _heading_section_text(
+        _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_DESIGN_PRINCIPLES_HEADING
+    )
+    assert principle_label in principles_section, (
+        f"plan-architect.md's {_PLAN_ARCHITECT_DESIGN_PRINCIPLES_HEADING!r} "
+        f"section no longer carries {principle_label!r}. plan-it Step 5 cites "
+        "that section for these rules, so dropping one leaves the citation "
+        "resolving to a section that no longer states it."
+    )
+
+
+def test_plan_it_cites_plan_architect_design_principles_heading() -> None:
+    # Presence matters as well as resolution:
+    # test_skill_citations_resolve_to_real_headings cannot notice a deleted
+    # citation.
+    _assert_citation_resolves_to_heading(
+        _skill_file("plan-it"),
+        "claude/.claude/agents/plan-architect.md",
+        "Design principles",
+        repo_root=REPO_ROOT,
+    )
+
+
+def test_plan_architect_cites_engineering_judgment_heading_that_exists() -> None:
+    # The agent body sits outside test_skill_citations_resolve_to_real_headings'
+    # corpus, and its bare `CLAUDE.md` target would resolve to the repo-root
+    # file, so the stowed global file's heading is checked directly.
+    cited_heading = "Engineering Judgment"
+    collapsed_agent_text = " ".join(_PLAN_ARCHITECT_PATH.read_text().split())
+    cited_headings = [
+        citation.heading
+        for citation in _extract_citations(collapsed_agent_text)
+        if citation.target == "CLAUDE.md"
+    ]
+    assert cited_heading in cited_headings, (
+        f"plan-architect.md no longer cites `CLAUDE.md` § {cited_heading!r}; "
+        f"its `CLAUDE.md` citations are {cited_headings!r}"
+    )
+    assert normalize_heading(cited_heading) in heading_texts(
+        _GLOBAL_CLAUDE_MD.read_text()
+    ), f"{_GLOBAL_CLAUDE_MD} has no {cited_heading!r} heading"
+
+
 def test_review_orchestrator_resume_path_names_ledger_show_in_code_review_step_0_1() -> None:
     section_text = _heading_section_text(
         _skill_file("code-review"), _CODE_REVIEW_STEP_0_1_HEADING
