@@ -80,7 +80,7 @@ Alternatives weighed:
 2. The handoff regex misses `deny-no-op-dispatch.sh:127` and `set-session-title-from-branch.sh:139,154,155`. It would also flag comment lines and `|| grep -q`. [verified: same Grep]
 3. Reachable lines: the input can be multi-line and over 64 KiB under `pipefail`, and a miss changes what the hook does. [verified: reads of each site]
    - `deny-credential-bash-reads.sh:76,85`: a miss allows a command that names a credential path. A deny needs both lines to match.
-   - `deny-credential-file-reads.sh:56`: a miss allows the Read. The gate decides before the Read runs. A real Read path is bounded by `PATH_MAX`, so this site is reachable only by a synthetic input. One rule classifies the file-path sites: this one, `consume-migration-token.sh:36`, and `validate-migration-filename.sh:76`. The conversions stay because the lint requires them.
+   - `deny-credential-file-reads.sh:56`: a miss allows the Read. The gate decides before the Read runs. A real Read path is bounded by `PATH_MAX`, so this site is reachable only by a synthetic input. The `PATH_MAX` bound classifies the file-path sites: this one, `consume-migration-token.sh:36`, and `validate-migration-filename.sh:76`. The conversions stay because the lint requires them.
    - `deny-private-project-refs.sh:358-362`: a miss leaves `IS_GH_API=0`, so a mutating `gh api` body is never scanned.
    - `deny-private-project-refs.sh:529`: a miss drops the chain-split tip from a deny that has already fired.
    - `deny-invisible-commit-content.sh:282`: the 141 falls into the "could not evaluate" deny at `:288-290`. The hook still denies, but with the wrong reason.
@@ -105,16 +105,19 @@ Alternatives weighed:
    - `&&|\|\|`
    - `NOOP_*_RE` (`deny-no-op-dispatch.sh:64,70`)
    - `ALLOWLIST_RE` (`set-session-title-from-branch.sh:153`)
-7. A here-string adds one residual failure: if its temp file cannot be created (for example a full temp filesystem or exhausted file descriptors), grep never runs and the status is 1, read as no match. This matters on bash 3.2 through 5.0, where every here-string is a temp file, and on 5.1+ above pipe capacity. [verified: reviewers' reading of bash behavior and `docs/hooks.md:299`; not run on bash 3.2]
-   - For input-derived strings the parse step fails first in the main gates: `_lib_parse_tool_input_or_deny` reads `COMMAND` and `FILE_PATH` through a here-string (`_lib.sh:543`) at `deny-credential-file-reads.sh:35`, `deny-credential-bash-reads.sh:55`, `deny-private-project-refs.sh:221`, `deny-invisible-commit-content.sh:185`, `enforce-marker-script-shape.sh:261`, `require-ready-for-review.sh:193`, and `deny-no-op-dispatch.sh:90`. When that redirect fails, the deny at `:547-549` is not reached: `_lib_parse_overflow` is never initialized, so under `set -u` the hook aborts with exit 127, a non-blocking exit that allows the call. [verified: reviewer probe on bash 5.2.21 with a file-descriptor limit]
-   - Accepted exceptions, where the string is not one the parse carried:
+7. A here-string adds one residual failure: if the shell cannot create it (its temp file or a file descriptor), grep never runs and the status is 1, read as no match. [verified: reviewer probe on bash 5.2.21 with a file-descriptor limit; `docs/hooks.md` gives status 2 for this case, see row 15; not run on bash 3.2] Bash 3.2 through 5.0 write every here-string to a temp file. Bash 5.1 and later do so above pipe capacity. [unverified for 5.1 and later]
+   - Seven main gates parse their input through a here-string first: `_lib_parse_tool_input_or_deny` reads `COMMAND` and `FILE_PATH` at `_lib.sh:543`, called from `deny-credential-file-reads.sh:35`, `deny-credential-bash-reads.sh:55`, `deny-private-project-refs.sh:221`, `deny-invisible-commit-content.sh:185`, `enforce-marker-script-shape.sh:261`, `require-ready-for-review.sh:193`, and `deny-no-op-dispatch.sh:90`.
+   - When that redirect fails, the deny at `:547-549` is not reached. `_lib_parse_overflow` is never initialized, so under `set -u` the hook aborts with exit 127, a non-blocking exit that allows the call. [verified: reviewer probe on bash 5.2.21 with a file-descriptor limit]
+   - That parse-step outcome predates this branch (`_lib.sh:543` and `:547-549` are identical at the merge-base). It relies on the failure persisting from the parse to the later grep.
+   - Sites with no here-string parse ahead of the grep, listed without a claim about their other failure handling:
      - `guard-settings-session-keys.sh:88` reads git's staged-name list.
-     - `nudge-transcript-toolkit.sh:124` reads Write `content`.
-     - The semver plugin gates have a parse with no here-string (`plugins/*/hooks/_lib.sh:71`).
-     - The `-ne 1` branch at `deny-invisible-commit-content.sh:282` reads a redirect failure as no match.
-     - `ask-review-permissions.sh` (lines 47, 63, 88) sets no `pipefail` and parses through pipes. It had no SIGPIPE hazard before and now depends on a creatable here-string temp file.
-     - `plugins/lovable-cloud/hooks/validate-migration-filename.sh` (line 76) has the same shape and the same new dependency.
-   - These hooks' posture on an environment failure is already fail-open or informational.
+     - `nudge-transcript-toolkit.sh:124` reads Write `content`, which a pipe extracted.
+     - `set-session-title-from-branch.sh:139,154,155` and `plugins/lovable-cloud/hooks/consume-migration-token.sh:36`.
+     - `ask-review-permissions.sh` (lines 47, 63, 88) and `plugins/lovable-cloud/hooks/validate-migration-filename.sh` (line 76) set no `pipefail`, so they had no SIGPIPE hazard before. They now depend on a creatable here-string.
+     - `plugins/plugin-semver/hooks/require-plugin-version-bump.sh:91` and `plugins/npm-semver/hooks/require-npm-version-bump.sh:127` parse through a pipe (`plugins/plugin-semver/hooks/_lib.sh:71`, `plugins/npm-semver/hooks/_lib.sh:71`).
+     - `_lib.sh:3419` reads a failed redirect as unsafe, the fail-closed direction.
+   - The `-ne 1` arm at `deny-invisible-commit-content.sh:288-290` is the one fail-closed fork around a converted grep (line 282). It reads a failed redirect, status 1, as no match.
+   - These residuals are the session's judgment, not an engineer-accepted exception.
    - The PR body records this residual, and records that the new tests ran on bash 5.x only (CI is `ubuntu-24.04`, `tests.yml:25`); bash 3.2 is [unverified].
 8. `_lib_capped` forwards `"$@"` to `_lib_capped_for` (`_lib.sh:49-51`). The current pipe form already relies on the wrapper passing stdin through, and a here-string uses the same stdin. [verified]
 9. At `guard-settings-session-keys.sh:88` the writer is `timeout … git`, not printf. A staged-name list over the pipe capacity with `claude/.claude/settings.json` listed early reproduces the miss. [verified: staff-sdet probe in a scratch repo with `git update-index --index-info`: a 266 KB list missed 5 of 5 runs, a 91 KB list 10 of 10, a 53 KB list 0 of 10] Verification step 1 still confirms it in place.
@@ -132,7 +135,7 @@ Alternatives weighed:
 
     Only `deny-private-project-refs.sh`'s header mentions the failure as a known gap (`:134-135`, `:440-443`). That bullet came in with an unrelated feature PR after the tier-header commit and carries no human-acceptance rationale, so it does not count as accepted debt under `docs/hooks.md:20`. [verified: ciso-reviewer's reading of the commit history] `_lib.sh:1756` already fails closed when xargs fails (`:1787-1789`).
 14. xargs exits 1 on a newline inside a quoted argument and emits no tokens after the failure point. [verified: session probe this session. `printf '%s\n' 'cmd sub --body "line one' 'line two" --body-file /tmp/x' | xargs -n1; echo "exit=$?"` printed `cmd`, `sub`, an "unmatched double quote" error, `--body`, and `exit=1`. `--body-file` was never emitted.] So "a nonzero tokenizer exit denies" would deny every multi-line inline `--body`/`-m` value.
-15. `docs/hooks.md` needs no edit. No entry mentions SIGPIPE or pipes into grep, and no tier line changes. Its one here-string mention (`:299`, status 2 also arises from a failed here-string redirect) is consistent with row 7. [verified: Grep of `docs/hooks.md`]
+15. `docs/hooks.md` needs no edit. No entry mentions SIGPIPE or pipes into grep, and no tier line changes. Its one here-string mention (`:299` at the merge-base, `:298` on this branch) gives status 2 for a failed here-string redirect, where row 7 records status 1. The doc is left unedited because it is outside this plan's files. [verified: Grep of `docs/hooks.md`]
 16. `CHANGELOG.md` has one `[Unreleased]` section (`:5`). #1240's bullet at `:256` records a past fix and stays untouched. The new bullet goes first under `### Fixed` (`:254`). [verified]
 17. The only version field is in `plugin.json`: plugin-semver 1.1.7, npm-semver 1.0.7, lovable-cloud 3.2.8. `marketplace.json` has none. `require-plugin-version-bump.sh` blocks the commit until each touched plugin's version is strictly raised. Plugins have no CHANGELOG of their own. The root CHANGELOG records plugin bumps. [verified: Grep; `.claude/rules/review-pipeline-dispatch.md`; CHANGELOG.md:258]
 18. The engineer approved the sequencing: this gate-hook PR first, then a separate P1 PR. [engineer-verified: "Let's go with your recommendation"] That quote covers only the sequencing.

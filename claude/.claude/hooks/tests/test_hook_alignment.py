@@ -31,9 +31,7 @@ shape checks:
   POSIX-strict grep reads as a literal `s`.
 - No hook in claude/.claude/hooks/*.sh (including _lib.sh and _config.sh) or
   plugins/*/hooks/*.sh (including each _lib.sh) pipes into a grep that can
-  exit at its first match -- under `set -o pipefail` that fails a pipeline
-  whose writer is still writing a large input with 141, which an `if` reads
-  as no match.
+  exit at its first match.
 - Every hook entry object inside `hooks.<Event>[].hooks[]` in
   claude/.claude/settings.json carries non-empty `type` and `command`
   fields — catches an entry left with only a `timeout` key and no `type`
