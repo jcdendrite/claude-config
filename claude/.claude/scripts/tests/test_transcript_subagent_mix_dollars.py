@@ -87,6 +87,8 @@ class TestSubagentMixDollars:
         )
         _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
+        assert cols["Actual$"] == "$3.00"  # priced row present, so banner absence is not an empty-corpus artifact
         assert "STALE PRICING" not in out
 
     def test_reprice_as_delta_arithmetic(self, fake_projects, capsys):

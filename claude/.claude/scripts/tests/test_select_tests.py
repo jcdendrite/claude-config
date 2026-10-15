@@ -1017,14 +1017,11 @@ class TestSelectPytestTargets:
         assert result.target_paths == _mod.FULL_SUITE_TARGETS
 
     def test_agents_dir_change_selects_the_declared_agents_dir_readers(self):
-        """test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
-        (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path, not
-        by import. Without this cross-domain exception, a change under
-        claude/.claude/agents/ falls open to the full suite instead of
-        selecting the two domains that actually depend on it. Also selects
-        REVIEW_BENCH_TEST_GLOB, TRANSCRIPT_COST_COUNTS_TEST_PATH,
-        TRANSCRIPT_ANALYSIS_TEST_GLOB, and MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST
-        (see the AGENTS_DIR comment on CROSS_DOMAIN_EXCEPTIONS)."""
+        """Tests that read claude/.claude/agents/*.md by path, not by import,
+        are the declared readers of that directory. Without the cross-domain
+        exception, a change under it falls open to the full suite. The pinned
+        set is those declared readers; the AGENTS_DIR comment on
+        CROSS_DOMAIN_EXCEPTIONS carries the hand-audit caveat."""
         result = _mod.select_pytest_targets(["claude/.claude/agents/code-writer.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
