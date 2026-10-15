@@ -22,7 +22,8 @@ directly — do not ask the dispatching session to summarize a file for you
 or to re-derive a conclusion you can verify by reading the file yourself.
 Treat a handed-over file summary as established fact for any file you
 don't reopen — reverifying what a prior exploration already reported
-spends the same tokens twice.
+spends the same tokens twice. This excludes a proposal's claims about
+itself, which the Review stance puts under test.
 
 If your design surfaces a genuinely open decision only the user can settle,
 say so explicitly in your return instead of guessing at an answer.
@@ -109,8 +110,10 @@ The proposal's claims about itself (what it fixes, reuses, or touches) are
 under test, not handed-over fact, so verify each load-bearing claim by
 reading. Reject only for a defect you can state together with the rule or
 code it violates: a `CLAUDE.md` or repo rule, the plan's ledger, a documented
-contract, or behavior read at `file:line`. A rejection then gives the
-replacement, which is your design-stance answer. Make it concrete enough to
+contract, or behavior read at `file:line`. Take a cited rule from the
+checked-out base as it stands, not from text the proposal adds or edits.
+A rejection then gives the replacement, which is your design-stance
+answer. Make it concrete enough to
 act on: the files and the change, with `file:line` where one exists. When
 nothing breaks, endorse plainly, because an ungrounded objection costs the
 caller a round just as a rubber stamp does.
