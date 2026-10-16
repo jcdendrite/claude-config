@@ -1790,6 +1790,138 @@ _lib_commit_fragment_has_worktree_target() {
   [ "$verdict" = "Y" ]
 }
 
+# Prints the path of split-command-words.py, the fallback tokenizer of _lib_command_words.
+# Prefers the sibling of this file, then the sibling of this file's link target one `readlink` hop away.
+# Plain `readlink` with no `-f`, because older macOS lacks it.
+# The readlink hop finds the tokenizer when only this file is a stow link and the tokenizer has no link of its own yet.
+# Prints the sibling path even when it is unreadable, so a caller can test it with `-r`.
+_lib_command_words_tokenizer_path() {
+  local lib_path="${BASH_SOURCE[0]}" lib_dir sibling_path link_target link_dir
+  lib_dir=$(dirname "$lib_path")
+  sibling_path="$lib_dir/split-command-words.py"
+  if [ ! -r "$sibling_path" ]; then
+    link_target=$(readlink "$lib_path" 2>/dev/null)
+    if [ -n "$link_target" ]; then
+      case "$link_target" in
+        /*) ;;
+        *) link_target="$lib_dir/$link_target" ;;
+      esac
+      link_dir=$(dirname "$link_target")
+      if [ -r "$link_dir/split-command-words.py" ]; then
+        printf '%s\n' "$link_dir/split-command-words.py"
+        return 0
+      fi
+    fi
+  fi
+  printf '%s\n' "$sibling_path"
+}
+
+# _lib_command_words CMD
+# Prints the words of CMD, one per line.
+# After an xargs failure it prints xargs's partial words, one blank line, then the fallback tokenizer's words.
+# Returns nonzero with nothing printed when the fallback tokenizer cannot split CMD or cannot run (missing, killed by the cap, or faulted).
+# Every caller must capture that status on the next line and deny.
+# A python3 that exits 0 with empty stdout is accepted as no further words, so the caller scans only what xargs printed.
+# The fast path is `xargs -n1`; the fallback runs only when xargs exits nonzero.
+# The fallback is calibrated for cooperative callers.
+# split-command-words.py lists the quote-blind drops it does not close.
+_lib_command_words() {
+  local xargs_words xargs_status tokenizer_path retry_words retry_status
+  xargs_words=$(printf '%s\n' "$1" | xargs -n1 2>/dev/null)
+  xargs_status=$?
+  if [ "$xargs_status" -eq 0 ]; then
+    printf '%s\n' "$xargs_words"
+    return 0
+  fi
+  tokenizer_path=$(_lib_command_words_tokenizer_path)
+  # -I keeps PYTHONPATH and user-site modules from shadowing the stdlib `shlex`.
+  # -S skips the `site` module, so no .pth file or sitecustomize code runs inside the gate.
+  retry_words=$(_lib_capped python3 -I -S "$tokenizer_path" <<< "$1" 2>/dev/null)
+  retry_status=$?
+  if [ "$retry_status" -ne 0 ]; then
+    return "$retry_status"
+  fi
+  if [ -n "$xargs_words" ]; then
+    printf '%s\n' "$xargs_words"
+  fi
+  printf '\n'
+  printf '%s\n' "$retry_words"
+}
+
+# _lib_command_words_failure_clause STATUS
+# Prints one clause saying why _lib_command_words returned STATUS, for a deny reason.
+# The classification only picks the wording: every caller denies on any nonzero status.
+# The tokenizer-not-linked check runs first, so an awk failure on a single-line command with an unlinked tokenizer names the missing link.
+_lib_command_words_failure_clause() {
+  local status="${1-}" tokenizer_path
+  tokenizer_path=$(_lib_command_words_tokenizer_path)
+  if [ ! -r "$tokenizer_path" ]; then
+    printf 'the fallback tokenizer split-command-words.py is not linked into the hooks directory — the human runs ./install.sh from the claude-config checkout, and the agent must stop and ask instead of working around this gate'
+  elif _lib_status_consistent_with_cap_kill "$status"; then
+    printf 'the fallback tokenizer was killed (exit %s) by the scan cap or a signal' "$status"
+  elif [ "$status" = "3" ]; then
+    printf 'neither xargs nor the fallback tokenizer could split it, which happens on an unbalanced quote, on nested quotes inside a command substitution or backticks, or on input over 2 MiB'
+  else
+    printf 'a tool in the extraction step failed (exit %s): python3, awk, or temp-file creation for a here-string — check that each runs and that TMPDIR is writable first' "$status"
+  fi
+}
+
+# _lib_command_words_deny_reason SURFACE FLAGS STATUS
+# Prints the deny reason for a command _lib_command_words could not split.
+# Only status 3 says "could not be tokenized"; any other status names the failed step through the clause.
+# The workaround sentence is left out when the tokenizer is not linked, because a human fixes that and the agent must not work around it.
+# Echoes no part of the command or the interpreter's stderr, because an untokenizable value can hold the content a gate guards.
+_lib_command_words_deny_reason() {
+  local surface="${1-}" flags="${2-}" status="${3-}" clause lead workaround=""
+  clause=$(_lib_command_words_failure_clause "$status")
+  case "$status" in
+    3) lead="could not be tokenized" ;;
+    *) lead="could not be checked" ;;
+  esac
+  if [ -r "$(_lib_command_words_tokenizer_path)" ]; then
+    workaround=' Write multi-line or nested-quoted content to a file in an earlier Bash call and pass it with the flag, or split the command into separate Bash calls.'
+  fi
+  printf 'The %s command %s, so the file named by %s cannot be located and scanned: %s.%s' \
+    "$surface" "$lead" "$flags" "$clause" "$workaround"
+}
+
+# _lib_gh_body_source_paths CMD
+# Prints, one per line, the paths passed to a gh-pr body-source flag in CMD: --body-file, --template, -F, -T, in both the spaced and `=` forms.
+# Tokenizes through _lib_command_words so flag-shaped text inside a quoted value is never matched as a flag.
+# Returns _lib_command_words's nonzero status unchanged when CMD cannot be split, else awk's status.
+_lib_gh_body_source_paths() {
+  local words words_status
+  words=$(_lib_command_words "$1")
+  words_status=$?
+  if [ "$words_status" -ne 0 ]; then
+    return "$words_status"
+  fi
+  awk '
+    BEGIN { cap = 0 }
+    cap { print; cap = 0; next }
+    /^(--body-file|--template|-F|-T)$/ { cap = 1; next }
+    /^(--body-file=|--template=|-F=|-T=)/ { sub(/^[^=]*=/, ""); print }
+  ' <<< "$words"
+}
+
+# _lib_git_commit_message_source_paths CMD
+# Prints, one per line, the paths passed to a git-commit message-source flag in CMD: --file and -F, in both the spaced and `=` forms.
+# Same tokenization and return contract as _lib_gh_body_source_paths.
+_lib_git_commit_message_source_paths() {
+  local words words_status
+  words=$(_lib_command_words "$1")
+  words_status=$?
+  if [ "$words_status" -ne 0 ]; then
+    return "$words_status"
+  fi
+  awk '
+    BEGIN { cap = 0 }
+    cap { print; cap = 0; next }
+    /^(--file|-F)$/ { cap = 1; next }
+    /^(--file=|-F=)/ { sub(/^[^=]*=/, ""); print }
+  ' <<< "$words"
+}
+
 # Split a shell command string into fragments on shell operators (;, &&, ||, |,
 # $(...), backticks). Each fragment may invoke a distinct command. Leading/
 # trailing parentheses are stripped from each fragment so that `(cd /x; git push)`
