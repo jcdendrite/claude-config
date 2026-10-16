@@ -25,6 +25,7 @@ The splitter diverges from `xargs -n1` on purpose:
   - A backslash-newline joins the lines (xargs yields two words).
   - `\\"` inside double quotes is honored (xargs fails on it).
   - `-e`, `-n`, and `-E` words are kept (xargs's echo swallows them).
+  - A `\\\\` pair inside double quotes yields one backslash (xargs keeps both).
 
 Residual over-denies, where valid bash still makes the splitter exit 3:
   - A `"$(...)"` or backtick substitution whose inner quotes leave the flat
@@ -35,10 +36,12 @@ Residual over-denies, where valid bash still makes the splitter exit 3:
   - A multi-line quoted value whose closing quote sits on a line starting with
     `#`, such as a message whose last line begins `#123`. The quote-blind
     comment-line drop removes that line, leaving the quote open.
-Residual over-deny outside the splitter: an unrelated tool's flag that a
-caller also reads (`ssh -T host`, `tar -T list`) newly reaches the caller once
-xargs's failure is recovered. The splitter exits 0 there; the caller's file
-read denies.
+Residual over-denies outside the splitter:
+  - An unrelated tool's flag that a caller also reads (`ssh -T host`,
+    `tar -T list`) reaches the caller once xargs's failure is recovered. The
+    splitter exits 0 there; the caller's file read denies.
+  - A command made only of comment lines that xargs cannot split, such as
+    `# it's`, yields no words, and `_lib_command_words` denies it.
 Residual misses, where the splitter drops words bash keeps. Each applies only
 past the point where xargs failed:
   - A quoted `<<WORD` mention followed later by a line equal to `WORD` makes
@@ -54,9 +57,8 @@ The quote-blind drops above are not closed against input crafted to evade
 them.
 
 The 2 MiB cap bounds memory, not time. `shlex` is quadratic in the length of
-one word (about 0.7 s at 200 KB, 3 s at 400 KB), and the heredoc scan is
-quadratic in the number of unterminated openers. The caller's 5 s cap
-(`_lib_capped` in _lib.sh) is the only runtime bound. A machine with neither
+one word, and the heredoc scan is quadratic in the number of unterminated
+openers. The caller's 5 s cap (`_lib_capped` in _lib.sh) is the only runtime bound. A machine with neither
 `timeout` nor `gtimeout` does not kill an over-long run, and a hook that
 outlives the harness timeout leaves the call un-gated (see `_lib_capped_for`'s
 header in _lib.sh).

@@ -53,6 +53,7 @@ from helpers import (
     staged_diff_hash,
     staged_diff_hash_at_base,
     write_scaled_timeout_shim,
+    xargs_is_gnu,
 )
 
 from .conftest import (
@@ -3623,9 +3624,10 @@ def test_commit_fragment_has_worktree_target_fails_safe_when_tool_missing(
 
 _SPLITTER = HOOKS_DIR / "split-command-words.py"
 
-# The cases below assume GNU xargs; each one asserts its xargs precondition so a BSD xargs
-# fails with this message instead of a bare mismatch.
+# Cases marked `requires_gnu_xargs` skip on any other xargs. On GNU, each asserts its xargs
+# precondition so a changed xargs fails with this message instead of a bare mismatch.
 _GNU_XARGS_ASSUMPTION = "this case assumes GNU xargs behavior, which BSD xargs does not share"
+requires_gnu_xargs = pytest.mark.skipif(not xargs_is_gnu(), reason="needs GNU xargs")
 
 # Each command makes plain `xargs -n1` fail after it has printed the early flag's path.
 _XARGS_FAILING_COMMANDS_WITH_EARLY_FLAG = {
@@ -3643,6 +3645,9 @@ _PAST_XARGS_LIMIT_COMMAND = "git commit -m " + "x" * 140_000 + " -F /late/msg"
 _SINGLE_LINE_BODY_COMMAND = "gh pr create --body-file /x"
 # A newline inside a quoted argument is a grammar-level xargs failure on every implementation.
 _XARGS_FAILING_BODY_COMMAND = 'gh pr create --title "a\nb" --body-file /x'
+
+# _LIB_COMMAND_WORDS_NO_WORDS_STATUS in _lib.sh: the fallback tokenizer exited 0 with no words.
+_NO_WORDS_STATUS = int(_sourced_value("_LIB_COMMAND_WORDS_NO_WORDS_STATUS"))
 
 # Every xargs-failing command the shell-side tests use; the retry-stream layout must hold for each.
 _ALL_XARGS_FAILING_COMMANDS = {
@@ -3759,6 +3764,7 @@ def test_command_words_single_line_does_not_need_python3(tmp_path: Path) -> None
     assert result.stdout == _plain_xargs_stdout(command)
 
 
+@requires_gnu_xargs
 @pytest.mark.parametrize("command_name", sorted(_ALL_XARGS_FAILING_COMMANDS))
 def test_command_words_after_xargs_failure_prints_xargs_words_then_blank_line_then_retry_words(
     command_name: str, tmp_path: Path
@@ -3774,6 +3780,7 @@ def test_command_words_after_xargs_failure_prints_xargs_words_then_blank_line_th
     assert result.stdout == plain_xargs.stdout + "\n" + _splitter_stdout(command)
 
 
+@requires_gnu_xargs
 @pytest.mark.parametrize("command_name", sorted(_XARGS_FAILING_COMMANDS_WITH_EARLY_FLAG))
 def test_command_words_after_xargs_failure_keeps_the_early_path_and_adds_the_late_path(
     command_name: str, tmp_path: Path
@@ -3804,6 +3811,7 @@ def test_gh_body_source_paths_after_multiline_value_prints_late_file_path(tmp_pa
     assert result.stdout.split("\n") == ["/late/body.md", "/late/template.md", ""]
 
 
+@requires_gnu_xargs
 def test_xargs_failing_pending_flag_is_closed_by_a_blank_path_before_the_retry_words(tmp_path: Path) -> None:
     """xargs's partial output ends in -F, so the blank separator is that flag's empty path."""
     command = 'git commit -F "line one\nline two" -m x'
@@ -3816,6 +3824,7 @@ def test_xargs_failing_pending_flag_is_closed_by_a_blank_path_before_the_retry_w
     assert result.stdout == "\nline one line two\n"
 
 
+@requires_gnu_xargs
 def test_unrelated_tools_flag_after_the_xargs_failure_point_reaches_the_extractor(tmp_path: Path) -> None:
     """Documented over-deny: the retry exposes `ssh -T host` to a body-flag extractor that xargs never reached."""
     command = 'gh pr create --title "line one\nline two" --repo r && ssh -T host'
@@ -3829,6 +3838,7 @@ def test_unrelated_tools_flag_after_the_xargs_failure_point_reaches_the_extracto
     assert "host" in result.stdout.split("\n")
 
 
+@requires_gnu_xargs
 def test_command_words_one_word_past_the_xargs_limit_then_flag_prints_the_flags_path(tmp_path: Path) -> None:
     """GNU xargs rejects one argument this long, so the retry runs."""
     plain_xargs = _plain_xargs(_PAST_XARGS_LIMIT_COMMAND)
@@ -3870,16 +3880,35 @@ def test_extractors_return_the_tokenizers_nonzero_status_unchanged(
     assert result.stdout == ""
 
 
-def test_extractor_accepts_a_python3_that_exits_0_with_empty_stdout_as_no_further_words(tmp_path: Path) -> None:
-    """Accepted gap: a silent interpreter leaves the caller with only the paths xargs printed before it failed."""
-    shim_dir = _python3_shim_dir(tmp_path, "exit 0")
-    command = _XARGS_FAILING_COMMANDS_WITH_EARLY_FLAG["bare-opener-then-apostrophe-in-body"]
-    result = _run_lib_helper_on_command(
-        "_lib_git_commit_message_source_paths", command, tmp_path, env=_env_with_path_prefix(shim_dir)
-    )
-    assert result.returncode == 0, result.stderr
-    assert "/early/msg" in result.stdout.split("\n")
-    assert "/late/msg" not in result.stdout.split("\n")
+@pytest.mark.parametrize("silent_tokenizer", ["python3-shim-exits-0", "zero-byte-tokenizer-script"])
+def test_command_words_denies_when_the_fallback_tokenizer_exits_0_with_empty_stdout(
+    silent_tokenizer: str, tmp_path: Path
+) -> None:
+    """A silent fallback gets its own status, not a command with no further words."""
+    if silent_tokenizer == "python3-shim-exits-0":
+        shim_dir = _python3_shim_dir(tmp_path, "exit 0")
+        result = _run_lib_helper_on_command(
+            "_lib_command_words", _XARGS_FAILING_BODY_COMMAND, tmp_path, env=_env_with_path_prefix(shim_dir)
+        )
+    else:
+        lib_copy = _copy_lib_with_tokenizer(tmp_path / "hooks-copy")
+        (lib_copy.parent / _SPLITTER.name).write_bytes(b"")
+        result = _run_lib_helper_on_command(
+            "_lib_command_words", _XARGS_FAILING_BODY_COMMAND, tmp_path, lib_path=lib_copy
+        )
+    assert result.returncode == _NO_WORDS_STATUS, result.stderr
+    assert result.stdout == ""
+
+
+def test_command_words_denies_a_comment_only_command_that_xargs_cannot_split(tmp_path: Path) -> None:
+    """Intended denial: the fallback drops comment lines, so nothing remains and the empty output is denied."""
+    command = "# it's"
+    assert _plain_xargs(command).returncode != 0, "precondition: xargs should fail on the unmatched apostrophe"
+
+    result = _run_lib_helper_on_command("_lib_command_words", command, tmp_path)
+
+    assert result.returncode == _NO_WORDS_STATUS, result.stderr
+    assert result.stdout == ""
 
 
 def test_command_words_runs_the_tokenizer_under_isolated_python_flags(tmp_path: Path) -> None:
@@ -4093,6 +4122,8 @@ def test_tokenizer_path_for_the_in_tree_lib_resolves_to_the_tokenizer_in_the_hoo
         ("3", "over 2 MiB", "tool in the extraction step"),
         ("2", "tool in the extraction step failed (exit 2)", "killed"),
         ("127", "tool in the extraction step failed (exit 127)", "killed"),
+        (str(_NO_WORDS_STATUS), "found no command words to check", "tool in the extraction step"),
+        (str(_NO_WORDS_STATUS), "holds only comments", "killed"),
         ("1", "tool in the extraction step failed (exit 1)", "killed"),
     ],
 )
@@ -4129,6 +4160,17 @@ def test_deny_reason_for_a_non_tokenizer_status_does_not_claim_a_tokenizing_fail
     assert "git commit" in result.stdout
     assert "tokenized" not in result.stdout
     assert "earlier Bash call" in result.stdout
+
+
+def test_deny_reason_for_the_no_words_status_does_not_blame_a_tool_or_offer_the_file_workaround() -> None:
+    result = _run_lib_call(
+        f"_lib_command_words_deny_reason 'git commit' '-F' {_NO_WORDS_STATUS}", env=dict(os.environ)
+    )
+    assert "git commit" in result.stdout
+    assert "found no command words to check" in result.stdout
+    assert "a tool in the extraction step failed" not in result.stdout
+    assert "tokenized" not in result.stdout
+    assert "earlier Bash call" not in result.stdout
 
 
 def test_deny_reason_omits_the_workaround_when_the_tokenizer_is_not_linked(tmp_path: Path) -> None:

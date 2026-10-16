@@ -1816,12 +1816,16 @@ _lib_command_words_tokenizer_path() {
   printf '%s\n' "$sibling_path"
 }
 
+# Status _lib_command_words returns when the fallback tokenizer exits 0 with no words.
+# It is distinct from the tokenizer's own statuses (2 and 3), the cap-kill statuses (124, 137, 143), and 127.
+_LIB_COMMAND_WORDS_NO_WORDS_STATUS=4
+
 # _lib_command_words CMD
 # Prints the words of CMD, one per line.
 # After an xargs failure it prints xargs's partial words, one blank line, then the fallback tokenizer's words.
-# Returns nonzero with nothing printed when the fallback tokenizer cannot split CMD or cannot run (missing, killed by the cap, or faulted).
+# Returns nonzero with nothing printed when the fallback tokenizer cannot split CMD, cannot run (missing, killed by the cap, or faulted), or prints no words (_LIB_COMMAND_WORDS_NO_WORDS_STATUS).
 # Every caller must capture that status on the next line and deny.
-# A python3 that exits 0 with empty stdout is accepted as no further words, so the caller scans only what xargs printed.
+# Empty fallback output is denied, so a command made only of comments that reaches the retry is denied.
 # The fast path is `xargs -n1`; the fallback runs only when xargs exits nonzero.
 # The fallback is calibrated for cooperative callers.
 # split-command-words.py lists the quote-blind drops it does not close.
@@ -1841,6 +1845,7 @@ _lib_command_words() {
   if [ "$retry_status" -ne 0 ]; then
     return "$retry_status"
   fi
+  [ -n "$retry_words" ] || return "$_LIB_COMMAND_WORDS_NO_WORDS_STATUS"
   if [ -n "$xargs_words" ]; then
     printf '%s\n' "$xargs_words"
   fi
@@ -1861,6 +1866,8 @@ _lib_command_words_failure_clause() {
     printf 'the fallback tokenizer was killed (exit %s) by the scan cap or a signal' "$status"
   elif [ "$status" = "3" ]; then
     printf 'neither xargs nor the fallback tokenizer could split it, which happens on an unbalanced quote, on nested quotes inside a command substitution or backticks, or on input over 2 MiB'
+  elif [ "$status" = "$_LIB_COMMAND_WORDS_NO_WORDS_STATUS" ]; then
+    printf 'the fallback tokenizer found no command words to check, which happens when the command holds only comments or the tokenizer produced no output'
   else
     printf 'a tool in the extraction step failed (exit %s): python3, awk, or temp-file creation for a here-string — check that each runs and that TMPDIR is writable first' "$status"
   fi
@@ -1870,6 +1877,7 @@ _lib_command_words_failure_clause() {
 # Prints the deny reason for a command _lib_command_words could not split.
 # Only status 3 says "could not be tokenized"; any other status names the failed step through the clause.
 # The workaround sentence is left out when the tokenizer is not linked, because a human fixes that and the agent must not work around it.
+# It is also left out for _LIB_COMMAND_WORDS_NO_WORDS_STATUS, because there is no file-bearing content to move.
 # Echoes no part of the command or the interpreter's stderr, because an untokenizable value can hold the content a gate guards.
 _lib_command_words_deny_reason() {
   local surface="${1-}" flags="${2-}" status="${3-}" clause lead workaround=""
@@ -1878,7 +1886,7 @@ _lib_command_words_deny_reason() {
     3) lead="could not be tokenized" ;;
     *) lead="could not be checked" ;;
   esac
-  if [ -r "$(_lib_command_words_tokenizer_path)" ]; then
+  if [ -r "$(_lib_command_words_tokenizer_path)" ] && [ "$status" != "$_LIB_COMMAND_WORDS_NO_WORDS_STATUS" ]; then
     workaround=' Write multi-line or nested-quoted content to a file in an earlier Bash call and pass it with the flag, or split the command into separate Bash calls.'
   fi
   printf 'The %s command %s, so the file named by %s cannot be located and scanned: %s.%s' \

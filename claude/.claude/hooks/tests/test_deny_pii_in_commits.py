@@ -29,6 +29,7 @@ from helpers import (
     bash_input,
     build_conflicted_merge_with_clean_addition,
     build_conflicted_rebase,
+    build_path_with_silent_python3,
     build_path_without,
     heredoc_substitution,
     read_input,
@@ -1263,7 +1264,7 @@ class TestDenyPiiInCommits:
         command = f'git commit -m "{command_text_marker} -F {msg_file}'
         reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo)
         assert reason is not None
-        assert "could not be tokenized" in reason
+        assert "The git commit command could not be tokenized" in reason
         assert command_text_marker not in reason
         assert str(msg_file) not in reason
 
@@ -1288,6 +1289,32 @@ class TestDenyPiiInCommits:
         )
         assert reason is not None
         assert "could not be checked" in reason
+        assert command_text_marker not in reason
+        assert str(msg_file) not in reason
+
+    def test_silent_python3_denies_xargs_failing_commit_command(
+        self, isolated_home, git_repo, pii_patterns, tmp_path
+    ):
+        """A python3 that exits 0 with no output is denied as a tokenizer that found no words,
+        not allowed as a command naming no message-source files."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        msg_file = git_repo / "msg.txt"
+        msg_file.write_text("a clean commit summary\n")
+        shim_dir = tmp_path / "silent-python3"
+        shim_dir.mkdir()
+        command_text_marker = "distinctive-marker-text"
+        command = f'echo "{command_text_marker}\nsecond line" && git commit -F {msg_file}'
+        reason = run_hook_reason(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input(command),
+            cwd=git_repo,
+            extra_env={"PATH": build_path_with_silent_python3(shim_dir)},
+        )
+        assert reason is not None
+        assert "The git commit command could not be checked" in reason
+        assert "found no command words to check" in reason
+        assert "a tool in the extraction step failed" not in reason
         assert command_text_marker not in reason
         assert str(msg_file) not in reason
 

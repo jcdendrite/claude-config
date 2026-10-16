@@ -9,22 +9,24 @@ status contract that only a real invocation can verify.
 Exit status contract: 0 success, 3 the input cannot be tokenized, 2 any other
 failure. Status 1 is never used.
 
-The parity cases assume GNU xargs. Each GNU-specific one asserts its xargs
-precondition first, so a BSD xargs fails with a message naming the assumption
-instead of a bare mismatch.
+The divergence cases and the allow-guard fixture case need GNU xargs and skip
+on any other xargs. On GNU, each asserts its xargs precondition first, so a
+changed xargs fails with a message naming the assumption instead of a bare
+mismatch.
 """
 from __future__ import annotations
 
 import ast
 import importlib.util
 import io
+import os
 import shlex
 import shutil
 import subprocess
 import sys
 
 import pytest
-from helpers import HEREDOC_BODY_WITH_GAP_APOSTROPHE, HOOKS_DIR, heredoc_substitution
+from helpers import HEREDOC_BODY_WITH_GAP_APOSTROPHE, HOOKS_DIR, heredoc_substitution, xargs_is_gnu
 
 SPLITTER_PATH = HOOKS_DIR / "split-command-words.py"
 
@@ -40,6 +42,14 @@ MAX_STDIN_BYTES = _split_command_words_module.MAX_STDIN_BYTES
 
 
 requires_xargs = pytest.mark.skipif(shutil.which("xargs") is None, reason="xargs not on PATH")
+requires_gnu_xargs = pytest.mark.skipif(not xargs_is_gnu(), reason="needs GNU xargs")
+
+
+def test_ci_runner_has_gnu_xargs():
+    """The GNU-gated cases skip on a non-GNU xargs, so a CI runner without one would pass them vacuously."""
+    if not os.environ.get("CI"):
+        pytest.skip("CI is not set")
+    assert xargs_is_gnu(), "CI is set but xargs is not GNU: the requires_gnu_xargs cases would skip silently"
 
 
 def run_splitter(stdin_bytes: bytes, script_path=SPLITTER_PATH) -> subprocess.CompletedProcess:
@@ -87,6 +97,14 @@ class TestHeredocBodies:
             shlex.split(command)
         words = split_command_words(command)
         assert words == ["git", "commit", "-m", "$(cat <<'EOF' )", "-F", "/x"]
+
+    @requires_gnu_xargs
+    def test_shared_allow_guard_fixture_command_fails_plain_xargs(self):
+        """The hook tests' over-deny guards reach the fallback tokenizer only while plain xargs fails on this command."""
+        command = f"git commit -m {heredoc_substitution(HEREDOC_BODY_WITH_GAP_APOSTROPHE)}"
+        assert run_xargs(command).returncode != 0, (
+            f"precondition: {GNU_XARGS_ASSUMPTION}; xargs should fail on the newline inside the quoted value"
+        )
 
     def test_two_heredoc_substitutions_chained_with_and(self):
         command = (
@@ -308,6 +326,7 @@ class TestParityWithXargs:
     def test_commands_xargs_can_split_yield_the_same_words(self, command):
         assert split_command_words(command) == xargs_words(command)
 
+    @requires_gnu_xargs
     def test_intended_divergence_backslash_newline_joins_where_xargs_splits(self):
         command = "a\\\nb"
         assert xargs_words(command) == ["a", "b"], (
@@ -315,6 +334,7 @@ class TestParityWithXargs:
         )
         assert split_command_words(command) == ["ab"]
 
+    @requires_gnu_xargs
     def test_intended_divergence_escaped_double_quote_is_honored_where_xargs_fails(self):
         command = 'echo "say \\"hi\\" now" x'
         assert run_xargs(command).returncode != 0, (
@@ -322,6 +342,15 @@ class TestParityWithXargs:
         )
         assert split_command_words(command) == ["echo", 'say "hi" now', "x"]
 
+    @requires_gnu_xargs
+    def test_intended_divergence_backslash_pair_inside_double_quotes_yields_one_backslash(self):
+        command = r'echo "a\\b" x'
+        assert xargs_words(command) == ["echo", r"a\\b", "x"], (
+            f"precondition: {GNU_XARGS_ASSUMPTION}; xargs should keep both backslashes"
+        )
+        assert split_command_words(command) == ["echo", r"a\b", "x"]
+
+    @requires_gnu_xargs
     @pytest.mark.parametrize("flag_like_word", ["-e", "-n", "-E"])
     def test_intended_divergence_echo_option_words_are_kept(self, flag_like_word):
         command = f"foo {flag_like_word} bar"

@@ -29,6 +29,7 @@ from helpers import (
     bash_input,
     build_conflicted_merge_with_clean_addition,
     build_conflicted_rebase,
+    build_path_with_silent_python3,
     build_path_without,
     heredoc_substitution,
     run_hook,
@@ -42,6 +43,13 @@ DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
 
 # A double-quoted value spanning a newline: xargs fails on it, bash accepts it.
 XARGS_FAILING_MULTILINE_ECHO = 'echo "first line\nsecond line"'
+
+# Read-only gh commands that never reach tokenization, each carrying a multi-line quoted --jq value.
+READ_ONLY_GH_XARGS_FAILING_COMMANDS = [
+    'gh api repos/owner/repo/pulls --jq ".[]\n| .title"',
+    'gh pr view 12 --json title --jq ".title\n| ascii_downcase"',
+    'gh pr list --json title --jq ".[]\n| .title"',
+]
 
 
 def _stage_clean_file(repo: Path) -> None:
@@ -4105,6 +4113,43 @@ class TestDenyPrivateProjectRefs:
         assert str(source_file) not in reason
 
     @pytest.mark.parametrize(
+        ("command_template", "surface"),
+        [
+            ("git commit -F {source_file}", "git commit"),
+            ("gh pr create --body-file {source_file}", "gh pr"),
+            ("gh issue create --body-file {source_file}", "gh issue"),
+            ("gh api -X POST --input {source_file} repos/owner/repo/issues", "gh api"),
+        ],
+        ids=["git-commit", "gh-pr", "gh-issue", "gh-api"],
+    )
+    def test_silent_python3_denies_xargs_failing_gated_command(
+        self, claude_config_repo, tmp_path, command_template, surface
+    ):
+        """A python3 that exits 0 with no output is denied as a tokenizer that found no words,
+        not allowed as a command naming no source files."""
+        source_file = tmp_path / "source.txt"
+        source_file.write_text("Nothing private here.\n")
+        _stage_clean_file(claude_config_repo)
+        shim_dir = tmp_path / "silent-python3"
+        shim_dir.mkdir()
+        command_text_marker = "distinctive-marker-text"
+        command = (
+            f'echo "{command_text_marker}\nsecond line" && {command_template.format(source_file=source_file)}'
+        )
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(command),
+            cwd=claude_config_repo,
+            extra_env={"PATH": build_path_with_silent_python3(shim_dir)},
+        )
+        assert reason is not None
+        assert f"The {surface} command could not be checked" in reason
+        assert "found no command words to check" in reason
+        assert "a tool in the extraction step failed" not in reason
+        assert command_text_marker not in reason
+        assert str(source_file) not in reason
+
+    @pytest.mark.parametrize(
         "command_template",
         [
             "git commit -m {substitution}",
@@ -4149,6 +4194,39 @@ class TestDenyPrivateProjectRefs:
         subprocess.run(["git", "reset", "HEAD"], cwd=claude_config_repo, check=True)
         command = 'git commit --amend -m "unterminated'
         assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
+
+    @pytest.mark.parametrize(
+        "command", READ_ONLY_GH_XARGS_FAILING_COMMANDS, ids=["gh-api-get", "gh-pr-view", "gh-pr-list"]
+    )
+    def test_read_only_gh_xargs_failing_commands_make_plain_xargs_fail(self, command):
+        """Precondition for the python3-absent allow cases below: each command must defeat plain
+        xargs, or those cases would pass without ever reaching the tokenization skip."""
+        if shutil.which("xargs") is None:
+            pytest.skip("xargs not on PATH")
+        result = subprocess.run(
+            ["xargs", "-n1"], input=command + "\n", capture_output=True, text=True, check=False
+        )
+        assert result.returncode != 0
+
+    @pytest.mark.parametrize("python3_available", [True, False], ids=["python3-present", "python3-absent"])
+    @pytest.mark.parametrize(
+        "command", READ_ONLY_GH_XARGS_FAILING_COMMANDS, ids=["gh-api-get", "gh-pr-view", "gh-pr-list"]
+    )
+    def test_read_only_gh_command_with_xargs_failing_value_allowed(
+        self, claude_config_repo, tmp_path, command, python3_available
+    ):
+        """Scope guard: a read-only gh api GET and a gh pr subcommand other than create/edit never
+        reach tokenization, so a quoted value xargs cannot split is allowed even without python3."""
+        _stage_clean_file(claude_config_repo)
+        extra_env = None
+        if not python3_available:
+            farm_dir = tmp_path / "path-without-python3"
+            farm_dir.mkdir()
+            extra_env = {"PATH": build_path_without("python3", farm_dir)}
+        decision = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo, extra_env=extra_env
+        )
+        assert decision == "allow"
 
     @pytest.mark.parametrize(
         ("command_template", "failing_program_marker", "source_flag"),

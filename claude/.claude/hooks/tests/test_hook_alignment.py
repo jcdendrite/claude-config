@@ -52,8 +52,7 @@ The first two carry a small, named exemption dict for a structural holdout
 that resisted conversion. The `\\s` check, the early-exit-grep check, and the
 bare-xargs check have none: no live occurrence remains anywhere in their
 scope. See `_all_hook_files` for why only the `\\s` and early-exit-grep checks
-also sweep each directory's _lib.sh. The bare-xargs check does not sweep
-_lib.sh, _config.sh, or the plugin _lib.sh files.
+also sweep each directory's _lib.sh, and why the bare-xargs check sweeps none.
 
 Layer 2 — Behavior checks: every gate-class hook must deny on malformed
 input, empty stdin, non-object `.tool_input`, and missing `_lib.sh`; and
@@ -104,8 +103,9 @@ def _all_hook_files(*, include_lib: bool = False) -> list[Path]:
     Pass include_lib=True to add _lib.sh back in -- used by the `\\s` and
     early-exit-grep detectors, which are safe against _lib.sh because neither
     primitive is defined there.
-    The bare-xargs check does not opt in: _lib.sh holds two status-checked
-    `xargs -n1` sites (in `_lib_command_words` and
+    The bare-xargs check does not opt in, so it sweeps no _lib.sh (the main
+    one or a plugin's) and no _config.sh: the main _lib.sh holds two
+    status-checked `xargs -n1` sites (in `_lib_command_words` and
     `_lib_commit_fragment_has_worktree_target`) that a sweep would flag.
     _config.sh stays excluded even then: it exists only under
     claude/.claude/hooks/, so folding it into ALL_HOOKS_AND_LIBS would break
@@ -1602,10 +1602,14 @@ def _bare_xargs_tokenizer_hits(hook: Path) -> list[str]:
     here-string spelling `xargs -n1 <<< "$cmd"` is caught too, since the
     anchor needs no pipe.
 
-    Blind spot: only `xargs` at statement start or directly after `|`, `;`,
-    `&`, or `(`, optionally behind `command` or `time`, with `-n1`, `-n 1`, or `--max-args` set to 1 followed by
-    whitespace, one of `|;&<>)`, or the end of the statement, is caught.
+    A statement is caught only when all three sets match:
+    - Anchor set: `xargs` at statement start or directly after `|`, `;`, `&`,
+      or `(`, optionally behind `command` or `time`.
+    - Flag spellings: `-n1`, `-n 1`, or `--max-args` set to 1.
+    - Terminator set: whitespace, one of `|;&<>)`, or the end of the statement.
     `&` covers `&&`, `|` covers `||`, and `(` covers `$(`.
+
+    Blind spots:
     - Misses `xargs` behind another wrapper (`env xargs -n1`,
       `nice xargs -n1`).
     - Misses `xargs` after a keyword (`then`, `do`, `else`, `if`, `!`) or
@@ -1646,14 +1650,11 @@ def test_hooks_tokenize_through_lib_command_words(hook: Path) -> None:
     and the gate fails open. `_lib_command_words` falls back to a second
     tokenizer after an xargs failure.
 
-    There is no exemption dict. ALL_HOOKS leaves out helper libraries
-    generally (`_HELPER_LIBRARY_NAMES`), so this check does not sweep
-    `_config.sh` or any `_lib.sh`, plugin ones included. The main `_lib.sh`
-    holds two `xargs -n1` sites: `_lib_command_words` (the helper itself)
-    and `_lib_commit_fragment_has_worktree_target`, both status-checked.
-    Ids are repo-relative paths, so a plugin hook is told apart from a main
-    hook. See _bare_xargs_tokenizer_hits for the detector's blind spots and
-    known false positives.
+    There is no exemption dict. See `_all_hook_files` for why this check
+    sweeps no `_lib.sh` or `_config.sh`. Ids are repo-relative paths, so a
+    plugin hook is told apart from a main hook. See
+    _bare_xargs_tokenizer_hits for the detector's blind spots and known false
+    positives.
     """
     hits = _bare_xargs_tokenizer_hits(hook)
     assert not hits, (

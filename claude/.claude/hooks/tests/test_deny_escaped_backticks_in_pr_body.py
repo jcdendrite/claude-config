@@ -20,6 +20,7 @@ from helpers import (
     LARGE_MULTILINE_TAIL,
     assert_cap_engaged,
     bash_input,
+    build_path_with_silent_python3,
     build_path_without,
     heredoc_substitution,
     run_hook,
@@ -29,6 +30,9 @@ from helpers import (
 from .conftest import _real_timeout_is_gnu_coreutils, _write_conditional_sleep_shim
 
 DENY_ESCAPED_BACKTICKS_HOOK = HOOKS_DIR / "deny-escaped-backticks-in-pr-body.sh"
+
+# A read-only gh pr subcommand carrying a multi-line quoted --jq value: xargs fails on it, bash accepts it.
+GH_PR_VIEW_XARGS_FAILING_COMMAND = 'gh pr view 12 --json title --jq ".title\n| ascii_downcase"'
 
 
 class TestDenyEscapedBackticksInPrBody:
@@ -262,7 +266,55 @@ class TestDenyEscapedBackticksInPrBody:
         command = f'gh pr create --title "unterminated --body-file {body_file}'
         reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(command))
         assert reason is not None
-        assert "could not be tokenized" in reason
+        assert "The gh pr command could not be tokenized" in reason
+
+    def test_silent_python3_denies_xargs_failing_pr_command(self, tmp_path):
+        """A python3 that exits 0 with no output is denied as a tokenizer that found no words,
+        not allowed as a command naming no body files."""
+        body_file = tmp_path / "body.md"
+        body_file.write_text("clean body, no escapes\n")
+        shim_dir = tmp_path / "silent-python3"
+        shim_dir.mkdir()
+        command_text_marker = "distinctive-marker-text"
+        command = f'gh pr create --title "{command_text_marker}\nsecond line" --body-file {body_file}'
+        reason = run_hook_reason(
+            DENY_ESCAPED_BACKTICKS_HOOK,
+            bash_input(command),
+            extra_env={"PATH": build_path_with_silent_python3(shim_dir)},
+        )
+        assert reason is not None
+        assert "The gh pr command could not be checked" in reason
+        assert "found no command words to check" in reason
+        assert "a tool in the extraction step failed" not in reason
+        assert command_text_marker not in reason
+        assert str(body_file) not in reason
+
+    def test_gh_pr_view_xargs_failing_command_makes_plain_xargs_fail(self):
+        """Precondition for the python3-absent allow case below: the command must defeat plain
+        xargs, or that case would pass without ever reaching the tokenization skip."""
+        if shutil.which("xargs") is None:
+            pytest.skip("xargs not on PATH")
+        result = subprocess.run(
+            ["xargs", "-n1"],
+            input=GH_PR_VIEW_XARGS_FAILING_COMMAND + "\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+
+    def test_gh_pr_view_with_xargs_failing_value_allowed_without_python3(self, tmp_path):
+        """Scope guard: tokenization runs only for gh pr create/edit, so a gh pr subcommand that
+        is neither is allowed even when a quoted value defeats xargs and python3 is absent."""
+        command = GH_PR_VIEW_XARGS_FAILING_COMMAND
+        farm_dir = tmp_path / "path-without-python3"
+        farm_dir.mkdir()
+        decision = run_hook(
+            DENY_ESCAPED_BACKTICKS_HOOK,
+            bash_input(command),
+            extra_env={"PATH": build_path_without("python3", farm_dir)},
+        )
+        assert decision == "allow"
 
     def test_untokenizable_non_pr_command_allowed(self):
         """Scope guard: tokenization runs only for a gh pr create/edit command, so an unbalanced
