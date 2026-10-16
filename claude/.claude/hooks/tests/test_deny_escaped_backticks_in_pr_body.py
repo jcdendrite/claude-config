@@ -333,8 +333,8 @@ class TestDenyEscapedBackticksInPrBody:
         ids=["without-apostrophe", "with-apostrophe"],
     )
     def test_create_then_pass_body_file_denied_with_and_without_apostrophe(self, tmp_path, heredoc_body):
-        """A command that writes the body file and passes it in the same call denies in both
-        arms: the file does not exist at hook time, whatever the heredoc body holds."""
+        """A command that writes a new body file and passes it in the same call denies in both
+        arms: the file does not exist yet at hook time, whatever the heredoc body holds."""
         body_file = tmp_path / "created-body.md"
         command = f"cat > {body_file} <<'EOF'\n{heredoc_body}\nEOF\ngh pr create --body-file {body_file}"
         reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(command))
