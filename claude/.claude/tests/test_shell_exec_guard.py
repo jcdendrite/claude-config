@@ -307,6 +307,28 @@ def test_check_shell_exec_control_table(row_id: str, stubs: Stubs) -> None:
         check_shell_exec(argv, env, None, completed)
 
 
+def test_check_shell_exec_advises_capturing_stderr_when_stderr_is_not_captured(stubs: Stubs) -> None:
+    argv = [str(stubs.env_bash)]
+    completed = _finished(argv, 127, None)
+
+    with pytest.raises(ShellExecGuardError, match="stderr was not captured") as raised:
+        check_shell_exec(argv, HAS_PATH, None, completed)
+
+    assert "Capture stderr for this call" in str(raised.value)
+    assert "126/127" in str(raised.value)
+
+
+def test_check_shell_exec_advises_link_bash_into_when_captured_stderr_is_an_env_error(stubs: Stubs) -> None:
+    argv = [str(stubs.env_bash)]
+    completed = _finished(argv, 127, ENV_ERROR_GNU_CURLY)
+
+    with pytest.raises(ShellExecGuardError, match="the script never ran") as raised:
+        check_shell_exec(argv, HAS_PATH, None, completed)
+
+    assert "helpers.link_bash_into" in str(raised.value)
+    assert "stderr was not captured" not in str(raised.value)
+
+
 def test_check_shell_exec_resolves_a_relative_target_against_cwd(stubs: Stubs) -> None:
     argv = [f".{os.sep}{stubs.env_bash.name}"]
     completed = _finished(argv, 127, ENV_ERROR_GNU_CURLY)

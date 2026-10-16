@@ -296,12 +296,19 @@ def check_shell_exec(argv, env, cwd, completed) -> None:
         )
 
     # Never ran: `env` could not find bash on the child's PATH.
-    # Uncaptured stderr (STDOUT, DEVNULL or inherited) counts as never-ran, so a script's own exit 126/127 would raise.
+    # Uncaptured stderr (STDOUT, DEVNULL or inherited) cannot be told apart from `env`'s error, so it raises with its own message.
     if (
         target_uses_env_bash
         and completed.returncode in _EXEC_FAILURE_EXIT_CODES
         and _stderr_is_env_missing_bash(completed.stderr)
     ):
+        if completed.stderr is None:
+            exec_failure_codes = "/".join(str(code) for code in sorted(_EXEC_FAILURE_EXIT_CODES))
+            raise ShellExecGuardError(
+                f"{target} starts with {_ENV_BASH_SHEBANG.decode()} and exited {completed.returncode}, but stderr "
+                "was not captured, so the guard cannot tell `env`'s error about a missing bash from the "
+                f"script's own exit {exec_failure_codes}. Capture stderr for this call (capture_output=True or stderr=PIPE)."
+            )
         raise ShellExecGuardError(
             f"{target} starts with {_ENV_BASH_SHEBANG.decode()} but `env` found no bash on the PATH it ran "
             f"under (exit {completed.returncode}), so the script never ran. "
@@ -312,7 +319,8 @@ def check_shell_exec(argv, env, cwd, completed) -> None:
 def install_shell_exec_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     """Wrap `subprocess.run` for the test so each finished call goes through `check_shell_exec`.
 
-    A `shell=True` call is not inspected: it runs `sh`, not a shebang.
+    A `shell=True` call is not inspected: its argv is one command string with no
+    argv[0] to inspect, so the guard cannot tell which file the shell execs.
     """
     real_run = subprocess.run
 
