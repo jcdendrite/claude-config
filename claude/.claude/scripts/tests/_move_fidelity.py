@@ -667,7 +667,7 @@ def compare_test_ids(
 
 def _run_nodes(args: argparse.Namespace) -> int:
     findings, compared = check_nodes(
-        args.before, args.after, args.moved, _parse_key_value_pairs(args.rename or [], "--rename"), args.verbatim or []
+        args.before, args.after, args.moved or [], _parse_key_value_pairs(args.rename or [], "--rename"), args.verbatim or []
     )
     return _emit(findings, f"compared-nodes: {compared}")
 

@@ -58,7 +58,9 @@ def _run_nodes_with_stderr(capsys, tmp_path, before_source, after_sources, *opti
     argv = ["nodes", "--before", before]
     for number, source in enumerate(after_sources):
         argv += ["--after", _write(tmp_path, f"after{number}.py", source)]
-    return _invoke(capsys, *argv, "--moved", *moved, *options)
+    if moved:
+        argv += ["--moved", *moved]
+    return _invoke(capsys, *argv, *options)
 
 
 def _run_nodes(capsys, tmp_path, before_source, after_sources, *options, moved=("moved_fn",)):
@@ -74,24 +76,44 @@ def test_nodes_clean_move_with_one_rename_and_one_decorator_has_no_findings(caps
 
 
 @pytest.mark.parametrize(
-    ("after_source", "rename_options"),
+    ("after_source", "rename_options", "expected_checks"),
     [
-        pytest.param(MOVED_AFTER.replace("    count = len(str(value))\n", ""), RENAME_HELPER, id="deleted-statement"),
-        pytest.param(MOVED_AFTER.replace('    assert total, "needs a total"\n', ""), RENAME_HELPER, id="deleted-assert"),
-        pytest.param(MOVED_AFTER.replace("needs a total", "needs a sum"), RENAME_HELPER, id="changed-string-literal"),
+        pytest.param(
+            MOVED_AFTER.replace("    count = len(str(value))\n", ""),
+            RENAME_HELPER,
+            ["node-ast"],
+            id="deleted-statement",
+        ),
+        pytest.param(
+            MOVED_AFTER.replace('    assert total, "needs a total"\n', ""),
+            RENAME_HELPER,
+            ["node-ast"],
+            id="deleted-assert",
+        ),
+        pytest.param(
+            MOVED_AFTER.replace("needs a total", "needs a sum"),
+            RENAME_HELPER,
+            ["node-ast"],
+            id="changed-string-literal",
+        ),
         pytest.param(
             MOVED_AFTER.replace('@pytest.mark.parametrize("value", [1, 2])\n', ""),
             RENAME_HELPER,
+            ["node-ast"],
             id="removed-parametrize-decorator",
         ),
-        pytest.param(MOVED_AFTER, ("--rename", "other=util.other"), id="rename-missing-from-the-map"),
+        pytest.param(
+            MOVED_AFTER,
+            ("--rename", "other=util.other"),
+            ["node-ast", "rename-unused"],
+            id="rename-missing-from-the-map",
+        ),
     ],
 )
-def test_nodes_flags_a_changed_node_as_node_ast(capsys, tmp_path, after_source, rename_options):
+def test_nodes_flags_a_changed_node_as_node_ast(capsys, tmp_path, after_source, rename_options, expected_checks):
     code, lines = _run_nodes(capsys, tmp_path, MOVED_BEFORE, [after_source], *rename_options)
 
-    assert code == 1
-    assert [check for check in _checks(lines) if check != "rename-unused"] == ["node-ast"]
+    assert (code, _checks(lines)) == (1, expected_checks)
 
 
 def test_nodes_flags_an_extra_method_in_a_moved_class_as_node_ast(capsys, tmp_path):
@@ -259,6 +281,7 @@ def test_nodes_compares_async_defs_and_annotated_assignments(capsys, tmp_path):
         pytest.param(("--verbatim", "not_moved"), "not listed in --moved: not_moved", id="verbatim-not-in-moved"),
         pytest.param(("--rename", "no-equals-sign"), "--rename expects NAME=VALUE", id="malformed-rename"),
         pytest.param(("--rename", "a=util.x", "b=util.x"), "share the same NEW name", id="two-renames-share-a-new-name"),
+        pytest.param(("--moved", "not-a-name"), "is not an identifier", id="moved-name-not-an-identifier"),
     ],
 )
 def test_nodes_exits_2_on_bad_arguments(capsys, tmp_path, options, reason):
@@ -266,6 +289,13 @@ def test_nodes_exits_2_on_bad_arguments(capsys, tmp_path, options, reason):
 
     assert (code, lines) == (2, [])
     assert reason in err
+
+
+def test_nodes_exits_2_when_moved_is_omitted(capsys, tmp_path):
+    code, lines, err = _run_nodes_with_stderr(capsys, tmp_path, MOVED_BEFORE, [MOVED_AFTER], moved=())
+
+    assert (code, lines) == (2, [])
+    assert "needs at least one name" in err
 
 
 def test_nodes_exits_2_when_a_file_does_not_parse(capsys, tmp_path):
