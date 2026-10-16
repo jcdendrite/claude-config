@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo
-from transcript_analysis import pricing, scope
+from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 
@@ -1361,14 +1361,10 @@ def _thinking_block() -> dict:
 
 
 @pytest.fixture()
-def fake_projects(tmp_path, monkeypatch, request):
-    """Isolated single-account corpus: patches scope.PROJECTS_DIR and
-    scope.config_dir on the calling test file's own loaded transcript-analysis.py
-    module (`request.module._mod`) -- every test file loads its own independent
-    copy via spec_from_file_location, but each copy's `from transcript_analysis
-    import scope` resolves to the one process-wide transcript_analysis.scope
-    module, so patching `mod.scope` here is visible regardless of which file's
-    `_mod` requested the fixture.
+def fake_projects(tmp_path, monkeypatch):
+    """Isolated single-account corpus: patches scope.PROJECTS_DIR and each package
+    module's by-name config_dir binding directly, so a test file needs no shim
+    loader to use it.
 
     _resolve_cost_roots (subagents, subagent-mix, cost, context-distribution)
     derives its default root from a fresh config_dir() call, not from the
@@ -1379,15 +1375,14 @@ def fake_projects(tmp_path, monkeypatch, request):
     scope.py's own binding, so all three are patched too -- four bindings of the same initial
     value, each the sole read path for its own still-independent call sites.
     """
-    mod = request.module._mod
     projects = tmp_path / "projects"
     proj = projects / "-home-user-testrepo"
     proj.mkdir(parents=True)
-    monkeypatch.setattr(mod.scope, "PROJECTS_DIR", projects)
-    monkeypatch.setattr(mod.scope, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(mod.cost_ledger, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(mod.ledger_common, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(mod.pr_cost_ledger, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+    monkeypatch.setattr(scope, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(cost_ledger, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(ledger_common, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(pr_cost_ledger, "config_dir", lambda: tmp_path)
     return proj
 
 
@@ -1405,55 +1400,50 @@ def fake_config_dir_factory(tmp_path):
 
 
 @pytest.fixture()
-def cost_ledger_file(tmp_path, monkeypatch, request):
+def cost_ledger_file(tmp_path, monkeypatch):
     """Isolated docs/cost-ledger.md: a fresh file with the canonical header/
     separator and zero data rows, matching the real committed file's own
-    shape. _cost_ledger_path is monkeypatched (on the calling test file's own
-    `_mod.cost_ledger` -- see fake_projects above for why `request.module._mod`)
-    so every test in this section reads/writes this file, never this repo's
-    own tracked ledger."""
-    mod = request.module._mod
+    shape. _cost_ledger_path is monkeypatched (on `cost_ledger`) so every test in
+    this section reads/writes this file, never this repo's own tracked ledger."""
     ledger_path = tmp_path / "cost-ledger.md"
     ledger_path.write_text(
         "# Cost-trend ledger\n\n"
-        + mod.cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
-        + mod.cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
+        + cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
+        + cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
     )
-    monkeypatch.setattr(mod.cost_ledger, "_cost_ledger_path", lambda: ledger_path)
+    monkeypatch.setattr(cost_ledger, "_cost_ledger_path", lambda: ledger_path)
     return ledger_path
 
 
 @pytest.fixture()
-def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects, request):
+def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects):
     """Isolated config dir carrying the cost-ledger opt-in sentinel and a
     seeded machine identity. Shared by test_transcript_cost_ledger.py's and
     test_transcript_cost_ledger_record_gates.py's own cost-ledger tests and
-    test_transcript_ledger_common.py's TestMachineIdentity (see fake_projects
-    above for why `request.module._mod`).
+    test_transcript_ledger_common.py's TestMachineIdentity.
 
     - Sets `CLAUDE_CONFIG_DIR` explicitly rather than relying on
       `_isolate_transcript_corpus_lookups`'s coincidental tmp-path match.
       `_cost_ledger_report`'s sentinel check resolves `config_dir` through
-      `_config.py`'s own binding, not `_mod`'s, so patching
-      `_mod.cost_ledger.config_dir` alone has no effect on it.
+      `_config.py`'s own binding, so patching
+      `cost_ledger.config_dir` alone has no effect on it.
     - The env var alone is not sufficient either. `fake_projects`
-      monkeypatches `_mod.cost_ledger.config_dir` to its own `tmp_path`,
+      monkeypatches `cost_ledger.config_dir` to its own `tmp_path`,
       which wins over the env var since it never re-reads the environment.
     - Declaring `fake_projects` as this fixture's own parameter (not just
       requested alongside it) makes pytest's fixture graph run it first,
       regardless of a test's own parameter order.
-    - `mod.cost_ledger.config_dir` and `mod.ledger_common.config_dir` are
+    - `cost_ledger.config_dir` and `ledger_common.config_dir` are
       both patched again here so they and `_config.config_enabled()`'s
       env-var-based resolution all agree on the same directory.
     """
-    mod = request.module._mod
     cfg_dir = tmp_path / "isolated-claude-config"
     cfg_dir.mkdir()
     (cfg_dir / ".cost-ledger-enabled").touch()
-    (cfg_dir / mod.ledger_common._MACHINE_IDENTITY_FILENAME).write_text("7e57c0de")
+    (cfg_dir / ledger_common._MACHINE_IDENTITY_FILENAME).write_text("7e57c0de")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
-    monkeypatch.setattr(mod.cost_ledger, "config_dir", lambda: cfg_dir)
-    monkeypatch.setattr(mod.ledger_common, "config_dir", lambda: cfg_dir)
+    monkeypatch.setattr(cost_ledger, "config_dir", lambda: cfg_dir)
+    monkeypatch.setattr(ledger_common, "config_dir", lambda: cfg_dir)
     return cfg_dir
 
 

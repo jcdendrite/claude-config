@@ -25,8 +25,7 @@ from .conftest import (
 )
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# fake_projects patches the shim module it finds on request.module._mod; load it the
-# way every other test file does (see test_transcript_subagents.py).
+# _mod.cmd_buckets below lives in the shim, so this file loads the shim itself.
 _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
