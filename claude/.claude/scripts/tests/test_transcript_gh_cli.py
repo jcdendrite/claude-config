@@ -2,6 +2,7 @@
 preflight, effective-repo pinning, and merged/closed PR discovery)."""
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import time
@@ -187,6 +188,16 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
             lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": remote_url + "\n", "stderr": ""})(),
         )
         assert _mod.gh_cli._git_remote_origin_host_and_owner_repo() == expected
+
+    def test_mixed_case_owner_and_repo_come_back_lowercased(self, monkeypatch):
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: type("R", (), {
+                "returncode": 0, "stdout": "https://GitHub.com/Owner-Name/Repo-Name.git\n", "stderr": "",
+            })(),
+        )
+
+        assert _mod.gh_cli._git_remote_origin_host_and_owner_repo() == ("github.com", "owner-name/repo-name")
 
     def test_default_args_prefix_failure_with_pr_cost_and_no_repo_hint(self, monkeypatch, capsys):
         """Calls _git_remote_origin_host_and_owner_repo with no arguments --
@@ -866,3 +877,410 @@ class TestGhHostQualifiedRepo:
     def test_returns_host_slash_owner_repo(self):
         assert _mod.gh_cli._gh_host_qualified_repo("acme-corp.ghe.com", "owner/repo") == "acme-corp.ghe.com/owner/repo"
         assert _mod.gh_cli._gh_host_qualified_repo("github.com", "owner/repo") == "github.com/owner/repo"
+
+
+# ---------------------------------------------------------------------------
+# Exact-output characterization of gh_cli.py: full gh argv, every stderr message site, and
+# empty/non-list stdout handling.
+# ---------------------------------------------------------------------------
+_MERGED_PR_LIST_FIELDS = "number,headRefName,additions,deletions,changedFiles,mergedAt"
+_AUTH_FAILURE_STDERR = "not logged into any GitHub hosts\n"
+_HOST_MISMATCH_FAILURE_STDERR = (
+    "none of the git remotes configured for this repository correspond to the"
+    " GH_HOST environment variable. Try adding a matching remote or unsetting"
+    " the variable\n"
+)
+
+
+def _gh_result(returncode: int = 0, stdout: str = "", stderr: str = ""):
+    return type("R", (), {"returncode": returncode, "stdout": stdout, "stderr": stderr})()
+
+
+@pytest.fixture
+def recorded_sleeps(monkeypatch) -> list[float]:
+    """Replaces time.sleep so no test waits out a backoff, and returns the list of requested durations."""
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    return sleep_calls
+
+
+class TestGhDiscoveryArgv:
+    def test_merged_discovery_issues_exactly_this_gh_pr_list_argv(self, monkeypatch, recorded_sleeps):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result(stdout="[]")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _mod.gh_cli._gh_discover_merged_prs("acme-corp.ghe.com", "owner/repo")
+
+        assert call_log == [[
+            "gh", "pr", "list", "--repo", "acme-corp.ghe.com/owner/repo", "--state", "merged",
+            "--limit", str(_mod.gh_cli._PR_COST_GH_PR_LIST_LIMIT), "--json", _MERGED_PR_LIST_FIELDS,
+        ]]
+        assert recorded_sleeps == []
+
+    def test_closed_discovery_issues_exactly_this_gh_pr_list_argv(self, monkeypatch, recorded_sleeps):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result(stdout="[]")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("acme-corp.ghe.com", "owner/repo")
+
+        assert call_log == [[
+            "gh", "pr", "list", "--repo", "acme-corp.ghe.com/owner/repo", "--state", "closed",
+            "--limit", str(_mod.gh_cli._PR_COST_GH_PR_LIST_LIMIT), "--json", "headRefName",
+        ]]
+        assert recorded_sleeps == []
+
+
+class TestGhDiscoveryStderrAndEmptyOutput:
+    """Exact stderr of each discovery helper's abort and unparseable-JSON paths, and what each returns for empty
+    or non-list stdout. The abort path prints the backoff helper's own message first, then the abort line."""
+
+    def test_merged_discovery_auth_failure_prints_backoff_then_abort_line_and_exits_1(
+        self, monkeypatch, capsys, recorded_sleeps,
+    ):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(1, stderr=_AUTH_FAILURE_STDERR))
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.gh_cli._gh_discover_merged_prs("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert capsys.readouterr().err == (
+            "pr-cost: pr list failed (auth), not retrying (auth failures don't self-resolve)\n"
+            "pr-cost: gh pr list failed (degraded_auth) before any row could be captured\n"
+        )
+        assert recorded_sleeps == []
+
+    def test_closed_discovery_auth_failure_prints_backoff_then_abort_line_and_exits_1(
+        self, monkeypatch, capsys, recorded_sleeps,
+    ):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(1, stderr=_AUTH_FAILURE_STDERR))
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert capsys.readouterr().err == (
+            "pr-cost: pr list (closed) failed (auth), not retrying (auth failures don't self-resolve)\n"
+            "pr-cost: gh pr list (closed) failed (degraded_auth) before any row could be captured\n"
+        )
+        assert recorded_sleeps == []
+
+    def test_merged_discovery_unparseable_json_prints_exact_message_and_exits_1(
+        self, monkeypatch, capsys, recorded_sleeps,
+    ):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout="not json"))
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.gh_cli._gh_discover_merged_prs("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert capsys.readouterr().err == "pr-cost: gh pr list returned unparseable JSON -- no row was captured\n"
+
+    def test_closed_discovery_unparseable_json_prints_exact_message_and_exits_1(
+        self, monkeypatch, capsys, recorded_sleeps,
+    ):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout="not json"))
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert capsys.readouterr().err == "pr-cost: gh pr list (closed) returned unparseable JSON\n"
+
+    @pytest.mark.parametrize("empty_stdout", ["", None], ids=["empty_string", "none"])
+    def test_merged_discovery_empty_stdout_returns_empty_list(self, monkeypatch, recorded_sleeps, empty_stdout):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout=empty_stdout))
+
+        assert _mod.gh_cli._gh_discover_merged_prs("github.com", "owner/repo") == []
+
+    @pytest.mark.parametrize("empty_stdout", ["", None], ids=["empty_string", "none"])
+    def test_closed_discovery_empty_stdout_returns_empty_set(self, monkeypatch, recorded_sleeps, empty_stdout):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout=empty_stdout))
+
+        assert _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo") == set()
+
+    def test_merged_discovery_returns_a_dict_payload_unchanged(self, monkeypatch, recorded_sleeps):
+        """No shape check: a dict payload reaches the caller as-is."""
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout='{"message": "unexpected"}'))
+
+        assert _mod.gh_cli._gh_discover_merged_prs("github.com", "owner/repo") == {"message": "unexpected"}
+
+    def test_merged_discovery_returns_a_null_payload_as_none(self, monkeypatch, recorded_sleeps):
+        """No shape check: a null payload reaches the caller as-is."""
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout="null"))
+
+        assert _mod.gh_cli._gh_discover_merged_prs("github.com", "owner/repo") is None
+
+    # Real `gh --json` never emits a non-list payload. These three tests guard that the closed helper does no
+    # shape check, so the exception types below are incidental. Flip them deliberately if a shape check is added.
+    def test_closed_discovery_empty_dict_payload_returns_empty_set(self, monkeypatch, recorded_sleeps):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout="{}"))
+
+        assert _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo") == set()
+
+    def test_closed_discovery_non_empty_dict_payload_raises_attribute_error(self, monkeypatch, capsys, recorded_sleeps):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result(stdout='{"headRefName": "x"}')
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(AttributeError, match=re.escape("'str' object has no attribute 'get'")):
+            _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        assert len(call_log) == 1
+        assert capsys.readouterr().err == ""
+
+    def test_closed_discovery_null_payload_raises_type_error(self, monkeypatch, capsys, recorded_sleeps):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result(stdout="null")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(TypeError, match=re.escape("'NoneType' object is not iterable")):
+            _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+
+        assert len(call_log) == 1
+        assert capsys.readouterr().err == ""
+
+
+_DISCOVERY_HELPER_CASES = [
+    pytest.param("_gh_discover_merged_prs", "pr list", "gh pr list", id="merged"),
+    pytest.param("_gh_discover_closed_unmerged_pr_branches", "pr list (closed)", "gh pr list (closed)", id="closed"),
+]
+
+
+class TestGhDiscoveryBackoffWiring:
+    """Each discovery helper hands the shared backoff its own label and default budget, and aborts with the
+    backoff's final status in the abort line."""
+
+    @pytest.mark.parametrize("helper_name,retry_label,abort_label", _DISCOVERY_HELPER_CASES)
+    def test_rate_limit_exhaustion_retries_four_times_then_aborts_with_degraded_rate_limit(
+        self, monkeypatch, capsys, recorded_sleeps, helper_name, retry_label, abort_label,
+    ):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result(1, stderr="API rate limit exceeded (HTTP 403)\n")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            getattr(_mod.gh_cli, helper_name)("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert len(call_log) == 5
+        assert recorded_sleeps == [60.0, 120.0, 240.0, 480.0]
+        assert capsys.readouterr().err == (
+            f"pr-cost: {retry_label} failed (rate_limit), retrying in 60s (attempt 1)...\n"
+            f"pr-cost: {retry_label} failed (rate_limit), retrying in 120s (attempt 2)...\n"
+            f"pr-cost: {retry_label} failed (rate_limit), retrying in 240s (attempt 3)...\n"
+            f"pr-cost: {retry_label} failed (rate_limit), retrying in 480s (attempt 4)...\n"
+            f"pr-cost: {retry_label} failed (rate_limit), giving up after 5 attempt(s)\n"
+            f"pr-cost: {abort_label} failed (degraded_rate_limit) before any row could be captured\n"
+        )
+
+    @pytest.mark.parametrize("helper_name,retry_label,abort_label", _DISCOVERY_HELPER_CASES)
+    def test_host_mismatch_failure_aborts_with_degraded_host_mismatch_without_retrying(
+        self, monkeypatch, capsys, recorded_sleeps, helper_name, retry_label, abort_label,
+    ):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result(1, stderr=_HOST_MISMATCH_FAILURE_STDERR)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            getattr(_mod.gh_cli, helper_name)("github.com", "owner/repo")
+
+        assert exc_info.value.code == 1
+        assert len(call_log) == 1
+        assert recorded_sleeps == []
+        assert capsys.readouterr().err == (
+            f"pr-cost: {retry_label} failed (host_mismatch), not retrying -- gh's ambient GH_HOST"
+            " environment variable does not match this repo's own git remote host;"
+            " unset GH_HOST or point it at the correct host\n"
+            f"pr-cost: {abort_label} failed (degraded_host_mismatch) before any row could be captured\n"
+        )
+
+
+class TestGhCallWithBackoffStderrMessages:
+    """Exact stderr text at every message site in _gh_call_with_backoff."""
+
+    def test_success_prints_nothing(self, monkeypatch, capsys, recorded_sleeps):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout="ok"))
+
+        proc, degraded = _mod.gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+
+        assert degraded == ""
+        assert proc.stdout == "ok"
+        assert capsys.readouterr().err == ""
+
+    def test_auth_failure_prints_not_retrying_message(self, monkeypatch, capsys, recorded_sleeps):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(1, stderr=_AUTH_FAILURE_STDERR))
+
+        _mod.gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+
+        assert capsys.readouterr().err == (
+            "pr-cost: repo view failed (auth), not retrying (auth failures don't self-resolve)\n"
+        )
+
+    def test_host_mismatch_failure_prints_actionable_message(self, monkeypatch, capsys, recorded_sleeps):
+        monkeypatch.setattr(
+            subprocess, "run", lambda cmd, *a, **kw: _gh_result(1, stderr=_HOST_MISMATCH_FAILURE_STDERR),
+        )
+
+        _mod.gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+
+        assert capsys.readouterr().err == (
+            "pr-cost: repo view failed (host_mismatch), not retrying -- gh's ambient GH_HOST"
+            " environment variable does not match this repo's own git remote host;"
+            " unset GH_HOST or point it at the correct host\n"
+        )
+
+    def test_rate_limit_exhaustion_prints_each_retry_line_then_giving_up(self, monkeypatch, capsys, recorded_sleeps):
+        monkeypatch.setattr(
+            subprocess, "run", lambda cmd, *a, **kw: _gh_result(1, stderr="API rate limit exceeded (HTTP 403)\n"),
+        )
+
+        _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "view", "1"], label="pr view 1")
+
+        assert capsys.readouterr().err == (
+            "pr-cost: pr view 1 failed (rate_limit), retrying in 60s (attempt 1)...\n"
+            "pr-cost: pr view 1 failed (rate_limit), retrying in 120s (attempt 2)...\n"
+            "pr-cost: pr view 1 failed (rate_limit), retrying in 240s (attempt 3)...\n"
+            "pr-cost: pr view 1 failed (rate_limit), retrying in 480s (attempt 4)...\n"
+            "pr-cost: pr view 1 failed (rate_limit), giving up after 5 attempt(s)\n"
+        )
+        assert recorded_sleeps == [60.0, 120.0, 240.0, 480.0]
+
+    def test_network_exception_exhaustion_prints_network_kind_in_every_line(self, monkeypatch, capsys, recorded_sleeps):
+        def fake_run(cmd, *a, **kw):
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod.gh_cli._GH_CALL_TIMEOUT_S)
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "view", "1"], label="pr view 1")
+
+        assert capsys.readouterr().err == (
+            "pr-cost: pr view 1 failed (network), retrying in 60s (attempt 1)...\n"
+            "pr-cost: pr view 1 failed (network), retrying in 120s (attempt 2)...\n"
+            "pr-cost: pr view 1 failed (network), retrying in 240s (attempt 3)...\n"
+            "pr-cost: pr view 1 failed (network), retrying in 480s (attempt 4)...\n"
+            "pr-cost: pr view 1 failed (network), giving up after 5 attempt(s)\n"
+        )
+
+    def test_retry_after_hint_replaces_the_backoff_duration_in_the_retry_line(self, monkeypatch, capsys, recorded_sleeps):
+        outcomes = iter([_gh_result(1, stderr="API rate limit exceeded, retry after: 7\n"), _gh_result(stdout="ok")])
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: next(outcomes))
+
+        proc, degraded = _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "view", "1"], label="pr view 1")
+
+        assert degraded == ""
+        assert proc.stdout == "ok"
+        assert capsys.readouterr().err == "pr-cost: pr view 1 failed (rate_limit), retrying in 7s (attempt 1)...\n"
+        assert recorded_sleeps == [7.0]
+
+    def test_elapsed_budget_exhaustion_prints_capped_retry_line_then_giving_up_after_two_attempts(
+        self, monkeypatch, capsys, recorded_sleeps,
+    ):
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda cmd, *a, **kw: _gh_result(1, stderr="secondary rate limit hit, retry after: 999999 seconds\n"),
+        )
+
+        _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "view", "1"], label="pr view 1")
+
+        assert capsys.readouterr().err == (
+            "pr-cost: pr view 1 failed (rate_limit), retrying in 900s (attempt 1)...\n"
+            "pr-cost: pr view 1 failed (rate_limit), giving up after 2 attempt(s)\n"
+        )
+
+
+_ORIGIN_FAILURE_MESSAGE_CASES = [
+    pytest.param({}, "pr-cost", "", id="defaults"),
+    pytest.param({"subcommand": "period-cost"}, "period-cost", "", id="subcommand_only"),
+    pytest.param({"failure_hint": "pass --repo to name it"}, "pr-cost", " -- pass --repo to name it", id="hint_only"),
+    pytest.param(
+        {"subcommand": "period-cost", "failure_hint": "pass --repo to name it"}, "period-cost", " -- pass --repo to name it",
+        id="subcommand_and_hint",
+    ),
+]
+
+
+class TestGitRemoteOriginFailureMessages:
+    """Exact failure text of _git_remote_origin_host_and_owner_repo, by subcommand prefix and failure_hint."""
+
+    @pytest.mark.parametrize("call_kwargs,expected_prefix,expected_hint_suffix", _ORIGIN_FAILURE_MESSAGE_CASES)
+    @pytest.mark.parametrize("raised", [
+        pytest.param(subprocess.CalledProcessError(128, ["git", "remote", "get-url", "origin"]), id="called_process_error"),
+        pytest.param(subprocess.TimeoutExpired(cmd=["git", "remote", "get-url", "origin"], timeout=1), id="timeout_expired"),
+        pytest.param(OSError("git not found"), id="os_error"),
+    ])
+    def test_unresolvable_origin_prints_exact_message_and_exits_1(
+        self, monkeypatch, capsys, call_kwargs, expected_prefix, expected_hint_suffix, raised,
+    ):
+        def fake_run(cmd, *a, **kw):
+            raise raised
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.gh_cli._git_remote_origin_host_and_owner_repo(**call_kwargs)
+
+        assert exc_info.value.code == 1
+        assert capsys.readouterr().err == (
+            f"{expected_prefix}: could not resolve this repo's own remote"
+            f" (git remote get-url origin failed){expected_hint_suffix}\n"
+        )
+
+    @pytest.mark.parametrize("call_kwargs,expected_prefix,expected_hint_suffix", _ORIGIN_FAILURE_MESSAGE_CASES)
+    def test_unparseable_origin_prints_exact_message_and_exits_1(
+        self, monkeypatch, capsys, call_kwargs, expected_prefix, expected_hint_suffix,
+    ):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout="not a remote\n"))
+
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.gh_cli._git_remote_origin_host_and_owner_repo(**call_kwargs)
+
+        assert exc_info.value.code == 1
+        assert capsys.readouterr().err == (
+            f"{expected_prefix}: this repo's origin remote is not a recognizable host/owner/repo URL{expected_hint_suffix}\n"
+        )
+
+    @pytest.mark.parametrize("call_kwargs,expected_prefix,expected_hint_suffix", _ORIGIN_FAILURE_MESSAGE_CASES)
+    def test_nonzero_git_exit_is_unresolvable_only_because_the_call_passes_check_true(
+        self, monkeypatch, capsys, call_kwargs, expected_prefix, expected_hint_suffix,
+    ):
+        """The fake raises CalledProcessError only when the caller asks for check=True, as real subprocess.run
+        does. Without check=True, exit 128 with empty stdout would fall through to the unparseable-URL message."""
+
+        def fake_run_honoring_check(cmd, *a, **kw):
+            result = _gh_result(returncode=128, stderr="fatal: No such remote 'origin'\n")
+            if kw.get("check") and result.returncode != 0:
+                raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
+            return result
+
+        monkeypatch.setattr(subprocess, "run", fake_run_honoring_check)
+        with pytest.raises(SystemExit) as exc_info:
+            _mod.gh_cli._git_remote_origin_host_and_owner_repo(**call_kwargs)
+
+        assert exc_info.value.code == 1
+        assert capsys.readouterr().err == (
+            f"{expected_prefix}: could not resolve this repo's own remote"
+            f" (git remote get-url origin failed){expected_hint_suffix}\n"
+        )
