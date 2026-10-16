@@ -19,3 +19,16 @@ _plugin_installed_at_path() {
   done <<< "$existing_tsv"
   return 1
 }
+
+# Asks whether to install $1 at $2 scope, reading the answer from stdin.
+# Caller must check [ -t 0 ] first: with no TTY guard of its own, read blocks forever on an open, never-closed stdin.
+# Returns 0 only for an answer starting with y or Y.
+# Enter, any other answer, and EOF all return 1.
+_confirm_plugin_install() {
+  local plugin_id="$1" scope="$2" answer
+  read -r -p "  Install $plugin_id at $scope scope? [y/N] " answer || answer=""
+  case "$answer" in
+    [Yy]*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
