@@ -134,12 +134,13 @@ The hook checks this key before any filesystem scan. The grammar:
 - **Body by file.** `--body-file` makes the bytes the engineer approved, the
   bytes the redaction gate scans, and the bytes GitHub receives the same
   bytes, and no memory-derived text passes through shell interpretation.
-- **Flag order (`--body-file` before `--title`).** Per
-  `claude/.claude/hooks/deny-private-project-refs.sh`'s own header bullet on
-  xargs tokenization failure, `extract_body_source_paths`'s `xargs -n1`
-  tokenizer drops only the paths after a failing token, so `--body-file` goes
-  first to stay read even when a newline in the title later breaks
-  tokenization.
+- **Flag order (`--body-file` before `--title`).** `_lib_command_words` in
+  `claude/.claude/hooks/_lib.sh` tokenizes with `xargs -n1` first. When
+  `xargs` fails on a command, it keeps the words `xargs` printed before the
+  failure, then adds a fallback tokenizer's words, and the hook denies when
+  the fallback cannot run or cannot split the command. Flag order does not
+  change whether the file is scanned, so the order is kept as convention only
+  and the scan no longer depends on it.
 - **Title allowlist.** The title has to sit inside a single-quoted shell
   argument, so allowing only ASCII letters, digits, spaces, and `-_.,:/`
   rules out quote, backtick, `$`, backslash, and control-character injection.

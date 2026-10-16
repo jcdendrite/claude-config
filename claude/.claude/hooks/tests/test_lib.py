@@ -3963,6 +3963,22 @@ def test_gh_body_source_paths_status_when_a_tool_is_missing(
         assert result.stdout == ""
 
 
+@pytest.mark.parametrize(
+    "command",
+    ["git commit -F /x", 'git commit -m "a\nb" -F /x'],
+    ids=["single-line", "xargs-failing"],
+)
+def test_git_commit_message_source_paths_fails_when_awk_is_missing(command: str, tmp_path: Path) -> None:
+    """A missing awk must read as a failure, not as a command with no message-source files."""
+    farm_dir = tmp_path / "path-without-awk"
+    farm_dir.mkdir()
+    env = dict(os.environ)
+    env["PATH"] = build_path_without("awk", farm_dir)
+    result = _run_lib_helper_on_command("_lib_git_commit_message_source_paths", command, tmp_path, env=env)
+    assert result.returncode == 127, result.stderr
+    assert result.stdout == ""
+
+
 def _copy_lib_without_tokenizer(destination: Path) -> Path:
     """Copy _lib.sh and the files it sources into destination, leaving out split-command-words.py."""
     destination.mkdir()

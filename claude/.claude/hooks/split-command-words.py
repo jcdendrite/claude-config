@@ -32,6 +32,9 @@ Residual over-denies, where valid bash still makes the splitter exit 3:
   - A `$'...'` string with an escaped apostrophe, such as `$'it\\'s'`.
   - An inline comment holding an unbalanced quote, such as
     `git commit -F /x  # don't amend`. Only whole comment lines are dropped.
+  - A multi-line quoted value whose closing quote sits on a line starting with
+    `#`, such as a message whose last line begins `#123`. The quote-blind
+    comment-line drop removes that line, leaving the quote open.
 Residual over-deny outside the splitter: an unrelated tool's flag that a
 caller also reads (`ssh -T host`, `tar -T list`) newly reaches the caller once
 xargs's failure is recovered. The splitter exits 0 there; the caller's file

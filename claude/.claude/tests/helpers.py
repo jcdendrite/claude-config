@@ -50,6 +50,17 @@ LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
 # The size keeps the mask scan exercised at scale while staying under that cap.
 MASK_SAFE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 8)
 
+# The lone apostrophe sits between two closed double-quote regions, so a tokenizer that
+# skips the heredoc-body strip finds an unterminated single quote. xargs fails on the
+# newline inside the double-quoted value either way.
+# An allow guard built on this body passes only because the heredoc-body strip ran.
+HEREDOC_BODY_WITH_GAP_APOSTROPHE = 'Summary line\n\nCall it "it\'s" fine.'
+
+
+def heredoc_substitution(heredoc_body: str) -> str:
+    """The dominant `"$(cat <<'EOF' ... )"` shape, as a single double-quoted shell word."""
+    return f"\"$(cat <<'EOF'\n{heredoc_body}\nEOF\n)\""
+
 
 def _sourced_value(var_name: str) -> str:
     """Return `var_name`'s value after sourcing _lib.sh in a bash subprocess

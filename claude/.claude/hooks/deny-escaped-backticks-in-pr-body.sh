@@ -27,6 +27,15 @@
 #   is not a regular file, is not readable, or whose capped read ends in any
 #   nonzero status. The deny text says "killed" only for the statuses
 #   _lib_status_consistent_with_cap_kill accepts.
+# - Blocks a command that xargs cannot split and that the fallback tokenizer
+#   (split-command-words.py) cannot split or cannot run, because a body-source
+#   flag after the unsplittable value cannot be located. The fallback is
+#   uncapped without timeout or gtimeout; see split-command-words.py's docstring.
+# - A deny reason that concerns one body-source file names its path. That path
+#   is a command argument already in the Bash tool call, so naming it
+#   discloses nothing new (the rationale deny-pii-in-commits.sh's header
+#   states for its -F deny messages). The tokenizer deny names no path and
+#   echoes none of the command, because an unsplittable value is unbounded.
 #
 # Known gaps (documented, not closed):
 # - The pseudo-file guard matches literal spellings only (`-`, `/dev/stdin`,
@@ -34,6 +43,8 @@
 #   `/dev/./fd/N` are not recognised and can evade the scan: under /bin/bash
 #   3.2 the `-f` test passes for them inside the reading loop. Accepted debt
 #   shared with deny-pii-in-commits.sh and deny-private-project-refs.sh.
+# - The fallback tokenizer's residual over-denies and misses are listed in
+#   split-command-words.py's module docstring.
 
 # grep -q reads a here-string, never a pipe: see test_no_pipe_into_early_exit_grep in hooks/tests/test_hook_alignment.py.
 set -uo pipefail
@@ -78,23 +89,6 @@ if [ "$IS_GH_PR_CREATE_STATUS" -ne 0 ] && [ "$IS_GH_PR_EDIT_STATUS" -ne 0 ]; the
   exit 0
 fi
 
-# Extract paths passed to any gh-pr body-source flag. Covers:
-#   --body-file <path>    --body-file=<path>
-#   -F <path>             -F=<path>
-#   --template <path>     --template=<path>
-#   -T <path>             -T=<path>
-# One path per output line. Uses xargs tokenization to avoid matching
-# flag-shaped text inside a quoted argument value.
-extract_body_source_paths() {
-  local cmd="$1"
-  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
-    BEGIN { cap = 0 }
-    cap { print; cap = 0; next }
-    /^(--body-file|--template|-F|-T)$/ { cap = 1; next }
-    /^(--body-file=|--template=|-F=|-T=)/ { sub(/^[^=]*=/, ""); print }
-  '
-}
-
 # Build the scan target: start with the full command string (which
 # contains any inline --body "..." value), then append the contents
 # of any referenced body-source files. Deliberately NOT unioned with a
@@ -104,7 +98,12 @@ extract_body_source_paths() {
 SCAN_TARGET=""
 SCAN_TARGET+=$'\n'"$COMMAND"
 
-BODY_SOURCES=$(extract_body_source_paths "$COMMAND")
+BODY_SOURCES=$(_lib_gh_body_source_paths "$COMMAND")
+BODY_SOURCES_STATUS=$?
+if [ "$BODY_SOURCES_STATUS" -ne 0 ]; then
+  emit_deny "$(_lib_command_words_deny_reason 'gh pr' '--body-file/--template/-F/-T' "$BODY_SOURCES_STATUS")"
+  exit 0
+fi
 if [ -n "$BODY_SOURCES" ]; then
   while IFS= read -r body_source_path; do
     [ -z "$body_source_path" ] && continue

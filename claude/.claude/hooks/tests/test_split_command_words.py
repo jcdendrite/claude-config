@@ -18,12 +18,13 @@ from __future__ import annotations
 import ast
 import importlib.util
 import io
+import shlex
 import shutil
 import subprocess
 import sys
 
 import pytest
-from helpers import HOOKS_DIR
+from helpers import HEREDOC_BODY_WITH_GAP_APOSTROPHE, HOOKS_DIR, heredoc_substitution
 
 SPLITTER_PATH = HOOKS_DIR / "split-command-words.py"
 
@@ -77,6 +78,15 @@ class TestHeredocBodies:
         )
         words = split_command_words(command)
         assert words == ["gh", "pr", "create", "--body", "$(cat <<'EOF' )", "--body-file", "/x"]
+
+    def test_shared_allow_guard_fixture_defeats_plain_shlex_but_not_the_tokenizer(self):
+        """The hook tests' over-deny guards pass only if this body keeps a tokenizer without the
+        heredoc-body strip from splitting the command."""
+        command = f"git commit -m {heredoc_substitution(HEREDOC_BODY_WITH_GAP_APOSTROPHE)} -F /x"
+        with pytest.raises(ValueError, match="No closing quotation"):
+            shlex.split(command)
+        words = split_command_words(command)
+        assert words == ["git", "commit", "-m", "$(cat <<'EOF' )", "-F", "/x"]
 
     def test_two_heredoc_substitutions_chained_with_and(self):
         command = (
@@ -363,6 +373,12 @@ class TestResidualShapes:
         words = split_command_words(command)
         assert "/hidden" not in words
         assert words == ["gh", "pr", "create", "--title", "x final"]
+
+    def test_comment_line_drop_removes_a_closing_quote_and_exits_3(self):
+        """Bash closes the quoted message on the `#123` line, but the drop takes the quote with it."""
+        result = run_splitter(b'git commit -m "Fix parser\n\n#123" -F /x\n')
+        assert result.returncode == 3
+        assert result.stdout == b""
 
     def test_inline_comment_holding_an_unbalanced_quote_exits_3(self):
         result = run_splitter(b"git commit -F /x  # don't amend\n")
