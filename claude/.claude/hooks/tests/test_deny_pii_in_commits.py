@@ -214,6 +214,28 @@ class TestDenyPiiInCommits:
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "deny"
 
+    def test_unarmed_untokenizable_commit_command_denied(self, isolated_home, git_repo):
+        """The tokenizer deny does not wait for arming: an unterminated quote hides the -F that follows."""
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        msg_file = git_repo / "msg.txt"
+        msg_file.write_text("a clean commit summary\n")
+        command_text_marker = "distinctive-marker-text"
+        command = f'git commit -m "{command_text_marker} -F {msg_file}'
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo)
+        assert reason is not None
+        assert "The git commit command could not be tokenized" in reason
+        assert command_text_marker not in reason
+        assert str(msg_file) not in reason
+
+    def test_unarmed_credential_in_F_file_after_xargs_failure_denied(self, isolated_home, git_repo):
+        """The credential-value scan reads a -F file named after a value xargs cannot tokenize, with no arming."""
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        msg_file = git_repo / "msg.txt"
+        msg_file.write_text(f"commit summary\n\ntoken {GHP_TOKEN}\n")
+        command = f"echo {heredoc_substitution(HEREDOC_BODY_WITH_GAP_APOSTROPHE)} && git commit -F {msg_file}"
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo)
+        assert reason is not None and "Credential value" in reason, reason
+
     @pytest.mark.parametrize(
         ("config_key", "config_value", "attributes_line", "run_from_subdirectory"),
         DIFF_RENDERING_CONFIGS,

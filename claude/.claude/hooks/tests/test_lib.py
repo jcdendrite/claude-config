@@ -3839,6 +3839,33 @@ def test_unrelated_tools_flag_after_the_xargs_failure_point_reaches_the_extracto
 
 
 @requires_gnu_xargs
+@pytest.mark.parametrize(
+    ("extractor", "source_flag"),
+    [("_lib_gh_body_source_paths", "--body-file"), ("_lib_git_commit_message_source_paths", "-F")],
+)
+def test_backslash_newline_between_a_flag_and_its_path_hides_the_path_from_the_extractor(
+    extractor: str, source_flag: str, tmp_path: Path
+) -> None:
+    """Pins the extractor's output for the gap recorded in the `_lib_command_words` header in _lib.sh.
+
+    An extractor-side fix flips this test on purpose. A caller-side fix would need its own test.
+    """
+    command = f"tool {source_flag} \\\n  /tmp/b.md --repo r"
+    plain_xargs = _plain_xargs(command)
+    assert plain_xargs.returncode == 0, f"precondition: {_GNU_XARGS_ASSUMPTION}; xargs should accept the command"
+    xargs_lines = plain_xargs.stdout.split("\n")
+    flag_index = xargs_lines.index(source_flag)
+    assert xargs_lines[flag_index + 1] == "", (
+        f"precondition: {_GNU_XARGS_ASSUMPTION}; xargs should print an empty word after {source_flag}"
+    )
+
+    result = _run_lib_helper_on_command(extractor, command, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "/tmp/b.md" not in result.stdout.split("\n")
+
+
+@requires_gnu_xargs
 def test_command_words_one_word_past_the_xargs_limit_then_flag_prints_the_flags_path(tmp_path: Path) -> None:
     """GNU xargs rejects one argument this long, so the retry runs."""
     plain_xargs = _plain_xargs(_PAST_XARGS_LIMIT_COMMAND)

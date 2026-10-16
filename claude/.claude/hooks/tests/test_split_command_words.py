@@ -414,6 +414,19 @@ class TestResidualShapes:
         assert result.returncode == 3
         assert result.stdout == b""
 
+    def test_inline_comment_apostrophes_on_two_lines_fold_the_lines_between_and_hide_a_flag(self):
+        """The two apostrophes pair as one quoted run, so bash's --body-file on the second line is folded away."""
+        command = (
+            "tool-a --file /tmp/msg.txt  # don't amend\n"
+            "tool-b create --title \"x\" --body-file /tmp/body.md  # it's ready"
+        )
+        words = split_command_words(command)
+        assert "/tmp/body.md" not in words
+        assert {"--file", "/tmp/msg.txt"} <= set(words)
+        folded_words = [word for word in words if "tool-b" in word]
+        assert len(folded_words) == 1
+        assert "--body-file" in folded_words[0]
+
 
 class TestInterpreterIsolation:
     def test_planted_stdlib_module_beside_the_script_is_not_imported(self, tmp_path):

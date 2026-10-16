@@ -51,6 +51,12 @@ past the point where xargs failed:
   - The comment-line drop is quote-blind. A line starting with `#` inside a
     multi-line quoted value is dropped, which hides any flag that follows the
     closing quote on that line.
+  - Quote characters inside an inline comment pair like any other quotes, since
+    only whole comment lines are dropped. The fold runs from the first stray
+    quote in a comment to the next quote of the same kind. It swallows the rest
+    of the opening comment, every line between, and the start of the closing
+    line up to that quote. A flag on the closing line is hidden too. An odd
+    count exits 3 instead, the over-deny listed above.
 
 The helper is calibrated for cooperative callers, which make honest mistakes.
 The quote-blind drops above are not closed against input crafted to evade
