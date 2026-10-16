@@ -772,7 +772,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="keep only testcases under this path, relative to pytest's rootdir, e.g. claude/.claude/scripts/tests/",
     )
     _add_list_option(test_ids, "--rename", "OLD=NEW", "rename a before ID, its leading ::-part, or its [param] stem")
-    _add_list_option(test_ids, "--expect-new", "ID", "IDs that must appear only after; others are an expect-new-mismatch")
+    _add_list_option(
+        test_ids, "--expect-new", "ID", "IDs that must occur more often after than before; others are an expect-new-mismatch"
+    )
     test_ids.set_defaults(handler=_run_test_ids)
     return parser
 
