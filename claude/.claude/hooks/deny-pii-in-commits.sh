@@ -101,7 +101,9 @@
 #    and can evade the scan: under /bin/bash 3.2 the `-f` test passes for them
 #    inside the reading loop. Accepted debt shared with
 #    deny-escaped-backticks-in-pr-body.sh and deny-private-project-refs.sh.
-#  - The fallback tokenizer's residual over-denies and misses are listed in
+#  - The `xargs -n1` fast path's miss is listed in `_lib_command_words`'s
+#    header in _lib.sh.
+#    The fallback tokenizer's residual over-denies and misses are listed in
 #    split-command-words.py's module docstring.
 #  - A capped `cat` of a message-source file that ends in any nonzero status
 #    denies; _lib_status_consistent_with_cap_kill only picks whether the

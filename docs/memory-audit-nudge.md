@@ -134,14 +134,12 @@ The hook checks this key before any filesystem scan. The grammar:
 - **Body by file.** `--body-file` makes the bytes the engineer approved, the
   bytes the redaction gate scans, and the bytes GitHub receives the same
   bytes, and no memory-derived text passes through shell interpretation.
-- **Flag order (`--body-file` before `--title`).** Flag order does not decide
-  whether the body file is scanned: `_lib_command_words` in
-  `claude/.claude/hooks/_lib.sh` recovers the flags after an `xargs` failure,
-  and the hook denies when it cannot (the function's header comment lists
-  when). `--body-file` first still keeps the flag ahead of any `xargs`
-  failure point, where the fallback tokenizer's residual misses, listed in the
-  module docstring of `claude/.claude/hooks/split-command-words.py`, cannot
-  drop it.
+- **Flag order (`--body-file` before `--title`).** `--body-file` first keeps
+  the flag ahead of any `xargs` failure point, so the fallback tokenizer's
+  residual misses, listed in the module docstring of
+  `claude/.claude/hooks/split-command-words.py`, cannot drop it. A command
+  neither tokenizer can split is denied, under the conditions in the header of
+  `_lib_command_words` in `claude/.claude/hooks/_lib.sh`.
 - **Title allowlist.** The title has to sit inside a single-quoted shell
   argument, so allowing only ASCII letters, digits, spaces, and `-_.,:/`
   rules out quote, backtick, `$`, backslash, and control-character injection.

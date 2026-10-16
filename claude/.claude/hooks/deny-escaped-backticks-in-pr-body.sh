@@ -44,8 +44,15 @@
 #   `/dev/./fd/N` are not recognised and can evade the scan: under /bin/bash
 #   3.2 the `-f` test passes for them inside the reading loop. Accepted debt
 #   shared with deny-pii-in-commits.sh and deny-private-project-refs.sh.
-# - The fallback tokenizer's residual over-denies and misses are listed in
+# - The `xargs -n1` fast path's miss is listed in `_lib_command_words`'s header
+#   in _lib.sh.
+#   The fallback tokenizer's residual over-denies and misses are listed in
 #   split-command-words.py's module docstring.
+# - A body-source file whose content changes after the hook fires is not
+#   re-read, such as when another command in the same call rewrites an
+#   already-existing path.
+#   deny-pii-in-commits.sh's Known gaps bullet on a `-F <path>` message file
+#   holds the example shape.
 
 # grep -q reads a here-string, never a pipe: see test_no_pipe_into_early_exit_grep in hooks/tests/test_hook_alignment.py.
 set -uo pipefail

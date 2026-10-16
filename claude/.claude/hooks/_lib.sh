@@ -1827,6 +1827,7 @@ _LIB_COMMAND_WORDS_NO_WORDS_STATUS=4
 # Every caller must capture that status on the next line and deny.
 # Empty fallback output is denied, so a command made only of comments that reaches the retry is denied.
 # The fast path is `xargs -n1`; the fallback runs only when xargs exits nonzero.
+# A backslash-newline between a source flag and its value makes `xargs -n1` exit 0 with a blank word between them, so a caller reads the value as empty and skips that file without scanning or denying it.
 # The fallback is calibrated for cooperative callers.
 # split-command-words.py lists the quote-blind drops it does not close.
 _lib_command_words() {

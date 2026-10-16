@@ -142,8 +142,15 @@
 #   spellings such as `//dev/fd/N` or `/dev/./fd/N` are not recognised and
 #   can evade the scan of a body/message source. Accepted debt shared with
 #   deny-pii-in-commits.sh and deny-escaped-backticks-in-pr-body.sh.
-# - The fallback tokenizer's residual over-denies and misses are listed in
+# - The `xargs -n1` fast path's miss is listed in `_lib_command_words`'s header
+#   in _lib.sh.
+#   The fallback tokenizer's residual over-denies and misses are listed in
 #   split-command-words.py's module docstring.
+# - A body, message, or input source file whose content changes after the hook
+#   fires is not re-read, such as when another command in the same call rewrites
+#   an already-existing path.
+#   deny-pii-in-commits.sh's Known gaps bullet on a `-F <path>` message file
+#   holds the example shape.
 # - The gate's scope comes from the hook process's cwd, so a chained `cd`
 #   or a `-R`/`--repo` aimed at the checkout from outside it escapes the scan.
 # - The Slack-channel shape accepts digits, `s`, then end of line or any
