@@ -44,6 +44,7 @@ from helpers import (
     build_path_without,
     extract_skill_command,
     install_marker_script,
+    link_bash_into,
     plant_traversal_canary,
     run_hook_until_marker_exists,
     run_skill_command,
@@ -234,13 +235,15 @@ def _check_mode_path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
     invokes (`dirname` kept as a harmless superset entry `run_check_mode`
     never calls, `jq` for the reported JSON, `ps`/`head`/`sed`/`tr` for the
     ancestor walk, `env` for the pinned-locale live-start read, `tail` for
-    read_latest_usage), omitting both timeout(1) and gtimeout(1). Skips when
-    a needed real binary is itself absent from the test machine."""
+    read_latest_usage, `bash` for the hook's `env bash` shebang), omitting both
+    timeout(1) and gtimeout(1). Skips when a needed real binary is itself
+    absent from the test machine."""
     for tool in ("dirname", "env", "head", "jq", "ps", "sed", "tail", "tr"):
         real = shutil.which(tool)
         if not real:
             pytest.skip(f"{tool} not found in PATH")
         (fake_bin / tool).symlink_to(real)
+    link_bash_into(fake_bin)
     return str(fake_bin)
 
 

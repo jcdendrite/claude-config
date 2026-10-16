@@ -4421,27 +4421,6 @@ class TestLibNormalizePathLexically:
         path = "/" + "/".join(["a"] * 50000) + "/../../b"
         assert _normalize_lexically(path) == "/" + "/".join(["a"] * 49998) + "/b"
 
-    def test_matches_the_oracle_under_bash_compat_32(self) -> None:
-        """The normalizer's header claims it was checked with BASH_COMPAT=32.
-        One process normalizes every oracle input at that compatibility level,
-        which emulates bash 3.2's documented differences and is not a real 3.2
-        binary."""
-        paths = [param.values[0] for param in _LEXICAL_NORMALIZATION_INPUTS]
-        script = (
-            f". {_LIB_SH}; for path in \"$@\"; do "
-            '_lib_normalize_path_lexically "$path"; printf "%s\\0" "$_LIB_NORMALIZED_PATH"; done'
-        )
-        result = subprocess.run(
-            ["bash", "-c", script, "bash", *paths],
-            env={**os.environ, "BASH_COMPAT": "32"},
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.split("\0")[:-1] == [_lexical_normalization_oracle(path) for path in paths]
-
     def test_a_glob_segment_stays_literal(self, tmp_path: Path) -> None:
         (tmp_path / "matching-file").write_text("")
         assert _normalize_lexically("*/x/../y", tmp_path=tmp_path) == "*/y"

@@ -177,7 +177,7 @@ def _rm_shim_that_fails_on_recursive_delete(tmp_path: Path) -> Path:
 class TestUsageErrors:
     def test_any_argument_exits_two_with_usage(self, isolated_home, tmp_path):
         _seed_session(isolated_home, SID)
-        env = {"HOME": str(isolated_home)}
+        env = {"HOME": str(isolated_home), "PATH": os.environ["PATH"]}
         result = subprocess.run(
             ["bash", str(SCRIPT), "unexpected"], cwd=tmp_path, env=env, capture_output=True, text=True,
             timeout=60,
@@ -528,7 +528,7 @@ class TestInteriorFailureBeforeSessionIsKnownStillExitsZero:
 
     def test_config_dir_resolution_failure_exits_zero(self, tmp_path):
         result = subprocess.run(
-            ["bash", str(SCRIPT)], cwd=tmp_path, env={"HOME": ""}, capture_output=True, text=True,
+            ["bash", str(SCRIPT)], cwd=tmp_path, env={"HOME": "", "PATH": os.environ["PATH"]}, capture_output=True, text=True,
             timeout=60,
         )
         assert result.returncode == 0, result.stderr

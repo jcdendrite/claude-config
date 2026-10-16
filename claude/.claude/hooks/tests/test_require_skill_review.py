@@ -29,6 +29,7 @@ from helpers import (
     build_path_without,
     edit_input,
     extract_skill_command,
+    link_bash_into,
     push_conflicting_edit_to_origin,
     resolve_conflicted_rebase,
     revert_subtraction_base,
@@ -1055,6 +1056,7 @@ class TestRequireSkillReview:
             if not cmd_path:
                 pytest.skip(f"{cmd} not found in PATH")
             (bin_dir / cmd).symlink_to(cmd_path)
+        link_bash_into(bin_dir)
 
         skill_file = git_repo / "claude-skills" / "skills" / "skill-review" / "SKILL.md"
         skill_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2560,6 +2562,7 @@ class TestCorpusBudgetWarning:
             if not cmd_path:
                 pytest.skip(f"{cmd} not found in PATH")
             (bin_dir / cmd).symlink_to(cmd_path)
+        link_bash_into(bin_dir)
 
         _stage_oversized_corpus(git_repo)
         write_skill_review_marker(isolated_home, git_repo)
@@ -3202,6 +3205,7 @@ class TestSkillReviewGateNoCapBinaryAndHashFailure:
             if not cmd_path:
                 pytest.skip(f"{cmd} not found in PATH")
             (bin_dir / cmd).symlink_to(cmd_path)
+        link_bash_into(bin_dir)
 
         assert (
             run_hook(

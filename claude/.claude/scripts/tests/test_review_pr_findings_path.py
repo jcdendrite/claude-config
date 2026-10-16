@@ -5,6 +5,7 @@ $CONFIG_DIR/$SESSION_ID by hand.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -35,7 +36,7 @@ def _write_provenance(
 
 
 def _run(home: Path, args: list[str] | None = None) -> subprocess.CompletedProcess:
-    env = {"HOME": str(home)}
+    env = {"HOME": str(home), "PATH": os.environ["PATH"]}
     env.pop("CLAUDE_CONFIG_DIR", None)
     return subprocess.run(
         ["bash", str(SCRIPT), *(args or [])], env=env, capture_output=True, text=True,

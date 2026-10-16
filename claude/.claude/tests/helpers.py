@@ -5,6 +5,7 @@ explicitly from each test file that needs these symbols.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -18,8 +19,12 @@ import time
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
+
+if TYPE_CHECKING:
+    import pytest
 
 CLAUDE_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = CLAUDE_DIR.parent.parent
@@ -167,6 +172,165 @@ def _build_subprocess_env(
     if extra_env is not None:
         env.update(extra_env)
     return env
+
+
+# -- Shell-exec guard ---------------------------------------------------------
+#
+# A shipped shell file whose shebang is `#!/usr/bin/env bash` resolves bash
+# through the child's PATH. A test that execs one under a PATH holding no bash
+# gets exit 126/127 from `env`, which the `run_hook*` runners map to "allow",
+# so the test passes without the script ever running. The guard turns that
+# silent pass into a failure.
+
+_ENV_BASH_SHEBANG = b"#!/usr/bin/env bash"
+
+# POSIX: 126 is "found but not executable", 127 is "not found". `env` uses both
+# when it cannot exec its program.
+_EXEC_FAILURE_EXIT_CODES = frozenset({126, 127})
+
+# Bounds the first-line read so a binary target with no newline is not read whole.
+_SHEBANG_READ_BYTE_LIMIT = 256
+
+# `env`'s own error about its program. A shebang runs `env` by absolute path, and GNU `env` prints that path
+# as its prefix: "/usr/bin/env: ‘bash’: No such file or directory", with ASCII quotes under the C locale.
+# BSD `env` prints its basename and no quotes: "env: bash: No such file or directory".
+# busybox `env` prints its basename and a "can't execute" phrase: "env: can't execute 'bash': No such file or directory".
+# Only the prefix, that optional phrase and the program name are matched, because the quote characters and the
+# text after the second colon vary by implementation and locale.
+_ENV_BASH_NOT_FOUND_RE = re.compile(r"(?:\S*/)?env: (?:can't execute )?[^\w:]*bash[^\w:]*:")
+
+
+class ShellExecGuardError(AssertionError):
+    """A test exec'd a shell file in a way that can pass without the file running."""
+
+
+def link_bash_into(bin_dir: Path) -> Path:
+    """Symlink the caller's `bash` into `bin_dir` so a PATH naming only that
+    directory still resolves `#!/usr/bin/env bash`. Returns the link.
+
+    Idempotent: a no-op when `bin_dir/bash` already resolves to the same file,
+    and an AssertionError when it resolves to a different one. Composes with
+    `build_path_without` mirrors, which already carry a `bash` link.
+    """
+    real_bash = shutil.which("bash")
+    assert real_bash is not None, "bash is not on PATH; the shell files under test need it"
+    link = bin_dir / "bash"
+    if link.is_symlink() or link.exists():
+        assert link.resolve() == Path(real_bash).resolve(), (
+            f"{link} resolves to {link.resolve()}, not the caller's bash {real_bash}"
+        )
+        return link
+    link.symlink_to(real_bash)
+    assert link.resolve() == Path(real_bash).resolve(), f"{link} does not resolve to {real_bash}"
+    return link
+
+
+def _shell_exec_argv_strings(argv) -> list[str]:
+    """`argv` as `str` elements. Accepts `str`, `bytes` and `Path` elements, or a single such value."""
+    if isinstance(argv, str | bytes | os.PathLike):
+        argv = [argv]
+    return [os.fsdecode(os.fspath(element)) for element in argv]
+
+
+def _shell_exec_target(argv_strings: list[str], cwd) -> Path | None:
+    """The file a shell exec runs: argv[0] when it names a file, else None.
+
+    Only argv[0] is a target, because the kernel reads a shebang only from the
+    file it execs. `bash script.sh` never reads the script's shebang, so
+    argv[1] is not a target. A bare argv[0] (no separator) is looked up on PATH
+    rather than in `cwd`, so it names no file here.
+    """
+    if not argv_strings or os.sep not in argv_strings[0]:
+        return None
+    target = Path(argv_strings[0])
+    if not target.is_absolute():
+        base = Path(os.fsdecode(os.fspath(cwd))) if cwd is not None else Path.cwd()
+        target = base / target
+    return target if target.is_file() else None
+
+
+def _has_env_bash_shebang(target: Path) -> bool:
+    try:
+        with target.open("rb") as handle:
+            first_line = handle.readline(_SHEBANG_READ_BYTE_LIMIT)
+    except OSError:
+        return False
+    return first_line.rstrip(b"\r\n") == _ENV_BASH_SHEBANG
+
+
+def _env_passed_without_path(env) -> bool:
+    if env is None:
+        return False
+    return "PATH" not in {os.fsdecode(key) for key in env}
+
+
+def _stderr_is_env_missing_bash(stderr) -> bool:
+    """True when stderr's first line is `env`'s own error about `bash`, or stderr was not captured."""
+    if stderr is None:
+        return True
+    text = os.fsdecode(stderr)
+    first_line = (text.splitlines() or [""])[0]
+    return _ENV_BASH_NOT_FOUND_RE.match(first_line) is not None
+
+
+def check_shell_exec(argv, env, cwd, completed) -> None:
+    """Raise ShellExecGuardError when a finished exec could have passed without its shell file running.
+
+    `argv`, `env` and `cwd` are the call's own arguments. `completed` is the
+    `CompletedProcess` (or the `CalledProcessError` a `check=True` call raised).
+    Raises ShellExecGuardError for a detected hazard. An unexpected internal error propagates; none is caught.
+    """
+    argv_strings = _shell_exec_argv_strings(argv)
+    if not argv_strings:
+        return
+    target = _shell_exec_target(argv_strings, cwd)
+    target_uses_env_bash = target is not None and _has_env_bash_shebang(target)
+    runs_bare_bash = argv_strings[0] == "bash"
+
+    # No PATH: the child falls back to the platform default search path,
+    # which on macOS holds the system bash 3.2, so the test passes on Linux only.
+    if _env_passed_without_path(env) and (target_uses_env_bash or runs_bare_bash):
+        raise ShellExecGuardError(
+            f"{argv_strings!r} runs with an env that has no PATH key, so bash resolves through the "
+            "default search path. Add a PATH to the env."
+        )
+
+    # Never ran: `env` could not find bash on the child's PATH.
+    # Uncaptured stderr (STDOUT, DEVNULL or inherited) counts as never-ran, so a script's own exit 126/127 would raise.
+    if (
+        target_uses_env_bash
+        and completed.returncode in _EXEC_FAILURE_EXIT_CODES
+        and _stderr_is_env_missing_bash(completed.stderr)
+    ):
+        raise ShellExecGuardError(
+            f"{target} starts with {_ENV_BASH_SHEBANG.decode()} but `env` found no bash on the PATH it ran "
+            f"under (exit {completed.returncode}), so the script never ran. "
+            "Call helpers.link_bash_into on the curated PATH directory."
+        )
+
+
+def install_shell_exec_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wrap `subprocess.run` for the test so each finished call goes through `check_shell_exec`.
+
+    A `shell=True` call is not inspected: it runs `sh`, not a shebang.
+    """
+    real_run = subprocess.run
+
+    @functools.wraps(real_run)
+    def guarded_run(*args, **kwargs):
+        argv = args[0] if args else kwargs.get("args")
+        inspect = not kwargs.get("shell")
+        try:
+            completed = real_run(*args, **kwargs)
+        except subprocess.CalledProcessError as failed:
+            if inspect:
+                check_shell_exec(argv, kwargs.get("env"), kwargs.get("cwd"), failed)
+            raise
+        if inspect:
+            check_shell_exec(argv, kwargs.get("env"), kwargs.get("cwd"), completed)
+        return completed
+
+    monkeypatch.setattr(subprocess, "run", guarded_run)
 
 
 def run_hook(
@@ -2099,6 +2263,7 @@ def _forced_fallback_path_env(tmp_path: Path) -> str:
     shim = shim_dir / "realpath"
     shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
     shim.chmod(0o755)
+    link_bash_into(shim_dir)
     return f"{shim_dir}:/usr/bin:/bin"
 
 
