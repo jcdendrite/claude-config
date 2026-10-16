@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -894,6 +895,86 @@ class TestRequireWorktreeForGitWrites:
             )
             == "allow"
         )
+
+    # The main-tree deny message points at worktree-ensure.sh, whose call form
+    # takes the branch name inside single quotes (GH-1234).
+
+    @staticmethod
+    def _script_call_from_reason(reason):
+        """The `<path>/worktree-ensure.sh '<branch>'` call embedded in the main-tree deny reason."""
+        match = re.search(r"\S*worktree-ensure\.sh '[^']*'", reason)
+        assert match, f"deny reason has no worktree-ensure.sh call: {reason!r}"
+        return match.group(0)
+
+    def test_main_tree_deny_points_at_worktree_ensure_script(self, isolated_home, opted_in_repo):
+        """GH-1234: the main-tree deny names the one script that creates or finds a
+        worktree, with the missing-script remedy and the branch-name character set.
+        The creation command lives only in the script."""
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=opted_in_repo)
+
+        assert reason is not None
+        assert self._script_call_from_reason(reason) == "~/.claude/scripts/worktree-ensure.sh '<branch>'"
+        assert "install.sh" in reason
+        assert "ASCII letters, digits, ., _, / and -" in reason
+        assert "worktree add" not in reason
+
+    def test_main_tree_deny_names_timeout_parameter_not_a_command_prefix(self, isolated_home, opted_in_repo):
+        """GH-1234: the hint tells the agent to set the Bash tool's timeout parameter. The
+        reading "with the Bash tool's maximum timeout" invites a `timeout N <path>` prefix,
+        which the reviewer gate's command-word match does not see."""
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=opted_in_repo)
+
+        assert reason is not None
+        assert "timeout parameter" in reason
+        assert "with the Bash tool's maximum timeout" not in reason
+
+    @pytest.mark.parametrize(
+        "branch",
+        ["GH-1/new", "GH-1/fix-git-hooks"],
+        ids=["no-git-word-takes-fast-path", "git-inside-a-word-reaches-parser"],
+    )
+    def test_main_tree_deny_script_call_is_allowed_on_main_tree(self, isolated_home, opted_in_repo, branch):
+        """GH-1234: the call the main-tree deny teaches, with the branch filled in, is itself
+        allowed from the main root, so following the hint never strands the session. The first
+        name has no `git` word and takes the gate's fast path. The second has one, so it reaches
+        the parser."""
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=opted_in_repo)
+        assert reason is not None
+        call = self._script_call_from_reason(reason).replace("<branch>", branch)
+
+        assert run_hook(WORKTREE_HOOK, bash_input(call), cwd=opted_in_repo) == "allow"
+
+    @pytest.mark.parametrize("route", ["direct", "cd_to_main_first"])
+    def test_main_tree_deny_script_call_is_allowed_from_linked_worktree(
+        self, isolated_home, opted_in_with_worktree, route
+    ):
+        """GH-1234: the taught call for a branch with a `git` word inside a name is allowed from a
+        linked-worktree session, both directly and behind the `cd <main> &&` prefix that reached the
+        deny. The `cd` route is where the parser and its allowlist run."""
+        main_root, worktree = opted_in_with_worktree
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=main_root)
+        assert reason is not None
+        call = self._script_call_from_reason(reason).replace("<branch>", "GH-1/fix-git-hooks")
+        command = call if route == "direct" else f"cd {main_root} && {call}"
+
+        assert run_hook(WORKTREE_HOOK, bash_input(command), cwd=worktree) == "allow"
+
+    @pytest.mark.parametrize("branch", ["git", "GH-7/git"], ids=["bare-git", "ends-in-slash-git"])
+    def test_main_tree_deny_script_call_with_branch_named_git_is_denied_as_sentinel(
+        self, isolated_home, opted_in_repo, branch
+    ):
+        """Known limitation: the parser reads a token that is `git` or ends in `/git` as a git command,
+        so such a branch name gets the SENTINEL deny, whose remedy is enter-only. SKILL.md tells the
+        agent to rename such a branch."""
+        reason = run_hook_reason(WORKTREE_HOOK, bash_input("git commit -m foo"), cwd=opted_in_repo)
+        assert reason is not None
+        call = self._script_call_from_reason(reason).replace("<branch>", branch)
+
+        sentinel_reason = run_hook_reason(WORKTREE_HOOK, bash_input(call), cwd=opted_in_repo)
+
+        assert sentinel_reason is not None
+        assert "or use the EnterWorktree tool" in sentinel_reason
+        assert "worktree-ensure.sh" not in sentinel_reason
 
 
 class TestMachineLevelMarker:
