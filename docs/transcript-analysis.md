@@ -276,7 +276,7 @@ Columns: `CR` = `/code-review` spawns, `PR` = `/plan-review` spawns, `RR` = `/re
 
 ## reviewer-yield
 
-**Purpose.** Per-reviewer-agent-type dispatch-to-verdict yield: for each main-thread reviewer-agent dispatch (`staff-*`, `ciso-reviewer`, `comment-discipline-reviewer`, `skill-fidelity-reviewer`), joins it to its own subagent transcript via `subagents/<id>.meta.json`'s `toolUseId` field, then classifies the transcript's last assistant text block as findings-found, zero-finding, or unclassified — answering "are reviewer-agent dispatches producing real findings, or mostly zero-finding passes" (the efficiency-audit tracking issue's F4). A second table reports, per (agent type, verdict bucket), whether the paths a reviewer cited were later edited — answering "did the session subsequently act on what was cited," not only whether the reviewer spoke (GH-558).
+**Purpose.** Per-reviewer-agent-type dispatch-to-verdict yield: for each main-thread reviewer-agent dispatch (`staff-*`, `ciso-reviewer`, `comment-discipline-reviewer`, `skill-fidelity-reviewer`), joins it to its own subagent transcript via `subagents/<id>.meta.json`'s `toolUseId` field, then classifies the transcript's last assistant text block as findings-found, zero-finding, or unclassified — answering "are reviewer-agent dispatches producing real findings, or mostly zero-finding passes" (the efficiency-audit tracking issue's F4). A second table reports, per (agent type, verdict bucket), whether the paths a reviewer cited were later edited — answering "did the session subsequently act on what was cited," not only whether the reviewer spoke (GH-558). A reviewer that `review-orchestrator` dispatches is not a main-thread dispatch, so it never appears here.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
@@ -1197,7 +1197,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 
 ## review-round-cost
 
-**Purpose.** Per-branch dollar cost of the `plan-review`/`code-review`/`ready-for-review` review loop: opens a round at every invocation of one of the three skills (both the `Skill` tool_use path and the `/slash` path), closes it at the next round-open or the next fresh user prompt, and prices every main-thread turn in that window plus every subagent transcript dispatched inside it (recursive `toolUseId` join, following a reviewer spawned from inside another subagent too). Every invocation is its own round -- no dedup by diff-state, since token cost is incurred whether or not the round produced findings. Read-only, corpus-wide, no `gh` calls.
+**Purpose.** Per-branch dollar cost of the `plan-review`/`code-review`/`ready-for-review` review loop: opens a round at every invocation of one of the three skills (the `Skill` tool_use path and the `/slash` path) and at every main-thread `Agent`/`Task` dispatch of a `review-orchestrator` (which runs `code-review` in its own transcript). It closes each round at the next round-open or the next fresh user prompt. It prices every main-thread turn in that window plus every subagent transcript dispatched inside it (recursive `toolUseId` join, following a reviewer spawned from inside another subagent too). Every invocation is its own round -- no dedup by diff-state, since token cost is incurred whether or not the round produced findings. Read-only, corpus-wide, no `gh` calls.
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above)
@@ -1208,7 +1208,9 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 - `--show-withheld` -- requires `--pooled`; also prints the figures the dominance-precision floor would otherwise withhold, plus the two data-quality-gap lines plain `--pooled` never prints, under a `DO NOT PUBLISH` banner on both stdout and stderr. Never publishable -- see "Pooled mode" below.
 
 **Round detection caveats.**
+- **A dispatch spawned from inside another subagent prices into its round.** The session's one flat `subagents/` index resolves it.
 - **Main-thread only.** A review skill invoked *inside* a dispatched subagent is already priced as that dispatch's own cost; counting it as its own round would double-count its dollars. That subagent's own review-skill spend, if reached from outside any round window, lands in the branch's non-round remainder below -- visible, not silently dropped.
+- **A main-thread `review-orchestrator` dispatch is a round.** `review-orchestrator` is the only agent type the code recognizes as running a review inside a subagent, and the dispatch itself opens a `code-review` round. Its reviewers and `code-writer` dispatches are priced into that round. Its own `Skill` call is never a second round. The dispatch counts as a round whether or not it invoked a review skill; see "Orchestrator rounds" under `author-outcome` for the halted and never-ran cases.
 - **A round's dollars are attributed to its own opening branch across its whole window.** Every dollar inside a round's window -- not only the opening record's own turn -- is attributed to the branch the round opened on, even when the session's own `gitBranch` changes partway through the window (e.g. a worktree switch mid-review). A record outside every window carries forward the last main-thread branch, unaffected by any window.
 - **A mid-review user interjection closes the window early.** The window closes at the first fresh user prompt *or* the next round-open, whichever comes first -- a user message sent partway through a review (before the reviewer's own output lands) ends the round there, and everything after it belongs to whatever comes next, not to the interrupted round.
 - **A round open at session end is priced through the last record.** No closing fresh user prompt and no next invocation before EOF still prices every turn and dispatch through the transcript's end -- never dropped or thrown on.
@@ -1422,6 +1424,23 @@ Two non-failure buckets, each of which would bias the share if collapsed into PA
 - **UNRESOLVED** -- no `code-review` round after the dispatch at all (typically the last dispatch of a session). Excluded from the failure-share denominator.
 - **UNATTRIBUTED** -- a round ran and left neither a matching ledger row nor a marker write. Excluded from the denominator and reported, so the operator sees the compliance rate rather than absorbing it as a passing grade. A round that raised a genuine `ADDRESS` finding but whose every append failed is indistinguishable from this bucket, since the failed append leaves no row; accepted as narrow, since an append fails only on a script or filesystem error.
 
+**Orchestrator rounds.** A main-thread `review-orchestrator` dispatch is a `code-review` round-open, and the round opens at the dispatch record. The orchestrator runs the review in its own transcript, so author-outcome also reads that one transcript, found through the session's `subagents/*.meta.json` `toolUseId` join, one transcript at a time:
+
+- **Marker fallback.** The fallback also reads whether the orchestrator's own transcript holds a `marker.sh write code-review` call, for each orchestrator spawn inside the round's outcome span. The signal is "attempted, not confirmed": a write counts whether or not it succeeded, on the inline path and the orchestrator path alike. It also counts a command that never ran, in any of these shapes:
+  - a short-circuited `false && marker.sh write code-review`;
+  - heredoc-body or unbalanced-quote text that tokenizes as an operator followed by the call;
+  - any directory's `marker.sh` with trailing arguments.
+
+  A failed, denied or unexecuted marker write therefore reads as PASS in a session with no round-keyed ledger rows. That false-PASS residual can inflate the PASS share, and it affects analytics only.
+- **Nested dispatches.** A dispatch of the `--agent` type inside the orchestrator's transcript takes the orchestrator's spawn position as its completion index, so it attributes to the first round-open after the orchestrator's round. Its `--since` check uses its own start timestamp. It is UNDECIDABLE when the orchestrator's transcript holds no `tool_result` for it.
+- **Launch-position limitation.** Completion at the spawn position is the same limitation the main thread has, where a dispatch whose `tool_result` is a launch acknowledgement completes at its launch position, and an acknowledgement satisfies the result check. Two residuals follow. A main-thread round that opens while the orchestrator is running is credited with its fix. An orchestrator can return while a nested `code-writer` is still in flight, so the next round is credited with that fix.
+- **Unreadable transcripts.** An orchestrator whose transcript is dangling, unreadable or empty, or whose spawn block has no usable `id` (absent or not a string), contributes no marker and no nested dispatches, and counts under "orchestrator dispatches with no readable transcript records". A non-zero value can explain a rise in the `authoring_agent inconsistent` count, because the unreadable orchestrator's nested `code-writer` is missing and the round's transcript side reads `inline`. The counter also counts dispatches that never ran, which lose no nested `code-writer`, so a non-zero value alone does not establish such a rise.
+- **Rounds that end before a ledger append.** All three round-consuming subcommands count a halted or never-run orchestrator dispatch as a round, whether or not it invoked a review skill. The "Round-number-sequence check" below decides when a round-open with no ledger block makes the session a mismatch. Three cases differ in what author-outcome does with a round that ends early:
+  - **Cannot start (it lacks the `Skill` or `Agent` tool), or returns a round-ending `HALT:` before its first ledger append.** The round-open has no ledger block. In a session with no round-keyed ledger rows, the round reads as UNATTRIBUTED and the round-number-mismatch counter does not move. A session flagged by the "Ledger-possibly-swept check" below instead has its dispatches leave the headline under that counter.
+  - **Halts after its first ledger append.** The round-open has a ledger block, so the session is no mismatch.
+  - **Halts and another round appends a block.** An inline `/code-review` after a round-ending `HALT:` is the designed path. The session holds a round-open with no ledger block and another round-keyed block, so the mismatch rule in the "Round-number-sequence check" below applies.
+- **Inherited aborts.** For a session holding an orchestrator spawn, author-outcome reads `subagents/`, so it inherits `corpus._index_subagent_dispatches`' abort on a non-object `*.meta.json`. A non-object line in an orchestrator transcript likewise aborts the run, as it does for the main file.
+
 **Accepted risk: a project-level `cleanupPeriodDays` override is not honored.** `_ledger_sweep_window_days` reads only `$CONFIG_DIR/settings.json` (the global/user-level file), deliberately skipping Claude Code's full settings-precedence resolution. A project-level override that Claude Code's real precedence would honor -- one raising the value above the global default -- is invisible to it, so a session under that project sweeps against the global default instead of its own project's wider window.
 
 **Accepted risk: a deploy-boundary or compaction can mislabel a session's round sequence.** A mid-session deploy boundary or compaction can desynchronize a session's own round-open count from its ledger's `round` sequence in ways the round-number-sequence check below is built to catch. It is bounded by the round-number-mismatch exclusion below, which removes an affected session's dispatches from the headline aggregate entirely rather than leaving them to bias it silently.
@@ -1437,7 +1456,11 @@ Two non-failure buckets, each of which would bias the share if collapsed into PA
 
 A session whose ledger rows are entirely legacy (no row carries a `round` key) or that has no rows at all is not evaluated by this check. A session that fails it has every one of its dispatches excluded from the headline outcomes/"Dispatches in scope" numerator-denominator -- the ledger-to-round join for that session can't be trusted, so its dispatches count toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED.
 
-A mismatched session's rounds are not classified, and its rows are not read by the counters below. The counters "rounds with a clean marker write but no round-keyed ledger rows" and "authoring_agent inconsistent with the transcript join" therefore skip it. Both read the round-to-row join that the mismatch marks untrusted, and classifying its rounds as row-less would count every marker-write round as having no row, whether or not it had rows. The other counters -- co-authored rounds, undecidable dispatches, malformed dispatch ids -- are transcript-side and unchanged.
+A session is a round-number mismatch when any round-open leaves no ledger block and the session holds another round-keyed block. Another round in the session can supply that block, such as an inline `/code-review` or a retried orchestrator dispatch after a denial. The mismatch leaves every round of the session unclassified, the halted round included, and keeps the session's dispatches out of the headline.
+
+The counter "mismatched sessions with fewer ledger blocks than round-opens" is a subset of the one above, and its unit is sessions too. It records that a mismatched session's blocks fall short, not why. Causes include a round that halts before its append, inline or orchestrator, and consecutive rounds that write the same round value to one ledger file, which `_round_blocks` merges into one block. A stray extra block that makes up for a missing round hides the missing one from both counters (see the first residual below).
+
+A mismatched session's rounds are not classified, and its rows are not read by the counters below. The counters "rounds with a clean marker write but no round-keyed ledger rows" and "authoring_agent inconsistent with the transcript join" therefore skip it. Both read the round-to-row join that the mismatch marks untrusted, and classifying its rounds as row-less would count every marker-write round as having no row, whether or not it had rows. The other counters -- co-authored rounds, undecidable dispatches, malformed dispatch ids, unreadable orchestrator transcripts -- are transcript-side and unchanged.
 
 These residuals remain:
 
@@ -1460,7 +1483,9 @@ This can't tell a swept ledger apart from a session that never landed a row, sin
 
 This counter is meaningful only when `--agent` is `code-writer` (the default). `review-ledger.sh`'s `--authoring-agent` enum has no case for any other value, so `declared` can never match and the counter fires on nearly every round. Treat that as reduced signal from an unsupported `--agent` value, not a data-quality problem.
 
-**The `dispatches with a missing or empty tool_use_id` counter is corpus-wide, not `--since`-filtered.** A malformed dispatch never reaches the per-dispatch loop where `in_scope` is computed, since `_agent_dispatch_tool_use_ids` drops it from its returned list before that loop ever sees it. Gating it would need a second return channel for a case rare enough -- a well-formed Agent/Task `tool_use` block with a genuinely missing id isn't a shape real transcripts produce -- not to warrant one.
+**The `dispatches with a missing or empty tool_use_id` counter is corpus-wide, not `--since`-filtered.** A malformed dispatch never reaches the per-dispatch loop where `in_scope` is computed, since `_agent_dispatch_tool_use_ids` drops it from its returned list before that loop ever sees it. Gating it would need a second return channel for a case rare enough -- a well-formed Agent/Task `tool_use` block with a genuinely missing id isn't a shape real transcripts produce -- not to warrant one. The counter also covers a nested dispatch with a missing or empty id inside an orchestrator's transcript.
+
+**The `orchestrator dispatches with no readable transcript records` counter is per spawn and corpus-wide, not `--since`-filtered.** It counts once per orchestrator spawn whose transcript is dangling, unreadable, or readable with no parseable line, even when two spawns share one record, like the malformed-id counter above. It is transcript-side, so a round-number-mismatched session still counts it.
 
 **Sample output.**
 ```
@@ -1478,10 +1503,13 @@ Data quality
   rounds co-authored by >1 dispatch                                                                                                               3
   rounds with a clean marker write but no round-keyed ledger rows                                                                                 0
   sessions whose ledger round sequence doesn't match the transcript's round-opens                                                                 0
+  mismatched sessions with fewer ledger blocks than round-opens                                                                                   0
   sessions with a code-review round, no attributed ledger row, no opened session-keyed ledger file, and a first round older than the sweep floor  0
   dispatches with no paired tool_result (undecidable)                                                                                             0
   authoring_agent inconsistent with the transcript join                                                                                           1
+  dispatches with a missing or empty tool_use_id                                                                                                  0
   rounds classified PASS with at least one SETTLED row                                                                                            2
+  orchestrator dispatches with no readable transcript records                                                                                     0
 ```
 
 `Failure share` is `FAILURE / (FAILURE + PASS)` -- UNRESOLVED and UNATTRIBUTED are excluded from both the numerator and the denominator, since neither one is evidence the dispatch's diff was reviewed and judged. The aggregate table and Data-quality counters carry no per-project, per-branch, or per-session dimension by construction, so neither has anything for redaction to pseudonymize. The scope header printed above them is a separate case -- see "Scoping to this repo: `--this-repo`" above for its `--projects` glob echo caveat.
@@ -1502,6 +1530,7 @@ Always scoped to the active account alone (`config_dir()/projects`), with no `--
 
 **Scope caveats.**
 - **Main-thread only, both counts.** A round or spawn reached only from inside a dispatched subagent is never counted — matching `review-round-cost`'s own main-thread-only round detection and `subagent-mix`'s own spawn-counting scope.
+- **A `review-orchestrator` dispatch is a `code-review` round.** A main-thread `review-orchestrator` dispatch counts as one `code-review` round. The dispatch itself is one spawn, and the agents it dispatches in turn are not counted as spawns. A halted or never-run dispatch still counts as a round: see the "Rounds that end before a ledger append" bullet under `docs/transcript-analysis.md` § "author-outcome".
 - **Two different branch-attribution models, deliberately.** Round counts use `review-round-cost`'s own carry-forward branch attribution (a round's opening record's `gitBranch`, carried forward when absent); spawn counts use `scope._attributed_branch`. Both apply the "Pre-branch default-branch attribution" block under `cost`, and they still differ only on a round opened on a record with no `gitBranch` of its own.
 - **The two tables render zero-count scope differently, deliberately.** The rounds table always prints all three `REVIEW_SKILLS` rows, zeros included, since a fixed three-row table of zeros is already the more explicit rendering of zero. The spawns table instead prints a `No subagent spawns found in scope.` sentence in place of a table when there is nothing to show, since an all-zero spawns table has no fixed row set to fall back on.
 - **Every disclosed row is re-checked against the allowlist just before it prints.** Each non-withheld agent-type label is asserted, immediately before its own print, to be a member of `_repo_tracked_agent_type_names()` — independent of the disclosure-partitioning check above — so a future regression to a direct, unpartitioned label reuse fails loudly here instead of silently disclosing an untracked `subagent_type`.
@@ -1511,7 +1540,7 @@ Always scoped to the active account alone (`config_dir()/projects`), with no `--
 ```
 ### Review rounds
 
-Each invocation of a review skill is one round, whether or not it produced findings. Counts reflect this section's last render; a review round that ran afterward may not be included yet.
+Each invocation of a review skill, and each main-thread `review-orchestrator` dispatch, is one round, whether or not it produced findings. Counts reflect this section's last render; a review round that ran afterward may not be included yet.
 
 | Skill | Rounds |
 |---|---|

@@ -168,6 +168,58 @@ class TestCostCounts:
         assert "| **total** | **1** |" in out
         assert _mod.subagent_mix._COST_COUNTS_ROUNDS_CAPTION in out
 
+    def test_main_thread_review_orchestrator_dispatch_renders_as_a_code_review_round_with_its_caption(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """Both caption texts are literals here, not read from
+        _COST_COUNTS_ROUNDS_CAPTION or _COST_COUNTS_SPAWNS_CAPTION, so a
+        reworded or reverted caption turns this red. The captions are public
+        PR-body text."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["review-orchestrator"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[_agent_use("o1", "review-orchestrator")]),
+        ])
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "| code-review | 1 |" in out
+        assert out.count("| review-orchestrator | 1 |") == 1
+        assert "(withheld" not in out
+        assert (
+            "Each invocation of a review skill, and each main-thread `review-orchestrator` dispatch,"
+            " is one round, whether or not it produced findings."
+            " Counts reflect this section's last render; a review round that ran afterward may not"
+            " be included yet."
+        ) in out
+        assert (
+            "Counts main-thread dispatches only; an agent spawned from inside another agent is not"
+            " counted."
+        ) in out
+
+    def test_review_orchestrator_dispatch_from_inside_a_subagent_is_neither_a_spawn_nor_a_round(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """Only main-thread dispatches count. A sidechain record's dispatch
+        adds no spawn row and opens no code-review round."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["review-orchestrator"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            # Carries branch "feat" to the sidechain record; without it the
+            # round-open guard is never reached and that half passes vacuously.
+            _asst("claude-opus-4-7", branch="feat"),
+            _asst(
+                "claude-opus-4-7", branch="feat", sidechain=True,
+                content=[_agent_use("o1", "review-orchestrator")],
+            ),
+        ])
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "| review-orchestrator |" not in out
+        assert "| code-review | 0 |" in out
+        assert "| **total** | **0** |" in out
+
     def test_prefix_round_and_prefix_spawn_count_under_the_entered_branch(
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):

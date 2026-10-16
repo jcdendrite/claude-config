@@ -497,7 +497,9 @@ Run them in this order:
   transcripts age out. A rerun keeps every prior shortlist entry it can no
   longer regenerate. For an entry it does regenerate, it keeps the prior
   description (when it is non-empty), excerpts, and round pairs too. It
-  exits 2 without writing when the existing file cannot be loaded.
+  exits 2 without writing when the existing file cannot be loaded. It skips a
+  round that a `review-orchestrator` dispatch runs, because its reviewers'
+  reads live in a subagent transcript the miner does not read.
 - **`mine-pr-comments`** (source `pr-comment`) reads the inline review
   comments of the authenticated `gh` login on merged pull requests of this
   repository, and nothing else: no review bodies, no PR conversation comments,

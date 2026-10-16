@@ -108,6 +108,11 @@ WORKTREES_DIR_NAME = "worktrees"
 # prefix), so it gets its own exact-path constant.
 TRANSCRIPT_ANALYSIS_TEST_GLOB = "claude/.claude/scripts/tests/test_transcript_analysis*.py"
 TRANSCRIPT_DENIALS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_denials.py"
+# test_transcript_review_rounds.py reads claude/.claude/agents/ by path, to
+# check review_rounds' agent-type mapping names real agent files. It is a
+# SCRIPTS_TESTS_DIR test, so it gets an exact-path constant instead of
+# selecting that whole domain from an agent-file edit.
+TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_rounds.py"
 # test_transcript_cost_counts.py reads claude/.claude/agents/ through
 # redaction._REPO_AGENT_DEFINITIONS_DIR, a production constant
 # TestCrossDomainReadCompleteness's scan cannot see.
@@ -671,11 +676,17 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # agent file rather than only the lenses with a read clause to copy --
 # over-selection is the safe direction.
 # TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_ANALYSIS_TEST_GLOB, and
-# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST are also targets. The two exact
-# paths each read the real agents directory without patching it. The glob
-# matches several files and is selected for the one of them that reads it.
-# This list is hand-audited, because the cross-domain scan cannot see a
-# read through a production constant.
+# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST are also targets. Each has a test
+# that reads the real agents directory unpatched, through a production constant:
+# redaction._REPO_AGENT_DEFINITIONS_DIR for the first two,
+# measure_subagent_model_resolution's AGENTS_DIR for the third.
+# The glob matches several files and is selected for the one of them that
+# reads it.
+# TestCrossDomainReadCompleteness cannot see a read through a production
+# constant, so these three are hand-audited.
+# TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH is also a target. Its test file reads
+# the directory through a module-level _AGENTS_DIR constant, so
+# TestCrossDomainReadCompleteness verifies it.
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
@@ -769,6 +780,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
         (
             HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB,
             TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_ANALYSIS_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
         ),
     ),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),

@@ -1550,6 +1550,68 @@ class TestResolveScopedSessionsRootGuard:
         assert exc_info.value.code == 2
 
 
+# --- mine_review_rounds: which round windows become entries -----------------
+
+
+class TestCollectRoundEntries:
+    def test_round_run_by_an_orchestrator_dispatch_is_skipped_and_inline_round_before_it_is_kept(self, tmp_path):
+        """A review-orchestrator dispatch's reviewers read files in a subagent
+        transcript the miner does not read, so its round has no round scope to
+        mine. The skipped window still closes the inline round before it."""
+        records = [
+            _assistant(ts="2026-01-01T00:00:00Z", content=[_skill_use("s1", "code-review")]),
+            _assistant(ts="2026-01-01T00:01:00Z", content=[_agent_use("o1", "review-orchestrator")]),
+            _user("done", ts="2026-01-01T00:02:00Z"),
+        ]
+        jsonl = tmp_path / "sess-1.jsonl"
+        _write_jsonl(jsonl, records)
+
+        windows = review_rounds.detect_round_windows(records)
+        entries = mine_review_rounds._collect_round_entries([(jsonl, records)])
+
+        assert len(windows) == 2, "a fixture that opens one round would pass the exclusion vacuously"
+        # window_end 1 is the orchestrator record's index: the skipped window still closes the kept one.
+        assert [entry.window for entry in entries] == [(0, 1, "code-review")]
+
+    def test_inline_round_after_an_orchestrator_round_is_kept(self, tmp_path):
+        records = [
+            _assistant(ts="2026-01-01T00:00:00Z", content=[_agent_use("o1", "review-orchestrator")]),
+            _assistant(ts="2026-01-01T00:01:00Z", content=[_skill_use("s1", "code-review")]),
+            _user("done", ts="2026-01-01T00:02:00Z"),
+        ]
+        jsonl = tmp_path / "sess-1.jsonl"
+        _write_jsonl(jsonl, records)
+
+        windows = review_rounds.detect_round_windows(records)
+        entries = mine_review_rounds._collect_round_entries([(jsonl, records)])
+
+        assert len(windows) == 2
+        assert [entry.window for entry in entries] == [windows[1]]
+
+    @pytest.mark.parametrize("skill", ["code-review", "plan-review"])
+    def test_round_opened_by_a_skill_block_is_kept_even_when_its_record_also_dispatches_an_orchestrator(
+        self, tmp_path, skill,
+    ):
+        """A record opens its round from a Skill block first, so the miner
+        keys its exclusion on the same per-record order, not on the mere
+        presence of a spawn block."""
+        records = [
+            _assistant(
+                ts="2026-01-01T00:00:00Z",
+                content=[_agent_use("o1", "review-orchestrator"), _skill_use("s1", skill)],
+            ),
+            _user("done", ts="2026-01-01T00:02:00Z"),
+        ]
+        jsonl = tmp_path / "sess-1.jsonl"
+        _write_jsonl(jsonl, records)
+
+        windows = review_rounds.detect_round_windows(records)
+        entries = mine_review_rounds._collect_round_entries([(jsonl, records)])
+
+        assert windows == [(0, 1, skill)]
+        assert [entry.window for entry in entries] == windows
+
+
 # --- mine_review_rounds: round-scope and citation matching -------------------
 
 

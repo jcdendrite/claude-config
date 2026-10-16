@@ -743,18 +743,20 @@ def _write_subagent_jsonl(
 def _write_subagent_dispatch(
     proj: Path, session_id: str, agent_id: str, tool_use_id: str, records: list[dict],
     *, agent_type: str = "staff-backend-engineer", description: str = "review",
-    requested_model: str | None = None,
+    requested_model: str | None = None, spawn_depth: int = 1,
 ) -> None:
     """Write both the .jsonl and its paired .meta.json for a synthetic subagent
     dispatch — _write_subagent_jsonl (above) writes only the .jsonl, never the
     meta.json sidecar reviewer-yield's and subagent-mix's dispatch joins read.
     Matches the real on-disk shape: {"agentType", "description", "toolUseId",
-    "spawnDepth"}. requested_model, when given, adds meta.json's own "model"
-    key — absent by default, matching a dispatch that requested no explicit
-    model."""
+    "spawnDepth"}. spawn_depth marks a nested dispatch with a value above 1;
+    where nested dispatches are written on disk is described in
+    corpus._index_subagent_dispatches.
+    requested_model, when given, adds meta.json's own "model" key —
+    absent by default, matching a dispatch that requested no explicit model."""
     _write_subagent_jsonl(proj, session_id, agent_id, records)
     subdir = proj / session_id / SUBAGENT_SUBDIR
-    meta = {"agentType": agent_type, "description": description, "toolUseId": tool_use_id, "spawnDepth": 1}
+    meta = {"agentType": agent_type, "description": description, "toolUseId": tool_use_id, "spawnDepth": spawn_depth}
     if requested_model is not None:
         meta["model"] = requested_model
     (subdir / f"{agent_id}.meta.json").write_text(json.dumps(meta))

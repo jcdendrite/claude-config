@@ -19,10 +19,12 @@ from .conftest import (
     _priced,
     _skill_block,
     _slash_user,
+    _tool_result,
     _user_msg,
     _write_jsonl,
     _write_subagent_dispatch,
 )
+from .test_transcript_cost_counts import _cost_counts_args
 
 # Earlier than every re-verify-by date in pricing._MODEL_RATE_EXPIRES, so a render that
 # receives it never prints the stale-rate line whatever the live clock reads.
@@ -31,6 +33,7 @@ _PRE_EXPIRY_TODAY = date(2000, 1, 1)
 # Module-level so test_select_tests.py's TestCrossDomainReadCompleteness sees these reads.
 _TRANSCRIPT_ANALYSIS_DOC = REPO_ROOT / "docs" / "transcript-analysis.md"
 _PRIVATE_PROJECT_REDACTION_DOC = REPO_ROOT / "docs" / "private-project-redaction.md"
+_AGENTS_DIR = REPO_ROOT / "claude" / ".claude" / "agents"
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
@@ -71,14 +74,6 @@ def _session_iter(fake_projects):
     return corpus.iter_sessions(fake_projects.parent, "*")
 
 
-def _nested_subagent_session_id(top_session_id: str, top_agent_id: str) -> str:
-    """The session_id argument that makes _write_subagent_dispatch write
-    under <top_session_id>/subagents/<top_agent_id>/subagents/ -- a nested
-    dispatch's own subagents/ directory, one level below the top-level
-    dispatch's own."""
-    return f"{top_session_id}/{corpus.SUBAGENT_SUBDIR}/{top_agent_id}"
-
-
 def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
     """Active profile (acct-a) plus one declared root (acct-b, via
     TRANSCRIPT_CONFIG_DIRS_FILE) -- the minimal setup resolve_scan_roots
@@ -93,6 +88,91 @@ def _two_declared_roots(tmp_path, monkeypatch) -> list[Path]:
     roots_file.write_text(f"{acct_b}\n")
     monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
     return [acct_a / "projects", acct_b / "projects"]
+
+
+_ORCHESTRATOR_AGENT_TYPE = "review-orchestrator"
+
+# Plain-ASCII prefix on every free-text value a review-orchestrator dispatch
+# carries that no round-consuming subcommand extracts. A prefix that appears in
+# any output means a subcommand surfaced a field it must not.
+_LEAK_SENTINEL_PREFIX = "LEAKSENTINEL-"
+
+
+def _leak_sentinel(field_name: str) -> str:
+    return f"{_LEAK_SENTINEL_PREFIX}{field_name}"
+
+
+def _dispatch_block_with_free_text(tool_use_id: str, subagent_type: str, *, tool_name: str = "Agent") -> dict:
+    """An Agent/Task tool_use block whose every input key except
+    subagent_type carries a sentinel."""
+    block = _agent_use(tool_use_id, subagent_type, tool_name=tool_name)
+    block["input"].update({
+        "description": _leak_sentinel(f"{tool_use_id}-description"),
+        "prompt": _leak_sentinel(f"{tool_use_id}-prompt"),
+        "name": _leak_sentinel(f"{tool_use_id}-name"),
+    })
+    return block
+
+
+def _orchestrator_spawn_record(
+    tool_use_id: str, *, ts: str, branch: str = "feat", tool_name: str = "Agent", extra_blocks: tuple = (),
+) -> dict:
+    """A main-thread priced assistant record ($0.20) that dispatches a
+    review-orchestrator."""
+    return _priced(
+        "claude-sonnet-5", input=100_000, branch=branch, ts=ts,
+        content=[
+            *extra_blocks,
+            {"type": "text", "text": _leak_sentinel(f"{tool_use_id}-assistant-text")},
+            _dispatch_block_with_free_text(tool_use_id, _ORCHESTRATOR_AGENT_TYPE, tool_name=tool_name),
+        ],
+    )
+
+
+def _orchestrator_return_record(tool_use_id: str, *, ts: str, branch: str = "feat") -> dict:
+    return _user_msg(
+        [_tool_result(tool_use_id, _leak_sentinel(f"{tool_use_id}-result"))], branch=branch, ts=ts,
+    )
+
+
+def _as_sidechain(record: dict) -> dict:
+    record["isSidechain"] = True
+    return record
+
+
+def _write_orchestrator_subagent_tree(
+    proj: Path, session_id: str, *, orchestrator_tool_use_id: str = "o1", branch: str = "feat",
+) -> None:
+    """The orchestrator's own transcript ($0.20: its Skill call plus a nested
+    reviewer dispatch) and that reviewer's depth-2 transcript ($1.00), both in
+    the session's flat subagents/ directory with isSidechain on every record."""
+    orchestrator_records = [
+        _as_sidechain(_priced(
+            "claude-sonnet-5", input=100_000, branch=branch, ts="2026-08-01T10:00:10.000Z",
+            content=[
+                {"type": "text", "text": _leak_sentinel("orchestrator-text")},
+                {
+                    "type": "tool_use", "id": "inner-skill", "name": "Skill",
+                    "input": {"skill": "code-review", "args": _leak_sentinel("skill-args")},
+                },
+                _dispatch_block_with_free_text("n1", "staff-sdet"),
+            ],
+        )),
+    ]
+    reviewer_records = [
+        _as_sidechain(_priced(
+            "claude-sonnet-5", input=500_000, branch=branch, ts="2026-08-01T10:00:20.000Z",
+            content=[{"type": "text", "text": _leak_sentinel("reviewer-text")}],
+        )),
+    ]
+    _write_subagent_dispatch(
+        proj, session_id, "agent-o", orchestrator_tool_use_id, orchestrator_records,
+        agent_type=_ORCHESTRATOR_AGENT_TYPE, description=_leak_sentinel("orchestrator-meta-description"),
+    )
+    _write_subagent_dispatch(
+        proj, session_id, "agent-n", "n1", reviewer_records,
+        agent_type="staff-sdet", description=_leak_sentinel("reviewer-meta-description"), spawn_depth=2,
+    )
 
 
 class TestComputeReviewRoundCosts:
@@ -215,9 +295,10 @@ class TestComputeReviewRoundCosts:
         assert data["rounds"][0]["main_dollars"] == pytest.approx(0.20 + 0.40)
 
     def test_nested_dispatch_from_inside_a_subagent_is_priced_into_the_round(self, fake_projects):
-        """An Agent/Task tool_use inside a subagent's own transcript, with
-        its own meta.json living in that subagent's own subagents/
-        directory, is priced into the same round as its parent dispatch."""
+        """An Agent/Task tool_use inside a subagent's own transcript, whose
+        meta.json (spawnDepth 2) sits in the session's own flat subagents/
+        directory beside its parent dispatch's, is priced into the same
+        round as its parent dispatch."""
         session_id = "sess-1"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _priced(
@@ -232,10 +313,9 @@ class TestComputeReviewRoundCosts:
         )  # $0.20, also spawns nested n1
         nested_spawn_rec["isSidechain"] = True
         _write_subagent_dispatch(fake_projects, session_id, "agent-1", "a1", [nested_spawn_rec])
-        nested_session_id = _nested_subagent_session_id(session_id, "agent-1")
         nested_rec = _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:20.000Z")  # $1.00
         nested_rec["isSidechain"] = True
-        _write_subagent_dispatch(fake_projects, nested_session_id, "agent-2", "n1", [nested_rec])
+        _write_subagent_dispatch(fake_projects, session_id, "agent-2", "n1", [nested_rec], spawn_depth=2)
 
         data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
         assert len(data["rounds"]) == 1
@@ -465,16 +545,42 @@ class TestComputeReviewRoundCosts:
         )
         dup_rec["isSidechain"] = True
         _write_subagent_dispatch(fake_projects, session_id, "agent-1", "a1", [dup_rec])
-        nested_session_id = _nested_subagent_session_id(session_id, "agent-1")
         nested_rec = _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:20.000Z")  # $1.00
         nested_rec["isSidechain"] = True
-        _write_subagent_dispatch(fake_projects, nested_session_id, "agent-dup", "dup", [nested_rec])
+        _write_subagent_dispatch(fake_projects, session_id, "agent-dup", "dup", [nested_rec], spawn_depth=2)
 
         data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
         assert len(data["rounds"]) == 1
         r = data["rounds"][0]
         assert r["agent_dollars"] == pytest.approx(1.00)  # "dup" priced once, not twice
         assert r["agents"] == 2  # dispatch a1 itself, plus "dup" counted once
+
+    def test_dispatch_whose_transcript_respawns_its_own_tool_use_id_is_priced_once(self, fake_projects):
+        """A dispatch whose own transcript spawns its own toolUseId resolves
+        through the session's single flat dispatch index to itself. The
+        walk terminates there: the dispatch is priced once, counted once,
+        and is not reported dangling."""
+        session_id = "sess-1"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_block("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        self_spawn_rec = _priced(
+            "claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:10.000Z",
+            content=[_agent_use("a1", "staff-sdet")],
+        )  # $1.00, spawns its own toolUseId
+        self_spawn_rec["isSidechain"] = True
+        _write_subagent_dispatch(fake_projects, session_id, "agent-1", "a1", [self_spawn_rec])
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+        assert len(data["rounds"]) == 1
+        r = data["rounds"][0]
+        assert r["agent_dollars"] == pytest.approx(1.00)  # priced once, not recursed into
+        assert r["agents"] == 1
+        assert r["dangling"] == 0
 
     def test_inline_sidechain_record_does_not_corrupt_last_branch_for_branch_totals(self, fake_projects):
         """An isSidechain record's own gitBranch can be an isolation:"worktree"
@@ -785,10 +891,9 @@ def _corpus_nested_dispatch(fake_projects) -> None:
     )
     nested_spawn_rec["isSidechain"] = True
     _write_subagent_dispatch(fake_projects, session_id, "agent-1", "a1", [nested_spawn_rec])
-    nested_session_id = _nested_subagent_session_id(session_id, "agent-1")
     nested_rec = _priced("claude-sonnet-5", input=500_000, branch="feat", ts="2026-08-01T10:00:20.000Z")
     nested_rec["isSidechain"] = True
-    _write_subagent_dispatch(fake_projects, nested_session_id, "agent-2", "n1", [nested_rec])
+    _write_subagent_dispatch(fake_projects, session_id, "agent-2", "n1", [nested_rec], spawn_depth=2)
 
 
 def _corpus_slash_path_open(fake_projects) -> None:
@@ -865,6 +970,20 @@ def _corpus_non_round_dollar_interleaving(fake_projects) -> None:
     )
 
 
+def _corpus_orchestrator_dispatch(fake_projects) -> None:
+    """A round opened by a review-orchestrator dispatch whose own transcript
+    dispatches a nested reviewer. A smoke entry in the agreement guard: counts
+    and costs both read detect_round_windows, so this shape cannot turn red
+    from a round-open bug, only from a crash while pricing the dispatch."""
+    session_id = "sess-1"
+    _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+        _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),
+        _orchestrator_return_record("o1", ts="2026-08-01T10:01:00.000Z"),
+        _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+    ])
+    _write_orchestrator_subagent_tree(fake_projects, session_id)
+
+
 # Every distinct round shape TestComputeReviewRoundCosts already exercises
 # elsewhere in this file, reused for the bidirectional agreement guard below
 # rather than one new hand-picked corpus.
@@ -875,6 +994,7 @@ _ROUND_SHAPE_CORPUS_BUILDERS = [
     pytest.param(_corpus_dedup_affecting_requestid_run, id="dedup_affecting_requestid_run"),
     pytest.param(_corpus_branch_carry_forward_mid_window, id="branch_carry_forward_mid_window"),
     pytest.param(_corpus_non_round_dollar_interleaving, id="non_round_dollar_interleaving"),
+    pytest.param(_corpus_orchestrator_dispatch, id="orchestrator_dispatch"),
 ]
 
 
@@ -1018,6 +1138,339 @@ class TestReviewRoundCountsAgreesWithComputeReviewRoundCosts:
         costs_data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
         expected = Counter(r["skill"] for r in costs_data["rounds"])
         assert counts == {skill: expected.get(skill, 0) for skill in review_rounds.REVIEW_SKILLS}
+
+
+class TestRoundOpenAgentSkills:
+    def test_every_mapped_agent_type_has_an_agent_file_and_maps_to_a_review_skill(self):
+        """The mapping is hand-written, so a renamed or deleted agent file, or
+        a value outside REVIEW_SKILLS, would silently stop opening rounds. The
+        frontmatter `name:` is not compared here: test_agent_roster.py's
+        test_agent_name_matches_filename already pins it to the filename."""
+        mapping = review_rounds._ROUND_OPEN_AGENT_SKILLS
+        assert mapping
+        for agent_type, skill in mapping.items():
+            assert (_AGENTS_DIR / f"{agent_type}.md").is_file(), agent_type
+            assert skill in review_rounds.REVIEW_SKILLS, skill
+
+
+class TestSpawnRoundSkill:
+    """spawn_round_skill: the mapped review skill a spawn tool_use block opens
+    a round for, or None."""
+
+    @pytest.mark.parametrize(("block", "expected"), [
+        pytest.param(_agent_use("t1", "review-orchestrator"), "code-review", id="bare_agent_spelling"),
+        pytest.param(
+            _agent_use("t1", "review-orchestrator", tool_name="Task"), "code-review", id="task_tool_name",
+        ),
+        pytest.param(_agent_use("t1", "plugin:review-orchestrator"), "code-review", id="plugin_qualified"),
+        pytest.param(_agent_use("t1", "claude/agents/review-orchestrator"), "code-review", id="dir_qualified"),
+        pytest.param(_agent_use("t1", "review-orchestrator-v2"), None, id="longer_name_is_not_a_prefix_match"),
+        pytest.param(_agent_use("t1", "staff-sdet"), None, id="unmapped_agent_type"),
+        pytest.param(_agent_use("t1", ""), None, id="empty_subagent_type"),
+        pytest.param(
+            {"type": "tool_use", "id": "t1", "name": "Agent", "input": {"description": "x"}},
+            None, id="missing_subagent_type",
+        ),
+        pytest.param(
+            {"type": "tool_use", "id": "t1", "name": "Agent", "input": {"subagent_type": None}},
+            None, id="none_subagent_type",
+        ),
+        pytest.param(
+            {"type": "tool_use", "id": "t1", "name": "Agent", "input": {"subagent_type": 7}},
+            None, id="int_subagent_type",
+        ),
+        pytest.param(
+            {"type": "tool_use", "id": "t1", "name": "Agent", "input": {"subagent_type": ["review-orchestrator"]}},
+            None, id="list_subagent_type",
+        ),
+        pytest.param({"type": "tool_use", "id": "t1", "name": "Agent"}, None, id="absent_input"),
+        pytest.param({"type": "tool_use", "id": "t1", "name": "Agent", "input": None}, None, id="none_input"),
+        pytest.param(
+            {"type": "tool_use", "id": "t1", "name": "Agent", "input": "review-orchestrator"},
+            None, id="string_input",
+        ),
+        pytest.param(
+            {"type": "tool_use", "id": "t1", "name": "Agent", "input": ["review-orchestrator"]},
+            None, id="list_input",
+        ),
+        pytest.param(
+            {"type": "tool_use", "id": "t1", "name": "Skill", "input": {"subagent_type": "review-orchestrator"}},
+            None, id="skill_tool_name_is_not_a_spawn",
+        ),
+        pytest.param(
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"subagent_type": "review-orchestrator"}},
+            None, id="bash_tool_name_is_not_a_spawn",
+        ),
+        pytest.param(
+            {"type": "tool_result", "name": "Agent", "input": {"subagent_type": "review-orchestrator"}},
+            None, id="non_tool_use_block",
+        ),
+        pytest.param("review-orchestrator", None, id="string_block"),
+        pytest.param(None, None, id="none_block"),
+    ])
+    def test_returns_the_mapped_skill_only_for_a_spawn_block_of_a_mapped_type(self, block, expected):
+        assert review_rounds.spawn_round_skill(block) == expected
+
+
+class TestRoundOpenedBySpawn:
+    """round_opened_by_spawn: whether a record's round comes from a spawn
+    block rather than a Skill block, the same per-record order
+    _round_open_skill applies."""
+
+    def test_spawn_only_record_is_opened_by_spawn(self):
+        rec = _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z")
+        assert review_rounds.round_opened_by_spawn(rec) is True
+
+    def test_record_whose_skill_block_opens_a_round_is_not_opened_by_spawn(self):
+        rec = _orchestrator_spawn_record(
+            "o1", ts="2026-08-01T10:00:00.000Z", extra_blocks=(_skill_block("s1", "plan-review"),),
+        )
+        assert review_rounds.round_opened_by_spawn(rec) is False
+
+    def test_record_holding_a_non_review_skill_and_a_spawn_is_opened_by_spawn(self):
+        rec = _orchestrator_spawn_record(
+            "o1", ts="2026-08-01T10:00:00.000Z", extra_blocks=(_skill_block("s1", "handoff"),),
+        )
+        assert review_rounds.round_opened_by_spawn(rec) is True
+
+    def test_sidechain_spawn_record_is_not_opened_by_spawn(self):
+        rec = _as_sidechain(_orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"))
+        assert review_rounds.round_opened_by_spawn(rec) is False
+
+    def test_unrelated_dispatch_and_user_records_are_not_opened_by_spawn(self):
+        dispatch_of_unmapped_type = _priced(
+            "claude-sonnet-5", input=1, branch="feat", content=[_agent_use("a1", "staff-sdet")],
+        )
+        assert review_rounds.round_opened_by_spawn(dispatch_of_unmapped_type) is False
+        assert review_rounds.round_opened_by_spawn(_user_msg("hi")) is False
+
+
+class TestOrchestratorDispatchOpensCodeReviewRound:
+    """A main-thread review-orchestrator dispatch is a code-review round, even
+    though the review skill itself runs in the orchestrator's own transcript."""
+
+    @pytest.mark.parametrize("tool_name", ["Agent", "Task"])
+    def test_dispatch_opens_exactly_one_code_review_round(self, tool_name):
+        records = [
+            _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z", tool_name=tool_name),
+            _orchestrator_return_record("o1", ts="2026-08-01T10:01:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ]
+        assert review_rounds.detect_round_windows(records) == [(0, 2, "code-review")]
+
+    @pytest.mark.parametrize("agent_type", ["staff-sdet", "code-writer", "review-orchestrator-v2"])
+    def test_dispatch_of_any_other_agent_type_opens_no_round(self, agent_type):
+        records = [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_agent_use("a1", agent_type)],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ]
+        assert review_rounds.detect_round_windows(records) == []
+
+    def test_orchestrator_dispatch_followed_by_inline_skill_gives_two_rounds(self):
+        records = [
+            _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),
+            _orchestrator_return_record("o1", ts="2026-08-01T10:01:00.000Z"),
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:02:00.000Z",
+                content=[_skill_block("s1", "code-review")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ]
+        assert review_rounds.detect_round_windows(records) == [(0, 2, "code-review"), (2, 3, "code-review")]
+
+    def test_record_holding_a_plan_review_skill_and_a_spawn_listed_first_opens_plan_review(self):
+        """A record opens its round from a Skill block first and from a spawn
+        block only when no Skill block opens one, whatever the block order."""
+        records = [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[_agent_use("o1", _ORCHESTRATOR_AGENT_TYPE), _skill_block("s1", "plan-review")],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ]
+        assert review_rounds.detect_round_windows(records) == [(0, 1, "plan-review")]
+
+    def test_record_holding_two_orchestrator_spawns_opens_one_round(self):
+        records = [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:00.000Z",
+                content=[
+                    _agent_use("o1", _ORCHESTRATOR_AGENT_TYPE), _agent_use("o2", _ORCHESTRATOR_AGENT_TYPE),
+                ],
+            ),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ]
+        assert review_rounds.detect_round_windows(records) == [(0, 1, "code-review")]
+
+    def test_main_file_sidechain_skill_record_opens_no_second_round(self):
+        """A record flagged isSidechain never opens a round, so a replayed
+        review Skill call does not add one beside the dispatch's own."""
+        replayed_skill_record = _as_sidechain(_priced(
+            "claude-sonnet-5", input=100_000, branch="feat", ts="2026-08-01T10:00:30.000Z",
+            content=[_skill_block("s1", "code-review")],
+        ))
+        records = [
+            _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),
+            replayed_skill_record,
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ]
+        assert review_rounds.detect_round_windows(records) == [(0, 2, "code-review")]
+
+    def test_counts_tally_a_main_thread_orchestrator_dispatch_under_code_review(self, fake_projects):
+        """Counting opens no dispatch transcript, so this pins only that the
+        dispatch opens a round, whether or not the orchestrator ran a skill."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        counts = review_rounds.compute_review_round_counts(_session_iter(fake_projects))
+        assert counts == {"code-review": 1, "plan-review": 0, "ready-for-review": 0}
+
+
+class TestOrchestratorRoundCosts:
+    def test_round_agent_dollars_include_the_orchestrators_flat_depth_two_dispatches(self, fake_projects):
+        """The orchestrator's transcript lives in the session's flat
+        subagents/ directory with isSidechain on every record, so its own Skill
+        call is never a main-thread round-open: the dispatch is the only round."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),  # $0.20
+            _orchestrator_return_record("o1", ts="2026-08-01T10:01:00.000Z"),
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_subagent_tree(fake_projects, "sess-1")  # orchestrator $0.20, nested reviewer $1.00
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        assert [r["skill"] for r in data["rounds"]] == ["code-review"]
+        round_entry = data["rounds"][0]
+        assert round_entry["main_dollars"] == pytest.approx(0.20)
+        assert round_entry["agent_dollars"] == pytest.approx(0.20 + 1.00)
+        assert round_entry["agents"] == 2
+        assert round_entry["dangling"] == 0
+
+    def test_parent_turns_after_the_orchestrator_returns_are_priced_until_the_next_fresh_prompt(self, fake_projects):
+        """The fixture's return is a tool_result record, which is never a
+        fresh prompt. A task-notification return reads as a fresh prompt and
+        ends the window, which this fixture does not cover."""
+        _write_jsonl(fake_projects / "sess-1.jsonl", [
+            _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z"),  # $0.20
+            _orchestrator_return_record("o1", ts="2026-08-01T10:01:00.000Z"),
+            _priced("claude-sonnet-5", input=200_000, branch="feat", ts="2026-08-01T10:02:00.000Z"),  # $0.40
+            _user_msg("thanks", branch="feat", ts="2026-08-01T10:05:00.000Z"),
+            _priced("claude-sonnet-5", input=300_000, branch="feat", ts="2026-08-01T10:06:00.000Z"),  # $0.60, outside
+        ])
+        _write_orchestrator_subagent_tree(fake_projects, "sess-1")
+
+        data = review_rounds.compute_review_round_costs(_session_iter(fake_projects))
+
+        assert len(data["rounds"]) == 1
+        assert data["rounds"][0]["main_dollars"] == pytest.approx(0.20 + 0.40)
+
+
+class TestOrchestratorDispatchFreeTextNeverSurfaces:
+    """A dispatch's prompt, description and every other input key, its result
+    text, its .meta.json description and everything in its transcript carry
+    free text. Only input["subagent_type"] is extracted. Each test first asserts
+    from a compute_* return value that the subcommand saw the orchestrator
+    round, so a corpus that opened no round cannot pass vacuously, then
+    matches rendered text only for the sentinel's absence. author-outcome's
+    own tripwire lives in test_author_outcome.py."""
+
+    @staticmethod
+    def _write_corpus(proj: Path, session_id: str = "sess-1", branch: str = "feat") -> None:
+        """A main-thread code-writer dispatch, then an orchestrator round, then a fresh prompt."""
+        _write_jsonl(proj / f"{session_id}.jsonl", [
+            _priced(
+                "claude-sonnet-5", input=100_000, branch=branch, ts="2026-08-01T09:59:00.000Z",
+                content=[_dispatch_block_with_free_text("w1", "code-writer")],
+            ),
+            _user_msg(
+                [_tool_result("w1", _leak_sentinel("w1-result"))], branch=branch, ts="2026-08-01T09:59:30.000Z",
+            ),
+            _orchestrator_spawn_record("o1", ts="2026-08-01T10:00:00.000Z", branch=branch),
+            _orchestrator_return_record("o1", ts="2026-08-01T10:01:00.000Z", branch=branch),
+            _user_msg(_leak_sentinel("user-prompt"), branch=branch, ts="2026-08-01T10:05:00.000Z"),
+        ])
+        _write_orchestrator_subagent_tree(proj, session_id, branch=branch)
+
+    @staticmethod
+    def _assert_prefix_absent(*surfaces: str) -> None:
+        for surface in surfaces:
+            assert _LEAK_SENTINEL_PREFIX not in surface
+
+    def test_review_round_cost_never_prints_or_returns_dispatch_free_text(self, fake_projects, capsys, monkeypatch):
+        self._write_corpus(fake_projects)
+        costs_seen_by_command: list[dict] = []
+        real_compute_review_round_costs = review_rounds.compute_review_round_costs
+
+        def _recording_compute_review_round_costs(*args, **kwargs):
+            costs = real_compute_review_round_costs(*args, **kwargs)
+            costs_seen_by_command.append(costs)
+            return costs
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_costs", _recording_compute_review_round_costs)
+
+        _mod.cmd_review_round_cost(_review_round_cost_args())
+        captured = capsys.readouterr()
+
+        # The command priced the orchestrator round with its dispatch and its nested reviewer.
+        assert len(costs_seen_by_command) == 1
+        costs = costs_seen_by_command[0]
+        assert [round_entry["skill"] for round_entry in costs["rounds"]] == ["code-review"]
+        assert costs["rounds"][0]["agents"] == 2
+        self._assert_prefix_absent(captured.out, captured.err, repr(costs))
+
+    def test_pooled_review_round_cost_never_prints_dispatch_free_text(self, tmp_path, monkeypatch, capsys):
+        """--show-withheld prints the figures plain --pooled withholds, so it is
+        the only pooled render path with anything to leak."""
+        roots = _pooled_two_root_fixture(tmp_path, monkeypatch)
+        self._write_corpus(roots[0] / "-home-user-repo-a", session_id="sess-orchestrator", branch="feat-orchestrator")
+        costs_seen_by_command: list[dict] = []
+        real_compute_review_round_costs = review_rounds.compute_review_round_costs
+
+        def _recording_compute_review_round_costs(*args, **kwargs):
+            costs = real_compute_review_round_costs(*args, **kwargs)
+            costs_seen_by_command.append(costs)
+            return costs
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_costs", _recording_compute_review_round_costs)
+
+        _mod.cmd_review_round_cost(_review_round_cost_args(pooled=True, show_withheld=True))
+        captured = capsys.readouterr()
+
+        # The command priced the orchestrator round with its dispatch and nested reviewer.
+        orchestrator_rounds = [
+            round_entry
+            for costs in costs_seen_by_command
+            for round_entry in costs["rounds"]
+            if round_entry["branch_key"][1] == "feat-orchestrator"
+        ]
+        assert [round_entry["skill"] for round_entry in orchestrator_rounds] == ["code-review"]
+        assert orchestrator_rounds[0]["agents"] == 2
+        self._assert_prefix_absent(captured.out, captured.err)
+
+    def test_cost_counts_never_prints_dispatch_free_text(self, fake_projects, capsys, monkeypatch):
+        self._write_corpus(fake_projects)
+        round_counts_seen_by_command: list[dict] = []
+        real_compute_review_round_counts = review_rounds.compute_review_round_counts
+
+        def _recording_compute_review_round_counts(*args, **kwargs):
+            round_counts = real_compute_review_round_counts(*args, **kwargs)
+            round_counts_seen_by_command.append(round_counts)
+            return round_counts
+
+        monkeypatch.setattr(review_rounds, "compute_review_round_counts", _recording_compute_review_round_counts)
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        captured = capsys.readouterr()
+
+        assert [round_counts["code-review"] for round_counts in round_counts_seen_by_command] == [1]
+        self._assert_prefix_absent(captured.out, captured.err)
 
 
 class TestCmdReviewRoundCost:

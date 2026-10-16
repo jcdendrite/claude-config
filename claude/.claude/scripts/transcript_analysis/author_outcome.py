@@ -19,6 +19,40 @@ sessions' rows, so this is a per-root index over every ledger file, not a
 1:1 point lookup. The transcript is still the sole source for round-open positions,
 dispatch completion ordering, and the marker-write fallback signal. Only
 the disposition/authoring-agent values move to the ledger.
+
+Round-open positions and dispatch completion come from the main thread. A
+main-thread review-orchestrator dispatch runs its round in its own transcript,
+so for each such round-open this module also reads that one transcript, through
+corpus._index_subagent_dispatches' toolUseId join: for its clean-marker write
+and for the nested dispatches of the `--agent` type, which attribute to the
+round that opens after the orchestrator's spawn.
+
+OUTPUT INVARIANT: no string read from transcript content or from a ledger
+row's free-text fields reaches output, except the one opaque `requestId` that
+each stderr diagnostic of pricing.dedup_turns_by_request_id carries. Every
+other stderr line (the ledger-file open failure, the reserved `--agent`
+refusal, the scope.* diagnostics) names a path, an option value or a fixed
+message, never transcript or ledger content.
+
+The fields extracted from a main-thread record or an orchestrator transcript are:
+- each record's `type`, `requestId` and `timestamp`, and `isSidechain` on main-thread records;
+- whether `message.content` is a list, and each block's `type`;
+- tool_use `name`, `id` and `input.subagent_type`, the Bash `input.command`
+  (read only by the marker matcher), and `tool_result` `tool_use_id`;
+- on main-thread records only, the round-open fields: a Skill tool_use's
+  `input.skill`, an Agent tool_use's `input.subagent_type`, and a user
+  record's text (matched for a slash-command tag), plus the `isMeta` and
+  `isCompactSummary` flags and the user text that render._is_fresh_user_prompt
+  reads through review_rounds.detect_round_windows;
+- from each subagent sidecar, through corpus._index_subagent_dispatches,
+  `toolUseId` and `model`.
+
+The fields extracted from a ledger row are `session_id`, `round`,
+`event_time`, `disposition` and `authoring_agent`. The row's `finding`,
+`rationale` and `source` are never read.
+
+Nothing else, in particular `prompt`, `description` and assistant text blocks, is
+extracted. pricing.dedup_turns_by_request_id handles whole records in memory.
 """
 from __future__ import annotations
 
@@ -30,8 +64,9 @@ import re
 import sys
 import time
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 from transcript_analysis import corpus, pricing, render, review_rounds, scope
 
@@ -67,6 +102,7 @@ _OUTCOME_KEYS = (_OUTCOME_FAILURE, _OUTCOME_PASS, _OUTCOME_UNRESOLVED, _OUTCOME_
 _DQ_CO_AUTHORED_ROUNDS = "rounds co-authored by >1 dispatch"
 _DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW = "rounds with a clean marker write but no round-keyed ledger rows"
 _DQ_ROUND_NUMBER_MISMATCH = "sessions whose ledger round sequence doesn't match the transcript's round-opens"
+_DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS = "mismatched sessions with fewer ledger blocks than round-opens"
 _DQ_LEDGER_POSSIBLY_SWEPT = (
     "sessions with a code-review round, no attributed ledger row, no opened session-keyed ledger file,"
     " and a first round older than the sweep floor"
@@ -75,10 +111,12 @@ _DQ_UNDECIDABLE = "dispatches with no paired tool_result (undecidable)"
 _DQ_AUTHORING_AGENT_INCONSISTENT = "authoring_agent inconsistent with the transcript join"
 _DQ_MALFORMED_DISPATCH_ID = "dispatches with a missing or empty tool_use_id"
 _DQ_SETTLED_PASS_ROUNDS = "rounds classified PASS with at least one SETTLED row"
+_DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE = "orchestrator dispatches with no readable transcript records"
 _DATA_QUALITY_KEYS = (
     _DQ_CO_AUTHORED_ROUNDS, _DQ_MARKER_WRITE_WITHOUT_LEDGER_ROW, _DQ_ROUND_NUMBER_MISMATCH,
-    _DQ_LEDGER_POSSIBLY_SWEPT, _DQ_UNDECIDABLE, _DQ_AUTHORING_AGENT_INCONSISTENT,
-    _DQ_MALFORMED_DISPATCH_ID, _DQ_SETTLED_PASS_ROUNDS,
+    _DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS, _DQ_LEDGER_POSSIBLY_SWEPT, _DQ_UNDECIDABLE,
+    _DQ_AUTHORING_AGENT_INCONSISTENT, _DQ_MALFORMED_DISPATCH_ID, _DQ_SETTLED_PASS_ROUNDS,
+    _DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE,
 )
 
 # review-narrative-ledger's own directory name, one level under a Claude
@@ -94,15 +132,16 @@ _LEDGER_SWEEP_FLOOR_DAYS = 30
 
 
 def _is_clean_marker_write(command: str) -> bool:
-    """True iff any &&/||/;/|-chained segment of `command` is the
+    """True iff any &&/||/;/|-chained segment of `command` starts with the
     hook-allowlisted `marker.sh write code-review` shape: basename(argv[0])
-    == "marker.sh" followed by exactly "write" "code-review".
+    == "marker.sh" followed by "write" "code-review". Later arguments are not
+    checked.
 
     Stricter than a substring search, and deliberately weaker than
-    reimplementing enforce-marker-script-shape.sh's own MARKER_SHAPE regex
-    -- sufficient here because that hook already guarantees no wrapper or
-    variable form of this call can exist in the transcript in the first
-    place.
+    reimplementing enforce-marker-script-shape.sh's own MARKER_SHAPE regex.
+    That hook's header lists shell indirection (a variable or function wrapper)
+    as an open gap, so a call spelled that way is missed here. The signal is
+    only a fallback for a round with no ledger row (see _classify_round).
     """
     for segment in corpus.split_command_segments(command):
         if len(segment) < 3:
@@ -114,14 +153,30 @@ def _is_clean_marker_write(command: str) -> bool:
     return False
 
 
-def _round_has_marker_write(records: list[dict], open_idx: int, span_end: int) -> bool:
-    """True iff any Bash tool_use command inside this round's own outcome
-    span [open_idx, span_end) is the hook-allowlisted `marker.sh write
-    code-review` shape -- the fallback signal used only when the round has
-    no ledger row at all (see _classify_round)."""
-    for rec in records[open_idx:span_end]:
-        if rec.get("isSidechain"):
-            continue
+class _OrchestratorSpawn(NamedTuple):
+    """The facts one main-thread review-orchestrator dispatch with a readable
+    transcript contributes. Only derived facts are retained, never raw records:
+    an orchestrator transcript carries the dispatch prompt, the reviewed diff
+    and reviewer findings, which nothing downstream may surface.
+
+    spawn_idx: the main-thread record index of the spawn.
+    has_clean_marker_write: whether the transcript holds a clean-marker write.
+    nested_dispatches: (start_ts, completion_idx) for each nested dispatch of
+        the `--agent` type. start_ts is the nested dispatch's own tool_use
+        timestamp. completion_idx is spawn_idx when the transcript holds a
+        paired tool_result for it, else None.
+    """
+
+    spawn_idx: int
+    has_clean_marker_write: bool
+    nested_dispatches: list[tuple[float | None, int | None]]
+
+
+def _records_have_clean_marker_write(records: list[dict]) -> bool:
+    """True iff any Bash tool_use command in `records` is the hook-allowlisted
+    `marker.sh write code-review` shape. Applies no sidechain filter, so it
+    reads a subagent transcript as well as main-thread records."""
+    for rec in records:
         if rec.get("type") != "assistant":
             continue
         for block in (rec.get("message") or {}).get("content") or []:
@@ -133,6 +188,30 @@ def _round_has_marker_write(records: list[dict], open_idx: int, span_end: int) -
             if _is_clean_marker_write(command):
                 return True
     return False
+
+
+def _round_has_marker_write(
+    records: list[dict], open_idx: int, span_end: int,
+    orchestrator_spawns: Sequence[_OrchestratorSpawn] = (),
+) -> bool:
+    """True iff this round's own outcome span [open_idx, span_end) holds a
+    hook-allowlisted `marker.sh write code-review` -- the fallback signal used
+    only when the round has no ledger row at all (see _classify_round).
+
+    The span's main-thread records are read, and so is the transcript of every
+    orchestrator spawn whose spawn_idx falls inside the span. The signal is
+    "attempted, not confirmed"; docs/transcript-analysis.md's author-outcome
+    "Orchestrator rounds" section lists what it counts besides a successful
+    write.
+    """
+    main_thread_span = [rec for rec in records[open_idx:span_end] if not rec.get("isSidechain")]
+    if _records_have_clean_marker_write(main_thread_span):
+        return True
+    return any(
+        spawn.has_clean_marker_write
+        for spawn in orchestrator_spawns
+        if open_idx <= spawn.spawn_idx < span_end
+    )
 
 
 def _code_review_rounds(records: list[dict]) -> list[tuple[int, int]]:
@@ -369,11 +448,16 @@ def _round_blocks(row_entries: list[tuple[int, dict]]) -> list[list[dict]]:
     ]
 
 
-def _round_number_mismatch(row_entries: list[tuple[int, dict]], round_open_count: int) -> bool:
-    """True if this session's ledger rows -- each tagged with its source
+_MISMATCH_FEWER_BLOCKS = "fewer ledger blocks than round-opens"
+_MISMATCH_OTHER = "more ledger blocks than round-opens, or block round values not strictly increasing"
+
+
+def _round_number_mismatch(row_entries: list[tuple[int, dict]], round_open_count: int) -> str | None:
+    """Why this session's ledger rows -- each tagged with its source
     file's index (see _read_ledger_row_entries_for_session) -- don't map
-    one-to-one, by rank, onto the transcript's own round-opens. The k-th
-    round-open takes the k-th block (see _round_blocks), so a mismatch is:
+    one-to-one, by rank, onto the transcript's own round-opens, or None when
+    they do. The k-th round-open takes the k-th block (see _round_blocks),
+    so a mismatch is:
 
     - a different number of blocks than round-opens (a round-open whose
       round never got a ledger row, or a ledger round with no round-open)
@@ -390,21 +474,29 @@ def _round_number_mismatch(row_entries: list[tuple[int, dict]], round_open_count
     A ledger with zero rows carrying a `round` key at all is not
     evaluated: entirely legacy rows (pre-schema-v2), or no ledger rows for
     this session. There is no schema-v2 sequence to compare, so this
-    always returns False for that case rather than flagging every
-    pre-migration or ledger-less session as a mismatch.
+    returns None for that case rather than flagging every pre-migration
+    or ledger-less session as a mismatch.
 
     A round with no rows makes the block count short, so it counts as a
     mismatch. A stray extra block that makes up for a missing round still
     matches by count and order; docs/transcript-analysis.md records that
     residual.
+
+    Returns _MISMATCH_FEWER_BLOCKS when the session has fewer blocks than
+    round-opens, _MISMATCH_OTHER for any other mismatch, and None when the
+    rows map onto the round-opens.
     """
     blocks = _round_blocks(row_entries)
     if not blocks:
-        return False
-    if len(blocks) != round_open_count:
-        return True
+        return None
+    if len(blocks) < round_open_count:
+        return _MISMATCH_FEWER_BLOCKS
+    if len(blocks) > round_open_count:
+        return _MISMATCH_OTHER
     round_values = [block[0]["round"] for block in blocks]
-    return any(later <= earlier for earlier, later in zip(round_values, round_values[1:], strict=False))
+    if any(later <= earlier for earlier, later in zip(round_values, round_values[1:], strict=False)):
+        return _MISMATCH_OTHER
+    return None
 
 
 def _ledger_possibly_swept(
@@ -485,13 +577,15 @@ def _classify_round(
 
 
 def _agent_dispatch_tool_use_ids(
-    records: list[dict], agent_type: str, data_quality: Counter,
+    records: list[dict], agent_type: str, data_quality: Counter, *, skip_sidechain: bool = True,
 ) -> list[tuple[str, int]]:
     """Every (tool_use_id, record_idx) for an Agent/Task dispatch of
-    `agent_type` on the main thread, in record order."""
+    `agent_type`, in record order. Sidechain records are skipped unless
+    skip_sidechain is False, which a subagent transcript's caller passes
+    because every record in that file is a sidechain record."""
     dispatches: list[tuple[str, int]] = []
     for idx, rec in enumerate(records):
-        if rec.get("isSidechain"):
+        if skip_sidechain and rec.get("isSidechain"):
             continue
         if rec.get("type") != "assistant":
             continue
@@ -511,7 +605,7 @@ def _agent_dispatch_tool_use_ids(
     return dispatches
 
 
-def _build_tool_result_index_map(records: list[dict]) -> dict[str, int]:
+def _build_tool_result_index_map(records: list[dict], *, skip_sidechain: bool = True) -> dict[str, int]:
     """Map each tool_use_id to the record index into `records` of its own
     paired tool_result -- the dispatch's completion position, used as the
     ordering key against each round's own open_idx (mechanism
@@ -522,10 +616,13 @@ def _build_tool_result_index_map(records: list[dict]) -> dict[str, int]:
     returns the record's index rather than its timestamp -- both keys must
     be indices into the same (already deduped) records list, never a
     timestamp compared against an index.
+
+    Sidechain records are skipped unless skip_sidechain is False (see
+    _agent_dispatch_tool_use_ids).
     """
     index_map: dict[str, int] = {}
     for idx, rec in enumerate(records):
-        if rec.get("isSidechain"):
+        if skip_sidechain and rec.get("isSidechain"):
             continue
         if rec.get("type") != "user":
             continue
@@ -541,6 +638,76 @@ def _build_tool_result_index_map(records: list[dict]) -> dict[str, int]:
     return index_map
 
 
+def _nested_dispatches_of_transcript(
+    transcript_records: list[dict], spawn_idx: int, agent_type: str, data_quality: Counter,
+) -> list[tuple[float | None, int | None]]:
+    """(start_ts, completion_idx) for each dispatch of `agent_type`
+    in one orchestrator transcript. completion_idx is the orchestrator's own
+    spawn_idx when the transcript holds a paired tool_result for the dispatch,
+    else None. The nested dispatch completes at its orchestrator's position.
+    It therefore attributes to the first round-open after the orchestrator's
+    round."""
+    tool_result_index = _build_tool_result_index_map(transcript_records, skip_sidechain=False)
+    return [
+        (
+            corpus._parse_ts(transcript_records[dispatch_idx].get("timestamp")),
+            spawn_idx if tool_use_id in tool_result_index else None,
+        )
+        for tool_use_id, dispatch_idx in _agent_dispatch_tool_use_ids(
+            transcript_records, agent_type, data_quality, skip_sidechain=False,
+        )
+    ]
+
+
+def _orchestrator_spawns(
+    jsonl: Path, records: list[dict], code_review_rounds: list[tuple[int, int]],
+    agent_type: str, data_quality: Counter,
+) -> list[_OrchestratorSpawn]:
+    """One _OrchestratorSpawn per orchestrator spawn block on a code-review
+    round-open record, in record order, each read from that spawn's own
+    transcript. A spawn whose transcript cannot be read yields no entry.
+
+    Two independent conditions admit a block: review_rounds.spawn_round_skill
+    maps it to code-review, and its record's index is a round-open in
+    code_review_rounds. The index gate is the only sidechain filter, because
+    _round_open_skill never opens a round on a sidechain record. It also keeps
+    a record that opened another skill's round (plan-review) out, so its
+    transcript is never scanned into the preceding round. Two spawn blocks in
+    one record give two entries sharing one spawn_idx.
+
+    The session's dispatch index is built at most once, and only when a spawn
+    exists. A spawn whose transcript yields no records is counted under
+    _DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE, whatever --since says. So is a
+    spawn block whose `id` is absent or not a str, which cannot be joined to
+    a sidecar.
+    """
+    round_open_indices = {open_idx for open_idx, _span_end in code_review_rounds}
+    dispatch_index: dict[str, tuple[Path, str | None]] | None = None
+    spawns: list[_OrchestratorSpawn] = []
+    for spawn_idx in sorted(round_open_indices):
+        rec = records[spawn_idx]
+        if rec.get("type") != "assistant":
+            continue
+        for block in (rec.get("message") or {}).get("content") or []:
+            if review_rounds.spawn_round_skill(block) != _CODE_REVIEW_SKILL:
+                continue
+            if dispatch_index is None:
+                dispatch_index, _meta_read_errors = corpus._index_subagent_dispatches(jsonl)
+            tool_use_id = block.get("id")
+            entry = dispatch_index.get(tool_use_id) if isinstance(tool_use_id, str) else None
+            raw_transcript = corpus._parse_jsonl_records(entry[0]) if entry is not None else None
+            if not raw_transcript:
+                data_quality[_DQ_ORCHESTRATOR_TRANSCRIPT_UNREADABLE] += 1
+                continue
+            transcript_records = pricing.dedup_turns_by_request_id(raw_transcript)
+            spawns.append(_OrchestratorSpawn(
+                spawn_idx,
+                _records_have_clean_marker_write(transcript_records),
+                _nested_dispatches_of_transcript(transcript_records, spawn_idx, agent_type, data_quality),
+            ))
+    return spawns
+
+
 def compute_author_outcomes(
     session_iter: Iterator[tuple[Path, list[dict]]],
     *,
@@ -548,9 +715,12 @@ def compute_author_outcomes(
     since_ts: float | None = None,
     now: float | None = None,
 ) -> dict:
-    """Single pass over session_iter (main-thread only, no subagent merge --
-    every transcript-side signal this join needs lives on the main thread;
-    the disposition side comes from each session's own ledger file).
+    """Single pass over session_iter (main-thread records only, no subagent
+    merge). Round-opens, dispatch completion and the marker fallback come from
+    the main thread, and the disposition side from each session's own ledger
+    file. A main-thread review-orchestrator dispatch is also a round-open whose
+    own transcript is read, one at a time, for its clean-marker write and its
+    nested dispatches of agent_type (see _orchestrator_spawns).
 
     now is forwarded to _ledger_possibly_swept as its own clock override --
     lets a caller/test inject a fixed value instead of monkeypatching the
@@ -585,6 +755,7 @@ def compute_author_outcomes(
         records = pricing.dedup_turns_by_request_id(raw_records)
         tool_result_index = _build_tool_result_index_map(records)
         code_review_rounds = _code_review_rounds(records)
+        orchestrator_spawns = _orchestrator_spawns(jsonl, records, code_review_rounds, agent_type, data_quality)
         # Resolved once per session and reused for the round-number-mismatch
         # check, the possibly-swept check, and every round's own
         # classification below, instead of re-reading per lookup.
@@ -593,9 +764,12 @@ def compute_author_outcomes(
         )
         ledger_rows = [row for _file_index, row in ledger_row_entries]
 
-        session_round_mismatch = _round_number_mismatch(ledger_row_entries, len(code_review_rounds))
+        round_mismatch_reason = _round_number_mismatch(ledger_row_entries, len(code_review_rounds))
+        session_round_mismatch = round_mismatch_reason is not None
         if session_round_mismatch:
             data_quality[_DQ_ROUND_NUMBER_MISMATCH] += 1
+        if round_mismatch_reason == _MISMATCH_FEWER_BLOCKS:
+            data_quality[_DQ_FEWER_LEDGER_BLOCKS_THAN_ROUND_OPENS] += 1
 
         session_ledger_possibly_swept = _ledger_possibly_swept(
             code_review_rounds, ledger_rows, records,
@@ -615,7 +789,7 @@ def compute_author_outcomes(
                 classification, matching_ledger_rows = None, []
             else:
                 round_rows = round_blocks[round_index] if round_index < len(round_blocks) else []
-                has_marker_write = _round_has_marker_write(records, open_idx, span_end)
+                has_marker_write = _round_has_marker_write(records, open_idx, span_end, orchestrator_spawns)
                 classification, matching_ledger_rows = _classify_round(
                     round_rows, has_marker_write, data_quality,
                 )
@@ -626,10 +800,18 @@ def compute_author_outcomes(
                 "unfiltered_dispatch_count": 0,
             }
 
-        for tool_use_id, dispatch_idx in _agent_dispatch_tool_use_ids(records, agent_type, data_quality):
-            # dispatch_idx is the dispatch's start (Agent/Task tool_use) record, so --since
-            # filters by the dispatch's start timestamp, not its completion timestamp.
-            ts = corpus._parse_ts(records[dispatch_idx].get("timestamp"))
+        # (start timestamp, completion index) for every dispatch of agent_type:
+        # main-thread ones, then those nested in an orchestrator transcript.
+        # --since filters by the dispatch's start timestamp, not its completion
+        # timestamp.
+        dispatches = [
+            (corpus._parse_ts(records[dispatch_idx].get("timestamp")), tool_result_index.get(tool_use_id))
+            for tool_use_id, dispatch_idx in _agent_dispatch_tool_use_ids(records, agent_type, data_quality)
+        ]
+        for spawn in orchestrator_spawns:
+            dispatches.extend(spawn.nested_dispatches)
+
+        for ts, completion_idx in dispatches:
             in_scope = since_ts is None or (ts is not None and ts >= since_ts)
             # A round-number-mismatched or possibly-swept-ledger session's
             # ledger/round join can't be trusted, so its dispatches still
@@ -640,7 +822,6 @@ def compute_author_outcomes(
                 in_scope and not session_round_mismatch and not session_ledger_possibly_swept
             )
 
-            completion_idx = tool_result_index.get(tool_use_id)
             if completion_idx is None:
                 if in_scope:
                     # Deliberately not gated by session_round_mismatch or

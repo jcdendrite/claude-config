@@ -170,6 +170,15 @@ class _RoundEntry:
 
 
 def _collect_round_entries(session_iter) -> list[_RoundEntry]:
+    """One entry per round window in each session, except a window a
+    review-orchestrator dispatch opened (review_rounds.round_opened_by_spawn):
+    its reviewers' reads live in a subagent transcript this miner does not read.
+
+    A skipped window is still a round-open, so it still closes the preceding
+    kept window, narrowing that round's `_round_scope` reads and moving
+    `_main_thread_edited_between`'s start. Windows come from undeduped
+    records, so they can differ from the deduped round consumers' windows.
+    """
     entries: list[_RoundEntry] = []
     for jsonl, records in session_iter:
         windows = review_rounds.detect_round_windows(records)
@@ -179,6 +188,8 @@ def _collect_round_entries(session_iter) -> list[_RoundEntry]:
         dispatch_index, _meta_errors = corpus._index_subagent_dispatches(jsonl)
         for window in windows:
             open_idx = window[0]
+            if review_rounds.round_opened_by_spawn(records[open_idx]):
+                continue
             ts = corpus._parse_ts(records[open_idx].get("timestamp"))
             entries.append(_RoundEntry(
                 jsonl=jsonl, records=records, dispatch_index=dispatch_index,

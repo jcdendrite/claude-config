@@ -54,10 +54,10 @@ name from the shim.
 JSONL transcript read/parse and session iteration: `iter_sessions`, `read_session_file`,
 `SUBAGENT_SUBDIR` (the `<session_id>/subagents/*.jsonl` split-transcript convention), `_parse_ts`,
 and `_index_subagent_dispatches` (one session's toolUseId → paired subagent `.jsonl`/requested-model
-join, reused recursively by `review_rounds.py`'s nested-dispatch descent since the function's own
-`jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR` layout resolves identically for a subagent's own
-transcript file). No dependency on scope resolution, redaction, or pricing — every other module
-(and the shim) builds on this one.
+join). The harness writes every nested dispatch's `.meta.json` into the session's own flat
+`subagents/` directory. One session's index therefore also resolves a dispatch spawned from inside
+another subagent. `review_rounds.py`'s nested-dispatch descent reuses it. No dependency on scope
+resolution, redaction, or pricing — every other module (and the shim) builds on this one.
 
 Also owns `split_command_segments` (tokenize a raw shell command, then split on `&&`/`||`/`;`/`|`)
 as the single source of truth for two consumers: the shim's own mutating-git classifier, and
@@ -151,9 +151,9 @@ shim, since review-trace's own detection moved into the package.
 ### `review_rounds.py`
 
 The review-round-cost command family: `cmd_review_round_cost` and every helper used only by it —
-per-branch review-round-window detection across both the `Skill` tool_use and `/slash` invocation
-shapes, and recursive per-round subagent dollar attribution via `corpus._index_subagent_dispatches`'
-toolUseId join (`compute_review_round_costs`). Also exports `compute_review_round_counts`, a
+per-branch review-round-window detection across three invocation shapes (the `Skill` tool_use, the
+`/slash` tag, and an `Agent`/`Task` spawn of a `review-orchestrator`), and recursive per-round
+subagent dollar attribution via `corpus._index_subagent_dispatches`' toolUseId join (`compute_review_round_costs`). Also exports `compute_review_round_counts`, a
 count-only sibling reusing the same detection helpers to produce per-skill round counts with no
 pricing, no dispatch index, and no recursion — `subagent_mix.py`'s `cmd_cost_counts` calls it as
 `review_rounds.compute_review_round_counts` for the `### Review rounds` half of its output. Imports `corpus`, `pricing`, `redaction`, `render`,
@@ -161,9 +161,12 @@ and `scope` all by module (attribute access), matching `cost.py`'s convention �
 `cost.py` import: a round's own branch is its opening record's own `gitBranch`, carried forward
 when absent and passed through `scope._attribute_carried_branch`, and every record inside that round's
 window is attributed to it, never `scope._attributed_branch`'s sidechain timeline step, which a
-main-thread round-opening record never needs. `REVIEW_SKILLS`, `compute_review_round_counts`, and `detect_round_windows` are the
-public names here. `REVIEW_SKILLS` is back-imported by the still-unmigrated `cmd_judgment_pair` in
-the shim for its own `--skills` default, one instance of the one-directional exception noted
+main-thread round-opening record never needs. `REVIEW_SKILLS`, `compute_review_round_counts`, `detect_round_windows`, `spawn_round_skill`,
+and `round_opened_by_spawn` are the public names here. `spawn_round_skill` maps a spawn block to the
+review skill it opens (`author_outcome.py` is its consumer), and `round_opened_by_spawn` reports
+whether a record's round came from a spawn block rather than a `Skill` block (the review-bench
+miner's round filter is its consumer). `REVIEW_SKILLS` is back-imported by the still-unmigrated
+`cmd_judgment_pair` in the shim for its own `--skills` default, one instance of the one-directional exception noted
 above. `_round_skill_name` and `_SLASH_COMMAND_RE` are two more instances, both back-imported by
 the still-unmigrated review-trace code: `_round_skill_name` for its own `REVIEW_TRACE_SKILLS`
 membership test and `--skill` filter comparison, `_SLASH_COMMAND_RE` to extract a `/slash`-invoked
@@ -187,7 +190,11 @@ still leave. `_round_blocks` groups a session's rows into blocks, and the k-th r
 the k-th block by rank, not by `round` value. The transcript is still the sole source for
 round-open positions, dispatch completion ordering, and the `marker.sh write code-review` Bash
 `tool_use` fallback signal used only when a round has no ledger row at all
-(`_is_clean_marker_write`).
+(`_is_clean_marker_write`). For a main-thread `review-orchestrator` round-open,
+`_orchestrator_spawns` also projects that spawn's own transcript, when it has readable records,
+into a `_OrchestratorSpawn` of derived facts (the marker write and the nested `--agent`
+dispatches), located through
+`corpus._index_subagent_dispatches`' `toolUseId` join.
 
 See `_lib.sh`'s own `_lib_acquire_append_lock`/`_lib_append_json_line_locked`
 docstrings for the append-lock mechanism `review-ledger.sh`'s

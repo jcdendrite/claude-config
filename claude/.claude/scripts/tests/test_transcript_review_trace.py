@@ -18,6 +18,7 @@ from .conftest import (
     _table_cols,
     _user_msg,
     _write_jsonl,
+    _write_subagent_dispatch,
     _write_subagent_jsonl,
 )
 
@@ -599,6 +600,31 @@ class TestReviewTrace:
         assert "architect-consults=1" in out
         assert "thread=sidechain" in out
         assert "line   n/a" in out
+
+    def test_review_trace_sees_the_code_review_skill_call_inside_a_merged_orchestrator_transcript(
+        self, fake_projects, capsys
+    ):
+        """A main-thread review-orchestrator dispatch carries no Skill block, so
+        review-trace gets the code-review skill event only by merging the
+        orchestrator's own subagent transcript, where the call sits on a
+        sidechain record."""
+        session_id = "sess-orchestrator-round"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("o1", "review-orchestrator")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-o", "o1",
+            [_asst("claude-sonnet-4-6", branch="feat", sidechain=True, ts="2026-05-19T10:01:00.000Z",
+                   content=[_skill_use("s1", "code-review")])],
+            agent_type="review-orchestrator",
+        )
+
+        _mod.review_trace.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+
+        assert "skills=1" in out
+        assert "skill        code-review  (branch=feat model=sonnet thread=sidechain)" in out
 
     def test_merged_stream_interleaves_main_and_sidechain_chronologically(self):
         """Main and subagent records are merged into one chronological

@@ -1027,6 +1027,7 @@ class TestSelectPytestTargets:
             _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
             _mod.TRANSCRIPT_COST_COUNTS_TEST_PATH, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB,
             _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
         }
 
     def test_rules_dir_change_also_selects_hooks_and_skills_tests(self):
@@ -1958,6 +1959,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
     _mod.SELECT_TESTS_TEST_PATH,
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+    _mod.TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
     _mod.TRANSCRIPT_COST_COUNTS_TEST_PATH,
     _mod.DOC_COUNTS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
