@@ -241,6 +241,22 @@ class TestSubagentsToolResultBytes:
         out = capsys.readouterr().out
         assert "No data found." in out
 
+    def test_branch_filter_applies_to_tool_result_bytes(self, fake_projects, capsys):
+        """The branch filter applies to tool_result bytes on user records, not only to assistant turns."""
+        bytes_on_branch_a = 120
+        bytes_on_branch_b = 340
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="branch-a", ts=_attr_ts(1), content=[_read_use("t1", "/x")]),
+            _user_msg([_tool_result("t1", "x" * bytes_on_branch_a)], branch="branch-a", ts=_attr_ts(2)),
+            _asst("claude-opus-4-7", branch="branch-b", ts=_attr_ts(3), content=[_read_use("t2", "/y")]),
+            _user_msg([_tool_result("t2", "x" * bytes_on_branch_b)], branch="branch-b", ts=_attr_ts(4)),
+        ])
+        _mod.subagents.cmd_subagents(_subagents_args(branches="branch-a"))
+        out = capsys.readouterr().out
+        assert "branch-b" not in out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Bytes"] == str(bytes_on_branch_a)
+
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_unreadable_transcript_file_skipped_without_crash(self, fake_projects, capsys):
         """An unreadable transcript file is silently skipped (mirrors
@@ -410,6 +426,43 @@ class TestSubagentsSince:
         _mod.subagents.cmd_subagents(_subagents_args(branches="feat-y", since="10d"))
         feat_y_cols = _table_cols(capsys.readouterr().out, header_contains="Thread", row_contains="main")
         assert feat_y_cols["Opus"] == "1"  # its own turn only, not the second main's
+
+    def test_since_excludes_tool_result_bytes_older_than_window(self, fake_projects, capsys, monkeypatch):
+        """The --since window applies to tool_result bytes on user records, not only to assistant turns."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        bytes_outside_window = 330
+        bytes_inside_window = 70
+
+        def days_ago(days: float) -> str:
+            return datetime.fromtimestamp(fixed_now - days * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat-x", ts=days_ago(20), content=[_read_use("t1", "/x")]),
+            _user_msg([_tool_result("t1", "x" * bytes_outside_window)], branch="feat-x", ts=days_ago(20)),
+            _asst("claude-opus-4-7", branch="feat-x", ts=days_ago(1), content=[_read_use("t2", "/y")]),
+            _user_msg([_tool_result("t2", "x" * bytes_inside_window)], branch="feat-x", ts=days_ago(1)),
+        ])
+        _mod.subagents.cmd_subagents(_subagents_args(since="10d"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Bytes"] == str(bytes_inside_window)
+
+    def test_since_excludes_tool_result_bytes_missing_timestamp(self, fake_projects, capsys, monkeypatch):
+        """An untimestamped user tool_result record cannot be placed inside the --since window, so it
+        contributes no bytes, mirroring the assistant arm's missing-timestamp exclusion."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        in_window_ts = datetime.fromtimestamp(fixed_now - 86400 / 2, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts=in_window_ts, content=[_read_use("t1", "/x")]),
+            _user_msg([_tool_result("t1", "x" * 330)], branch="main"),  # no ts= given -> no timestamp key
+        ])
+        _mod.subagents.cmd_subagents(_subagents_args(since="1d"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Opus"] == "1"
+        assert cols["Bytes"] == "0"
 
     def test_malformed_since_exits_nonzero_naming_subagents(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc_info:

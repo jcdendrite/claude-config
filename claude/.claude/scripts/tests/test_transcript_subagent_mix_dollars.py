@@ -56,6 +56,41 @@ class TestSubagentMixDollars:
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Actual$"] == "$3.00"
 
+    def test_past_rate_expiry_prints_stale_pricing_banner(self, fake_projects, capsys, monkeypatch):
+        """A priced model whose re-verify-by date is already past prints the STALE PRICING banner naming that model."""
+        monkeypatch.setitem(_mod.subagent_mix.pricing._MODEL_RATE_EXPIRES, "claude-sonnet-4-6", date(2000, 1, 1))
+        session_id = "sess-stale"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        assert "STALE PRICING — today is past the re-verify-by date for: claude-sonnet-4-6." in out
+
+    def test_future_rate_expiry_prints_no_stale_pricing_banner(self, fake_projects, capsys, monkeypatch):
+        """A priced model whose re-verify-by date is still ahead leaves the STALE PRICING banner out. The date is
+        pinned far ahead so the outcome never flips on the real expiry date."""
+        monkeypatch.setitem(_mod.subagent_mix.pricing._MODEL_RATE_EXPIRES, "claude-sonnet-4-6", date(2999, 1, 1))
+        session_id = "sess-fresh"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
+        assert cols["Actual$"] == "$3.00"  # priced row present, so banner absence is not an empty-corpus artifact
+        assert "STALE PRICING" not in out
+
     def test_reprice_as_delta_arithmetic(self, fake_projects, capsys):
         """The same 1,000,000-input-token dispatch re-priced at
         claude-haiku-4-5-20251001's $1.00/MTok rate: Actual $3.00,

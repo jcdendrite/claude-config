@@ -114,6 +114,42 @@ def _top_level_names(module_path: Path) -> set[str]:
     return names
 
 
+def _import_aliases(node: ast.ImportFrom) -> str:
+    return ", ".join(alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in node.names)
+
+
+def _unresolvable_sibling_imports(tree: ast.Module, package_names: set[str]) -> list[str]:
+    """Import statements that bind a sibling package module in a shape the attribute check cannot resolve.
+
+    Flagged shapes, one per line:
+    - `from transcript_analysis import <m> as <a>` for any <m> in package_names
+    - every `import transcript_analysis` and `import transcript_analysis.<m>`, with or without `as`
+    - every relative `from` import (`level > 0`), e.g. `from . import scope` or `from .scope import X`
+
+    All three are flagged because the attribute check resolves only absolute
+    `from transcript_analysis import <m>` bindings.
+
+    The no-op spelling `from transcript_analysis import scope as scope` is flagged too, since forbidding every
+    `as` on a sibling binding is a simpler rule than telling the no-op spelling apart."""
+    unresolvable: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level > 0:
+            unresolvable.append(f"from {'.' * node.level}{node.module or ''} import {_import_aliases(node)}")
+        elif isinstance(node, ast.ImportFrom) and node.module == "transcript_analysis":
+            unresolvable.extend(
+                f"from transcript_analysis import {alias.name} as {alias.asname}"
+                for alias in node.names
+                if alias.asname is not None and alias.name in package_names
+            )
+        elif isinstance(node, ast.Import):
+            unresolvable.extend(
+                f"import {alias.name}" + (f" as {alias.asname}" if alias.asname else "")
+                for alias in node.names
+                if alias.name == "transcript_analysis" or alias.name.startswith("transcript_analysis.")
+            )
+    return unresolvable
+
+
 def test_scope_lazy_module_attrs_are_exactly_projects_dir():
     """scope.py's `__getattr__` resolves PROJECTS_DIR and nothing else, so
     _lazy_module_attrs derives exactly that -- pins against over-derivation
@@ -151,6 +187,45 @@ def test_production_modules_import_package_siblings_by_module_only():
             f"{filename} imports {submodule_imports} via `from transcript_analysis.<m> import ...` -- "
             f"read the sibling module's name by attribute instead"
         )
+
+
+def test_production_modules_bind_siblings_only_by_unaliased_from_import():
+    """test_production_modules_reference_only_real_sibling_attributes resolves only unaliased absolute
+    `from transcript_analysis import <m>` bindings, so no module in PRODUCTION_MODULES may bind a sibling
+    in any shape `_unresolvable_sibling_imports` flags."""
+    package_names = _package_module_names()
+    for filename in PRODUCTION_MODULES:
+        tree = ast.parse((PACKAGE_DIR / filename).read_text())
+        unresolvable = _unresolvable_sibling_imports(tree, package_names)
+        assert not unresolvable, (
+            f"{filename} binds a sibling package module via {unresolvable} -- "
+            f"use an unaliased `from transcript_analysis import <m>` so the attribute check can resolve it"
+        )
+
+
+def test_unresolvable_sibling_imports_flags_aliased_and_plain_import_shapes():
+    """The aliased `from` shape, every `ast.Import` shape of the package, and every relative `from` import
+    are flagged; the unaliased absolute `from` shape, an aliased non-module name from the package, and
+    unrelated aliased imports are not."""
+    package_names = {"scope"}
+
+    def flagged(source: str) -> list[str]:
+        return _unresolvable_sibling_imports(ast.parse(source), package_names)
+
+    assert flagged("from transcript_analysis import scope as s") == ["from transcript_analysis import scope as s"]
+    assert flagged("from transcript_analysis import scope as scope") == [
+        "from transcript_analysis import scope as scope"
+    ]
+    assert flagged("import transcript_analysis.scope as s") == ["import transcript_analysis.scope as s"]
+    assert flagged("import transcript_analysis.scope") == ["import transcript_analysis.scope"]
+    assert flagged("import transcript_analysis") == ["import transcript_analysis"]
+    assert flagged("from . import scope as s") == ["from . import scope as s"]
+    assert flagged("from . import scope") == ["from . import scope"]
+    assert flagged("from .scope import X") == ["from .scope import X"]
+    assert flagged("from transcript_analysis import scope") == []
+    assert flagged("from transcript_analysis import not_a_module as x") == []
+    assert flagged("import os as o") == []
+    assert flagged("from collections import defaultdict as dd") == []
 
 
 def test_production_modules_reference_only_real_sibling_attributes():
