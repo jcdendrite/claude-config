@@ -100,10 +100,6 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 - **Python:** `python3` >= 3.11. Stock macOS `/usr/bin/python3` is 3.9.6, Ubuntu 22.04 LTS ships 3.10, and Debian 11 ships 3.9 — all below this floor. Install a newer interpreter (e.g. via Homebrew or pyenv on macOS; your distro's `python3.11+` package or pyenv on Linux) so it resolves first on PATH. `install.sh` checks this and exits early if it isn't met.
 - **Optional:** `pytest` for running the test suite (`pytest claude/.claude/`; add `-n0` to run serially for `-s` / `--pdb` / `-x` debugging).
 - **Claude Code CLI:** `>= 2.1.218` for `transcript-narrative` and `error-mode-analysis`, this repo's two `context: fork` skills. An earlier version honors `context: fork` without honoring `background: false`. That produces a background fork whose narrowed tool set may omit `Bash`. Below that floor, each skill's first step stops and names the version requirement once it detects `Bash` is unavailable, rather than failing silently or half-run. Not enforced by `install.sh`, since it would block installation for every consumer who never invokes either skill.
-- **Optional:** `pyright-lsp` for Python code intelligence (diagnostics, navigation) while editing this repo's hooks and tests. Installed automatically by `./install.sh` via its `enabledPlugins` handling, or manually with `claude plugin install pyright-lsp@claude-plugins-official --scope project`. Also requires the `pyright-langserver` binary, installed separately:
-  - Prefer `python3 -m pip install --user pyright` over `npm install -g pyright` — a stock (non-Homebrew) global npm prefix on Linux/WSL2 is commonly root-owned, causing `EACCES`.
-  - Install to the user or global site, not inside `.venv` — a `.venv`-scoped install won't be on PATH for the process that launches Claude Code.
-  - On WSL2, confirm `which pyright-langserver` resolves to the Linux-side binary, not a Windows-side one on an inherited PATH.
 
 **macOS:** `sha256sum` ships in GNU `coreutils`. Install with `brew install coreutils`, then add the gnubin directory to PATH so the unprefixed name resolves: `export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"`.
 
@@ -515,7 +511,7 @@ Claude Code compresses conversation history when the context window fills up. Th
 Pytest suite covering hooks (allow, deny, and ask paths) and skill description contracts. Pins live in [`requirements-dev.txt`](./requirements-dev.txt) (single source for CI + contributors):
 
 ```bash
-./install-dev.sh   # creates .venv and installs requirements-dev.txt (contributor only)
+./install-dev.sh   # creates .venv, installs requirements-dev.txt and the pyright-lsp plugin (contributor only)
 .venv/bin/pytest claude/.claude/ claude-skills/
 .venv/bin/ruff check claude/.claude/ claude-skills/          # Python
 scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck  # shell
@@ -525,6 +521,13 @@ ShellCheck takes no flags on the command line — they live in the repo-root
 `.shellcheckrc`, so CI, the command above, and any editor integration agree.
 
 The `.venv` lives only in the main worktree root. Linked worktrees live at `.claude/worktrees/<branch>/` — exactly three levels deep — so from inside a worktree invoke `../../../.venv/bin/pytest` and `../../../.venv/bin/ruff` instead.
+
+`./install-dev.sh` also installs `pyright-lsp@claude-plugins-official` at local scope, giving Claude Code sessions in this checkout Python diagnostics and navigation. Local scope records the plugin only in this checkout's gitignored `.claude/settings.local.json`, so it reaches contributors and not every consumer who runs `./install.sh`. The install runs only when `claude-plugins-official` is already registered. Otherwise the script prints the `claude plugin marketplace add anthropics/claude-plugins-official` command, and registration applies to every project on your profile. A local-scope install made from the main checkout root is active in Claude Code sessions anchored in a linked worktree under `.claude/worktrees/` too. See [`docs/design-decisions/pyright-lsp-installed-per-contributor.md`](./docs/design-decisions/pyright-lsp-installed-per-contributor.md) for why this reaches contributors only. The `pyright-langserver` binary needs to be on the PATH of the shell that launches Claude Code, and `./install-dev.sh` checks for it but does not install it:
+
+- Prefer `pipx install pyright`. Without pipx, `python3 -m pip install --user pyright` works only on an interpreter that is not externally managed (PEP 668).
+- Avoid `npm install -g pyright` where the global npm prefix is root-owned (common on stock Linux/WSL2); that fails with `EACCES`.
+- Install outside `.venv`. A `.venv`-scoped binary is not on PATH for the process that launches Claude Code.
+- On WSL2, confirm that `which pyright-langserver` resolves to the Linux-side binary, not a Windows-side one on an inherited PATH.
 
 The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run serially for `-s` / `--pdb` / `-x` debugging.
 

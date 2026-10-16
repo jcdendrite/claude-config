@@ -22,6 +22,11 @@ Tests exercise the critical branches:
    deny-private-project-refs.sh's own: $HOME/.claude is the floor,
    overridden only when CLAUDE_CONFIG_DIR is absolute and its own copy
    exists.
+9. Step 7, the pyright-lsp local-scope install: one case per branch (no
+   claude CLI, marketplace-list read failure, unregistered marketplace,
+   registered-and-not-installed, already-installed, a path mismatch on the
+   same id, an install failure, the pyright-langserver binary present or
+   absent, a plugin-list read failure, and jq genuinely absent from PATH).
 
 PATH stubs replace system python3/ruff so tests run in isolation without
 mutating the real .venv. HOME is isolated per test (see the `fake_home`
@@ -30,12 +35,14 @@ fixture) so the gate never reads the real invoking environment's
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
+from helpers import build_path_without
 
 # install-dev.sh lives at the repo root: climb from scripts/tests/ (parents[0])
 # → scripts/ (parents[1]) → claude/.claude/ (parents[2]) → claude/ (parents[3])
@@ -58,14 +65,24 @@ def _write_stub(bin_dir: Path, name: str, body: str) -> Path:
 
 
 def _run_script(
-    cwd: Path, fake_home: Path, stub_bin: Path | None = None, extra_env: dict | None = None
+    cwd: Path,
+    fake_home: Path,
+    stub_bin: Path | None = None,
+    extra_env: dict | None = None,
+    path_tail: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Run install-dev.sh from cwd with an isolated PATH and HOME.
 
     HOME must be isolated (not the real invoking environment's $HOME) — the
     script's private-projects.md gate would otherwise read the real
-    developer/CI machine's ~/.claude/private-projects.md."""
-    system_path = "/usr/bin:/bin"
+    developer/CI machine's ~/.claude/private-projects.md.
+
+    path_tail overrides the "/usr/bin:/bin" fallback appended after
+    stub_bin. A caller that needs a binary genuinely absent from PATH (e.g.
+    jq, which some platforms ship at /usr/bin) passes a path built by
+    helpers.build_path_without instead — /usr/bin:/bin's own contents are
+    platform-dependent and cannot be relied on to omit a given binary."""
+    system_path = path_tail if path_tail is not None else "/usr/bin:/bin"
     path_val = f"{stub_bin}:{system_path}" if stub_bin else system_path
     env = {"PATH": path_val, "HOME": str(fake_home)}
     if extra_env:
@@ -125,6 +142,98 @@ def _make_healthy_venv_stub(repo_root_stub: Path) -> None:
         'printf "version: 0.11.0\\n"\nexit 0\n'
     )
     (venv_bin / "shellcheck").chmod(0o755)
+
+
+_PYRIGHT_LSP_PLUGIN = "pyright-lsp@claude-plugins-official"
+
+
+def _make_claude_shim(
+    bin_dir: Path,
+    marketplaces: list[str] | None,
+    plugins: list[tuple[str, str, str]] | None,
+    call_log: Path,
+    install_exit: int = 0,
+) -> Path:
+    """Write a bash `claude` stub — a python shebang would resolve to this
+    test file's own fake python3 PATH stub rather than the real
+    interpreter — that handles `plugin marketplace list --json`,
+    `plugin list --json`, and
+    `plugin install`, logging every invocation's arguments (as `$*`, one
+    line per call) to call_log. Exits 1 on anything unhandled.
+
+    marketplaces=None simulates `claude plugin marketplace list --json`
+    itself failing (exit 1); otherwise it's rendered as that command's
+    `.name`-bearing JSON array. plugins=None simulates `claude plugin list
+    --json` itself failing (exit 1) the same way; otherwise it's a list of
+    (id, scope, project_path) tuples rendered as that command's JSON
+    array."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    call_log.parent.mkdir(parents=True, exist_ok=True)
+    marketplace_list_should_fail = "true" if marketplaces is None else "false"
+    marketplace_json = "[]" if marketplaces is None else json.dumps(
+        [{"name": name} for name in marketplaces]
+    )
+    plugin_list_should_fail = "true" if plugins is None else "false"
+    plugin_json = "[]" if plugins is None else json.dumps(
+        [{"id": pid, "scope": scope, "projectPath": project_path} for pid, scope, project_path in plugins]
+    )
+    stub = bin_dir / "claude"
+    stub.write_text(textwrap.dedent(f"""\
+        #!/bin/bash
+        printf '%s\\n' "$*" >> '{call_log}'
+        if [ "$1" = "plugin" ] && [ "$2" = "marketplace" ] && [ "$3" = "list" ]; then
+          if [ "{marketplace_list_should_fail}" = "true" ]; then
+            exit 1
+          fi
+          echo '{marketplace_json}'
+          exit 0
+        fi
+        if [ "$1" = "plugin" ] && [ "$2" = "list" ]; then
+          if [ "{plugin_list_should_fail}" = "true" ]; then
+            exit 1
+          fi
+          echo '{plugin_json}'
+          exit 0
+        fi
+        if [ "$1" = "plugin" ] && [ "$2" = "install" ]; then
+          exit {install_exit}
+        fi
+        exit 1
+    """))
+    stub.chmod(0o755)
+    return stub
+
+
+def _link_real_jq(bin_dir: Path) -> None:
+    """Symlink the real jq into bin_dir, ahead of install-dev.sh's default
+    PATH tail, so the script's `jq -r` pipeline can parse the claude shim's
+    JSON output."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    real_jq = shutil.which("jq")
+    assert real_jq, "jq must be installed on the test runner's PATH"
+    (bin_dir / "jq").symlink_to(real_jq)
+
+
+def _pyright_lsp_baseline(repo_root_stub: Path) -> tuple[Path, Path]:
+    """A healthy .venv plus a python3 stub whose ensurepip check passes and
+    whose `-m venv` call touches a sentinel — the shared setup for every
+    TestPyrightLspStep case. Returns (bin_dir, venv_created_sentinel); the
+    sentinel proves Step 7 never feeds into check_venv_healthy's recreate
+    path."""
+    _make_healthy_venv_stub(repo_root_stub)
+    sentinel = repo_root_stub / "venv_created.flag"
+    bin_dir = repo_root_stub / "bin"
+    _write_stub(bin_dir, "python3", textwrap.dedent(f"""\
+        if [ "$1" = "-c" ] && [ "$2" = "import ensurepip" ]; then
+          exit 0
+        fi
+        if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+          touch '{sentinel}'
+          exit 0
+        fi
+        exit 0
+    """))
+    return bin_dir, sentinel
 
 
 # ---------------------------------------------------------------------------
@@ -706,3 +815,222 @@ class TestPrivateProjectsGate:
             f"Expected exit 0 — a non-absolute CLAUDE_CONFIG_DIR must fall back to "
             f"$HOME/.claude; got {result.returncode}\nstderr: {result.stderr}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test class: Step 7, the pyright-lsp local-scope install
+# ---------------------------------------------------------------------------
+
+class TestPyrightLspStep:
+    """Step 7 runs after a healthy .venv is confirmed, is never fatal, and
+    never touches check_venv_healthy. Each case isolates one
+    branch of install-dev.sh's pyright-lsp install; _pyright_lsp_baseline
+    supplies the healthy-venv/python3 setup every case shares, and
+    _make_claude_shim supplies a `claude` stub varying only what that
+    branch needs."""
+
+    def test_no_claude_cli_skips_and_still_prints_venv_summary(
+        self, repo_root_stub: Path, fake_home: Path
+    ):
+        bin_dir, _ = _pyright_lsp_baseline(repo_root_stub)
+        result = _run_script(repo_root_stub, fake_home, stub_bin=bin_dir)
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "claude CLI not found" in result.stdout, result.stdout
+        assert _PYRIGHT_LSP_PLUGIN in result.stdout
+        assert "Done. .venv is ready" in result.stdout, (
+            "Step 7 skipping must not suppress Step 6's own summary"
+        )
+
+    def test_marketplace_list_read_failure_skips_with_stderr_warning(
+        self, repo_root_stub: Path, fake_home: Path
+    ):
+        bin_dir, _ = _pyright_lsp_baseline(repo_root_stub)
+        call_log = repo_root_stub / "claude_calls.log"
+        _make_claude_shim(bin_dir, marketplaces=None, plugins=[], call_log=call_log)
+        _link_real_jq(bin_dir)
+
+        result = _run_script(repo_root_stub, fake_home, stub_bin=bin_dir)
+
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "could not read registered marketplaces" in result.stderr, result.stderr
+        assert "plugin install" not in call_log.read_text()
+
+    def test_unregistered_marketplace_skips_naming_remedy(
+        self, repo_root_stub: Path, fake_home: Path
+    ):
+        bin_dir, _ = _pyright_lsp_baseline(repo_root_stub)
+        call_log = repo_root_stub / "claude_calls.log"
+        _make_claude_shim(bin_dir, marketplaces=["some-other-marketplace"], plugins=[], call_log=call_log)
+        _link_real_jq(bin_dir)
+
+        result = _run_script(repo_root_stub, fake_home, stub_bin=bin_dir)
+
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "claude-plugins-official" in result.stdout
+        assert "claude plugin marketplace add anthropics/claude-plugins-official" in result.stdout
+        assert "every project on this profile" in result.stdout
+        log_text = call_log.read_text()
+        assert "plugin install" not in log_text
+        assert "marketplace add" not in log_text
+
+    def test_registered_and_not_installed_runs_install(
+        self, repo_root_stub: Path, fake_home: Path
+    ):
+        bin_dir, _ = _pyright_lsp_baseline(repo_root_stub)
+        call_log = repo_root_stub / "claude_calls.log"
+        _make_claude_shim(
+            bin_dir, marketplaces=["claude-plugins-official"], plugins=[], call_log=call_log
+        )
+        _link_real_jq(bin_dir)
+
+        result = _run_script(repo_root_stub, fake_home, stub_bin=bin_dir)
+
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        log_lines = call_log.read_text().splitlines()
+        install_calls = [line for line in log_lines if line.startswith("plugin install")]
+        assert install_calls == [f"plugin install {_PYRIGHT_LSP_PLUGIN} --scope local"], log_lines
+
+    def test_already_installed_skips_install(self, repo_root_stub: Path, fake_home: Path):
+        bin_dir, _ = _pyright_lsp_baseline(repo_root_stub)
+        call_log = repo_root_stub / "claude_calls.log"
+        _make_claude_shim(
+            bin_dir,
+            marketplaces=["claude-plugins-official"],
+            plugins=[(_PYRIGHT_LSP_PLUGIN, "local", str(repo_root_stub))],
+            call_log=call_log,
+        )
+        _link_real_jq(bin_dir)
+
+        result = _run_script(repo_root_stub, fake_home, stub_bin=bin_dir)
+
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert f"{_PYRIGHT_LSP_PLUGIN} (already installed)" in result.stdout
+        assert "plugin install" not in call_log.read_text()
+
+    def test_local_entry_for_other_directory_still_triggers_install(
+        self, repo_root_stub: Path, fake_home: Path, tmp_path: Path
+    ):
+        """The deny side of the path match: a local-scope entry for the
+        same id but a different directory must not count as installed
+        here."""
+        bin_dir, _ = _pyright_lsp_baseline(repo_root_stub)
+        call_log = repo_root_stub / "claude_calls.log"
+        other_dir = tmp_path / "other-checkout"
+        other_dir.mkdir()
+        _make_claude_shim(
+            bin_dir,
+            marketplaces=["claude-plugins-official"],
+            plugins=[(_PYRIGHT_LSP_PLUGIN, "local", str(other_dir))],
+            call_log=call_log,
+        )
+        _link_real_jq(bin_dir)
+
+        result = _run_script(repo_root_stub, fake_home, stub_bin=bin_dir)
+
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        log_lines = call_log.read_text().splitlines()
+        install_calls = [line for line in log_lines if line.startswith("plugin install")]
+        assert install_calls == [f"plugin install {_PYRIGHT_LSP_PLUGIN} --scope local"], log_lines
+
+    def test_install_failure_does_not_abort_script(self, repo_root_stub: Path, fake_home: Path):
+        bin_dir, _ = _pyright_lsp_baseline(repo_root_stub)
+        call_log = repo_root_stub / "claude_calls.log"
+        _make_claude_shim(
+            bin_dir,
+            marketplaces=["claude-plugins-official"],
+            plugins=[],
+            call_log=call_log,
+            install_exit=1,
+        )
+        _link_real_jq(bin_dir)
+
+        result = _run_script(repo_root_stub, fake_home, stub_bin=bin_dir)
+
+        assert result.returncode == 0, (
+            f"A failed plugin install must not abort the script; got "
+            f"{result.returncode}\nstderr: {result.stderr}"
+        )
+        assert "failed to install" in result.stderr, result.stderr
+
+    def test_pyright_langserver_present_prints_path(self, repo_root_stub: Path, fake_home: Path):
+        bin_dir, _ = _pyright_lsp_baseline(repo_root_stub)
+        call_log = repo_root_stub / "claude_calls.log"
+        _make_claude_shim(
+            bin_dir,
+            marketplaces=["claude-plugins-official"],
+            plugins=[(_PYRIGHT_LSP_PLUGIN, "local", str(repo_root_stub))],
+            call_log=call_log,
+        )
+        _link_real_jq(bin_dir)
+        _write_stub(bin_dir, "pyright-langserver", "exit 0\n")
+
+        result = _run_script(repo_root_stub, fake_home, stub_bin=bin_dir)
+
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "✓ pyright-langserver (" in result.stdout, result.stdout
+
+    def test_pyright_langserver_absent_prints_hint_and_leaves_venv_sentinel_untouched(
+        self, repo_root_stub: Path, fake_home: Path
+    ):
+        bin_dir, sentinel = _pyright_lsp_baseline(repo_root_stub)
+        call_log = repo_root_stub / "claude_calls.log"
+        _make_claude_shim(
+            bin_dir,
+            marketplaces=["claude-plugins-official"],
+            plugins=[(_PYRIGHT_LSP_PLUGIN, "local", str(repo_root_stub))],
+            call_log=call_log,
+        )
+        _link_real_jq(bin_dir)
+
+        result = _run_script(repo_root_stub, fake_home, stub_bin=bin_dir)
+
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "pipx install pyright" in result.stdout, result.stdout
+        assert not sentinel.exists(), (
+            "the pyright-langserver probe must not feed into check_venv_healthy's "
+            "recreate path"
+        )
+
+    def test_plugin_list_read_failure_proceeds_as_if_none_installed(
+        self, repo_root_stub: Path, fake_home: Path
+    ):
+        """Mirrors install.sh's project-scope loop: a plugin-list read
+        failure warns and proceeds as if nothing is installed, so the
+        install still runs."""
+        bin_dir, _ = _pyright_lsp_baseline(repo_root_stub)
+        call_log = repo_root_stub / "claude_calls.log"
+        _make_claude_shim(
+            bin_dir, marketplaces=["claude-plugins-official"], plugins=None, call_log=call_log
+        )
+        _link_real_jq(bin_dir)
+
+        result = _run_script(repo_root_stub, fake_home, stub_bin=bin_dir)
+
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "could not read installed local-scope plugins" in result.stderr, result.stderr
+        log_lines = call_log.read_text().splitlines()
+        install_calls = [line for line in log_lines if line.startswith("plugin install")]
+        assert install_calls == [f"plugin install {_PYRIGHT_LSP_PLUGIN} --scope local"], log_lines
+
+    def test_jq_absent_skips_via_pipefail_not_shim_exit_code(
+        self, repo_root_stub: Path, fake_home: Path, tmp_path: Path
+    ):
+        """jq absent must be caught by the real `set -o pipefail` pipe
+        failure on `claude ... | jq -r ...`, not by a shim exit code — the
+        shim's own `plugin marketplace list` call succeeds here, and jq
+        itself is what's missing. No _link_real_jq call: that's the point.
+        """
+        bin_dir, _ = _pyright_lsp_baseline(repo_root_stub)
+        call_log = repo_root_stub / "claude_calls.log"
+        _make_claude_shim(
+            bin_dir, marketplaces=["claude-plugins-official"], plugins=[], call_log=call_log
+        )
+        farm_dir = tmp_path / "path-without-jq"
+        farm_dir.mkdir()
+        path_tail = build_path_without("jq", farm_dir)
+
+        result = _run_script(repo_root_stub, fake_home, stub_bin=bin_dir, path_tail=path_tail)
+
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert "could not read registered marketplaces" in result.stderr, result.stderr
+        assert "plugin install" not in call_log.read_text()

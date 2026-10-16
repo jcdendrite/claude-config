@@ -3,8 +3,7 @@
     "skill-management@claude-config": true,
     "claude-hook-review@claude-config": true,
     "plugin-semver@claude-config": true,
-    "issue-triage@claude-config": true,
-    "pyright-lsp@claude-plugins-official": true
+    "issue-triage@claude-config": true
   },
   "permissions": {
     "allow": [
