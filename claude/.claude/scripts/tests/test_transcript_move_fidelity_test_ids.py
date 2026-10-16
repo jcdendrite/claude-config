@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from xml.sax.saxutils import quoteattr
 
+import pytest
+
 from ._move_fidelity import main
 
 
@@ -104,14 +106,15 @@ def test_test_ids_flags_an_expect_new_id_present_on_both_sides(capsys, tmp_path)
     assert "does not occur more often" in lines[0]
 
 
-def test_test_ids_flags_passed_to_skipped_as_an_outcome_change(capsys, tmp_path):
+@pytest.mark.parametrize("outcome_tag", ["skipped", "failure", "error"])
+def test_test_ids_flags_passed_to_a_non_passing_outcome_as_an_outcome_change(capsys, tmp_path, outcome_tag):
     before = [(f"{TREE}.test_old.TestThing", "test_one", ())]
-    after = [(f"{TREE}.test_new.TestThing", "test_one", ("skipped",))]
+    after = [(f"{TREE}.test_new.TestThing", "test_one", (outcome_tag,))]
 
     code, lines, _ = _run_test_ids(capsys, tmp_path, before, after)
 
     assert (code, _checks(lines)) == (1, ["id-outcome"])
-    assert "before passed, after skipped" in lines[0]
+    assert f"before passed, after {outcome_tag}" in lines[0]
 
 
 def test_test_ids_flags_two_copies_before_and_one_after_as_missing(capsys, tmp_path):
@@ -149,6 +152,19 @@ def test_test_ids_rename_maps_a_parametrized_function_by_its_stem(capsys, tmp_pa
     code, lines, _ = _run_test_ids(capsys, tmp_path, before, after, "--rename", "test_old=test_new")
 
     assert (code, lines) == (0, ["testcases: before 2, after 2"])
+
+
+def test_test_ids_rename_maps_an_unparametrized_module_level_test_whose_id_equals_the_old_name(capsys, tmp_path):
+    before = [(f"{TREE}.test_old", "test_free_function", ())]
+    after = [(f"{TREE}.test_new", "test_renamed_function", ())]
+
+    unmapped_code, unmapped_lines, _ = _run_test_ids(capsys, tmp_path, before, after)
+    mapped_code, mapped_lines, _ = _run_test_ids(
+        capsys, tmp_path, before, after, "--rename", "test_free_function=test_renamed_function"
+    )
+
+    assert (unmapped_code, set(_checks(unmapped_lines))) == (1, {"id-missing", "id-unexpected"})
+    assert (mapped_code, mapped_lines) == (0, ["testcases: before 1, after 1"])
 
 
 def test_test_ids_keys_on_the_last_test_component_of_the_classname(capsys, tmp_path):

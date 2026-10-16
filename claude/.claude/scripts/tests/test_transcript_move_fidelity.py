@@ -184,6 +184,15 @@ def test_nodes_flags_a_changed_string_holding_a_hash_as_node_ast_not_node_commen
     assert (code, _checks(lines)) == (1, ["node-ast"])
 
 
+def test_nodes_flags_a_node_sharing_its_line_with_another_statement_as_node_ast(capsys, tmp_path):
+    shared_line = "moved_fn = 1; other = 2\n"
+
+    code, lines = _run_nodes(capsys, tmp_path, shared_line, [shared_line], moved=("moved_fn",))
+
+    assert (code, _checks(lines)) == (1, ["node-ast"])
+    assert "before text holds 2 statements, expected 1" in lines[0]
+
+
 def test_nodes_flags_a_rename_that_no_compared_node_applied_as_rename_unused(capsys, tmp_path):
     code, lines = _run_nodes(capsys, tmp_path, MOVED_BEFORE, [MOVED_BEFORE], *RENAME_HELPER)
 
@@ -398,6 +407,62 @@ def test_remainder_flags_a_declared_import_that_was_not_added(capsys, tmp_path):
     )
 
     assert (code, _checks(lines)) == (1, ["import-diff"])
+
+
+def test_remainder_flags_an_undeclared_removed_import(capsys, tmp_path):
+    without_os = SHIM_AFTER.replace("import os\n", "")
+
+    code, lines = _run_remainder(capsys, tmp_path, SHIM_BEFORE, without_os, **SHIM_DECLARATIONS)
+
+    assert (code, _checks(lines)) == (1, ["import-diff"])
+    assert "undeclared removed import os" in lines[0]
+
+
+def test_remainder_flags_a_declared_import_that_was_not_removed(capsys, tmp_path):
+    code, lines = _run_remainder(
+        capsys, tmp_path, SHIM_BEFORE, SHIM_AFTER, **{**SHIM_DECLARATIONS, "import_removed": ["pkg:ghost"]}
+    )
+
+    assert (code, _checks(lines)) == (1, ["import-diff"])
+    assert "declared removed import pkg:ghost is not a removed import" in lines[0]
+
+
+@pytest.mark.parametrize(
+    ("before_imports", "after_imports", "right_declarations", "wrong_declarations"),
+    [
+        pytest.param("import os\n", "", {"import_removed": ["os"]}, {}, id="plain-import-removed"),
+        pytest.param("import os\n", "import os\n", {}, {"import_removed": ["os"]}, id="plain-import-kept"),
+        pytest.param("import os\n", "import os\n", {}, {"import_added": ["os"]}, id="plain-import-kept-added"),
+        pytest.param(
+            "", "from x import y as z\n", {"import_added": ["x:y:z"]}, {"import_added": ["x:y"]}, id="from-import-aliased-added"
+        ),
+        pytest.param(
+            "", "import x as y\n", {"import_added": ["x::y"]}, {"import_added": ["x"]}, id="plain-import-with-alias-added"
+        ),
+        pytest.param(
+            "", "from .x import y\n", {"import_added": [".x:y"]}, {"import_added": ["x:y"]}, id="relative-from-import-added"
+        ),
+        pytest.param(
+            "",
+            "from x import a, b\n",
+            {"import_added": ["x:a", "x:b"]},
+            {"import_added": ["x:a"]},
+            id="from-import-two-names-added",
+        ),
+    ],
+)
+def test_remainder_import_changes_are_clean_only_under_the_right_declaration(
+    capsys, tmp_path, before_imports, after_imports, right_declarations, wrong_declarations
+):
+    before = before_imports + "VALUE = 1\n"
+    after = after_imports + "VALUE = 1\n"
+
+    right_code, right_lines = _run_remainder(capsys, tmp_path, before, after, **right_declarations)
+    wrong_code, wrong_lines = _run_remainder(capsys, tmp_path, before, after, **wrong_declarations)
+
+    assert (right_code, right_lines) == (0, ["remaining-statements: 1"])
+    assert wrong_code == 1
+    assert set(_checks(wrong_lines)) == {"import-diff"}
 
 
 def test_remainder_flags_a_changed_module_docstring_unless_declared_changed(capsys, tmp_path):

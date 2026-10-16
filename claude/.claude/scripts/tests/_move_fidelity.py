@@ -10,6 +10,10 @@ Run as `_move_fidelity.py <subcommand>`, or import the check functions. One usag
 
 Each finding prints as one line prefixed with its check name. Exit status is 0 when clean, 1 on any finding,
 2 on bad input. The module imports only the standard library and uses no relative imports.
+
+`capture --all-help` captures rendered help only, so it cannot see an argparse default, type, or dest that the help output
+does not display. `remainder` drops every top-level import statement, with any comment on its lines, before comparing,
+so it checks neither import order nor import-line comments.
 """
 from __future__ import annotations
 
