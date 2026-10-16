@@ -190,14 +190,20 @@ def test_nodes_does_not_reverse_a_new_name_reached_through_attribute_access(caps
 
 
 def test_nodes_reverses_overlapping_new_names_longest_first(capsys, tmp_path):
-    before = "def moved_fn(value):\n    return collect_all(value)\n"
-    after = "def moved_fn(value):\n    return util.helper.all(value)\n"
+    overlapping_renames = ("--rename", "helper=util.helper", "collect_all=util.helper.all")
+    before = "def moved_fn(value):\n    return collect_all(helper(value))\n"
+    after = "def moved_fn(value):\n    return util.helper.all(util.helper(value))\n"
+    only_longer_name_used_before = "def moved_fn(value):\n    return collect_all(value)\n"
+    only_longer_name_used_after = "def moved_fn(value):\n    return util.helper.all(value)\n"
 
-    code, lines = _run_nodes(
-        capsys, tmp_path, before, [after], "--rename", "helper=util.helper", "collect_all=util.helper.all"
+    code, lines = _run_nodes(capsys, tmp_path, before, [after], *overlapping_renames)
+    unused_code, unused_lines = _run_nodes(
+        capsys, tmp_path, only_longer_name_used_before, [only_longer_name_used_after], *overlapping_renames
     )
 
     assert (code, lines) == (0, ["compared-nodes: 1"])
+    assert (unused_code, _checks(unused_lines)) == (1, ["rename-unused"])
+    assert "helper=util.helper" in unused_lines[0]
 
 
 def test_nodes_flags_a_changed_string_holding_a_hash_as_node_ast_not_node_comments(capsys, tmp_path):
@@ -806,6 +812,15 @@ def test_capture_refuses_an_existing_out_directory(capsys, tmp_path, echo_target
     assert code == 2
     assert "already exists" in err
     assert [path.name for path in out.iterdir()] == ["keep.txt"]
+
+
+def test_capture_exits_2_with_bad_input_when_out_sits_under_a_regular_file(capsys, tmp_path, echo_target):
+    regular_file = _write(tmp_path, "not_a_directory", "")
+
+    code, _, err = _invoke(capsys, *_capture_argv(echo_target, regular_file / "out", "--all-help"))
+
+    assert code == 2
+    assert "bad-input" in err
 
 
 def test_capture_exits_2_when_nothing_is_requested(capsys, tmp_path, echo_target):

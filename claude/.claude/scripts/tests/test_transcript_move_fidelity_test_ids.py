@@ -267,3 +267,12 @@ def test_test_ids_exits_2_when_no_testcase_survives_the_file_prefix(capsys, tmp_
 
     assert code == 2
     assert "no testcases" in err
+    assert "--file-prefix nowhere/" in err
+
+
+def test_test_ids_empty_runs_exit_2_without_naming_a_file_prefix_that_was_not_given(capsys, tmp_path):
+    code, _, err = _run_test_ids(capsys, tmp_path, [], [])
+
+    assert code == 2
+    assert "no testcases" in err
+    assert "--file-prefix" not in err

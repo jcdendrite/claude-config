@@ -255,8 +255,12 @@ def check_nodes(
         after_text = after.segment(after_node)
         compared_after_texts.append(after_text)
         findings.extend(_compare_node(name, before_text, after_text, reverse_map, reverse_pattern, name in verbatim))
+    # Matching with the reversal's own longest-first pattern leaves a NEW name that occurs only inside a longer NEW name unused.
+    used_new_names = {
+        match.group(0) for text in compared_after_texts for match in (reverse_pattern.finditer(text) if reverse_pattern else ())
+    }
     for new_name, old_name in reverse_map.items():
-        if not any(_contains_name(text, new_name) for text in compared_after_texts):
+        if new_name not in used_new_names:
             findings.append(f"rename-unused: {old_name}={new_name}: {new_name} occurs in none of the compared nodes")
     return findings, compared
 
@@ -639,7 +643,7 @@ def compare_test_ids(
     before_total = sum(sum(outcomes.values()) for outcomes in before.values())
     after_total = sum(sum(outcomes.values()) for outcomes in after.values())
     if not before_total and not after_total:
-        raise BadInput("no testcases survive --file-prefix on either side")
+        raise BadInput("no testcases on either side" + (f" under --file-prefix {file_prefix}" if file_prefix else ""))
     findings = []
     for test_id in sorted(set(before) | set(after)):
         before_outcomes, after_outcomes = before.get(test_id, Counter()), after.get(test_id, Counter())
@@ -762,7 +766,11 @@ def build_parser() -> argparse.ArgumentParser:
     test_ids = subcommands.add_parser("test-ids", help="compare per-test outcomes across junit XML runs")
     test_ids.add_argument("--before", required=True, action="append", type=Path, help="junit XML; repeatable, unioned")
     test_ids.add_argument("--after", required=True, action="append", type=Path, help="junit XML; repeatable, unioned")
-    test_ids.add_argument("--file-prefix", default="", help="keep only testcases under this path, e.g. scripts/tests/")
+    test_ids.add_argument(
+        "--file-prefix",
+        default="",
+        help="keep only testcases under this path, relative to pytest's rootdir, e.g. claude/.claude/scripts/tests/",
+    )
     _add_list_option(test_ids, "--rename", "OLD=NEW", "rename a before ID, its leading ::-part, or its [param] stem")
     _add_list_option(test_ids, "--expect-new", "ID", "IDs that must appear only after; others are an expect-new-mismatch")
     test_ids.set_defaults(handler=_run_test_ids)
@@ -773,7 +781,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.handler(args)
-    except BadInput as error:
+    except (BadInput, OSError) as error:
         print(f"bad-input: {error}", file=sys.stderr)
         return EXIT_BAD_INPUT
 
