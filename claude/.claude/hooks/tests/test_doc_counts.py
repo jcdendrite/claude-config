@@ -716,6 +716,64 @@ class TestDocCounts:
             _assert_claimed_matches_actual(claimed, actual, occurrence, fact.label)
 
 
+_CONFIG_FILE_DOC_REL_PATH = "docs/config-file.md"
+_CONFIG_SCHEMA_AUDIT_REL_PATH = "claude/.claude/hooks/tests/config-schema-audit.md"
+_DOCS_ANCHOR_SECTION_SEPARATOR = " \u00a7 "
+
+
+class TestConfigKeyDocumentationCoverage:
+    """Every key in config-keys.psv is documented where the docs promise it is."""
+
+    @pytest.mark.parametrize("key", list(schema()))
+    def test_key_has_a_config_file_doc_table_row(self, key: str) -> None:
+        doc_lines = (REPO_ROOT / _CONFIG_FILE_DOC_REL_PATH).read_text().splitlines()
+        assert any(line.startswith(f"| `{key}` |") for line in doc_lines), (
+            f"{_CONFIG_FILE_DOC_REL_PATH}: no table row for schema key {key!r}"
+        )
+
+    @pytest.mark.parametrize("key", list(schema()))
+    def test_config_file_doc_table_row_matches_schema_type_default_and_resolution(
+        self, key: str
+    ) -> None:
+        """The user-facing per-key table must not contradict config-keys.psv.
+
+        Cells are compared after stripping the markdown backticks the table puts
+        around some types and every default; the Promptable and Docs cells are
+        not compared."""
+        doc_lines = (REPO_ROOT / _CONFIG_FILE_DOC_REL_PATH).read_text().splitlines()
+        row_line = next(
+            (line for line in doc_lines if line.startswith(f"| `{key}` |")), None
+        )
+        assert row_line is not None, (
+            f"{_CONFIG_FILE_DOC_REL_PATH}: no table row for schema key {key!r}"
+        )
+        # A row is `| key | type | default | resolution | promptable | docs |`; the
+        # leading and trailing pipes yield empty first and last split cells.
+        _, _, type_cell, default_cell, resolution_cell, *_ = (
+            cell.strip().strip("`") for cell in row_line.split("|")
+        )
+        schema_row = schema()[key]
+        assert (type_cell, default_cell, resolution_cell) == (
+            schema_row.type,
+            schema_row.default,
+            schema_row.resolution,
+        ), f"{_CONFIG_FILE_DOC_REL_PATH}: row for {key!r} disagrees with config-keys.psv"
+
+    @pytest.mark.parametrize("key", list(schema()))
+    def test_key_has_a_config_schema_audit_section(self, key: str) -> None:
+        audit_lines = (REPO_ROOT / _CONFIG_SCHEMA_AUDIT_REL_PATH).read_text().splitlines()
+        assert f"### `{key}`" in audit_lines, (
+            f"{_CONFIG_SCHEMA_AUDIT_REL_PATH}: no `### `{key}`` section for schema key {key!r}"
+        )
+
+    @pytest.mark.parametrize("key", list(schema()))
+    def test_key_docs_anchor_path_exists(self, key: str) -> None:
+        anchor_path = schema()[key].docs_anchor.split(_DOCS_ANCHOR_SECTION_SEPARATOR)[0]
+        assert (REPO_ROOT / anchor_path).is_file(), (
+            f"config-keys.psv: docs-anchor path {anchor_path!r} for {key!r} does not exist"
+        )
+
+
 class TestParseCountToken:
     """Unit tests for the _parse_count_token helper."""
 
