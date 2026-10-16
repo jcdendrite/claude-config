@@ -75,8 +75,10 @@ per session), `_attributed_branch` (the timeline step for sidechain records, the
 `_attribute_carried_branch` (the pre-branch step alone, for positional consumers).
 The rule itself is documented in `docs/transcript-analysis.md` under "Subagent attribution" and
 "Pre-branch default-branch attribution".
-Also owns `_add_project_scope_args`, which registers the mutually exclusive `--projects`/`--this-repo`
-flags on a subparser; `_resolve_project_scope` reads the `this_repo` attribute it defines.
+
+`scope.py` also owns `_add_project_scope_args`, which registers the mutually exclusive
+`--projects`/`--this-repo` flags on a subparser. `_resolve_project_scope` reads the `this_repo`
+attribute that function defines.
 
 Read reassignable module globals (`scope.PROJECTS_DIR`, `scope.config_dir`,
 `pricing._usage_drift_warned`) via attribute access, never `from module import NAME` — the latter
@@ -485,10 +487,12 @@ shim copy reserved for the argparse-wiring and `cmd_author_outcome` end-to-end t
 
 `fake_projects`, `cost_ledger_file`, and `cost_ledger_enabled` patch the package modules directly, so a
 test file that uses them needs no `transcript-analysis.py` loader of its own.
+`tests/test_transcript_shared_fixtures.py` requests them from a file that loads no shim.
 `tests/_move_fidelity.py` checks a code move between files: moved-node AST equality modulo a rename
 map, what remains of each source file, byte-compared CLI captures under a pinned environment, and
-per-test outcomes across junit XML runs. `tests/test_transcript_move_fidelity.py` seeds a defect for
-each check. Run the module with `--help` for usage.
+per-test outcomes across junit XML runs. Its seeded-defect self-test is split by subcommand:
+`tests/test_transcript_move_fidelity_test_ids.py` covers `test-ids`, and
+`tests/test_transcript_move_fidelity.py` covers the rest. Run the module with `--help` for usage.
 
 The cache-rebuild family splits along thematic seams rather than one file per module:
 

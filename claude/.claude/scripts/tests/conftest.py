@@ -1425,7 +1425,7 @@ def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects):
     - Sets `CLAUDE_CONFIG_DIR` explicitly rather than relying on
       `_isolate_transcript_corpus_lookups`'s coincidental tmp-path match.
       `_cost_ledger_report`'s sentinel check resolves `config_dir` through
-      `_config.py`'s own binding, not the shim's, so patching
+      `_config.py`'s own binding, so patching
       `cost_ledger.config_dir` alone has no effect on it.
     - The env var alone is not sufficient either. `fake_projects`
       monkeypatches `cost_ledger.config_dir` to its own `tmp_path`,
