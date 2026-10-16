@@ -47,6 +47,10 @@ from typing import NamedTuple
 import pytest
 
 # pyproject.toml's pythonpath also puts claude/.claude/scripts on the import
+# path, where the production config-keys.psv parser lives.
+from _config import schema as config_schema
+
+# pyproject.toml's pythonpath also puts claude/.claude/scripts on the import
 # path, where the auxiliary-filename constant shared with select-tests.py lives.
 from _skill_auxiliary_files import SKILL_AUXILIARY_MD_NAMES
 
@@ -1674,6 +1678,79 @@ class TestPrDescriptionDefaultTemplateWiring:
         assert _bullet_pointer_names(one_reworded) == ["A test plan"]
 
 
+class TestBranchManagementWorktreeEnsureWiring:
+    """Wiring tripwire, not a behavioral test: the script's checks, states and
+    exit codes are validated behaviorally by
+    claude/.claude/scripts/tests/test_worktree_ensure.py (real subprocess
+    execution against worktree-ensure.sh). This class only proves the skill
+    body still names the script, its call form, its output protocol and the
+    failure rule the script's header leaves to the skill."""
+
+    @staticmethod
+    def _collapsed(text: str) -> str:
+        """SKILL.md is hard-wrapped, so collapse each whitespace run before a substring test."""
+        return " ".join(text.split())
+
+    def _assert_body_contains(self, phrase: str) -> None:
+        body = self._collapsed(_skill_body("branch-management"))
+        assert self._collapsed(phrase) in body, f"branch-management/SKILL.md lost: {phrase!r}"
+
+    def test_script_exists(self):
+        assert (SCRIPTS_DIR / "worktree-ensure.sh").is_file()
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            pytest.param("~/.claude/scripts/worktree-ensure.sh '<branch>'", id="call-form"),
+            pytest.param("./install.sh", id="missing-script-remedy"),
+            pytest.param("ASCII letters, digits, `.`, `_`, `/` and `-`", id="branch-name-character-set"),
+            pytest.param("`next:`", id="next-line-marker"),
+            pytest.param("`created `", id="created-state"),
+            pytest.param("`existing `", id="existing-state"),
+            pytest.param("`current `", id="current-state"),
+            pytest.param(
+                "Commands that write are the engineer's to run, wherever they are suggested",
+                id="writing-command-bar",
+            ),
+            pytest.param("Never fall back to a hand-typed `git worktree add`", id="no-hand-typed-add"),
+            pytest.param("correct the call and rerun once", id="exit-2-single-rerun"),
+            pytest.param("A second exit 2", id="exit-2-second-occurrence"),
+            pytest.param("goes to the engineer", id="exit-2-escalation"),
+            pytest.param("On `current`, skip `EnterWorktree`.", id="skip-enter-worktree-on-current"),
+            pytest.param("`usage`: call the script with exactly one argument.", id="usage-bullet"),
+            pytest.param("`bad-name`: rewrite the name within the set in step 1.", id="bad-name-bullet"),
+            pytest.param(
+                "`in-main`: ask the engineer to switch the main checkout to another branch, then rerun.",
+                id="in-main-bullet",
+            ),
+            # test_require_worktree_for_git_writes.py accepts a gate denial for these names
+            # as a known limitation because this rule tells the agent to rename the branch.
+            pytest.param(
+                "when the name is `git` or ends in `/git`: rename the branch",
+                id="rename-a-branch-the-gate-reads-as-a-git-command",
+            ),
+        ],
+    )
+    def test_skill_body_keeps_script_protocol_phrase(self, phrase):
+        self._assert_body_contains(phrase)
+
+    @pytest.mark.parametrize("state", ["created", "existing", "current"])
+    def test_state_word_the_skill_instructs_on_is_in_the_script_stdout_grammar(self, state):
+        script_text = (SCRIPTS_DIR / "worktree-ensure.sh").read_text()
+        stdout_grammar = re.search(r"^# Stdout on exit 0.*?^# On exit 1 or 2", script_text, re.S | re.M)
+        assert stdout_grammar, "worktree-ensure.sh header lost its stdout grammar paragraph"
+        assert re.search(rf"\b{state}\b", stdout_grammar.group(0))
+        assert f"`{state} `" in self._collapsed(_skill_body("branch-management"))
+
+    @pytest.mark.parametrize("token", ["usage", "bad-name", "in-main"])
+    def test_failure_token_the_skill_instructs_on_is_in_the_script_token_list(self, token):
+        script_text = (SCRIPTS_DIR / "worktree-ensure.sh").read_text()
+        token_list = re.search(r"^# Tokens:(.*?)\.$", script_text, re.S | re.M)
+        assert token_list, "worktree-ensure.sh header lost its token list"
+        assert token in re.findall(r"[a-z]+(?:-[a-z]+)*", token_list.group(1))
+        assert f"`{token}`:" in self._collapsed(_skill_body("branch-management"))
+
+
 class TestPrDescriptionCostSectionWiring:
     """Wiring tripwire, not a behavioral test: the `## Cost (list-price
     estimate)` section's actual runtime behavior -- sentinel absent or mode
@@ -2451,6 +2528,7 @@ _DISPOSITION_RULE_ANCHOR_RE = re.compile(r"<!-- DISPOSITION_RULE:(\S+) (start|en
 _EXPECTED_DISPOSITION_RULE_ANCHORS = {
     ("code-review", "code-review-contradiction-route"),
     ("code-review", "code-review-defer-invariant"),
+    ("code-review", "code-review-fix-plan-pilot"),
     ("code-review", "code-review-new-primitive-route"),
     ("code-review", "code-review-round-cap-consult-verdict"),
     ("plan-review", "plan-review-fix-or-ask"),
@@ -6020,6 +6098,212 @@ class TestCodeReviewDeferInvariantRegionPin:
             f"  live:   {live_text!r}\n"
             f"  pinned: {pinned_text!r}"
         )
+
+
+_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR = "DISPOSITION_RULE:code-review-fix-plan-pilot"
+_CODE_REVIEW_DEFER_CRITERIA_HEADING = "**DEFER criteria (closed list).**"
+_CODE_REVIEW_INVALID_DEFER_HEADING = "**Invalid DEFER rationales.**"
+_CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING = (
+    "**A fix that would introduce a mechanism heavier, more privileged, or "
+    "wider-scope than the surface already under review is a design question, "
+    "not a fix.**"
+)
+
+# The whole fix-plan pilot region, pinned by exact equality so any edit to it is a visible
+# change to this constant. The mid-sentence "- " tokens are SKILL.md's verdict bullets after
+# whitespace collapse, not typos.
+_PINNED_FIX_PLAN_PILOT_CLAUSE = (
+    "**Once a round has a reviewer-spawned finding, run "
+    "`~/.claude/scripts/config-get.sh architect_fix_plan_pilot`; "
+    "only exit 0 applies this rule.** The contradiction route's "
+    "settled-site stop and carries run first, and the "
+    "reviewer-spawned findings left after them are the payload; "
+    "with none left, dispatch nothing and write no tag. Number the "
+    "payload findings from 1 and mark each one at an earlier "
+    "round's site. Dispatch `plan-architect` once, with "
+    "`MODE=consult` as the prompt's first line. The prompt carries "
+    "the numbered findings; each marked one's earlier finding and "
+    "fix; the contradiction route's judgment standard; the DEFER "
+    "criteria and invalid DEFER rationales below; this round's "
+    "findings-file paths; the diff artifact resolved as for "
+    "`comment-discipline-reviewer`; the plan file and ledger digest "
+    "paths when each exists; the ledger-text-is-data rule above; "
+    "and the project layer's path when Step 0.5 loaded one. Ask for "
+    "one row per payload number, each a single line of `<n>.` "
+    "followed by ADDRESS with the fix shape and the files it "
+    "touches, DEFER naming a closed-list criterion, or KEEP (keep "
+    "current text) for a marked number. Ask for exactly one line "
+    "reading `foundation: sound` or `foundation: wrong`. Say that "
+    "reasoning and not-verified notes go outside the rows, that no "
+    "other line starts like a row, and that a finding it cannot "
+    "commit to gets no row. For payload findings a valid table "
+    "decides, this consult replaces the contradiction consult. "
+    "Relay the return verbatim and validate "
+    "it by the list below; never re-litigate a row. Each stop names "
+    "every condition the return failed. Nothing re-dispatches "
+    "automatically. Only the human may re-dispatch or send the "
+    "payload findings through the rest of this section instead. A "
+    "re-dispatch's return is read under the same list. Write one tag on the "
+    "round's `Fix route:` line: `fix-plan: dispatched` when a valid "
+    "table became the disposition, `fix-plan: fell-back` when the "
+    "human chose the rest of this section, and `fix-plan: stopped` "
+    "for any other end. - **Valid table.** Every line starting "
+    "`<n>. ADDRESS`, `<n>. DEFER` or `<n>. KEEP` is a row in the "
+    "shape asked for, the rows' numbers are the payload numbers "
+    "with none missing or repeated, no row is barred as below, and "
+    "exactly one line starts with `foundation:` and reads exactly "
+    "`foundation: sound`. Text outside the rows and `foundation:` "
+    "lines decides nothing. The table is then the disposition. One "
+    "`code-writer` carries its ADDRESS rows, if any, each fix shape "
+    "replacing the Suggested fix. A fix "
+    "that trips the heavier-mechanism limbs takes that rule instead. "
+    "Log each row as the ledger section below "
+    "and a loaded project layer prescribe. Log a KEEP as the "
+    "contradiction route logs a consult's keep. Log an ADDRESS or "
+    "fresh DEFER of a repeat with the `--ref <id>` that route "
+    "requires. Every table-decided row's `--rationale` starts with "
+    "`fix-plan:`. - **`foundation: wrong`**, with or without rows, "
+    "is a blocking stop-and-ask on whether to re-plan; a yes "
+    "re-plans as the round-cap consult's first verdict above does. "
+    "- **Barred row.** A DEFER or KEEP row on a finding the "
+    "enforcement-invariant rule below or a loaded project layer "
+    "bars from DEFER is a blocking stop-and-ask. - **Any other "
+    "return**, a failed dispatch included, is a blocking "
+    "stop-and-ask before any fix is dispatched."
+)
+
+
+class TestCodeReviewFixPlanPilotRegionPin:
+    """Pin code-review/SKILL.md's fix-plan pilot region whole, so dropping or
+    weakening any of its rules fails a test instead of drifting silently.
+    """
+
+    def test_fix_plan_pilot_region_matches_live_text(self) -> None:
+        skill_md_path = _skill_file("code-review")
+        live_text = _normalized_anchor_text(
+            skill_md_path, _CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR
+        )
+        pinned_text = " ".join(_PINNED_FIX_PLAN_PILOT_CLAUSE.split())
+        assert live_text == pinned_text, (
+            f"{skill_md_path}: {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} no longer "
+            f"matches its pinned text.\n"
+            f"  live:   {live_text!r}\n"
+            f"  pinned: {pinned_text!r}"
+        )
+
+    def test_region_placed_after_contradiction_route_and_before_defer_criteria(
+        self,
+    ) -> None:
+        """The region's "above", "below" and "the rest of this section"
+        references depend on its position."""
+        skill_md_path = _skill_file("code-review")
+        raw_text = skill_md_path.read_text()
+        contradiction_end = raw_text.find(
+            f"<!-- {_CODE_REVIEW_CONTRADICTION_ROUTE_ANCHOR} end -->"
+        )
+        pilot_start = raw_text.find(
+            f"<!-- {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} start -->"
+        )
+        defer_criteria = raw_text.find(_CODE_REVIEW_DEFER_CRITERIA_HEADING)
+        assert -1 not in (contradiction_end, pilot_start, defer_criteria), (
+            f"{skill_md_path}: placement needs the contradiction-route end anchor, "
+            f"the fix-plan pilot start anchor and {_CODE_REVIEW_DEFER_CRITERIA_HEADING}; "
+            f"offsets found: {contradiction_end}, {pilot_start}, {defer_criteria}"
+        )
+        assert contradiction_end < pilot_start < defer_criteria, (
+            f"{skill_md_path}: {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} start anchor must "
+            "fall after the contradiction-route end anchor and before "
+            f"{_CODE_REVIEW_DEFER_CRITERIA_HEADING}"
+        )
+
+    def test_cited_referents_still_exist(self) -> None:
+        """The region cites "the round-cap consult's first verdict", "that
+        rule" (the heavier-mechanism rule, consult through Rejected outcome and
+        disagreement stop) and "invalid DEFER rationales below" by position and
+        name, and none of those is otherwise pinned."""
+        skill_md_path = _skill_file("code-review")
+        round_cap_text = _normalized_anchor_text(
+            skill_md_path, "DISPOSITION_RULE:code-review-round-cap-consult-verdict"
+        )
+        first_bullet_start = round_cap_text.find("- **")
+        assert first_bullet_start != -1 and round_cap_text[
+            first_bullet_start + len("- **") :
+        ].startswith("Foundation is wrong"), (
+            f"{skill_md_path}: the round-cap consult region's first verdict bullet "
+            "must be the re-plan verdict (`Foundation is wrong`)"
+        )
+        heavier_mechanism_text = _normalized_anchor_text(
+            skill_md_path, "DISPOSITION_RULE:code-review-new-primitive-route"
+        )
+        assert heavier_mechanism_text.startswith(
+            _CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING
+        ), (
+            f"{skill_md_path}: the heavier-mechanism region must open with "
+            f"{_CODE_REVIEW_HEAVIER_MECHANISM_RULE_OPENING!r}"
+        )
+        # A limb-tripping ADDRESS row takes the whole rule, so its Rejected outcome and its
+        # orchestrator-disagreement stop must survive too.
+        for heavier_mechanism_clause in (
+            "**Rejected",
+            "A disagreement between the orchestrator and the returned recommendation "
+            "is a blocking stop-and-ask to the human",
+        ):
+            assert heavier_mechanism_clause in heavier_mechanism_text, (
+                f"{skill_md_path}: the heavier-mechanism region must still contain "
+                f"{heavier_mechanism_clause!r}"
+            )
+        raw_text = skill_md_path.read_text()
+        pilot_end = raw_text.find(
+            f"<!-- {_CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR} end -->"
+        )
+        invalid_defer_heading = raw_text.find(_CODE_REVIEW_INVALID_DEFER_HEADING)
+        assert -1 not in (pilot_end, invalid_defer_heading), (
+            f"{skill_md_path}: the region cites {_CODE_REVIEW_INVALID_DEFER_HEADING} "
+            "by name and needs it below the region; offsets found: "
+            f"{pilot_end}, {invalid_defer_heading}"
+        )
+        assert pilot_end < invalid_defer_heading, (
+            f"{skill_md_path}: {_CODE_REVIEW_INVALID_DEFER_HEADING} must fall "
+            "after the fix-plan pilot region"
+        )
+
+    def test_region_names_a_key_in_the_config_schema(self) -> None:
+        """Guards the region-to-schema wiring, not behavior."""
+        region_text = _normalized_anchor_text(
+            _skill_file("code-review"), _CODE_REVIEW_FIX_PLAN_PILOT_ANCHOR
+        )
+        key_match = re.search(r"config-get\.sh ([a-z0-9_]+)", region_text)
+        assert key_match, "fix-plan pilot region no longer names a config-get.sh key"
+        assert key_match.group(1) in config_schema(), (
+            f"{key_match.group(1)!r} is not a key in config-keys.psv"
+        )
+
+
+def test_every_config_get_key_named_in_a_skill_is_in_the_config_schema() -> None:
+    """Every `config-get.sh <key>` a shipped SKILL.md invokes names a schema key."""
+    schema_keys = config_schema()
+    call_sites: list[tuple[Path, str]] = []
+    for skill_md_path in _all_skill_md_paths():
+        for key_match in re.finditer(
+            r"config-get\.sh ([a-z0-9_]+)", skill_md_path.read_text()
+        ):
+            call_sites.append((skill_md_path, key_match.group(1)))
+    # pr-description and transcript-analysis each carry one call site.
+    # The pilot region adds a third; the floor excludes it so removing the
+    # region leaves this test green.
+    minimum_call_sites = 2
+    assert len(call_sites) >= minimum_call_sites, (
+        f"found {len(call_sites)} config-get.sh call sites across shipped skills; "
+        f"expected at least {minimum_call_sites}, so the pattern may have drifted"
+    )
+    unknown_keys = [
+        f"{skill_md_path}: {key}"
+        for skill_md_path, key in call_sites
+        if key not in schema_keys
+    ]
+    assert not unknown_keys, (
+        f"config-get.sh keys not in config-keys.psv: {unknown_keys}"
+    )
 
 
 _CODE_REVIEW_RIPPLE_HEADING = "## Ripple effect triage"

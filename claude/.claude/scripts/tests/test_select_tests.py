@@ -1424,24 +1424,29 @@ class TestSelectPytestTargets:
         claude-skills/, and plugins/ (e.g. SKILL_EVALS_RUNNER) must not match."""
         assert _mod._is_py_source_under_claude_or_plugins(_mod.SKILL_EVALS_RUNNER) is False
 
-    def test_config_module_change_selects_its_hooks_tests_importers(self):
-        """HOOKS_TESTS_IMPORTING_CONFIG's four test files import CONFIG_MODULE
-        by name, invisible to path-constant scanning, so its declared
-        CROSS_DOMAIN_EXCEPTIONS row is the only thing that selects them for
-        this change."""
+    def test_config_module_change_selects_its_declared_importers(self):
+        """HOOKS_TESTS_IMPORTING_CONFIG's and SKILLS_TESTS_IMPORTING_CONFIG's
+        test files import CONFIG_MODULE by name, invisible to path-constant
+        scanning, so its declared CROSS_DOMAIN_EXCEPTIONS row is the only
+        thing that selects them for this change."""
         result = _mod.select_pytest_targets([_mod.CONFIG_MODULE])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
             *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
+            *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
         }
+        # Hand-typed literal, independent of the constant: an emptied
+        # SKILLS_TESTS_IMPORTING_CONFIG would otherwise satisfy the set above.
+        assert "claude-skills/skills/tests/test_skills.py" in result.target_paths
 
-    def test_config_dir_module_change_selects_all_three_declared_importer_sets(self):
-        """CONFIG_DIR_MODULE's own row selects three declared importer sets:
+    def test_config_dir_module_change_selects_all_four_declared_importer_sets(self):
+        """CONFIG_DIR_MODULE's own row selects four declared importer sets:
         - HOOKS_TESTS_IMPORTING_CONFIG's test files, via _config.py's own import
+        - SKILLS_TESTS_IMPORTING_CONFIG's test files, via _config.py's own import
         - REVIEW_LEDGER_SCRIPT_TEST_PATH, via transcript_analysis.author_outcome -> scope -> _config_dir
         - SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER's test files, via run_skill_evals
-        A fourth contributor, the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES row, adds
+        A fifth contributor, the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES row, adds
         REVIEW_BENCH_TEST_GLOB and MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST.
         """
         result = _mod.select_pytest_targets([_mod.CONFIG_DIR_MODULE])
@@ -1450,6 +1455,7 @@ class TestSelectPytestTargets:
             _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
             _mod.REVIEW_LEDGER_SCRIPT_TEST_PATH,
             *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
+            *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
             *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
         }
@@ -1959,6 +1965,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
     *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
+    *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
     *_mod.HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR,
     *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
     *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,

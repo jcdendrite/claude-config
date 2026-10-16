@@ -49,8 +49,8 @@ the split between this file, `claude/.claude/CLAUDE.md`, and
 Configuration files section for what each rule covers.
 
 Worktree enforcement is active — see README.md's Worktree enforcement
-section for the hook, the opt-in mechanism, and why. `git worktree add
-.claude/worktrees/<branch> -b <branch>` (or an agent with `isolation:
+section for the hook, the opt-in mechanism, and why. A worktree created
+per the `branch-management` skill (or an agent with `isolation:
 worktree`) satisfies it.
 
 `claude/` is stowed into `$HOME`. Changes under `claude/.claude/**` go live on

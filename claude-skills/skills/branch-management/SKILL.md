@@ -53,27 +53,71 @@ not from whatever happens to be checked out:
 Branching off a stale or unrelated branch carries baggage (extra
 commits, dirty state) that doesn't belong in the PR. Repos that route
 branch creation through a worktree helper (`EnterWorktree`, custom
-scripts) usually handle this automatically — verify once, then trust.
+scripts) usually handle this automatically — verify once, then trust. A
+branch for a linked worktree skips the `checkout`/`pull` commands above,
+because `worktree-ensure.sh` (below) fetches and starts from the default
+tip itself.
 
 If the repo's default branch is `master`, `trunk`, `develop`, or
-anything other than `main`, substitute accordingly. Check with
-`git symbolic-ref refs/remotes/origin/HEAD`.
+anything other than `main`, substitute accordingly.
+`git symbolic-ref --short refs/remotes/origin/HEAD` prints the name
+after its `origin/` prefix.
 
 ## Anchor the session in the worktree
 
 When the branch lives in a linked worktree, creating the worktree is
-only half the step — the session must also enter it, as the very next
-call, before any other command touches the new path:
+only half the step — the session must also enter it. One script finds or
+creates the worktree and prints the step to take next. It works the same
+from the main checkout or from a linked worktree:
 
-    git worktree add .claude/worktrees/<branch> -b <branch>
+1. Branch names use only ASCII letters, digits, `.`, `_`, `/` and `-`.
+   Rewrite a name outside that set before composing the call; never
+   quote around it.
+2. Run `~/.claude/scripts/worktree-ensure.sh '<branch>'`, typing the
+   branch name in place of `<branch>` inside the single quotes. Set the
+   Bash tool's `timeout` to the maximum its description allows, because
+   a kill mid-checkout leaves a state only the engineer can clear.
+3. Find the last line that starts with `next:`. The line just before it
+   starts with `created `, `existing ` or `current `. Other lines come
+   from git and the programs it runs, such as hooks.
+   - On `created` or `existing`, make the `EnterWorktree{path: …}` call
+     on the `next:` line your very next call.
+   - On `current`, skip `EnterWorktree`. The working directory already
+     is that worktree, and `EnterWorktree` refuses a target equal to it.
+4. On failure, read the last line that starts with
+   `worktree-ensure.sh: `. Its second field is the token.
+   - `usage`: call the script with exactly one argument.
+   - `bad-name`: rewrite the name within the set in step 1.
+   - Exit 2 with no such line: the script most likely never ran, usually
+     because the name held a `'`. Rewrite the name only if it held a
+     character outside the set.
+   - After any exit 2, correct the call and rerun once. A second exit 2,
+     or a no-line exit 2 from a call that already had one argument and
+     a name within the set, goes to the engineer with the exit status
+     and stderr.
+   - `in-main`: ask the engineer to switch the main checkout to another
+     branch, then rerun.
+   - Exit 127 with no such line: the script is missing. Tell the
+     engineer to re-run `./install.sh`.
+   - A worktree-gate denial when the name is `git` or ends in `/git`:
+     rename the branch, because the gate reads such a name as a git
+     command. `EnterWorktree`'s create mode is not a substitute, because
+     it takes no start point.
+   - Any other failure, including a run the tool killed with no
+     `worktree-ensure.sh:` line: report that line, or the exit status,
+     to the engineer, and do not rerun.
+     - Commands that write are the engineer's to run, wherever they are
+       suggested. Examples include creating or attaching a worktree,
+       deleting a branch, unlocking, removing or pruning a record,
+       deleting a lock file, and moving or removing a directory.
+     - Read-only commands such as `git worktree list` are fine.
+     - A rerun the engineer asks for writes nothing while the failed
+       run's branch or worktree remains, and reports that state.
+   - Never fall back to a hand-typed `git worktree add`.
 
-then `EnterWorktree{path: "<absolute path to the worktree>"}`.
-
-Call `EnterWorktree` with an absolute path before any other command,
-including read-only ones — it resolves relative paths against cwd (not
-repo root) and has no idempotent "already there" case, so a prior `cd`
-silently leaves the session unanchored, with none of `EnterWorktree`'s
-other effects (subagent inheritance, `ExitWorktree` tracking).
+A `cd` before `EnterWorktree` silently leaves the session unanchored,
+with none of `EnterWorktree`'s other effects (subagent inheritance,
+`ExitWorktree` tracking).
 
 Entering the worktree resets the session's cd-anchor to it; until
 then, a stray `cd` out (including one through a symlink that resolves
@@ -97,8 +141,8 @@ at a committed ref, without the parent's uncommitted work
 (`claude/.claude/CLAUDE.md` § "Agent Briefing").
 
 The anchor is session-scoped. A resumed session starts unanchored, so
-re-enter the worktree before running *any* other command or
-dispatching subagents — a read-only lookup counts too, since it's the
+re-enter the worktree with the steps above before running *any* other
+command or dispatching subagents — a read-only lookup counts too, since it's the
 `cd` that breaks the anchor described above.
 
 ## Crossing to a different branch mid-session

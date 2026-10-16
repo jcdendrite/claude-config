@@ -179,11 +179,13 @@ DOC_COUNTS_TEST_PATH = "claude/.claude/hooks/tests/test_doc_counts.py"
 # one added later, needs its own manual addition to the matching *_IMPORTING_*
 # constant below.
 
-# Import dependency of HOOKS_TESTS_IMPORTING_CONFIG's test files.
+# Import dependency of HOOKS_TESTS_IMPORTING_CONFIG's and
+# SKILLS_TESTS_IMPORTING_CONFIG's test files.
 CONFIG_MODULE = "claude/.claude/scripts/_config.py"
 
-# Import dependency of HOOKS_TESTS_IMPORTING_CONFIG, REVIEW_LEDGER_SCRIPT_TEST_PATH,
-# and SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER's test files.
+# Import dependency of HOOKS_TESTS_IMPORTING_CONFIG, SKILLS_TESTS_IMPORTING_CONFIG,
+# REVIEW_LEDGER_SCRIPT_TEST_PATH, and SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER's
+# test files.
 CONFIG_DIR_MODULE = "claude/.claude/scripts/_config_dir.py"
 
 # Import dependency of REVIEW_LEDGER_SCRIPT_TEST_PATH, via its import of
@@ -212,6 +214,9 @@ HOOKS_TESTS_IMPORTING_CONFIG: frozenset[str] = frozenset({
     "claude/.claude/hooks/tests/test_install_sh_machine_level_opt_ins.py",
     "claude/.claude/hooks/tests/test_install_sh_sentinel_inventory.py",
 })
+
+# SKILLS_TESTS_DIR test files that import CONFIG_MODULE by name.
+SKILLS_TESTS_IMPORTING_CONFIG: frozenset[str] = frozenset({"claude-skills/skills/tests/test_skills.py"})
 
 # Imports transcript_analysis.author_outcome by name.
 REVIEW_LEDGER_SCRIPT_TEST_PATH = "claude/.claude/hooks/tests/test_review_ledger_script.py"
@@ -591,10 +596,11 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # validator scripts and eval runner it exercises.
 # SKILL_AUXILIARY_FILES_MODULE: SKILLS_TESTS_DIR's test_skills.py imports the
 # module, and that import is invisible to path-constant scanning.
-# CONFIG_MODULE: every HOOKS_TESTS_IMPORTING_CONFIG member imports it by name.
+# CONFIG_MODULE: every HOOKS_TESTS_IMPORTING_CONFIG and
+# SKILLS_TESTS_IMPORTING_CONFIG member imports it by name.
 # CONFIG_DIR_MODULE: same shape as CONFIG_MODULE's row, but each group
 # depends on it transitively rather than by direct name-import:
-# - HOOKS_TESTS_IMPORTING_CONFIG, via _config
+# - HOOKS_TESTS_IMPORTING_CONFIG and SKILLS_TESTS_IMPORTING_CONFIG, via _config
 # - REVIEW_LEDGER_SCRIPT_TEST_PATH, via transcript_analysis.author_outcome -> scope
 # - SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER, via run_skill_evals
 # TRANSCRIPT_ANALYSIS_PACKAGE_DIR: HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS's
@@ -738,11 +744,15 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == EVALS_README_MD, (SKILLS_TESTS_DIR,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
-    (lambda p: p == CONFIG_MODULE, tuple(sorted(HOOKS_TESTS_IMPORTING_CONFIG))),
+    (
+        lambda p: p == CONFIG_MODULE,
+        tuple(sorted(HOOKS_TESTS_IMPORTING_CONFIG | SKILLS_TESTS_IMPORTING_CONFIG)),
+    ),
     (
         lambda p: p == CONFIG_DIR_MODULE,
         tuple(sorted(
             HOOKS_TESTS_IMPORTING_CONFIG
+            | SKILLS_TESTS_IMPORTING_CONFIG
             | {REVIEW_LEDGER_SCRIPT_TEST_PATH}
             | SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER
         )),

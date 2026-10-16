@@ -32,6 +32,9 @@ _CONFIG_SH = HOOKS_DIR / "_config.sh"
 _CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
 _INSTALL_SH = REPO_ROOT / "install.sh"
 
+sys.path.insert(0, str(SCRIPTS_DIR))
+from _config import schema  # noqa: E402
+
 
 def _installed_utf8_locale_names() -> list[str]:
     """Every UTF-8 locale name `locale -a` reports as installed, in its order.
@@ -114,9 +117,9 @@ def _run_with_schema(hooks_dir: Path, script: str) -> subprocess.CompletedProces
     needs only _config.sh's own functions, matching
     test_config_parser_parity.py's TestMissingSchemaFile isolation
     technique. Used for schema shapes (e.g. a key with no legacy-polarity
-    value) that none of today's other real keys carry.
-    test_selection_tracking is the one real key with that shape. It is
-    exercised directly against the real schema by TestConfigScaffold."""
+    value) that few or none of the real keys carry. The real keys with
+    no legacy-polarity are exercised directly against the real schema by
+    TestConfigScaffold."""
     return subprocess.run(
         ["bash", "-c", f'set -uo pipefail; . "{hooks_dir / "_config.sh"}"; {script}'],
         capture_output=True,
@@ -1274,6 +1277,15 @@ class TestConfigSet:
 # ---------------------------------------------------------------------------
 
 
+def _no_legacy_polarity_default_rows() -> list[str]:
+    """`<key> = <default>` for every real-schema key with an empty
+    legacy-polarity, in config-keys.psv order -- the rows _config_scaffold
+    backfills into an empty state file. Derived from the schema so a newly
+    added no-legacy key needs no test edit.
+    Rendering is the bare form, which holds for bool keys only."""
+    return [f"{row.key} = {row.default}" for row in schema().values() if not row.legacy_polarity]
+
+
 class TestConfigScaffold:
     def test_existing_hand_edited_row_survives_unchanged(self, isolated_home):
         _write_state_file(isolated_home, "handoff_nudge = false\n")
@@ -1281,24 +1293,38 @@ class TestConfigScaffold:
         assert result.returncode == 0
 
         state_file = isolated_home / ".claude" / "claude-config.toml"
-        # test_selection_tracking has no legacy-polarity (see
+        # Every key with no legacy-polarity (see
         # test_presence_and_content_matches_polarity_keys_stay_absent's own
-        # docstring) so scaffold backfills its default row alongside the
+        # docstring) gets its default row backfilled alongside the
         # untouched hand-edited one.
-        assert state_file.read_text().splitlines() == [
-            "handoff_nudge = false", "test_selection_tracking = false",
-        ]
+        assert state_file.read_text() == "\n".join(
+            ["handoff_nudge = false", *_no_legacy_polarity_default_rows()]
+        ) + "\n"
 
-    def test_presence_and_content_matches_polarity_keys_stay_absent(self, isolated_home):
-        """Every key but test_selection_tracking carries a legacy-polarity
-        value and stays absent (backfilling would shadow its legacy file);
-        test_selection_tracking has none, so scaffold backfills its default
-        row alone."""
+    @pytest.mark.parametrize("key", [row.key for row in schema().values() if not row.legacy_polarity and row.type == "bool"])
+    def test_hand_written_non_default_row_for_a_no_legacy_key_survives_unchanged(self, isolated_home, key):
+        """The non-default value is spelled out, not derived from a legacy
+        file the key does not have, so the row stays distinguishable from the
+        default row scaffold would otherwise write. Bool keys only, like
+        _no_legacy_polarity_default_rows."""
+        non_default_value = "true" if schema()[key].default == "false" else "false"
+        _write_state_file(isolated_home, f"{key} = {non_default_value}\n")
         result = _run("_config_scaffold")
         assert result.returncode == 0
 
         state_file = isolated_home / ".claude" / "claude-config.toml"
-        assert state_file.read_text() == "test_selection_tracking = false\n"
+        assert f"{key} = {non_default_value}" in state_file.read_text().splitlines()
+        assert f"{key} = {schema()[key].default}" not in state_file.read_text().splitlines()
+
+    def test_presence_and_content_matches_polarity_keys_stay_absent(self, isolated_home):
+        """Every key with a legacy-polarity value stays absent (backfilling
+        would shadow its legacy file); every key with none gets its default
+        row backfilled, and nothing else is written."""
+        result = _run("_config_scaffold")
+        assert result.returncode == 0
+
+        state_file = isolated_home / ".claude" / "claude-config.toml"
+        assert state_file.read_text() == "\n".join(_no_legacy_polarity_default_rows()) + "\n"
 
     def test_legacy_file_created_after_scaffold_still_takes_effect(self, isolated_home):
         """A legacy kill switch touched after `install.sh`/
@@ -1309,23 +1335,29 @@ class TestConfigScaffold:
         (isolated_home / ".claude" / ".round-consult-gate-disabled").touch()
         assert _run("_config_value round_consult_gate").stdout == "false"
 
-    def test_exclude_list_key_and_every_other_key_both_stay_absent(self, isolated_home):
-        result = _run("_config_scaffold 'worktree_required autonomous_shipping'")
+    def test_excluded_no_legacy_key_stays_absent_while_every_other_no_legacy_key_is_backfilled(self, isolated_home):
+        excluded_no_legacy_key = "test_selection_tracking"
+        result = _run(f"_config_scaffold 'worktree_required autonomous_shipping {excluded_no_legacy_key}'")
         assert result.returncode == 0
 
         state_file = isolated_home / ".claude" / "claude-config.toml"
-        # Neither excluded key would have been backfilled anyway -- both
-        # carry a legacy-polarity value. test_selection_tracking has none,
-        # so it alone gets a default row.
-        assert state_file.read_text() == "test_selection_tracking = false\n"
+        # worktree_required and autonomous_shipping would not have been
+        # backfilled anyway -- both carry a legacy-polarity value. The
+        # excluded no-legacy key is the one that discriminates: every other
+        # no-legacy key still gets its default row, and it does not.
+        expected_rows = [
+            row for row in _no_legacy_polarity_default_rows() if not row.startswith(f"{excluded_no_legacy_key} = ")
+        ]
+        assert len(expected_rows) < len(_no_legacy_polarity_default_rows())
+        assert expected_rows, "needs a second no-legacy key for the exclusion to discriminate"
+        assert state_file.read_text() == "\n".join(expected_rows) + "\n"
 
     def test_plain_key_with_no_legacy_polarity_still_gets_its_default_row(self, isolated_home, tmp_path):
         """A key with an empty legacy-polarity column has no legacy file to
         protect, so scaffold's original additive-only default-fill contract
-        still applies to it. test_selection_tracking is the one real key
-        with this shape and is covered directly against the real schema by
-        TestConfigScaffold. This test exercises the same shape via an
-        isolated config-keys.psv fixture."""
+        still applies to it. The real keys with this shape are covered
+        directly against the real schema by TestConfigScaffold. This test
+        exercises the same shape via an isolated config-keys.psv fixture."""
         isolated_hooks_dir = tmp_path / "isolated-hooks"
         isolated_hooks_dir.mkdir()
         (isolated_hooks_dir / "_config.sh").symlink_to(_CONFIG_SH)
@@ -2154,9 +2186,6 @@ class TestSchemaFieldBogusFieldOrdering:
 # TestConfigKeysPsvGrammarInvariants below covers a different gap both
 # parsers share: row-shape/field-count leniency on a malformed row.
 # ---------------------------------------------------------------------------
-
-sys.path.insert(0, str(SCRIPTS_DIR))
-from _config import schema  # noqa: E402
 
 _SCHEMA_ROWS_BY_KEY = schema()
 

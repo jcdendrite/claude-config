@@ -57,6 +57,11 @@
 #     --fix-only`, and bare `ruff --fix` are all caught; `ruff check` alone
 #     stays allowed as read-only linting.
 #
+# worktree-ensure.sh is denied by command word.
+# require-worktree-for-git-writes.sh's main-tree deny message advertises it.
+# It fetches refs and creates a branch and a worktree.
+# Its command text holds no git word for this scan to catch.
+#
 # Known gaps (what this model does NOT close):
 #   - The Bash arm denies only the shapes this header names, so any other
 #     write verb or form (`rm`, `ln`, the source side of `mv`, an inline
@@ -108,6 +113,14 @@
 #   - An agent reached only through an alias, wrapper script, or another
 #     level of indirection this fragment-level scan cannot see is
 #     undecidable, same class of gap as require-worktree-for-git-writes.sh.
+#     For worktree-ensure.sh the residual is every command whose command
+#     word, after _lib.sh's command-word resolution, is not the script.
+#     That includes wrappers outside the runner skip list (`bash`, `sh`,
+#     `source`, `timeout N`, `exec`, `nohup`, `setsid`), syntax the fragment
+#     splitter does not unwrap (a brace group, `then`/`do` bodies, a bare `&`),
+#     and glob- or variable-built command words.
+#     Each is undecidable here, the same as the `bash -c` gap below.
+#     The class is accepted.
 #   - A git-write or in-place-edit reached through a command name quoted
 #     directly in the Bash arm's own command text (`'sed' -i file`) IS
 #     caught: the Bash arm strips quote characters from $COMMAND before
@@ -438,6 +451,13 @@ case "$TOOL_NAME" in
           emit_deny "'terraform/tofu fmt' reformats files and a review-only agent never reformats the tree under review. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
+      fi
+
+      # The command word is matched, so reading the script (`cat`, `grep`,
+      # `bash -n`) stays allowed.
+      if _lib_fragment_invokes_tool "$fragment" worktree-ensure.sh; then
+        emit_deny "The worktree gate's pointer to worktree-ensure.sh does not apply to review-only agents: it fetches refs and creates a branch and a worktree, and a review-only agent never writes git state. $SANCTIONED_ALTERNATIVE"
+        exit 0
       fi
 
       # Linters and text tools KEEP write-flag gating — unlike the pure
