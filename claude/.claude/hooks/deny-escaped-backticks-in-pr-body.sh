@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # Gate: reject `gh pr create` and `gh pr edit` commands whose body

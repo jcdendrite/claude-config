@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Single source of the migration-token directory path.
 # Source this file (do NOT invoke it) to set MIGRATION_TOKEN_DIR.
 # Generator and hooks both source this so the path is defined in one place.

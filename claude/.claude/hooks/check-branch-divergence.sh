@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # SessionStart hook: surface feature-branch divergence from origin/<default>
 # to the resuming Claude session. Advisory-only; never blocks, never acts.

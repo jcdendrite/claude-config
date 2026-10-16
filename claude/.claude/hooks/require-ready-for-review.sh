@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: require /ready-for-review to have run before pushing to a branch

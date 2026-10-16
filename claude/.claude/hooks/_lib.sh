@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Shared helper library sourced by require-*.sh hooks and scripts/marker.sh.
 # Keep this file the single source of truth for any recipe that must produce
 # byte-identical output on both the read side (hooks) and the write side
@@ -529,7 +529,7 @@ _lib_parse_tool_input_or_deny() {
   # -d '' (NUL delimiter, absent from the input) is required rather than the
   # default newline delimiter, because COMMAND may legitimately contain
   # embedded newlines. mapfile/readarray, the bash-4 alternative, is
-  # forbidden in this repo (test_no_bash4_constructs.py) because the target
+  # forbidden in this repo because the target
   # includes bash 3.2. `read -r -d ''` returns non-zero at EOF without ever
   # finding that delimiter, on every invocation including this one's own
   # success path, hence the trailing `|| true`.

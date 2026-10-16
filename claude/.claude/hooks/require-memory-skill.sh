@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # set -uo pipefail but NOT -e: hooks inspect exit codes rather than aborting on them.

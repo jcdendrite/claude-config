@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # PreToolUse: deny a no-op Agent/Task dispatch -- a subagent spawned solely

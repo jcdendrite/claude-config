@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # _review-pr-lib.sh — shared checks for review-pr-acquire.sh,
 # review-pr-checkout.sh and review-pr-diff.sh.
 #

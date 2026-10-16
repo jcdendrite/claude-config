@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Shared config-key reader/writer for every bash consumer: hooks (sourced
 # transitively via _lib.sh, which sources this file), install.sh (sourced
 # directly by repo-relative path, since install.sh runs before stow exists),

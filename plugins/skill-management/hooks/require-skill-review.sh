@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # Gate: require /skill-review before a commit-concluding command (git commit,

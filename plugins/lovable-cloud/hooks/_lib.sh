@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Trimmed shared helper library for lovable-cloud plugin hooks.
 # Source this file (do NOT invoke it). Contains only the two helpers needed
 # by PreToolUse gate hooks in this plugin: _lib_jq and

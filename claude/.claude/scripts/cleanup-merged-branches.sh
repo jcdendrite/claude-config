@@ -217,9 +217,8 @@ read_configured_roots() {
 declare -a DISCOVERED_REPOS=()
 discover_repo_roots() {
   # Linear membership scan, not an associative array: `declare -A` is a
-  # bash-4+ construct that fails outright on macOS's frozen system bash 3.2
-  # (test_no_bash4_constructs.py guards against it repo-wide). Fine at the
-  # scale a machine's own repo count reaches.
+  # bash-4+ construct that fails outright on macOS's frozen system bash 3.2.
+  # Fine at the scale a machine's own repo count reaches.
   local root git_dir repo_root already_seen _existing_repo
   for root in "${CONFIGURED_ROOTS[@]+"${CONFIGURED_ROOTS[@]}"}"; do
     if [ ! -d "$root" ]; then

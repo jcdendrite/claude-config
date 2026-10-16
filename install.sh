@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Mutates $HOME (stow symlinks) and this repo's tracked settings (marketplace
 # registration) -- never `source`/`.` this file; to exercise one block in
 # isolation, extract it via its INSTALL_TEST_FIXTURE markers instead (see

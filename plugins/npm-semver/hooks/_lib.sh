@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Trimmed shared helper library for npm-semver plugin hooks.
 # Source this file (do NOT invoke it). Contains only the helper needed by
 # the PreToolUse gate hook in this plugin: _lib_jq and

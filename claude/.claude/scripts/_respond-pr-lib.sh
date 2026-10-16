@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # _respond-pr-lib.sh — shared pure checks for respond-pr-safe-patch.sh.
 #
 # Sourced by respond-pr-safe-patch.sh; not executable on its own.

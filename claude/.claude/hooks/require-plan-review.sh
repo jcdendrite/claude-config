@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # PreToolUse hook: block Write/Edit/ExitPlanMode when an uncommitted or modified

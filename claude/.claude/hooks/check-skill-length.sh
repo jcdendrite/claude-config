@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # Gate: block git commit when a staged SKILL.md grows past its per-skill ceiling.

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, irreversible
 # Gate: denies a Bash `git commit` or `git <merge|rebase|cherry-pick|

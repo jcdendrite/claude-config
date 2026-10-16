@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: turn-gate
 # Stop hook: force forward progress past a commit/push/PR permission-question
 # stall (GH-526), in repos where the engineer has opted in to autonomous

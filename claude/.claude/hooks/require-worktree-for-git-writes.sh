@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, irreversible
 # Gate: require git write operations to happen inside a linked worktree,
@@ -294,7 +294,7 @@ if [ "$PARSER_EXIT" -ne 0 ]; then
 fi
 
 # Pulled from _lib.sh. Built via a read loop, not `mapfile` (bash-4+, breaks
-# macOS's shipped bash 3.2.57 — see test_no_bash4_constructs.py).
+# macOS's shipped bash 3.2.57).
 ALLOWED_SUBCMDS=()
 while IFS= read -r subcmd; do
   ALLOWED_SUBCMDS+=("$subcmd")

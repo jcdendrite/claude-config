@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # SessionStart hook: surface active gate-bypass marker state, and a
 # review-narrative ledger summary, to the resuming Claude session.

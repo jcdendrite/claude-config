@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Write or remove review markers for Claude Code workflow skills.
 # Called from SKILL.md HOOK_TEST_FIXTURE fenced blocks.
 # Usage: marker.sh <write|activate|deactivate|clear-stale> [<skill>|--dry-run]

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, irreversible
 # Gate: reject `git commit`, `gh pr create`, `gh pr edit`, `gh issue

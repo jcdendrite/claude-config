@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Trimmed shared helper library for skill-management plugin hooks.
 # Source this file (do NOT invoke it). Contains the helpers needed by
 # require-skill-review.sh: _lib_config_dir, _lib_jq, _lib_capped_for,

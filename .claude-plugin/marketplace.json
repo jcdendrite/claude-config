@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "lovable-cloud",
-      "description": "Skills and hooks for Lovable Cloud projects — Project/Workspace Knowledge fields, edge-function auth model, migration-sync workflow, and UTC-enforced migration filename generation.",
+      "description": "Skills and hooks for Lovable Cloud projects — Project/Workspace Knowledge fields, edge-function auth model, migration-sync workflow, and UTC-enforced migration filename generation. Needs bash 5.2 or newer first on the PATH Claude Code starts with (macOS: brew install bash) and Claude Code 2.1.295 or newer.",
       "author": {
         "name": "Cordova Strategy"
       },
@@ -17,7 +17,7 @@
     },
     {
       "name": "skill-management",
-      "description": "Authoring guardrails for SKILL.md files: a commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing) plus a behavioral-equivalence audit via /skill-review. Install at project scope in repos that author SKILL.md files.",
+      "description": "Authoring guardrails for SKILL.md files: a commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing) plus a behavioral-equivalence audit via /skill-review. Install at project scope in repos that author SKILL.md files. Needs bash 5.2 or newer first on the PATH Claude Code starts with (macOS: brew install bash) and Claude Code 2.1.295 or newer.",
       "author": {
         "name": "Cordova Strategy"
       },
@@ -35,7 +35,7 @@
     },
     {
       "name": "plugin-semver",
-      "description": "Semver and version-field discipline for Claude Code plugin changes. Install at project scope in any repo that authors plugins for a Claude Code marketplace.",
+      "description": "Semver and version-field discipline for Claude Code plugin changes. Install at project scope in any repo that authors plugins for a Claude Code marketplace. Needs bash 5.2 or newer first on the PATH Claude Code starts with (macOS: brew install bash) and Claude Code 2.1.295 or newer.",
       "author": {
         "name": "Cordova Strategy"
       },
@@ -44,7 +44,7 @@
     },
     {
       "name": "npm-semver",
-      "description": "Semver and version-field discipline for published npm packages. Install at project scope in any repo that publishes an npm package.",
+      "description": "Semver and version-field discipline for published npm packages. Install at project scope in any repo that publishes an npm package. Needs bash 5.2 or newer first on the PATH Claude Code starts with (macOS: brew install bash) and Claude Code 2.1.295 or newer.",
       "author": {
         "name": "Cordova Strategy"
       },

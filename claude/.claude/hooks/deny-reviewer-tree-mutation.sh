@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, irreversible
 # Gate: review-only agents (the eight staff-*/ciso-reviewer personas, the

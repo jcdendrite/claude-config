@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # PostToolUse Bash hook: after `marker.sh write plan-review` records a marker,
 # shows the absolute path of each plan it covers in the engineer's terminal.

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # _worktree-lib.sh — shared helpers for worktree scripts.
 #
 # Sourced by cleanup-merged-branches.sh, cleanup-idle-open-pr-worktrees.sh,

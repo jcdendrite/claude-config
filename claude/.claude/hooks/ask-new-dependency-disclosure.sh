@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # Gate: ask (never deny) when an Edit/Write/MultiEdit call adds a
 # dependency name to a recognized manifest (package.json, requirements*.txt,

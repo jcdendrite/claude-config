@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: guard review-marker and review-ledger state. Two jobs:

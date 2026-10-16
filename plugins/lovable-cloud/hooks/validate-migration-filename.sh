@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # PreToolUse gate: block Write calls to supabase/migrations/<14digits>_*.sql

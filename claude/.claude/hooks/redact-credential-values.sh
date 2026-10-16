@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # PostToolUse redactor on Bash|Read|WebFetch|Grep|Task results: replaces credential-value shapes (GitHub token prefix, full PEM private-key block) with [REDACTED-CREDENTIAL] before the model's next turn reads them -- the value-shape backstop for credentials that reach context through a path deny-credential-bash-reads.sh/deny-credential-file-reads.sh don't cover (WebFetch body, Grep match, subagent output).
 # That parenthetical names the motivating channels, not the full matcher -- Bash and Read are also covered above, Read backstopped further by deny-data-file-reads.sh's size cap.
