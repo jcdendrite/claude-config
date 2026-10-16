@@ -1,5 +1,7 @@
 # Tool-call batching and delegation compliance: measure, then nudge
 
+**Status (2026-10-15):** Phase 2 does not ship on this design. See `docs/design-decisions/tool-call-advisory-does-not-ship.md`.
+
 ## Context
 
 **Goal:** give two standing tool-call-economy rules a feedback mechanism — a

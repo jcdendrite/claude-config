@@ -113,6 +113,10 @@ TRANSCRIPT_DENIALS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_den
 # SCRIPTS_TESTS_DIR test, so it gets an exact-path constant instead of
 # selecting that whole domain from an agent-file edit.
 TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_rounds.py"
+# test_transcript_cost_counts.py reads claude/.claude/agents/ through
+# redaction._REPO_AGENT_DEFINITIONS_DIR, a production constant
+# TestCrossDomainReadCompleteness's scan cannot see.
+TRANSCRIPT_COST_COUNTS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_cost_counts.py"
 
 # test_ticket_reference_discipline.py statically scans every tracked .py and
 # .sh file under claude/ and plugins/ for ticket-prefixed identifiers,
@@ -157,7 +161,8 @@ MARKER_CLEAR_STALE_PY = "claude/.claude/scripts/marker-clear-stale.py"
 REVIEW_PR_AUDIT_SCRIPT = "claude-skills/skills/review-pr/audit-execution-surface.py"
 
 # SCRIPTS_TESTS_DIR's test_review_pr_post.py reads this exact file by path, to
-# compare its literal script invocations against the settings allow entries.
+# compare its literal script invocations against the settings allow entries,
+# and test_review_pr_lib.py reads it for the BASE_IS_DEFAULT_BRANCH token.
 REVIEW_PR_SKILL_MD = "claude-skills/skills/review-pr/SKILL.md"
 
 # test_doc_counts.py reads the SKILL.md frontmatter of every name-only skill
@@ -235,6 +240,7 @@ SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_author_outcome.py",
     "claude/.claude/scripts/tests/test_config_parser_parity.py",
     "claude/.claude/scripts/tests/test_review_ledger_lib.py",
+    "claude/.claude/scripts/tests/test_review_pr_lib.py",
 })
 
 CODE_REVIEW_SKILL_MD = "claude-skills/skills/code-review/SKILL.md"
@@ -663,7 +669,18 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # file needs review_bench's own tests re-run too. This selects on every
 # agent file rather than only the lenses with a read clause to copy --
 # over-selection is the safe direction.
-# TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH is also a target of this row; see the comment at that constant's definition for why.
+# TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_ANALYSIS_TEST_GLOB, and
+# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST are also targets. Each has a test
+# that reads the real agents directory unpatched, through a production constant:
+# redaction._REPO_AGENT_DEFINITIONS_DIR for the first two,
+# measure_subagent_model_resolution's AGENTS_DIR for the third.
+# The glob matches several files and is selected for the one of them that
+# reads it.
+# TestCrossDomainReadCompleteness cannot see a read through a production
+# constant, so these three are hand-audited.
+# TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH is also a target. Its test file reads
+# the directory through a module-level _AGENTS_DIR constant, so
+# TestCrossDomainReadCompleteness verifies it.
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
@@ -750,7 +767,11 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (
         lambda p: _is_under(p, AGENTS_DIR),
-        (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB, TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH),
+        (
+            HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB,
+            TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_ANALYSIS_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
+        ),
     ),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),

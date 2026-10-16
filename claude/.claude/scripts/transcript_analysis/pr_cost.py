@@ -459,7 +459,7 @@ def _pr_cost_report(args: argparse.Namespace, now: datetime, roots: Sequence[Pat
         print(
             "pr-cost: more than one root resolved -- refusing a durable write (or a read that"
             " could conflate two accounts' branch/repo data) across accounts; pass --all-accounts"
-            " to scan every declared account in one run (each account's own opt-in sentinel still"
+            " to scan every declared account in one run (each account's own pr_cost_recording config key still"
             " gates its own write), or scope to a single profile (drop --config-dir)",
             file=sys.stderr,
         )

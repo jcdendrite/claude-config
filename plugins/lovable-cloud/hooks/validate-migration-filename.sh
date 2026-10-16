@@ -73,7 +73,7 @@ BASENAME=$(basename "$FILE_PATH")
 # The match requires: supabase/migrations/ in the path AND a 14-digit prefix
 # followed by underscore. Files outside this path or with a different prefix
 # length are not Claude-authored migration candidates — allow them.
-if ! printf '%s\n' "$FILE_PATH" | grep -qE 'supabase/migrations/[0-9]{14}_[^/]+\.sql$'; then
+if ! grep -qE 'supabase/migrations/[0-9]{14}_[^/]+\.sql$' <<< "$FILE_PATH"; then
   exit 0
 fi
 

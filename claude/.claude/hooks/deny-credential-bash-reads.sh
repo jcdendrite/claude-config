@@ -73,7 +73,7 @@ if [ "$COMMAND_UNQUOTED_EXIT" -ne 0 ]; then
 fi
 
 # Case-folded (-i): on a case-insensitive-but-case-preserving filesystem (macOS APFS/HFS+, Windows NTFS), `id_RSA` opens the same file as `id_rsa` -- a case-sensitive match here would silently bypass a gate with no other bypass valve.
-if printf '%s' "$COMMAND_UNQUOTED" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
+if grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX" <<< "$COMMAND_UNQUOTED"; then
   # Strip only now that the raw text has already matched, then re-scan --
   # never the reverse order, which would hand an empty/no-op strip an
   # unmatched string and turn a strip failure into a silent allow. A cleared
@@ -82,7 +82,7 @@ if printf '%s' "$COMMAND_UNQUOTED" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; th
   # carries an unrelated credential-shaped token (one only those checks
   # catch) alongside an exempted env-file flag still reaches them.
   COMMAND_ENV_FILE_STRIPPED=$(_lib_strip_env_file_flag_args "$COMMAND_UNQUOTED")
-  if printf '%s' "$COMMAND_ENV_FILE_STRIPPED" | grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX"; then
+  if grep -qEi "$_LIB_CREDENTIAL_PATH_REGEX" <<< "$COMMAND_ENV_FILE_STRIPPED"; then
     emit_deny "the command references a credential-shaped path (an SSH private key, .netrc/_netrc, .git-credentials, a cloud credential store, or a non-template .env/credentials.json path). Reading, copying, or otherwise touching a credential file through Bash pulls its content toward Claude's conversation context. No bypass valve — if this command is legitimate and does not expose file content (e.g. ssh-add, chmod, ssh -i), ask the user to run it in a separate terminal instead of through Claude's Bash tool."
     exit 0
   fi

@@ -95,6 +95,7 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 - **Shell:** `bash`. Hooks and `install.sh` use `#!/bin/bash`.
 - **Tools:** `stow`, `git`, `gh`, `jq`, `sha256sum`, `python3`, and the `claude` CLI. `install.sh` verifies they exist and exits early if any are missing.
 - **`git` version:** `git` >= 2.31, because the worktree hooks, `marker.sh`, and the `review-pr-*` scripts resolve the main tree with `git rev-parse --path-format=absolute`, an option added in git 2.31.0 (its release notes). `install.sh` does not check this.
+- **`jq` version:** `review-pr-checkout.sh`'s stacked-base audit needs a `jq` whose `jq -R -s` keeps NUL bytes in raw input. That behavior was verified on jq 1.8.2 only. A `jq` that truncates raw input at NUL makes every stacked PR with a non-empty delta exit 2 there.
 - **`timeout` version:** `timeout` (or `gtimeout`) must accept `-k` (GNU coreutils, or BusyBox 1.35.0 or newer; other implementations are unverified), because a `timeout` that rejects `-k` makes every gate hook deny its tool calls, as `docs/hooks.md` § "Gate deadlock recovery" describes.
 - **Python:** `python3` >= 3.11. Stock macOS `/usr/bin/python3` is 3.9.6, Ubuntu 22.04 LTS ships 3.10, and Debian 11 ships 3.9 — all below this floor. Install a newer interpreter (e.g. via Homebrew or pyenv on macOS; your distro's `python3.11+` package or pyenv on Linux) so it resolves first on PATH. `install.sh` checks this and exits early if it isn't met.
 - **Optional:** `pytest` for running the test suite (`pytest claude/.claude/`; add `-n0` to run serially for `-s` / `--pdb` / `-x` debugging).
@@ -402,15 +403,15 @@ See [`docs/error-mode-nudge.md`](docs/error-mode-nudge.md) for the fire predicat
 
 ### Cost ledger recording
 
-`transcript-analysis.py cost-ledger --record` appends this repo's current-week cost and efficiency figures to `docs/cost-ledger.md`, a durable row this repo keeps once Claude Code's rolling transcript cleanup deletes the source data it was computed from. Off by default; a week not recorded while its transcripts are still on disk can't be recovered later.
+`transcript-analysis.py cost-ledger --record` appends the current ISO week's cost and efficiency figures to a local ledger file outside this repo. The row aggregates every project's transcripts in scope, which by default includes every account declared in `~/.claude/transcript-config-dirs`. `--this-repo` narrows the project set. The row outlives Claude Code's rolling transcript cleanup. Off by default; a week not recorded while its transcripts are still on disk can't be recovered later.
 
 `./install.sh` now offers this interactively on every run — the snippet below is the non-interactive/scripted alternative, not the only path.
 
 ```bash
-touch "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.cost-ledger-enabled"
+printf '\ncost_ledger_recording = true\n' >> "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/claude-config.toml"
 ```
 
-See [`docs/cost-ledger.md`](docs/cost-ledger.md) for the schema and recording mechanics.
+See [`docs/cost-ledger.md`](docs/cost-ledger.md) for the ledger's default location, schema, and recording mechanics, and [`docs/config-file.md`](docs/config-file.md) for the file's hand-edit contract.
 
 ### Repo relocation
 

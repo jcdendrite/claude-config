@@ -17,6 +17,7 @@ from ._subagent_helpers import (
 from .conftest import (
     _agent_use,
     _asst,
+    _hook_deny,
     _read_use,
     _table_cols,
     _tool_result,
@@ -39,6 +40,56 @@ _spec.loader.exec_module(_mod)
 def _mcp_use(tool_id: str, server: str, tool: str) -> dict:
     """Build an mcp__<server>__<tool> tool_use block, the on-disk shape for an MCP tool call."""
     return {"type": "tool_use", "id": tool_id, "name": f"mcp__{server}__{tool}", "input": {}}
+
+
+def _attr_ts(minute: int) -> str:
+    """Strictly increasing timestamps one minute apart, so a fixture's main-thread
+    timeline (the branch index) is unambiguous."""
+    return f"2026-05-12T12:{minute:02d}:00.000Z"
+
+
+def _sidechain_tool_result(tool_id: str, text: str, *, branch: str, ts: str) -> dict:
+    """A subagent-file user record carrying one tool_result block, tagged with the subagent's own `branch`."""
+    return {**_user_msg([_tool_result(tool_id, text)], branch=branch, ts=ts), "isSidechain": True}
+
+
+_SIDECHAIN_TOOL_RESULT_BYTES = 40
+
+
+def _write_sidechain_tool_result_session(fake_projects: Path, own_tag: str) -> None:
+    """One session whose main thread is on 'feature-x' and whose subagent reads a file
+    on a branch tagged `own_tag`, so the Read result's bytes belong to 'feature-x'."""
+    session_id = "sess-sidechain-result"
+    _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+        _asst("claude-opus-4-7", branch="feature-x", ts=_attr_ts(1)),
+    ])
+    _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+        _asst("claude-sonnet-4-6", branch=own_tag, sidechain=True, ts=_attr_ts(5),
+              content=[_read_use("t1", "/x")]),
+        _sidechain_tool_result("t1", "y" * _SIDECHAIN_TOOL_RESULT_BYTES, branch=own_tag, ts=_attr_ts(6)),
+    ])
+
+
+def _assert_sidechain_bytes_land_under_branch(out: str, branch_label_pattern: str) -> None:
+    """The sidechain Read result's bytes appear in both tables, the tool table under a Branch cell matching the pattern."""
+    sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1)
+    assert sidechain_cols["Bytes"] == str(_SIDECHAIN_TOOL_RESULT_BYTES)
+    tool_cols = _table_cols(out, header_contains="Side", row_contains="Read")
+    assert re.fullmatch(branch_label_pattern, tool_cols["Branch"])
+    assert tool_cols["Bytes"] == str(_SIDECHAIN_TOOL_RESULT_BYTES)
+
+
+def _branch_block(out: str, label_pattern: str) -> list[str]:
+    """The first-table lines under the branch row whose label matches `label_pattern`:
+    the labelled row plus its continuation rows, whose Branch cell is blank."""
+    lines = out.splitlines()
+    start = next(i for i, ln in enumerate(lines) if re.match(label_pattern, ln))
+    block = [lines[start]]
+    for ln in lines[start + 1:]:
+        if not ln.startswith(" "):
+            break
+        block.append(ln)
+    return block
 
 
 class TestSubagents:
@@ -154,6 +205,18 @@ class TestSubagentsToolResultBytes:
         assert main_cols["Bytes"] == "0"
         assert sidechain_cols["Bytes"] == str(len(text.encode()))
 
+    @pytest.mark.parametrize("own_tag", ["unrelated-repo-branch", "worktree-agent-abc123"])
+    def test_sidechain_tool_result_with_a_foreign_own_tag_counts_under_the_dispatching_branch(
+        self, fake_projects, capsys, own_tag
+    ):
+        """Single-root mode prints the attributed branch raw, so the subagent's own tag
+        must not reach either table through the user-record arm."""
+        _write_sidechain_tool_result_session(fake_projects, own_tag)
+        _mod.subagents.cmd_subagents(_subagents_args())
+        out = capsys.readouterr().out
+        assert own_tag not in out
+        _assert_sidechain_bytes_land_under_branch(out, r"feature-x")
+
     def test_user_record_without_tool_result_block_contributes_zero_bytes(
         self, fake_projects, capsys
     ):
@@ -177,6 +240,22 @@ class TestSubagentsToolResultBytes:
         _mod.subagents.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         assert "No data found." in out
+
+    def test_branch_filter_applies_to_tool_result_bytes(self, fake_projects, capsys):
+        """The branch filter applies to tool_result bytes on user records, not only to assistant turns."""
+        bytes_on_branch_a = 120
+        bytes_on_branch_b = 340
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="branch-a", ts=_attr_ts(1), content=[_read_use("t1", "/x")]),
+            _user_msg([_tool_result("t1", "x" * bytes_on_branch_a)], branch="branch-a", ts=_attr_ts(2)),
+            _asst("claude-opus-4-7", branch="branch-b", ts=_attr_ts(3), content=[_read_use("t2", "/y")]),
+            _user_msg([_tool_result("t2", "x" * bytes_on_branch_b)], branch="branch-b", ts=_attr_ts(4)),
+        ])
+        _mod.subagents.cmd_subagents(_subagents_args(branches="branch-a"))
+        out = capsys.readouterr().out
+        assert "branch-b" not in out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Bytes"] == str(bytes_on_branch_a)
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
     def test_unreadable_transcript_file_skipped_without_crash(self, fake_projects, capsys):
@@ -320,6 +399,70 @@ class TestSubagentsSince:
         _mod.subagents.cmd_subagents(_subagents_args(since="1d"))
         out = capsys.readouterr().out
         assert "No data found." in out
+
+    def test_since_window_leaves_a_later_default_branch_turn_on_the_default_branch(
+        self, fake_projects, capsys, monkeypatch
+    ):
+        """main -> X -> main -> Y with the window starting between X and the second
+        main. The session context is built before the --since check; one built from
+        in-window records would see the second main as the leading run and credit
+        its turn to Y."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+
+        def days_ago(days: float) -> str:
+            return datetime.fromtimestamp(fixed_now - days * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts=days_ago(20)),
+            _asst("claude-opus-4-7", branch="feat-x", ts=days_ago(15)),
+            _asst("claude-opus-4-7", branch="main", ts=days_ago(8)),
+            _asst("claude-opus-4-7", branch="feat-y", ts=days_ago(5)),
+        ])
+
+        _mod.subagents.cmd_subagents(_subagents_args(branches="main", since="10d"))
+        main_cols = _table_cols(capsys.readouterr().out, header_contains="Thread", row_contains="main")
+        assert main_cols["Opus"] == "1"
+        _mod.subagents.cmd_subagents(_subagents_args(branches="feat-y", since="10d"))
+        feat_y_cols = _table_cols(capsys.readouterr().out, header_contains="Thread", row_contains="main")
+        assert feat_y_cols["Opus"] == "1"  # its own turn only, not the second main's
+
+    def test_since_excludes_tool_result_bytes_older_than_window(self, fake_projects, capsys, monkeypatch):
+        """The --since window applies to tool_result bytes on user records, not only to assistant turns."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        bytes_outside_window = 330
+        bytes_inside_window = 70
+
+        def days_ago(days: float) -> str:
+            return datetime.fromtimestamp(fixed_now - days * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="feat-x", ts=days_ago(20), content=[_read_use("t1", "/x")]),
+            _user_msg([_tool_result("t1", "x" * bytes_outside_window)], branch="feat-x", ts=days_ago(20)),
+            _asst("claude-opus-4-7", branch="feat-x", ts=days_ago(1), content=[_read_use("t2", "/y")]),
+            _user_msg([_tool_result("t2", "x" * bytes_inside_window)], branch="feat-x", ts=days_ago(1)),
+        ])
+        _mod.subagents.cmd_subagents(_subagents_args(since="10d"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Bytes"] == str(bytes_inside_window)
+
+    def test_since_excludes_tool_result_bytes_missing_timestamp(self, fake_projects, capsys, monkeypatch):
+        """An untimestamped user tool_result record cannot be placed inside the --since window, so it
+        contributes no bytes, mirroring the assistant arm's missing-timestamp exclusion."""
+        fixed_now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: fixed_now)
+        in_window_ts = datetime.fromtimestamp(fixed_now - 86400 / 2, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts=in_window_ts, content=[_read_use("t1", "/x")]),
+            _user_msg([_tool_result("t1", "x" * 330)], branch="main"),  # no ts= given -> no timestamp key
+        ])
+        _mod.subagents.cmd_subagents(_subagents_args(since="1d"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Thread", row_contains="main")
+        assert cols["Opus"] == "1"
+        assert cols["Bytes"] == "0"
 
     def test_malformed_since_exits_nonzero_naming_subagents(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc_info:
@@ -552,29 +695,175 @@ class TestSubagentsDeclaredRootsMultiRoot:
         assert "account-1/feat-disclosed" in out
         assert "account-2/feat-disclosed" in out
 
-    def test_this_repo_discloses_attested_main_thread_branch_but_not_sidechain_only_branch(
+    def test_this_repo_sidechain_record_follows_its_dispatcher_and_never_discloses_its_own_branch(
         self, fake_projects, fake_config_dir_factory, capsys
     ):
-        """One session's main-thread record attests branch 'alpha'; its own
-        sidechain record carries a different branch 'beta' with no
-        main-thread attestation anywhere in scope -- alpha discloses raw
-        and beta prints as account-<K>/branch-<N>, in the same run. Both
-        halves asserted together so the contrast is what fails."""
+        """One session's main thread is on 'alpha'; its sidechain record carries a
+        different branch 'beta'. The sidechain turn prints under alpha's disclosed
+        label, 'beta' never appears, and no opaque label is needed."""
         acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
         session_id = "sess-attest"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="alpha"),
+            _asst("claude-opus-4-7", branch="alpha", ts=_attr_ts(1)),
         ])
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="beta", sidechain=True),
+            _asst("claude-sonnet-4-6", branch="beta", sidechain=True, ts=_attr_ts(5)),
         ])
         args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
         _mod.subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert re.search(r"account-\d+/alpha\b", out)
-        assert re.search(r"account-\d+/branch-\d+", out)
+        assert not re.search(r"account-\d+/branch-\d+", out)
         assert "beta" not in out
+        sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1)
+        assert sidechain_cols["Sonnet"] == "1"
+
+    def test_this_repo_prefix_and_post_boundary_sidechain_records_print_under_the_branch_entered(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        session_id = "sess-prefix"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts=_attr_ts(1)),
+            _asst("claude-opus-4-7", branch="feature-x", ts=_attr_ts(5)),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True, ts=_attr_ts(2)),  # prefix
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True, ts=_attr_ts(8)),  # after the boundary
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.subagents.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/feature-x\b", out)
+        sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1)
+        assert sidechain_cols["Sonnet"] == "2"
+        assert not re.search(r"account-\d+/main\b", out)
+        assert not re.search(r"account-\d+/branch-\d+", out)
+
+    def test_this_repo_foreign_and_isolation_tags_never_print_and_need_no_opaque_label(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        session_id = "sess-foreign"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="feature-x", ts=_attr_ts(1)),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="unrelated-repo-branch", sidechain=True, ts=_attr_ts(5)),
+            _asst("claude-sonnet-4-6", branch="worktree-agent-abc123", sidechain=True, ts=_attr_ts(6)),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.subagents.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert "unrelated-repo-branch" not in out
+        assert "worktree-agent" not in out
+        assert not re.search(r"account-\d+/branch-\d+", out)
+        sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1)
+        assert sidechain_cols["Sonnet"] == "2"
+
+    @pytest.mark.parametrize("own_tag", ["unrelated-repo-branch", "worktree-agent-abc123"])
+    def test_this_repo_sidechain_tool_result_with_a_foreign_own_tag_counts_under_the_dispatching_branch(
+        self, fake_projects, fake_config_dir_factory, capsys, own_tag
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        _write_sidechain_tool_result_session(fake_projects, own_tag)
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.subagents.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert own_tag not in out
+        assert not re.search(r"account-\d+/branch-\d+", out)
+        _assert_sidechain_bytes_land_under_branch(out, r"account-\d+/feature-x")
+
+    def test_this_repo_branch_carried_only_by_a_non_assistant_non_user_main_thread_record_stays_opaque(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """Deny path: the attestation set takes main-thread assistant and user records
+        only. A branch a hook-denial attachment alone carried is not disclosed even though
+        the timeline resolves later sidechain records to it, and a sidechain record
+        (assistant or user) tagged with that same name does not attest it either."""
+        acct_b = fake_config_dir_factory("acct-b")
+        session_id = "sess-deny"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="alpha", ts=_attr_ts(1)),
+            _hook_deny("some-hook", branch="unattested-branch", ts=_attr_ts(5)),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="unattested-branch", sidechain=True, ts=_attr_ts(8)),
+            _sidechain_tool_result("t1", "x" * 10, branch="unattested-branch", ts=_attr_ts(9)),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.subagents.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/branch-\d+", out)
+        assert "unattested-branch" not in out
+
+    def test_this_repo_prefix_remapped_onto_a_branch_only_a_non_assistant_non_user_record_carried_stays_opaque(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """Deny path through the pre-branch remap: the leading 'main' assistant record
+        is attributed to 'unattested-branch', but the attestation set reads each record's
+        own tag. Only a hook-denial attachment carried 'unattested-branch', so it stays
+        opaque; attesting the attributed branch instead would print it raw."""
+        acct_b = fake_config_dir_factory("acct-b")
+        session_id = "sess-prefix-deny"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts=_attr_ts(1)),
+            _hook_deny("some-hook", branch="unattested-branch", ts=_attr_ts(5)),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True, ts=_attr_ts(8)),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.subagents.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/branch-\d+", out)
+        assert "unattested-branch" not in out
+        assert not re.search(r"account-\d+/main\b", out)
+
+    def test_this_repo_branch_carried_only_by_a_main_thread_user_record_prints_raw(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        """Allow path for the user arm: a main-thread user record with a tool_result is
+        the sole attester of the branch the sidechain turn resolves to."""
+        acct_b = fake_config_dir_factory("acct-b")
+        session_id = "sess-user-attests"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="alpha", ts=_attr_ts(1)),
+            _user_msg([_tool_result("t1", "x" * 10)], branch="user-only-branch", ts=_attr_ts(5)),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="alpha", sidechain=True, ts=_attr_ts(8)),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.subagents.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert re.search(r"account-\d+/user-only-branch\b", out)
+        assert not re.search(r"account-\d+/branch-\d+", out)
+
+    def test_this_repo_session_without_a_branch_bearing_main_thread_record_contributes_no_row(
+        self, fake_projects, fake_config_dir_factory, capsys
+    ):
+        acct_b = fake_config_dir_factory("acct-b")
+        session_id = "sess-no-branch"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="", ts=_attr_ts(1)),
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst("claude-sonnet-4-6", branch="orphan-branch", sidechain=True, ts=_attr_ts(5)),
+        ])
+        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
+        args._this_repo_slugs = ["-home-user-testrepo"]
+        _mod.subagents.cmd_subagents(args)
+        out = capsys.readouterr().out
+        assert "No data found." in out
+        assert "orphan-branch" not in out
 
     def test_this_repo_attestation_is_corpus_wide_not_since_window_scoped(
         self, fake_projects, fake_config_dir_factory, capsys, monkeypatch
@@ -604,60 +893,36 @@ class TestSubagentsDeclaredRootsMultiRoot:
         out = capsys.readouterr().out
         assert re.search(r"account-\d+/gamma\b", out)
 
-    def test_this_repo_branch_attestation_collision_residual_folds_unattested_sidechain_into_disclosed_row(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        """Accepted residual: attestation is keyed on (root_idx, branch) --
-        a same-account, same-string check, not a same-repo check. A
-        sidechain record that happens to carry the SAME branch name as a
-        genuine main-thread record in the same account -- e.g. a subagent
-        dispatched to a different repo whose own gitBranch coincidentally
-        also reads "main" -- still folds into that disclosed row. Pinned
-        here as a deliberate, tested tradeoff, not a silent consequence."""
-        acct_b = fake_config_dir_factory("acct-b")  # forces multi_root; carries no data of its own
-        session_id = "sess-collision"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main"),
-        ])
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
-        ])
-        args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
-        args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagents.cmd_subagents(args)
-        out = capsys.readouterr().out
-        assert re.search(r"account-\d+/main\b", out)
-        assert not re.search(r"account-\d+/branch-\d+", out)  # only one branch total, and it's disclosed
-        sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1)
-        assert sidechain_cols["Sonnet"] == "1"  # the coincidental sidechain's own data reached the disclosed row
-
     def test_this_repo_cross_account_attestation_independence(self, tmp_path, monkeypatch, capsys):
         """main_thread_branches keyed on (root_idx, branch), not a flat
-        set[str] -- account A's own main-thread attestation of a generic
-        branch name must not leak disclosure to account B's own unattested
-        (sidechain-only) copy of the same branch name."""
+        set[str] -- account A attests 'main' through a main-thread assistant
+        record, account B carries 'main' only on a hook-denial record the gate
+        ignores, so B's sidechain turn (which resolves to 'main') must print
+        under an opaque label rather than ride A's disclosure."""
         roots = _two_declared_roots(tmp_path, monkeypatch)
         this_repo_slug = "-repo-main"
         proj_a = roots[0] / this_repo_slug
         proj_a.mkdir(parents=True)
         _write_jsonl(proj_a / "sess-a.jsonl", [
-            _asst("claude-opus-4-7", branch="main"),
+            _asst("claude-opus-4-7", branch="main", ts=_attr_ts(1)),
         ])
         proj_b = roots[1] / this_repo_slug
         proj_b.mkdir(parents=True)
         session_id_b = "sess-b"
         _write_jsonl(proj_b / f"{session_id_b}.jsonl", [
-            _asst("claude-opus-4-7", branch="other"),  # keeps proj_b's own top-level file non-empty
+            _asst("claude-opus-4-7", branch="other", ts=_attr_ts(1)),
+            _hook_deny("some-hook", branch="main", ts=_attr_ts(3)),
         ])
         _write_subagent_jsonl(proj_b, session_id_b, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="main", sidechain=True),
+            _asst("claude-sonnet-4-6", branch="other", sidechain=True, ts=_attr_ts(5)),
         ])
         args = _subagents_args(this_repo=True)
         args._this_repo_slugs = [this_repo_slug]
         _mod.subagents.cmd_subagents(args)
         out = capsys.readouterr().out
-        assert re.search(r"account-\d+/main\b", out)  # account A's attested row
-        assert re.search(r"account-\d+/branch-\d+", out)  # account B's unattested row stays opaque
+        assert len(re.findall(r"account-\d+/main\b", out)) == 1, "only account A's row may print 'main' raw"
+        assert not any("sidechain" in ln for ln in _branch_block(out, r"account-\d+/main\b"))
+        assert any("sidechain" in ln for ln in _branch_block(out, r"account-\d+/branch-\d+"))
 
     def test_this_repo_still_stamps_do_not_publish_banner_under_multi_root(
         self, fake_projects, fake_config_dir_factory, capsys

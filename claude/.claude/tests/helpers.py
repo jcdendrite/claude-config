@@ -32,6 +32,24 @@ _CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 
 _LIB_SH = HOOKS_DIR / "_lib.sh"
 
+# About 320 KB in 32 lines. Append it after a command whose first line matches.
+# `grep -q` exits on that match while the writer still has output.
+# A pipe into it then returns 141 under pipefail.
+# That needs more output than the pipe capacity (64 KiB by default on Linux).
+# Misses are intermittent near 64 KiB and certain from about 100 KiB, so keep it above 100 KiB.
+# A single unbroken line never triggers it, since `grep -q` reads the whole line first.
+# Few lines keep the per-fragment scans fast.
+# Do not use it on a path that reaches `_lib_mask_shell_quotes` (called by
+# `deny-invisible-commit-content.sh`): its quadratic awk scan lands at or near its 5 s cap at this size.
+# Where it lands depends on awk and load.
+# Use MASK_SAFE_MULTILINE_TAIL there instead.
+LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
+
+# About 80 KB in 8 lines: small enough that `_lib_mask_shell_quotes` finishes within its 5 s cap.
+# It is a control input for benign commands that allow with or without the SIGPIPE bug, not a regression trigger.
+# The size keeps the mask scan exercised at scale while staying under that cap.
+MASK_SAFE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 8)
+
 
 def _sourced_value(var_name: str) -> str:
     """Return `var_name`'s value after sourcing _lib.sh in a bash subprocess

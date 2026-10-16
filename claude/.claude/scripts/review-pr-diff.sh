@@ -6,7 +6,7 @@
 # Mirrors review-pr-checkout.sh's self-derivation discipline (own
 # PR-identity parse, own origin-identity check, own paginated file list,
 # own double headRefOid fetch bracketing the pagination) minus everything
-# that only matters once code lands on disk: no worktree.
+# that only matters once a PR is checked out: no worktree.
 set -euo pipefail
 
 usage() {
@@ -17,7 +17,8 @@ Self-derives the PR's own file list and headRefOid, the same discipline
 review-pr-checkout.sh uses, but never checks the PR out. In order:
 1. Checks that <owner>/<repo> matches this worktree's own origin remote,
    aborting before any gh call on a mismatch.
-2. Fetches the PR's current headRefOid and its REST `changed_files` count.
+2. Fetches the PR's current headRefOid, baseRefOid, and baseRefName in one
+   `gh pr view` call, and its REST `changed_files` count and default branch.
    Stops naming the limit when the PR changes more than 300 files, a limit
    third parties report for GitHub's diff endpoint (see
    claude-skills/skills/review-pr/REFERENCES.md).
@@ -28,26 +29,40 @@ review-pr-checkout.sh uses, but never checks the PR out. In order:
    being paginated, and aborts on drift.
 5. Pipes the file list to audit-execution-surface.py. A stop verdict is
    reported on stderr as a mandatory pre-seeded finding rather than a stop:
-   nothing is landing on disk here for that predicate to protect, and a PR
+   with no checkout, that predicate has nothing to protect, and a PR
    touching .claude/hooks/** or .mcp.json is precisely what an inbound reviewer
    must flag. Each match is one stderr line with the path as an ASCII-only
    JSON string, bounded (review_pr_audit_match_report in _review-pr-lib.sh).
    An audit that fails to return a verdict aborts with exit 2 and its stderr
    shown, and is never reported as a finding (review_pr_audit_verdict in
    _review-pr-lib.sh defines what counts as a verdict).
-6. Fetches `gh pr diff`. Aborts, writing no diff file and no provenance, when
+6. Fetches the baseRefOid commit by object name, with git hooks disabled, so
+   the session can read base files with `git show` and `git grep`. Only a full
+   SHA-1 or SHA-256 hex object name is fetched. A baseRefOid that is missing,
+   not hex, or cannot be fetched degrades the base only: the run continues and
+   writes `review-pr-diff.sh: BASE_UNAVAILABLE <cause>` on stderr, where cause
+   is missing, not-hex, fetch-failed (git exited non-zero, or exited 0 without
+   leaving the commit in this repository), or fetch-timed-out (git exited with a
+   status a cap kill produces). Git's own output is never echoed. A missing
+   headRefOid still aborts.
+7. Fetches `gh pr diff`. Aborts, writing no diff file and no provenance, when
    the diff is empty or whitespace-only although the PR reports changed
    files. Re-fetches
    headRefOid once more and aborts on drift, so the diff is bound to the head
    the provenance records.
-7. Writes the diff to $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff and
+8. Writes the diff to $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff and
    rewrites this session's provenance file with mode "diff-only".
 
-Prints the diff file's path on stdout as the sole output of a successful run.
+Prints the diff file's path on stdout as line 1 of a successful run. When the
+base fetch succeeded it also prints the baseRefOid as a full hex object name on
+line 2, and when the PR's base branch is also the base repository's default
+branch, the fixed token BASE_IS_DEFAULT_BRANCH on line 3. When the base fetch did
+not succeed, stdout holds the path alone, and the token is never printed.
 
-Worst-case wall time: the per-step caps sum to 125 seconds on a run whose audit
-is clean (10 for the two local git reads, 100 for the six gh calls, 15 for
-three jq calls) and 140 when the audit reports a finding (three more jq calls).
+Worst-case wall time: the per-step caps sum to 180 seconds on a run whose audit
+is clean (15 for the three local git reads, 100 for the six gh calls, 35 for
+seven jq calls, 30 for the base fetch) and 195 when the audit reports a finding
+(three more jq calls).
 Each cap kill adds up to 2 seconds of SIGKILL grace. The diff write and the
 provenance write are uncapped, as is the audit script. The session lookup's
 capped ps calls add up to 10 seconds per process-ancestor hop. The caps apply
@@ -127,11 +142,16 @@ if [[ ! -f "$AUDIT_SCRIPT" ]]; then
   exit 2
 fi
 
-HEAD_REF_OID=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || HEAD_REF_OID=""
+PR_VIEW_JSON=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid,baseRefOid,baseRefName 2>/dev/null) || PR_VIEW_JSON=""
+HEAD_REF_OID=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.headRefOid // empty' 2>/dev/null) || HEAD_REF_OID=""
 if [[ -z "$HEAD_REF_OID" ]]; then
   echo "review-pr-diff.sh: could not fetch PR $OWNER_REPO#$PR_NUMBER's current headRefOid. Abort." >&2
   exit 2
 fi
+# A baseRefOid that cannot be read degrades the base only: the diff and the audit do not depend on it.
+BASE_REF_OID=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefOid // empty' 2>/dev/null) || BASE_REF_OID=""
+# The base branch name only decides whether the default-branch token prints, so an unreadable field degrades to no token instead of aborting.
+BASE_REF_NAME=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefName // empty' 2>/dev/null) || BASE_REF_NAME=""
 
 # The PR's own file count, from the REST payload (snake_case, unlike the
 # camelCase `changedFiles` of `gh pr view --json`). Ground truth for the
@@ -147,6 +167,7 @@ if ! CHANGED_FILES_COUNT=$(review_pr_rest_changed_files "$PR_REST_JSON"); then
   echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER's REST payload carried no usable changed_files count (malformed response). Abort." >&2
   exit 2
 fi
+BASE_DEFAULT_BRANCH=$(printf '%s' "$PR_REST_JSON" | _lib_jq -r '.base.repo.default_branch // empty' 2>/dev/null) || BASE_DEFAULT_BRANCH=""
 
 # The changed-file ceiling of GitHub's diff endpoint: `gh pr diff` cannot
 # serve a PR past it, so a named stop here beats a bare gh failure below.
@@ -202,7 +223,7 @@ case "$(review_pr_audit_verdict "$AUDIT_EXIT" "$AUDIT_OUTPUT")" in
   clean) ;;
   stop)
     MATCHES=$(review_pr_audit_match_report "$AUDIT_OUTPUT")
-    echo "review-pr-diff.sh: AUDIT_FINDING -- passive-execution audit matched paths in PR $OWNER_REPO#$PR_NUMBER's file list. Treat this as a mandatory blocking finding in the synthesized review, not a stop -- no checkout means nothing landed on disk. Matched paths:" >&2
+    echo "review-pr-diff.sh: AUDIT_FINDING -- passive-execution audit matched paths in PR $OWNER_REPO#$PR_NUMBER's file list. Treat this as a mandatory blocking finding in the synthesized review, not a stop -- this path checks nothing out. Matched paths:" >&2
     printf '%s\n' "$MATCHES" >&2
     ;;
   *)
@@ -210,6 +231,37 @@ case "$(review_pr_audit_verdict "$AUDIT_EXIT" "$AUDIT_OUTPUT")" in
     exit 2
     ;;
 esac
+
+# No worktree exists on this path, so the base commit is fetched only for the
+# session's own `git show` and `git grep` reads. A failure here never stops the
+# run, and git's output is dropped because it can carry remote URLs into a
+# posted body.
+BASE_UNAVAILABLE_CAUSE=""
+if [[ -z "$BASE_REF_OID" ]]; then
+  BASE_UNAVAILABLE_CAUSE="missing"
+elif ! review_pr_is_full_hex_oid "$BASE_REF_OID"; then
+  # Only a full hex object name reaches `git fetch`: anything else could read as an option or a ref name.
+  BASE_UNAVAILABLE_CAUSE="not-hex"
+else
+  # core.hooksPath=/dev/null disables hooks: a relative hooksPath resolves inside the repo's own tree.
+  # --no-write-fetch-head keeps the fetch to object transfer, leaving the repo's FETCH_HEAD alone.
+  # --recurse-submodules=no keeps git from also fetching into a populated submodule, whose failure would fail this fetch.
+  # `--` ends option parsing before the remote and object name, independent of the hex check above.
+  # GIT_TERMINAL_PROMPT=0 makes git fail instead of prompting on the terminal itself; prompts that ssh raises are not covered.
+  BASE_FETCH_STATUS=0
+  GIT_TERMINAL_PROMPT=0 _lib_capped_for "$REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS" git -C "$REPO_ROOT" -c core.hooksPath=/dev/null fetch --no-write-fetch-head --recurse-submodules=no -- origin "$BASE_REF_OID" >/dev/null 2>&1 || BASE_FETCH_STATUS=$?
+  if _lib_status_consistent_with_cap_kill "$BASE_FETCH_STATUS"; then
+    BASE_UNAVAILABLE_CAUSE="fetch-timed-out"
+  elif [[ "$BASE_FETCH_STATUS" -ne 0 ]]; then
+    BASE_UNAVAILABLE_CAUSE="fetch-failed"
+  elif ! _lib_capped git -C "$REPO_ROOT" cat-file -e "$BASE_REF_OID^{commit}" >/dev/null 2>&1; then
+    # A fetch can exit 0 without leaving the commit local, and the session's `git show` would then fail with raw git output.
+    BASE_UNAVAILABLE_CAUSE="fetch-failed"
+  fi
+fi
+if [[ -n "$BASE_UNAVAILABLE_CAUSE" ]]; then
+  echo "review-pr-diff.sh: BASE_UNAVAILABLE $BASE_UNAVAILABLE_CAUSE" >&2
+fi
 
 GH_PR_DIFF_TIMEOUT_SECONDS=30
 if ! DIFF_TEXT=$(_lib_gh "$GH_PR_DIFF_TIMEOUT_SECONDS" pr diff "$PR_NUMBER" -R "$OWNER_REPO" 2>/dev/null); then
@@ -247,3 +299,9 @@ if ! _lib_write_review_pr_provenance "$PROVENANCE" \
 fi
 
 printf '%s\n' "$DIFF_FILE"
+if [[ -z "$BASE_UNAVAILABLE_CAUSE" ]]; then
+  printf '%s\n' "$BASE_REF_OID"
+  if review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; then
+    printf '%s\n' "$REVIEW_PR_BASE_IS_DEFAULT_BRANCH_TOKEN"
+  fi
+fi

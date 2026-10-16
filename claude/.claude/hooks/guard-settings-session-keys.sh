@@ -85,7 +85,8 @@ fi
 SETTINGS_REPO_PATH="claude/.claude/settings.json"
 
 # Check whether settings.json is staged at all.
-if ! _lib_capped git -C "$CWD" diff --cached --name-only 2>/dev/null | grep -qF "$SETTINGS_REPO_PATH"; then
+STAGED_NAMES=$(_lib_capped git -C "$CWD" diff --cached --name-only 2>/dev/null) || exit 0
+if ! grep -qF "$SETTINGS_REPO_PATH" <<< "$STAGED_NAMES"; then
   exit 0
 fi
 

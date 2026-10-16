@@ -4,6 +4,7 @@ require faking gh). gh-integration scenarios live in test_transcript_pr_cost_gh.
 import importlib.util
 import json
 import random
+import re
 import stat
 import subprocess
 import sys
@@ -43,7 +44,7 @@ _spec.loader.exec_module(_mod)
 class TestComputePrCostBranchTotals:
     """_compute_pr_cost_branch_totals: pr-cost's own single-pass per-branch
     aggregation, exercised through the function itself (not just its reused
-    primitives _attributed_branch/_session_branch_index in isolation)."""
+    primitives scope._attributed_branch/scope._session_branch_context in isolation)."""
 
     def test_worktree_agent_record_folds_into_branch_active_at_dispatch_time(self, fake_projects):
         """A worktree-agent-* subagent record's dollars fold into the branch
@@ -97,9 +98,9 @@ class TestComputePrCostBranchTotals:
         self, fake_projects,
     ):
         """A worktree-agent-* record whose own timestamp doesn't parse
-        degrades gracefully via _attributed_branch's documented contract
-        (rec_ts is None -> falls back to branch_index[0][1], the session's
-        earliest main-thread branch entry) rather than crashing or dropping
+        degrades gracefully via scope._attributed_branch's documented contract
+        (rec_ts is None -> falls forward to the first branch_index entry, the
+        session's earliest main-thread branch entry) rather than crashing or dropping
         into unbranched_totals."""
         session_id = "sess-bad-ts"
         main_rec = _priced(
@@ -194,6 +195,102 @@ class TestComputePrCostBranchTotals:
         assert tokens["cache_read"] == 50_000
         assert tokens["cache_write_1h"] == 30_000
         assert tokens["cache_write_5m"] == 10_000
+
+
+class TestPrCostPreBranchAndSubagentAttribution:
+    """pr-cost's per-branch totals follow the same attribution as
+    cost --branches: a session's leading default-branch records count toward
+    the first branch it enters, and every sidechain record follows its
+    dispatching main thread."""
+
+    TODAY = date(2026, 8, 2)
+
+    def _branch_totals(self, fake_projects) -> tuple[dict, dict]:
+        session_iter, _scope = _mod._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
+        )
+        return _mod._compute_pr_cost_branch_totals(session_iter)
+
+    def _write_prefix_and_divergent_sidechain_sessions(self, project_dir) -> float:
+        """Write a prefix session with divergent sidechain tags plus a session
+        with an empty main file, and return the fixture's per-record dollars
+        summed independently of pr-cost."""
+        _write_jsonl(project_dir / "sess-prefix.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="main", ts="2026-08-01T10:01:00.000Z"),  # $2.00
+            _priced("claude-sonnet-5", input=500_000, branch="feature-x", ts="2026-08-01T10:03:00.000Z"),  # $1.00
+        ])
+        divergent_tags = [
+            _priced("claude-sonnet-5", input=100_000, branch="main", ts="2026-08-01T10:05:00.000Z"),  # $0.20
+            _priced("claude-sonnet-5", input=50_000, branch="other", ts="2026-08-01T10:06:00.000Z"),  # $0.10
+        ]
+        for rec in divergent_tags:
+            rec["isSidechain"] = True
+        _write_subagent_jsonl(project_dir, "sess-prefix", "agent-1", divergent_tags)
+        orphan = _priced("claude-sonnet-5", input=200_000, branch="feature-x", ts="2026-08-01T10:07:00.000Z")  # $0.40
+        orphan["isSidechain"] = True
+        _write_jsonl(project_dir / "sess-empty-main.jsonl", [])
+        _write_subagent_jsonl(project_dir, "sess-empty-main", "agent-1", [orphan])
+        return 2.00 + 1.00 + 0.20 + 0.10 + 0.40
+
+    def test_all_branch_total_plus_unbranched_equals_the_per_record_dollars(self, fake_projects):
+        expected_total = self._write_prefix_and_divergent_sidechain_sessions(fake_projects)
+
+        branch_totals, unbranched = self._branch_totals(fake_projects)
+        attributed_total = sum(sum(agg["dollars"].values()) for agg in branch_totals.values())
+        assert attributed_total + sum(unbranched["dollars"].values()) == pytest.approx(expected_total)
+        assert sum(branch_totals["feature-x"]["dollars"].values()) == pytest.approx(3.30)
+        assert "main" not in branch_totals
+        assert "other" not in branch_totals
+
+    def test_sidechain_record_in_an_empty_main_session_lands_in_unbranched_totals(self, fake_projects):
+        self._write_prefix_and_divergent_sidechain_sessions(fake_projects)
+
+        _branch_totals, unbranched = self._branch_totals(fake_projects)
+        assert unbranched["turn_count"] == 1
+        assert sum(unbranched["dollars"].values()) == pytest.approx(0.40)
+
+    def test_prefix_session_starts_the_branch_at_its_first_default_branch_turn(self, fake_projects):
+        """The branch's session_starts entry for a prefix session is the timestamp of its
+        first turn credited to the branch, which here precedes a second session's first turn."""
+        _write_jsonl(fake_projects / "sess-a.jsonl", [
+            _priced("claude-sonnet-5", input=500_000, branch="main", ts="2026-08-01T10:00:00.000Z"),
+            _priced("claude-sonnet-5", input=1_000_000, branch="feature-x", ts="2026-08-03T10:00:00.000Z"),
+        ])
+        _write_jsonl(fake_projects / "sess-b.jsonl", [
+            _priced("claude-sonnet-5", input=2_000_000, branch="feature-x", ts="2026-08-02T10:00:00.000Z"),
+        ])
+
+        branch_totals, _unbranched = self._branch_totals(fake_projects)
+        starts = sorted(branch_totals["feature-x"]["session_starts"])
+        assert [session_id for _ts, session_id in starts] == ["sess-a", "sess-b"]
+
+    def test_branch_total_equals_cost_branches_summary_dollars(self, tmp_path, monkeypatch, capsys):
+        """The PR Cost section (cost --summary) and the pr-cost ledger row
+        (branch totals) resolve through one attribution, so they agree."""
+        projects = tmp_path / "projects"
+        mine = projects / "-repo-main"
+        mine.mkdir(parents=True)
+        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+        def fake_run(cmd, *a, **k):
+            if cmd[:3] == ["git", "worktree", "list"]:
+                porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+                return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+            assert cmd == ["git", "rev-parse", "--show-toplevel"]
+            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        self._write_prefix_and_divergent_sidechain_sessions(mine)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
+        summary_out = capsys.readouterr().out
+        total_match = re.search(r"^\|\s*\*\*total\*\*\s*\|\s*\*\*([\d,]+\.\d\d)\*\*\s*\|", summary_out, re.MULTILINE)
+        assert total_match is not None, "markdown grand total row not found in --summary output"
+        session_iter, _scope = _mod._resolve_project_scope(
+            _pr_cost_args(), "pr-cost", include_subagents=True, roots=[projects],
+        )
+        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        assert float(total_match.group(1)) == pytest.approx(sum(branch_totals["feature-x"]["dollars"].values()))
 
 
 class TestPrCostDedupBeforePricing:

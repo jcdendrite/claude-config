@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, bash_input, edit_input, run_hook, run_hook_advisory, run_hook_reason
+from helpers import HOOKS_DIR, LARGE_MULTILINE_TAIL, bash_input, edit_input, run_hook, run_hook_advisory, run_hook_reason
 
 _PLUGINS_DIR = HOOKS_DIR.parent.parent.parent / "plugins"
 VERSION_BUMP_HOOK = _PLUGINS_DIR / "npm-semver" / "hooks" / "require-npm-version-bump.sh"
@@ -150,6 +150,16 @@ class TestRequireNpmVersionBump:
         _write_source_file(feature_clone, "packages/demo/src/index.ts")
         _git_q(feature_clone, "add", "packages/demo/src/index.ts")
         assert run_hook(VERSION_BUMP_HOOK, bash_input("git commit -m foo"), cwd=feature_clone) == "deny"
+
+    def test_large_multiline_git_commit_still_gated(self, feature_clone):
+        """A `git commit` first line followed by multi-line command text above pipe capacity is still gated.
+
+        The mechanism is in the LARGE_MULTILINE_TAIL comment in tests/helpers.py."""
+        _write_source_file(feature_clone, "packages/demo/src/index.ts")
+        _git_q(feature_clone, "add", "packages/demo/src/index.ts")
+        reason = run_hook_reason(VERSION_BUMP_HOOK, bash_input("git commit -m foo" + LARGE_MULTILINE_TAIL), cwd=feature_clone)
+        assert reason is not None, "hook allowed silently; expected deny"
+        assert "its version was not bumped" in reason
 
     def test_version_lowered_denies(self, feature_clone):
         _write_source_file(feature_clone, "packages/demo/src/index.ts")

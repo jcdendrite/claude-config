@@ -12,11 +12,16 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR
+from helpers import CLAUDE_DIR, HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR
 
-from .conftest import _base_test_env, _review_pr_audit_limit
+# claude/.claude/ itself, so `hooks.tests...` below resolves, as in test_review_ledger_lib.py.
+sys.path.insert(0, str(CLAUDE_DIR))
+from hooks.tests.test_config_lib import _locale_that_widens_ascii_ranges  # noqa: E402
+
+from .conftest import _base_test_env, _review_pr_audit_limit  # noqa: E402
 
 _LIB = SCRIPTS_DIR / "_review-pr-lib.sh"
 _HOOKS_LIB = HOOKS_DIR / "_lib.sh"
@@ -27,17 +32,22 @@ _EXPECTED_JQ_FILTER = ".[].filename | @json"
 _SUBPROCESS_TIMEOUT_SECONDS = 60
 
 
-def _run_bash(script_body: str, *args: str) -> subprocess.CompletedProcess:
-    """Source hooks/_lib.sh then _review-pr-lib.sh, then run script_body under
-    `set -euo pipefail`, the way the scripts source them. args arrive as "$1",
-    "$2", ... so a test input never needs shell quoting."""
-    full_script = f'set -euo pipefail\n. "{_HOOKS_LIB}"\n. "{_LIB}"\n{script_body}\n'
+def _sourced_script(script_body: str) -> str:
+    """script_body under `set -euo pipefail`, after sourcing hooks/_lib.sh and
+    _review-pr-lib.sh the way the scripts do."""
+    return f'set -euo pipefail\n. "{_HOOKS_LIB}"\n. "{_LIB}"\n{script_body}\n'
+
+
+def _run_bash(script_body: str, *args: str, env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    """Run script_body sourced as in _sourced_script. args arrive as "$1",
+    "$2", ... so a test input never needs shell quoting. env_overrides is
+    applied over the base test environment."""
     return subprocess.run(
-        ["bash", "-c", full_script, "bash", *args],
+        ["bash", "-c", _sourced_script(script_body), "bash", *args],
         capture_output=True,
         text=True,
         check=False,
-        env=_base_test_env(),
+        env={**_base_test_env(), **(env_overrides or {})},
         timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
 
@@ -55,6 +65,30 @@ def _call(function_name: str, *args: str) -> tuple[int, str]:
     assert result.returncode == 0, result.stderr
     status_line, _, output = result.stdout.partition("\n")
     assert status_line in {"0", "1"}, f"{function_name} exited with undefined status {status_line!r}: {result.stderr}"
+    return int(status_line), output
+
+
+def _call_with_stdin(function_name: str, stdin_bytes: bytes, prelude: str = "") -> tuple[int, str]:
+    """Call function_name with stdin_bytes on its standard input, returning
+    (exit status, stdout) like _call. `prelude` runs after the libraries are
+    sourced and before the call, so a test can redefine a function the call
+    reaches."""
+    result = subprocess.run(
+        [
+            "bash", "-c",
+            _sourced_script(
+                f'{prelude}\nstatus=0\noutput=$({function_name}) || status=$?\nprintf "%s\\n%s" "$status" "$output"'
+            ),
+        ],
+        input=stdin_bytes,
+        capture_output=True,
+        check=False,
+        env=_base_test_env(),
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+    )
+    assert result.returncode == 0, result.stderr
+    status_line, _, output = result.stdout.decode().partition("\n")
+    assert status_line in {"0", "1"}, f"{function_name} exited with undefined status {status_line!r}: {result.stderr!r}"
     return int(status_line), output
 
 
@@ -220,6 +254,186 @@ class TestFileCountMatches:
     )
     def test_input_that_is_not_an_array_fails_with_no_output(self, files_json):
         assert _call("review_pr_file_count_matches", files_json, "0") == (1, "")
+
+
+class TestIsFullHexOid:
+    @pytest.mark.parametrize("oid", ["a" * 40, "0123456789abcdef" * 4], ids=["sha1-length", "sha256-length"])
+    def test_a_full_lowercase_hex_object_name_passes(self, oid):
+        assert _call("review_pr_is_full_hex_oid", oid)[0] == 0
+
+    @pytest.mark.parametrize(
+        "oid",
+        [
+            "",
+            "main",
+            "abc123",
+            "--upload-pack=option-shaped",
+            "G" * 40,
+            "a" * 41,
+            "a" * 63,
+            "a" * 65,
+            "A" * 40,
+            "a" * 40 + "\n",
+            "a" * 40 + "\n--upload-pack=option-shaped",
+        ],
+        ids=[
+            "empty", "branch-name", "short-hex", "option-shaped", "non-hex", "41-hex", "63-hex", "65-hex",
+            "uppercase-hex", "40-hex-then-newline", "40-hex-then-option-line",
+        ],
+    )
+    def test_anything_else_is_refused(self, oid):
+        assert _call("review_pr_is_full_hex_oid", oid)[0] == 1
+
+    def test_a_locale_that_widens_bracket_ranges_does_not_widen_the_hex_class(self):
+        """Under a locale where `[0-9a-f]` accepts a non-ASCII letter, the
+        helper still refuses it. The script first asserts, in the same shell,
+        that the range form accepts the probe, so a locale that does not widen
+        fails here instead of passing."""
+        premise_failed = 3
+        result = _run_bash(
+            f'[[ "$1" =~ ^[0-9a-f]+$ ]] || exit {premise_failed}\nreview_pr_is_full_hex_oid "$1"',
+            "\u00e9" * 40,
+            env_overrides={"LC_ALL": _locale_that_widens_ascii_ranges()},
+        )
+
+        assert result.returncode != premise_failed, "the range form rejects the probe, so this locale does not widen it"
+        assert result.returncode == 1, result.stderr
+
+
+class TestBaseIsDefaultBranch:
+    def test_equal_names_are_the_default_branch(self):
+        assert _call("review_pr_base_is_default_branch", "main", "main")[0] == 0
+
+    def test_a_name_with_a_slash_equal_on_both_sides_is_the_default_branch(self):
+        assert _call("review_pr_base_is_default_branch", "release/1.x", "release/1.x")[0] == 0
+
+    @pytest.mark.parametrize("glob_name", ["m*", "[m]ain", "ma?n"])
+    def test_glob_metacharacters_compare_as_literal_text(self, glob_name):
+        assert _call("review_pr_base_is_default_branch", glob_name, glob_name)[0] == 0
+
+    @pytest.mark.parametrize(
+        ("base_ref_name", "default_branch"),
+        [
+            ("feature", "main"),
+            ("", ""),
+            ("", "main"),
+            ("main", ""),
+            ("Main", "main"),
+            ("refs/heads/main", "main"),
+            (" main", "main"),
+            ("main2", "main"),
+            ("main", "main2"),
+            ("main ", "main"),
+            ("main", "m*"),
+            ("main", "[m]ain"),
+            ("main", "ma?n"),
+        ],
+        ids=[
+            "different", "both-empty", "base-empty", "default-empty", "case-only-difference",
+            "refs-heads-prefix", "leading-space", "base-has-default-as-prefix", "default-has-base-as-prefix", "trailing-space",
+            "default-is-a-star-glob-matching-base",
+            "default-is-a-bracket-glob-matching-base", "default-is-a-question-glob-matching-base",
+        ],
+    )
+    def test_anything_but_two_equal_non_empty_names_is_not(self, base_ref_name, default_branch):
+        assert _call("review_pr_base_is_default_branch", base_ref_name, default_branch)[0] == 1
+
+
+class TestBaseIsDefaultBranchToken:
+    def test_the_skill_text_names_the_token_the_scripts_print(self):
+        """The session matches the token's text on the scripts' stdout, so a rename in one place must reach the other."""
+        result = _run_bash('printf "%s" "$REVIEW_PR_BASE_IS_DEFAULT_BRANCH_TOKEN"')
+        assert result.returncode == 0, result.stderr
+        token = result.stdout
+        assert token, "control: the library defines a non-empty token"
+        assert f"`{token}`" in (SKILLS_DIR / "review-pr" / "SKILL.md").read_text()
+
+
+class TestNulNamesToJson:
+    def test_names_keep_their_order_and_a_newline_inside_a_name(self):
+        status, output = _call_with_stdin("review_pr_nul_names_to_json", b"a b\0x\ny\0-lead\0")
+        assert status == 0
+        assert json.loads(output) == ["a b", "x\ny", "-lead"]
+
+    def test_empty_input_is_an_empty_array(self):
+        assert _call_with_stdin("review_pr_nul_names_to_json", b"") == (0, "[]")
+
+    def test_one_terminated_name_is_one_element(self):
+        assert _call_with_stdin("review_pr_nul_names_to_json", b"a\0") == (0, '["a"]')
+
+    def test_a_name_of_invalid_utf8_keeps_its_place_in_the_count(self):
+        """jq replaces the bad byte rather than failing, so the count check still foots."""
+        status, output = _call_with_stdin("review_pr_nul_names_to_json", b"a\0.claude/hooks/\xff.sh\0")
+        assert status == 0
+        names = json.loads(output)
+        assert len(names) == 2
+        assert names[1].startswith(".claude/hooks/")
+
+    @pytest.mark.parametrize(
+        "unterminated_input",
+        [b"a\0b", b"a", b"a\0b\0c"],
+        ids=["final-name-unterminated", "one-name-unterminated", "last-of-three-unterminated"],
+    )
+    def test_an_unterminated_final_name_is_refused_rather_than_dropped(self, unterminated_input):
+        status, output = _call_with_stdin("review_pr_nul_names_to_json", unterminated_input)
+        assert (status, output) == (1, "")
+
+    def test_a_jq_failure_is_refused(self):
+        status, _ = _call_with_stdin(
+            "review_pr_nul_names_to_json", b"a\0", prelude="_lib_jq() { cat >/dev/null; return 1; }",
+        )
+        assert status == 1
+
+
+class TestAsciiJsonString:
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("main", '"main"'),
+            ("release/1.x", '"release/1.x"'),
+            ("-lead", '"-lead"'),
+            ("a\x01b", '"a\\u0001b"'),
+            ("a\x7fb", '"a\\u007fb"'),
+            ("a\nb", '"a\\nb"'),
+            ('a"b', '"a\\"b"'),
+            ("café", '"caf\\u00e9"'),
+            ("a\x80b", '"a\\u0080b"'),
+            ("a\x9fb", '"a\\u009fb"'),
+            ("a\u202eb", '"a\\u202eb"'),
+            ("\U0001f600", '"\\ud83d\\ude00"'),
+        ],
+        ids=[
+            "plain", "slash", "leading-dash", "control-byte-json-escaped", "delete-byte-json-escaped", "newline", "quote",
+            "bmp-latin", "c1-lower-bound", "c1-upper-bound", "bmp-bidi-override", "astral",
+        ],
+    )
+    def test_prints_one_ascii_only_json_string(self, value, expected):
+        assert _call("review_pr_ascii_json_string", value) == (0, expected)
+
+    def test_a_jq_failure_prints_a_fixed_placeholder_and_still_succeeds(self):
+        result = _run_bash(
+            '_lib_jq() { return 1; }\nreview_pr_ascii_json_string "$1"', "a\x01b",
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == '"<value could not be escaped>"'
+
+
+class TestBareCount:
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [("3", "3"), ("       3", "3"), ("3\n", "3"), (" 12 \n", "12"), ("0", "0")],
+        ids=["bare", "bsd-left-padded", "trailing-newline", "padded-both-sides", "zero"],
+    )
+    def test_an_integer_with_surrounding_whitespace_prints_bare(self, raw, expected):
+        assert _call("review_pr_bare_count", raw) == (0, expected)
+
+    @pytest.mark.parametrize(
+        "raw",
+        ["", "3 4", "abc", "-1", "1.5", "3x"],
+        ids=["empty", "two-numbers", "word", "negative", "fractional", "trailing-text"],
+    )
+    def test_anything_but_one_non_negative_integer_is_refused_with_no_output(self, raw):
+        assert _call("review_pr_bare_count", raw) == (1, "")
 
 
 class TestAuditVerdict:
@@ -502,6 +716,17 @@ class TestGhStatusDescription:
     def test_every_other_status_reads_as_a_failure_naming_the_status(self, status):
         assert _call("review_pr_gh_status_description", status) == (0, f"failed (exit {status})")
 
+
+class TestGitStatusDescription:
+    @pytest.mark.parametrize("status", ["124", "137", "143"])
+    def test_a_cap_kill_status_names_the_cap(self, status):
+        assert _call("review_pr_git_status_description", status, "30") == (
+            0, f"exited {status}, consistent with the 30s cap firing",
+        )
+
+    @pytest.mark.parametrize("status", ["1", "128", "129"])
+    def test_every_other_status_is_named_without_a_cap_note(self, status):
+        assert _call("review_pr_git_status_description", status, "30") == (0, f"exited {status}")
 
 
 class TestChecksTokenSource:

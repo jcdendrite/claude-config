@@ -128,6 +128,82 @@ class TestSubagentMix:
         assert "feat-b" not in out
         assert "staff-backend-engineer" not in out
 
+    def test_prefix_dispatch_lands_under_the_entered_branch(self, fake_projects, capsys):
+        """A dispatch recorded on the default branch before the session enters
+        feat-x is credited to feat-x: the row prints under feat-x, and the
+        default branch gets none."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(
+                "claude-opus-4-7", branch="main", ts="2026-08-01T10:00:00.000Z",
+                content=[_agent_use("a1", "staff-backend-engineer")],
+            ),
+            _asst("claude-opus-4-7", branch="feat-x", ts="2026-08-01T10:02:00.000Z"),
+        ])
+
+        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(branches="feat-x"))
+        out = capsys.readouterr().out
+        assert "feat-x" in out
+        assert "staff-backend-engineer(1)" in out
+        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(branches="main"))
+        assert "staff-backend-engineer" not in capsys.readouterr().out
+
+    def test_this_repo_prints_only_the_main_thread_successor_for_prefix_and_sidechain_dispatches(
+        self, fake_projects, capsys,
+    ):
+        """Allow: a prefix dispatch prints under the main-thread successor branch.
+        Deny: the prefix record's own tag is not a row, and an inline sidechain
+        dispatch tagged with a foreign branch is neither a row nor a counted spawn."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(
+                "claude-opus-4-7", branch="main", ts="2026-08-01T10:00:00.000Z",
+                content=[_agent_use("a1", "staff-backend-engineer")],
+            ),
+            _asst("claude-opus-4-7", branch="feat-x", ts="2026-08-01T10:02:00.000Z"),
+            _asst(
+                "claude-opus-4-7", branch="foreign-branch", sidechain=True, ts="2026-08-01T10:03:00.000Z",
+                content=[_agent_use("a2", "ciso-reviewer")],
+            ),
+        ])
+        args = _subagent_mix_args(this_repo=True)
+        args._this_repo_slugs = ["-home-user-testrepo"]
+
+        _mod.subagent_mix.cmd_subagent_mix(args)
+        out = capsys.readouterr().out
+        lines = out.splitlines()
+        data_rows = [ln for ln in lines[lines.index("-" * 120) + 1:] if ln.strip()]
+        assert len(data_rows) == 1
+        branch, *_counts, spawn_types = data_rows[0].split()
+        assert branch == "feat-x"
+        assert spawn_types == "staff-backend-engineer(1)"
+
+    def test_since_window_leaves_a_later_default_branch_dispatch_on_the_default_branch(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """main -> X -> main -> Y with the window starting between X and the second
+        main. The session context is built before the --since check; one built from
+        in-window records would see the second main as the leading run and credit
+        its dispatch to Y."""
+        now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: now)
+
+        def days_ago(days: float) -> str:
+            return datetime.fromtimestamp(now - days * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts=days_ago(20)),
+            _asst("claude-opus-4-7", branch="feat-x", ts=days_ago(15)),
+            _asst(
+                "claude-opus-4-7", branch="main", ts=days_ago(8),
+                content=[_agent_use("a1", "staff-backend-engineer")],
+            ),
+            _asst("claude-opus-4-7", branch="feat-y", ts=days_ago(5)),
+        ])
+
+        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(branches="main", since="10d"))
+        assert "staff-backend-engineer(1)" in capsys.readouterr().out
+        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(branches="feat-y", since="10d"))
+        assert "staff-backend-engineer" not in capsys.readouterr().out
+
     def test_per_session_splits_aggregate(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "abcd1234-aaaa.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "ciso-reviewer")]),

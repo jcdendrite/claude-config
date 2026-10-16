@@ -129,10 +129,14 @@ def _run(cwd: Path, home: Path, *, path_prefix: Path | None = None) -> subproces
     """path_prefix, when given, is prepended to a real, inherited PATH --
     needed only when a test must override one specific external tool (git,
     rm, sha256sum) the script or a helper it shells out to calls
-    internally."""
-    env = {"HOME": str(home)}
+    internally.
+
+    PATH is always forwarded: the script hashes with sha256sum, which on
+    macOS lives in /sbin, a directory the built-in default PATH of Apple's
+    /bin/bash omits."""
+    env = {"HOME": str(home), "PATH": os.environ["PATH"]}
     if path_prefix is not None:
-        env["PATH"] = f"{path_prefix}{os.pathsep}{os.environ.get('PATH', '')}"
+        env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
     return subprocess.run(
         ["bash", str(SCRIPT)], cwd=cwd, env=env, capture_output=True, text=True, timeout=60,
     )

@@ -3,17 +3,24 @@
 # review-pr-checkout.sh and review-pr-diff.sh.
 #
 # Sourced by those scripts after hooks/_lib.sh, whose _lib_jq,
-# _lib_resolve_claude_pid and _lib_valid_session_id_component it calls; not
-# executable on its own.
+# _lib_resolve_claude_pid, _lib_valid_session_id_component and
+# _lib_status_consistent_with_cap_kill it calls; not executable on its own.
 #
 # Provides:
 #   REVIEW_PR_FILE_NAMES_JQ_FILTER  — the `gh api --jq` filter that prints each file name as one JSON string per line
 #   REVIEW_PR_COMMIT_SHAS_JQ_FILTER — the `gh api --jq` filter that prints each commit SHA on its own line
+#   REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS — the cap in seconds on one `git fetch` of a PR ref, a base commit or a default branch
 #   REVIEW_PR_REVIEWS_JQ_FILTER     — the `gh api --jq` filter that keeps each review with a non-empty body as one {id, author, state, body} object per line
 #   REVIEW_PR_INLINE_COMMENTS_JQ_FILTER — the `gh api --jq` filter that prints each inline comment as one {author, path, line, body} object per line
 #   review_pr_rest_changed_files    — the REST payload's changed_files count, validated as an integer
 #   review_pr_decode_file_names     — the @json stream decoded into one JSON array
 #   review_pr_file_count_matches    — a decoded listing's length equals the expected count
+#   review_pr_is_full_hex_oid       — a value is a full SHA-1 or SHA-256 lowercase hex object name
+#   REVIEW_PR_BASE_IS_DEFAULT_BRANCH_TOKEN — the fixed stdout line the checkout and diff scripts print when the PR's base branch is the repository's default branch
+#   review_pr_base_is_default_branch — a PR's base branch name equals the repository's default branch name, both non-empty
+#   review_pr_nul_names_to_json     — NUL-terminated names on stdin decoded into one JSON array
+#   review_pr_bare_count            — a command's printed count trimmed of surrounding whitespace and validated as an integer
+#   review_pr_ascii_json_string     — an attacker-chosen string printed as one ASCII-only JSON string, for a message
 #   REVIEW_PR_AUDIT_CLEAN_DOCUMENT  — the stdout the audit prints for a file list with no match, without its trailing newline
 #   review_pr_audit_verdict         — the audit's exit status and stdout classified as clean, stop or failed
 #   REVIEW_PR_AUDIT_STDOUT_ECHO_LIMIT — the most characters of the audit's stdout a failed-verdict message echoes
@@ -23,14 +30,18 @@
 #   review_pr_audit_match_lines     — the audit's stop document as one escaped, bounded line per match, for a stop message
 #   review_pr_audit_match_report    — review_pr_audit_match_lines, or a fixed line with the match count when the document cannot be formatted
 #   review_pr_gh_status_description — "timed out" for a gh exit status of 124, else "failed (exit N)"
+#   review_pr_git_status_description — "exited N", plus a cap note when N is a status a cap kill produces
 #   review_pr_checks_token_source   — whether the check-status fetch uses the CI_CHECKS_GH_TOKEN override (PR url on github.com), withholds it, or runs on the ambient token
 #   review_pr_resolve_session_and_pid — sets SESSION_ID and CLAUDE_PID for the scripts that record provenance
 #
-# Every function except review_pr_resolve_session_and_pid takes its input as an
-# argument, prints its result on stdout where it has one, returns 0 (true) or 1
-# (false) (a function that only prints returns 0), and performs no gh call and
-# no filesystem access. Error text and exit codes stay with the caller.
-# review_pr_resolve_session_and_pid is the one exception. It reads the session
+# Every function except review_pr_nul_names_to_json and
+# review_pr_resolve_session_and_pid takes its input as an argument, prints its
+# result on stdout where it has one, returns 0 (true) or 1 (false) (a function
+# that only prints returns 0), and performs no gh call and no filesystem
+# access. Error text and exit codes stay with the caller.
+# review_pr_nul_names_to_json is the stdin exception: it reads its input from
+# stdin, because a NUL byte cannot travel in an argument.
+# review_pr_resolve_session_and_pid is the other exception. It reads the session
 # file under the config dir, spawns ps, prints caller-parameterised text on
 # stderr, and sets SESSION_ID and CLAUDE_PID as globals in the caller.
 
@@ -49,6 +60,14 @@ REVIEW_PR_REVIEWS_JQ_FILTER='.[] | select(.body != "") | {id, author: .user.logi
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_INLINE_COMMENTS_JQ_FILTER='.[] | {author: .user.login, path, line, body}'
 
+# A git fetch is a network transfer, not a local read. No protocol or vendor limit backs the value. The value assumes a clone that already holds most of the fetched history.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_GIT_FETCH_TIMEOUT_SECONDS=30
+
+# The fixed text that review-pr-checkout.sh and review-pr-diff.sh print on their own stdout line when the base is the default branch.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_BASE_IS_DEFAULT_BRANCH_TOKEN='BASE_IS_DEFAULT_BRANCH'
+
 # The audit's `json.dumps({"stop": False, "matches": []})` output, which it prints for a file list with no match.
 REVIEW_PR_AUDIT_CLEAN_DOCUMENT='{"stop": false, "matches": []}'
 
@@ -59,6 +78,21 @@ REVIEW_PR_AUDIT_STDOUT_ECHO_LIMIT=200
 # The worst-case message stays under the 30,000-byte Bash output truncation threshold (claude-skills/skills/subagent-delegation/REFERENCES.md).
 REVIEW_PR_AUDIT_MATCH_LINE_LIMIT=20
 REVIEW_PR_AUDIT_PATH_ECHO_LIMIT=80
+
+# jq definitions that print a string as an ASCII-only JSON string; `ascii_json_string` is the entry point.
+# shellcheck disable=SC2034 # read by the functions below; export would leak it into every child process
+# shellcheck disable=SC2016 # the text is jq source holding `$offset`, and double quotes would expand it as a shell variable.
+REVIEW_PR_JQ_ASCII_JSON_STRING_DEFS='
+    def hex4: [(. / 4096 | floor) % 16, (. / 256 | floor) % 16, (. / 16 | floor) % 16, . % 16] | map("0123456789abcdef"[. : . + 1]) | join("");
+    def unicode_escape: "\\u" + hex4;
+    def escape_codepoint:
+      if . > 31 and . < 127 then [.]
+      elif . < 65536 then unicode_escape | explode
+      else (. - 65536) as $offset
+        | (55296 + ($offset / 1024 | floor) | unicode_escape) + (56320 + ($offset % 1024) | unicode_escape) | explode
+      end;
+    def ascii_json_string: @json | explode | map(escape_codepoint) | add | implode;
+'
 
 # review_pr_rest_changed_files REST_JSON
 # Prints the payload's `changed_files` when it is a non-negative integer.
@@ -86,6 +120,50 @@ review_pr_file_count_matches() {
   [[ -n "$listed_count" ]] || return 1
   printf '%s' "$listed_count"
   [[ "$listed_count" == "$2" ]]
+}
+
+# Spells out each lowercase hex digit instead of using ranges, so a locale whose collation puts non-ASCII letters inside a range does not widen the class.
+_REVIEW_PR_HEX_CHAR_REGEX='[0123456789abcdef]'
+
+# review_pr_is_full_hex_oid VALUE
+# Returns 0 only when VALUE is a full SHA-1 (40) or SHA-256 (64) lowercase hex object name.
+# Anchored with no newline allowance, so a value with a trailing line, such as one carrying an option on the second line, fails.
+review_pr_is_full_hex_oid() {
+  [[ "$1" =~ ^${_REVIEW_PR_HEX_CHAR_REGEX}{40}(${_REVIEW_PR_HEX_CHAR_REGEX}{24})?$ ]]
+}
+
+# review_pr_base_is_default_branch BASE_REF_NAME DEFAULT_BRANCH
+# Returns 0 only when both names are non-empty and byte-equal.
+# Returns 1 when either is empty, so two absent names never read as the default branch. The comparison is case-sensitive, as git ref names are.
+review_pr_base_is_default_branch() {
+  [[ -n "$1" && "$1" == "$2" ]]
+}
+
+# review_pr_nul_names_to_json
+# Reads NUL-terminated names on stdin and prints them as one compact JSON array, in order.
+# Empty stdin prints [].
+# Returns 1 when jq fails or the input does not end in NUL, so an unterminated final name is never dropped.
+# Relies on a `jq -R -s` that keeps NUL bytes (README.md's `jq` version bullet names the verified version); a jq that truncates at NUL leaves the final name unterminated, so this returns 1.
+review_pr_nul_names_to_json() {
+  _lib_jq -R -s -c 'split("\u0000") | if length == 0 or .[-1] == "" then .[:-1] else error("unterminated final name") end' 2>/dev/null || return 1
+}
+
+# review_pr_bare_count RAW
+# Prints the integer in RAW with surrounding whitespace removed, such as the left-padded count BSD `wc -c` prints.
+# Returns 1, printing nothing, when RAW holds anything but one non-negative integer.
+review_pr_bare_count() {
+  [[ "$1" =~ ^[[:space:]]*([0-9]+)[[:space:]]*$ ]] || return 1
+  printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# review_pr_ascii_json_string VALUE
+# Prints VALUE as one ASCII-only JSON string, quotes included, escaped as review_pr_audit_match_lines escapes a path, but with no length cut.
+# For an attacker-chosen name, such as a branch name, echoed in a message.
+# When jq fails, prints a fixed placeholder instead and still returns 0, so a message built around it reaches its own exit.
+review_pr_ascii_json_string() {
+  # shellcheck disable=SC2016 # $value is a jq binding in a single-quoted filter, and double quotes would expand it as a shell variable.
+  _lib_jq -n -r --arg value "$1" "$REVIEW_PR_JQ_ASCII_JSON_STRING_DEFS"'$value | ascii_json_string' 2>/dev/null \
+    || printf '"<value could not be escaped>"'
 }
 
 # review_pr_audit_verdict AUDIT_EXIT_STATUS AUDIT_STDOUT
@@ -130,16 +208,8 @@ review_pr_audit_match_lines() {
   # shellcheck disable=SC2016 # $matches, $match_limit and $path_limit are jq bindings in a single-quoted filter, and double quotes would expand them as shell variables.
   formatted_lines=$(printf '%s' "$1" | _lib_jq -r \
     --argjson match_limit "$REVIEW_PR_AUDIT_MATCH_LINE_LIMIT" \
-    --argjson path_limit "$REVIEW_PR_AUDIT_PATH_ECHO_LIMIT" '
-    def hex4: [(. / 4096 | floor) % 16, (. / 256 | floor) % 16, (. / 16 | floor) % 16, . % 16] | map("0123456789abcdef"[. : . + 1]) | join("");
-    def unicode_escape: "\\u" + hex4;
-    def escape_codepoint:
-      if . > 31 and . < 127 then [.]
-      elif . < 65536 then unicode_escape | explode
-      else (. - 65536) as $offset
-        | (55296 + ($offset / 1024 | floor) | unicode_escape) + (56320 + ($offset % 1024) | unicode_escape) | explode
-      end;
-    def ascii_json_string: @json | explode | map(escape_codepoint) | add | implode;
+    --argjson path_limit "$REVIEW_PR_AUDIT_PATH_ECHO_LIMIT" \
+    "$REVIEW_PR_JQ_ASCII_JSON_STRING_DEFS"'
     if (.matches | type) != "array" then error("no matches array") else
       .matches as $matches
       | ($matches[:$match_limit][]
@@ -176,6 +246,16 @@ review_pr_gh_status_description() {
     printf 'timed out'
   else
     printf 'failed (exit %s)' "$1"
+  fi
+}
+
+# review_pr_git_status_description GIT_EXIT_STATUS CAP_SECONDS
+# Prints "exited N", plus ", consistent with the CAP_SECONDSs cap firing" when N is a status a cap kill produces (see _lib_status_consistent_with_cap_kill).
+review_pr_git_status_description() {
+  if _lib_status_consistent_with_cap_kill "$1"; then
+    printf 'exited %s, consistent with the %ss cap firing' "$1" "$2"
+  else
+    printf 'exited %s' "$1"
   fi
 }
 

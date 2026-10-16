@@ -73,9 +73,7 @@
 #   without also touching `install.sh` gets no reminder — that is the
 #   standing, unclosed gap.
 
-# Every grep -q in this file reads a here-string, never a pipe. Under
-# pipefail, grep exiting at its first match while printf still writes a large
-# multi-line input fails the pipeline, which reads as no match.
+# grep -q reads a here-string, never a pipe: see test_no_pipe_into_early_exit_grep in hooks/tests/test_hook_alignment.py.
 set -uo pipefail
 
 DENY_GATE_LABEL="stow-reminder"

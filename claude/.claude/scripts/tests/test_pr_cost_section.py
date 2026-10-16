@@ -804,9 +804,10 @@ class TestCostBodyEndsWithTableRowBothSeams:
 class TestCombinedZeroState:
     """The one table-to-non-table seam: the rounds table's fixed zero-count
     rows immediately followed by the spawns section's bare sentence with no
-    table at all. At the Python level, test_transcript_cost_counts.py's
-    test_zero_spawns_renders_the_sentence_not_a_table pins only the spawns
-    side, never the two as one rendered body."""
+    table at all. test_transcript_cost_counts.py's
+    test_all_zero_state_renders_zero_round_rows_and_the_no_spawns_sentence
+    pins the same state from real cmd_cost_counts; this test pins
+    pr-cost-section.sh's handling of it."""
 
     def test_stdout_matches_combined_zero_rendering(
         self, tmp_path, combined_zero_state_script_fixture,

@@ -279,7 +279,7 @@ CONCLUDING_FRAGMENT_LABEL=$(_first_concluding_fragment_label "$STRIPPED_FRAGMENT
 # whitespace (`${IFS}`) defeats this regex — see Known gaps below.     #
 # ------------------------------------------------------------------ #
 EXECUTION_WRAPPER_TOKEN_RE='(^|/|[[:space:]])(bash|sh|zsh|ksh|dash)[[:space:]]+-c([[:space:]]|$)|(^|[^A-Za-z0-9_])eval([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])xargs([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])source([^A-Za-z0-9_]|$)|(^|&&?|;|\|\|?)[[:space:]]*\.[[:space:]]+[^[:space:]]|(^|/|[[:space:]])perl[[:space:]]+-e([[:space:]]|$)|(^|/|[[:space:]])(python|python2|python3)[[:space:]]+-c([[:space:]]|$)|(^|/|[[:space:]])ruby[[:space:]]+-e([[:space:]]|$)|(^|/|[[:space:]])node[[:space:]]+-e([[:space:]]|$)'
-printf '%s\n' "$COMMAND" | grep -qE "$EXECUTION_WRAPPER_TOKEN_RE"
+grep -qE "$EXECUTION_WRAPPER_TOKEN_RE" <<< "$COMMAND"
 WRAPPER_TOKEN_EXIT=$?
 if [ "$WRAPPER_TOKEN_EXIT" -eq 0 ]; then
   emit_deny "this Bash call carries both a ${CONCLUDING_FRAGMENT_LABEL} and an execution-wrapper token (bash -c, sh -c, eval, xargs, source/bare '.', perl -e, python -c, ruby -e, node -e, or similar) — content executed inside the wrapper is invisible to this and every other commit gate's git diff --cached snapshot, regardless of quoting or ordering. Staging must run as its own Bash tool call, with the ${CONCLUDING_FRAGMENT_LABEL} as a second, separate call."

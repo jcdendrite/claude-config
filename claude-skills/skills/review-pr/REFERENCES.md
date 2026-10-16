@@ -1,9 +1,9 @@
 # References — review-pr
 
 Not loaded at skill runtime. Consult when editing the skill,
-`review-pr-acquire.sh`/`review-pr-diff.sh`, or `audit-execution-surface.py`
-to verify a `gh` field name, a truncation caveat, or the execution-surface
-match list still holds.
+`review-pr-acquire.sh`/`review-pr-diff.sh`/`review-pr-checkout.sh`,
+`_review-pr-lib.sh`, or `audit-execution-surface.py` to verify a `gh` field
+name, a truncation caveat, or the execution-surface match list still holds.
 
 ## What `review-pr-acquire.sh` fetches (Step 1)
 
@@ -60,6 +60,15 @@ match list still holds.
   rate-limited from a network failure means parsing stderr text, which is
   version-fragile across `gh` releases. The script prefers aborting on any
   non-zero exit over branching on a parsed failure cause.
+- **The script's worst-case wall time exceeds the Bash tool's default
+  timeout.** Its seven capped `gh` calls sum to 150 seconds: the two
+  `gh pr view` calls and the REST call at 10 seconds each, and the four
+  paginated calls (files, commits, reviews, inline comments) at 30 seconds
+  each. The tool's default timeout is 120000 ms and its documented maximum is
+  600000 ms, so SKILL.md Step 1 sets `timeout: 600000` for it.
+  The usage text of `review-pr-checkout.sh` and `review-pr-diff.sh` each state a
+  "Worst-case wall time" that exceeds the default, so Step 1 sets the same
+  timeout for them.
 
 ## Execution-surface file list (Step 2 / `audit-execution-surface.py`)
 
@@ -139,7 +148,7 @@ into a plain text file, and it was not adopted, for two reasons:
 
 The residual is accepted by decision, not by a threat-model exclusion. Both backstops are partial:
 
-- The `author_association` allowlist in `review-pr-checkout.sh` refuses every value outside `MEMBER`, `OWNER`, `COLLABORATOR` and `CONTRIBUTOR`, including any value GitHub adds later. It admits those four, so it does not stop a `CONTRIBUTOR` or a compromised collaborator account. A cross-repository PR, and a PR whose base branch is not the base repository's default branch, are each refused by a separate check in the same script.
+- The `author_association` allowlist in `review-pr-checkout.sh` refuses every value outside `MEMBER`, `OWNER`, `COLLABORATOR` and `CONTRIBUTOR`, including any value GitHub adds later. It admits those four, so it does not stop a `CONTRIBUTOR` or a compromised collaborator account. A cross-repository PR is refused by a separate check in the same script. For a PR whose base branch is not the base repository's default branch, the script also audits every path the head changes from the default branch, by the same path predicate.
 - `deny-credential-file-reads.sh` resolves a `Read` target with `readlink -f` only when the target's last path component is itself a symlink (`[ -L ]`). A symlinked directory earlier in the path is not resolved, so a `Read` through such a link to a credential file is checked against its raw path text alone.
 
 Two further controls do not close the gap:
@@ -156,22 +165,26 @@ Two further controls do not close the gap:
 routes to once `review-pr-checkout.sh`'s trust block refuses it
 unconditionally — the common case on a public repo, so this path exists
 to keep that PR class reviewable rather than permanently locked out.
-The checkout script also refuses a PR whose base branch is not the base
-repository's default branch, because the audit covers only the changed
-files while the checkout writes the whole head tree. Step 1 cannot read
-the base branch, so that refusal is learned only from the script's exit 3.
+For a PR whose base branch is not the base repository's default branch, the
+checkout script audits every path the head changes from the default branch as
+well as the PR's changed files, because the checkout writes the whole head tree
+and a stacked base can carry files the PR's own file list never names. A
+trusted PR whose delta audits clean gets a worktree. Step 1 cannot read an
+audit verdict, so a stop is learned only from the script's exit 3.
 The checkout path stays the default for a trusted PR because it gives the
 reviewer full-file context, which the diff alone does not.
 What the no-checkout path gives up against it, named explicitly rather than
 left implicit:
 
-- **No local checks (Step 6 is skipped entirely).** Nothing lands on disk,
-  so there is no tree to run the project's test suite, linter, or build
-  against. Any finding that would only surface by running code is missed.
+- **No local checks (Step 6 is skipped entirely).** The script creates no
+  worktree and checks nothing out, so there is no checkout to run the
+  project's test suite, linter, or build against. Any finding that would only
+  surface by running code is missed.
 - **A stop-shaped signal becomes a mandatory finding instead.** An
-  `audit-execution-surface.py` hit halts `review-pr-checkout.sh` before any
-  fetch. On this path, the same hit is reported on stderr as an
-  `AUDIT_FINDING` line instead, and must be carried into the Step 5
+  `audit-execution-surface.py` hit on the file list halts
+  `review-pr-checkout.sh` before it fetches the PR's ref. On this path, the
+  same hit is reported on stderr as an `AUDIT_FINDING` line instead, and must
+  be carried into the Step 5
   synthesized review as a blocking finding — there is no checkout for a
   hard stop to protect.
 - **The diff itself may be truncated on an unusually large PR.** `gh pr
@@ -209,6 +222,154 @@ left implicit:
   invoked from a review worktree. A path they mark `-diff` or `binary`
   appears as "Binary files ... differ"; SKILL.md Step 5 says what the
   reviewer does with such a path.
+- **No head content beyond the diff's hunks.** SKILL.md Step 5 makes the diff
+  file the only route to the PR's file contents, and the only head lines that
+  file carries are each hunk's added and context lines. A finding about
+  unchanged lines of a changed file therefore rests on hunk context alone.
+  Base content is readable (see the base-reads section below).
+- **The base commit can be unavailable.** `review-pr-diff.sh` fetches the
+  base commit and prints it as a full-hex line only when the fetch succeeded
+  and the commit is present locally. Otherwise it writes
+  `review-pr-diff.sh: BASE_UNAVAILABLE <token>` on stderr, with the token
+  `missing`, `not-hex`, `fetch-failed`, or `fetch-timed-out`, and still writes
+  the diff and provenance and exits 0. An operator whose `gh` works while git
+  over SSH does not would otherwise lose the whole diff-only path. Git's own
+  output is never echoed, because it can carry remote URLs into a posted body.
+  A missing `headRefOid` still exits 2.
+- **Stdout carries a fixed token when the base is the default branch.**
+  - The usage text of `review-pr-checkout.sh` and `review-pr-diff.sh` states
+    which line each prints the token on and when it prints it.
+  - The session matches the line's text on the script's own stdout, so a diff
+    or PR body that contains the text cannot supply it.
+  - `review-pr-checkout.sh` takes the base branch name from the REST payload.
+    It requires `gh pr view`'s `baseRefName` to equal that name beside
+    `baseRefOid` and again after the file list, and exits 2 on a mismatch, so a
+    one-way retarget between the reads cannot skip the stacked delta audit. The
+    attacker left in that window is the one the "Known gaps and operator
+    choices" section accepts.
+  - `review-pr-diff.sh` reads the base branch name from the same `gh pr view`
+    response as `baseRefOid`, and only the default branch name from the REST
+    payload. No later read that a PR retarget can change feeds the token, so it
+    has no recheck after the file list. The diff file is not bound to the base
+    the token describes: `gh pr diff` renders against the base the PR has when
+    it runs. That GitHub serves the two fields of one response
+    consistently is unverified, and `review-pr-checkout.sh` relies on the same.
+  - A token printed in error lets a non-default branch's content count as
+    settled code, because SKILL.md makes the token the only gate for that. A
+    token missing in error only leaves claims open.
+
+## Base reads by object ID (Step 5)
+
+SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
+`git --literal-pathspecs grep -n -F -e '<literal>' <baseRefOid> -- '<path>'`.
+
+- **Neither command runs a configured driver.** `git show` prints a blob's
+  plain contents and `git grep` applies no textconv by default (git-show(1),
+  git-grep(1); read from the manual, not run).
+- **Single quotes keep a PR-derived string literal.** Inside them the shell
+  treats every character literally, and a single quote cannot occur inside them
+  (POSIX Shell Command Language, quoting; recalled, not reopened). SKILL.md
+  Step 5's "Base reads" paragraph defines which strings never reach Bash.
+- **`--literal-pathspecs` and `-F` make the PR-derived path and `<literal>`
+  match verbatim.** Without `--literal-pathspecs`, `git grep` treats the path as a
+  pathspec, so glob characters or a leading `:` select other files
+  (gitglossary(7), "pathspec"). `-F` makes the `<literal>` a fixed string.
+  `git show <oid>:<path>` names one tree entry and needs neither.
+- **The scripts fetch the base commit, not the session.** A fetch the session
+  writes copies a model-transcribed object ID with no hex validation, no
+  `core.hooksPath` pin, and no time cap. The scripts validate the ID with
+  `review_pr_is_full_hex_oid`, disable hooks, and cap the fetch. The cap holds
+  only when `timeout` or `gtimeout` is on `PATH`.
+- **Every network `git fetch` in `review-pr-checkout.sh` and `review-pr-diff.sh`
+  runs with `GIT_TERMINAL_PROMPT=0`.**
+  Git's own prompts, such as an HTTP(S) credential request, then fail the fetch
+  instead of waiting for terminal input. An ssh passphrase or host-key prompt
+  comes from ssh itself, so it is not suppressed. An ssh origin can still wait
+  until the fetch time cap. `GIT_ASKPASS` and `SSH_ASKPASS` stay untouched, so
+  a configured GUI askpass helper still works.
+- **Stacked-base content is not precedent.** SKILL.md Step 5's "Base reads"
+  paragraph states the rule. A stacked base is unmerged and may be written by
+  the PR's author. The session cannot tell it from a base the script could not
+  verify, so without the token line it treats the base as unsettled. The
+  session works out nothing about the base itself: the token line is its only
+  signal.
+- **Per-file `gh api repos/<owner>/<repo>/contents/<path>?ref=<oid>` was not
+  adopted.** It costs one API call per file, returns base64, and cannot grep
+  across the tree.
+- **A base worktree for diff-only PRs was not adopted.** A diff-only PR's
+  head is never checked out, because the audit exists to keep PR-supplied
+  `CLAUDE.md`, settings, and hooks out of any tree the harness reads. For the
+  base, object-ID reads give the same read access without a worktree to create,
+  name, clean up, or audit. The cost is that each read is a Bash call that may
+  prompt.
+- **Two fixed-shape alternatives are heavier and were not adopted.**
+  - A `review-pr-base-read.sh <path>` script: the path still reaches the
+    script's argv through a model-written command line, so the quoting exposure
+    moves instead of closing.
+  - A request file written with the Write tool and read by `git cat-file
+    --batch` or `git grep -F -f`: this closes the exposure, but costs a Write
+    and a scratch-file convention per read.
+- **Residual.** The quoting rule is prose. A command that double-quotes a name
+  would expand `$(...)`. The harness shows the full command only in a
+  permission mode that prompts, not under an allowlist or auto mode.
+- **Numeric and hex placeholders are validated by instruction.** SKILL.md
+  Steps 5 and 7 state the digits-only and full-hex rules and the CI-log
+  control-character strip. The model transcribes each placeholder from a
+  document it read, so nothing mechanical checks the transcription. The human
+  approves the displayed body.
+
+## Step 7's controls
+
+- **Protected findings.** SKILL.md Step 7 defines the rule. The mark must exist
+  before the passes that could lower it, because tiering is the list's fifth
+  item. Without the rule, a pre-existing check could drop a path the audit
+  flagged because that path also exists at the base, and the consult would never
+  see the finding.
+- **Claims about code close only on code evidence.** SKILL.md Step 7, item 3
+  states the rule. CI-log text, ticket text, and assertions in
+  PR-authored text are written or editable by the PR's author, which is why
+  they never close or downgrade a claim about code. "Verified" means observed
+  code behavior in the diff file, base objects, or worktree. Step 8 prints the first 20 `AUDIT_FINDING` matched
+  paths, each cut at 80 characters, so a human can see an omission among them.
+  A later match is not listed there.
+- **Per-finding `Edit`s are the record of the consult.** The transcript then
+  holds the pre-consult `Write`, the consult dispatch, and every change as an
+  old/new pair. Two weaker records fail: cuts recalled from memory leave nothing
+  tying each cut to a visible change, and an annotation-only consult cannot
+  correct a body.
+- **The `Read` after the `Write` is deliberate.** `Edit` fails unless the file
+  was read in the conversation (quoted in `docs/case-studies/hashline-edit-format.md`).
+  Whether the session's own `Write` counts as that read is unverified, so the
+  skill reads the body explicitly.
+- **Up to three consults run before step 8 presents the body, and the
+  session runs none after.** A consult after every round of edits can loop when each consult
+  proposes another change the session can verify, so the third consult is
+  final. Its verified corrections are applied, so the human never approves a
+  body missing a correction the session already verified. A change after
+  step 8 presents the body gets no consult, so no consult can reverse a
+  change the human asked for. Such a change also voids any earlier approval,
+  so the human approves the exact bytes that post. Once the third consult
+  has run or step 8 has presented the body, a fix that clears a
+  `marker.sh write` refusal is the only change the session may make on its
+  own besides the third consult's corrections, because without it a refused
+  write would leave the body unpostable.
+  The protected-finding rule binds that fix too. A re-check or consult the
+  human asks for after step 8 presents only proposes changes, which keeps
+  the refusal fix the session's only change of its own.
+- **Residual.** The record is the session's own transcript, and every edit is
+  session-authored, because `plan-architect` holds no write tool. Nothing
+  mechanical detects a finding missing from the body. `marker.sh`'s body check
+  and `review-pr-post.sh`'s hash check prove only that the posted text equals
+  the marked text. The human's approval of the exact body is the backstop,
+  helped by step 8's listing of dropped claims and `AUDIT_FINDING` paths. For
+  any `Edit` made after the last consult, the human's reading of the presented
+  text is the only content review. `marker.sh`'s attribution check and
+  credential scan check the body's shape, not its content, so step 8 presents
+  a fresh `Read` of the file and shows each such `Edit` as its verbatim old and
+  new strings.
+- **`plan-architect`, `comment-discipline-reviewer`, and `skill-fidelity-reviewer`
+  get no Bash.** These three hold no Bash, so
+  the main session resolves the claims they mark as unchecked.
 
 ## Why the findings-body declaration uses the Write tool, not Bash (Step 7)
 
@@ -281,6 +442,24 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
   - Its redaction policy also short-circuits unless the clone's `origin.url`
     contains `claude-config`, while `/review-pr` runs in any repository.
   - The control is the Step 8 human approval of the exact body to post.
+- **The ticket read in Step 4 trusts the engineer's confirmation.**
+  - The session guesses the ticket from PR-authored text, and the PR author
+    controls that text.
+  - The engineer's answer to the `AskUserQuestion` is the only binding on which
+    ticket is read.
+  - A confirmation given on reflex weakens that control.
+  - Every tracker gets the same confirmation, because a connected tool shows
+    what the operator can read, not which tracker the repo uses.
+  - The `gh issue view` read is pinned by `-R` to `origin`'s repo. The lookup
+    for any other tracker, including a GitHub repo other than `origin`'s, has
+    no equivalent pin and trusts the operator's connector to point at the right
+    project's workspace.
+  - Ticket text can reach the findings body, and its tracker's audience can be
+    narrower than the PR's. Step 8 names each body finding that rests on ticket
+    text, so the human approves the exact body knowing which text came from the
+    ticket.
+  - The lookup is matched by role, never by tool name, per
+    `linear-formatting/SKILL.md`.
 - **Symlinks at the session-scoped paths are not refused.**
   - Neither the Write tool nor the review-pr scripts refuse a symlink at
     `.body`, `.diff`, `.context.json`, `.provenance`, or the completion
@@ -301,8 +480,12 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
   - `review-pr-acquire.sh` registers one `EXIT` trap that removes its
     `mktemp -d` assembly directory.
   - That trap is not proven to run when a signal kills the process.
-  - `review-pr-checkout.sh` registers no trap, so a signal between its
-    worktree `mktemp -d` and `git worktree add` leaves an empty, unregistered
+  - `review-pr-checkout.sh` registers one `EXIT` trap only on the stacked-base
+    path, to remove the `mktemp -d` directory (`review-pr-checkout.XXXXXX`
+    under `$TMPDIR`) holding its name listing, and that trap is not proven to
+    run on a signal either.
+  - No trap covers the worktree directory, so a signal between its
+    `mktemp -d` and `git worktree add` leaves an empty, unregistered
     directory.
   - `review-pr-finish.sh` does not sweep that directory, because it finds
     worktrees through `git worktree list`, which never lists an unregistered
@@ -311,17 +494,57 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
     file stranded by a killed process, not these directories.
   - Remove an unregistered `review-pr-<session-id>-<number>-<suffix>`
     directory under `<main tree>/.claude/worktrees/`, or a
-    `review-pr-acquire.XXXXXX` directory under `$TMPDIR` (`/tmp` when unset),
-    with a plain `rm -r` on that specific directory.
-- **`review-pr-finish.sh` leaves a ref and fetched base objects in the
-  repository.** `review-pr-checkout.sh` fetches the PR's head into
-  `refs/review-pr/pr-<number>`, which keeps that commit and its objects
-  reachable until the ref is deleted with
-  `git update-ref -d refs/review-pr/pr-<number>`. `review-pr-checkout.sh`'s
-  `git fetch origin <baseRefOid>` adds the base commit's objects to the
-  shared object store. `review-pr-finish.sh` does not remove them, and an
-  ordinary `git gc` expires them once unreachable (default prune expiry is
-  2 weeks, per `git-gc(1)`).
+    `review-pr-acquire.XXXXXX` or `review-pr-checkout.XXXXXX` directory under
+    `$TMPDIR` (`/tmp` when unset), with a plain `rm -r` on that specific
+    directory.
+- **`review-pr-finish.sh` leaves refs and fetched base objects in the
+  repository.**
+  - `review-pr-checkout.sh` fetches the PR's head into
+    `refs/review-pr/pr-<number>`, which keeps that commit and its objects
+    reachable until the ref is deleted with
+    `git update-ref -d refs/review-pr/pr-<number>`.
+  - For a PR whose base branch is not the default branch, it also fetches the
+    default branch into `refs/review-pr/pr-<number>-default`, deleted the same
+    way. Both refs stay behind, including after a stacked delta stop.
+  - Those two ref fetches pass `--no-tags`, `--no-write-fetch-head` and an
+    empty `--refmap=`, so they leave no tag, no `FETCH_HEAD` and no
+    remote-tracking ref update behind.
+  - Both scripts' fetch of `<baseRefOid>` adds the base commit's objects to
+    the shared object store.
+    `review-pr-finish.sh` does not remove them, and an ordinary `git gc`
+    expires them once unreachable (default prune expiry is 2 weeks, per
+    `git-gc(1)`).
+  - Each of these fetches is capped only when `timeout` or `gtimeout` is on
+    `PATH`.
+- **The stacked-base delta is a three-dot diff.** A file in the head that sits
+  in default-branch history but was removed at the default tip is not listed
+  by `<default>...<head>`. A two-dot `<default-oid>..<head-oid>` diff would
+  list it and was not adopted. A default-base PR carries the identical
+  residual in its own file list, so a stacked PR gains no new exposure.
+- **A stacked PR's exit 2 has no automatic fallback.** A failed default-branch
+  fetch, a failed or capped name listing, a count mismatch, and an audit with
+  no verdict all exit 2, and exit-2 messages never name `review-pr-diff.sh`.
+  SKILL.md Step 2 tells the human they may re-run the script or ask for the
+  diff-only path.
+- **The NUL-split name decode depends on the `jq` version.** README.md's
+  `jq` version bullet names the verified version. A jq that
+  truncates at a NUL byte fails at the decode ("unterminated final name"), so
+  every stacked PR with a non-empty delta exits 2 on it. An empty delta still
+  passes.
+- **A retarget away from the default branch and back skips the stacked delta
+  audit.**
+  - It must land while the paginated file list is being read, so all three
+    base-name reads stay equal and the file list can describe another base.
+  - Closing it needs an audit keyed only on object IDs, such as an
+    unconditional `DEFAULT_OID...FETCHED_SHA` audit.
+  - That audit was not adopted. The attacker is a same-repo author with write
+    access, who already has the quieter bypass in the "Git-tracked symlinks are not defended against" section above.
+  - An unconditional audit would also add a default-branch fetch and the NUL
+    decode dependence to every PR.
+  - The paginated listing must still match `changed_files` in length
+    (`review_pr_file_count_matches`). A skipped audit lets flagged
+    execution-surface paths that the head shares with the stacked base reach
+    the checkout unaudited.
 - **The post gate is a cooperative-mistake check.** The checks `review-pr-post.sh`
   makes are listed in its usage text.
   - `review-pr-post.sh` consumes the completion marker with `unlink(1)`, an

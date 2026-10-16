@@ -1016,18 +1016,17 @@ class TestSelectPytestTargets:
         assert result.reason == "empty-diff"
         assert result.target_paths == _mod.FULL_SUITE_TARGETS
 
-    def test_agents_dir_change_also_selects_hooks_and_skills_tests(self):
-        """test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
-        (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path, not
-        by import. Without this cross-domain exception, a change under
-        claude/.claude/agents/ falls open to the full suite instead of
-        selecting the two domains that actually depend on it. Also selects
-        REVIEW_BENCH_TEST_GLOB and TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH (see the
-        AGENTS_DIR comment on CROSS_DOMAIN_EXCEPTIONS)."""
+    def test_agents_dir_change_selects_the_declared_agents_dir_readers(self):
+        """Tests that read claude/.claude/agents/*.md by path, not by import,
+        are selected by the cross-domain exception; without it a change there
+        falls open to the full suite. The AGENTS_DIR comment on
+        CROSS_DOMAIN_EXCEPTIONS carries the hand-audited list."""
         result = _mod.select_pytest_targets(["claude/.claude/agents/code-writer.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
+            _mod.TRANSCRIPT_COST_COUNTS_TEST_PATH, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB,
+            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
             _mod.TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
         }
 
@@ -1955,6 +1954,7 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.SELECT_TESTS_TEST_PATH,
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
     _mod.TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
+    _mod.TRANSCRIPT_COST_COUNTS_TEST_PATH,
     _mod.DOC_COUNTS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,

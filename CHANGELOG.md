@@ -8,10 +8,45 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 - **A main-thread `review-orchestrator` dispatch now counts as a `code-review` round in `review-round-cost`, `cost-counts` and `author-outcome`.** The agent runs its round in its own transcript, so these subcommands previously opened no round for it and its spend landed in the non-round remainder. `review-round-cost` now prices the dispatch, its reviewers and its `code-writer` dispatches into the round. `author-outcome` also classifies the round: it reads the orchestrator's own transcript for the marker write and for nested `code-writer` dispatches. It gains a data-quality counter, `orchestrator dispatches with no readable transcript records`.
   - **Retroactive:** figures are recomputed from surviving transcripts, so a re-run differs from an earlier published figure for any session holding such a dispatch.
-  - **Halted dispatches:** a dispatch that halted before invoking a review skill, or that never ran (a gate denial, a user rejection or a bad agent type still leaves its `tool_use` block), still counts as a round, so `author-outcome` can newly count its session as a round-number mismatch. See `docs/transcript-analysis.md` § "author-outcome".
+  - **Halted dispatches:** a dispatch that halted before invoking a review skill, or that never ran (a gate denial or a user rejection still leaves its `tool_use` block), still counts as a round, so `author-outcome` can newly count its session as a round-number mismatch. See `docs/transcript-analysis.md` § "author-outcome".
   - **Caption:** the pinned `cost-counts` rounds caption now names a main-thread `review-orchestrator` dispatch as a round.
   - **`author-outcome`:** a new data-quality counter, `mismatched sessions with fewer ledger blocks than round-opens`, is a subset of the round-number-mismatch counter and counts sessions, not round-opens.
 - **`review-round-cost` prices a dispatch spawned from inside another subagent into its round, instead of counting it dangling at $0.** The harness records every nested dispatch in the session's own flat `subagents/` directory, which the per-session dispatch index already covers. Figures are recomputed retroactively from surviving transcripts, so a re-run can differ from an earlier figure for a round holding a nested dispatch: higher `agent $`, higher `agents`, lower `Dangling dispatches`. See `docs/transcript-analysis.md` § "review-round-cost".
+- **`/plan-it`'s push offer now runs one tested script, `plan-push-preflight.py`, instead of following about twenty prose steps.** The push command and the one-push-URL rule are unchanged.
+  - The script prints the question's facts and the exact push command. The question shows both, and the session runs that command only after a yes. The script never pushes.
+  - `gh` requests now go only to the push URL's own host, and only when that host is `github.com` or `GH_HOST`, always host-qualified. For any other push URL, the question says the open-PR check did not run, and no share URL is given.
+  - A branch, remote, owner, or repository name outside a fixed character set stops the offer. So do a push URL the script cannot parse without loss and a plan file missing from the pushed commit.
+  - The commit list ignores replace refs, `log.showSignature`, and `i18n.logOutputEncoding`. Every value the script prints has control, format, and line-separator characters removed.
+  - The question also names `push.gpgSign` and `remote.<remote>.receivepack` when either is set.
+  - If `~/.claude/scripts` is a real directory rather than a symlink into this checkout, re-run `./install.sh` so the new script is linked. Until then, `/plan-it` Step 7 reports an error and skips the push offer.
+- **`/review-pr` step 7-8 now applies the final consult's corrections before presenting, and an edit after presentation voids earlier approval.** **Supersedes** the clause "with a further consult after every edit round" in the consult sub-bullet of the "`/review-pr` now resolves checkable claims" entry below.
+  - Step 7 runs up to three consults before step 8 presents the body, and the third consult's verified corrections are applied rather than left unapplied.
+  - A change after step 8 presents the body gets no consult.
+  - Between the third consult and step 8's presentation, the only change allowed besides the third consult's corrections is a fix that clears a marker-write refusal.
+  - After step 8 presents the body, the body changes only as the human asks or to clear a marker-write refusal. Any other change is proposed beside the body, including a correction found by a re-check or consult the human asks for.
+  - Any change after step 8 presents the body voids earlier approval, including approval given in the same message, until the human approves the re-presented body.
+  - The protected-finding rule now also binds a fix that clears a marker-write refusal.
+  - The completion marker is written after the last consult and every body change.
+  - Step 8 presents a fresh `Read` of the findings-body file and names its path.
+  - Step 8 shows each `Edit` made after the last consult and not shown at an earlier presentation as a verbatim old/new pair, marked as not reviewed by any consult.
+  - Step 8's summary covers every consult's corrections, including findings added or upgraded, and the session's own proposals not applied.
+  - New marker-script tests cover a re-write after a body edit and a refused re-write, which leaves the marker's hash unchanged.
+- **`--branches` and per-branch rows, filtered or not, now credit a session's leading default-branch records to the first branch that same session enters.** This applies to every subcommand the "Pre-branch default-branch attribution" rule block in `docs/transcript-analysis.md` lists as applying it. Planning in a separate session is not moved.
+- **`cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark now attribute every subagent record to the dispatching main thread's branch at that record's time, never its own `gitBranch`.**
+  - A subagent still running after a branch switch follows the switch.
+  - A dispatched subagent's spend counts toward the dispatching branch whatever repo it worked in.
+  - Provided its records carry the `isSidechain` flag, a subagent's own branch name never becomes a label.
+  - A session with no branch-bearing main-thread record leaves its subagent records unbranched.
+- **PR Cost sections and new `pr-cost --record` rows follow both changes, so a figure can rise or fall.** See `docs/pr-cost.md` § "Pre-branch and subagent attribution" for the cutover and how to compare across it.
+  - **Cutover:** it is per checkout, at pull time, and an open PR's Cost figure changes at its next sync.
+  - **Columns:** every transcript-derived column follows both changes, and the `gh`-sourced columns do not.
+  - **Ledger:** existing rows are not re-recorded.
+  - **PR body:** it keeps the figures from its last sync, so a body last synced from a checkout that had not yet pulled still follows the earlier attribution.
+- **`subagents`, `skill-pair` and `skill-invocation --include-subagents` now attribute subagent records the same way, `worktree-agent-*` included, with the same `isSidechain` condition.**
+  - `buckets` and `duration` apply the same attribution to a sidechain record inline in a main transcript file.
+  - `review-trace` and the other per-record consumers apply the pre-branch rule to the records they read.
+  - `skill-invocation --include-subagents --branches X` can now print skill names from a subagent dispatched into another repo, because its records count under the dispatching branch. Plain `--include-subagents` already printed them. Treat all `skill-invocation --include-subagents` output as local-only.
+- **`/ready-for-review`'s fidelity report (`skill-fidelity-report.sh`) now sees plan-mode skill invocations and architect consults made earlier in the same session on the default branch.**
 - **The `pr-cost` ledger gains a trailing `model_breakdown` column, and the first `--record` that writes a row upgrades an existing ledger to it.** The cell holds tokens and integer micro-dollars per priced model, pricing variant, and token class, so a later subcommand can re-price mixed-model rows under a common rate table.
   - **Ledger:** rows recorded earlier read as "not recorded" and are never assigned an estimated split.
   - **Ledger:** the upgrade rewrites the file under the new header, prints a stderr notice, and has no supported downgrade.
@@ -28,6 +63,27 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
     - While the key is off, a scheduled single-account `--record` caller exits 1 on every run, so pause it too.
     - PRs skipped meanwhile can be captured after the fix only while their sessions are still inside `cleanupPeriodDays`.
   - **Migration:** `--record --force --pr N`, with the run's account flags, re-captures a PR, and the new row gains the breakdown. It recomputes the whole PR from surviving transcripts and becomes its current row, so use it only while every session of that PR is still inside `cleanupPeriodDays`. It is also the follow-up for a row recorded without its breakdown, once the cause is fixed.
+- **`/review-pr` now resolves checkable claims before presenting, can read the base commit in diff-only mode, and checks out a trusted stacked PR.** The audit-then-checkout script no longer refuses a base branch other than the default branch.
+  - Instead, `review-pr-checkout.sh` audits every path the head changes from the default branch, fail-closed, before creating the worktree. A stop exits 3 and names `review-pr-diff.sh`, and a failed audit step exits 2.
+  - `review-pr-checkout.sh` prints the base commit as its third stdout line.
+  - `review-pr-diff.sh` prints the base commit as line 2 when it fetched the commit.
+  - `review-pr-checkout.sh` prints the line `BASE_IS_DEFAULT_BRANCH` as its fourth line, only when the PR's base branch is the base repository's default branch.
+  - `review-pr-diff.sh` prints the same line as its third line, under the same condition, provided the base fetch succeeded.
+  - The skill counts base content as settled code only when that line is present.
+  - A base fetch failure in `review-pr-diff.sh` writes `BASE_UNAVAILABLE <token>` on stderr and exits 0.
+  - A stacked run leaves `refs/review-pr/pr-<N>-default` and fetched base objects in the consumer's repository, which `review-pr-finish.sh` does not remove.
+  - `review-pr-checkout.sh` exits 2 before fetching the PR's ref when the PR's base branch reads differently across its own reads.
+  - Its two ref-updating fetches write no tag, update no remote-tracking ref, and write no `FETCH_HEAD`.
+  - Every network fetch in `review-pr-checkout.sh` and `review-pr-diff.sh` fails instead of waiting at a git credential prompt on the terminal. A passphrase or host-key prompt from ssh itself is not suppressed.
+  - None of those fetches recurses into submodules, so a submodule's fetch failure cannot fail them.
+  - Step 7 resolves hedged claims against the diff, base content, CI runs, and the linked issue before tiering.
+  - Step 7 moves pre-existing defects to step 8 notes.
+  - A claim about code closes only on code evidence, never on CI-log, issue, or PR-authored text.
+  - A finding derived from an `AUDIT_FINDING` line, or marked blocking before synthesis, is protected.
+  - The agent is instructed not to drop or downgrade a protected finding in those passes or the consult.
+  - Step 8 lists every dropped or downgraded claim and the `AUDIT_FINDING` paths, because no script detects a missing finding.
+  - The `plan-architect` consult now reads the drafted body, and each correction applies as its own `Edit` after the session verifies it, with a further consult after every edit round.
+  - The findings body follows a posted-text hygiene list with no review-process wording.
 - **`/plan-it`'s push offer now pins what the push publishes, and says when it skips the offer or a step fails.** **Supersedes** the push-offer sub-bullet of the "`/plan-review` approval now shows the approved plan's absolute path" entry below.
   - The offer is made only when the remote has exactly one push URL. Otherwise the session says which condition stopped the offer.
   - The question names the push URL, the branch tip's SHA, the remote branch, and the repository's visibility. Visibility is looked up only for `github.com` push URLs; for any other host the visibility lookup makes no request and the result is reported as unknown and treated as public.
@@ -231,6 +287,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
+- **The full `cost` report under `--branches` prints one audit line for the leading default-branch turns and dollars credited to the filter.** It never prints under `--summary` or `--share-only`, and it audits only the pre-branch shift, not the subagent one.
 - **`review-orchestrator` agent, which runs one `/code-review` round per dispatch in its own context.** Its instructions have it send every fix to `code-writer` and write the code-review marker only on a round with no fix. No hook enforces either rule, and like a `general-purpose` dispatch it can write or activate any marker that `permissions.allow` pre-approves. Its trigger is explicit-request-only: it fires only when you ask for a `/code-review` through it, and no session is told to use it otherwise. The dispatching session's protocol lives in `subagent-delegation`'s gate/review-loop section. See `docs/design-decisions/review-orchestrator-gate-release-decoupling.md`.
   - **Re-run `./install.sh` after pulling if the active config dir's `agents/` is not a folded directory symlink.** A `git pull` alone does not link a new file into an existing stowed directory, so the agent stays unlinked until you re-stow.
 - **`/review-pr` skill and its scripts.** Reviews a PR from a checkout or, for a restricted PR, from its diff alone; the `review-pr-*` scripts under `claude/.claude/scripts/` hold the mechanics. Consumer-visible changes:
@@ -285,6 +342,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Fixed
 
+- **The stowed main hooks and the `plugin-semver` and `npm-semver` version-bump gates no longer read an early match in a large multi-line input as no match.** A pipe into an early-exit `grep` returns 141 under `pipefail` when `grep` exits at its first match while the writer is still writing. The hooks below read that status as no match, or as an evaluation failure. `deny-credential-bash-reads.sh` allowed a command that named a credential path. `deny-private-project-refs.sh` never scanned the body of a mutating `gh api` call and dropped the chain-split tip from a deny. `deny-invisible-commit-content.sh` denied a commit that carried an execution-wrapper token with a "could not evaluate" reason instead of naming the token. `enforce-marker-script-shape.sh` let a tilde-form path traversal through. `require-ready-for-review.sh` kept the delete-only or tags-only push bypass despite a command substitution. `guard-settings-session-keys.sh` skipped the key check when the staged-path list was long. `nudge-transcript-toolkit.sh` dropped its nudge. This closes the grep-in-a-pipe SIGPIPE shape only. In the stowed main hooks, each match now reads a here-string instead of a pipe into `grep`, and the fix is live on `git pull`. The `git commit` detector in the `plugin-semver` and `npm-semver` gates allowed a large multi-line commit command without checking the bump. The two `lovable-cloud` migration-path checks now read a here-string too, with no behavior change. Plugin changes reach consumers on `claude plugin update` after the bump (`plugin-semver` 1.1.8, `npm-semver` 1.0.8, `lovable-cloud` 3.2.9), not on `git pull`.
 - **`require-stow-reminder.sh` and `deny-escaped-backticks-in-pr-body.sh` no longer read an early match in a large multi-line input as no match.** `require-stow-reminder.sh` falsely denied a `--body-file` whose reminder sat near the top, and dropped `--fill` commit messages from its scan. It also skipped the gate for a large multi-line body-changing `gh pr edit`. `deny-escaped-backticks-in-pr-body.sh` let an escaped backtick (backslash-backtick) near the top of a large body through. Each match now reads a here-string instead of a pipe into `grep -q`, and both hooks are stowed, so the fix is live on `git pull`.
 - **`post-crash-sessions` no longer aborts on a Unicode-digit or over-limit pid.** Such a pid in a registry or lock file now counts as unparsed instead of aborting the run.
 - **`require-skill-review.sh` now gates a third SKILL.md layout: `skills/<name>/SKILL.md` at the repo root, used by a consumer repo whose plugin root is its own repo root.** The hook's pathspecs previously covered only `claude-skills/skills/**/SKILL.md` (stowed) and `plugins/*/skills/**/SKILL.md` (project-scoped plugin), so a repo laid out the third way had its skill-review gate silently no-op on every commit — no error, no denial, just always-allow, because the hook's own early-exit treats an empty staged-skill diff as "nothing to review." `marker.sh`'s `write skill-review` and `status` recipes, and the `skill-review` skill's own description of the layout, gain the same third pathspec so the write side and the hook stay in agreement. Plugin bumped to 3.5.0 (trigger broadened to fire in strictly more cases).

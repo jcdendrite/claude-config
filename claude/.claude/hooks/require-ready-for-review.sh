@@ -261,19 +261,19 @@ push_fragment_args_after_repo() {
 push_fragment_publishes_reviewable_change() {
   local fragment="$1"
   local remaining
-  if printf '%s\n' "$fragment" | grep -qE '(^|[[:space:]])--dry-run([[:space:]]|$)'; then
+  if grep -qE '(^|[[:space:]])--dry-run([[:space:]]|$)' <<< "$fragment"; then
     return 1
   fi
-  if printf '%s\n' "$fragment" | grep -qE '(^|[[:space:]])(-d|--delete)([[:space:]]|$)'; then
+  if grep -qE '(^|[[:space:]])(-d|--delete)([[:space:]]|$)' <<< "$fragment"; then
     return 1
   fi
-  if printf '%s\n' "$fragment" | grep -qE '[[:space:]]:[A-Za-z0-9._/-]+([[:space:]]|$)'; then
+  if grep -qE '[[:space:]]:[A-Za-z0-9._/-]+([[:space:]]|$)' <<< "$fragment"; then
     # Delete-only holds only when every refspec is a deletion form, since a
     # real refspec alongside one is reviewable.
     # A literal $( or backtick anywhere in $COMMAND disqualifies the
     # delete-only bypass, since a runtime branch ref can hide inside a
     # substitution that _lib_split_fragments treats as a fragment boundary.
-    if printf '%s\n' "$COMMAND" | grep -qE '\$\(|`'; then
+    if grep -qE '\$\(|`' <<< "$COMMAND"; then
       return 0
     fi
     remaining=$(push_fragment_args_after_repo "$fragment" \
@@ -283,13 +283,13 @@ push_fragment_publishes_reviewable_change() {
       return 1
     fi
   fi
-  if printf '%s\n' "$fragment" | grep -qE '(^|[[:space:]])--tags([[:space:]]|$)'; then
+  if grep -qE '(^|[[:space:]])--tags([[:space:]]|$)' <<< "$fragment"; then
     # Tag-only holds only when --tags is the sole refspec hint, since a
     # branch ref alongside it is reviewable.
     # A literal $( or backtick anywhere in $COMMAND disqualifies the
     # tags-only bypass, since a runtime branch ref can hide inside a
     # substitution that _lib_split_fragments treats as a fragment boundary.
-    if printf '%s\n' "$COMMAND" | grep -qE '\$\(|`'; then
+    if grep -qE '\$\(|`' <<< "$COMMAND"; then
       return 0
     fi
     remaining=$(push_fragment_args_after_repo "$fragment" \
@@ -328,10 +328,10 @@ while IFS= read -r frag; do
   # command word, so a `bash -c` or `eval` wrapper stays covered, matching
   # the git arm above.
   # Cost: a flag interposed before the subcommand is missed.
-  if printf '%s\n' "$frag" | grep -qE '(^|[[:space:]])gh[[:space:]]+pr[[:space:]]+ready([[:space:]]|;|$)'; then
+  if grep -qE '(^|[[:space:]])gh[[:space:]]+pr[[:space:]]+ready([[:space:]]|;|$)' <<< "$frag"; then
     is_gh_pr_ready=true
   fi
-  if printf '%s\n' "$frag" | grep -qE '(^|[[:space:]])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|;|$)'; then
+  if grep -qE '(^|[[:space:]])gh[[:space:]]+pr[[:space:]]+create([[:space:]]|;|$)' <<< "$frag"; then
     is_gh_pr_create=true
   fi
 done <<< "$FRAGMENTS"

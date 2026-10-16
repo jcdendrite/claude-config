@@ -708,6 +708,33 @@ class TestCmdHandoffSignalResponseStartupBurnBenchmark:
         assert cards[0]["exceeds_startup_burn_benchmark"] is None
 
 
+class TestStartupBurnBenchmarkOverPrefixContinuation:
+    """_startup_burn_benchmark over the real _compute_workstream_dollars: a
+    continuation that opens on the default branch before entering the
+    workstream's branch counts its leading default-branch turns as startup
+    burn, and adds no workstream of its own for the default branch."""
+
+    def test_benchmark_includes_a_continuations_leading_default_branch_turns(self, fake_projects):
+        _write_jsonl(fake_projects / "cont-1.jsonl", [
+            _priced("claude-sonnet-5", branch="cont", input=100_000, output=0, ts="2026-08-01T10:00:00.000Z"),
+        ])  # $0.20, first session by time
+        _write_jsonl(fake_projects / "cont-2.jsonl", [
+            _priced("claude-sonnet-5", branch="main", input=200_000, output=0, ts="2026-08-02T10:00:00.000Z"),  # $0.40 prefix
+            _priced("claude-sonnet-5", branch="cont", input=500_000, output=0, ts="2026-08-02T10:01:00.000Z"),  # $1.00
+        ])
+        session_iter, _scope = _mod._resolve_project_scope(
+            _handoff_signal_response_args(), "handoff-signal-response", include_subagents=True,
+            roots=[fake_projects.parent],
+        )
+
+        workstream = _mod.cost._compute_workstream_dollars(session_iter)
+        benchmark, total_continuations, branch_count = _mod.handoff_signal_response._startup_burn_benchmark(workstream)
+
+        assert benchmark == pytest.approx(1.40)  # $0.40 prefix + $1.00, over one continuation
+        assert total_continuations == 1
+        assert branch_count == 1  # no "main" workstream
+
+
 class TestCmdHandoffSignalResponseOperatorLagDiagnostic:
     """.handoff-nudge.log's operator-response-lag cross-check, wired
     end-to-end through cmd_handoff_signal_response -- mirrors

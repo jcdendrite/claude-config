@@ -12,6 +12,11 @@ rationale, including the error-path contracts the recorder implements and
 why several candidate columns (a corpus fingerprint, a per-turn denial
 denominator) were left out.
 
+`--record` requires the `cost_ledger_recording` config key to resolve true
+(prompted by `install.sh`, alongside `pr_cost_recording`; see
+[`docs/config-file.md`](config-file.md) for the file and legacy-fallback
+mechanics).
+
 ## Schema
 
 | Column | Source | Why it is in the ledger |

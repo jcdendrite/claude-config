@@ -2041,7 +2041,7 @@ class TestCostBranchFilter:
         """Extends test_null_git_branch_record_counted_unfiltered_excluded_under_branch_filter:
         a null-gitBranch record excluded under --branches main renders under
         this codebase's existing "?" sentinel for an unresolved branch (see
-        _attributed_branch's None-return docstring), not silently merged into
+        scope._attributed_branch's None-return docstring), not silently merged into
         another row."""
         no_branch_rec = _priced("claude-sonnet-5", input=1_000_000)
         no_branch_rec["gitBranch"] = None
@@ -3523,10 +3523,9 @@ class TestPricingIntegrityBanner:
 
 
 class TestCostWorktreeAgentBranchCarryForward:
-    """A worktree-agent-* subagent record's branch is resolved by carry-
-    forward against its own session's main-thread branch history, not
-    excluded and not taken literally — see _session_branch_index and
-    _attributed_branch."""
+    """A worktree-agent-* subagent record's branch is resolved against its
+    own session's main-thread branch timeline, not excluded and not taken
+    literally — see scope._session_branch_index and scope._attributed_branch."""
 
     def test_worktree_agent_record_folds_into_branch_active_at_dispatch_time(self, fake_projects, capsys):
         """(a): a main-thread record on the requested branch, followed (later
@@ -3616,6 +3615,352 @@ class TestCostWorktreeAgentBranchCarryForward:
 
         _mod._cost_report(_cost_args(branches="main"), date(2026, 8, 2))
         assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.0)
+
+
+def _days_ago_iso(days: float, *, now: float) -> str:
+    """ISO timestamp `days` before the fixed clock `now` (epoch seconds)."""
+    return datetime.fromtimestamp(now - days * 86400, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _sidechain(record: dict, *, cwd: str | None = None) -> dict:
+    """Mark a _priced record as a subagent-file record: _priced stamps no
+    isSidechain, so a split-file fixture sets it explicitly."""
+    record["isSidechain"] = True
+    if cwd is not None:
+        record["cwd"] = cwd
+    return record
+
+
+def _pin_this_repo_to_repo_main(monkeypatch, tmp_path) -> Path:
+    """Scope --this-repo to a single project directory, `-repo-main`, and
+    return the projects root. The caller creates the project directories it
+    needs under it."""
+    projects = tmp_path / "projects"
+    (projects / "-repo-main").mkdir(parents=True)
+    monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+    monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+
+    def fake_run(cmd, *a, **k):
+        if cmd[:3] == ["git", "worktree", "list"]:
+            porcelain = "worktree /repo/main\nHEAD 0000\nbranch refs/heads/x\n"
+            return subprocess.CompletedProcess(cmd, 0, porcelain, "")
+        assert cmd == ["git", "rev-parse", "--show-toplevel"]
+        return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return projects
+
+
+class TestCostPreBranchAndSubagentAttribution:
+    """--branches credits a session's leading default-branch records to the
+    first branch it enters, and attributes every sidechain record to the
+    branch its dispatching main thread was on at that record's time."""
+
+    TODAY = date(2026, 8, 2)
+
+    def test_main_thread_and_sidechain_prefix_records_count_toward_the_entered_branch(self, fake_projects, capsys):
+        session_id = "sess-prefix"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="main", ts="2026-08-01T10:01:00.000Z"),  # $2.00 prefix
+            _priced("claude-sonnet-5", input=500_000, branch="feature-x", ts="2026-08-01T10:03:00.000Z"),  # $1.00
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _sidechain(_priced("claude-sonnet-5", input=250_000, branch="main", ts="2026-08-01T10:02:00.000Z")),  # $0.50
+        ])
+
+        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(3.50)
+        _mod._cost_report(_cost_args(branches="main"), self.TODAY)
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.0)
+
+    def test_post_boundary_sidechain_tagged_main_and_foreign_tagged_sidechain_count_toward_the_entered_branch(
+        self, fake_projects, capsys,
+    ):
+        session_id = "sess-divergent"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="main", ts="2026-08-01T10:01:00.000Z"),  # $2.00
+            _priced("claude-sonnet-5", input=500_000, branch="feature-x", ts="2026-08-01T10:03:00.000Z"),  # $1.00
+        ])
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _sidechain(_priced("claude-sonnet-5", input=100_000, branch="main", ts="2026-08-01T10:05:00.000Z")),  # $0.20
+            _sidechain(_priced("claude-sonnet-5", input=50_000, branch="other", ts="2026-08-01T10:06:00.000Z")),  # $0.10
+        ])
+
+        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(3.30)
+        _mod._cost_report(_cost_args(branches="other"), self.TODAY)
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.0)
+        _mod._cost_report(_cost_args(branches="main"), self.TODAY)
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.0)
+
+    def test_main_thread_record_without_a_gitbranch_stays_excluded(self, fake_projects, capsys):
+        branchless = _priced("claude-sonnet-5", input=200_000, ts="2026-08-01T10:02:00.000Z")  # $0.40
+        branchless["gitBranch"] = None
+        _write_jsonl(fake_projects / "sess-branchless.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="main", ts="2026-08-01T10:01:00.000Z"),  # $2.00
+            branchless,
+            _priced("claude-sonnet-5", input=500_000, branch="feature-x", ts="2026-08-01T10:03:00.000Z"),  # $1.00
+        ])
+
+        _mod._cost_report(_cost_args(), self.TODAY)
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(3.40)
+        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(3.00)
+
+    def test_sidechain_record_in_a_session_with_an_empty_main_file_is_excluded_from_every_branch_total(
+        self, fake_projects, capsys,
+    ):
+        _write_jsonl(fake_projects / "sess-empty-main.jsonl", [])
+        _write_subagent_jsonl(fake_projects, "sess-empty-main", "agent-1", [
+            _sidechain(_priced("claude-sonnet-5", input=1_000_000, branch="feature-x")),  # $2.00
+        ])
+
+        _mod._cost_report(_cost_args(), self.TODAY)
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(2.00)
+        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.0)
+
+    # -- Cross-repo subagent spend ------------------------------------------
+
+    def _write_cross_repo_session(self, mine: Path, *, sidechain_cwd: str | None) -> None:
+        _write_jsonl(mine / "sess-mine.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="main", ts="2026-08-01T10:01:00.000Z"),  # $2.00
+            _priced("claude-sonnet-5", input=500_000, branch="feature-x", ts="2026-08-01T10:03:00.000Z"),  # $1.00
+        ])
+        _write_subagent_jsonl(mine, "sess-mine", "agent-1", [
+            _sidechain(
+                _priced("claude-sonnet-5", input=250_000, branch="foreign-branch", ts="2026-08-01T10:04:00.000Z"),  # $0.50
+                cwd=sidechain_cwd,
+            ),
+        ])
+
+    @pytest.mark.parametrize("sidechain_cwd", ["/elsewhere/other-repo", "/repo/main/subdir", None])
+    def test_this_repo_summary_counts_dispatched_subagent_spend_whatever_its_cwd(
+        self, tmp_path, monkeypatch, capsys, sidechain_cwd,
+    ):
+        """Allow path: the subagent's spend is the dispatching session's own,
+        so a cwd outside the repo, inside it, or absent changes nothing."""
+        projects = _pin_this_repo_to_repo_main(monkeypatch, tmp_path)
+        self._write_cross_repo_session(projects / "-repo-main", sidechain_cwd=sidechain_cwd)
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
+        assert _extract_md_grand_total(capsys.readouterr().out) == pytest.approx(3.50)  # 2.00 + 1.00 + 0.50
+
+    def test_this_repo_summary_adds_nothing_from_another_projects_session_on_the_same_branch(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Deny path: a session under a different project directory is out of
+        scope, even when its sidechain record's cwd names this repo."""
+        projects = _pin_this_repo_to_repo_main(monkeypatch, tmp_path)
+        self._write_cross_repo_session(projects / "-repo-main", sidechain_cwd="/elsewhere/other-repo")
+        other = projects / "-home-user-otherrepo"
+        other.mkdir()
+        _write_jsonl(other / "sess-other.jsonl", [
+            _priced("claude-sonnet-5", input=2_500_000, branch="feature-x", ts="2026-08-01T10:03:00.000Z"),  # $5.00
+        ])
+        _write_subagent_jsonl(other, "sess-other", "agent-1", [
+            _sidechain(
+                _priced("claude-sonnet-5", input=5_000_000, branch="feature-x", ts="2026-08-01T10:04:00.000Z"),  # $10.00
+                cwd="/repo/main",
+            ),
+        ])
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
+        assert _extract_md_grand_total(capsys.readouterr().out) == pytest.approx(3.50)
+
+    # -- Pre-branch moved-turns audit line ----------------------------------
+
+    def _write_prefix_session(
+        self, project: Path, *, with_prefix: bool = True, with_unpriced_turn: bool = True,
+        with_post_boundary_sidechains: bool = False,
+    ) -> None:
+        records = []
+        if with_prefix:
+            records.append(
+                _priced("claude-sonnet-5", input=1_000_000, branch="main", ts="2026-08-01T10:01:00.000Z"),  # $2.00
+            )
+            if with_unpriced_turn:
+                records.append(_priced("<synthetic>", input=1_000_000, branch="main", ts="2026-08-01T10:02:00.000Z"))
+        records.append(
+            _priced("claude-sonnet-5", input=500_000, branch="feature-x", ts="2026-08-01T10:04:00.000Z"),  # $1.00
+        )
+        _write_jsonl(project / "sess-prefix.jsonl", records)
+        # Present with and without the prefix, so a prefix-free fixture differs only by figures.
+        _write_subagent_jsonl(project, "sess-prefix", "agent-1", [
+            _sidechain(_priced(
+                "claude-sonnet-5", input=250_000, branch="main" if with_prefix else "feature-x",
+                ts="2026-08-01T10:03:00.000Z",
+            )),  # $0.50
+        ])
+        if with_post_boundary_sidechains:
+            _write_subagent_jsonl(project, "sess-prefix", "agent-2", [
+                _sidechain(_priced("claude-sonnet-5", input=100_000, branch="main", ts="2026-08-01T10:05:00.000Z")),  # $0.20
+                _sidechain(_priced("claude-sonnet-5", input=50_000, branch="other", ts="2026-08-01T10:06:00.000Z")),  # $0.10
+            ])
+
+    def test_full_report_prints_the_moved_turns_and_dollars_for_main_thread_and_sidechain_prefix_turns(
+        self, fake_projects, capsys,
+    ):
+        self._write_prefix_session(fake_projects)
+
+        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        out = capsys.readouterr().out
+        # Two priced prefix turns ($2.00 and $0.50) and one unpriced turn: three moved turns, $2.50.
+        assert _mod.cost._PRE_BRANCH_MOVED_LINE.format(turns=3, dollars=2.50) in out.splitlines()
+
+    def test_moved_line_excludes_post_boundary_and_foreign_tagged_sidechain_records_the_total_includes(
+        self, fake_projects, capsys,
+    ):
+        """A post-boundary sidechain tagged main and a sidechain tagged other
+        reach feature-x through the timeline step, not the pre-branch step, so
+        the audit line keeps only the prefix turns while the total counts both."""
+        self._write_prefix_session(fake_projects, with_post_boundary_sidechains=True)
+
+        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(3.80)  # 2.00 + 0.50 + 1.00 + 0.20 + 0.10
+        assert _mod.cost._PRE_BRANCH_MOVED_LINE.format(turns=3, dollars=2.50) in out.splitlines()
+
+    def test_full_report_prints_no_moved_line_when_nothing_moved(self, fake_projects, capsys):
+        self._write_prefix_session(fake_projects, with_prefix=False)
+
+        _mod._cost_report(_cost_args(branches="feature-x"), self.TODAY)
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(1.50)  # the entered branch's own turn plus its subagent
+        assert _mod.cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
+
+    def test_full_report_prints_no_moved_line_without_a_branches_filter(self, fake_projects, capsys):
+        self._write_prefix_session(fake_projects)
+
+        _mod._cost_report(_cost_args(), self.TODAY)
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(3.50)  # 2.00 + 0.50 + 1.00, the unpriced turn adds nothing
+        assert _mod.cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
+
+    @pytest.mark.parametrize(("branches", "expected_total"), [("main", 0.0), ("main,feature-x", 3.50)])
+    def test_full_report_prints_no_moved_line_when_the_default_branch_is_in_the_filter(
+        self, fake_projects, capsys, branches, expected_total,
+    ):
+        """Under --branches main nothing is moved into the filter set, and
+        under main,feature-x the prefix turns were already inside it."""
+        self._write_prefix_session(fake_projects)
+
+        _mod._cost_report(_cost_args(branches=branches), self.TODAY)
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(expected_total)
+        assert _mod.cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
+
+    def test_summary_prints_no_moved_line(self, tmp_path, monkeypatch, capsys):
+        projects = _pin_this_repo_to_repo_main(monkeypatch, tmp_path)
+        self._write_prefix_session(projects / "-repo-main")
+
+        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
+        out = capsys.readouterr().out
+        assert _extract_md_grand_total(out) == pytest.approx(3.50)
+        assert _mod.cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
+
+    def test_share_only_prints_no_moved_line(self, fake_projects, capsys):
+        self._write_prefix_session(fake_projects)
+
+        _mod._cost_report(_cost_args(share_only=True, branches="feature-x"), self.TODAY)
+        out = capsys.readouterr().out
+        assert "Scope: pooled corpus" in out
+        assert _mod.cost._PRE_BRANCH_MOVED_LINE.partition("{")[0] not in out
+
+    def test_summary_lines_match_the_prefix_free_fixture_once_numbers_are_masked(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """Numbers (digits with their separators) are replaced so the two
+        summaries compare by shape: the moved turns change figures, never the
+        printed lines."""
+        def summary_shape(root: Path, *, with_prefix: bool) -> list[str]:
+            projects = _pin_this_repo_to_repo_main(monkeypatch, root)
+            # No unpriced turn: it would add an EXCLUDED SPEND banner unrelated to the moved-turns line.
+            self._write_prefix_session(projects / "-repo-main", with_prefix=with_prefix, with_unpriced_turn=False)
+            _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
+            out = capsys.readouterr().out
+            # An empty or no-data report would otherwise compare equal to its twin.
+            assert _extract_md_grand_total(out) > 0
+            return [re.sub(r"\d[\d,.]*", "#", line) for line in out.splitlines()]
+
+        with_prefix_lines = summary_shape(tmp_path / "with-prefix", with_prefix=True)
+        without_prefix_lines = summary_shape(tmp_path / "without-prefix", with_prefix=False)
+        assert with_prefix_lines == without_prefix_lines
+
+    # -- Printed labels in the Branch-filter exclusions block ---------------
+
+    def _write_labelled_session(self, project: Path) -> None:
+        _write_jsonl(project / "sess-labels.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="main", ts="2026-08-01T10:01:00.000Z"),
+            _priced("claude-sonnet-5", input=500_000, branch="feature-x", ts="2026-08-01T10:03:00.000Z"),
+        ])
+        _write_subagent_jsonl(project, "sess-labels", "agent-1", [
+            _sidechain(_priced("claude-sonnet-5", input=250_000, branch="foreign-branch", ts="2026-08-01T10:04:00.000Z")),
+        ])
+
+    def test_exclusion_block_labels_prefix_and_sidechain_records_with_the_main_thread_branch_only_redacted(
+        self, fake_projects, capsys,
+    ):
+        """Allow: the main-thread successor is printed, as an opaque branch-N label.
+        Deny: neither the prefix record's own tag nor a sidechain-only tag is printed."""
+        self._write_labelled_session(fake_projects)
+
+        _mod._cost_report(_cost_args(branches="unrelated-filter"), self.TODAY)
+        block = _diagnostic_section(capsys.readouterr().out)
+        cols = _table_cols(block, header_contains="Turns", row_contains="branch-1", row_startswith=True)
+        assert cols["Turns"] == "3"  # prefix turn, entered-branch turn, and the subagent turn, all on one label
+        assert "feature-x" not in block
+        assert "main" not in block
+        assert "foreign-branch" not in block
+
+    def test_exclusion_block_labels_prefix_and_sidechain_records_with_the_main_thread_branch_only_unredacted(
+        self, fake_projects, capsys,
+    ):
+        self._write_labelled_session(fake_projects)
+
+        _mod._cost_report(_cost_args(branches="unrelated-filter", no_redact=True), self.TODAY)
+        block = _diagnostic_section(capsys.readouterr().out)
+        cols = _table_cols(block, header_contains="Turns", row_contains="feature-x", row_startswith=True)
+        assert cols["Turns"] == "3"
+        assert "main" not in block
+        assert "foreign-branch" not in block
+
+    # -- --since windows -----------------------------------------------------
+
+    def test_since_window_starting_after_the_first_branch_entry_leaves_later_default_branch_turns_on_the_default_branch(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        """main -> X -> main -> Y with the window starting between X and the
+        second main: a context built from window-filtered records would see
+        the second main as the leading run and remap it to Y."""
+        now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: now)
+        _write_jsonl(fake_projects / "sess-window.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="main", ts=_days_ago_iso(20, now=now)),  # $2.00
+            _priced("claude-sonnet-5", input=500_000, branch="feature-x", ts=_days_ago_iso(15, now=now)),  # $1.00
+            _priced("claude-sonnet-5", input=250_000, branch="main", ts=_days_ago_iso(8, now=now)),  # $0.50
+            _priced("claude-sonnet-5", input=100_000, branch="feature-y", ts=_days_ago_iso(5, now=now)),  # $0.20
+        ])
+
+        _mod._cost_report(_cost_args(branches="main", since="10d"), self.TODAY)
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.50)
+        _mod._cost_report(_cost_args(branches="feature-y", since="10d"), self.TODAY)
+        assert _extract_grand_total(capsys.readouterr().out) == pytest.approx(0.20)
+
+    def test_since_window_starting_inside_the_prefix_counts_only_in_window_prefix_turns(
+        self, fake_projects, monkeypatch, capsys,
+    ):
+        now = 1_700_000_000.0
+        monkeypatch.setattr(time, "time", lambda: now)
+        _write_jsonl(fake_projects / "sess-window.jsonl", [
+            _priced("claude-sonnet-5", input=1_000_000, branch="main", ts=_days_ago_iso(20, now=now)),  # $2.00, out of window
+            _priced("claude-sonnet-5", input=250_000, branch="main", ts=_days_ago_iso(12, now=now)),  # $0.50, in window
+            _priced("claude-sonnet-5", input=500_000, branch="feature-x", ts=_days_ago_iso(5, now=now)),  # $1.00
+        ])
+
+        _mod._cost_report(_cost_args(branches="feature-x", since="15d"), self.TODAY)
+        out = capsys.readouterr().out
+        assert _extract_grand_total(out) == pytest.approx(1.50)
+        assert _mod.cost._PRE_BRANCH_MOVED_LINE.format(turns=1, dollars=0.50) in out.splitlines()
 
 
 class TestCostTrend:

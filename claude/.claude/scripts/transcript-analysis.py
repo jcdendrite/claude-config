@@ -85,13 +85,12 @@ from transcript_analysis.corpus import (
     iter_sessions,
 )
 from transcript_analysis.cost import (
-    # The eleven noqa'd names below are read only via _mod.<name> from test files (unit-testing
+    # The nine noqa'd names below are read only via _mod.<name> from test files (unit-testing
     # a private helper directly, or a monkeypatch retarget). _compute_pr_cost_branch_totals is
     # one of them: pr_cost.py's own code reads it as cost._compute_pr_cost_branch_totals instead.
     # cmd_cost and cmd_cost_trend are the two names this file's own code calls bare -- via
     # p_cost/p_cost_trend.set_defaults below.
     _accumulate_per_account_turn,  # noqa: F401
-    _attributed_branch,  # noqa: F401
     _compute_pr_cost_branch_totals,  # noqa: F401
     _compute_workstream_dollars,  # noqa: F401
     _cost_report,  # noqa: F401
@@ -100,7 +99,6 @@ from transcript_analysis.cost import (
     _print_model_id_table,  # noqa: F401
     _print_thread_table,  # noqa: F401
     _print_token_class_table,  # noqa: F401
-    _session_branch_index,  # noqa: F401
     cmd_cost,
     cmd_cost_trend,
 )
@@ -236,6 +234,7 @@ from transcript_analysis.reviewer_yield import (
 from transcript_analysis.scope import (
     _DO_NOT_PUBLISH_BANNER,
     _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR,
+    _attributed_branch,
     _branch_filter,
     _iter_glob_scoped_sessions,
     _iter_scoped_sessions,
@@ -249,6 +248,7 @@ from transcript_analysis.scope import (
     _resolved_scope_header,
     _root_index_for_path,
     _scan_root_transcripts,
+    _session_branch_context,
     _single_level_projects_glob,
 )
 from transcript_analysis.scope import print_resolved_scope as _print_resolved_scope
@@ -352,8 +352,9 @@ def cmd_buckets(args: argparse.Namespace) -> None:
         file_branches: dict[str, dict] = defaultdict(
             lambda: {"opus": 0, "sonnet": 0, "haiku": 0, "other": 0, "ts_min": float("inf"), "ts_max": float("-inf")}
         )
+        branch_context = _session_branch_context(records)
         for rec in records:
-            branch = rec.get("gitBranch") or ""
+            branch = _attributed_branch(rec, branch_context) or ""
             if not branch or (branch_filter and branch not in branch_filter):
                 continue
             ts = _parse_ts(rec.get("timestamp"))
@@ -407,17 +408,24 @@ def cmd_fail_seq(args: argparse.Namespace) -> None:
     branch_runs: dict[str, list[tuple[str, int]]] = defaultdict(list)
 
     for _jsonl, records in session_iter:
+        # Every attributed branch is some record's own tag, so a session with none in the
+        # filter set cannot contribute.
         if not ({r.get("gitBranch", "") for r in records} & branches):
             continue
 
         pending: dict[str, str] = {}  # tool_use_id → model_family
         current_branch: str = ""
+        branch_context = _session_branch_context(records)
 
         for rec in records:
-            branch = rec.get("gitBranch") or ""
-            if branch != current_branch:
+            # The pending-pair reset follows the record's literal tag: it marks a physical
+            # checkout change, which attribution must not hide. Only the filter and the
+            # runs key take the attributed branch.
+            literal_branch = rec.get("gitBranch") or ""
+            if literal_branch != current_branch:
                 pending.clear()
-                current_branch = branch
+                current_branch = literal_branch
+            branch = _attributed_branch(rec, branch_context) or ""
             if branch not in branches or bool(rec.get("isSidechain")):
                 continue
 
@@ -487,8 +495,9 @@ def cmd_struggle(args: argparse.Namespace) -> None:
 
     for _jsonl, records in session_iter:
         last_fam: dict[str, str] = {}
+        branch_context = _session_branch_context(records)
         for rec in records:
-            branch = rec.get("gitBranch") or ""
+            branch = _attributed_branch(rec, branch_context) or ""
             if not branch or (branch_filter and branch not in branch_filter):
                 continue
             if bool(rec.get("isSidechain")):
@@ -658,13 +667,14 @@ def cmd_user_input(args: argparse.Namespace) -> None:
         # Collect fresh prompts for this session, applying all filters.
         session_prompts: list[dict] = []
         is_first_in_session = True
+        branch_context = _session_branch_context(records)
 
         for idx, rec in enumerate(records):
             if not _is_fresh_user_prompt_for_narrative(rec):
                 continue
 
             # Branch filter
-            branch = rec.get("gitBranch") or ""
+            branch = _attributed_branch(rec, branch_context) or ""
             if branch_filter and branch not in branch_filter:
                 continue
 
@@ -847,8 +857,9 @@ def cmd_duration(args: argparse.Namespace) -> None:
     branch_timestamps: dict[str, list[float]] = defaultdict(list)
 
     for _jsonl, records in session_iter:
+        branch_context = _session_branch_context(records)
         for rec in records:
-            branch = rec.get("gitBranch") or ""
+            branch = _attributed_branch(rec, branch_context) or ""
             if not branch or (branch_filter and branch not in branch_filter):
                 continue
             ts = _parse_ts(rec.get("timestamp"))
@@ -888,10 +899,10 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
     Uses _is_fresh_user_prompt() to skip tool-result turns, isMeta injections,
     and isCompactSummary injections when locating the user response.
 
-    --branches filters on the invocation record's own gitBranch, not a single
-    session-wide branch — a session whose branch changes between the
-    invocation and the user response is filtered by where the invocation
-    itself happened.
+    --branches filters on the invocation record's attributed branch
+    (scope._attributed_branch), not a single session-wide branch — a session
+    whose branch changes between the invocation and the user response is
+    filtered by where the invocation itself happened.
     """
     branch_filter = _branch_filter(args)
     roots = _resolve_scan_roots(args)
@@ -909,6 +920,7 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
     for jsonl, records in session_iter:
         proj_label = _derive_proj_label(jsonl)
         session_id_prefix = jsonl.stem[:8]
+        branch_context = _session_branch_context(records)
 
         for rec_idx, rec in enumerate(records):
             line_no = rec_idx + 1  # 1-based line number for output
@@ -931,7 +943,7 @@ def cmd_judgment_pair(args: argparse.Namespace) -> None:
             if inv_skill is None:
                 continue
 
-            invocation_branch = rec.get("gitBranch") or ""
+            invocation_branch = _attributed_branch(rec, branch_context) or ""
             if branch_filter and invocation_branch not in branch_filter:
                 continue
 
@@ -1085,9 +1097,11 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
       one, so --include-subagents folds those in and adds a thread column keeping the
       two distinguishable rather than silently merged.
 
-    --branches scopes to named gitBranch values; --projects scopes to project dirs and
-    defaults to every project on the machine, which is rarely what a branch-scoped
-    caller wants (branch names are not unique across repos).
+    --branches scopes to named branches, matching each record's attributed branch
+    (scope._attributed_branch): a subagent record counts under the branch its
+    dispatching main thread was on, never its own gitBranch. --projects scopes to
+    project dirs and defaults to every project on the machine, which is rarely what
+    a branch-scoped caller wants (branch names are not unique across repos).
     """
     branch_filter = _branch_filter(args)
     include_subagents = bool(getattr(args, "include_subagents", False))
@@ -1100,6 +1114,9 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
     # own project dirs (_repo_scoped_project_slugs) — the default when --projects
     # is unset. An explicit --projects is an escape hatch for corpus analysis;
     # the caller then owns that the output is no longer publish-safe.
+    #
+    # Skill names from --include-subagents can come from a cross-repo subagent,
+    # so treat that output as local-only (docs/transcript-analysis.md, Limits).
     #
     # Supporting rules: only input["skill"] is extracted (never input["args"],
     # which holds absolute paths even for in-scope sessions); and
@@ -1132,13 +1149,15 @@ def cmd_skill_invocation(args: argparse.Namespace) -> None:
     routed_pairs: dict[tuple[str, str], int] = defaultdict(int)  # (parent, child) -> count
 
     for _jsonl, records in session_iter:
+        # Unfiltered runs never read a branch, so the context is built only for a filter.
+        branch_context = _session_branch_context(records) if branch_filter else None
         for rec in records:
             sidechain = bool(rec.get("isSidechain"))
             if sidechain and not include_subagents:
                 continue
             # Unfiltered runs must still count records that carry no gitBranch,
             # so the branch test applies only when a filter was requested.
-            if branch_filter and (rec.get("gitBranch") or "") not in branch_filter:
+            if branch_context is not None and (_attributed_branch(rec, branch_context) or "") not in branch_filter:
                 continue
             thread = "sidechain" if sidechain else "main"
             rtype = rec.get("type")
@@ -1296,14 +1315,14 @@ def cmd_skill_pair(args: argparse.Namespace) -> None:
         leader_first_ts: float | None = None
         has_main_follower = False
         has_sidechain_follower = False
+        branch_context = _session_branch_context(records) if branch_filter else None
 
         for rec in records:
             if rec.get("type") != "assistant":
                 continue
             if bool(rec.get("isSidechain")):
                 corpus_sidechain_turns += 1
-            branch = rec.get("gitBranch") or ""
-            if branch_filter and branch not in branch_filter:
+            if branch_context is not None and (_attributed_branch(rec, branch_context) or "") not in branch_filter:
                 continue
             is_sidechain = bool(rec.get("isSidechain"))
             for block in ((rec.get("message") or {}).get("content") or []):
@@ -1400,8 +1419,9 @@ def cmd_pr_link(args: argparse.Namespace) -> None:
 
     branch_models: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for _jsonl, records in session_iter:
+        branch_context = _session_branch_context(records)
         for rec in records:
-            branch = rec.get("gitBranch") or ""
+            branch = _attributed_branch(rec, branch_context) or ""
             if branch not in branches or rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
                 continue
             fam = _fam((rec.get("message") or {}).get("model", ""))
@@ -4057,7 +4077,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
-    p_buckets = sub.add_parser("buckets", help="Assistant turns bucketed by gitBranch × model family.")
+    p_buckets = sub.add_parser("buckets", help="Assistant turns bucketed by branch × model family.")
     _add_project_scope_args(p_buckets)
     p_buckets.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
     p_buckets.set_defaults(func=cmd_buckets)
@@ -4262,7 +4282,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_skill_inv_scope = p_skill_inv.add_mutually_exclusive_group()
     p_skill_inv_scope.add_argument(
         "--projects", default=None, metavar="GLOB",
-        help="Project-dir glob. Default: this repo's own worktrees only (publish-safe). "
+        help="Project-dir glob. Default: this repo's own worktrees only (publish-safe without --include-subagents). "
              "Passing an explicit glob is an escape hatch — output is then not scoped to this repo.",
     )
     p_skill_inv_scope.add_argument(
@@ -4275,7 +4295,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_skill_inv.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
     p_skill_inv.add_argument(
         "--include-subagents", action="store_true",
-        help="Count skill invocations inside spawned subagents too, split by a thread column.",
+        help="Count skill invocations inside spawned subagents too, split by a thread column. "
+             "Output can carry another project's skill names (docs/transcript-analysis.md, Limits).",
     )
     p_skill_inv.set_defaults(func=cmd_skill_invocation)
 
@@ -4694,7 +4715,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_project_scope_args(p_cost_ledger)
     p_cost_ledger.add_argument(
         "--record", action="store_true",
-        help="Append the current ISO week's row. Requires ~/.claude/.cost-ledger-enabled.",
+        help=(
+            "Append the current ISO week's row. Requires the cost_ledger_recording config key"
+            " to resolve true (set via ./install.sh or claude-config.toml; legacy-file fallback: docs/config-file.md)."
+        ),
     )
     p_cost_ledger.add_argument(
         "--force", action="store_true",
@@ -4728,13 +4752,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--all-accounts", action="store_true",
         help=(
             "Scan every declared account in one run instead of refusing when more than one root"
-            " resolves. Each account's own ~/.claude/.pr-cost-enabled sentinel still individually"
+            " resolves. Each account's own pr_cost_recording config key still individually"
             " gates whether that account's row is recorded -- see docs/pr-cost.md."
         ),
     )
     p_pr_cost.add_argument(
         "--record", action="store_true",
-        help="Capture ledger rows for eligible merged PRs. Requires ~/.claude/.pr-cost-enabled.",
+        help=(
+            "Capture ledger rows for eligible merged PRs. Requires the pr_cost_recording config key"
+            " to resolve true (set via ./install.sh or claude-config.toml; legacy-file fallback: docs/config-file.md)."
+        ),
     )
     p_pr_cost.add_argument(
         "--pr", type=int, metavar="N",

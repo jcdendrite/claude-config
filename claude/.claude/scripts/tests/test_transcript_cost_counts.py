@@ -79,6 +79,29 @@ class TestSpawnCountsByAgentType:
         counts = _mod.subagent_mix._spawn_counts_by_agent_type([(Path("sess.jsonl"), records)], None)
         assert counts == {"staff-sdet": 1}
 
+    def test_branch_filter_counts_only_the_named_branchs_spawn_of_a_shared_agent_type(self):
+        """A filter naming one of two branches counts only that branch's spawn of a shared agent type."""
+        sessions = [
+            (Path("a.jsonl"), [
+                _asst("claude-opus-4-7", branch="feat-a", content=[_agent_use("a1", "staff-sdet")]),
+            ]),
+            (Path("b.jsonl"), [
+                _asst("claude-opus-4-7", branch="feat-b", content=[_agent_use("b1", "staff-sdet")]),
+                _asst("claude-opus-4-7", branch="feat-b", content=[_agent_use("b2", "staff-sdet")]),
+            ]),
+        ]
+        counts = _mod.subagent_mix._spawn_counts_by_agent_type(sessions, {"feat-a"})
+        assert counts == {"staff-sdet": 1}
+
+    def test_empty_branch_filter_set_excludes_every_spawn(self):
+        """An empty (not None) filter set names no branch, so it counts nothing rather than everything."""
+        sessions = [
+            (Path("a.jsonl"), [
+                _asst("claude-opus-4-7", branch="feat-a", content=[_agent_use("a1", "staff-sdet")]),
+            ]),
+        ]
+        assert _mod.subagent_mix._spawn_counts_by_agent_type(sessions, set()) == {}
+
 
 class TestCostCounts:
     """cost-counts: per-branch review-round and subagent-spawn counts for a
@@ -128,9 +151,7 @@ class TestCostCounts:
         assert "--branches" in capsys.readouterr().err
 
     def test_review_round_table_renders_actual_round_counts(self, fake_projects, capsys):
-        """Every other TestCostCounts fixture seeds spawn records only, so
-        round_counts is all-zero in every one of them. This test seeds a
-        real round-opening record (a Skill tool_use matching a
+        """Seeds a real round-opening record (a Skill tool_use matching a
         REVIEW_SKILLS member) and asserts the ### Review rounds table's
         actual rendered row values and caption, through the real
         cmd_cost_counts rendering path."""
@@ -148,12 +169,13 @@ class TestCostCounts:
         assert _mod.subagent_mix._COST_COUNTS_ROUNDS_CAPTION in out
 
     def test_main_thread_review_orchestrator_dispatch_renders_as_a_code_review_round_with_its_caption(
-        self, fake_projects, capsys,
+        self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         """Both caption texts are literals here, not read from
         _COST_COUNTS_ROUNDS_CAPTION or _COST_COUNTS_SPAWNS_CAPTION, so a
         reworded or reverted caption turns this red. The captions are public
         PR-body text."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["review-orchestrator"])
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("o1", "review-orchestrator")]),
         ])
@@ -162,6 +184,8 @@ class TestCostCounts:
         ))
         out = capsys.readouterr().out
         assert "| code-review | 1 |" in out
+        assert out.count("| review-orchestrator | 1 |") == 1
+        assert "(withheld" not in out
         assert (
             "Each invocation of a review skill, and each main-thread `review-orchestrator` dispatch,"
             " is one round, whether or not it produced findings."
@@ -172,6 +196,61 @@ class TestCostCounts:
             "Counts main-thread dispatches only; an agent spawned from inside another agent is not"
             " counted."
         ) in out
+
+    def test_review_orchestrator_dispatch_from_inside_a_subagent_is_neither_a_spawn_nor_a_round(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """Only main-thread dispatches count. A sidechain record's dispatch
+        adds no spawn row and opens no code-review round."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["review-orchestrator"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            # Carries branch "feat" to the sidechain record; without it the
+            # round-open guard is never reached and that half passes vacuously.
+            _asst("claude-opus-4-7", branch="feat"),
+            _asst(
+                "claude-opus-4-7", branch="feat", sidechain=True,
+                content=[_agent_use("o1", "review-orchestrator")],
+            ),
+        ])
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert "| review-orchestrator |" not in out
+        assert "| code-review | 0 |" in out
+        assert "| **total** | **0** |" in out
+
+    def test_prefix_round_and_prefix_spawn_count_under_the_entered_branch(
+        self, fake_projects, tmp_path, monkeypatch, capsys,
+    ):
+        """A round and a spawn recorded on the default branch before the
+        session enters feat-x count toward feat-x, and not toward main."""
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(
+                "claude-opus-4-7", branch="main", ts="2026-08-01T10:00:00.000Z",
+                content=[_skill_use("s1", "code-review")],
+            ),
+            _asst(
+                "claude-opus-4-7", branch="main", ts="2026-08-01T10:01:00.000Z",
+                content=[_agent_use("a1", "staff-sdet")],
+            ),
+            _asst("claude-opus-4-7", branch="feat-x", ts="2026-08-01T10:03:00.000Z"),
+        ])
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat-x", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        entered_out = capsys.readouterr().out
+        assert "| code-review | 1 |" in entered_out
+        assert "| staff-sdet | 1 |" in entered_out
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="main", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        default_out = capsys.readouterr().out
+        assert "| code-review | 0 |" in default_out
+        assert "staff-sdet" not in default_out
 
     def test_untracked_subagent_type_is_withheld_under_this_repo(
         self, fake_projects, tmp_path, monkeypatch, capsys,
@@ -225,7 +304,10 @@ class TestCostCounts:
             _mod.subagent_mix, "_partition_spawn_counts_by_disclosure",
             lambda raw_counts: [("some-untracked-agent-type", 1)],
         )
-        with pytest.raises(AssertionError) as exc_info:
+        with pytest.raises(
+            AssertionError,
+            match=r"spawn row 0 is neither the withheld label nor a repo-tracked agent type",
+        ) as exc_info:
             _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
                 this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
             ))
@@ -252,23 +334,96 @@ class TestCostCounts:
 
     def test_zero_spawns_renders_the_sentence_not_a_table(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="feat", content=[]),
+            _asst("claude-opus-4-7", branch="feat", content=[_skill_use("s1", "code-review")]),
         ])
         _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
+        assert "| code-review | 1 |" in out
         assert "No subagent spawns found in scope." in out
         assert "| Agent type | Spawns |" not in out
 
-    def test_no_branch_name_appears_anywhere_in_output(self, fake_projects, capsys):
+    def test_all_zero_state_renders_zero_round_rows_and_the_no_spawns_sentence(self, fake_projects, capsys):
+        """Real cmd_cost_counts renders the zero review-round rows and the no-spawns sentence as one body.
+        The other-branch run proves the seeded corpus is read."""
+        _write_jsonl(fake_projects / "sess-other.jsonl", [
+            _asst("claude-opus-4-7", branch="other", content=[_skill_use("s1", "code-review")]),
+        ])
+        _write_jsonl(fake_projects / "sess-feat.jsonl", [
+            _asst("claude-opus-4-7", branch="feat", content=[]),
+        ])
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="other", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        assert "| code-review | 1 |" in capsys.readouterr().out
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert (
+            "| code-review | 0 |\n"
+            "| plan-review | 0 |\n"
+            "| ready-for-review | 0 |\n"
+            "| **total** | **0** |\n"
+            "\n"
+            "### Subagent spawns\n"
+            "\n"
+            f"{_mod.subagent_mix._COST_COUNTS_SPAWNS_CAPTION}\n"
+            "\n"
+            "No subagent spawns found in scope.\n"
+        ) in out
+        assert "| Agent type | Spawns |" not in out
+
+    def test_empty_branches_list_renders_the_all_zero_state_not_corpus_wide_counts(self, fake_projects, capsys):
+        """`--branches ","` parses to an empty branch set, which excludes every record: the output is the
+        all-zero state, never a corpus-wide count."""
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-opus-4-7", branch="my-secret-branch-name", content=[_agent_use("a1", "staff-sdet")]),
+            _asst(
+                "claude-opus-4-7", branch="feat",
+                content=[_skill_use("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
+        ])
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches="feat", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        assert "| code-review | 1 |" in capsys.readouterr().out
+
+        _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
+            this_repo=True, branches=",", this_repo_slugs=["-home-user-testrepo"],
+        ))
+        out = capsys.readouterr().out
+        assert (
+            "| code-review | 0 |\n"
+            "| plan-review | 0 |\n"
+            "| ready-for-review | 0 |\n"
+            "| **total** | **0** |\n"
+            "\n"
+            "### Subagent spawns\n"
+            "\n"
+            f"{_mod.subagent_mix._COST_COUNTS_SPAWNS_CAPTION}\n"
+            "\n"
+            "No subagent spawns found in scope.\n"
+        ) in out
+        assert "| Agent type | Spawns |" not in out
+
+    def test_no_branch_name_appears_anywhere_in_output(self, fake_projects, tmp_path, monkeypatch, capsys):
+        self._isolate_allowlist(tmp_path, monkeypatch, tracked=["staff-sdet"])
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(
+                "claude-opus-4-7", branch="my-secret-branch-name",
+                content=[_skill_use("s1", "code-review"), _agent_use("a1", "staff-sdet")],
+            ),
         ])
         _mod.subagent_mix.cmd_cost_counts(_cost_counts_args(
             this_repo=True, branches="my-secret-branch-name", this_repo_slugs=["-home-user-testrepo"],
         ))
         out = capsys.readouterr().out
+        assert "| code-review | 1 |" in out
+        assert "| staff-sdet | 1 |" in out
         assert "my-secret-branch-name" not in out
 
     def test_second_declared_root_contributes_nothing(

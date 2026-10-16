@@ -121,7 +121,7 @@ esac
 # Same shape used elsewhere in this repo to scan for this pattern — kept
 # identical so match counts stay comparable across the two call sites.
 TRANSCRIPT_GLOB_PATTERN='projects/\*.*\.jsonl'
-printf '%s\n' "$CONTENT" | grep -qE "$TRANSCRIPT_GLOB_PATTERN" || exit 0
+grep -qE "$TRANSCRIPT_GLOB_PATTERN" <<< "$CONTENT" || exit 0
 
 ADDITIONAL_CONTEXT="This file's content looks like a hand-rolled transcript-corpus glob (a projects/*/*.jsonl shape). transcript-analysis.py already unions across every config root declared in ~/.claude/transcript-config-dirs by default — invoke the transcript-analysis skill instead of a one-off script, which silently covers only one root."
 
