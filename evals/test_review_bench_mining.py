@@ -2126,6 +2126,16 @@ def _fixed_reply_body(sha_text: str) -> str:
     return _RESPOND_PR_FIXED_EXAMPLE.replace("<sha>", sha_text)
 
 
+def _fixed_reply_body_without_other_sites(sha_text: str) -> str:
+    """A `FIXED` reply with no `other-sites` field, the shape of replies posted before that field existed.
+
+    `rationale` sits directly before `commit_sha`.
+    """
+    body = _fixed_reply_body(sha_text).replace(f"`{_RESPOND_PR_FIXED_EXAMPLE_OTHER_SITES}` | ", "")
+    assert "other-sites" not in body, "the removal no-opped: the example's field segment changed shape"
+    return body
+
+
 class _FakeGh:
     """Stands in for the `run` that carries every `gh` call. It derives its answer from the argv: the
     visibility payload, the user lookup, and the two paginated listings, each of which must carry
@@ -3663,7 +3673,7 @@ class TestClassifyReply:
             pytest.param(_fixed_reply_body("0123abcxyz"), ("fixed-without-sha", None), id="sha-with-trailing-garbage"),
             pytest.param(
                 _fixed_reply_body("").replace(
-                    _RESPOND_PR_FIXED_EXAMPLE_OTHER_SITES, "other-sites: none — searched deadbeef0 across handlers",
+                    _RESPOND_PR_FIXED_EXAMPLE_OTHER_SITES, "other-sites: not swept — gh pr diff failed near deadbeef0",
                 ),
                 ("fixed-without-sha", None),
                 id="hex-word-in-other-sites-is-not-taken-as-the-sha",
@@ -3677,6 +3687,10 @@ class TestClassifyReply:
             pytest.param(
                 _RESPOND_PR_OUT_OF_SCOPE_DOCUMENTED_LIMIT_REPLY, ("out-of-scope-or-deferred", None),
                 id="out-of-scope-with-a-documented-limit",
+            ),
+            pytest.param(
+                _fixed_reply_body_without_other_sites(_FORTY_HEX), ("FIXED", _FORTY_HEX),
+                id="fixed-reply-without-other-sites-keeps-its-sha",
             ),
             pytest.param(_RESPOND_PR_EXPLAIN_DESIGN_EXAMPLE, ("not-fixed", None), id="explain-design"),
             pytest.param(_RESPOND_PR_AGREE_NO_CHANGE_REPLY, ("not-fixed", None), id="agree-no-change"),

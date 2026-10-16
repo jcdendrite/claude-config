@@ -24,10 +24,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - A run that the warrant check stops no longer creates the directory.
 - **code-review's DEFER criterion 2 and respond-pr's `OUT-OF-SCOPE`/`DEFERRED` replies take a documented limit by default, and a ticket is filed only on request.**
   - A criterion-2 DEFER row names where the remediation would land, and the PR body carries it.
-  - A respond-pr `none — documented at <file:line>` reply names a line on the pushed branch. respond-pr may add that line to the diff as a one-line limit statement.
-  - The reply says no follow-up is scheduled.
+  - A respond-pr `none — documented at <file:line>` reply names a line on the pushed branch.
+  - The reply says no follow-up is scheduled, and that the reviewer can ask for a ticket in a reply.
+  - A reply with no line to name states the limit itself, as `none — documented in this reply`.
 - **respond-pr `FIXED` replies carry a required `other-sites` field, and step 6 applies each fix at sibling sites in the PR's changed files.**
-  - Siblings found outside those files are listed as `found, not changed` and are not edited.
 - **`/review-pr` step 7-8 now applies the final consult's corrections before presenting, and an edit after presentation voids earlier approval.** **Supersedes** the clause "with a further consult after every edit round" in the consult sub-bullet of the "`/review-pr` now resolves checkable claims" entry below.
   - Step 7 runs up to three consults before step 8 presents the body, and the third consult's verified corrections are applied rather than left unapplied.
   - A change after step 8 presents the body gets no consult.

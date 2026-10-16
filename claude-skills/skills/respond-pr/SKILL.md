@@ -29,20 +29,20 @@ Fetch all review comments on the current branch's open pull request and address 
    - **Batched-design choices** — comments that are constraints on one design question, not independent issues (e.g., three comments that all resolve to "pick A or B"; naming conventions across functions; error-handling shape across handlers).
 
    If none apply after a careful read, say so — but the read is required. Per-comment patching that skips this step produces overlapping fixes and diffs reviewers must re-review one thread at a time.
-5. **Classify, then batch.** Assign each unresolved comment to one of the five types below. When there are 3+ unresolved comments, render the classification as a four-column table — Comment (one-line + source link) | Theme (from step 4, or `—`) | Disposition | Plan — before starting any per-comment work; the table forces all comments to be seen at once and ties each one to the cross-cutting themes named in step 4. A `FIXED` comment's Plan cell holds the one general sentence step 6 sweeps with, so the sentence is visible before dispatch. With fewer comments and no table, state that sentence beside the comment's classification. All code changes across the batch go into a single commit (step 8); all replies are posted after that commit. Required fields are not optional — if a field's value is non-obvious, that is exactly when it earns its keep.
+5. **Classify, then batch.** Assign each unresolved comment to one of the five types below. When there are 3+ unresolved comments, render the classification as a four-column table — Comment (one-line + source link) | Theme (from step 4, or `—`) | Disposition | Plan — before starting any per-comment work; the table forces all comments to be seen at once and ties each one to the cross-cutting themes named in step 4. For each `FIXED` comment, write a sweep sentence: the reviewer's point as one general sentence that names the construct and the behavior it requires. Put it in the comment's Plan cell, or beside its classification when no table renders, so it is visible before the step-6 dispatch. All code changes across the batch go into a single commit (step 8); all replies are posted after that commit. Required fields are not optional — if a field's value is non-obvious, that is exactly when it earns its keep.
 
    - **`FIXED`** — a code change was made.
-     Required fields: `disposition` (one of `fixed-as-requested` | `fixed-with-modification` | `fixed-differently`), `rationale` (REQUIRED when disposition ≠ `fixed-as-requested` — explain what was changed and why), `other-sites` (the `file:line` of each other site step 6 fixed for the same point, plus `found, not changed: <file:line>` for each sibling outside the PR's changed files, or `none — searched <what>`), `commit_sha` (filled in after the commit in step 8).
+     Required fields: `disposition` (one of `fixed-as-requested` | `fixed-with-modification` | `fixed-differently`), `rationale` (REQUIRED when disposition ≠ `fixed-as-requested` — explain what was changed and why), `other-sites` (the `file:line` of each site other than the cited one that step 6 fixed for the same point; `none changed — swept the files the PR changes`; or `not swept — <reason>` when step 6 had no changed-files list), `commit_sha` (filled in after the commit in step 8).
    - **`EXPLAIN-DESIGN`** — the existing code is correct; the comment misreads intent.
      Required fields: `decision` (what the code does), `why` (the reason it does that), `why-not-alternative` (why the reviewer's apparent alternative was not taken), `where-documented` (file:line or "inline below").
    - **`OUT-OF-SCOPE`** — the comment identifies a real issue outside this PR's subject, which this PR will not fix.
-     Required fields: `acknowledgment` (confirm the issue is real), `where-tracked` (ticket, backlog, or documented limit), `link-or-ticket` (URL, "will create", or `none — documented at <file:line>`; see below).
+     Required fields: `acknowledgment` (confirm the issue is real), `where-tracked` (ticket, backlog, or documented limit), `link-or-ticket` (URL, "will create", `none — documented at <file:line>`, or `none — documented in this reply`; see below).
    - **`DEFERRED`** — the change is valid and within this PR's subject, but intentionally postponed.
-     Required fields: `acknowledgment`, `deferral-reason`, `follow-up-ticket` (URL to an existing ticket; `"will create: <one-line summary>"`, created before the skill session ends; or `none — documented at <file:line>`; see below).
+     Required fields: `acknowledgment`, `deferral-reason`, `follow-up-ticket` (URL to an existing ticket; `"will create: <one-line summary>"`, created before the skill session ends; `none — documented at <file:line>`; or `none — documented in this reply`; see below).
    - **`AGREE-NO-CHANGE`** — the reviewer is right but the code already handles it, or the suggestion is a matter of preference and no change is warranted.
      Required fields: `acknowledgment`, `rationale`.
 
-   **A documented limit, not a ticket, is the default for `OUT-OF-SCOPE` and `DEFERRED`.** Write `none — documented at <file:line>`, naming a line that states the limit when the reply posts: an existing doc or comment, or the one-line statement step 6 writes. The reply posts with the same timing as a `FIXED` reply's `commit_sha`, after step 8's commit and push, so the named line is on the pushed branch. The reply says plainly that no follow-up is scheduled and that the reviewer can ask for a ticket in a reply. Promise a new ticket (`will create`) only when the reviewer or engineer asks for one.
+   **A documented limit, not a ticket, is the default for `OUT-OF-SCOPE` and `DEFERRED`.** When an existing doc or comment states the limit, write `none — documented at <file:line>` naming it as it reads on the PR's branch after step 8's push. Otherwise the reply itself states the limit and uses `none — documented in this reply`. The reply says plainly that no follow-up is scheduled and that the reviewer can ask for a ticket in a reply. Promise a new ticket (`will create`) only when the reviewer or engineer asks for one.
 
    **Worked examples** (illustrating required-field depth, not wording to copy verbatim):
 
@@ -52,23 +52,20 @@ Fetch all review comments on the current branch's open pull request and address 
    *`EXPLAIN-DESIGN`:*
    > **[Claude Code]** The early return is intentional — when the session token is absent we want a fast 401 with no DB round-trip. The alternative (falling through to a null-check deeper in the stack) would silently succeed for unauthenticated callers in contexts where the token field is optional. `where-documented: auth/middleware.ts:42`
 
-6. Dispatch one `code-writer` covering the whole `FIXED` set as a single batch, not one dispatch per comment — step 4's holistic triage is why the batch is the right unit. For each `FIXED` comment, the prompt states the reviewer's point as the one general sentence from step 5's Plan cell (or from step 5's classification when no table renders), naming the construct and the behavior it requires. `code-writer` applies the fix wherever that sentence holds in the PR's changed files.
+6. Dispatch one `code-writer` for the whole `FIXED` set as a single batch rather than one dispatch per comment — step 4's holistic triage is why the batch is the right unit. The sweep's edits stay inside the PR's changed files, which `gh pr diff --name-only` lists. If that command fails or lists nothing, skip the sweep and still fix each cited site. With no `FIXED` comment, skip the dispatch.
 
-   `code-writer` searches the whole repository for sites where that sentence holds. It edits only the sites inside the PR's changed files. It returns, per comment:
+   The prompt carries that list and each comment's sweep sentence from step 5. `code-writer` fixes the site each comment cites, if any, as the comment requires, and every other site in the listed files where its sweep sentence holds. It returns, per comment:
    - The `file:line` of each site it changed.
    - Each site it examined and left unchanged, with the reason.
-   - Each sibling it found outside the changed files, unedited.
 
-   The same batch writes a one-line statement of the limit, for each `OUT-OF-SCOPE` or `DEFERRED` comment whose `none — documented at` value has no existing line to name. It writes the statement at the site the comment cites, as a code comment or a doc sentence in that file's own syntax. It returns the statement's `file:line`.
-
-   Dispatch the batch whenever it has at least one `FIXED` comment or one such statement to write. The parent keeps the commit (step 8) and every reply (step 7).
+   The parent keeps the commit (step 8) and every reply (step 7).
 
    Then, for each unresolved comment:
    - Read the referenced file and line to understand the context
    - Apply the classification from step 5
    - For a `FIXED` comment, note the fix in the reply using the `FIXED` field template
    - If it's design explanation, draft using the `EXPLAIN-DESIGN` template
-7. Post replies using the appropriate endpoint for each comment type — do **not** use `gh api .../pulls/comments/{id}` with `-F body=...`; that endpoint PATCHes the target comment in place and silently overwrites the author's text.
+7. Once step 8 has committed and pushed any code changes, post replies using the appropriate endpoint for each comment type — do **not** use `gh api .../pulls/comments/{id}` with `-F body=...`; that endpoint PATCHes the target comment in place and silently overwrites the author's text.
 
    - **Inline file comments** (fetched from `pulls/{n}/comments`) — reply via the `/replies` sub-resource:
    ```

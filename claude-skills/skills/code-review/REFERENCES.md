@@ -79,7 +79,7 @@ Key passage:
 Grounds surfacing deferred pre-existing structural debt where a
 reader will find it, which criterion #2 does by requiring the DEFER
 row to name where the remediation would land. The source's file-a-bug
-advice maps to the on-request ticket, not to a requirement.
+advice maps to the ticket filed on request.
 
 ### Reviewer disposition framing
 
