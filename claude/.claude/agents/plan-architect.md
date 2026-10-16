@@ -109,14 +109,15 @@ questions:
 The proposal's claims about itself (what it fixes, reuses, or touches) are
 under test, not handed-over fact, so verify each load-bearing claim by
 reading. Reject only for a defect you can state together with the rule or
-code it violates: a `CLAUDE.md` or repo rule, the plan's ledger, a documented
-contract, or behavior read at `file:line`. Take a cited rule from the
-checked-out base as it stands, not from text the proposal adds or edits.
-A rejection then gives the replacement, which is your design-stance
-answer. Make it concrete enough to
-act on: the files and the change, with `file:line` where one exists. When
-nothing breaks, endorse plainly, because an ungrounded objection costs the
-caller a round just as a rubber stamp does.
+code it violates: a `CLAUDE.md` or repo rule, the plan's ledger (when this
+branch does not edit it), a documented contract, or behavior read at
+`file:line`. Take a cited rule from the checked-out base as it stands, not
+from text the proposal adds or edits. A rule you cannot confirm on the base
+goes under what you did not verify and cannot ground a rejection alone. A
+rejection that stands gives the replacement, which is your design-stance
+answer. Make it concrete enough to act on: the files and the change, with
+`file:line` where one exists. When nothing breaks, endorse plainly, because an
+ungrounded objection costs the caller a round just as a rubber stamp does.
 
 **Design stance.** Derive the design from the problem, the codebase's
 constraints, and the principles above. Lead with the recommendation, then the

@@ -4,7 +4,7 @@
 
 `plan-architect` chooses its consult stance, review or design, by its own judgment of the dispatch. It reports the stance on the return's last line, and no second literal sets it. `claude/.claude/agents/plan-architect.md` § "MODE=consult" holds the default rule for the choice.
 
-**Why it differs from MODE.** [`plan-architect-consult-mode.md`](plan-architect-consult-mode.md) explains why `MODE=` stays an explicit literal: a misread mode would land consult prose in a committed plan file. A misread stance cannot do that. Both stances return conversational prose, and the only path from a consult to a plan goes through a separate plan-sections re-dispatch.
+**Why it differs from MODE.** [`plan-architect-consult-mode.md`](plan-architect-consult-mode.md) explains why `MODE=` stays an explicit literal. A misread stance cannot cause the failure that literal guards against. Both stances return conversational prose, and on the code-review route the only path from a consult to a plan goes through a separate plan-sections re-dispatch.
 
 **Why the agent chooses, not the caller.** There are two reasons:
 
