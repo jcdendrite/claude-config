@@ -504,6 +504,21 @@ def resolve_scan_roots(parsed: argparse.Namespace) -> list[Path]:
     return roots
 
 
+def _add_project_scope_args(parser: argparse.ArgumentParser) -> None:
+    """Add the shared --projects/--this-repo scope flags to a subparser.
+
+    Mutually exclusive: --this-repo routes through _repo_scoped_project_slugs(),
+    an identity-based minimization control; --projects keeps the pre-existing
+    machine-wide glob default ("*") so no existing invocation's behavior changes.
+    """
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--projects", default="*", metavar="GLOB")
+    group.add_argument(
+        "--this-repo", action="store_true",
+        help="Scope to this repo's own worktrees only (see docs/transcript-analysis.md).",
+    )
+
+
 def _resolve_project_scope(
     args: argparse.Namespace,
     subcommand: str,
