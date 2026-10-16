@@ -4715,7 +4715,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_project_scope_args(p_cost_ledger)
     p_cost_ledger.add_argument(
         "--record", action="store_true",
-        help="Append the current ISO week's row. Requires ~/.claude/.cost-ledger-enabled.",
+        help=(
+            "Append the current ISO week's row. Requires the cost_ledger_recording config key"
+            " to resolve true (set via ./install.sh or claude-config.toml; legacy-file fallback: docs/config-file.md)."
+        ),
     )
     p_cost_ledger.add_argument(
         "--force", action="store_true",
@@ -4749,13 +4752,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--all-accounts", action="store_true",
         help=(
             "Scan every declared account in one run instead of refusing when more than one root"
-            " resolves. Each account's own ~/.claude/.pr-cost-enabled sentinel still individually"
+            " resolves. Each account's own pr_cost_recording config key still individually"
             " gates whether that account's row is recorded -- see docs/pr-cost.md."
         ),
     )
     p_pr_cost.add_argument(
         "--record", action="store_true",
-        help="Capture ledger rows for eligible merged PRs. Requires ~/.claude/.pr-cost-enabled.",
+        help=(
+            "Capture ledger rows for eligible merged PRs. Requires the pr_cost_recording config key"
+            " to resolve true (set via ./install.sh or claude-config.toml; legacy-file fallback: docs/config-file.md)."
+        ),
     )
     p_pr_cost.add_argument(
         "--pr", type=int, metavar="N",
