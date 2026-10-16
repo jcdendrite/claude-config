@@ -97,6 +97,7 @@ DEFAULT_PERMISSION_MODE_LABEL = "default"
 
 DISPATCH_STAFF_BACKEND_ENGINEER = "staff-backend-engineer"
 DISPATCH_EXPLORE_HAIKU = "explore-haiku"
+DISPATCH_EXPLORE_SONNET = "explore-sonnet"
 
 STAFF_BACKEND_ENGINEER_AGENT_FILE = AGENTS_DIR / "staff-backend-engineer.md"
 
@@ -107,27 +108,47 @@ STAFF_BACKEND_ENGINEER_AGENT_FILE = AGENTS_DIR / "staff-backend-engineer.md"
 # config dir happens to resolve.
 EXPLORE_HAIKU_OVERRIDE_AGENT_NAME = "Explore"
 EXPLORE_HAIKU_OVERRIDE_MODEL = "haiku"
+EXPLORE_SONNET_OVERRIDE_MODEL = "sonnet"
 EXPLORE_HAIKU_OVERRIDE_TOOLS = frozenset({"Read", "Grep", "Glob"})
-EXPLORE_HAIKU_OVERRIDE = {
-    EXPLORE_HAIKU_OVERRIDE_AGENT_NAME: {
-        "description": (
-            "A fast, read-only agent for searching and analyzing codebases — "
-            "file discovery, code search, and codebase exploration without "
-            "making changes."
-        ),
-        "prompt": (
-            "You are `Explore`, a fast read-only search agent. Locate files, "
-            "symbols, and patterns; report what you find. You have no "
-            "`Write`/`Edit`/`Bash` access."
-        ),
-        "tools": sorted(EXPLORE_HAIKU_OVERRIDE_TOOLS),
-        "model": EXPLORE_HAIKU_OVERRIDE_MODEL,
+
+
+def _explore_override(model: str) -> dict:
+    """Build the --agents override payload for the given model value — the
+    haiku and sonnet dispatch labels differ only in this field, so both
+    share this description/prompt/tools text rather than drifting apart."""
+    return {
+        EXPLORE_HAIKU_OVERRIDE_AGENT_NAME: {
+            "description": (
+                "A fast, read-only agent for searching and analyzing codebases — "
+                "file discovery, code search, and codebase exploration without "
+                "making changes."
+            ),
+            "prompt": (
+                "You are `Explore`, a fast read-only search agent. Locate files, "
+                "symbols, and patterns; report what you find. You have no "
+                "`Write`/`Edit`/`Bash` access."
+            ),
+            "tools": sorted(EXPLORE_HAIKU_OVERRIDE_TOOLS),
+            "model": model,
+        }
     }
+
+
+EXPLORE_HAIKU_OVERRIDE = _explore_override(EXPLORE_HAIKU_OVERRIDE_MODEL)
+EXPLORE_SONNET_OVERRIDE = _explore_override(EXPLORE_SONNET_OVERRIDE_MODEL)
+
+# Step 2b's Sonnet-valued twin reuses the Haiku dispatch's agent type, prompt
+# template, and permission-mode wiring — only the --agents override payload
+# (looked up from this map) differs between the two labels.
+_EXPLORE_OVERRIDE_BY_DISPATCH = {
+    DISPATCH_EXPLORE_HAIKU: EXPLORE_HAIKU_OVERRIDE,
+    DISPATCH_EXPLORE_SONNET: EXPLORE_SONNET_OVERRIDE,
 }
 
 _DISPATCH_AGENT_TYPE = {
     DISPATCH_STAFF_BACKEND_ENGINEER: "staff-backend-engineer",
     DISPATCH_EXPLORE_HAIKU: EXPLORE_HAIKU_OVERRIDE_AGENT_NAME,
+    DISPATCH_EXPLORE_SONNET: EXPLORE_HAIKU_OVERRIDE_AGENT_NAME,
 }
 
 # One fixed prompt template across runs 2-5 (plan M2) — only --model and
@@ -156,12 +177,14 @@ DISPATCH_PROMPT_TEMPLATE = (
     "look at the file or judge it yourself, and do not do any other work."
 )
 
-# Runs 6-7 (the Explore/Haiku --agents pin test) append one line diverging
-# from the runs-2-5 template above: the dispatcher can spontaneously pass an
-# explicit model param sourced from ambient CLAUDE.md's Explore-pinning
-# instruction, which loads regardless of the harness's temp-project cwd and
-# always overrides an --agents-supplied frontmatter pin — this line forbids
-# that so the run measures whether the pin survives plan mode unforced.
+# Runs 6-9 (the Explore --agents pin test: M9's Haiku pin plus Step 2b's
+# Sonnet-valued twin) append one line diverging from the runs-2-5 template
+# above: the dispatcher can spontaneously pass an explicit model param
+# sourced from ambient CLAUDE.md's Explore-pinning instruction, which loads
+# regardless of the harness's temp-project cwd and always overrides an
+# --agents-supplied frontmatter pin — this line forbids that so the run
+# measures whether the pin survives plan mode (6-7) or default mode (8-9)
+# unforced.
 DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX = (
     " Do not pass an explicit model parameter on the Task call — dispatch "
     "the agent by name only."
@@ -172,7 +195,7 @@ def build_dispatch_prompt(dispatch: str) -> str:
     prompt = DISPATCH_PROMPT_TEMPLATE.format(
         agent_type=_DISPATCH_AGENT_TYPE[dispatch], marker_file=MARKER_FILE_NAME
     )
-    if dispatch == DISPATCH_EXPLORE_HAIKU:
+    if dispatch in _EXPLORE_OVERRIDE_BY_DISPATCH:
         prompt += DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX
     return prompt
 
@@ -187,10 +210,15 @@ class MatrixRun:
     repeat_of: int | None = None
 
 
-# M2's seven-run matrix, encoded as data. Run 1 is the instrument self-check
+# M2's nine-run matrix, encoded as data. Run 1 is the instrument self-check
 # and must run first — see run1_self_check_passed(). Runs 2/3 and 4/5 are
 # the two decisive cells and their repeats; runs 6/7 are M9's Explore/Haiku
-# pin test and its repeat.
+# pin test and its repeat; run 8 is the pin-review plan's Step 2 kill-check
+# (haiku-routing-surfaces.md) — the same pin test outside plan mode, with no
+# repeat since a directional kill-check needs one trial, not confidence
+# across a pair; run 9 is Step 2b's Sonnet-valued twin of run 8, confirming
+# the --agents override resolves symmetrically for both model values before
+# Step 3 spends anything.
 RUN_MATRIX: tuple[MatrixRun, ...] = (
     MatrixRun(
         1, "opus", DEFAULT_PERMISSION_MODE_LABEL, DISPATCH_STAFF_BACKEND_ENGINEER,
@@ -227,6 +255,25 @@ RUN_MATRIX: tuple[MatrixRun, ...] = (
         7, "opus", "plan", DISPATCH_EXPLORE_HAIKU,
         "Repeat of run 6.", repeat_of=6,
     ),
+    MatrixRun(
+        8, "opus", DEFAULT_PERMISSION_MODE_LABEL, DISPATCH_EXPLORE_HAIKU,
+        "Step 2 kill-check (haiku-routing-surfaces.md): same Explore/Haiku "
+        "--agents pin as run 6, outside plan mode — only permission_mode "
+        "differs from run 6, isolating that variable. haiku observed => the "
+        "pin is honored outside plan mode too; sonnet/opus => the pin is not "
+        "honored and the plan stops; a 'Prompt is too long' failure => the "
+        "vendor's MCP prompt-size ceiling binds this harness and the plan "
+        "stops.",
+    ),
+    MatrixRun(
+        9, "opus", DEFAULT_PERMISSION_MODE_LABEL, DISPATCH_EXPLORE_SONNET,
+        "Step 2b Sonnet-valued twin of run 8 (haiku-routing-surfaces.md): "
+        "identical --agents override and default permission mode, but the "
+        "override's model is sonnet instead of haiku. sonnet observed => "
+        "the --agents mechanism resolves symmetrically for both model "
+        "values, so Step 3 may proceed; anything else => the mechanism is "
+        "not symmetric and the plan stops before spending.",
+    ),
 )
 
 
@@ -242,8 +289,9 @@ def build_run_command(run: MatrixRun, *, session_id: str, budget_cap_usd: float)
     ]
     if run.permission_mode != DEFAULT_PERMISSION_MODE_LABEL:
         cmd += ["--permission-mode", run.permission_mode]
-    if run.dispatch == DISPATCH_EXPLORE_HAIKU:
-        cmd += ["--agents", json.dumps(EXPLORE_HAIKU_OVERRIDE)]
+    override = _EXPLORE_OVERRIDE_BY_DISPATCH.get(run.dispatch)
+    if override is not None:
+        cmd += ["--agents", json.dumps(override)]
     return cmd
 
 
@@ -284,8 +332,9 @@ def agent_frontmatter_tools(agent_file_text: str) -> frozenset[str] | None:
 
 
 def declared_model_pin_for_dispatch(dispatch: str) -> str | None:
-    if dispatch == DISPATCH_EXPLORE_HAIKU:
-        return EXPLORE_HAIKU_OVERRIDE_MODEL
+    override = _EXPLORE_OVERRIDE_BY_DISPATCH.get(dispatch)
+    if override is not None:
+        return override[EXPLORE_HAIKU_OVERRIDE_AGENT_NAME]["model"]
     try:
         text = STAFF_BACKEND_ENGINEER_AGENT_FILE.read_text()
     except OSError:
@@ -294,7 +343,7 @@ def declared_model_pin_for_dispatch(dispatch: str) -> str | None:
 
 
 def declared_tools_for_dispatch(dispatch: str) -> frozenset[str] | None:
-    if dispatch == DISPATCH_EXPLORE_HAIKU:
+    if dispatch in _EXPLORE_OVERRIDE_BY_DISPATCH:
         return EXPLORE_HAIKU_OVERRIDE_TOOLS
     try:
         text = STAFF_BACKEND_ENGINEER_AGENT_FILE.read_text()
@@ -534,7 +583,7 @@ def run1_self_check_passed(result: RunResult) -> bool:
 def should_stop_matrix_after(run: MatrixRun, result: RunResult) -> bool:
     """The --all loop's one safety-critical decision, extracted from main() so
     it's unit-testable without a live subprocess: stop before spending budget
-    on runs 2-7 if run 1's self-check failed."""
+    on runs 2-9 if run 1's self-check failed."""
     return run.number == 1 and not run1_self_check_passed(result)
 
 
@@ -544,7 +593,7 @@ def should_stop_matrix_after(run: MatrixRun, result: RunResult) -> bool:
 def abort_if_subagent_model_env_set() -> None:
     """CLAUDE_CODE_SUBAGENT_MODEL sits above every other step in the documented
     subagent model-resolution order (the plan's G1), so if set it would decide
-    every run's observed model by itself and make the matrix's seven cells
+    every run's observed model by itself and make the matrix's nine cells
     unable to distinguish between rival explanations — with nothing in the
     harness output to show it happened (plan M1a). Fails loudly before any
     subprocess launches, rather than surfacing only as a field in the report."""
@@ -552,7 +601,7 @@ def abort_if_subagent_model_env_set() -> None:
     if value:
         sys.exit(
             f"ERROR: CLAUDE_CODE_SUBAGENT_MODEL is set ({value!r}). This overrides "
-            "every model-resolution step in all seven runs, so every run would "
+            "every model-resolution step in all nine runs, so every run would "
             "observe whatever model this variable names regardless of parent, "
             "permission mode, or dispatch — making the runs unable to tell "
             "apart the different explanations this experiment exists to "
@@ -577,6 +626,7 @@ def gather_environment_report() -> dict:
             DISPATCH_STAFF_BACKEND_ENGINEER
         ),
         "explore_haiku_override_declared_model": EXPLORE_HAIKU_OVERRIDE_MODEL,
+        "explore_sonnet_override_declared_model": EXPLORE_SONNET_OVERRIDE_MODEL,
     }
 
 
@@ -887,11 +937,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--list", action="store_true", help="Print the run matrix and exit without launching anything"
     )
     group.add_argument(
-        "--run", type=int, metavar="N", help="Run a single matrix cell by its run number (1-7)"
+        "--run", type=int, metavar="N", help="Run a single matrix cell by its run number (1-9)"
     )
     group.add_argument(
         "--all", action="store_true",
-        help="Run the full seven-run matrix in order, stopping if run 1's self-check fails",
+        help="Run the full nine-run matrix in order, stopping if run 1's self-check fails",
     )
     parser.add_argument(
         "--budget-cap-usd", type=float, default=PER_RUN_BUDGET_CAP_USD,
@@ -926,7 +976,7 @@ def main() -> int:
     if args.run is not None:
         matches = [r for r in RUN_MATRIX if r.number == args.run]
         if not matches:
-            print(f"ERROR: no run numbered {args.run} in the matrix (valid: 1-7)", file=sys.stderr)
+            print(f"ERROR: no run numbered {args.run} in the matrix (valid: 1-9)", file=sys.stderr)
             return 2
         result = execute_matrix_cell(matches[0], budget_cap_usd=args.budget_cap_usd, timeout_s=args.timeout_s)
         print_run_result(result)
@@ -944,7 +994,7 @@ def main() -> int:
             print(
                 "ERROR: run 1 self-check failed — the harness appears to be reading "
                 "the parent's model rather than the subagent's. Stopping before "
-                "spending budget on runs 2-7.",
+                "spending budget on runs 2-9.",
                 file=sys.stderr,
             )
             break

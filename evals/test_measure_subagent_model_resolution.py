@@ -672,7 +672,7 @@ class TestRun1SelfCheck:
     def test_sidecar_poll_timeout_fails_same_as_genuine_no_dispatch(self) -> None:
         """Pins the documented conservative choice: a sidecar-poll timeout is
         indistinguishable from a genuine self-check failure here by design —
-        both stop the --all matrix rather than risk spending on runs 2-7
+        both stop the --all matrix rather than risk spending on runs 2-9
         against a voided run 1."""
         result = self._result([])
         timed_out_result = msmr.RunResult(
@@ -711,7 +711,7 @@ class TestShouldStopMatrixAfter:
         assert msmr.should_stop_matrix_after(msmr.RUN_MATRIX[0], result) is False
 
     def test_never_stops_on_a_later_run_regardless_of_outcome(self) -> None:
-        """The self-check gate is run-1-specific — a bad outcome on runs 2-7
+        """The self-check gate is run-1-specific — a bad outcome on runs 2-9
         is data to report, not a reason to abort the matrix."""
         result = self._result(4, msmr.MODEL_FAMILY_SONNET)
         assert msmr.should_stop_matrix_after(msmr.RUN_MATRIX[3], result) is False
@@ -750,6 +750,22 @@ class TestBuildRunCommand:
         cmd = msmr.build_run_command(run, session_id="sid", budget_cap_usd=11.5)
         assert "--agents" not in cmd
 
+    def test_explore_haiku_dispatch_omits_permission_mode_outside_plan_mode(self) -> None:
+        run = msmr.RUN_MATRIX[7]  # run 8: opus / default / explore-haiku
+        cmd = msmr.build_run_command(run, session_id="sid", budget_cap_usd=11.5)
+        assert "--permission-mode" not in cmd
+        assert "--agents" in cmd
+        payload = json.loads(cmd[cmd.index("--agents") + 1])
+        assert payload["Explore"]["model"] == "haiku"
+
+    def test_explore_sonnet_dispatch_adds_agents_override_with_sonnet_model(self) -> None:
+        run = msmr.RUN_MATRIX[8]  # run 9: opus / default / explore-sonnet
+        cmd = msmr.build_run_command(run, session_id="sid", budget_cap_usd=11.5)
+        assert "--permission-mode" not in cmd
+        assert "--agents" in cmd
+        payload = json.loads(cmd[cmd.index("--agents") + 1])
+        assert payload["Explore"]["model"] == "sonnet"
+
     def test_session_id_and_budget_cap_passed_through(self) -> None:
         run = msmr.RUN_MATRIX[0]
         cmd = msmr.build_run_command(run, session_id="my-session", budget_cap_usd=7.25)
@@ -759,8 +775,8 @@ class TestBuildRunCommand:
 
 class TestBuildDispatchPrompt:
     """Guards against the dispatcher voluntarily passing an explicit `model`
-    param that overrides the --agents-supplied haiku pin on the explore-haiku
-    dispatch shape (runs 6-7)."""
+    param that overrides the --agents-supplied pin on the explore-haiku and
+    explore-sonnet dispatch shapes (runs 6-9)."""
 
     def test_staff_backend_engineer_prompt_has_no_model_param_clause(self) -> None:
         prompt = msmr.build_dispatch_prompt(msmr.DISPATCH_STAFF_BACKEND_ENGINEER)
@@ -772,6 +788,14 @@ class TestBuildDispatchPrompt:
 
     def test_explore_haiku_prompt_forbids_explicit_model_param(self) -> None:
         prompt = msmr.build_dispatch_prompt(msmr.DISPATCH_EXPLORE_HAIKU)
+        assert msmr.DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX in prompt
+
+    def test_explore_sonnet_prompt_also_forbids_explicit_model_param(self) -> None:
+        """The Sonnet-valued twin (run 9) shares the Haiku dispatch's
+        no-model-param clause, since the dispatcher restoring Sonnet via an
+        explicit param would make the --agents override untestable either
+        way."""
+        prompt = msmr.build_dispatch_prompt(msmr.DISPATCH_EXPLORE_SONNET)
         assert msmr.DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX in prompt
 
     def test_explore_haiku_prompt_extends_shared_template(self) -> None:
@@ -787,8 +811,8 @@ class TestBuildDispatchPrompt:
 
 
 class TestRunMatrix:
-    def test_seven_runs_numbered_one_through_seven(self) -> None:
-        assert [r.number for r in msmr.RUN_MATRIX] == list(range(1, 8))
+    def test_nine_runs_numbered_one_through_nine(self) -> None:
+        assert [r.number for r in msmr.RUN_MATRIX] == list(range(1, 10))
 
     def test_run_one_is_instrument_self_check_shape(self) -> None:
         run = msmr.RUN_MATRIX[0]
@@ -803,9 +827,25 @@ class TestRunMatrix:
         assert by_number[7].repeat_of == 6
         assert by_number[2].repeat_of is None
 
-    def test_only_runs_six_seven_dispatch_explore_haiku(self) -> None:
+    def test_only_runs_six_seven_eight_dispatch_explore_haiku(self) -> None:
         explore_runs = {r.number for r in msmr.RUN_MATRIX if r.dispatch == msmr.DISPATCH_EXPLORE_HAIKU}
-        assert explore_runs == {6, 7}
+        assert explore_runs == {6, 7, 8}
+
+    def test_only_run_nine_dispatches_explore_sonnet(self) -> None:
+        explore_sonnet_runs = {r.number for r in msmr.RUN_MATRIX if r.dispatch == msmr.DISPATCH_EXPLORE_SONNET}
+        assert explore_sonnet_runs == {9}
+
+    def test_run_eight_is_explore_haiku_outside_plan_mode(self) -> None:
+        run = msmr.RUN_MATRIX[7]
+        assert run.dispatch == msmr.DISPATCH_EXPLORE_HAIKU
+        assert run.permission_mode == msmr.DEFAULT_PERMISSION_MODE_LABEL
+        assert run.repeat_of is None
+
+    def test_run_nine_is_explore_sonnet_outside_plan_mode(self) -> None:
+        run = msmr.RUN_MATRIX[8]
+        assert run.dispatch == msmr.DISPATCH_EXPLORE_SONNET
+        assert run.permission_mode == msmr.DEFAULT_PERMISSION_MODE_LABEL
+        assert run.repeat_of is None
 
 
 class TestAgentFrontmatterParsing:
@@ -822,6 +862,12 @@ class TestAgentFrontmatterParsing:
 
     def test_explore_haiku_override_declared_model_is_haiku(self) -> None:
         assert msmr.declared_model_pin_for_dispatch(msmr.DISPATCH_EXPLORE_HAIKU) == "haiku"
+
+    def test_explore_sonnet_override_declared_model_is_sonnet(self) -> None:
+        """Exercised through declared_model_pin_for_dispatch directly, not via
+        the staff-backend-engineer frontmatter-read fallback, which would
+        return the right answer for the wrong reason."""
+        assert msmr.declared_model_pin_for_dispatch(msmr.DISPATCH_EXPLORE_SONNET) == "sonnet"
 
     def test_explore_haiku_override_declared_tools(self) -> None:
         assert msmr.declared_tools_for_dispatch(msmr.DISPATCH_EXPLORE_HAIKU) == frozenset(
@@ -880,6 +926,7 @@ class TestGatherEnvironmentReport:
         assert report["claude_code_subagent_model_env"] is None
         assert report["staff_backend_engineer_declared_model"] == "sonnet"
         assert report["explore_haiku_override_declared_model"] == "haiku"
+        assert report["explore_sonnet_override_declared_model"] == "sonnet"
         assert "config_dir" in report
 
 

@@ -1,0 +1,275 @@
+{
+  "pinned_commit": "eff170d05e73",
+  "cases": [
+    {
+      "id": "A1",
+      "stratum": "A",
+      "question": "Which files reference the PER_RUN_BUDGET_CAP_USD per-run budget cap constant?",
+      "grep_pattern": "PER_RUN_BUDGET_CAP_USD",
+      "grep_mode": "fixed",
+      "key": [
+        ".claude/plans/haiku-routing-surfaces.md",
+        ".claude/plans/measure-review-quality.md",
+        "evals/README.md",
+        "evals/measure_subagent_model_resolution.py",
+        "evals/review_bench/runner.py",
+        "evals/test_measure_subagent_model_resolution.py"
+      ]
+    },
+    {
+      "id": "A2",
+      "stratum": "A",
+      "question": "Which files reference the autonomous-shipping-active.sh script?",
+      "grep_pattern": "autonomous-shipping-active.sh",
+      "grep_mode": "fixed",
+      "key": [
+        ".claude/plans/clarify-autonomous-shipping-sentinel-scope.md",
+        ".claude/plans/round2-pilot-config-key-fix.md",
+        ".claude/plans/sentinel-config-migration.md",
+        ".claude/plans/terraform-rule-and-feature-flags-skill.md",
+        ".claude/plans/worktree-bash-guard-regression.md",
+        "claude/.claude/CLAUDE.md",
+        "claude/.claude/hooks/tests/config-schema-audit.md",
+        "claude/.claude/scripts/autonomous-shipping-active.sh",
+        "claude/.claude/scripts/config-get.sh",
+        "claude/.claude/scripts/tests/test_autonomous_shipping_active.py"
+      ]
+    },
+    {
+      "id": "A3",
+      "stratum": "A",
+      "question": "Which files reference the findings-path-suffix.sh script?",
+      "grep_pattern": "findings-path-suffix.sh",
+      "grep_mode": "fixed",
+      "key": [
+        ".claude/plans/branch-scoped-review-ledger.md",
+        ".claude/plans/findings-path-script.md",
+        ".claude/plans/fix-path-length-fixtures.md",
+        ".claude/plans/lighten-subprocess-tests.md",
+        ".claude/plans/review-loop-cost-levers.md",
+        ".claude/plans/reviewer-diff-handoff-by-path.md",
+        ".claude/plans/reviewer-diff-input.md",
+        ".claude/plans/reviewer-instance-continuation.md",
+        ".claude/plans/rfr-reentry-convergence.md",
+        ".gitignore",
+        "claude-skills/skills/code-review/SKILL.md",
+        "claude-skills/skills/plan-review/ROUTING.md",
+        "claude-skills/skills/ready-for-review/SKILL.md",
+        "claude-skills/skills/tests/test_skills.py",
+        "claude/.claude/scripts/findings-path-suffix.sh",
+        "claude/.claude/scripts/tests/test_findings_path_suffix.py",
+        "claude/.claude/settings.json",
+        "docs/design-decisions/ready-for-review-fix-loop-convergence.md",
+        "docs/design-decisions/reviewer-findings-path-output.md",
+        "docs/scripts.md",
+        "docs/worktree-bash-guard.md"
+      ]
+    },
+    {
+      "id": "A4",
+      "stratum": "A",
+      "question": "Which files reference the review-orchestrator agent?",
+      "grep_pattern": "review-orchestrator",
+      "grep_mode": "fixed",
+      "key": [
+        ".claude/plans/claude-md-agent-core.md",
+        ".claude/plans/defer-ci-check-to-end.md",
+        ".claude/plans/review-pipeline-orchestrator-subagent.md",
+        "CHANGELOG.md",
+        "claude-skills/skills/subagent-delegation/SKILL.md",
+        "claude-skills/skills/tests/test_skills.py",
+        "claude/.claude/agents/review-orchestrator.md",
+        "claude/.claude/hooks/_lib.sh",
+        "claude/.claude/hooks/tests/test_agent_roster.py",
+        "claude/.claude/hooks/tests/test_enforce_marker_script_shape.py",
+        "docs/design-decisions/global-claude-md-agent-core-and-main-session-groups.md",
+        "docs/design-decisions/review-orchestrator-gate-release-decoupling.md"
+      ]
+    },
+    {
+      "id": "A5",
+      "stratum": "A",
+      "question": "Which files reference the _lib_fragment_concludes_commit helper function?",
+      "grep_pattern": "_lib_fragment_concludes_commit",
+      "grep_mode": "fixed",
+      "key": [
+        ".claude/plans/git-pre-commit-hooks-spike.md",
+        ".claude/plans/merge-aware-review-gates.md",
+        "claude/.claude/hooks/_lib.sh",
+        "claude/.claude/hooks/deny-invisible-commit-content.sh",
+        "claude/.claude/hooks/tests/test_lib.py",
+        "claude/.claude/hooks/tests/test_require_skill_review.py",
+        "docs/design-decisions/git-native-commit-hooks-declined.md",
+        "plugins/skill-management/hooks/_lib.sh"
+      ]
+    },
+    {
+      "id": "A6",
+      "stratum": "A",
+      "question": "Which files reference the parse_subagent_dispatches function?",
+      "grep_pattern": "parse_subagent_dispatches",
+      "grep_mode": "fixed",
+      "key": [
+        ".claude/plans/haiku-routing-surfaces.md",
+        ".claude/plans/measure-review-quality.md",
+        "evals/measure_subagent_model_resolution.py",
+        "evals/review_bench/runner.py",
+        "evals/test_measure_subagent_model_resolution.py"
+      ]
+    },
+    {
+      "id": "A7",
+      "stratum": "A",
+      "question": "Which files reference the _skill_auxiliary_files module?",
+      "grep_pattern": "_skill_auxiliary_files",
+      "grep_mode": "fixed",
+      "key": [
+        ".claude/plans/default-pr-description-template.md",
+        ".claude/plans/narrow-claude-tests-dir-routing.md",
+        "claude-skills/skills/tests/test_skills.py",
+        "claude/.claude/scripts/select-tests.py",
+        "claude/.claude/scripts/tests/test_select_tests.py"
+      ]
+    },
+    {
+      "id": "A8",
+      "stratum": "A",
+      "question": "Which files reference the memory-store-audit skill?",
+      "grep_pattern": "memory-store-audit",
+      "grep_mode": "fixed",
+      "key": [
+        ".claude/plans/memory-audit-nudge.md",
+        "README.md",
+        "claude-skills/skills/memory-store-audit/SKILL.md",
+        "claude-skills/skills/tests/test_skills.py",
+        "claude/.claude/hooks/nudge-memory-store-audit.awk",
+        "claude/.claude/hooks/nudge-memory-store-audit.sh",
+        "claude/.claude/hooks/tests/config-schema-audit.md",
+        "claude/.claude/hooks/tests/test_deny_private_project_refs.py",
+        "claude/.claude/hooks/tests/test_hook_alignment.py",
+        "claude/.claude/hooks/tests/test_nudge_memory_store_audit.py",
+        "claude/.claude/settings.json",
+        "docs/design-decisions/memory-store-classifier-folded-into-skill.md",
+        "docs/hooks.md",
+        "docs/memory-audit-nudge.md",
+        "docs/skills.md"
+      ]
+    },
+    {
+      "id": "B1",
+      "stratum": "B",
+      "question": "Where in this repo's hooks and scripts does code call `_config_enabled` to check a config-key toggle, as opposed to just mentioning it in a comment?",
+      "key": [
+        "claude/.claude/hooks/_lib.sh:_lib_worktree_enforcement_active",
+        "claude/.claude/hooks/_lib.sh:_lib_autonomous_shipping_sentinel_present",
+        "claude/.claude/hooks/_lib.sh:_lib_permission_prompt_tracking_active",
+        "claude/.claude/hooks/_lib.sh:_lib_reviewer_round_state_cap",
+        "claude/.claude/hooks/_lib.sh:_lib_round_consult_gate_disabled",
+        "claude/.claude/hooks/advance-past-commit-stall.sh:top-level-main",
+        "claude/.claude/hooks/consume-durable-continuity-file-on-read.sh:top-level-main",
+        "claude/.claude/hooks/nudge-error-mode-analysis.sh:top-level-main",
+        "claude/.claude/hooks/nudge-handoff-near-context-cap.sh:run_check_mode",
+        "claude/.claude/hooks/nudge-handoff-near-context-cap.sh:top-level-main",
+        "claude/.claude/hooks/nudge-memory-store-audit.sh:top-level-main",
+        "claude/.claude/hooks/restore-authorization-boundary-on-compact.sh:top-level-main",
+        "claude/.claude/hooks/set-session-title-from-branch.sh:top-level-main"
+      ],
+      "accepted_near_misses": [
+        "claude/.claude/scripts/config-get.sh:top-level-main"
+      ],
+      "second_pass_confirmed": true,
+      "curator_notes": "Built by enumerating every production call site of `_config_enabled` (git grep at the pinned commit, excluding comments, the function's own definition in _config.sh, and test files) and attributing each call line to its enclosing bash function or, when the call sits outside any function, to a single per-file `top-level-main` label. One judgment-call type applied uniformly (function vs. top-level scope), no case needing a second kind of call. config-get.sh is listed as a near-miss because its own comments describe it as delegating to _config_enabled, but its actual call is to the differently-named _config_value.",
+      "second_pass_notes": "Independently re-derived the full call-site set via git grep at the pinned commit and attributed each to its enclosing function/top-level block. Zero additional sites found; all 13 key entries and the config-get.sh near-miss confirmed by direct read (config-get.sh calls _config_value, not _config_enabled)."
+    },
+    {
+      "id": "B2",
+      "stratum": "B",
+      "question": "Where in this repo's hooks and scripts does code call `_lib_marker_value_present` to check whether a review/approval marker is already present?",
+      "key": [
+        "claude/.claude/hooks/require-code-review.sh:top-level-main",
+        "claude/.claude/hooks/require-plan-review.sh:top-level-main",
+        "claude/.claude/hooks/require-ready-for-review.sh:top-level-main",
+        "claude/.claude/scripts/marker.sh:_status_report_completion_marker",
+        "claude/.claude/scripts/marker.sh:top-level-main",
+        "plugins/skill-management/hooks/require-skill-review.sh:top-level-main"
+      ],
+      "accepted_near_misses": [
+        "claude/.claude/hooks/_lib.sh:_lib_marker_value_present",
+        "plugins/skill-management/hooks/_lib.sh:_lib_marker_value_present"
+      ],
+      "second_pass_confirmed": true,
+      "curator_notes": "Built by enumerating every production call site of `_lib_marker_value_present` (git grep at the pinned commit, excluding comments and tests) and attributing each to its enclosing function or top-level block. marker.sh's two call sites (code-review-markers check and verification-markers check) both sit in its top-level case-dispatch body with no enclosing function, so they collapse to one `top-level-main` entry; require-plan-review.sh's three call sites collapse the same way. The two sibling _lib.sh files' own function definitions are listed as near-misses, not keys, since a definition is not a read site.",
+      "second_pass_notes": "Independently re-derived all 9 production call sites (require-code-review.sh:222, require-plan-review.sh:129/284/318, require-ready-for-review.sh:409, marker.sh:261/1093/1135, require-skill-review.sh:421) and confirmed each attribution by reading the enclosing scope at the pinned commit. Zero additional sites found; zero wrong key entries."
+    },
+    {
+      "id": "B3",
+      "stratum": "B",
+      "question": "Where in this repo's hooks and scripts is a session id validated as a safe filesystem-path component (via `_lib_valid_session_id_component`) before being used to build a marker, state, or log file path?",
+      "key": [
+        "claude/.claude/hooks/_lib.sh:_lib_active_bypass_marker_live",
+        "claude/.claude/hooks/_lib.sh:_lib_review_ledger_session_path",
+        "claude/.claude/hooks/_lib.sh:_lib_review_pr_completion_marker_fields",
+        "claude/.claude/hooks/activate-handoff-bypass.sh:top-level-main",
+        "claude/.claude/hooks/advance-past-commit-stall.sh:top-level-main",
+        "claude/.claude/hooks/capture-session-id.sh:top-level-main",
+        "claude/.claude/hooks/log-routing-read.sh:top-level-main",
+        "claude/.claude/hooks/nudge-error-mode-analysis.sh:top-level-main",
+        "claude/.claude/hooks/nudge-handoff-near-context-cap.sh:run_check_mode",
+        "claude/.claude/hooks/nudge-handoff-near-context-cap.sh:top-level-main",
+        "claude/.claude/hooks/nudge-long-turn-subagent.sh:top-level-main",
+        "claude/.claude/hooks/nudge-worktree-anchor.sh:top-level-main",
+        "claude/.claude/hooks/record-session-end.sh:top-level-main",
+        "claude/.claude/hooks/require-routing-read.sh:top-level-main",
+        "claude/.claude/hooks/session-marker-dashboard.sh:top-level-main",
+        "claude/.claude/scripts/_review-pr-lib.sh:review_pr_resolve_session_and_pid",
+        "claude/.claude/scripts/marker.sh:_resolve_session_and_pid",
+        "claude/.claude/scripts/review-ledger.sh:_resolve_session_id"
+      ],
+      "accepted_near_misses": [
+        "claude/.claude/hooks/_lib.sh:_lib_valid_session_id_component",
+        "claude/.claude/hooks/_lib.sh:_lib_resolve_session_id",
+        "claude/.claude/scripts/handoff-record-conversion.sh:top-level-main",
+        "claude/.claude/hooks/_lib.sh:_lib_review_pr_select_session_worktrees"
+      ],
+      "second_pass_confirmed": true,
+      "curator_notes": "Built by enumerating every production call site of `_lib_valid_session_id_component` (git grep at the pinned commit, excluding comments, the definition, and tests) and attributing each to its enclosing function or top-level block; a single judgment-call type (function vs. top-level scope) throughout. `_lib_resolve_session_id` is a near-miss: a differently-named sibling in the same file that resolves a live process's session id from scratch rather than validating one already in hand, which a model could plausibly conflate with this question.",
+      "second_pass_notes": "Confirmed by independent pass; 18 sites. One draft entry moved to accepted_near_misses: it validates the session id but writes to a fixed log path, never using the id as a path component. `_lib_review_pr_select_session_worktrees` also validates the session id but builds a worktree directory name rather than a marker, state, or log path; two reviewers split on whether it is on-topic, so it is scored as neither hit nor false positive."
+    },
+    {
+      "id": "B4",
+      "stratum": "B",
+      "question": "In evals/measure_subagent_model_resolution.py, where is a dispatch's observed model family read, derived, or reported?",
+      "key": [
+        "evals/measure_subagent_model_resolution.py:DispatchObservation",
+        "evals/measure_subagent_model_resolution.py:parse_subagent_dispatches",
+        "evals/measure_subagent_model_resolution.py:run1_self_check_passed",
+        "evals/measure_subagent_model_resolution.py:observation_to_dict",
+        "evals/measure_subagent_model_resolution.py:print_run_result"
+      ],
+      "accepted_near_misses": [],
+      "second_pass_confirmed": true,
+      "curator_notes": "Built by grepping observed_model_family at the pinned commit inside this one file (test file excluded) and attributing each use to its enclosing class or function; all five sites are unambiguous single-definition scopes, so no near-misses were identified.",
+      "second_pass_notes": "Independently re-derived all 5 observed_model_family sites in this file (lines 379, 508, 531, 796, 870) and confirmed each enclosing class/function matches the key exactly. Zero additional sites, zero wrong entries."
+    },
+    {
+      "id": "B5",
+      "stratum": "B",
+      "question": "Where in this repo's hooks, scripts, and plugin-sibling library does code resolve the local default branch via `_lib_default_branch_or_guess`?",
+      "key": [
+        "claude/.claude/hooks/_lib.sh:_lib_gate_diff_base",
+        "claude/.claude/hooks/_lib.sh:_lib_review_ledger_path",
+        "claude/.claude/hooks/guard-settings-session-keys.sh:top-level-main",
+        "claude/.claude/hooks/require-ready-for-review.sh:top-level-main",
+        "claude/.claude/scripts/pr-diff-against-base.sh:top-level-main",
+        "plugins/skill-management/hooks/_lib.sh:_lib_gate_diff_base"
+      ],
+      "accepted_near_misses": [
+        "claude/.claude/hooks/_lib.sh:_lib_default_branch_or_guess",
+        "claude/.claude/scripts/transcript_analysis/scope.py:top-level-main"
+      ],
+      "second_pass_confirmed": true,
+      "curator_notes": "Six production call sites at the pinned commit, including the primary _lib.sh copies the first pass missed; the plugin-sibling _lib.sh copy is a distinct site.",
+      "second_pass_notes": "Confirmed by independent pass; 6 sites."
+    }
+  ]
+}

@@ -696,3 +696,25 @@ Reopening incremental credit would need:
 - Line headroom in `code-review/SKILL.md`. See `docs/design-decisions/ready-for-review-fix-loop-convergence.md` § "The `code-review/SKILL.md` line cap".
 
 No code, skill, hook, or test change ships from this investigation.
+
+## From `haiku-routing-surfaces.md` — "Haiku routing surfaces: measure Haiku's locate recall, then pin and route the locate lane"
+
+| Lever | Verdict | Measured reason |
+|---|---|---|
+| Pin `Explore` to `model: haiku`, paired with the routing fix that would send `general-purpose`'s locate-shaped dispatches to it instead | Declined on measurement, 2026-10-15 (gate `FAIL`) | Stratified recall-and-precision gate (`evals/measure_explore_recall.py`, K=5 samples per case per model, 130 scored samples, $47.81): Stratum A (grep-derivable search) tied at 0.995 Haiku vs. 1.000 Sonnet; Stratum B (semantic search) trailed by ~4 points, 0.917 vs. 0.953 — both within the gate's 5-point recall term. Precision failed: 0.931 Haiku (46 false positives / 670 returned items) against the 0.98 floor, versus Sonnet's 0.986 (9 / 653). 21 of Haiku's 46 false positives, and the gate's only per-case recall cliff (one case fell 20 points), trace to a single semantic-search sample whose every returned path dropped its leading directory segment; Sonnet had no equivalent failure in the same 25 samples. |
+| Route locate-shaped dispatches to `Explore` instead of `general-purpose` (the routing half of the same change) | Named, not solved — stands regardless of the pin's own verdict | A dispatch-shape scan of this repository's `general-purpose`/`fork`/`Explore` sidecars over the 60 days to 2026-10-15 found 24 of the 25 locate-shaped dispatches went to `general-purpose` or `fork`, only 1 to `Explore`, even though `subagent-delegation/SKILL.md`'s own rule already assigns locate search to `Explore`. Two other shipped instructions steer dispatchers away from it regardless of any pin: one tells every dispatcher to pass `model: sonnet` on every dispatch including pinned ones, the other names `general-purpose` as the routine discovery-and-research target. |
+
+**What held, so a future reader doesn't re-measure it.** Grep-shaped search is a recall tie between the two models. Semantic search trails by a measured ~4 points, inside the gate's own 5-point tolerance. The term that failed the gate is precision and per-sample robustness, not recall.
+
+**Cost bound that sized the lever.** A `subagent-mix` scan of this repository's sessions over the 60 days to 2026-10-15 (`TRANSCRIPT_CONFIG_DIRS_FILE=/dev/null python3 claude/.claude/scripts/transcript-analysis.py subagent-mix --this-repo --since 60d --reprice-as claude-haiku-4-5-20251001`) put the `general-purpose`/`fork` lane at 103 runs, $138.88 actual, with `Explore` itself at 0 priced runs in that table. The same dispatch-shape scan put the LOCATE bucket at roughly 15% of that lane's token volume, bounding the saving a Haiku pin could unlock at roughly $21 actual, or $10 saved per 60 days at Haiku rates — small enough that the lever was pursued as a knowledge investment (whether the locate-and-report task shape can run on Haiku at all), not a cost play. These transcript-derived figures — the `subagent-mix` lane totals above and the 24-of-25 locate-shaped dispatch-shape classification above — are published under the owner's authorization of 2026-10-16 (UTC), given for this exact command and these exact figures. That authorization was required because `subagent-mix` carries no built-in scope refusal and the dispatch-shape count is a manual sidecar classification rather than a command's own output.
+
+**Instrument note.** The first full K=5 run ($63.52) was a calibration, not the scored result: (1) the `symbol` field was undefined; (2) top-level code had no alias canonicalization (`main` vs. `top-level-main`); (3) a 90-second per-dispatch timeout killed the heavier Stratum B samples mid-search. All three were fixed and the gate re-run in full; only the corrected run ($47.81, above) is scored. Total study spend across every run, scored and not: ~$146 — a K=1 smoke run at $32.75 that scored nothing because the parent lacked an `--add-dir` grant, ~$1.50 of single-sample diagnosis, the $63.52 calibration, and the $47.81 corrected run.
+
+**Re-run recipe**, against a separate clean checkout at the fixture's pinned commit — the checkout holding the scorer differs from that commit, so pointing the scorer at itself would turn its own files into false positives:
+
+```bash
+evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json \
+  --repo-dir <clean-checkout-at-pinned-commit> --timeout-s 300
+```
+
+The fixture's own `pinned_commit` field names the exact commit to check out; the checkout must be clean (`git status --porcelain` empty) at that commit before any run.
