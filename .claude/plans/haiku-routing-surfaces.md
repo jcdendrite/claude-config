@@ -61,11 +61,11 @@ Dollar figures in this table are actual spend.
 
 | Lane | Runs | Actual | Haiku-eligible under A7 |
 | --- | --- | --- | --- |
-| `plan-architect` (Opus) | 129 | $278.67 | No — judgment |
-| `code-writer` | 115 | $208.97 | No — authoring |
+| `plan-architect` (Opus) | withheld | $278.67 | No — judgment |
+| `code-writer` | withheld | $208.97 | No — authoring |
 | `general-purpose` + `fork` | 103 | $138.88 | Only the locate slice |
-| `staff-*` / `ciso-reviewer` | 223 | $174.21 | No — rubric judgment |
-| `comment-discipline-reviewer` | 25 | $9.35 | Marginal, not pursued (see Out of scope) |
+| `staff-*` / `ciso-reviewer` | withheld | $174.21 | No — rubric judgment |
+| `comment-discipline-reviewer` | withheld | $9.35 | Marginal, not pursued (see Out of scope) |
 | `Explore` | 0 | $0 | Yes — but no volume |
 
 **What `general-purpose` and `fork` dispatches actually are.** 144 dispatch
@@ -75,12 +75,12 @@ dispatch's description and prompt head:
 
 | Shape | Count | Share of token volume |
 | --- | --- | --- |
-| JUDGMENT (review skills run via `general-purpose`, assessments) | 84 | ~53% |
-| RESEARCH-SYNTHESIS | 20 | ~23% |
+| JUDGMENT (review skills run via `general-purpose`, assessments) | withheld | ~53% |
+| RESEARCH-SYNTHESIS | withheld | ~23% |
 | LOCATE (grep-shaped, answer is a verifiable path list) | 25 | ~15% |
-| IMPLEMENT | 5 | ~6% |
-| READ-SUMMARIZE | 5 | ~2% |
-| OTHER (mechanical ops, placeholders) | 5 | ~1% |
+| IMPLEMENT | withheld | withheld |
+| READ-SUMMARIZE | withheld | withheld |
+| OTHER (mechanical ops, placeholders) | withheld | withheld |
 
 The classification is one judgment pass over descriptions, not a mechanical
 measurement; 9 of 144 had no recoverable prompt and were bucketed from the

@@ -137,9 +137,9 @@ def _explore_override(model: str) -> dict:
 EXPLORE_HAIKU_OVERRIDE = _explore_override(EXPLORE_HAIKU_OVERRIDE_MODEL)
 EXPLORE_SONNET_OVERRIDE = _explore_override(EXPLORE_SONNET_OVERRIDE_MODEL)
 
-# Step 2b's Sonnet-valued twin reuses the Haiku dispatch's agent type, prompt
-# template, and permission-mode wiring — only the --agents override payload
-# (looked up from this map) differs between the two labels.
+# The Sonnet-valued dispatch label reuses the Haiku dispatch's agent type,
+# prompt template, and permission-mode wiring — only the --agents override
+# payload (looked up from this map) differs between the two labels.
 _EXPLORE_OVERRIDE_BY_DISPATCH = {
     DISPATCH_EXPLORE_HAIKU: EXPLORE_HAIKU_OVERRIDE,
     DISPATCH_EXPLORE_SONNET: EXPLORE_SONNET_OVERRIDE,
@@ -177,14 +177,16 @@ DISPATCH_PROMPT_TEMPLATE = (
     "look at the file or judge it yourself, and do not do any other work."
 )
 
-# Runs 6-9 (the Explore --agents pin test: M9's Haiku pin plus Step 2b's
-# Sonnet-valued twin) append one line diverging from the runs-2-5 template
-# above: the dispatcher can spontaneously pass an explicit model param
-# sourced from ambient CLAUDE.md's Explore-pinning instruction, which loads
-# regardless of the harness's temp-project cwd and always overrides an
-# --agents-supplied frontmatter pin — this line forbids that so the run
-# measures whether the pin survives plan mode (6-7) or default mode (8-9)
-# unforced.
+# Runs 6-9 are the Explore --agents pin test: a Haiku pin on runs 6-8, a
+# Sonnet-valued twin on run 9. They append one line diverging from the
+# runs-2-5 template above.
+#
+# Ambient CLAUDE.md's Explore-pinning instruction loads regardless of the
+# harness's temp-project cwd, and the dispatcher can spontaneously pass an
+# explicit model param sourced from it that always overrides an
+# --agents-supplied frontmatter pin. This appended line forbids that
+# explicit param, so the run measures whether the --agents pin survives
+# plan mode (runs 6-7) or default mode (runs 8-9) unforced.
 DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX = (
     " Do not pass an explicit model parameter on the Task call — dispatch "
     "the agent by name only."
@@ -210,15 +212,16 @@ class MatrixRun:
     repeat_of: int | None = None
 
 
-# M2's nine-run matrix, encoded as data. Run 1 is the instrument self-check
-# and must run first — see run1_self_check_passed(). Runs 2/3 and 4/5 are
-# the two decisive cells and their repeats; runs 6/7 are M9's Explore/Haiku
-# pin test and its repeat; run 8 is the pin-review plan's Step 2 kill-check
-# (haiku-routing-surfaces.md) — the same pin test outside plan mode, with no
-# repeat since a directional kill-check needs one trial, not confidence
-# across a pair; run 9 is Step 2b's Sonnet-valued twin of run 8, confirming
-# the --agents override resolves symmetrically for both model values before
-# Step 3 spends anything.
+# The nine-run matrix, encoded as data:
+#
+# - Run 1 is the instrument self-check and must run first -- see
+#   run1_self_check_passed().
+# - Runs 2/3 and 4/5 are the two decisive cells and their repeats.
+# - Runs 6/7 are the Explore/Haiku pin test and its repeat.
+# - Run 8 is the same Explore/Haiku pin test outside plan mode -- a
+#   directional kill-check, so one trial is enough and it has no repeat.
+# - Run 9 is run 8's Sonnet-valued twin, confirming the --agents override
+#   resolves symmetrically for both model values before any further spend.
 RUN_MATRIX: tuple[MatrixRun, ...] = (
     MatrixRun(
         1, "opus", DEFAULT_PERMISSION_MODE_LABEL, DISPATCH_STAFF_BACKEND_ENGINEER,
@@ -257,22 +260,21 @@ RUN_MATRIX: tuple[MatrixRun, ...] = (
     ),
     MatrixRun(
         8, "opus", DEFAULT_PERMISSION_MODE_LABEL, DISPATCH_EXPLORE_HAIKU,
-        "Step 2 kill-check (haiku-routing-surfaces.md): same Explore/Haiku "
-        "--agents pin as run 6, outside plan mode — only permission_mode "
-        "differs from run 6, isolating that variable. haiku observed => the "
-        "pin is honored outside plan mode too; sonnet/opus => the pin is not "
-        "honored and the plan stops; a 'Prompt is too long' failure => the "
-        "vendor's MCP prompt-size ceiling binds this harness and the plan "
-        "stops.",
+        "Same Explore/Haiku --agents pin as run 6, outside plan mode. Only "
+        "permission_mode differs from run 6, isolating that variable. Haiku "
+        "observed means the pin is honored outside plan mode too. "
+        "Sonnet/opus observed means the pin is not honored and the plan "
+        "stops. A 'Prompt is too long' failure means the vendor's MCP "
+        "prompt-size ceiling binds this harness and the plan stops.",
     ),
     MatrixRun(
         9, "opus", DEFAULT_PERMISSION_MODE_LABEL, DISPATCH_EXPLORE_SONNET,
-        "Step 2b Sonnet-valued twin of run 8 (haiku-routing-surfaces.md): "
-        "identical --agents override and default permission mode, but the "
-        "override's model is sonnet instead of haiku. sonnet observed => "
-        "the --agents mechanism resolves symmetrically for both model "
-        "values, so Step 3 may proceed; anything else => the mechanism is "
-        "not symmetric and the plan stops before spending.",
+        "Run 8's Sonnet-valued twin: identical --agents override and "
+        "default permission mode, but the override's model is sonnet "
+        "instead of haiku. Sonnet observed means the --agents mechanism "
+        "resolves symmetrically for both model values, so further live "
+        "spend may proceed. Anything else means the mechanism is not "
+        "symmetric and the plan stops before spending.",
     ),
 )
 

@@ -456,7 +456,7 @@ python evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-
 # Run the gate for real (K=5 samples per case per model by default),
 # writing the full report:
 python evals/measure_explore_recall.py --fixtures evals/fixtures/explore-recall-cases.json \
-  --repo-dir /path/to/clean/checkout --json results.json
+  --repo-dir /path/to/clean/checkout --json /tmp/results.json
 ```
 
 `--keep-artifacts DIR` retains each sample's session and subagent
@@ -464,6 +464,12 @@ transcripts for diagnosis instead of discarding them; `DIR` is refused if
 it resolves inside any worktree of this repository — the main checkout or
 any linked worktree — since copied transcripts carry account-local session
 paths that must never be staged or committed.
+
+`--json`'s report carries the same class of account-local content
+(`repo_dir`'s absolute checkout path, plus each sample's answer text) and
+has no equivalent containment check, so point it outside the repository
+the way the example above does — it must never be staged or committed
+either.
 
 Tests: `evals/test_measure_explore_recall.py`, fixture-based, no live
 sessions.

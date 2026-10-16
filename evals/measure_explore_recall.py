@@ -1,11 +1,10 @@
 """Stratified recall/precision scorer for the `Explore` Haiku-pin adoption gate.
 
 See .claude/plans/haiku-routing-surfaces.md's "Step 3 — Measure recall (the
-gate)" section (mechanism M5, ledger rows A16/A20) for the full design: the
-two fixture strata, the answer contract, the matching and arithmetic rules,
-and the three-term tri-state gate this module's evaluate_gate() implements
-exactly. Every threshold and formula below is fixed there, not re-derived
-here.
+gate)" section for the full design: the two fixture strata, the answer
+contract, the matching and arithmetic rules, and the three-term tri-state
+gate this module's evaluate_gate() implements exactly. Every threshold and
+formula below is fixed there, not re-derived here.
 
 LOCAL USE ONLY — never run in CI. Same subscription-auth `claude -p`
 subprocess-launch shape and never-CI posture as
@@ -13,17 +12,22 @@ measure_subagent_model_resolution.py — see evals/README.md's "Why local
 only — never CI" section.
 
 Reuses measure_subagent_model_resolution.py (imported as msmr) rather than
-re-deriving: the --agents override payloads and dispatch labels
-(DISPATCH_EXPLORE_HAIKU/_SONNET, _EXPLORE_OVERRIDE_BY_DISPATCH,
-EXPLORE_HAIKU_OVERRIDE_TOOLS), the subprocess-launch and sidecar-polling
-machinery (_run_claude_to_completion, _wait_for_subagent_sidecar,
-_compute_sidecar_poll_timed_out, _extract_total_cost_usd,
-_resolved_temp_project_dir), the arm-mismatch
-discriminator (parse_subagent_dispatches /
-DispatchObservation.observed_model_family), PER_RUN_BUDGET_CAP_USD, and the
-no-explicit-model-param prompt clause (DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX).
+re-deriving:
 
-New here (M5, A20): the fixture schema and floor check, the final-answer
+- The --agents override payloads and dispatch labels
+  (DISPATCH_EXPLORE_HAIKU/_SONNET, _EXPLORE_OVERRIDE_BY_DISPATCH,
+  EXPLORE_HAIKU_OVERRIDE_TOOLS).
+- The subprocess-launch and sidecar-polling machinery
+  (_run_claude_to_completion, _wait_for_subagent_sidecar,
+  _compute_sidecar_poll_timed_out, _extract_total_cost_usd,
+  _resolved_temp_project_dir).
+- The arm-mismatch discriminator (parse_subagent_dispatches /
+  DispatchObservation.observed_model_family).
+- PER_RUN_BUDGET_CAP_USD.
+- The no-explicit-model-param prompt clause
+  (DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX).
+
+New in this module: the fixture schema and floor check, the final-answer
 sidecar reader, fenced-JSON extraction and normalization, Stratum A/B
 matching against accepted_near_misses, the aggregation arithmetic, the
 hand-rolled Wilson interval, the tri-state gate function, the UNCALLABLE
@@ -64,8 +68,8 @@ REQUIRED_TOP_LEVEL_KEYS = frozenset({"pinned_commit", "cases"})
 MIN_PINNED_COMMIT_HEX_LEN = 7
 _ABBREVIATED_COMMIT_RE = re.compile(rf"^[0-9a-f]{{{MIN_PINNED_COMMIT_HEX_LEN},}}$")
 
-# Plan's Step 3 floors: Stratum A needs recall to be exercisable (a model
-# must be able to return a subset), Stratum B needs more than one
+# Fixture floor rationale: Stratum A needs recall to be exercisable (a
+# model must be able to return a subset), Stratum B needs more than one
 # ground-truth site so a single-site case doesn't degenerate recall to a
 # coin flip.
 STRATUM_SITE_FLOOR = 5
@@ -77,7 +81,8 @@ MIN_STRATUM_B_WIDE_CASES = 3
 
 class FixtureSchemaError(ValueError):
     """Raised by load_fixture/parse_fixture_cases/validate_fixture_floors on
-    a malformed fixture or one that doesn't clear Step 3's floors."""
+    a malformed fixture or one that doesn't meet the fixture's minimum
+    case/site-coverage requirements."""
 
 
 @dataclass(frozen=True)
@@ -144,8 +149,9 @@ def parse_fixture_cases(raw_cases: object) -> tuple[RecallCase, ...]:
 
 
 def validate_fixture_floors(cases: tuple[RecallCase, ...]) -> None:
-    """Fails loudly when the fixture doesn't clear Step 3's floors, rather
-    than silently running a gate that can't exercise recall."""
+    """Fails loudly when the fixture doesn't meet the minimum case/site
+    coverage above, rather than silently running a gate that can't exercise
+    recall."""
     stratum_a = [c for c in cases if c.stratum == STRATUM_A]
     stratum_b = [c for c in cases if c.stratum == STRATUM_B]
     if len(stratum_a) < MIN_STRATUM_A_CASES:
@@ -230,7 +236,7 @@ def validate_repo_dir(repo_dir: Path, pinned_commit: str) -> None:
         )
 
 
-# --- Dispatch prompt builder (M5's answer contract) --------------------------
+# --- Dispatch prompt builder (the structured-answer contract) ----------------
 
 ANSWER_CONTRACT_TEMPLATE = (
     "End your reply with one fenced ```json code block containing a JSON array "
@@ -254,10 +260,10 @@ def _answer_contract_unit(stratum: str) -> str:
 
 
 def build_dispatch_prompt(case: RecallCase, repo_dir: Path) -> str:
-    """The case's own question plus where to search (repo_dir) plus M5's
-    answer contract, plus run 8's "dispatch by name only, no model param"
-    clause (msmr.DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX) so the headless
-    parent can't restore Sonnet via an explicit per-dispatch model param.
+    """The case's own question plus where to search (repo_dir) plus the
+    structured-answer contract, plus msmr.DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX's
+    "dispatch by name only, no model param" clause so the headless parent
+    can't restore Sonnet via an explicit per-dispatch model param.
     The headless parent itself launches in an empty temp project dir, so
     Explore has nothing to search unless told where the real checkout is."""
     location = (
@@ -411,7 +417,7 @@ def read_final_answer(
 ) -> AnswerExtraction:
     """A sample with no parseable fenced block, or whose block parses to
     anything other than a JSON array of strings, is a format failure:
-    recall 0, precision undefined (M5)."""
+    recall 0, precision undefined."""
     text = _scan_subagent_final_answer_text(subagent_jsonl)
     if not text:
         return AnswerExtraction(items=None, format_failure=True, raw_block=None, final_answer_text=text)
@@ -447,9 +453,9 @@ def score_sample(
     """Per-sample recall = matched key sites / key sites. Per-sample
     precision = matched returned items / returned items, with a returned
     item in accepted_near_misses excluded from both the numerator and the
-    denominator — it is neither a hit nor a false positive (M5's matching
-    rule). Precision is undefined (None) on a format failure or when no
-    non-near-miss item was returned at all."""
+    denominator — it is neither a hit nor a false positive. Precision is
+    undefined (None) on a format failure or when no non-near-miss item was
+    returned at all."""
     if format_failure or items is None:
         return SampleScore(
             recall=0.0, precision=None, matched=frozenset(), false_positives=frozenset(),
@@ -633,19 +639,23 @@ ARM_EXPECTED_FAMILY = {
 
 ARMS: tuple[str, ...] = (msmr.DISPATCH_EXPLORE_HAIKU, msmr.DISPATCH_EXPLORE_SONNET)
 
+# Sized so the pooled-items unit (>=13 cases x K=5 pooled recalls) clears
+# the Wilson lower bound's n >= 35 floor the gate's precision term needs.
 DEFAULT_K = 5
-# Step 3's cumulative stop: "aborts the whole batch... once the running
-# total crosses $300" (A20) -- the plan's own fixed figure, not re-derived
-# here.
+# Aborts the whole batch once realized spend crosses $300 -- the plan's
+# own fixed stop figure, not re-derived here. Checked once per logical
+# sample, after it completes, not before or during one, so the batch can
+# overshoot this by up to (MAX_ARM_MISMATCH_RETRIES + 1) * budget_cap_usd
+# before the check blocks the next sample from starting.
 DEFAULT_CUMULATIVE_STOP_USD = 300.0
-# Step 3's UNCALLABLE path: raise every case's K by 3 on both models and
+# The UNCALLABLE retry path: raise every case's K by 3 on both models and
 # re-evaluate once, still under the cumulative stop.
 UNCALLABLE_K_INCREMENT = 3
-# Step 3 fixes this at 1 (one K-raise retry). A smoke batch passes 0 so it
-# never enters the UNCALLABLE K-raise loop at all.
+# One K-raise retry. A smoke batch passes 0 so it never enters the
+# UNCALLABLE K-raise loop at all.
 DEFAULT_MAX_K_RAISES = 1
 
-# The plan's Step 3 "First full K=5 run" record: the inherited 90s default
+# The plan's first full K=5 run record: the inherited 90s default
 # (msmr.run_skill_evals.SAMPLE_TIMEOUT_S, sized for a lighter dispatch)
 # killed the parent mid-search on Stratum B's heavier cases (subagent spans
 # measured at 64-82s), producing empty final answers scored as format
@@ -664,10 +674,11 @@ def build_run_command(
     dispatch: str, prompt: str, *, session_id: str, budget_cap_usd: float, repo_dir: Path,
 ) -> list[str]:
     """Mirrors msmr.build_run_command's flag shape for the fixed
-    opus-parent/default-permission-mode cell Step 2b validated symmetrically
-    for both --agents model values (runs 8 and 9), with this case's own
-    dispatch prompt in place of that module's fixed marker-file task, and
-    msmr's own override payload for the --agents pin.
+    opus-parent/default-permission-mode cell measure_subagent_model_resolution.py's
+    runs 8 and 9 already validated symmetrically for both --agents model
+    values, with this case's own dispatch prompt in place of that module's
+    fixed marker-file task, and msmr's own override payload for the
+    --agents pin.
 
     Unlike that module's fixed marker-file task (which writes its own
     marker file inside the headless parent's own tmp_project cwd), this
@@ -1063,7 +1074,7 @@ def run_recall_gate(
     cases: tuple[RecallCase, ...], *, k: int, cumulative_stop_usd: float, budget_cap_usd: float,
     timeout_s: int, launcher: Callable[..., SampleAttempt], max_k_raises: int = DEFAULT_MAX_K_RAISES,
 ) -> GateReport:
-    """Step 3's full driver: one K-sample batch, then — only on an
+    """The gate's full driver: one K-sample batch, then — only on an
     UNCALLABLE verdict that the cumulative stop didn't already cut short —
     up to max_k_raises additional UNCALLABLE_K_INCREMENT-sample batches per
     case per model, re-evaluated after each. A verdict that is still

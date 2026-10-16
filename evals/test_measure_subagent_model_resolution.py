@@ -874,6 +874,16 @@ class TestAgentFrontmatterParsing:
             {"Read", "Grep", "Glob"}
         )
 
+    def test_explore_sonnet_override_declared_tools(self) -> None:
+        """Pins that the Sonnet arm shares EXPLORE_HAIKU_OVERRIDE_TOOLS via
+        _EXPLORE_OVERRIDE_BY_DISPATCH's membership check -- a revert to the
+        narrower `== DISPATCH_EXPLORE_HAIKU` check would silently fall
+        through to the staff-backend-engineer frontmatter-read fallback and
+        return its unrelated five-tool set here, not None."""
+        assert msmr.declared_tools_for_dispatch(msmr.DISPATCH_EXPLORE_SONNET) == frozenset(
+            {"Read", "Grep", "Glob"}
+        )
+
     def test_frontmatter_model_regex_ignores_prose_mentions(self) -> None:
         text = "---\nmodel: sonnet\n---\n\nThis body mentions model: opus in prose.\n"
         assert msmr.agent_frontmatter_model(text) == "sonnet"

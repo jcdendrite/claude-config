@@ -46,8 +46,8 @@ def _stratum_b_case(index: int, n_sites: int, *, second_pass_confirmed: bool = T
 
 
 def _valid_fixture_data() -> dict:
-    """Exactly clears Step 3's floors: 8 Stratum A cases (5 with >=5 sites),
-    5 Stratum B cases (3 with >=5 sites)."""
+    """Exactly clears the fixture floors: 8 Stratum A cases (5 with >=5
+    sites), 5 Stratum B cases (3 with >=5 sites)."""
     stratum_a = [_stratum_a_case(i, 5 if i < 5 else 1) for i in range(8)]
     stratum_b = [_stratum_b_case(i, 5 if i < 3 else 1) for i in range(5)]
     return {"pinned_commit": "abc123def456", "cases": stratum_a + stratum_b}
@@ -156,6 +156,34 @@ class TestParseFixtureCases:
     def test_case_missing_key_rejected(self) -> None:
         raw = [{"id": "a1", "stratum": "A", "question": "q", "grep_pattern": "x", "grep_mode": "literal"}]
         with pytest.raises(m.FixtureSchemaError, match="'key'"):
+            m.parse_fixture_cases(raw)
+
+    def test_non_list_cases_rejected(self) -> None:
+        with pytest.raises(m.FixtureSchemaError, match="must be a JSON array"):
+            m.parse_fixture_cases({"id": "a1"})
+
+    def test_non_dict_case_entry_rejected(self) -> None:
+        with pytest.raises(m.FixtureSchemaError, match="must be a JSON object"):
+            m.parse_fixture_cases(["not-a-dict"])
+
+    def test_case_missing_id_rejected(self) -> None:
+        raw = [{"stratum": "A", "question": "q", "grep_pattern": "x", "grep_mode": "literal", "key": ["a.py"]}]
+        with pytest.raises(m.FixtureSchemaError, match="'id'"):
+            m.parse_fixture_cases(raw)
+
+    def test_case_missing_question_rejected(self) -> None:
+        raw = [{"id": "a1", "stratum": "A", "grep_pattern": "x", "grep_mode": "literal", "key": ["a.py"]}]
+        with pytest.raises(m.FixtureSchemaError, match="'question'"):
+            m.parse_fixture_cases(raw)
+
+    def test_stratum_a_case_missing_grep_pattern_rejected(self) -> None:
+        raw = [{"id": "a1", "stratum": "A", "question": "q", "grep_mode": "literal", "key": ["a.py"]}]
+        with pytest.raises(m.FixtureSchemaError, match="'grep_pattern'"):
+            m.parse_fixture_cases(raw)
+
+    def test_stratum_a_case_missing_grep_mode_rejected(self) -> None:
+        raw = [{"id": "a1", "stratum": "A", "question": "q", "grep_pattern": "x", "key": ["a.py"]}]
+        with pytest.raises(m.FixtureSchemaError, match="'grep_mode'"):
             m.parse_fixture_cases(raw)
 
 
@@ -550,7 +578,7 @@ class TestScoreSample:
     def test_near_miss_is_excluded_from_precision_entirely(self) -> None:
         """A near-miss item is neither a hit nor a false positive -- it must
         drop out of the precision denominator, not merely out of the
-        numerator (M5's matching rule)."""
+        numerator."""
         score = m.score_sample(
             ("a.py", "near.py"), key=frozenset({"a.py", "b.py"}), accepted_near_misses=frozenset({"near.py"}),
         )
@@ -953,12 +981,30 @@ class TestEvaluateGate:
         )
         assert verdict == m.GateVerdict.FAIL
 
+    def test_passes_when_a_stratum_gap_is_exactly_five_points(self) -> None:
+        """Pins the boundary as inclusive -- a >/>= mutation on the stratum-gap
+        check would flip this to FAIL unnoticed."""
+        verdict = m.evaluate_gate(
+            stratum_recall_gaps={"A": 0.05, "B": 0.0}, min_per_case_recall_gap=0.0,
+            haiku_precision_point_estimate=0.99, haiku_precision_wilson_lower_bound=0.95,
+        )
+        assert verdict == m.GateVerdict.PASS
+
     def test_fails_when_the_worst_per_case_gap_exceeds_fifteen_points(self) -> None:
         verdict = m.evaluate_gate(
             stratum_recall_gaps={"A": 0.0, "B": 0.0}, min_per_case_recall_gap=-0.16,
             haiku_precision_point_estimate=0.99, haiku_precision_wilson_lower_bound=0.95,
         )
         assert verdict == m.GateVerdict.FAIL
+
+    def test_passes_when_the_worst_per_case_gap_is_exactly_fifteen_points(self) -> None:
+        """Pins the boundary as inclusive -- a </<= mutation on the per-case-gap
+        check would flip this to FAIL unnoticed."""
+        verdict = m.evaluate_gate(
+            stratum_recall_gaps={"A": 0.0, "B": 0.0}, min_per_case_recall_gap=-0.15,
+            haiku_precision_point_estimate=0.99, haiku_precision_wilson_lower_bound=0.95,
+        )
+        assert verdict == m.GateVerdict.PASS
 
     def test_passes_when_haiku_outperforms_on_the_worst_case_too(self) -> None:
         """A positive min_per_case_recall_gap means even Haiku's worst case
@@ -1797,6 +1843,66 @@ class TestMain:
 
         with pytest.raises(SystemExit, match="unknown case id"):
             m.main()
+
+    def test_a_live_run_exits_on_the_verdict_and_writes_a_json_report_that_round_trips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Drives main()'s live-launch branch end to end with a stubbed
+        subprocess layer, the same technique TestExecuteOneSampleAttempt
+        uses -- the one production path real money has already run through
+        with no prior direct test coverage (_build_launcher construction,
+        run_recall_gate, the exit-code mapping, and the --json write through
+        gate_report_to_dict). No --keep-artifacts flag is passed here, so
+        that resolution path stays uncovered by this test."""
+        fixture_data = _valid_fixture_data()
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "path/to/file_0_0.py", "x = 1\n")
+        pinned_commit = _commit(repo, "initial")
+        fixture_data["pinned_commit"] = pinned_commit
+        fixture_path = tmp_path / "fixture.json"
+        fixture_path.write_text(json.dumps(fixture_data))
+        json_path = tmp_path / "report.json"
+
+        def fake_run_claude(cmd: list[str], cwd: Path, timeout_s: int) -> tuple[list[bytes], bool]:
+            requested_model = json.loads(cmd[cmd.index("--agents") + 1])["Explore"]["model"]
+            session_id = cmd[cmd.index("--session-id") + 1]
+            subagent_dir = msmr.run_skill_evals.compute_session_store_dir(cwd) / session_id / msmr.SUBAGENT_SUBDIR
+            subagent_dir.mkdir(parents=True)
+            (subagent_dir / "agent-1.meta.json").write_text(
+                json.dumps({"toolUseId": "toolu_1", "agentType": "Explore"})
+            )
+            answer_record = {
+                "type": "assistant",
+                "message": {
+                    "model": f"claude-{requested_model}-4-5-20251001",
+                    "content": [{"type": "text", "text": '```json\n["path/to/file_0_0.py"]\n```'}],
+                },
+            }
+            _write_jsonl(subagent_dir / "agent-1.jsonl", [answer_record])
+            lines = [
+                json.dumps(
+                    {"event": {"type": "content_block_start", "content_block": {"type": "tool_use", "name": "Task"}}}
+                ).encode()
+            ]
+            return lines, False
+
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", fake_run_claude)
+        monkeypatch.setattr(sys, "argv", [
+            "measure_explore_recall.py", "--fixtures", str(fixture_path), "--repo-dir", str(repo),
+            "--cases", "a0", "--k", "1", "--max-k-raises", "0", "--json", str(json_path),
+        ])
+
+        exit_code = m.main()
+
+        report = json.loads(json_path.read_text())
+        assert set(report) == {
+            "verdict", "repo_dir", "pinned_commit", "haiku", "sonnet", "realized_spend_usd",
+            "cumulative_stop_triggered", "uncallable_retry_ran", "k_used", "samples",
+        }
+        # k=1 pools n=1 non-near-miss item, far below the Wilson lower bound's
+        # n>=35 floor at zero false positives, so this stub always lands UNCALLABLE.
+        assert report["verdict"] == m.GateVerdict.UNCALLABLE.value
+        assert exit_code == 1
 
     def test_cases_flag_restricts_a_dry_run_to_the_named_cases(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

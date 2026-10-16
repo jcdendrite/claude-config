@@ -67,7 +67,7 @@ REVIEW_BENCH_FIXTURES_DIR = "evals/fixtures/review-bench"
 # standalone row -- over-selection here is the safe direction.
 MEASURE_SUBAGENT_MODEL_RESOLUTION = "evals/measure_subagent_model_resolution.py"
 MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST = "evals/test_measure_subagent_model_resolution.py"
-# Folded into the same review_bench predicate as the pair above (A16): the
+# Folded into the same review_bench predicate as the pair above: the
 # recall scorer imports measure_subagent_model_resolution directly, so an
 # edit to either file needs both tests re-run.
 MEASURE_EXPLORE_RECALL = "evals/measure_explore_recall.py"

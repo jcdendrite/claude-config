@@ -745,8 +745,8 @@ class TestSelectPytestTargets:
 
     def test_measure_subagent_model_resolution_change_selects_its_own_test(self):
         """Selects its own test rather than the full suite. Also selects
-        MEASURE_EXPLORE_RECALL_TEST (A16): the recall scorer imports this
-        module directly."""
+        MEASURE_EXPLORE_RECALL_TEST: the recall scorer imports this module
+        directly."""
         result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -756,7 +756,7 @@ class TestSelectPytestTargets:
     def test_measure_explore_recall_change_selects_its_own_test_and_the_sibling_pair(self):
         """Vice versa of the row above: an edit to the recall scorer itself
         also re-selects measure_subagent_model_resolution's own test, since
-        both files fold into the same review_bench predicate (A16)."""
+        both files fold into the same review_bench predicate."""
         result = _mod.select_pytest_targets([_mod.MEASURE_EXPLORE_RECALL])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
