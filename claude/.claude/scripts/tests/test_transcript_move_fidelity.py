@@ -200,6 +200,30 @@ def test_nodes_flags_a_rename_that_no_compared_node_applied_as_rename_unused(cap
     assert "helper=util.helper" in lines[0]
 
 
+@pytest.mark.parametrize(
+    ("before_source", "after_source"),
+    [
+        pytest.param(
+            'def moved_fn(value):\n    raise ValueError("helper failed")\n',
+            'def moved_fn(value):\n    raise ValueError("util.helper failed")\n',
+            id="inside-a-string-literal",
+        ),
+        pytest.param(
+            "def moved_fn(value):\n    # helper failed\n    return value\n",
+            "def moved_fn(value):\n    # util.helper failed\n    return value\n",
+            id="inside-a-comment",
+        ),
+    ],
+)
+def test_nodes_reversal_is_textual_so_a_new_name_only_in_a_string_or_comment_passes_as_a_used_rename(
+    capsys, tmp_path, before_source, after_source
+):
+    # Documented limit: the reversal regex runs over raw text, so a string or comment edit passes as a rename.
+    code, lines = _run_nodes(capsys, tmp_path, before_source, [after_source], *RENAME_HELPER)
+
+    assert (code, lines) == (0, ["compared-nodes: 1"])
+
+
 def test_nodes_accepts_a_rename_used_only_by_the_second_of_two_compared_nodes(capsys, tmp_path):
     first = "def first_fn(value):\n    return value\n"
     second = "def second_fn(value):\n    return helper(value)\n"
@@ -687,6 +711,36 @@ def test_capture_all_help_lists_top_then_each_subcommand_in_registration_order_n
     assert labels == ["help-top", "help-zeta", "help-alpha"]
     assert (tmp_path / "out" / "help-alpha.argv").read_text() == "alpha --help\n"
     assert (tmp_path / "out" / "help-top.argv").read_text() == "--help\n"
+
+
+def test_capture_all_help_imports_a_module_that_sits_beside_the_script(tmp_path):
+    sibling_module_name = "move_fidelity_sibling_probe"
+    _write(tmp_path, f"{sibling_module_name}.py", 'SUBCOMMAND_NAME = "probe"\n')
+    script = _write(
+        tmp_path,
+        "sibling_cli.py",
+        f"""\
+        import argparse
+
+        import {sibling_module_name}
+
+
+        def build_parser():
+            parser = argparse.ArgumentParser(prog="sibling")
+            subcommands = parser.add_subparsers(dest="command")
+            subcommands.add_parser({sibling_module_name}.SUBCOMMAND_NAME)
+            return parser
+        """,
+    )
+    account = tmp_path / "account"
+    account.mkdir()
+
+    try:
+        labels = capture(script, account, tmp_path / "out", all_help=True)
+    finally:
+        sys.modules.pop(sibling_module_name, None)
+
+    assert labels == ["help-top", "help-probe"]
 
 
 def test_capture_all_help_restores_sys_path_and_registers_no_module(capsys, tmp_path, echo_target):

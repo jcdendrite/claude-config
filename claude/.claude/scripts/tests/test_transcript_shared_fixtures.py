@@ -6,7 +6,9 @@ from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, scop
 
 def test_fake_projects_patches_every_config_dir_binding_without_a_shim(fake_projects, tmp_path):
     assert "_mod" not in globals()
-    # vars(scope) has PROJECTS_DIR only if the fixture's setattr put it there; attribute access can resolve lazily.
+    # Reading vars(scope) never triggers the lazy PROJECTS_DIR resolution that attribute access runs.
+    # A cached lazy value and the fixture's setattr both leave a real entry.
+    # Only a value equal to this test's projects directory therefore proves the patch.
     assert vars(scope)["PROJECTS_DIR"] == fake_projects.parent
     assert scope.config_dir() == tmp_path
     assert cost_ledger.config_dir() == tmp_path

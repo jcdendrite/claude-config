@@ -488,6 +488,7 @@ shim copy reserved for the argparse-wiring and `cmd_author_outcome` end-to-end t
 `fake_projects`, `cost_ledger_file`, and `cost_ledger_enabled` patch the package modules directly, so a
 test file that uses them needs no `transcript-analysis.py` loader of its own.
 `tests/test_transcript_shared_fixtures.py` requests them from a file that loads no shim.
+
 `tests/_move_fidelity.py` checks a code move between files: moved-node AST equality modulo a rename
 map, what remains of each source file, byte-compared CLI captures under a pinned environment, and
 per-test outcomes across junit XML runs. Its seeded-defect self-test is split by subcommand:

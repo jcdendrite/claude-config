@@ -11,6 +11,8 @@ Run as `_move_fidelity.py <subcommand>`, or import the check functions. One usag
 Each finding prints as one line prefixed with its check name. Exit status is 0 when clean, 1 on any finding,
 2 on bad input. The module imports only the standard library and uses no relative imports.
 
+`nodes --rename` reverses each NEW name to its OLD by a textual match over the node's source, so it also rewrites a NEW name
+that occurs inside a string literal or a comment.
 `capture --all-help` captures rendered help only, so it cannot see an argparse default, type, or dest that the help output
 does not display. `remainder` drops every top-level import statement, with any comment on its lines, before comparing,
 so it checks neither import order nor import-line comments.
@@ -40,8 +42,9 @@ EXIT_FINDINGS = 1
 EXIT_BAD_INPUT = 2
 
 MODULE_DOCSTRING_NAME = "__doc__"
-# Capture environment pins. argparse wraps help text at COLUMNS, and a fixed hash seed fixes set iteration order.
+# argparse wraps help text at COLUMNS, so capture pins it.
 PINNED_COLUMNS = "100"
+# A fixed hash seed fixes set iteration order in the captured script.
 PINNED_HASHSEED = "0"
 # A file name under --account that capture never creates, so a corpus-config lookup finds no file.
 ABSENT_CONFIG_DIRS_FILE = "absent-config-dirs"
