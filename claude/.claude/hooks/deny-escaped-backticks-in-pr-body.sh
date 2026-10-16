@@ -27,10 +27,11 @@
 #   is not a regular file, is not readable, or whose capped read ends in any
 #   nonzero status. The deny text says "killed" only for the statuses
 #   _lib_status_consistent_with_cap_kill accepts.
-# - Blocks a command that xargs cannot split and that the fallback tokenizer
-#   (split-command-words.py) cannot split or cannot run, because a body-source
-#   flag after the unsplittable value cannot be located. The fallback is
-#   uncapped without timeout or gtimeout; see split-command-words.py's docstring.
+# - Blocks a command when `_lib_command_words` returns nonzero, because a
+#   body-source flag after the unsplittable value cannot be located. The
+#   conditions are in that function's header in _lib.sh. The fallback
+#   tokenizer is uncapped without timeout or gtimeout; see
+#   split-command-words.py's docstring.
 # - A deny reason that concerns one body-source file names its path. That path
 #   is a command argument already in the Bash tool call, so naming it
 #   discloses nothing new (the rationale deny-pii-in-commits.sh's header

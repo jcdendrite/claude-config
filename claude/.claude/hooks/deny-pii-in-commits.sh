@@ -72,9 +72,9 @@
 # by literal spelling — the hook cannot statically verify what git will read.
 # A message-source path that is not a readable regular file is rejected too.
 # Both apply only to the spellings the extractor recognises (see Known gaps).
-# A command that xargs cannot split and that the fallback tokenizer
-# (split-command-words.py) cannot split or cannot run is rejected as well,
-# because the -F path cannot be located. The fallback is uncapped without
+# A command is rejected as well when `_lib_command_words` returns nonzero,
+# because the -F path cannot be located. The conditions are in that
+# function's header in _lib.sh. The fallback tokenizer is uncapped without
 # timeout or gtimeout; see split-command-words.py's docstring.
 #
 # Self-exclusion: claude/.claude/hooks/tests/** is always excluded from

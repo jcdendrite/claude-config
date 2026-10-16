@@ -73,12 +73,12 @@
 #   Read-only `gh api` calls (default GET, no body-bearing flags) are
 #   intentionally not gated — they don't carry user-authored content
 #   into a body GitHub re-publishes.
-# - Fails closed when xargs cannot split a command that needs a source-file
-#   lookup and the fallback tokenizer (split-command-words.py) cannot split
-#   it or cannot run, because a source-file flag after the unsplittable value
-#   cannot be located. A commit whose staged diff is empty never reaches that
-#   lookup. The fallback is uncapped without timeout or gtimeout; see
-#   split-command-words.py's docstring.
+# - Fails closed when `_lib_command_words` returns nonzero for a command that
+#   needs a source-file lookup, because a source-file flag after the
+#   unsplittable value cannot be located. The conditions are in that
+#   function's header in _lib.sh. A commit whose staged diff is empty never
+#   reaches that lookup. The fallback tokenizer is uncapped without timeout
+#   or gtimeout; see split-command-words.py's docstring.
 # - A deny reason that concerns one source file names its path. That path is a
 #   command argument already in the Bash tool call, so naming it discloses
 #   nothing new (the rationale deny-pii-in-commits.sh's header states for its
