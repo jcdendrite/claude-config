@@ -21,7 +21,7 @@
 #   review_pr_base_is_default_branch — a PR's base branch name equals the repository's default branch name, both non-empty
 #   review_pr_nul_names_to_json     — NUL-terminated names on stdin decoded into one JSON array
 #   review_pr_bare_count            — a command's printed count trimmed of surrounding whitespace and validated as an integer
-#   review_pr_ascii_json_string     — an attacker-chosen string printed as one ASCII-only JSON string, for a message
+#   review_pr_ascii_json_string     — an attacker-chosen string, optionally cut to a limit, printed as one ASCII-only JSON string, for a message
 #   REVIEW_PR_AUDIT_CLEAN_DOCUMENT  — the stdout the audit prints for a file list with no match, without its trailing newline
 #   review_pr_audit_verdict         — the audit's exit status and stdout classified as clean, stop or failed
 #   REVIEW_PR_AUDIT_STDOUT_ECHO_LIMIT — the most characters of the audit's stdout a failed-verdict message echoes
@@ -36,17 +36,33 @@
 #   review_pr_author_login          — a `gh pr view --json author` response's `.author.login`, printed only when the response is exactly one object whose `.author` is an object with a string `.login`
 #   review_pr_authorship            — whether a PR author's login equals the login `gh api user` returns: self, other or unknown
 #   review_pr_resolve_session_and_pid — sets SESSION_ID and CLAUDE_PID for the scripts that record provenance
+#   REVIEW_PR_STACK_MAX_LOOKUPS     — the most open-PR lookups one stack walk makes
+#   REVIEW_PR_STACK_LOOKUP_LIMIT    — the most items one stack-walk lookup reads; a full page reads as undecided
+#   REVIEW_PR_STACK_LOOKUP_TIMEOUT_SECONDS — the cap in seconds on one stack-walk lookup
+#   REVIEW_PR_STACK_GH_REVIEWS_LIMIT — the most reviews `gh pr list` returns per PR
+#   REVIEW_PR_STACK_TEXT_ECHO_LIMIT — the most characters of a PR title, a login or a branch name the stack document and a walk failure line echo
+#   REVIEW_PR_STACK_REVIEW_DISPLAY_LIMIT — the most distinct reviews the stack document lists per ancestor
+#   REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE — the fixed sentence that ends a walk failure no re-run clears
+#   REVIEW_PR_STACK_GH_FAILURE_NOTE — the fixed sentences that end a walk failure caused by a gh call
+#   REVIEW_PR_EXIT_STACK_UNREVIEWED — the checkout and diff scripts' exit status when an ancestor PR has no submitted review
+#   review_pr_stack_lookup_verdict  — one `gh pr list --head` reply classified as none, truncated, ambiguous or an ancestor with its review summary
+#   review_pr_stack_document        — the ancestor entries and root branch assembled into the stack document with its concerns and choices
+#   review_pr_walk_stack            — the chain of ancestor PRs behind a PR's base branch, as a stack document or the lowest ancestor with no review
 #
-# Every function except review_pr_nul_names_to_json and
-# review_pr_resolve_session_and_pid takes its input as an argument, prints its
-# result on stdout where it has one, returns 0 (true) or 1 (false) (a function
-# that only prints returns 0), and performs no gh call and no filesystem
-# access. Error text and exit codes stay with the caller.
+# Every function except review_pr_nul_names_to_json,
+# review_pr_resolve_session_and_pid and review_pr_walk_stack takes its input as
+# an argument, prints its result on stdout where it has one, returns 0 (true) or
+# 1 (false) (a function that only prints returns 0), and performs no gh call and
+# no filesystem access. Error text and exit codes stay with the caller.
 # review_pr_nul_names_to_json is the stdin exception: it reads its input from
 # stdin, because a NUL byte cannot travel in an argument.
 # review_pr_resolve_session_and_pid is the other exception. It reads the session
 # file under the config dir, spawns ps, prints caller-parameterised text on
 # stderr, and sets SESSION_ID and CLAUDE_PID as globals in the caller.
+# review_pr_walk_stack is the third exception. It makes gh calls through _lib_gh
+# and prints one caller-prefixed line on stderr per failure. It sets no global.
+# Its pure pieces, review_pr_stack_lookup_verdict and review_pr_stack_document,
+# make no gh call.
 
 # One JSON string per line keeps a name holding a raw newline on a single line.
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
@@ -82,7 +98,7 @@ REVIEW_PR_AUDIT_STDOUT_ECHO_LIMIT=200
 REVIEW_PR_AUDIT_MATCH_LINE_LIMIT=20
 REVIEW_PR_AUDIT_PATH_ECHO_LIMIT=80
 
-# jq definitions that print a string as an ASCII-only JSON string; `ascii_json_string` is the entry point.
+# jq definitions that print a string as an ASCII-only JSON string; `ascii_json_string` is the entry point, and `truncated_ascii_json_string` cuts to a character limit first.
 # shellcheck disable=SC2034 # read by the functions below; export would leak it into every child process
 # shellcheck disable=SC2016 # the text is jq source holding `$offset`, and double quotes would expand it as a shell variable.
 REVIEW_PR_JQ_ASCII_JSON_STRING_DEFS='
@@ -95,6 +111,167 @@ REVIEW_PR_JQ_ASCII_JSON_STRING_DEFS='
         | (55296 + ($offset / 1024 | floor) | unicode_escape) + (56320 + ($offset % 1024) | unicode_escape) | explode
       end;
     def ascii_json_string: @json | explode | map(escape_codepoint) | add | implode;
+    def truncated_ascii_json_string($limit): (if length > $limit then .[:$limit] + "...[truncated]" else . end) | ascii_json_string;
+'
+
+# No protocol or vendor limit backs the value. One lookup costs at most 15 s (the 10 s gh cap plus one 5 s jq cap), so 8 lookups cost 120 s.
+# Added to the 435 s of review-pr-checkout.sh's stacked worst failure path, that is 555 s, under the Bash tool's 600 s maximum (claude-skills/skills/review-pr/REFERENCES.md).
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_STACK_MAX_LOOKUPS=8
+
+# The most items one lookup reads; a full page reads as undecided, since a same-repository PR past it would go unseen.
+# 100 is GitHub's GraphQL page maximum, and a larger `gh pr list --limit` makes gh paginate, which would break the single-request cap below.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_STACK_LOOKUP_LIMIT=100
+
+# One request. The value matches the 10 s GH_PR_VIEW_TIMEOUT_SECONDS that review-pr-acquire.sh, review-pr-checkout.sh, review-pr-diff.sh and review-pr-post.sh give each single-request gh read.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_STACK_LOOKUP_TIMEOUT_SECONDS=10
+
+# `gh pr list --json reviews` embeds `reviews(first: 100)` in its GraphQL query, an implementation detail of gh verified in gh 2.101.0, so a list that long may be a prefix.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_STACK_GH_REVIEWS_LIMIT=100
+
+# Display bounds for the stack document. No protocol or vendor limit backs either value.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_STACK_TEXT_ECHO_LIMIT=80
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_STACK_REVIEW_DISPLAY_LIMIT=10
+
+# Ends a walk failure that is a property of the repository, not of the call.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE='Re-running will not help, and neither will review-pr-diff.sh, which runs the same walk.'
+
+# Ends a walk failure that a gh call caused.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_STACK_GH_FAILURE_NOTE='One re-run may help a transient failure. A token that cannot read pull request reviews fails the same way every time, and review-pr-diff.sh runs the same walk.'
+
+# The checkout and diff scripts' exit status when an ancestor PR has no submitted review.
+# shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
+REVIEW_PR_EXIT_STACK_UNREVIEWED=4
+
+# The `gh pr list --json` fields one lookup reads.
+_REVIEW_PR_STACK_LOOKUP_JSON_FIELDS='number,title,author,headRefName,baseRefName,isCrossRepository,reviews'
+
+# jq program for review_pr_stack_lookup_verdict. Reads the lookup's stdout slurped, so it must be exactly one JSON array.
+# Numbers above 2^53 are not exact integers in a jq double, so a PR number is bounded there.
+# GitHub-sourced text in an entry is cut and escaped, and a review's association and state are limited to GitHub's documented values (GraphQL CommentAuthorAssociation and PullRequestReviewState) or the marker UNRECOGNIZED.
+# shellcheck disable=SC2016 # the text is jq source holding `$branch` and similar bindings, and double quotes would expand them as shell variables.
+_REVIEW_PR_STACK_LOOKUP_VERDICT_JQ_PROGRAM='
+    def login_of: if type == "object" and (.login | type) == "string" and (.login | length) > 0 then .login else null end;
+    def string_or_null: if type == "string" then . else null end;
+    def escaped_text_or_null: if . == null then null else truncated_ascii_json_string($text_limit) end;
+    def documented_value_or_marker($documented_values): if . == null then null elif . as $value | $documented_values | any(. == $value) then . else "UNRECOGNIZED" end;
+    def documented_associations: ["COLLABORATOR", "CONTRIBUTOR", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN", "MEMBER", "NONE", "OWNER"];
+    def documented_review_states: ["PENDING", "COMMENTED", "APPROVED", "CHANGES_REQUESTED", "DISMISSED"];
+    def has_control_character: explode | any(. < 32 or (. >= 127 and . <= 159));
+    def well_formed_review:
+      type == "object"
+      and ((.state | type) == "string" and (.state | length) > 0)
+      and (if (.state | ascii_upcase) == "APPROVED" or (.state | ascii_upcase) == "CHANGES_REQUESTED"
+           then (.submittedAt | type) == "string" and (.submittedAt | length) > 0
+           else true end);
+    def well_formed_item($branch):
+      type == "object"
+      and ((.number | type) == "number" and .number >= 1 and .number <= 9007199254740991 and .number == (.number | floor))
+      and ((.isCrossRepository | type) == "boolean")
+      and .headRefName == $branch
+      and ((.baseRefName | type) == "string" and (.baseRefName | length) > 0 and ((.baseRefName | has_control_character) | not))
+      and ((.reviews | type) == "array" and (.reviews | all(well_formed_review)));
+    def superseded($decisive_reviews):
+      . as $review
+      | $review.author != null and ($decisive_reviews | any(.author == $review.author and .submittedAt > $review.submittedAt));
+    def ancestor_line:
+      . as $pr
+      | ($pr.author | login_of) as $pr_login
+      | (if ($pr.author | type) == "object" and $pr.author.is_bot == true and $pr_login != null
+         then $pr_login | ltrimstr("app/")
+         else $pr_login end) as $comparable_pr_login
+      | ($pr.reviews | map({
+            author: (.author | login_of),
+            association: (.authorAssociation | string_or_null),
+            upper_state: (.state | ascii_upcase),
+            submitted_at: (.submittedAt | string_or_null)
+          } | .byPrAuthor = (.author != null and .author == $comparable_pr_login))) as $reviews
+      | ($reviews | map(select(.upper_state != "PENDING"))) as $submitted_reviews
+      | ($reviews | map(select(.upper_state == "APPROVED" or .upper_state == "CHANGES_REQUESTED")
+          | {author, state: .upper_state, submittedAt: .submitted_at})) as $decisive_reviews
+      | ($reviews | map({author, association: (.association | documented_value_or_marker(documented_associations)), state: (.upper_state | documented_value_or_marker(documented_review_states)), byPrAuthor})
+          | reduce .[] as $review ([]; if any(.[]; . == $review) then . else . + [$review] end)) as $distinct_reviews
+      | {
+          number: $pr.number,
+          title: ($pr.title | if type == "string" then . else "" end | truncated_ascii_json_string($text_limit)),
+          author: ($pr_login | escaped_text_or_null),
+          reviewed: (($submitted_reviews | length) > 0),
+          changesRequested: ($decisive_reviews | any(.state == "CHANGES_REQUESTED" and (superseded($decisive_reviews) | not))),
+          selfReviewOnly: ((($submitted_reviews | length) > 0) and ($submitted_reviews | all(.byPrAuthor))),
+          reviewListFull: (($pr.reviews | length) >= $gh_reviews_limit),
+          reviews: ($distinct_reviews[:$display_limit] | map(.author |= escaped_text_or_null)),
+          reviewsNotShown: ([($distinct_reviews | length) - $display_limit, 0] | max)
+        } as $entry
+      | "ancestor\t\($pr.number)\t\($entry.reviewed)\t\($pr.baseRefName)\t\($entry | tojson)";
+    if length != 1 then error("expected exactly one JSON value")
+    else .[0]
+      | if type != "array" then error("expected a JSON array")
+        elif (all(well_formed_item($branch)) | not) then error("malformed item")
+        elif length >= $lookup_limit then "truncated"
+        else
+          map(select(.isCrossRepository == false)) as $same_repository_items
+          | if ($same_repository_items | length) == 0 then "none"
+            elif ($same_repository_items | length) > 1 then "ambiguous\t" + ($same_repository_items | map(.number | tostring) | join(","))
+            else $same_repository_items[0] | ancestor_line
+            end
+        end
+    end
+'
+
+# jq program for review_pr_stack_document. Reads the ancestor entries slurped, in merge order.
+# shellcheck disable=SC2016 # the text is jq source holding `$root_branch` and similar bindings, and double quotes would expand them as shell variables.
+_REVIEW_PR_STACK_DOCUMENT_JQ_PROGRAM='
+    def pr_labels: map("PR #\(.number)") | join(", ");
+    . as $ancestors
+    | ($root_branch == $default_branch and ($root_branch | length) > 0) as $root_is_default
+    | ((($ancestors | length) > 0) or ($root_is_default | not)) as $stacked
+    | (first(range(0; $ancestors | length) | select($ancestors[.].reviewed | not)) // null) as $lowest_index
+    | [
+        (if $root_is_default then empty else {
+          code: "root-without-open-pr",
+          message: "The root branch has no open pull request, so it may never have been reviewed. To review it, ask the owner of the root branch to open a PR from it into the default branch (a draft is enough), then review that PR. If you open it yourself, you become its author and your own review reads as self-review-only, and from then on that PR blocks every PR stacked on the branch until it has a review. If the branch has already merged, retarget this PR instead."
+        } end),
+        ($ancestors | map(select(.changesRequested)) | if length == 0 then empty else {
+          code: "changes-requested",
+          message: "Changes were requested and may still be open on: \(pr_labels). Proceed only once those changes are addressed and reviewed again."
+        } end),
+        ($ancestors | map(select(.selfReviewOnly)) | if length == 0 then empty else {
+          code: "self-review-only",
+          message: "Every submitted review is by the PR author on: \(pr_labels). Review each of those PRs directly by number, then return to this one."
+        } end),
+        ($ancestors | map(select(.reviewListFull)) | if length == 0 then empty else {
+          code: "review-list-full",
+          message: "Only the first \($reviews_limit) reviews were read on: \(pr_labels). Check the latest reviews on those PRs on GitHub before proceeding."
+        } end)
+      ] as $concerns
+    | (if ($stacked | not) then {choices: [], recommended: null}
+       elif $lowest_index != null then {
+         choices: ["review-lowest", "stop"],
+         recommended: (if ($root_is_default | not) or ($ancestors[:$lowest_index] | any(.changesRequested or .selfReviewOnly or .reviewListFull))
+                       then "stop" else "review-lowest" end)
+       }
+       else {
+         choices: ["proceed", "stop"],
+         recommended: (if ($concerns | length) > 0 then "stop" else "proceed" end)
+       } end) as $advice
+    # Decision keys come first so a head preview of the output keeps them.
+    | {
+        stacked: $stacked,
+        lowestUnreviewed: (if $lowest_index == null then null else $ancestors[$lowest_index].number end),
+        recommendedChoice: $advice.recommended,
+        choices: $advice.choices,
+        concerns: $concerns,
+        rootIsDefaultBranch: $root_is_default,
+        rootBranch: ($root_branch | truncated_ascii_json_string($text_limit)),
+        ancestors: $ancestors
+      }
 '
 
 # review_pr_rest_changed_files REST_JSON
@@ -202,13 +379,14 @@ review_pr_bare_count() {
   printf '%s' "${BASH_REMATCH[1]}"
 }
 
-# review_pr_ascii_json_string VALUE
-# Prints VALUE as one ASCII-only JSON string, quotes included, escaped as review_pr_audit_match_lines escapes a path, but with no length cut.
+# review_pr_ascii_json_string VALUE [LIMIT]
+# Prints VALUE as one ASCII-only JSON string, quotes included, escaped as review_pr_audit_match_lines escapes a path.
+# With no LIMIT it makes no length cut. A LIMIT (a non-negative integer) cuts VALUE to that many characters first, then marks the cut `...[truncated]`.
 # For an attacker-chosen name, such as a branch name, echoed in a message.
 # When jq fails, prints a fixed placeholder instead and still returns 0, so a message built around it reaches its own exit.
 review_pr_ascii_json_string() {
-  # shellcheck disable=SC2016 # $value is a jq binding in a single-quoted filter, and double quotes would expand it as a shell variable.
-  _lib_jq -n -r --arg value "$1" "$REVIEW_PR_JQ_ASCII_JSON_STRING_DEFS"'$value | ascii_json_string' 2>/dev/null \
+  # shellcheck disable=SC2016 # $value and $limit are jq bindings in a single-quoted filter, and double quotes would expand them as shell variables.
+  _lib_jq -n -r --arg value "$1" --argjson limit "${2:-null}" "$REVIEW_PR_JQ_ASCII_JSON_STRING_DEFS"'$value | if $limit == null then ascii_json_string else truncated_ascii_json_string($limit) end' 2>/dev/null \
     || printf '"<value could not be escaped>"'
 }
 
@@ -303,6 +481,173 @@ review_pr_git_status_description() {
   else
     printf 'exited %s' "$1"
   fi
+}
+
+# review_pr_stack_lookup_verdict LOOKUP_STDOUT BRANCH
+# Classifies one `gh pr list --head=BRANCH` reply (REVIEW_PR_STACK_LOOKUP_LIMIT items at most) and prints one line:
+#   none                                                    — no open same-repository PR has BRANCH as its head
+#   truncated                                               — the reply holds REVIEW_PR_STACK_LOOKUP_LIMIT items, so a PR past them would go unseen
+#   ambiguous<TAB><number>,<number>,...                     — more than one open same-repository PR has BRANCH as its head
+#   ancestor<TAB><number><TAB><reviewed><TAB><base><TAB><entry> — exactly one does; <reviewed> is true or false, <base> is its base branch, and <entry> is its one-line JSON stack-document entry
+# A fork PR whose head branch has the same name is ignored (`--head` matches the name only).
+# <reviewed> is true when any review's state, upper-cased, is not PENDING. Every other state counts, including DISMISSED, an empty-body review, a self-review and a state this code does not know.
+# <entry> keeps only the allowlisted keys, so no review body, head ref or base ref reaches the document.
+# <entry> carries the title and every login cut to REVIEW_PR_STACK_TEXT_ECHO_LIMIT characters and escaped as an ASCII-only JSON string, and an association or state outside GitHub's documented values as `UNRECOGNIZED`.
+# Returns 1 with no output when the reply is not exactly one JSON array of well-formed items, or when jq fails.
+review_pr_stack_lookup_verdict() {
+  printf '%s' "${1-}" | _lib_jq -s -r \
+    --arg branch "${2-}" \
+    --argjson lookup_limit "$REVIEW_PR_STACK_LOOKUP_LIMIT" \
+    --argjson gh_reviews_limit "$REVIEW_PR_STACK_GH_REVIEWS_LIMIT" \
+    --argjson text_limit "$REVIEW_PR_STACK_TEXT_ECHO_LIMIT" \
+    --argjson display_limit "$REVIEW_PR_STACK_REVIEW_DISPLAY_LIMIT" \
+    "$REVIEW_PR_JQ_ASCII_JSON_STRING_DEFS$_REVIEW_PR_STACK_LOOKUP_VERDICT_JQ_PROGRAM" 2>/dev/null || return 1
+}
+
+# review_pr_stack_document ANCESTOR_LINES ROOT_BRANCH DEFAULT_BRANCH
+# Prints the stack document as one line of JSON.
+# ANCESTOR_LINES holds the entry of each ancestor PR, as review_pr_stack_lookup_verdict printed it, one per line in merge order: the PR nearest ROOT_BRANCH first and the target's own base PR last. It is empty for a target with no ancestor.
+# ROOT_BRANCH is where the walk ended: DEFAULT_BRANCH, or a branch with no open PR.
+# `stacked` is false only for an empty ANCESTOR_LINES and a ROOT_BRANCH equal to DEFAULT_BRANCH.
+# Each concern's message names PRs only by their number.
+# The entries arrive with their text already cut and escaped by review_pr_stack_lookup_verdict, so this function cuts and escapes only `rootBranch`, as an ASCII-only JSON string.
+# Returns 1 with no output when jq fails, such as for a line that is not JSON.
+review_pr_stack_document() {
+  printf '%s' "${1-}" | _lib_jq -s -c \
+    --arg root_branch "${2-}" \
+    --arg default_branch "${3-}" \
+    --argjson text_limit "$REVIEW_PR_STACK_TEXT_ECHO_LIMIT" \
+    --argjson reviews_limit "$REVIEW_PR_STACK_GH_REVIEWS_LIMIT" \
+    "$REVIEW_PR_JQ_ASCII_JSON_STRING_DEFS$_REVIEW_PR_STACK_DOCUMENT_JQ_PROGRAM" 2>/dev/null || return 1
+}
+
+# _review_pr_stack_walk_failure SCRIPT_NAME MESSAGE
+# Prints one `SCRIPT_NAME: MESSAGE` line on stderr and always returns 1, so `_review_pr_stack_walk_failure ... || return 1` ends the walk.
+_review_pr_stack_walk_failure() {
+  printf '%s: %s\n' "$1" "$2" >&2
+  return 1
+}
+
+# _review_pr_stack_branch_echo BRANCH
+# Prints BRANCH for a walk failure line: cut to REVIEW_PR_STACK_TEXT_ECHO_LIMIT characters and escaped as an ASCII-only JSON string.
+_review_pr_stack_branch_echo() {
+  review_pr_ascii_json_string "$1" "$REVIEW_PR_STACK_TEXT_ECHO_LIMIT"
+}
+
+# _review_pr_stack_walk_unreadable_reply SCRIPT_NAME BRANCH
+# Prints the stderr line for a lookup reply of BRANCH that the walk could not read, and always returns 1.
+# The line carries neither failure note, because a reply that is not a well-formed list is persistent when PR data caused it and transient when a jq cap kill did, and the walk cannot tell the two apart.
+_review_pr_stack_walk_unreadable_reply() {
+  _review_pr_stack_walk_failure "$1" "the stack walk could not read the reply to its lookup of open PRs with head branch $(_review_pr_stack_branch_echo "$2")."
+}
+
+# review_pr_walk_stack SCRIPT_NAME OWNER_REPO PR_NUMBER BASE_REF DEFAULT_BRANCH MODE
+# Follows PR_NUMBER's base branch down through the open same-repository PRs that use each branch as their head, until a branch is the default branch or has no open PR. Makes one gh call per branch it looks up, at most REVIEW_PR_STACK_MAX_LOOKUPS.
+# BASE_REF and DEFAULT_BRANCH are the PR's base branch and the repository's default branch, both non-empty. MODE is `document` or `lowest-unreviewed`.
+# `document` prints the stack document (see review_pr_stack_document) and returns 0 only when it begins with `{`.
+# `lowest-unreviewed` prints `clear`, or the number of the ancestor PR nearest the root that has no submitted review.
+# Returns 1 with nothing on stdout and one `SCRIPT_NAME: ...` failure line on stderr when it cannot decide. A bad argument fails before any gh call.
+# A failure that is a property of the repository ends in REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE and a gh failure in REVIEW_PR_STACK_GH_FAILURE_NOTE. A reply the walk could not read ends in neither. gh's own stderr is never echoed.
+# A caller maps a return of 1 to its own exit status. Only the gate in the checkout and diff scripts exits REVIEW_PR_EXIT_STACK_UNREVIEWED.
+# A branch name is echoed only as _review_pr_stack_branch_echo prints it, and a PR number only after a digits check.
+# Every command whose failure ends the walk carries an explicit `|| return 1`, because callers run this inside `$(...)`, where errexit does not stop it.
+review_pr_walk_stack() {
+  local script_name="${1-}" owner_repo="${2-}" pr_number="${3-}" base_ref="${4-}" default_branch="${5-}" mode="${6-}"
+  local branch seen_pr_numbers lookups=0 ancestor_lines="" lowest_unreviewed="" deepest_pr=""
+  local lookup_stdout lookup_status verdict verdict_rest candidate_numbers
+  local ancestor_number ancestor_reviewed next_branch ancestor_entry cycle_numbers document
+
+  case "$mode" in
+    document|lowest-unreviewed) ;;
+    *)
+      _review_pr_stack_walk_failure "$script_name" "the stack walk was given an unknown mode $(review_pr_ascii_json_string "$mode")" || return 1 ;;
+  esac
+  if [[ -z "$base_ref" || -z "$default_branch" ]]; then
+    _review_pr_stack_walk_failure "$script_name" "the stack walk needs the PR's base branch and the repository's default branch, and one is empty" || return 1
+  fi
+  if ! _lib_parse_pr_identity "$owner_repo#$pr_number" >/dev/null; then
+    _review_pr_stack_walk_failure "$script_name" "the stack walk was given a repository or PR number it cannot use" || return 1
+  fi
+  # Leading zeros removed, so the cycle check compares the number the way gh prints it.
+  pr_number=${pr_number#"${pr_number%%[!0]*}"}
+  if [[ -z "$pr_number" ]]; then
+    _review_pr_stack_walk_failure "$script_name" "the stack walk was given PR number zero" || return 1
+  fi
+
+  branch="$base_ref"
+  seen_pr_numbers=" $pr_number "
+  while :; do
+    if review_pr_base_is_default_branch "$branch" "$default_branch"; then
+      break
+    fi
+    # `gh pr list --head=` with an empty value returns every open PR, so an empty name must never reach it.
+    if [[ -z "$branch" ]]; then
+      _review_pr_stack_walk_failure "$script_name" "an ancestor PR's base branch name is empty" || return 1
+    fi
+    if (( lookups >= REVIEW_PR_STACK_MAX_LOOKUPS )); then
+      _review_pr_stack_walk_failure "$script_name" "the stack is deeper than the $REVIEW_PR_STACK_MAX_LOOKUPS lookups the walk makes, and the deepest PR it reached is PR #$deepest_pr, whose base is branch $(_review_pr_stack_branch_echo "$branch"). This PR becomes reviewable through the skill only once the stack is shorter, for example after lower PRs merge. Reviewing PR #$deepest_pr directly by number does not by itself change that. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1
+    fi
+    lookups=$((lookups + 1))
+
+    lookup_status=0
+    lookup_stdout=$(_lib_gh "$REVIEW_PR_STACK_LOOKUP_TIMEOUT_SECONDS" pr list -R "$owner_repo" "--head=$branch" --state open --limit "$REVIEW_PR_STACK_LOOKUP_LIMIT" --json "$_REVIEW_PR_STACK_LOOKUP_JSON_FIELDS" 2>/dev/null) || lookup_status=$?
+    if (( lookup_status != 0 )); then
+      _review_pr_stack_walk_failure "$script_name" "the stack walk's lookup of open PRs with head branch $(_review_pr_stack_branch_echo "$branch") $(review_pr_gh_status_description "$lookup_status"). $REVIEW_PR_STACK_GH_FAILURE_NOTE" || return 1
+    fi
+
+    verdict=$(review_pr_stack_lookup_verdict "$lookup_stdout" "$branch") || verdict=""
+    case "$verdict" in
+      none)
+        break ;;
+      truncated)
+        _review_pr_stack_walk_failure "$script_name" "$REVIEW_PR_STACK_LOOKUP_LIMIT or more open PRs have head branch $(_review_pr_stack_branch_echo "$branch"), so the walk cannot tell which one is this PR's ancestor. No route through this skill exists while that many open PRs share the branch name. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1 ;;
+      ambiguous$'\t'*)
+        candidate_numbers=${verdict#ambiguous$'\t'}
+        if [[ ! "$candidate_numbers" =~ ^[0-9]+(,[0-9]+)+$ ]]; then
+          _review_pr_stack_walk_unreadable_reply "$script_name" "$branch" || return 1
+        fi
+        _review_pr_stack_walk_failure "$script_name" "more than one open PR has head branch $(_review_pr_stack_branch_echo "$branch"): PR numbers ${candidate_numbers//,/, }. This PR stays unreviewable through the skill until all but one of them are closed or retargeted. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1 ;;
+      ancestor$'\t'*)
+        verdict_rest=${verdict#ancestor$'\t'}
+        ancestor_number=${verdict_rest%%$'\t'*}
+        verdict_rest=${verdict_rest#*$'\t'}
+        ancestor_reviewed=${verdict_rest%%$'\t'*}
+        verdict_rest=${verdict_rest#*$'\t'}
+        next_branch=${verdict_rest%%$'\t'*}
+        ancestor_entry=${verdict_rest#*$'\t'}
+        if [[ ! "$ancestor_number" =~ ^[1-9][0-9]*$ ]] || [[ "$ancestor_reviewed" != "true" && "$ancestor_reviewed" != "false" ]] || [[ "$ancestor_entry" != "{"* ]]; then
+          _review_pr_stack_walk_unreadable_reply "$script_name" "$branch" || return 1
+        fi ;;
+      *)
+        _review_pr_stack_walk_unreadable_reply "$script_name" "$branch" || return 1 ;;
+    esac
+
+    case "$seen_pr_numbers" in
+      *" $ancestor_number "*)
+        # The cycle is the chain from the first sighting of this number onward.
+        cycle_numbers="$ancestor_number ${seen_pr_numbers#*" $ancestor_number "}"
+        cycle_numbers=${cycle_numbers% }
+        _review_pr_stack_walk_failure "$script_name" "the base branches form a cycle through PR numbers ${cycle_numbers// /, }. One of those PRs must be retargeted. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1 ;;
+    esac
+    seen_pr_numbers="$seen_pr_numbers$ancestor_number "
+    deepest_pr="$ancestor_number"
+    # The walk runs from the target down, so a later ancestor is nearer the root and the last unreviewed one is the lowest.
+    if [[ "$ancestor_reviewed" == "false" ]]; then
+      lowest_unreviewed="$ancestor_number"
+    fi
+    ancestor_lines="$ancestor_entry"$'\n'"$ancestor_lines"
+    branch="$next_branch"
+  done
+
+  if [[ "$mode" == "lowest-unreviewed" ]]; then
+    printf '%s' "${lowest_unreviewed:-clear}"
+    return 0
+  fi
+  document=$(review_pr_stack_document "$ancestor_lines" "$branch" "$default_branch") || document=""
+  if [[ "$document" != "{"* ]]; then
+    _review_pr_stack_walk_failure "$script_name" "the stack walk could not assemble the stack document" || return 1
+  fi
+  printf '%s' "$document"
 }
 
 # review_pr_checks_token_source PR_URL OVERRIDE_TOKEN

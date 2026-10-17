@@ -379,9 +379,9 @@ def _pythonpath_env_that_forges_a_clean_audit(poison_dir: Path, sentinel: Path) 
     return {"PYTHONPATH": str(poison_dir)}
 
 
-def _review_pr_audit_limit(name: str) -> int:
-    """The display bound `name` (REVIEW_PR_AUDIT_MATCH_LINE_LIMIT or
-    REVIEW_PR_AUDIT_PATH_ECHO_LIMIT) as _review-pr-lib.sh defines it, so a
+def _review_pr_lib_integer(name: str) -> int:
+    """The integer constant `name` (such as REVIEW_PR_AUDIT_MATCH_LINE_LIMIT
+    or REVIEW_PR_STACK_LOOKUP_LIMIT) as _review-pr-lib.sh defines it, so a
     test sizes its input from the production constant."""
     result = subprocess.run(
         ["bash", "-c", f'. "{SCRIPTS_DIR / "_review-pr-lib.sh"}"; printf "%s" "${name}"'],

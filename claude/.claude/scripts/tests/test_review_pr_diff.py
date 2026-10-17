@@ -41,7 +41,7 @@ from .conftest import (
     _provenance_fields,
     _push_new_base_commit,
     _pythonpath_env_that_forges_a_clean_audit,
-    _review_pr_audit_limit,
+    _review_pr_lib_integer,
     _seed_session,
     _shim_match_count,
     _shimmed_env,
@@ -1157,7 +1157,7 @@ class TestAuditFindingKeepsEachMatchOnOneLine:
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        path_limit = _review_pr_audit_limit("REVIEW_PR_AUDIT_PATH_ECHO_LIMIT")
+        path_limit = _review_pr_lib_integer("REVIEW_PR_AUDIT_PATH_ECHO_LIMIT")
         long_name = "d" * (path_limit + 100) + "/CLAUDE.md"
         result, _ = _run(
             repo, isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid=pr_sha, files=[long_name],

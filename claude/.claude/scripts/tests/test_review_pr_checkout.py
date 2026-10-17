@@ -49,7 +49,7 @@ from .conftest import (
     _provenance_fields,
     _push_new_base_commit,
     _pythonpath_env_that_forges_a_clean_audit,
-    _review_pr_audit_limit,
+    _review_pr_lib_integer,
     _seed_session,
     _shim_match_count,
     _shimmed_env,
@@ -2926,7 +2926,7 @@ class TestAuditStopMessageKeepsEachMatchOnOneLine:
     ):
         _install_audit_script(isolated_home)
         repo, pr_sha = repo_with_pr_ref
-        match_limit = _review_pr_audit_limit("REVIEW_PR_AUDIT_MATCH_LINE_LIMIT")
+        match_limit = _review_pr_lib_integer("REVIEW_PR_AUDIT_MATCH_LINE_LIMIT")
         unlisted_count = 5
         matching_names = [f"pkg_{index}/CLAUDE.md" for index in range(match_limit + unlisted_count)]
         result, _ = _run(
