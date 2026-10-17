@@ -100,7 +100,7 @@ Scrub Artifact B against these categories before it leaves the private machine:
 
 Two things this scrub relies on that are easy to get backwards:
 
-1. **A stowed commit hook is not a universal safety net.** The `deny-private-project-refs` hook only re-checks tracker-ID/project-name tiers, and only when the destination repo is `claude-config`; the manual scrub is the sole defense everywhere else and the only defense against structural fingerprints anywhere.
+1. **A stowed commit hook is not a universal safety net.** The `deny-private-project-refs` hook only re-checks tracker-ID/project-name tiers, and only when the destination repo is `claude-config` or commits `.claude/private-projects-optin`; the manual scrub is the sole defense everywhere else and the only defense against structural fingerprints anywhere.
 2. **Scrub-complete and diffed is a precondition of transport, not a reminder to keep in mind.** Do not commit or push Artifact B until the checklist above has been walked and the document has been diffed line by line.
 
 ## Step 6 — Artifact B skeleton

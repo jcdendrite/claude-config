@@ -61,9 +61,10 @@ def _stage_clean_file(repo: Path) -> None:
 @pytest.fixture
 def claude_config_repo(git_repo):
     """git_repo with a `claude-config`-shaped origin URL so the scoping
-    check lets the redaction gate run. The hook short-circuits on any
-    repo whose origin URL doesn't contain `claude-config`, so this fixture
-    is required for any test that expects deny behavior."""
+    check lets the redaction gate run. The hook short-circuits on any repo
+    that is neither claude-config (origin URL contains `claude-config`) nor
+    opted in via `.claude/private-projects-optin`, so a test that expects
+    deny behavior needs this fixture or `private_projects_optin_repo`."""
     subprocess.run(
         ["git", "remote", "add", "origin", "git@github.com:jcdendrite/claude-config.git"],
         cwd=git_repo,
@@ -76,14 +77,38 @@ def claude_config_repo(git_repo):
 def unrelated_remote_repo(git_repo):
     """git_repo with an origin URL that does NOT match claude-config.
     Used to verify the scoping short-circuit: the hook must let commits
-    through in every repo other than claude-config, regardless of diff
-    content or commit message."""
+    through in every repo that is neither claude-config nor opted in via
+    `.claude/private-projects-optin`, regardless of diff content or commit
+    message."""
     subprocess.run(
         ["git", "remote", "add", "origin", "git@github.com:someone/unrelated-app.git"],
         cwd=git_repo,
         check=True,
     )
     return git_repo
+
+
+@pytest.fixture
+def private_projects_optin_repo(unrelated_remote_repo):
+    """unrelated_remote_repo with an empty `.claude/private-projects-optin`
+    marker, which arms the redaction gate in a repo whose origin URL does not
+    contain `claude-config`.
+
+    Built on `git_repo` because the commit scan needs its non-empty staged
+    diff. The marker is left untracked and unstaged so these tests pin the
+    working-tree read; a read of a committed ref would fail them."""
+    marker = unrelated_remote_repo / ".claude" / "private-projects-optin"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("")
+    return unrelated_remote_repo
+
+
+def _stage_extra_line(repo: Path) -> None:
+    """Stage a one-line change to file.txt so the commit scan has a non-empty
+    diff in a checkout, such as a linked worktree, that `git_repo` did not
+    prepare."""
+    (repo / "file.txt").write_text("first\nsecond\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
 
 
 class TestDenyPrivateProjectRefs:
@@ -380,12 +405,10 @@ class TestDenyPrivateProjectRefs:
         )
 
     # -- Scoping ------------------------------------------------------------
-    # Regression: the hook originally had no repo-identity check and fired
-    # on every `git commit` in every repo where the user had this config
-    # installed. It blocked legitimate tracker IDs in the user's own
-    # projects that happened to match `[A-Z]{2,}-\d+`. The gate must only
-    # activate in the claude-config repo, where accidental references to
-    # private projects would leak publicly.
+    # The gate fires only in claude-config and in repos that opt in with
+    # `.claude/private-projects-optin`. Any other repo legitimately uses its
+    # own tracker IDs, which match `[A-Z]{2,}-\d+`, so the gate must stay
+    # silent there.
 
     def test_unrelated_remote_suspect_token_allowed(self, unrelated_remote_repo):
         """A suspect tracker ID in a repo whose origin URL does NOT contain
@@ -445,6 +468,458 @@ class TestDenyPrivateProjectRefs:
             )
             == "deny"
         )
+
+    # -- Opt-in marker ------------------------------------------------------
+    # A repo whose origin URL lacks `claude-config` is gated when its checked-
+    # out tree holds `.claude/private-projects-optin` at the toplevel. The
+    # marker is read from the working tree, so the accepted activation window
+    # (pre-marker checkouts, unreadable `.claude/`) is pinned as allow cases.
+
+    _OPTIN_MARKER_PATH = ".claude/private-projects-optin"
+    _OPTIN_NOTE_PHRASE = "stop and ask the human"
+    # Phrases that occur only in the opt-in note, so each pins one clause of it.
+    _OPTIN_NOTE_MISROUTE_PHRASE = "Do not delete or edit the marker"
+    _OPTIN_NOTE_BLOCKLIST_PHRASE = "edit the user's private-projects.md blocklist"
+    _OPTIN_NOTE_RETARGET_PHRASE = "retarget the command with git -C"
+    # The opted-in tracker deny's affirmative remedy: the remedy lead "Rewrite" joined to the shared tail.
+    _OPTIN_TRACKER_REWRITE_SENTENCE = (
+        "Rewrite the commit message / staged content / PR body / issue body / gh api body "
+        "without the tracker ID before retrying."
+    )
+    # The tracker deny's remedy for claude-config; it is wrong advice in any other repo.
+    _OSS_ALLOWLIST_ADVICE = "add the prefix to the OSS_ALLOWLIST variable"
+    _TRACKER_COMMIT_COMMAND = "git commit -m 'Fix WIDGET-123 regression'"
+
+    @pytest.mark.parametrize(
+        ("command", "blocklist", "expected_scan_text"),
+        [
+            ("git commit -m 'Fix WIDGET-123 regression'", None, "WIDGET-123"),
+            ("git commit -m 'Working on Acme Corp integration'", "Acme Corp\n", "Acme Corp"),
+            ("git commit -m 'The internal service lives at 10.20.30.40 in the VPC'", None, "IPv4 literal"),
+        ],
+        ids=["tracker_id", "blocklist_entry", "structural_ipv4"],
+    )
+    def test_optin_marker_arms_whole_hook(
+        self, private_projects_optin_repo, private_projects_file, command, blocklist, expected_scan_text
+    ):
+        """Each of the three scans denies in an opted-in repo, and the deny
+        carries the opt-in note naming the marker."""
+        if blocklist is not None:
+            private_projects_file(blocklist)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(command),
+            cwd=private_projects_optin_repo,
+        )
+        assert reason is not None
+        assert expected_scan_text in reason
+        assert self._OPTIN_MARKER_PATH in reason
+        assert self._OPTIN_NOTE_PHRASE in reason
+        assert self._OPTIN_NOTE_MISROUTE_PHRASE in reason
+        assert self._OPTIN_NOTE_BLOCKLIST_PHRASE in reason
+        assert self._OPTIN_NOTE_RETARGET_PHRASE in reason
+
+    def test_optin_tracker_deny_omits_oss_allowlist_advice(self, private_projects_optin_repo):
+        """The tracker deny's remedy of adding a prefix to OSS_ALLOWLIST edits a
+        file shipped in the public claude-config repo, so a marker-armed repo's
+        deny must not offer it. The note still names OSS_ALLOWLIST, to forbid it."""
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(self._TRACKER_COMMIT_COMMAND),
+            cwd=private_projects_optin_repo,
+        )
+        assert reason is not None
+        assert "WIDGET-123" in reason
+        assert self._OPTIN_TRACKER_REWRITE_SENTENCE in reason
+        assert self._OSS_ALLOWLIST_ADVICE not in reason
+        assert "not on the allowlist" not in reason
+        assert "OSS_ALLOWLIST" in reason
+
+    def test_optin_marker_arms_long_hex_scan_of_staged_diff(self, private_projects_optin_repo):
+        long_hex_token = "ab12" * 10
+        (private_projects_optin_repo / "file.txt").write_text(f"first\nsecond\ndigest {long_hex_token}\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=private_projects_optin_repo, check=True)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Pin the digest'"),
+            cwd=private_projects_optin_repo,
+        )
+        assert reason is not None
+        assert "long hex identifier" in reason
+
+    def test_optin_marker_alone_does_not_deny_clean_commit(self, private_projects_optin_repo):
+        """Control: the marker fixture by itself causes no deny."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Refactor the parser'"),
+                cwd=private_projects_optin_repo,
+            )
+            == "allow"
+        )
+
+    def test_optin_marker_read_at_toplevel_from_subdirectory(self, private_projects_optin_repo):
+        subdirectory = private_projects_optin_repo / "nested" / "deeper"
+        subdirectory.mkdir(parents=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(self._TRACKER_COMMIT_COMMAND),
+                cwd=subdirectory,
+            )
+            == "deny"
+        )
+
+    def test_optin_marker_arms_repo_with_no_remote(self, git_repo):
+        marker = git_repo / ".claude" / "private-projects-optin"
+        marker.parent.mkdir()
+        marker.write_text("")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(self._TRACKER_COMMIT_COMMAND),
+                cwd=git_repo,
+            )
+            == "deny"
+        )
+
+    def test_optin_marker_arms_gh_pr_create(self, private_projects_optin_repo):
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh pr create --body 'Fix WIDGET-123 regression'"),
+                cwd=private_projects_optin_repo,
+            )
+            == "deny"
+        )
+
+    def test_optin_marker_committed_on_linked_worktree_branch_arms_gate(
+        self, unrelated_remote_repo, tmp_path
+    ):
+        """The marker is read from the current worktree, so a branch whose
+        commit carries it is gated even when the main checkout lacks it."""
+        worktree = tmp_path / "marked-branch-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "marked-branch", str(worktree)],
+            cwd=unrelated_remote_repo,
+            check=True,
+        )
+        marker = worktree / ".claude" / "private-projects-optin"
+        marker.parent.mkdir()
+        marker.write_text("")
+        subprocess.run(["git", "add", "-f", ".claude/private-projects-optin"], cwd=worktree, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "add marker"], cwd=worktree, check=True)
+        _stage_extra_line(worktree)
+        assert not (unrelated_remote_repo / ".claude" / "private-projects-optin").exists()
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(self._TRACKER_COMMIT_COMMAND),
+                cwd=worktree,
+            )
+            == "deny"
+        )
+
+    def test_optin_marker_absent_on_pre_marker_branch_leaves_gate_silent(
+        self, unrelated_remote_repo, tmp_path
+    ):
+        """Pins the accepted activation window: the marker is committed on
+        main, but a linked worktree on a branch cut before that commit has no
+        marker in its checked-out tree, so the gate stays silent there."""
+        pre_marker_worktree = tmp_path / "pre-marker-worktree"
+        subprocess.run(
+            ["git", "worktree", "add", "-b", "pre-marker-branch", str(pre_marker_worktree)],
+            cwd=unrelated_remote_repo,
+            check=True,
+        )
+        marker = unrelated_remote_repo / ".claude" / "private-projects-optin"
+        marker.parent.mkdir()
+        marker.write_text("")
+        subprocess.run(["git", "add", "-f", ".claude/private-projects-optin"], cwd=unrelated_remote_repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "add marker", "--", ".claude/private-projects-optin"],
+            cwd=unrelated_remote_repo,
+            check=True,
+        )
+        _stage_extra_line(pre_marker_worktree)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(self._TRACKER_COMMIT_COMMAND),
+                cwd=pre_marker_worktree,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize("hook_cwd_relative", [".", "sub"], ids=["from_toplevel", "from_marker_subdirectory"])
+    def test_optin_marker_below_toplevel_does_not_arm_gate(self, unrelated_remote_repo, hook_cwd_relative):
+        """Only the toplevel marker arms the gate. Running from the directory
+        that holds the nested marker rejects a lookup that walks up from cwd."""
+        nested_marker = unrelated_remote_repo / "sub" / ".claude" / "private-projects-optin"
+        nested_marker.parent.mkdir(parents=True)
+        nested_marker.write_text("")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(self._TRACKER_COMMIT_COMMAND),
+                cwd=unrelated_remote_repo / hook_cwd_relative,
+            )
+            == "allow"
+        )
+
+    def test_optin_marker_that_is_a_symlink_to_a_file_arms_gate(self, unrelated_remote_repo):
+        """A symlink to a regular file counts as the marker, as the docs state."""
+        marker_target = unrelated_remote_repo / ".claude" / "marker-target"
+        marker_target.parent.mkdir(parents=True)
+        marker_target.write_text("")
+        (unrelated_remote_repo / ".claude" / "private-projects-optin").symlink_to(marker_target.name)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(self._TRACKER_COMMIT_COMMAND),
+                cwd=unrelated_remote_repo,
+            )
+            == "deny"
+        )
+
+    def test_optin_marker_that_is_a_directory_does_not_arm_gate(self, unrelated_remote_repo):
+        (unrelated_remote_repo / ".claude" / "private-projects-optin").mkdir(parents=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(self._TRACKER_COMMIT_COMMAND),
+                cwd=unrelated_remote_repo,
+            )
+            == "allow"
+        )
+
+    def test_optin_marker_that_cannot_be_stat_fails_open(self, private_projects_optin_repo):
+        """Pins the accepted fail-open: a filesystem error on the `-f` test
+        reads as an absent marker. A regular file at `.claude` makes the stat
+        fail with ENOTDIR, which needs no permission bits and so also runs as
+        root. Restoring the marker then denies, so the allow is caused by the
+        stat error and not by a fixture that never wrote the marker."""
+        claude_dir = private_projects_optin_repo / ".claude"
+        shutil.rmtree(claude_dir)
+        claude_dir.write_text("")
+        decision_with_stat_error = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(self._TRACKER_COMMIT_COMMAND),
+            cwd=private_projects_optin_repo,
+        )
+        claude_dir.unlink()
+        claude_dir.mkdir()
+        (claude_dir / "private-projects-optin").write_text("")
+        decision_with_marker_restored = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(self._TRACKER_COMMIT_COMMAND),
+            cwd=private_projects_optin_repo,
+        )
+        assert decision_with_stat_error == "allow"
+        assert decision_with_marker_restored == "deny"
+
+    def test_optin_marker_scans_hook_test_paths_that_claude_config_exempts(self, private_projects_optin_repo):
+        """The staged-diff exemption for `claude/.claude/hooks/tests/**` is a
+        claude-config rule, so a marker-armed repo scans that path too."""
+        test_dir = private_projects_optin_repo / "claude" / ".claude" / "hooks" / "tests"
+        test_dir.mkdir(parents=True)
+        (test_dir / "test_new_case.py").write_text("# synthetic token for testing: FAKEPROJ-42\n")
+        subprocess.run(
+            ["git", "add", "claude/.claude/hooks/tests/test_new_case.py"],
+            cwd=private_projects_optin_repo,
+            check=True,
+        )
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Add new test case'"),
+                cwd=private_projects_optin_repo,
+            )
+            == "deny"
+        )
+
+    def test_optin_marker_scans_repo_root_files_when_hook_runs_from_subdirectory(self, private_projects_optin_repo):
+        """The staged-diff pathspec is repo-wide, so a violating file at the
+        repo root is scanned when the hook runs from a subdirectory with a
+        clean message. A cwd-relative pathspec reads an empty diff there and
+        skips the scan."""
+        subdirectory = private_projects_optin_repo / "nested" / "deeper"
+        subdirectory.mkdir(parents=True)
+        (private_projects_optin_repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=private_projects_optin_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Refactor the parser'"),
+                cwd=subdirectory,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        ("config_key", "config_value", "attributes_line"),
+        [
+            ("color.ui", "always", None),
+            ("diff.external", "true", None),
+            ("diff.relative", "true", None),
+            ("diff.blank.textconv", "true", "file.txt diff=blank"),
+        ],
+        ids=["color_always", "external_diff_driver", "relative_diff", "textconv_prints_nothing"],
+    )
+    def test_optin_marker_staged_diff_scan_ignores_diff_config(
+        self, private_projects_optin_repo, config_key, config_value, attributes_line
+    ):
+        """Repo diff config that changes the diff's shape at exit 0 (escape
+        codes before each added line, an external driver that prints nothing,
+        paths scoped to the cwd subdirectory, a textconv driver that replaces
+        the file's text with nothing) must not hide a staged tracker token
+        from the scan. The hook runs from a subdirectory so the relative case
+        has a cwd to scope to. The textconv attributes line lives in
+        `.git/info/attributes` so no tracked file carries it."""
+        subdirectory = private_projects_optin_repo / "nested"
+        subdirectory.mkdir()
+        subprocess.run(["git", "config", config_key, config_value], cwd=private_projects_optin_repo, check=True)
+        if attributes_line is not None:
+            attributes_file = private_projects_optin_repo / ".git" / "info" / "attributes"
+            attributes_file.parent.mkdir(parents=True, exist_ok=True)
+            attributes_file.write_text(attributes_line + "\n")
+        (private_projects_optin_repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=private_projects_optin_repo, check=True)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=subdirectory,
+        )
+        assert reason is not None
+        assert "WIDGET-123" in reason
+
+    def test_claude_config_staged_diff_scan_ignores_diff_config(self, claude_config_repo):
+        """The staged-diff read hardening is not marker-conditional: a
+        claude-config checkout with `color.ui=always` still denies a staged
+        tracker token instead of scanning escape-prefixed lines."""
+        subprocess.run(["git", "config", "color.ui", "always"], cwd=claude_config_repo, check=True)
+        (claude_config_repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "WIDGET-123" in reason
+
+    def test_optin_marker_does_not_scan_files_marked_no_diff_known_gap(self, private_projects_optin_repo):
+        """Pins an accepted Known gap in the hook header: a file that
+        `.gitattributes` marks `-diff` renders without added lines, so a
+        synthetic tracker token inside it is not scanned and the commit is
+        allowed. A change that closes or widens the gap must flip this test."""
+        (private_projects_optin_repo / ".gitattributes").write_text("generated.lock -diff\n")
+        (private_projects_optin_repo / "generated.lock").write_text("// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "generated.lock"], cwd=private_projects_optin_repo, check=True)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Refactor the parser'"),
+                cwd=private_projects_optin_repo,
+            )
+            == "allow"
+        )
+
+    def test_optin_marker_denies_when_staged_diff_cannot_be_read(self, private_projects_optin_repo):
+        """A corrupt index makes the staged-diff read exit nonzero. The gate
+        fails closed with an infrastructure deny, which carries no opt-in note
+        because rewording content cannot fix it."""
+        (private_projects_optin_repo / ".git" / "index").write_bytes(b"not an index")
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        assert reason is not None
+        assert "git diff --cached failed" in reason
+        assert self._OPTIN_NOTE_PHRASE not in reason
+        assert self._OPTIN_NOTE_MISROUTE_PHRASE not in reason
+
+    def test_claude_config_deny_carries_no_optin_note(self, claude_config_repo):
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(self._TRACKER_COMMIT_COMMAND),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert self._OPTIN_MARKER_PATH not in reason
+        assert self._OPTIN_NOTE_PHRASE not in reason
+        assert self._OPTIN_NOTE_MISROUTE_PHRASE not in reason
+        assert self._OPTIN_NOTE_RETARGET_PHRASE not in reason
+        assert self._OSS_ALLOWLIST_ADVICE in reason
+        assert "not on the allowlist" in reason
+        assert self._OPTIN_TRACKER_REWRITE_SENTENCE not in reason
+
+    def test_claude_config_repo_that_also_has_marker_gets_no_optin_note(self, claude_config_repo):
+        """The note belongs to repos armed by the marker alone, so a
+        claude-config checkout that also carries the marker keeps its
+        unchanged deny text."""
+        marker = claude_config_repo / ".claude" / "private-projects-optin"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("")
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(self._TRACKER_COMMIT_COMMAND),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert self._OPTIN_MARKER_PATH not in reason
+        assert self._OPTIN_NOTE_PHRASE not in reason
+        assert self._OSS_ALLOWLIST_ADVICE in reason
+
+    def test_claude_config_repo_that_also_has_marker_keeps_hook_test_path_exemption(self, claude_config_repo):
+        """The hook-tests exemption follows the origin URL, so a marker in a
+        claude-config checkout cannot make the hook deny its own synthetic
+        tracker tokens."""
+        marker = claude_config_repo / ".claude" / "private-projects-optin"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("")
+        test_dir = claude_config_repo / "claude" / ".claude" / "hooks" / "tests"
+        test_dir.mkdir(parents=True)
+        (test_dir / "test_new_case.py").write_text("# synthetic token for testing: FAKEPROJ-42\n")
+        subprocess.run(
+            ["git", "add", "claude/.claude/hooks/tests/test_new_case.py"], cwd=claude_config_repo, check=True
+        )
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Add new test case'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
+    @pytest.mark.parametrize(
+        ("command_template", "expected_infrastructure_text"),
+        [
+            ("gh pr create --body-file {missing_file}", "body-source file"),
+            ("git commit -F {missing_file}", "message-source file"),
+            ("gh issue create --body-file {missing_file}", "body-source file"),
+            ("gh api repos/example-org/example-repo/issues --input {missing_file}", "--input file"),
+        ],
+        ids=["gh_pr_body_file", "git_commit_message_file", "gh_issue_body_file", "gh_api_input_file"],
+    )
+    def test_optin_repo_infrastructure_deny_carries_no_optin_note(
+        self, private_projects_optin_repo, tmp_path, command_template, expected_infrastructure_text
+    ):
+        """An unreadable body- or message-source file is a fail-closed
+        infrastructure deny, where advice to reword the content would be wrong."""
+        missing_file = tmp_path / "missing-source.md"
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(command_template.format(missing_file=missing_file)),
+            cwd=private_projects_optin_repo,
+        )
+        assert reason is not None
+        assert expected_infrastructure_text in reason
+        assert self._OPTIN_NOTE_PHRASE not in reason
+        assert self._OPTIN_NOTE_MISROUTE_PHRASE not in reason
+        assert self._OPTIN_NOTE_RETARGET_PHRASE not in reason
 
     def test_test_dir_changes_exempt_from_scan(self, claude_config_repo):
         """The hook's own test directory is excluded from the staged-diff
@@ -658,9 +1133,9 @@ class TestDenyPrivateProjectRefs:
         assert str(missing) in reason
 
     def test_gh_pr_unrelated_remote_allowed(self, unrelated_remote_repo):
-        """Scoping short-circuit (origin URL doesn't contain `claude-config`)
-        must apply to gh pr too — the hook must not block PRs in any other
-        repo even if they reference a tracker ID."""
+        """Scoping short-circuit (origin URL doesn't contain `claude-config`
+        and no opt-in marker) must apply to gh pr too — the hook must not
+        block PRs in any other repo even if they reference a tracker ID."""
         assert (
             run_hook(
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -1099,11 +1574,10 @@ class TestDenyPrivateProjectRefs:
         )
 
     def test_blocklist_unrelated_remote_short_circuits(self, unrelated_remote_repo, private_projects_file):
-        """The blocklist scan must respect the same origin.url short-
-        circuit as the tracker-ID scan. A repo that isn't claude-config
-        gets no scanning at all, even if the content matches a blocklist
-        entry — the user's blocklist is for THEIR private projects, but
-        the gate only fires in this public repo."""
+        """The blocklist scan must respect the same scope short-circuit as
+        the tracker-ID scan. A repo that is neither claude-config nor opted
+        in via `.claude/private-projects-optin` gets no scanning at all,
+        even if the content matches a blocklist entry."""
         private_projects_file("Acme Corp\n")
         assert (
             run_hook(
@@ -1184,6 +1658,25 @@ class TestDenyPrivateProjectRefs:
                 )
                 == "deny"
             ), f"expected deny for {punct_form!r}"
+
+    @pytest.mark.parametrize(
+        "hyphenated_word",
+        ["Initech-legacy", "legacy-Initech"],
+        ids=["hyphen_after_entry", "hyphen_before_entry"],
+    )
+    def test_blocklist_match_at_hyphen_boundary(self, claude_config_repo, private_projects_file, hyphenated_word):
+        """Whole-word match: a hyphen is a non-word boundary on either side,
+        so `Initech` matches inside `Initech-legacy` and `legacy-Initech`.
+        Blocks a future boundary regex that treats `-` as a word character."""
+        private_projects_file("Initech\n")
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(f"git commit -m 'Migrate {hyphenated_word} config to new schema'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "private-projects.md blocklist" in reason
+        assert "  - Initech" in reason
 
     def test_blocklist_quote_split_bypass_denied(self, claude_config_repo, private_projects_file):
         """GH-783 regression: a blocklist entry split across an adjacent

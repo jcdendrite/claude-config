@@ -9,6 +9,11 @@ enforcement. For the high-level three-tier overview, see the
 
 ## The three scans
 
+The hook runs in claude-config and its forks, and in any other repo that
+commits `.claude/private-projects-optin`; see
+[Opting in another repository](#opting-in-another-repository). It is silent
+everywhere else.
+
 Each gated operation's scan target reaches beyond the content a reviewer
 would think to check. For `git commit`, the target is the staged diff's
 added lines plus the commit message (an inline `-m` value or a `-F`/`--file`
@@ -34,12 +39,12 @@ comment for that grammar's one residual rather than restating it here.
 
 `deny-private-project-refs.sh` runs three scans, in order:
 
-1. **Tracker-ID scan (always on, no setup).** Matches `[A-Z]{2,}-\d+` tokens
+1. **Tracker-ID scan (always on in every gated repo, no setup).** Matches `[A-Z]{2,}-\d+` tokens
    not on the OSS allowlist. The allowlist also reserves two placeholder
    prefixes — `PROJ-` and `TICKET-` — so skill examples and commit messages can
    use a realistic-looking tracker shape (`PROJ-<digits>`, `TICKET-<digits>`)
    without obfuscating the digits to defeat the scan.
-2. **Structural-shape scan (always on, no setup).** Six independent detectors
+2. **Structural-shape scan (always on in every gated repo, no setup).** Six independent detectors
    for shapes that can identify a specific machine, person, or private
    project without naming it directly — see "The six structural detectors"
    below.
@@ -51,7 +56,7 @@ comment for that grammar's one residual rather than restating it here.
 
 ## The six structural detectors
 
-Unlike the blocklist, these run unconditionally — no `<config-dir>/private-projects.md`
+Unlike the blocklist, these run in every gated repo — no `<config-dir>/private-projects.md`
 setup required. Each is checked independently, so the deny message names
 which one fired. Regexes live in `_lib.sh` as `_LIB_IPV4_LITERAL_REGEX` and
 its five siblings, shared with any future consumer that needs the same
@@ -386,7 +391,8 @@ silently skippable.
 # matching):
 cat > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/private-projects.md" <<'EOF'
 # Project names blocked from commits / PR titles / PR bodies in
-# claude-config (and forks). Match semantics + what to put in this
+# claude-config, its forks, and repos opted in via
+# .claude/private-projects-optin. Match semantics + what to put in this
 # file: see docs/private-project-redaction.md in the claude-config
 # repo.
 
@@ -433,6 +439,13 @@ matching shrinks the false-positive surface compared to substring match, but a
 codename is a common standalone word, use a multi-word form (`ART pipeline`
 instead of `ART` alone) — the longer phrase is more selective — or rely on
 reviewer discipline instead of mechanical match.
+
+❌ **Don't add a word that is part of your home-directory username.** A hyphen,
+a dot, or any other non-word character except an underscore is a word
+boundary, so an entry equal to one word of a username split by such a
+character matches that username everywhere it appears. The structural scan already
+denies home-rooted paths, so the additional denials land on remote URLs, handles, and
+author lines naming `<username>`.
 
 **Rule of thumb:**
 
@@ -498,10 +511,113 @@ future revision that needs more headroom should look at collapsing the
 remaining tracker-ID and blocklist `grep` spawns into the same fast-path
 treatment.
 
+## Opting in another repository
+
+A repo whose origin URL does not contain `claude-config` is silent by default.
+Committing `.claude/private-projects-optin` at the repo's toplevel runs the
+whole hook there: all three scans, with no per-scan switch.
+
+**What denies there.**
+
+- Any off-allowlist tracker-ID token, including the repo's own, in a commit
+  message, PR/issue text, or an added diff line.
+- Every structural detector over added diff lines and command text. Long-hex
+  hits include SHA-pinned workflow actions, image digests, lockfile hashes,
+  full commit SHAs quoted in a PR body, and UUID fixtures. See
+  [The six structural detectors](#the-six-structural-detectors).
+- Every entry in `<config-dir>/private-projects.md`.
+
+The hook has no per-repo or per-path exclusion and no bypass. For content that
+cannot be reworded, such as a lockfile, removing the marker is the only
+in-hook remedy, and it disarms every scan.
+
+**Suitability.** Opt in only a repo whose commits and PRs don't cite its own
+tracker IDs or carry hex digests, unless you accept rewording them. The tracker
+scan also denies ordinary technical terms shaped like uppercase letters, a
+hyphen, and digits, such as cipher, encoding, and time-zone names, when their
+prefix is not on the hook's allowlist. Those false positives go to the human,
+who extends the allowlist upstream in claude-config.
+
+**Coverage.** The gate catches a cooperative agent's honest mistakes. It is not
+a confidentiality control. The marker is a per-machine control, not a
+repo-level one: it works only in Claude Code sessions on machines with
+claude-config's hooks installed, and the blocklist scan depends on each
+contributor's own file, per config dir. Wrapper forms, `$(...)`, `--fill`, and
+`git -C` or `cd` into another checkout evade it; the hook header's Known gaps
+lists them. Surfaces it never scans include `gh pr comment`, `gh pr review`,
+`gh release create`, `gh gist create`, writing files, and any file git
+classifies as binary or a `.gitattributes` rule marks `-diff`. A later commit
+scans a written file's added lines, never its path. A commit made outside a Claude
+Code session is not gated either. The backstop is a repo-owned pre-commit or
+server-side check; see [Limitations](security-hardening.md#limitations).
+
+**Opt in.** From the repo's toplevel, write a short self-describing comment
+into the marker and commit it. The hook reads the marker only at the
+toplevel, so a marker committed from a subdirectory never arms the gate.
+Keep tracker-shaped, hex, path, and IP content out of the comment.
+
+```bash
+mkdir -p .claude
+cat > .claude/private-projects-optin <<'EOF'
+# Arms claude-config's private-project redaction gate in this repo.
+# Presence of this file is the whole switch.
+EOF
+
+git add .claude/private-projects-optin
+git commit -m "Opt in to the private-project redaction gate"
+git ls-files .claude/private-projects-optin
+```
+
+`git ls-files` must list the marker. If `.claude/` is gitignored, the marker
+needs `git add -f`, or it never reaches other clones. Presence alone counts. A
+regular file or a symlink to one counts; a directory does not.
+
+**Activation.** The gate is armed only while the marker is in the checked-out
+tree of the worktree you work in. A branch created before the marker commit
+stays ungated until it is rebased onto a commit that has the marker. The hook
+header's Known gaps lists the other shapes that leave it silent. A claude-config
+checkout without this change, or a revert of it, leaves committed markers
+silently inert. The positive signal is a content-match deny whose message names
+`.claude/private-projects-optin`.
+
+**Remedies.** Reword the content. If it cannot be reworded, stop and ask the
+human. Never add the repo's own tracker prefix to `OSS_ALLOWLIST`, because it
+ships in the public repo. An open-source prefix that is a false positive goes
+to the human, who fixes it upstream in claude-config. In an opted-in repo, the
+deny message carries these prohibitions and leaves out the `OSS_ALLOWLIST`
+remedy.
+
+**Blocklist.** `<config-dir>/private-projects.md` is one user-wide file, and an
+entry naming the opted-in repo's own project blocks that repo from naming
+itself. The exits are: do not opt in that repo, or reword. Never edit the file
+to get past a deny. Deleting or shortening the entry is not a remedy, because
+that also drops claude-config's protection. For
+entries that collide with your username, see
+[What to put in the file (and what NOT to)](#what-to-put-in-the-file-and-what-not-to).
+
+**Why it fires.** A collaborator who sees these denies finds
+`.claude/private-projects-optin` at the toplevel, and the deny names it. The
+repo controls activation. Activation can only add denies. A blocklist deny
+echoes your matching `private-projects.md` entries into that session, so a repo
+that commits the marker can surface them there.
+
+**Opt out.** `git rm` the marker and commit. The change reaches each checkout
+when it pulls or rebases. A local-only delete disarms that checkout too, but it
+is an unsupported shape, covered by the hook header's Known-gaps bullet on the
+marker needing to be present at that exact path, not a per-user disable.
+
+**Deny pointer.** The deny messages cite the repo's CLAUDE.md section
+"Redact private-project-identifying content". Add a section with exactly that
+heading to the opted-in repo's own CLAUDE.md, ideally in the PR that adds the
+marker.
+
 ## For fork contributors
 
 Forks of `claude-config` inherit the same hook (the scoping check passes for
-any `claude-config` substring in the origin URL). A fork user can drop their
-own `<config-dir>/private-projects.md` and contribute back without their project
-names ever ending up in a PR they open against the upstream. `install-dev.sh`
-requires that file to exist before it will set up a contributor's `.venv`.
+any `claude-config` substring in the origin URL), so a fork whose origin URL
+contains `claude-config` needs no marker. A fork renamed so its URL lacks that
+substring can opt in with the marker.
+A fork user can drop their own `<config-dir>/private-projects.md` and
+contribute back without their project names ever ending up in a PR they open
+against the upstream. `install-dev.sh` requires that file to exist before it
+will set up a contributor's `.venv`.

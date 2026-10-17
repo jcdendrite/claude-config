@@ -440,7 +440,8 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
   - `deny-private-project-refs.sh` does not gate `gh pr review`, and it
     never sees the `gh` call inside `review-pr-post.sh`.
   - Its redaction policy also short-circuits unless the clone's `origin.url`
-    contains `claude-config`, while `/review-pr` runs in any repository.
+    contains `claude-config` or the clone commits
+    `.claude/private-projects-optin`, while `/review-pr` runs in any repository.
   - The control is the Step 8 human approval of the exact body to post.
 - **The ticket read in Step 4 trusts the engineer's confirmation.**
   - The session guesses the ticket from PR-authored text, and the PR author
