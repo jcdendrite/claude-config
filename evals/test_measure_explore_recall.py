@@ -276,6 +276,22 @@ class TestLoadFixture:
         with pytest.raises(m.FixtureSchemaError, match="Stratum B"):
             m.load_fixture(path)
 
+    def test_the_real_production_fixture_loads_and_clears_every_floor(self) -> None:
+        """The fixture a live run actually loads (evals/README.md's example
+        command), not the synthetic data every other TestLoadFixture case
+        builds. A hand-edit that drops second_pass_confirmed or falls below
+        a stratum floor fails load_fixture the same way it would fail a
+        live run, instead of only a paid live run discovering it."""
+        path = Path(__file__).parent / "fixtures" / "explore-recall-cases.json"
+
+        pinned_commit, cases = m.load_fixture(path)
+
+        assert pinned_commit
+        assert cases
+        assert {case.id for case in cases} == {
+            "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "B1", "B2", "B3", "B4", "B5",
+        }
+
 
 # --- --repo-dir validation ------------------------------------------------------
 
@@ -402,6 +418,18 @@ class TestScanSubagentFinalAnswerText:
         result = m.read_final_answer(path)
         assert result.format_failure is False
         assert result.items == ("a.py", "b.py")
+
+    def test_skips_a_line_that_is_not_valid_utf8_without_raising(self, tmp_path: Path) -> None:
+        path = tmp_path / "agent.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            json.dumps(_text_record("first")).encode("utf-8"),
+            b"\xff\xfe not valid utf-8",
+            json.dumps(_text_record("second")).encode("utf-8"),
+        ]
+        path.write_bytes(b"\n".join(lines) + b"\n")
+
+        assert m._scan_subagent_final_answer_text(path) == "second"
 
 
 class TestLastFencedJsonBlock:
@@ -539,6 +567,19 @@ class TestCanonicalizeStratumBSymbol:
 
     def test_strips_a_trailing_call_style_parens_before_matching(self) -> None:
         assert m.canonicalize_stratum_b_symbol("foo.py:main()") == "foo.py:top-level-main"
+
+    def test_strips_call_style_parens_outside_the_backtick_pair(self) -> None:
+        """Call-parens placed outside the backticks (`` `main`() ``) strip to
+        the same result as parens placed inside them (`` `main()` ``) --
+        the two strips run to a fixed point regardless of which one a model
+        applied first."""
+        assert m.canonicalize_stratum_b_symbol("foo.py:`main`()") == "foo.py:top-level-main"
+
+    def test_strips_call_style_parens_inside_the_backtick_pair(self) -> None:
+        """Regression guard for `main()` written inside the backtick pair.
+        A naive strip-parens-before-strip-backticks reorder would leave the
+        parens stranded inside the backticks and never strip them off."""
+        assert m.canonicalize_stratum_b_symbol("foo.py:`main()`") == "foo.py:top-level-main"
 
     def test_backtick_stripping_also_applies_to_a_non_alias_symbol(self) -> None:
         assert m.canonicalize_stratum_b_symbol("foo.py:`_lib_marker_value_present`") == "foo.py:_lib_marker_value_present"
@@ -1035,9 +1076,7 @@ class TestEvaluateGate:
         """Term ordering: when term 2's cliff guard and term 3's Wilson
         lower bound would independently disagree (FAIL vs UNCALLABLE), term
         2 is checked first per the plan's exact ordering (1, 2, then 3), so
-        the verdict is FAIL -- the same bug class the real run's max()/
-        min() reduction slip already surfaced once, just at the ordering
-        level instead of the reduction level."""
+        the verdict is FAIL."""
         verdict = m.evaluate_gate(
             stratum_recall_gaps={"A": 0.0, "B": 0.0}, min_per_case_recall_gap=-0.5,
             haiku_precision_point_estimate=0.5, haiku_precision_wilson_lower_bound=0.5,
@@ -1827,6 +1866,52 @@ class TestMain:
         # so an entry a model returns prefixed with that same resolved path
         # must strip to the relative form.
         assert m.normalize_entry(f"{resolved}/a.py", repo_dir=resolved) == "a.py"
+
+    def test_a_missing_fixtures_file_exits_cleanly(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, "argv", [
+            "measure_explore_recall.py", "--fixtures", str(tmp_path / "no-such-fixture.json"), "--dry-run",
+        ])
+
+        with pytest.raises(SystemExit, match="ERROR:"):
+            m.main()
+
+    def test_a_schema_invalid_fixtures_file_exits_cleanly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fixture_path = tmp_path / "fixture.json"
+        fixture_path.write_text(json.dumps({"pinned_commit": _valid_fixture_data()["pinned_commit"]}))
+        monkeypatch.setattr(sys, "argv", [
+            "measure_explore_recall.py", "--fixtures", str(fixture_path), "--dry-run",
+        ])
+
+        with pytest.raises(SystemExit, match="ERROR: fixture missing top-level keys"):
+            m.main()
+
+    def test_an_invalid_json_fixtures_file_exits_cleanly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fixture_path = tmp_path / "fixture.json"
+        fixture_path.write_text("{not valid json")
+        monkeypatch.setattr(sys, "argv", [
+            "measure_explore_recall.py", "--fixtures", str(fixture_path), "--dry-run",
+        ])
+
+        with pytest.raises(SystemExit, match="ERROR:"):
+            m.main()
+
+    def test_a_non_utf8_fixtures_file_exits_cleanly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Covers the file-content encoding, not the file name. The
+        fixture path itself stays plain ASCII."""
+        fixture_path = tmp_path / "fixture.json"
+        fixture_path.write_bytes(b"\xff\xfe\x00\x00")
+        monkeypatch.setattr(sys, "argv", [
+            "measure_explore_recall.py", "--fixtures", str(fixture_path), "--dry-run",
+        ])
+
+        with pytest.raises(SystemExit, match="ERROR:"):
+            m.main()
 
     def test_a_live_run_without_repo_dir_is_refused(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         fixture_path = self._fixture_path(tmp_path)

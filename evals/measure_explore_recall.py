@@ -177,7 +177,7 @@ def validate_fixture_floors(cases: tuple[RecallCase, ...]) -> None:
 
 
 def load_fixture(path: Path) -> tuple[str, tuple[RecallCase, ...]]:
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise FixtureSchemaError("fixture root must be a JSON object")
     missing_top = REQUIRED_TOP_LEVEL_KEYS - data.keys()
@@ -292,15 +292,18 @@ def _scan_subagent_final_answer_text(path: Path) -> str | None:
     model IDs: returns the last assistant record's own text content blocks,
     concatenated in order, tool_use blocks ignored. None if the file has no
     assistant record at all (not the same as an assistant record whose last
-    turn carried no text, which returns "")."""
+    turn carried no text, which returns "").
+
+    Reads in binary mode and decodes per line, like corpus._parse_jsonl_records,
+    so one line that is not valid UTF-8 is skipped rather than aborting the scan."""
     last_text: str | None = None
     seen_assistant = False
     try:
-        with open(path) as fh:
+        with open(path, "rb") as fh:
             for raw in fh:
                 try:
-                    rec = json.loads(raw)
-                except json.JSONDecodeError:
+                    rec = json.loads(raw.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
                 if rec.get("type") != "assistant":
                     continue
@@ -356,10 +359,15 @@ def canonicalize_stratum_b_symbol(entry: str) -> str:
         return entry
     path, symbol = entry.split(":", 1)
     cleaned = symbol.strip()
-    if cleaned.startswith("`") and cleaned.endswith("`") and len(cleaned) >= 2:
-        cleaned = cleaned[1:-1]
-    if cleaned.endswith("()"):
-        cleaned = cleaned[:-2]
+    while True:
+        stripped = cleaned
+        if stripped.startswith("`") and stripped.endswith("`") and len(stripped) >= 2:
+            stripped = stripped[1:-1]
+        if stripped.endswith("()"):
+            stripped = stripped[:-2]
+        if stripped == cleaned:
+            break
+        cleaned = stripped
     if cleaned.lower() in STRATUM_B_TOP_LEVEL_SYMBOL_ALIASES:
         cleaned = "top-level-main"
     return f"{path}:{cleaned}"
@@ -1327,7 +1335,10 @@ def main() -> int:
     args = build_arg_parser().parse_args()
 
     msmr.abort_if_subagent_model_env_set()
-    pinned_commit, cases = load_fixture(args.fixtures)
+    try:
+        pinned_commit, cases = load_fixture(args.fixtures)
+    except (FixtureSchemaError, OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        sys.exit(f"ERROR: {exc}")
 
     if args.cases:
         requested_ids = [case_id.strip() for case_id in args.cases.split(",") if case_id.strip()]

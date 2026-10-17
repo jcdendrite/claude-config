@@ -72,6 +72,11 @@ MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST = "evals/test_measure_subagent_model_reso
 # edit to either file needs both tests re-run.
 MEASURE_EXPLORE_RECALL = "evals/measure_explore_recall.py"
 MEASURE_EXPLORE_RECALL_TEST = "evals/test_measure_explore_recall.py"
+# A sibling of REVIEW_BENCH_FIXTURES_DIR, not nested under it: a single file
+# directly in evals/fixtures/. MEASURE_EXPLORE_RECALL_TEST's real-fixture
+# test is its only automated-test consumer. The recall scorer also reads it,
+# but at runtime via --fixtures, not through a test.
+MEASURE_EXPLORE_RECALL_FIXTURE = "evals/fixtures/explore-recall-cases.json"
 # Applies to every test under evals/, which are exactly the review_bench
 # tests, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, and MEASURE_EXPLORE_RECALL_TEST.
 EVALS_CONFTEST = "evals/conftest.py"
@@ -566,7 +571,7 @@ def _is_review_bench_change(path: str) -> bool:
         or _is_under(path, REVIEW_BENCH_FIXTURES_DIR)
         or path in (
             REVIEW_BENCH_RUNNER, MEASURE_SUBAGENT_MODEL_RESOLUTION, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
-            MEASURE_EXPLORE_RECALL, MEASURE_EXPLORE_RECALL_TEST, EVALS_CONFTEST,
+            MEASURE_EXPLORE_RECALL, MEASURE_EXPLORE_RECALL_TEST, MEASURE_EXPLORE_RECALL_FIXTURE, EVALS_CONFTEST,
         )
         or (path.startswith("evals/test_review_bench") and path.endswith(".py"))
     )

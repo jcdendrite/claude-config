@@ -206,9 +206,9 @@ dispatch `general-purpose` with an explicit `model`. See the Model Routing
 section of the global `CLAUDE.md`.
 
 Do **not** reach for `CLAUDE_CODE_SUBAGENT_MODEL` to solve this. It is the
-env var, which now ranks below frontmatter — it leaves an agent with its
-own `model:` frontmatter pin (like the `staff-*` reviewers' Sonnet pin)
-untouched, but it still overrides every unpinned built-in's model (like
+env var, which ranks below frontmatter. It leaves an agent with its own
+`model:` frontmatter pin (like the `staff-*` reviewers' Sonnet pin)
+untouched. It still overrides every unpinned built-in's model (like
 `general-purpose`, which otherwise only inherits from the parent). The
 per-dispatch `model` parameter is the targeted instrument; the env var is
 a blunt global hammer that reaches every unpinned dispatch.

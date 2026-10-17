@@ -338,7 +338,7 @@ def declared_model_pin_for_dispatch(dispatch: str) -> str | None:
     if override is not None:
         return override[EXPLORE_HAIKU_OVERRIDE_AGENT_NAME]["model"]
     try:
-        text = STAFF_BACKEND_ENGINEER_AGENT_FILE.read_text()
+        text = STAFF_BACKEND_ENGINEER_AGENT_FILE.read_text(encoding="utf-8")
     except OSError:
         return None
     return agent_frontmatter_model(text)
@@ -348,7 +348,7 @@ def declared_tools_for_dispatch(dispatch: str) -> frozenset[str] | None:
     if dispatch in _EXPLORE_OVERRIDE_BY_DISPATCH:
         return EXPLORE_HAIKU_OVERRIDE_TOOLS
     try:
-        text = STAFF_BACKEND_ENGINEER_AGENT_FILE.read_text()
+        text = STAFF_BACKEND_ENGINEER_AGENT_FILE.read_text(encoding="utf-8")
     except OSError:
         return None
     return agent_frontmatter_tools(text)
@@ -466,15 +466,18 @@ def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
     record's message.model, excluding SYNTHETIC_MODEL_ID — and collects tool_use block names in the same pass for M3's
     discriminator. Returns two empty frozensets on any read error, matching
     that function's "dangling" convention: absence of data, not a crash.
+
+    Reads in binary mode and decodes per line, like corpus._parse_jsonl_records,
+    so one line that is not valid UTF-8 is skipped rather than aborting the scan.
     """
     model_ids: set[str] = set()
     tools: set[str] = set()
     try:
-        with open(path) as fh:
+        with open(path, "rb") as fh:
             for raw in fh:
                 try:
-                    rec = json.loads(raw)
-                except json.JSONDecodeError:
+                    rec = json.loads(raw.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
                 if rec.get("type") != "assistant":
                     continue
@@ -517,8 +520,8 @@ def parse_subagent_dispatches(
     observations: list[DispatchObservation] = []
     for meta_path in sorted(subagent_dir.glob("*.meta.json")):
         try:
-            meta = json.loads(meta_path.read_text())
-        except (OSError, json.JSONDecodeError):
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             continue
         tool_use_id = meta.get("toolUseId")
         if not isinstance(tool_use_id, str) or not tool_use_id:
@@ -784,7 +787,7 @@ def _extract_total_cost_usd(lines: list[bytes]) -> float | None:
     for raw in reversed(lines):
         try:
             rec = json.loads(raw)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             continue
         if not isinstance(rec, dict):
             continue

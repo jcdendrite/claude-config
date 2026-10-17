@@ -471,6 +471,12 @@ has no equivalent containment check, so point it outside the repository
 the way the example above does — it must never be staged or committed
 either.
 
+`--cumulative-stop-usd` aborts the whole batch once realized spend crosses
+it (default: `DEFAULT_CUMULATIVE_STOP_USD`). It is checked once per sample
+after that sample completes, so the batch can overshoot it by up to
+`(MAX_ARM_MISMATCH_RETRIES + 1) * budget_cap_usd` before the check blocks
+the next sample from starting.
+
 Tests: `evals/test_measure_explore_recall.py`, fixture-based, no live
 sessions.
 

@@ -172,6 +172,19 @@ class TestParseSubagentDispatches:
 
         assert result == ()
 
+    def test_meta_json_not_valid_utf8_skipped(self, tmp_path: Path) -> None:
+        """Invalid UTF-8 bytes in a *.meta.json file are skipped like
+        malformed JSON, not raised — same meta_read_errors exclusion as
+        test_unreadable_meta_json_skipped above."""
+        session_jsonl = _session_jsonl_path(tmp_path)
+        subagent_dir = session_jsonl.parent / session_jsonl.stem / msmr.SUBAGENT_SUBDIR
+        subagent_dir.mkdir(parents=True)
+        (subagent_dir / "agent-1.meta.json").write_bytes(b"\x80\x81 not valid utf-8")
+
+        result = msmr.parse_subagent_dispatches(session_jsonl, requested_agent_declared_tools=None)
+
+        assert result == ()
+
     def test_meta_json_missing_tool_use_id_skipped(self, tmp_path: Path) -> None:
         session_jsonl = _session_jsonl_path(tmp_path)
         subagent_dir = session_jsonl.parent / session_jsonl.stem / msmr.SUBAGENT_SUBDIR
@@ -237,6 +250,26 @@ class TestParseSubagentDispatches:
 
         assert result[0].observed_model_family == msmr.MODEL_FAMILY_SONNET
         assert result[0].observed_tools == frozenset()
+
+    def test_skips_a_line_that_is_not_valid_utf8_without_raising(self, tmp_path: Path) -> None:
+        """Mirrors corpus._parse_jsonl_records' per-line UnicodeDecodeError
+        skip: one invalid-UTF-8 line among valid ones is skipped, not an
+        aborted scan."""
+        session_jsonl = _session_jsonl_path(tmp_path)
+        subagent_dir = session_jsonl.parent / session_jsonl.stem / msmr.SUBAGENT_SUBDIR
+        subagent_dir.mkdir(parents=True)
+        path = subagent_dir / "agent-1.jsonl"
+        lines = [
+            json.dumps(_assistant_record("claude-sonnet-5", ["Read"])).encode("utf-8"),
+            b"\xff\xfe not valid utf-8",
+            json.dumps(_assistant_record("claude-haiku-4-5-20251001", ["Grep"])).encode("utf-8"),
+        ]
+        path.write_bytes(b"\n".join(lines) + b"\n")
+
+        model_ids, tools = msmr._scan_subagent_jsonl(path)
+
+        assert model_ids == frozenset({"claude-sonnet-5", "claude-haiku-4-5-20251001"})
+        assert tools == frozenset({"Read", "Grep"})
 
 
 class TestWaitForSubagentSidecar:
@@ -963,6 +996,12 @@ class TestExtractTotalCostUsd:
 
     def test_valid_json_non_dict_lines_are_skipped_not_crashed_on(self) -> None:
         lines = [b"5", b"[1, 2, 3]", b'{"type": "result", "total_cost_usd": 0.5}']
+        assert msmr._extract_total_cost_usd(lines) == 0.5
+
+    def test_lines_not_valid_utf8_are_skipped_not_crashed_on(self) -> None:
+        """The invalid-UTF-8 line sits after the result event so the reverse
+        scan visits it first and must skip past it to reach the result."""
+        lines = [b'{"type": "result", "total_cost_usd": 0.5}', b"\x80\x81 not valid utf-8"]
         assert msmr._extract_total_cost_usd(lines) == 0.5
 
     def test_multiple_result_events_last_in_stream_order_wins(self) -> None:

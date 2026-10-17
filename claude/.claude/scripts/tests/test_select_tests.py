@@ -716,6 +716,18 @@ class TestSelectPytestTargets:
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
         }
 
+    def test_explore_recall_fixture_change_selects_review_bench_measure_subagent_and_explore_recall_tests(self):
+        """evals/fixtures/explore-recall-cases.json is a sibling of
+        REVIEW_BENCH_FIXTURES_DIR, not a path under it. It selects the same
+        three-test target set as the review_bench rows above rather than
+        falling open to FULL_SUITE_TARGETS, whose roots don't collect any
+        evals/ test."""
+        result = _mod.select_pytest_targets([_mod.MEASURE_EXPLORE_RECALL_FIXTURE])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.MEASURE_EXPLORE_RECALL_TEST,
+        }
+
     def test_measure_subagent_model_resolution_test_change_selects_its_own_test(self):
         """The test file selects itself rather than falling through to the full suite."""
         result = _mod.select_pytest_targets([_mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST])
@@ -1981,6 +1993,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     _mod.MEASURE_EXPLORE_RECALL,
     _mod.MEASURE_EXPLORE_RECALL_TEST,
+    _mod.MEASURE_EXPLORE_RECALL_FIXTURE,
     _mod.EVALS_README_MD,
     _mod.EVALS_CONFTEST,
 )
