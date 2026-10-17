@@ -2,7 +2,9 @@
 preflight, effective-repo pinning, and merged/closed PR discovery)."""
 import importlib.util
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -10,8 +12,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from helpers import HOOKS_DIR
 
 from ._pr_cost_helpers import _enable_pr_cost, _fake_pr_cost_subprocess_run, _pr_cost_args
+from .conftest import _commit, _init_repo
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
@@ -1284,3 +1288,917 @@ class TestGitRemoteOriginFailureMessages:
             f"{expected_prefix}: could not resolve this repo's own remote"
             f" (git remote get-url origin failed){expected_hint_suffix}\n"
         )
+
+
+class TestGitRemoteOriginLenientParseKept:
+    """The cwd lookup keeps accepting the URL shapes that _vetted_origin_identity_from_url rejects, so pr-cost,
+    workstream-cost, and pr-link behave as before; their gh preflight and pin already stop on these shapes."""
+
+    @pytest.mark.parametrize("remote_url,expected", [
+        pytest.param(
+            "https://user:pw@host/project.git", ("user", "pw@host/project"), id="password_userinfo_lenient_misparse_kept",
+        ),
+        pytest.param("somedir/o/r", ("somedir", "o/r"), id="relative_path_lenient_parse_kept"),
+        pytest.param("../o/r.git", ("..", "o/r"), id="parent_relative_path_lenient_parse_kept"),
+        pytest.param("ssh://git@host:2222/r.git", ("host", "2222/r"), id="ssh_port_lenient_misparse_kept"),
+    ])
+    def test_shape_the_vetting_rejects_keeps_its_current_result(self, monkeypatch, remote_url, expected):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout=remote_url + "\n"))
+
+        assert _mod.gh_cli._git_remote_origin_host_and_owner_repo() == expected
+
+
+class TestGhCallWithBackoffMaxAttempts:
+    def test_max_attempts_one_makes_exactly_one_call_and_never_sleeps(self, monkeypatch, capsys, recorded_sleeps):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result(1, stderr="API rate limit exceeded (HTTP 403)\n")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        proc, degraded = _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "list"], label="pr list", max_attempts=1)
+
+        assert proc is None
+        assert degraded == _mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT
+        assert len(call_log) == 1
+        assert recorded_sleeps == []
+        assert capsys.readouterr().err == "pr-cost: pr list failed (rate_limit), giving up after 1 attempt(s)\n"
+
+    def test_max_attempts_three_retries_twice_then_gives_up(self, monkeypatch, capsys, recorded_sleeps):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(1, stderr="connection reset\n"))
+
+        _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "list"], label="pr list", max_attempts=3)
+
+        assert recorded_sleeps == [60.0, 120.0]
+        assert capsys.readouterr().err.splitlines()[-1] == "pr-cost: pr list failed (network), giving up after 3 attempt(s)"
+
+    @pytest.mark.parametrize("max_attempts", [0, -1])
+    def test_max_attempts_below_one_raises_before_any_call(self, monkeypatch, recorded_sleeps, max_attempts):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(ValueError, match="max_attempts"):
+            _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "list"], label="pr list", max_attempts=max_attempts)
+
+        assert call_log == []
+        assert recorded_sleeps == []
+
+    def test_default_attempts_are_read_from_the_module_constant_at_call_time(self, monkeypatch, recorded_sleeps):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result(1, stderr="connection reset\n")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(_mod.gh_cli, "_PR_COST_RATE_LIMIT_MAX_ATTEMPTS", 2)
+
+        _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "list"], label="pr list")
+
+        assert len(call_log) == 2
+        assert recorded_sleeps == [60.0]
+
+
+class TestGhCallWithBackoffCommandName:
+    """command_name replaces the "pr-cost" prefix at every message site."""
+
+    def test_auth_failure_message_uses_command_name(self, monkeypatch, capsys, recorded_sleeps):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(1, stderr=_AUTH_FAILURE_STDERR))
+
+        _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "list"], label="pr list", command_name="period-cost")
+
+        assert capsys.readouterr().err == (
+            "period-cost: pr list failed (auth), not retrying (auth failures don't self-resolve)\n"
+        )
+
+    def test_host_mismatch_message_uses_command_name(self, monkeypatch, capsys, recorded_sleeps):
+        monkeypatch.setattr(
+            subprocess, "run", lambda cmd, *a, **kw: _gh_result(1, stderr=_HOST_MISMATCH_FAILURE_STDERR),
+        )
+
+        _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "list"], label="pr list", command_name="period-cost")
+
+        assert capsys.readouterr().err == (
+            "period-cost: pr list failed (host_mismatch), not retrying -- gh's ambient GH_HOST"
+            " environment variable does not match this repo's own git remote host;"
+            " unset GH_HOST or point it at the correct host\n"
+        )
+
+    def test_retry_and_giving_up_messages_use_command_name(self, monkeypatch, capsys, recorded_sleeps):
+        monkeypatch.setattr(
+            subprocess, "run", lambda cmd, *a, **kw: _gh_result(1, stderr="API rate limit exceeded (HTTP 403)\n"),
+        )
+
+        _mod.gh_cli._gh_call_with_backoff(
+            ["gh", "pr", "list"], label="pr list", command_name="period-cost", max_attempts=2,
+        )
+
+        assert capsys.readouterr().err == (
+            "period-cost: pr list failed (rate_limit), retrying in 60s (attempt 1)...\n"
+            "period-cost: pr list failed (rate_limit), giving up after 2 attempt(s)\n"
+        )
+
+
+_PR_LIST_FIELDS = "number,mergedAt"
+
+
+def _gh_pr_list_all(**overrides):
+    kwargs = {"state": "all", "json_fields": _PR_LIST_FIELDS, "label": "pr list", **overrides}
+    return _mod.gh_cli._gh_pr_list("github.com", "owner/repo", **kwargs)
+
+
+class TestGhPrList:
+    def test_issues_exactly_this_argv_for_state_all(self, monkeypatch, recorded_sleeps):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result(stdout="[]")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _mod.gh_cli._gh_pr_list("acme-corp.ghe.com", "owner/repo", state="all", json_fields=_PR_LIST_FIELDS, label="pr list")
+
+        assert call_log == [[
+            "gh", "pr", "list", "--repo", "acme-corp.ghe.com/owner/repo", "--state", "all",
+            "--limit", str(_mod.gh_cli._PR_COST_GH_PR_LIST_LIMIT), "--json", _PR_LIST_FIELDS,
+        ]]
+
+    def test_success_returns_parsed_payload_and_empty_status_without_printing(self, monkeypatch, capsys, recorded_sleeps):
+        payload = [{"number": 7, "mergedAt": "2026-09-01T00:00:00Z"}]
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout=json.dumps(payload)))
+
+        assert _gh_pr_list_all() == (payload, "")
+        assert capsys.readouterr().err == ""
+
+    @pytest.mark.parametrize("empty_stdout", ["", None], ids=["empty_string", "none"])
+    def test_empty_stdout_returns_empty_list_and_empty_status(self, monkeypatch, recorded_sleeps, empty_stdout):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout=empty_stdout))
+
+        assert _gh_pr_list_all() == ([], "")
+
+    @pytest.mark.parametrize("stdout,expected_payload", [
+        pytest.param('{"message": "unexpected"}', {"message": "unexpected"}, id="dict"),
+        pytest.param("null", None, id="null"),
+    ])
+    def test_non_list_payload_is_returned_unchanged_with_empty_status(
+        self, monkeypatch, recorded_sleeps, stdout, expected_payload,
+    ):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout=stdout))
+
+        assert _gh_pr_list_all() == (expected_payload, "")
+
+    def test_unparseable_stdout_returns_unparseable_status_and_prints_nothing(self, monkeypatch, capsys, recorded_sleeps):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout="not json"))
+
+        assert _gh_pr_list_all() == (None, _mod.gh_cli._GH_PR_LIST_UNPARSEABLE)
+        assert capsys.readouterr().err == ""
+
+    def test_gh_failure_returns_the_backoff_status_without_aborting(self, monkeypatch, capsys, recorded_sleeps):
+        monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(1, stderr=_AUTH_FAILURE_STDERR))
+
+        assert _gh_pr_list_all() == (None, _mod.gh_cli._GH_CALL_DEGRADED_AUTH)
+        assert capsys.readouterr().err == (
+            "pr-cost: pr list failed (auth), not retrying (auth failures don't self-resolve)\n"
+        )
+
+    def test_max_attempts_one_makes_exactly_one_call_and_never_sleeps(self, monkeypatch, recorded_sleeps):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result(1, stderr="API rate limit exceeded (HTTP 403)\n")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert _gh_pr_list_all(max_attempts=1) == (None, _mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT)
+        assert len(call_log) == 1
+        assert recorded_sleeps == []
+
+    @pytest.mark.parametrize("max_attempts", [0, -1])
+    def test_max_attempts_below_one_raises_before_any_call(self, monkeypatch, recorded_sleeps, max_attempts):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result(stdout="[]")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        with pytest.raises(ValueError, match="max_attempts"):
+            _gh_pr_list_all(max_attempts=max_attempts)
+
+        assert call_log == []
+        assert recorded_sleeps == []
+
+    def test_default_attempts_are_read_from_the_module_constant_at_call_time(self, monkeypatch, recorded_sleeps):
+        call_log: list[list[str]] = []
+
+        def fake_run(cmd, *a, **kw):
+            call_log.append(cmd)
+            return _gh_result(1, stderr="connection reset\n")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(_mod.gh_cli, "_PR_COST_RATE_LIMIT_MAX_ATTEMPTS", 2)
+
+        assert _gh_pr_list_all() == (None, _mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK)
+        assert len(call_log) == 2
+
+    def test_command_name_prefixes_the_backoff_messages(self, monkeypatch, capsys, recorded_sleeps):
+        monkeypatch.setattr(
+            subprocess, "run", lambda cmd, *a, **kw: _gh_result(1, stderr="API rate limit exceeded (HTTP 403)\n"),
+        )
+
+        _gh_pr_list_all(command_name="period-cost", max_attempts=2)
+
+        assert capsys.readouterr().err == (
+            "period-cost: pr list failed (rate_limit), retrying in 60s (attempt 1)...\n"
+            "period-cost: pr list failed (rate_limit), giving up after 2 attempt(s)\n"
+        )
+
+
+class TestGhPrListUnparseableStatus:
+    def test_status_is_a_non_empty_string_distinct_from_every_other_status(self):
+        status = _mod.gh_cli._GH_PR_LIST_UNPARSEABLE
+
+        assert isinstance(status, str)
+        assert status
+        other_statuses = {
+            _mod.gh_cli._GH_CALL_DEGRADED_AUTH,
+            _mod.gh_cli._GH_CALL_DEGRADED_HOST_MISMATCH,
+            *_mod.pr_cost_ledger._PR_COST_STATUS_VALUES,
+        }
+        assert status not in other_statuses
+
+
+class TestOriginUrlSchemeGroup:
+    def test_scheme_group_takes_part_in_a_match_with_no_prefix_and_is_empty(self):
+        match = _mod.gh_cli._GIT_REMOTE_HOST_OWNER_REPO_RE.search("ghe.example:o/r")
+
+        assert match is not None
+        assert match.group("scheme") == ""
+        assert match.group("sep") == ":"
+
+
+class TestOriginIdentityFromUrl:
+    @pytest.mark.parametrize("url,expected", [
+        pytest.param("https://github.com/owner/repo.git", ("github.com", "owner/repo"), id="https_dot_git"),
+        pytest.param("https://github.com/owner/repo", ("github.com", "owner/repo"), id="https_no_suffix"),
+        pytest.param("git@github.com:owner/repo.git", ("github.com", "owner/repo"), id="scp_style"),
+        pytest.param("https://github.com/owner/repo/", ("github.com", "owner/repo"), id="trailing_slash"),
+        pytest.param("https://github.com/owner/repo.git/", ("github.com", "owner/repo"), id="dot_git_and_trailing_slash"),
+        pytest.param("https://GitHub.COM/Owner-Name/Repo-Name.git", ("github.com", "owner-name/repo-name"), id="uppercase"),
+        pytest.param("https://github.com/owner/repo.git\n", ("github.com", "owner/repo"), id="trailing_newline"),
+        pytest.param(
+            "https://user:pw@host/project.git", ("user", "pw@host/project"), id="password_userinfo_lenient_misparse_kept",
+        ),
+    ])
+    def test_recognized_shapes_resolve_lowercased(self, url, expected):
+        assert _mod.gh_cli._origin_identity_from_url(url) == expected
+
+    @pytest.mark.parametrize("url", [
+        pytest.param("https://user@host/o/r.git", id="userinfo_without_password"),
+        pytest.param("https://user:token@host/o/r.git", id="userinfo_with_token"),
+        pytest.param("file:///abs/o/r.git", id="file_scheme"),
+        pytest.param("/abs/path/r.git", id="absolute_path"),
+        pytest.param("ssh://git@host:2222/o/r.git", id="ssh_with_port"),
+        pytest.param("not a remote", id="not_a_url"),
+        pytest.param("", id="empty"),
+    ])
+    def test_unrecognized_shapes_return_none(self, url):
+        assert _mod.gh_cli._origin_identity_from_url(url) is None
+
+
+# A quadratic match at this length takes several seconds, growing with the square of the length; a linear one takes milliseconds.
+_PATHOLOGICAL_LENGTH = 50_000
+_LINEAR_TIME_BOUND_S = 1.0
+
+
+class TestIsPlainOwnerRepo:
+    @pytest.mark.parametrize("owner_repo", [
+        pytest.param("acme/widgets", id="plain"),
+        pytest.param("a.b/c_d-e", id="dot_underscore_hyphen"),
+        pytest.param("acme/.github", id="leading_dot_name_with_a_letter"),
+    ])
+    def test_accepts(self, owner_repo):
+        assert _mod.gh_cli._is_plain_owner_repo(owner_repo) is True
+
+    @pytest.mark.parametrize("owner_repo", [
+        pytest.param("./r", id="dot_owner"),
+        pytest.param("o/..", id="dot_dot_name"),
+        pytest.param("o/r*", id="glob_character"),
+        pytest.param("pw@host/project", id="at_sign"),
+        pytest.param("o/r/x", id="third_segment"),
+        pytest.param("o", id="missing_name"),
+        pytest.param("o/", id="empty_name"),
+        pytest.param("/r", id="empty_owner"),
+        pytest.param("o/r\n", id="trailing_newline"),
+        pytest.param("o/r\u0661", id="non_ascii_digit_arabic_indic_one"),
+        pytest.param("o/r:x", id="colon"),
+        pytest.param("o /r", id="space"),
+    ])
+    def test_rejects(self, owner_repo):
+        assert _mod.gh_cli._is_plain_owner_repo(owner_repo) is False
+
+    @pytest.mark.parametrize("owner_repo", [
+        pytest.param("a" * _PATHOLOGICAL_LENGTH + "*/r", id="bad_character_after_a_long_owner"),
+        pytest.param("o/" + "a" * _PATHOLOGICAL_LENGTH + "*", id="bad_character_after_a_long_name"),
+        pytest.param("." * _PATHOLOGICAL_LENGTH + "/" + "." * _PATHOLOGICAL_LENGTH, id="long_segments_without_a_letter_or_digit"),
+        pytest.param("/".join(["a"] * _PATHOLOGICAL_LENGTH), id="many_segments"),
+    ])
+    def test_rejects_a_very_long_failing_input_within_a_generous_bound(self, owner_repo):
+        started = time.perf_counter()
+
+        assert _mod.gh_cli._is_plain_owner_repo(owner_repo) is False
+
+        assert time.perf_counter() - started < _LINEAR_TIME_BOUND_S
+
+
+# Reads hex-encoded owner/repo arguments so control characters survive argv; prints one 1 or 0 verdict per line.
+# The trailing "." keeps command substitution from stripping a final newline.
+# printf -v is avoided because bash 3.2 reuses the previous printf -v result when a %b output is empty.
+_BASH_OWNER_REPO_VERDICTS_SCRIPT = (
+    '. "$1/_lib.sh"; shift; '
+    'for encoded in "$@"; do '
+    'decoded=$(printf "%b." "$encoded"); owner_repo=${decoded%.}; '
+    'if _lib_parse_pr_identity "$owner_repo#1" >/dev/null; then echo 1; else echo 0; fi; '
+    "done"
+)
+
+
+def _bash_owner_repo_verdicts(owner_repos: list[str]) -> tuple[list[bool], str]:
+    """Per owner/repo, whether _lib_parse_pr_identity in _lib.sh accepts it with a valid PR number, plus bash's stderr.
+
+    Runs one bash process under LC_ALL=C so bracket ranges are ASCII-only whatever locale the host bash widens them in.
+    The child environment holds only PATH and the locale pin, so BASH_ENV and exported functions cannot reach it."""
+    encoded = ["".join(f"\\x{byte:02x}" for byte in owner_repo.encode("utf-8")) for owner_repo in owner_repos]
+    result = subprocess.run(
+        ["bash", "-c", _BASH_OWNER_REPO_VERDICTS_SCRIPT, "_", str(HOOKS_DIR), *encoded],
+        env={"PATH": os.environ.get("PATH", os.defpath), "LC_ALL": "C"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    verdicts = [verdict == "1" for verdict in result.stdout.splitlines()]
+    assert len(verdicts) == len(owner_repos), (
+        f"bash printed {len(verdicts)} verdicts for {len(owner_repos)} inputs; stderr: {result.stderr!r}"
+    )
+    return verdicts, result.stderr
+
+
+def _bash_accepts_owner_repo(owner_repo: str) -> bool:
+    return _bash_owner_repo_verdicts([owner_repo])[0][0]
+
+
+class TestIsPlainOwnerRepoParityWithLibParsePrIdentity:
+    @pytest.mark.parametrize("owner_repo", [
+        pytest.param("acme/widgets", id="plain"),
+        pytest.param("a.b/c_d-e", id="dot_underscore_hyphen"),
+        pytest.param("acme/.github", id="leading_dot_name_with_a_letter"),
+        pytest.param("acme/repo.", id="trailing_dot_name_with_a_letter"),
+        pytest.param(".o./.r.", id="dot_wrapped_segments_with_a_letter"),
+        pytest.param("0/0", id="single_digit_segments"),
+        pytest.param("./r", id="dot_owner"),
+        pytest.param("o/..", id="dot_dot_name"),
+        pytest.param("../r", id="dot_dot_owner"),
+        pytest.param("o/_", id="underscore_only_name"),
+        pytest.param("-/r", id="hyphen_only_owner"),
+        pytest.param("o/r*", id="glob_character"),
+        pytest.param("pw@host/project", id="at_sign"),
+        pytest.param("o/r/x", id="third_segment"),
+        pytest.param("o", id="missing_name"),
+        pytest.param("o/", id="empty_name"),
+        pytest.param("/r", id="empty_owner"),
+        pytest.param("/", id="both_segments_empty"),
+        pytest.param("", id="empty"),
+        pytest.param("o/r\n", id="trailing_newline"),
+        pytest.param("o\n/r", id="newline_in_owner"),
+        pytest.param("o/r\u0661", id="non_ascii_digit_arabic_indic_one"),
+        pytest.param("o/r\u00e9", id="non_ascii_letter"),
+        pytest.param("o/r\u212a", id="non_ascii_kelvin_sign_beside_an_ascii_letter"),
+        pytest.param("o/a\u017f", id="non_ascii_long_s_beside_an_ascii_letter"),
+        pytest.param("o/r:x", id="colon"),
+        pytest.param("o /r", id="space"),
+        pytest.param("-o/r", id="leading_hyphen_owner"),
+        pytest.param("o-/r", id="trailing_hyphen_owner"),
+        pytest.param("o/-r", id="leading_hyphen_name"),
+        pytest.param("o/r-", id="trailing_hyphen_name"),
+        pytest.param("_o/r", id="leading_underscore_owner"),
+        pytest.param("o/r_", id="trailing_underscore_name"),
+        pytest.param(".o/r", id="leading_dot_owner_with_a_letter"),
+        pytest.param(" o/r", id="leading_space"),
+        pytest.param("o/r ", id="trailing_space"),
+        pytest.param("\no/r", id="leading_newline"),
+    ])
+    def test_agrees_with_the_bash_parser(self, owner_repo):
+        assert _mod.gh_cli._is_plain_owner_repo(owner_repo) is _bash_accepts_owner_repo(owner_repo)
+
+    def test_agrees_with_the_bash_parser_for_every_ascii_character_in_owner_and_name_position(self):
+        owner_repos = [
+            owner_repo
+            for code_point in range(1, 128)
+            for owner_repo in (f"a{chr(code_point)}b/repo", f"owner/a{chr(code_point)}b")
+        ]
+
+        bash_verdicts, bash_stderr = _bash_owner_repo_verdicts(owner_repos)
+
+        disagreements = [
+            (owner_repo, python_verdict, bash_verdict)
+            for owner_repo, bash_verdict in zip(owner_repos, bash_verdicts, strict=True)
+            if (python_verdict := _mod.gh_cli._is_plain_owner_repo(owner_repo)) is not bash_verdict
+        ]
+        assert not disagreements, f"(owner_repo, python, bash) disagreements: {disagreements!r}; bash stderr: {bash_stderr!r}"
+
+
+class TestVettedOriginIdentityFromUrl:
+    @pytest.mark.parametrize("url,expected", [
+        pytest.param("https://github.com/Owner/Repo.git", ("github.com", "owner/repo"), id="https_dot_git"),
+        pytest.param("git@github.com:o/r.git", ("github.com", "o/r"), id="scp_with_git_user"),
+        pytest.param("ssh://git@ghe.example/o/r.git", ("ghe.example", "o/r"), id="ssh_scheme"),
+        pytest.param("ghe.example:o/r", ("ghe.example", "o/r"), id="scp_without_user"),
+        pytest.param("git@ssh-alias:o/r", ("ssh-alias", "o/r"), id="single_label_alias_host"),
+        pytest.param("https://GitHub.COM/O/R.git", ("github.com", "o/r"), id="uppercase_host_and_owner_repo"),
+    ])
+    def test_accepts_and_lowercases(self, url, expected):
+        assert _mod.gh_cli._vetted_origin_identity_from_url(url) == expected
+
+    @pytest.mark.parametrize("url", [
+        pytest.param("https://user:pw@host/project.git", id="password_userinfo"),
+        pytest.param("ssh://git@host:2222/r.git", id="port"),
+        pytest.param("somedir/o/r", id="relative_path"),
+        pytest.param("git@host/o/r", id="scp_prefix_with_slash_separator"),
+        pytest.param("../o/r.git", id="parent_relative_path"),
+        pytest.param("./o/r", id="current_relative_path"),
+        pytest.param("https://TOKEN@host/o/r", id="token_only_userinfo"),
+        pytest.param("user:TOKEN@host/r", id="scp_style_user_and_token_userinfo"),
+        pytest.param("user:TOKEN@host/o/r", id="scp_style_user_and_token_userinfo_with_three_segments"),
+        pytest.param("https://ghe.example:8443/r", id="https_with_port"),
+        pytest.param("https://ghe.example:8443/o/r", id="https_with_port_and_owner"),
+        pytest.param("alice@host:o/r", id="scp_user_other_than_git"),
+    ])
+    def test_rejects_by_form(self, url):
+        assert _mod.gh_cli._vetted_origin_identity_from_url(url) is None
+
+    @pytest.mark.parametrize("url", [
+        pytest.param("https://../o/r", id="dot_dot_host"),
+        pytest.param("https://./o/r", id="dot_host"),
+        pytest.param("https://-x.example/o/r", id="leading_hyphen_label"),
+        pytest.param("https://github.com./o/r", id="trailing_dot"),
+        pytest.param("https://a..b/o/r", id="empty_label"),
+    ])
+    def test_rejects_by_host(self, url):
+        assert _mod.gh_cli._origin_identity_from_url(url) is not None  # form and name are plain, so only the host rule rejects it
+        assert _mod.gh_cli._vetted_origin_identity_from_url(url) is None
+
+    @pytest.mark.parametrize("url", [
+        pytest.param("ext::sh -c id/r", id="transport_helper"),
+        pytest.param("https://github.com/o/r*", id="glob_in_name"),
+        pytest.param("https://github.com/./r", id="dot_owner"),
+        pytest.param("https://github.com/o/..", id="dot_dot_name"),
+        pytest.param("https://github.com/o p/r", id="space_in_owner"),
+    ])
+    def test_rejects_by_owner_and_name(self, url):
+        assert _mod.gh_cli._vetted_origin_identity_from_url(url) is None
+
+    @pytest.mark.parametrize("url", [
+        pytest.param("https://github.com/" + "a" * _PATHOLOGICAL_LENGTH + "*/r", id="bad_character_after_a_long_owner"),
+        pytest.param("https://github.com/o/" + "a" * _PATHOLOGICAL_LENGTH + "*", id="bad_character_after_a_long_name"),
+        pytest.param("https://" + "a-" * (_PATHOLOGICAL_LENGTH // 2) + "/o/r", id="long_host_ending_in_a_hyphen"),
+        pytest.param("https://" + "a." * (_PATHOLOGICAL_LENGTH // 2) + "-/o/r", id="long_dotted_host_with_a_bad_label"),
+    ])
+    def test_rejects_a_very_long_failing_input_within_a_generous_bound(self, url):
+        started = time.perf_counter()
+
+        assert _mod.gh_cli._vetted_origin_identity_from_url(url) is None
+
+        assert time.perf_counter() - started < _LINEAR_TIME_BOUND_S
+
+
+_GIT_REPOSITORY_LOCAL_NAMES_UNDER_TEST = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+)
+_GH_TOKEN_NAMES_UNDER_TEST = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+# Names that share a prefix with a scrubbed name but are not in either scrub list, plus one unrelated name.
+_PASSTHROUGH_NAMES_UNDER_TEST = (
+    "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_SSH_COMMAND", "GH_HOST", "GITHUB_ACTIONS", "GITHUB_WORKSPACE",
+    "UNRELATED_VARIABLE_FOR_PASSTHROUGH",
+)
+_EXPECTED_ORIGIN_GIT_ARGV_PREFIX = ["git", "--no-pager", "-c", "safe.bareRepository=explicit", "-C"]
+_EXPECTED_ORIGIN_GIT_ARGV_SUFFIX = ["remote", "get-url", "origin"]
+
+
+class TestGhTokenEnvVars:
+    # Exact pin: every child process that scrubs gh credentials reads this constant, and this file exercises only the
+    # _origin_identity_at child, so a dropped name would otherwise go unnoticed for the others.
+    def test_names_the_four_variables_gh_reads_as_tokens(self):
+        assert _mod.gh_cli._GH_TOKEN_ENV_VARS == _GH_TOKEN_NAMES_UNDER_TEST
+
+
+# git splits GIT_CEILING_DIRECTORIES on colons and skips relative entries, so none of these can be one ceiling entry.
+_HOMES_THAT_CANNOT_BE_A_CEILING = [
+    pytest.param(None, id="unset"),
+    pytest.param("", id="empty"),
+    pytest.param("/srv/someone:else", id="contains_colon"),
+    pytest.param("relative/home", id="relative"),
+]
+
+
+class TestOriginIdentityAtFakedRun:
+    @staticmethod
+    def _record_run(monkeypatch, result) -> dict:
+        captured: dict = {"calls": 0}
+
+        def fake_run(cmd, *a, **kw):
+            captured["calls"] += 1
+            captured["cmd"] = cmd
+            captured["kwargs"] = kw
+            return result
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        return captured
+
+    def test_issues_exactly_this_git_argv_with_capture_decoding_and_timeout(self, monkeypatch, capfd):
+        captured = self._record_run(monkeypatch, _gh_result(stdout="https://github.com/Owner/Repo.git\n"))
+
+        identity = _mod.gh_cli._origin_identity_at("/some/dir")
+        output = capfd.readouterr()
+
+        assert identity == ("github.com", "owner/repo")
+        assert captured["cmd"] == [*_EXPECTED_ORIGIN_GIT_ARGV_PREFIX, "/some/dir", *_EXPECTED_ORIGIN_GIT_ARGV_SUFFIX]
+        kwargs = captured["kwargs"]
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["errors"] == "replace"
+        assert kwargs["timeout"] == _mod.gh_cli._GIT_REMOTE_ORIGIN_TIMEOUT_S
+        assert (output.out, output.err) == ("", "")
+
+    def test_uppercase_host_in_the_origin_url_comes_back_lowercased(self, monkeypatch):
+        self._record_run(monkeypatch, _gh_result(stdout="https://GitHub.COM/Owner/Repo.git\n"))
+
+        assert _mod.gh_cli._origin_identity_at("/some/dir") == ("github.com", "owner/repo")
+
+    def test_environment_lacks_every_repository_local_and_token_variable_even_when_exported(self, monkeypatch):
+        for name in (*_GIT_REPOSITORY_LOCAL_NAMES_UNDER_TEST, *_GH_TOKEN_NAMES_UNDER_TEST):
+            monkeypatch.setenv(name, "exported-value")
+        for name in _PASSTHROUGH_NAMES_UNDER_TEST:
+            monkeypatch.setenv(name, f"kept-{name}")
+        captured = self._record_run(monkeypatch, _gh_result(stdout="https://github.com/o/r.git\n"))
+
+        _mod.gh_cli._origin_identity_at("/some/dir")
+
+        child_env = captured["kwargs"]["env"]
+        scrubbed_names = (*_GIT_REPOSITORY_LOCAL_NAMES_UNDER_TEST, *_GH_TOKEN_NAMES_UNDER_TEST)
+        assert [name for name in scrubbed_names if name in child_env] == []
+        assert {name: child_env.get(name) for name in _PASSTHROUGH_NAMES_UNDER_TEST} == {
+            name: f"kept-{name}" for name in _PASSTHROUGH_NAMES_UNDER_TEST
+        }
+
+    def test_ceiling_directories_equals_home_when_nothing_was_set(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/srv/someone")
+        monkeypatch.delenv("GIT_CEILING_DIRECTORIES", raising=False)
+        captured = self._record_run(monkeypatch, _gh_result(stdout="https://github.com/o/r.git\n"))
+
+        _mod.gh_cli._origin_identity_at("/some/dir")
+
+        assert captured["kwargs"]["env"]["GIT_CEILING_DIRECTORIES"] == "/srv/someone"
+
+    def test_ceiling_directories_puts_home_before_an_already_set_value(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/srv/someone")
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", "/slow/mount")
+        captured = self._record_run(monkeypatch, _gh_result(stdout="https://github.com/o/r.git\n"))
+
+        _mod.gh_cli._origin_identity_at("/some/dir")
+
+        assert captured["kwargs"]["env"]["GIT_CEILING_DIRECTORIES"] == "/srv/someone:/slow/mount"
+
+    @staticmethod
+    def _set_home(monkeypatch, home_value: str | None) -> None:
+        if home_value is None:
+            monkeypatch.delenv("HOME", raising=False)
+        else:
+            monkeypatch.setenv("HOME", home_value)
+
+    @pytest.mark.parametrize("home_value", _HOMES_THAT_CANNOT_BE_A_CEILING)
+    def test_a_set_ceiling_passes_through_unchanged_without_a_usable_home(self, monkeypatch, home_value):
+        self._set_home(monkeypatch, home_value)
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", "/slow/mount")
+        captured = self._record_run(monkeypatch, _gh_result(stdout="https://github.com/o/r.git\n"))
+
+        _mod.gh_cli._origin_identity_at("/some/dir")
+
+        assert captured["kwargs"]["env"]["GIT_CEILING_DIRECTORIES"] == "/slow/mount"
+
+    @pytest.mark.parametrize("home_value", _HOMES_THAT_CANNOT_BE_A_CEILING)
+    def test_an_unset_ceiling_stays_absent_without_a_usable_home(self, monkeypatch, home_value):
+        self._set_home(monkeypatch, home_value)
+        monkeypatch.delenv("GIT_CEILING_DIRECTORIES", raising=False)
+        captured = self._record_run(monkeypatch, _gh_result(stdout="https://github.com/o/r.git\n"))
+
+        _mod.gh_cli._origin_identity_at("/some/dir")
+
+        assert "GIT_CEILING_DIRECTORIES" not in captured["kwargs"]["env"]
+
+    @pytest.mark.parametrize("outcome", [
+        pytest.param(_gh_result(2, stderr="fatal: not a git repository\n"), id="exit_2"),
+        pytest.param(subprocess.TimeoutExpired(cmd=["git"], timeout=1), id="timeout_expired"),
+        pytest.param(OSError("git not found"), id="os_error"),
+        pytest.param(ValueError("embedded null byte"), id="value_error"),
+        pytest.param(_gh_result(stdout="not a remote\n"), id="unparseable_url"),
+        pytest.param(_gh_result(stdout="https://user:SENTINEL-SECRET@host/project.git\n"), id="credentialed_url"),
+        pytest.param(_gh_result(stdout="../o/r.git\n"), id="relative_path_url"),
+        pytest.param(_gh_result(stdout="ext::sh -c id/r\n"), id="transport_helper_url"),
+    ])
+    def test_unresolvable_directory_returns_none_and_prints_nothing(self, monkeypatch, capfd, outcome):
+        def fake_run(cmd, *a, **kw):
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        assert _mod.gh_cli._origin_identity_at("/some/dir") is None
+
+        captured = capfd.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_path_like_directory_passes_its_fspath_string_to_git(self, monkeypatch):
+        captured = self._record_run(monkeypatch, _gh_result(stdout="https://github.com/o/r.git\n"))
+
+        identity = _mod.gh_cli._origin_identity_at(Path("/abs/dir"))
+
+        assert identity == ("github.com", "o/r")
+        assert captured["calls"] == 1
+        assert captured["cmd"] == [*_EXPECTED_ORIGIN_GIT_ARGV_PREFIX, "/abs/dir", *_EXPECTED_ORIGIN_GIT_ARGV_SUFFIX]
+        directory_argument = captured["cmd"][len(_EXPECTED_ORIGIN_GIT_ARGV_PREFIX)]
+        assert type(directory_argument) is str
+
+    def test_path_like_whose_fspath_is_bytes_returns_none_without_a_git_call(self, monkeypatch):
+        class BytesPath:
+            def __fspath__(self):
+                return b"/abs"
+
+        captured = self._record_run(monkeypatch, _gh_result(stdout="https://github.com/o/r.git\n"))
+
+        assert _mod.gh_cli._origin_identity_at(BytesPath()) is None
+        assert captured["calls"] == 0
+
+    @pytest.mark.parametrize("directory", [
+        pytest.param("", id="empty_string"),
+        pytest.param(".", id="dot"),
+        pytest.param("relative/dir", id="relative"),
+        pytest.param("-C", id="leading_hyphen"),
+        pytest.param("a\x00b", id="embedded_nul_relative"),
+        pytest.param(None, id="none"),
+        pytest.param(42, id="int"),
+        pytest.param(b"/abs", id="bytes"),
+    ])
+    def test_invalid_directory_returns_none_without_a_git_call(self, monkeypatch, directory):
+        captured = self._record_run(monkeypatch, _gh_result(stdout="https://github.com/o/r.git\n"))
+
+        assert _mod.gh_cli._origin_identity_at(directory) is None
+        assert captured["calls"] == 0
+
+    def test_embedded_nul_in_an_absolute_path_is_rejected_by_the_real_subprocess_run(self, capfd):
+        assert _mod.gh_cli._origin_identity_at("/nul\x00path") is None
+
+        captured = capfd.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
+
+def _git_version_at_least(minimum: tuple[int, int]) -> bool:
+    if shutil.which("git") is None:
+        return False
+    try:
+        version_text = subprocess.run(["git", "--version"], capture_output=True, text=True, check=True).stdout
+    except (subprocess.CalledProcessError, OSError):
+        return False
+    version_match = re.search(r"(\d+)\.(\d+)", version_text)
+    return version_match is not None and (int(version_match.group(1)), int(version_match.group(2))) >= minimum
+
+
+_ORIGIN_URL = "https://github.com/Acme/Widget.git"
+_ORIGIN_IDENTITY = ("github.com", "acme/widget")
+_OTHER_ORIGIN_URL = "https://github.com/Other/Elsewhere.git"
+_requires_safe_bare_repository = pytest.mark.skipif(
+    not _git_version_at_least((2, 38)),
+    reason="needs git 2.38 or later for safe.bareRepository; skipped here means the bare-layout deny path went unchecked",
+)
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
+
+
+def _write_sentinel_script(path: Path, log_path: Path, marker: str, *, exit_code: int = 0) -> Path:
+    """An executable that appends `marker` to `log_path` whatever its environment holds."""
+    path.write_text(f"#!/bin/sh\necho {marker} >> '{log_path}'\nexit {exit_code}\n")
+    path.chmod(0o755)
+    return path
+
+
+def _escape_for_ext_transport(command_path: Path) -> str:
+    """Escapes a command path for an `ext::<command>` remote URL: a percent sign doubles, a space follows a percent sign."""
+    return str(command_path).replace("%", "%%").replace(" ", "% ")
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git on PATH")
+class TestOriginIdentityAtRealGit:
+    """_origin_identity_at against real repositories. HOME and every repository the class builds sit under
+    tmp_path, so the ceiling keeps discovery out of whatever encloses it and the machine's own git config never
+    takes part."""
+
+    @pytest.fixture(autouse=True)
+    def isolated_git_environment(self, monkeypatch, tmp_path):
+        for name in [name for name in os.environ if name.startswith("GIT_")]:
+            monkeypatch.delenv(name)
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        home = tmp_path / "home"
+        (home / "xdg").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "xdg"))
+        self.home = home
+        self.sentinel_log = tmp_path / "sentinel.log"
+
+    def _clone_with_origin(self, name: str = "clone", origin_url: str = _ORIGIN_URL) -> Path:
+        clone = self.home / name
+        _init_repo(clone)
+        _commit(clone, "init")
+        _git(clone, "remote", "add", "origin", origin_url).check_returncode()
+        return clone
+
+    def _bare_repo_with_origin(self, name: str = "bare.git") -> Path:
+        seed = self.home / f"{name}-seed"
+        _init_repo(seed)
+        _commit(seed, "init")
+        bare = self.home / name
+        subprocess.run(["git", "clone", "-q", "--bare", str(seed), str(bare)], check=True)
+        _git(bare, "config", "remote.origin.url", _ORIGIN_URL).check_returncode()
+        return bare
+
+    @staticmethod
+    def _identity_at_silently(capfd, directory: Path):
+        capfd.readouterr()  # drop output from fixture setup
+        identity = _mod.gh_cli._origin_identity_at(directory)
+        captured = capfd.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+        return identity
+
+    @staticmethod
+    def _direct_origin_url(directory: Path) -> str:
+        """Prints what a bare `git -C <directory> remote get-url origin` says, with none of the production call's hardening."""
+        result = subprocess.run(
+            ["git", "-C", str(directory), "remote", "get-url", "origin"],
+            capture_output=True, text=True, check=False,
+        )
+        return result.stdout.strip()
+
+    def test_clone_root_and_subdirectory_resolve_to_the_identity(self, capfd):
+        clone = self._clone_with_origin()
+        subdirectory = clone / "nested" / "deeper"
+        subdirectory.mkdir(parents=True)
+
+        assert self._identity_at_silently(capfd, clone) == _ORIGIN_IDENTITY
+        assert self._identity_at_silently(capfd, subdirectory) == _ORIGIN_IDENTITY
+
+    def test_linked_worktree_of_a_clone_resolves_to_the_identity(self, capfd):
+        clone = self._clone_with_origin()
+        linked = self.home / "linked"
+        _git(clone, "worktree", "add", "-q", "-b", "feature", str(linked)).check_returncode()
+
+        assert self._identity_at_silently(capfd, linked) == _ORIGIN_IDENTITY
+
+    def test_linked_worktree_of_a_bare_repository_resolves_to_the_identity(self, capfd):
+        bare = self._bare_repo_with_origin()
+        linked = self.home / "bare-linked"
+        _git(bare, "worktree", "add", "-q", str(linked), "main").check_returncode()
+
+        assert self._identity_at_silently(capfd, linked) == _ORIGIN_IDENTITY
+
+    def test_plain_directory_nonexistent_path_and_regular_file_return_none(self, capfd):
+        plain = self.home / "plain"
+        plain.mkdir()
+        regular_file = self.home / "file.txt"
+        regular_file.write_text("x\n")
+
+        assert self._identity_at_silently(capfd, plain) is None
+        assert self._identity_at_silently(capfd, self.home / "does-not-exist") is None
+        assert self._identity_at_silently(capfd, regular_file) is None
+
+    def test_clone_whose_origin_remote_was_removed_returns_none(self, capfd):
+        clone = self._clone_with_origin()
+        _git(clone, "remote", "remove", "origin").check_returncode()
+
+        assert self._identity_at_silently(capfd, clone) is None
+
+    def test_home_that_is_a_repository_resolves_itself_but_not_plain_folders_under_it(self, monkeypatch, capfd):
+        home_repo = self._clone_with_origin(name="home-repo")
+        folder_under_home = home_repo / "untracked-folder"
+        folder_under_home.mkdir()
+        monkeypatch.setenv("HOME", str(home_repo))
+
+        control_url = self._direct_origin_url(folder_under_home)
+        assert control_url == _ORIGIN_URL, "control: with no ceiling the folder finds HOME's repository"
+        assert self._identity_at_silently(capfd, home_repo) == _ORIGIN_IDENTITY
+        assert self._identity_at_silently(capfd, folder_under_home) is None
+
+    def test_exported_git_dir_pointing_at_another_repository_leaves_results_unchanged(self, monkeypatch, capfd):
+        clone = self._clone_with_origin()
+        other_repo = self._clone_with_origin(name="other", origin_url=_OTHER_ORIGIN_URL)
+        plain = self.home / "plain"
+        plain.mkdir()
+        monkeypatch.setenv("GIT_DIR", str(other_repo / ".git"))
+
+        assert self._direct_origin_url(clone) == _OTHER_ORIGIN_URL, "control: with no scrub the exported GIT_DIR wins"
+        assert self._direct_origin_url(plain) == _OTHER_ORIGIN_URL, "control: with no scrub the exported GIT_DIR wins"
+        assert self._identity_at_silently(capfd, clone) == _ORIGIN_IDENTITY
+        assert self._identity_at_silently(capfd, plain) is None
+
+    @_requires_safe_bare_repository
+    def test_bare_repository_directory_itself_returns_none(self, capfd):
+        bare = self._bare_repo_with_origin()
+
+        assert self._direct_origin_url(bare) == _ORIGIN_URL, "control: with no -c pair the bare layout is read as a repository"
+        assert self._identity_at_silently(capfd, bare) is None
+
+    @_requires_safe_bare_repository
+    def test_bare_layout_committed_inside_a_clone_returns_none_from_itself_and_from_a_folder_inside_it(self, capfd):
+        clone = self._clone_with_origin()
+        embedded = clone / "embedded"
+        (embedded / "objects").mkdir(parents=True)
+        (embedded / "refs").mkdir()
+        (embedded / "objects" / ".keep").write_text("")
+        (embedded / "refs" / ".keep").write_text("")
+        (embedded / "HEAD").write_text("ref: refs/heads/main\n")
+        (embedded / "config").write_text(
+            f'[core]\n\tbare = true\n[remote "origin"]\n\turl = {_OTHER_ORIGIN_URL}\n'
+        )
+        _git(clone, "add", "embedded").check_returncode()
+        _git(clone, "commit", "-q", "-m", "commit a bare layout").check_returncode()
+        inside_layout = embedded / "refs"
+
+        for layout_directory in (embedded, inside_layout):
+            control_url = self._direct_origin_url(layout_directory)
+            assert control_url == _OTHER_ORIGIN_URL, "control: with no -c pair the layout is read as a repository"
+        assert self._identity_at_silently(capfd, embedded) is None
+        assert self._identity_at_silently(capfd, inside_layout) is None
+
+    def test_hostile_clone_config_runs_no_configured_program(self, capfd):
+        clone = self._clone_with_origin()
+        hooks_dir = self.home / "hostile-hooks"
+        hooks_dir.mkdir()
+        fsmonitor_script = _write_sentinel_script(self.home / "fsmonitor.sh", self.sentinel_log, "core.fsmonitor")
+        _write_sentinel_script(hooks_dir / "post-index-change", self.sentinel_log, "post-index-change")
+        _write_sentinel_script(hooks_dir / "reference-transaction", self.sentinel_log, "reference-transaction")
+        _git(clone, "config", "core.fsmonitor", str(fsmonitor_script)).check_returncode()
+        _git(clone, "config", "core.hooksPath", str(hooks_dir)).check_returncode()
+
+        # Each control starts from an empty log, so its marker can only come from the command it ran.
+        _git(clone, "status")
+        assert "core.fsmonitor" in self.sentinel_log.read_text(), "control: git status refreshes the index through core.fsmonitor"
+        self.sentinel_log.unlink()
+        (clone / "new-file.txt").write_text("x\n")
+        _git(clone, "add", "new-file.txt")
+        assert "post-index-change" in self.sentinel_log.read_text(), "control: git add fires post-index-change"
+        self.sentinel_log.unlink()
+        _git(clone, "update-ref", "refs/heads/probe", "HEAD")
+        assert "reference-transaction" in self.sentinel_log.read_text(), "control: update-ref fires reference-transaction"
+        self.sentinel_log.unlink()
+
+        assert self._identity_at_silently(capfd, clone) == _ORIGIN_IDENTITY
+        assert not self.sentinel_log.exists()
+
+    def test_transport_helper_origin_runs_no_program_and_returns_none(self, capfd):
+        clone = self._clone_with_origin(name="ext-clone")
+        ext_script = _write_sentinel_script(self.home / "ext helper.sh", self.sentinel_log, "ext", exit_code=1)
+        _git(clone, "config", "remote.origin.url", f"ext::{_escape_for_ext_transport(ext_script)}").check_returncode()
+        _git(clone, "config", "protocol.ext.allow", "always").check_returncode()
+
+        _git(clone, "ls-remote", "origin")
+        assert "ext" in self.sentinel_log.read_text(), "control: ls-remote runs the transport helper"
+        self.sentinel_log.unlink()
+
+        assert self._identity_at_silently(capfd, clone) is None
+        assert not self.sentinel_log.exists()
+
+    def test_repository_local_variable_list_names_only_scrubbed_variables(self):
+        plain = self.home / "plain"
+        plain.mkdir()
+
+        printed = _git(plain, "rev-parse", "--local-env-vars")
+
+        assert printed.returncode == 0
+        assert set(printed.stdout.split()) <= set(_mod.gh_cli._GIT_REPOSITORY_LOCAL_ENV_VARS)
