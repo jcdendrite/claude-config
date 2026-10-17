@@ -174,7 +174,7 @@ while IFS= read -r CHANGED_FILE; do
   ROOT=$(find_plugin_root "$CHANGED_FILE") || continue
   [ -z "$ROOT" ] && continue
   ALREADY_SEEN=0
-  # Guard on non-empty: bash <4.4 (incl. macOS's stock bash 3.2) throws unbound-variable under set -u when iterating an empty array -- same guard as npm-semver's sibling hook.
+  # Guard on non-empty: redundant on the supported bash floor; kept to avoid churn.
   if [ "${#PLUGIN_ROOTS[@]}" -gt 0 ]; then
     for EXISTING_ROOT in "${PLUGIN_ROOTS[@]}"; do
       if [ "$EXISTING_ROOT" = "$ROOT" ]; then

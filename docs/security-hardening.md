@@ -866,6 +866,11 @@ to hold PII/PHI or live credentials:
   attacker able to substitute `basename`/`dirname` on PATH can substitute
   `timeout` too. The defense here has to come from PATH and filesystem
   integrity outside this repo's hooks.
+- Every hook's shebang resolves `bash` through `env` on PATH, so a PATH-resolved
+  `bash` is trusted too. A substituted `bash` executable on PATH runs before
+  the bash floor check and before `onFailure`, and neither can detect it. No
+  gate protects user-writable PATH directories such as `~/.local/bin` or
+  Homebrew's bin directory.
 
 The airtight control is machine segmentation: developer machines do not
 hold patient data or long-lived credentials. That is policy, not

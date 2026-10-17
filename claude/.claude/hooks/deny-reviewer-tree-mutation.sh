@@ -293,13 +293,10 @@ case "$TOOL_NAME" in
         # _lib_parse_tool_input_or_deny already reads .cwd fail-closed, so
         # CWD is never empty here as a silent read failure — the
         # zero-length check below is for a genuinely absent field.
-        # macOS's system /bin/bash (3.2, what a bare `#!/bin/bash` shebang
-        # resolves to) treats `cd ''` as a silent no-op that stays in the
-        # current directory and returns 0 — unlike bash 4+, which errors.
-        # Relying on `cd "$CWD"` to fail on an empty CWD would silently check
-        # whatever directory the hook process happens to be running in
-        # instead of failing closed. Verified empirically on this machine's
-        # /bin/bash 3.2.57 and Homebrew bash 5.3.15. Deliberately stricter
+        # This zero-length check denies an empty CWD because, on bash 5.2,
+        # `cd ''` succeeds in place, so `cd "$CWD"` alone would silently check
+        # whatever directory the hook process happens to be running in instead
+        # of failing closed. Deliberately stricter
         # than require-worktree-for-git-writes.sh:103's `[ -z "$CWD" ] &&
         # CWD="$PWD"` fallback: that hook's invariant is "is this a git
         # write inside a worktree," where an unresolvable cwd can safely

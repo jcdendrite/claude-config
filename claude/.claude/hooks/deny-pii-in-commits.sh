@@ -93,10 +93,9 @@
 # Known gaps (documented, not closed):
 #  - The pseudo-file guard matches literal spellings only (`-`, `/dev/stdin`,
 #    `/dev/fd/*`, `/proc/*/fd/*`), then requires a regular readable file.
-#    Alias spellings such as `//dev/fd/N` or `/dev/./fd/N` are not recognised
-#    and can evade the scan: under /bin/bash 3.2 the `-f` test passes for them
-#    inside the reading loop. Accepted debt shared with
-#    deny-escaped-backticks-in-pr-body.sh and deny-private-project-refs.sh.
+#    Alias spellings such as `//dev/fd/N` or `/dev/./fd/N` are not recognised,
+#    and on bash 5.2 the `-f` test rejects them, so the gate denies. Shared
+#    with deny-escaped-backticks-in-pr-body.sh and deny-private-project-refs.sh.
 #  - A capped `cat` of a message-source file that ends in any nonzero status
 #    denies; _lib_status_consistent_with_cap_kill only picks whether the
 #    message says "killed".
@@ -175,8 +174,9 @@
 #    captured stdout pipe keeps the hook open past the cap, because the cap
 #    bounds only the direct child.
 #    The hook then stays open until the harness's own hook timeout.
-#    A PreToolUse command hook that times out does not block the tool call,
-#    so the commit then proceeds unscanned.
+#    A PreToolUse command hook that times out does not block the tool call by
+#    default, but gate registrations set `onFailure: "block"`, so on Claude
+#    Code 2.1.295 or later the commit is blocked instead.
 #    _lib_capped_for's header in _lib.sh quotes the vendor rule.
 #  - The diff calls pass `--no-ext-diff` so a repo-local `diff.external`
 #    driver is not such a descendant.
@@ -565,7 +565,7 @@ luhn_valid() {
 # Prints $1 with each apostrophe-grouped thousands numeral replaced by a space, unless stripping quotes would join its digits to another digit.
 # The substitution runs twice because one global pass skips a numeral whose leading bound character the previous match consumed.
 # This expression must stay backreference-free — sed's runtime here is linear in input only without one.
-# A superlinear runtime here would reopen the fail-open timeout gap this hook's Known-gaps section already accepts as a residual risk.
+# A superlinear runtime here would hold the hook open until the harness timeout, which blocks the commit on Claude Code 2.1.295 or later (see this hook's Known gaps).
 mask_thousands_numerals() {
   local expr=$'s/(^|[^0-9\'"\\$])([\'"\\$]*)[0-9]{1,3}(\'[0-9]{3})+([\'"\\$]*)([^0-9\'"\\$]|$)/\\1\\2 \\4\\5/g'
   printf '%s' "$1" | sed -E -e "$expr" -e "$expr"

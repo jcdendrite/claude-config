@@ -210,7 +210,7 @@ report_worktree() {
   [ "$IS_LOCKED" -eq 1 ] && reasons+=("locked")
   [ "$has_submodules" -eq 1 ] && reasons+=("has submodules")
   local reason_text="" _reason
-  for _reason in "${reasons[@]+"${reasons[@]}"}"; do
+  for _reason in "${reasons[@]}"; do
     if [ -z "$reason_text" ]; then
       reason_text="$_reason"
     else
@@ -247,7 +247,7 @@ PRUNABLE_COUNT=0
 IN_USE_COUNT=0
 UNVERIFIABLE_COUNT=0
 
-for _i in "${REPORT_INDICES[@]+"${REPORT_INDICES[@]}"}"; do
+for _i in "${REPORT_INDICES[@]}"; do
   report_worktree "$_i"
   [ "$IS_REMOVABLE" -eq 1 ] && REMOVABLE_COUNT=$(( REMOVABLE_COUNT + 1 ))
   [ "$IS_DIRTY" -eq 1 ] && DIRTY_COUNT=$(( DIRTY_COUNT + 1 ))

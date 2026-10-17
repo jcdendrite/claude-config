@@ -115,8 +115,7 @@ _claude_session_is_active_now() {
 # Sourced from its own known repo-relative path, not ~/.claude/scripts/...,
 # which doesn't exist yet at this point in a fresh install (migration runs
 # before stow does). Not relocate-claude-config.sh itself — sourcing that
-# would turn on set -u/pipefail for the rest of install.sh, fatal on an
-# empty array under macOS system bash 3.2.
+# would turn on set -u/pipefail for the rest of install.sh.
 # shellcheck source=claude/.claude/scripts/_stow_migration_lib.sh
 . "$REPO_DIR/claude/.claude/scripts/_stow_migration_lib.sh"
 
@@ -561,8 +560,8 @@ configure_machine_level_opt_ins() {
 # row moved to config-keys.psv: a committed file is the git-native idiom
 # for a repo-level toggle, and moving these into the per-machine state file
 # would break exactly the property they exist for. Flat, pipe-delimited
-# rows rather than an associative array: the system bash on macOS (and this
-# machine's default) is 3.2, which has no `declare -A`. Schema (no
+# rows rather than an associative array (redundant on the supported bash
+# floor; kept to avoid churn). Schema (no
 # surrounding whitespace around any `|` -- IFS='|' read -r would otherwise
 # bake leading/trailing spaces into every field): path-template|human-name|
 # docs-anchor. Every row defaults to `disabled` (presence-enables); no
@@ -703,8 +702,8 @@ report_sentinel_inventory() {
 
 # INSTALL_TEST_FIXTURE: legacy-config-migration — start
 # Executed, not sourced: sourcing would turn on set -u/pipefail for the
-# rest of this script, fatal on an empty array under macOS system bash 3.2
-# (the same reason given above for not sourcing _stow_migration_lib.sh).
+# rest of this script (the same reason given above for not sourcing
+# _stow_migration_lib.sh).
 # Runs before the interactive opt-in prompts below so a freshly-imported
 # legacy value is what those prompts (and the reporter) see. A failed
 # migration does not abort the rest of install.sh -- matching the shape at

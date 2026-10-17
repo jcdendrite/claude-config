@@ -96,7 +96,9 @@ _lib_config_dir() {
 # install.sh warns about missing timeout at onboarding time.
 # Security implication: on BSD/macOS without coreutils, a stalled or
 # replaced jq binary can hold a gate hook open until the harness's own hook
-# timeout, which does not block the tool call (see _lib_capped_for below).
+# timeout, which does not block the tool call by default (see _lib_capped_for
+# below). Gate registrations set `onFailure: "block"`, so on Claude Code
+# 2.1.295 or later a timed-out gate blocks the call instead.
 _lib_jq() {
   if command -v timeout >/dev/null 2>&1; then
     timeout 5 jq "$@"
@@ -119,7 +121,9 @@ _lib_jq() {
 # --foreground, so the outer cap's group-directed signal does not reach it.
 # On the uncapped fallback, or with a child that survives SIGKILL, a stalled
 # PreToolUse gate exits only by the harness's own hook timeout, which does not
-# block the tool call (hooks reference, Timeouts section, fetched 2026-09-19).
+# block the tool call by default (hooks reference, Timeouts section, fetched
+# 2026-09-19). Gate registrations set `onFailure: "block"`, so on Claude Code
+# 2.1.295 or later a timed-out gate blocks the call instead.
 # The short `-k 2` spelling is load-bearing: BusyBox's timeout rejects
 # `--kill-after=2` with a usage error and never runs the command.
 # The requirement is a `timeout` or `gtimeout` that accepts `-k`: GNU coreutils,

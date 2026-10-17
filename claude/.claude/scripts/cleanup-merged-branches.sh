@@ -216,11 +216,11 @@ read_configured_roots() {
 # same repo contribute it only once.
 declare -a DISCOVERED_REPOS=()
 discover_repo_roots() {
-  # Linear membership scan, not an associative array: `declare -A` is a
-  # bash-4+ construct that fails outright on macOS's frozen system bash 3.2.
-  # Fine at the scale a machine's own repo count reaches.
+  # Linear membership scan, not an associative array: redundant on the
+  # supported bash floor; kept to avoid churn. Fine at the scale a machine's
+  # own repo count reaches.
   local root git_dir repo_root already_seen _existing_repo
-  for root in "${CONFIGURED_ROOTS[@]+"${CONFIGURED_ROOTS[@]}"}"; do
+  for root in "${CONFIGURED_ROOTS[@]}"; do
     if [ ! -d "$root" ]; then
       echo "WARNING: configured root is not a directory, skipping: ${root}" >&2
       continue
@@ -228,7 +228,7 @@ discover_repo_roots() {
     while IFS= read -r -d '' git_dir; do
       repo_root=$(cd "$(dirname "$git_dir")" && pwd -P)
       already_seen=0
-      for _existing_repo in "${DISCOVERED_REPOS[@]+"${DISCOVERED_REPOS[@]}"}"; do
+      for _existing_repo in "${DISCOVERED_REPOS[@]}"; do
         if [ "$_existing_repo" = "$repo_root" ]; then
           already_seen=1
           break
@@ -613,7 +613,7 @@ else:
 # branch and so stay one line each, unaffected by the grouping.
 print_skip_reason_lines() {
   # Linear scan against parallel arrays, not an associative array — see the
-  # bash-3.2 note on discover_repo_roots above.
+  # note on discover_repo_roots above.
   local -a _reason_messages=()
   local -a _reason_branch_lists=()
   local -a _reason_counts=()
@@ -1016,7 +1016,7 @@ fi
 # End-of-run summary
 # ---------------------------------------------------------------------------
 
-for BRANCH in "${SKIPPED_LIVE_LOCK[@]+"${SKIPPED_LIVE_LOCK[@]}"}"; do
+for BRANCH in "${SKIPPED_LIVE_LOCK[@]}"; do
   echo "Skipped (live agent lock): ${BRANCH}"
 done
 

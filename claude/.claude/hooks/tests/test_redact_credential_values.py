@@ -398,8 +398,8 @@ class TestRedactCredentialValues:
         assert GHP_TOKEN not in result.stdout + result.stderr
 
     def test_failed_lib_sh_source_exits_1_with_redaction_off_stderr(self, tmp_path):
-        """A `_lib.sh` that fails to source must surface as a hook error, not a
-        silent exit 0 that leaves the result unredacted. The hook is copied
+        """A `_lib.sh` that fails to source must exit 1 with a stderr line, not a
+        silent exit 0 that gives no signal that redaction is off. The hook is copied
         beside a stub `_lib.sh` so `${0%/*}/_lib.sh` resolves to the stub."""
         shutil.copy2(REDACT_CREDENTIAL_VALUES_HOOK, tmp_path / REDACT_CREDENTIAL_VALUES_HOOK.name)
         (tmp_path / "_lib.sh").write_text("return 1\n")

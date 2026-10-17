@@ -194,9 +194,9 @@ class TestAgentReviewsIgnoreVerification:
 
     def test_missing_cwd_denied(self):
         """No .cwd in the payload at all must deny, not silently check
-        whatever directory the hook process happens to be running in —
-        regression test for macOS system /bin/bash 3.2 treating `cd ''` as a
-        silent no-op (exit 0, stays put) rather than an error like bash 4+."""
+        whatever directory the hook process happens to be running in. The
+        hook's zero-length check denies it because, on bash 5.2, `cd ''`
+        succeeds in place."""
         path = "agent-reviews/staff-sdet-1700000000-branch.md"
         reason = run_hook_reason(HOOK, write_input(path, agent_type="staff-sdet"))
         assert reason is not None

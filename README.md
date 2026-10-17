@@ -92,16 +92,16 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 ## Requirements
 
 - **Operating system:** Linux, macOS, or WSL2. Native Windows (PowerShell / cmd.exe) is not supported — every hook is a bash script and `install.sh` uses GNU `stow` with symlinks. If you're on Windows, install inside [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) instead.
-- **Shell:** `bash`. Hooks and `install.sh` use `#!/bin/bash`.
+- **Shell:** bash 5.2 or newer, first on the PATH Claude Code starts with. Every hook, script, and `install.sh` uses `#!/usr/bin/env bash`. On macOS, `/bin/bash` is 3.2, so run `brew install bash` and put Homebrew's bin directory before `/bin` on PATH. Elsewhere, install bash 5.2 or newer by any means that puts it first on PATH: a distro package, Homebrew on Linux, or a source build. Below the floor, `install.sh` exits naming the bash it found, and every gate denies with "could not source _lib.sh". The credential redactor exits 1 with a stderr line saying "credential redaction is OFF" instead of redacting, and whether and how the transcript surfaces that is unverified. CI runs bash 5.2.
 - **Tools:** `stow`, `git`, `gh`, `jq`, `sha256sum`, `python3`, and the `claude` CLI. `install.sh` verifies they exist and exits early if any are missing.
 - **`git` version:** `git` >= 2.31, because the worktree hooks, `marker.sh`, and the `review-pr-*` scripts resolve the main tree with `git rev-parse --path-format=absolute`, an option added in git 2.31.0 (its release notes). `install.sh` does not check this.
 - **`jq` version:** `review-pr-checkout.sh`'s stacked-base audit needs a `jq` whose `jq -R -s` keeps NUL bytes in raw input. That behavior was verified on jq 1.8.2 only. A `jq` that truncates raw input at NUL makes every stacked PR with a non-empty delta exit 2 there.
 - **`timeout` version:** `timeout` (or `gtimeout`) must accept `-k` (GNU coreutils, or BusyBox 1.35.0 or newer; other implementations are unverified), because a `timeout` that rejects `-k` makes every gate hook deny its tool calls, as `docs/hooks.md` § "Gate deadlock recovery" describes.
 - **Python:** `python3` >= 3.11. Stock macOS `/usr/bin/python3` is 3.9.6, Ubuntu 22.04 LTS ships 3.10, and Debian 11 ships 3.9 — all below this floor. Install a newer interpreter (e.g. via Homebrew or pyenv on macOS; your distro's `python3.11+` package or pyenv on Linux) so it resolves first on PATH. `install.sh` checks this and exits early if it isn't met.
 - **Optional:** `pytest` for running the test suite (`pytest claude/.claude/`; add `-n0` to run serially for `-s` / `--pdb` / `-x` debugging).
-- **Claude Code CLI:** `>= 2.1.218` for `transcript-narrative` and `error-mode-analysis`, this repo's two `context: fork` skills. An earlier version honors `context: fork` without honoring `background: false`. That produces a background fork whose narrowed tool set may omit `Bash`. Below that floor, each skill's first step stops and names the version requirement once it detects `Bash` is unavailable, rather than failing silently or half-run. Not enforced by `install.sh`, since it would block installation for every consumer who never invokes either skill.
+- **Claude Code CLI:** 2.1.295 or newer, because every gate registration sets `onFailure: "block"`, which older versions may ignore or reject (unverified). `install.sh` does not check the version, because it does not run on `git pull`, so update Claude Code before pulling.
 
-**macOS:** `sha256sum` ships in GNU `coreutils`. Install with `brew install coreutils`, then add the gnubin directory to PATH so the unprefixed name resolves: `export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"`.
+**macOS:** `bash` 5.2 or newer and `sha256sum` come from Homebrew. `sha256sum` ships in GNU `coreutils`. Install with `brew install bash coreutils`, put Homebrew's bin directory before `/bin` on PATH (`export PATH="$(brew --prefix)/bin:$PATH"`), then add the gnubin directory to PATH so the unprefixed `sha256sum` resolves: `export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"`.
 
 **PATH setup for script wrappers:** The user-facing scripts are installed as wrappers under `~/.local/bin/`. That directory needs to be on your PATH:
 
@@ -111,6 +111,8 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
 **Existing users:** `git pull` does not materialize new wrappers automatically, nor does it apply the owner-only permissions on `~/.claude` and `~/.claude.json` — both happen only when `./install.sh` runs. Re-run it once after pulling. After re-stowing, run `git status` in the repo: if any file under `claude/.local/bin/` shows as modified, stow's `--adopt` flag adopted a same-named local file. Revert with `git checkout claude/.local/bin/<name>` and rename the conflicting local script.
+
+Before pulling a change that raises the bash or Claude Code floor, install the newer versions from a terminal, as [Requirements](#requirements) describes. Check them with `env bash -c 'echo "$BASH_VERSION"'` (5.2 or newer) and `claude --version` (2.1.295 or newer), because `command -v bash` prints a path, not a version. Close or restart any already-running Claude Code session before pulling, and pull from a separate terminal rather than from inside a Claude Code session. If you use the hook-bearing plugins, update each with `claude plugin update <name>@claude-config --scope project` from the consuming repository's root directory. If gates deny with "could not source _lib.sh" after a pull, run `./install.sh` from a terminal. If it names a below-floor bash, fix that. If it passes and gates still deny, Claude Code was started with a different PATH than that terminal, or a stale stow link needs `./install.sh`: for the PATH case, start Claude Code from a shell where `command -v bash` is the new bash, per `docs/hooks.md` § "Gate deadlock recovery". A desktop-app or IDE launch may not inherit a shell's PATH. This is unverified.
 
 ## What this installs
 
@@ -212,6 +214,8 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 
 Marketplace registration and user-scope `enabledPlugins` install are also available standalone via `register-marketplace` — `install.sh` calls it once for its own profile, but a machine running multiple Claude Code config profiles (each pointed at its own config directory via `CLAUDE_CONFIG_DIR`) can re-run it per profile: `CLAUDE_CONFIG_DIR=<profile-dir> register-marketplace`. See [`docs/scripts.md`](docs/scripts.md) for the full description.
 
+`skill-management`, `plugin-semver`, `npm-semver` and `lovable-cloud` ship gates that need the bash and Claude Code versions in [Requirements](#requirements). Below the bash floor, those gates deny. Below the Claude Code minimum, the block-on-failure behavior for crashes and timeouts is not applied, and how that Claude Code version treats the `onFailure` field is unverified.
+
 - **`lovable-cloud`** — Skills for Lovable Cloud projects: Project/Workspace Knowledge fields, edge-function auth model (ES256 gateway constraint, two-tier auth), and migration-sync workflow. `claude plugin install lovable-cloud@claude-config --scope project`
 - **`skill-management`** — Authoring guardrails for SKILL.md files: a commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing) plus a behavioral-equivalence audit via `/skill-review`. `claude plugin install skill-management@claude-config --scope project`
 
@@ -251,7 +255,7 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 ### Configuration files
 
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
-- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, test-tree packaging, and this repo's bash unit-test-seam mechanics.
+- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, test-tree packaging, this repo's bash unit-test-seam mechanics, and the shell floor.
 - **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra, SQL/DDL, Python environment, settings.json conventions, and CLAUDE.md/AGENTS.md loading conventions that apply across every repo the user opens, not just this one.
 - **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo`, secret-file reads, and tool-availability entries (see [Auto mode](#auto-mode)). Configured with **sonnet** as the default model. The escalation path for Opus judgment is `plan-architect`, dispatched automatically by `/plan-it` Step 5 or on the user's explicit ask for an ad hoc consult (Model & Effort Routing section of `CLAUDE.md`). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
 

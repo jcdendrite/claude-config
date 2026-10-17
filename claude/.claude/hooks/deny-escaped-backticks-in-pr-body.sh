@@ -31,9 +31,9 @@
 # Known gaps (documented, not closed):
 # - The pseudo-file guard matches literal spellings only (`-`, `/dev/stdin`,
 #   `/dev/fd/*`, `/proc/*/fd/*`). Alias spellings such as `//dev/fd/N` or
-#   `/dev/./fd/N` are not recognised and can evade the scan: under /bin/bash
-#   3.2 the `-f` test passes for them inside the reading loop. Accepted debt
-#   shared with deny-pii-in-commits.sh and deny-private-project-refs.sh.
+#   `/dev/./fd/N` are not recognised, and on bash 5.2 the `-f` test below
+#   rejects them, so the gate denies. Shared with deny-pii-in-commits.sh and
+#   deny-private-project-refs.sh.
 
 # grep -q reads a here-string, never a pipe: see test_no_pipe_into_early_exit_grep in hooks/tests/test_hook_alignment.py.
 set -uo pipefail

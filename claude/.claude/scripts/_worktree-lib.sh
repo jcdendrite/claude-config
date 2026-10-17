@@ -155,7 +155,7 @@ worktree_in_use() {
   # Canonicalize so symlinked path components match the kernel-canonical
   # cwd strings reported by /proc and lsof.
   resolved=$(worktree_canon_path "$target")
-  for cwd in "${PROCESS_CWDS[@]+"${PROCESS_CWDS[@]}"}"; do
+  for cwd in "${PROCESS_CWDS[@]}"; do
     if [ "$cwd" = "$resolved" ] || [[ "$cwd" == "$resolved"/* ]]; then
       return 0
     fi

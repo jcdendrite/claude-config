@@ -1259,9 +1259,8 @@ _config_scaffold() {
       ''|'#'*) continue ;;
     esac
     already=1
-    # Count-guarded (${#arr[@]} first): expanding "${present_keys[@]}"
-    # directly when the array is empty (a fresh/absent state file) is an
-    # unbound-variable error under `set -u` on bash before 4.4.
+    # Count-guarded (${#arr[@]} first): redundant on the supported bash floor;
+    # kept to avoid churn.
     if [ "${#present_keys[@]}" -gt 0 ]; then
       for present_key in "${present_keys[@]}"; do
         [ "$present_key" = "$schema_key" ] && already=0 && break

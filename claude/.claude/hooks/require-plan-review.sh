@@ -312,8 +312,7 @@ if WORKTREE_LIST=$(_lib_capped git -C "$REPO_ROOT" worktree list --porcelain 2>/
     [ "$SIBLING_ROOT" != "$REPO_ROOT" ] || continue
     SIBLING_PREFIXES+=("$(_marker_lib_repo_hash "$SIBLING_ROOT").")
   done <<< "$WORKTREE_LIST"
-  # The count guard is load-bearing under `set -u`: expanding an empty array
-  # is an unbound-variable error on bash before 4.4 (stock macOS ships 3.2).
+  # The count guard is redundant on the supported bash floor; kept to avoid churn.
   if [ "${#SIBLING_PREFIXES[@]}" -gt 0 ] \
     && _lib_marker_value_present "$PLAN_REVIEW_MARKERS_DIR" "$CURRENT_HASH" "${SIBLING_PREFIXES[@]}"; then
     exit 0

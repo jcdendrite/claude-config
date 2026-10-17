@@ -3,8 +3,7 @@
 # into claude-config.toml, plus an interactive per-file offer to delete
 # each one afterward. Executed by install.sh via subprocess -- never
 # sourced (sourcing would turn on set -u/pipefail for the rest of
-# install.sh, fatal on an empty array under macOS system bash 3.2, the
-# same reason install.sh:99-101 gives for not sourcing
+# install.sh, the same reason install.sh:99-101 gives for not sourcing
 # relocate-claude-config.sh) -- and safe to run standalone between full
 # install.sh runs to materialize claude-config.toml on its own, since
 # claude/.claude/** goes live on `git pull` with no install.sh re-run.
@@ -37,8 +36,8 @@ _MIGRATE_ENFORCEMENT_CRITICAL_KEYS=" worktree_required autonomous_shipping round
 # _migrate_enforcement_critical_safe_value KEY
 # Populates _MIGRATE_SAFE_VALUE with KEY's fail-closed value and returns 0,
 # or returns 1 for a key outside _MIGRATE_ENFORCEMENT_CRITICAL_KEYS. A case
-# statement, not an associative array (bash 3.2 has none -- see this
-# script's own header for why that matters here). Deliberately not
+# statement, not an associative array (redundant on the supported bash
+# floor; kept to avoid churn). Deliberately not
 # config-keys.psv's own legacy-probe-on-resolution-failure column, which
 # answers a different question (does resolution-failure fall back to
 # $HOME/.claude?) and only coincides with these values for today's five

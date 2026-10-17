@@ -211,11 +211,10 @@ is_gated_source_file() {
 # --- Package root detection --------------------------------------------------
 
 # Memoization cache for find_package_root, keyed by starting directory.
-# Two parallel arrays (not `declare -A`) — associative arrays require bash
-# 4+, which is not the default on stock macOS bash 3.2. CACHED_ROOTS holds
-# either the resolved root directory or the sentinel "__NONE__" for a
-# confirmed miss, so a miss (which still costs a full ancestor walk to
-# confirm) is cached too, not just a hit.
+# Two parallel arrays (not `declare -A`): redundant on the supported bash
+# floor; kept to avoid churn. CACHED_ROOTS holds either the resolved root
+# directory or the sentinel "__NONE__" for a confirmed miss, so a miss (which
+# still costs a full ancestor walk to confirm) is cached too, not just a hit.
 CACHED_DIRS=()
 CACHED_ROOTS=()
 
@@ -265,10 +264,8 @@ find_package_root() {
     dir=$(dirname -- "$dir")
   done
 
-  # Guard before iterating: on bash <4.4 (including stock macOS bash 3.2),
-  # `for x in "${arr[@]}"` on an EMPTY array triggers "unbound variable"
-  # under `set -u` — this hits on the common case of a cache hit at the
-  # walk's very first iteration, where visited_dirs is still empty.
+  # Guard before iterating: redundant on the supported bash floor; kept to
+  # avoid churn.
   local visited
   if [ "${#visited_dirs[@]}" -gt 0 ]; then
     for visited in "${visited_dirs[@]}"; do
@@ -289,8 +286,7 @@ while IFS= read -r CHANGED_FILE; do
   ROOT=$(find_package_root "$CHANGED_FILE") || continue
   [ -z "$ROOT" ] && continue
   ALREADY_SEEN=0
-  # Same bash <4.4 empty-array guard as above — PACKAGE_ROOTS is empty for
-  # the first gated changed file of nearly every invocation.
+  # Same empty-array guard as above, redundant on the supported bash floor.
   if [ "${#PACKAGE_ROOTS[@]}" -gt 0 ]; then
     for EXISTING_ROOT in "${PACKAGE_ROOTS[@]}"; do
       if [ "$EXISTING_ROOT" = "$ROOT" ]; then
