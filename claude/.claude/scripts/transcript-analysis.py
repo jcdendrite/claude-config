@@ -234,6 +234,7 @@ from transcript_analysis.reviewer_yield import (
 from transcript_analysis.scope import (
     _DO_NOT_PUBLISH_BANNER,
     _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR,
+    _add_project_scope_args,
     _attributed_branch,
     _branch_filter,
     _iter_glob_scoped_sessions,
@@ -4042,21 +4043,6 @@ def cmd_friction_count(args: argparse.Namespace) -> None:
 
     signals = _friction_signals(records)
     _emit_friction_result(signals, as_json=getattr(args, "json", False))
-
-
-def _add_project_scope_args(parser: argparse.ArgumentParser) -> None:
-    """Add the shared --projects/--this-repo scope flags to a subparser.
-
-    Mutually exclusive: --this-repo routes through _repo_scoped_project_slugs(),
-    an identity-based minimization control; --projects keeps the pre-existing
-    machine-wide glob default ("*") so no existing invocation's behavior changes.
-    """
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--projects", default="*", metavar="GLOB")
-    group.add_argument(
-        "--this-repo", action="store_true",
-        help="Scope to this repo's own worktrees only (see docs/transcript-analysis.md).",
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:

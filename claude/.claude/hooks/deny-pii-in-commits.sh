@@ -72,6 +72,10 @@
 # by literal spelling — the hook cannot statically verify what git will read.
 # A message-source path that is not a readable regular file is rejected too.
 # Both apply only to the spellings the extractor recognises (see Known gaps).
+# A command is rejected as well when `_lib_command_words` returns nonzero,
+# because the -F path cannot be located. The conditions are in that
+# function's header in _lib.sh. The fallback tokenizer is uncapped without
+# timeout or gtimeout; see split-command-words.py's docstring.
 #
 # Self-exclusion: claude/.claude/hooks/tests/** is always excluded from
 # the diff scan (this hook's own synthetic-PII test fixtures live there).
@@ -96,6 +100,10 @@
 #    Alias spellings such as `//dev/fd/N` or `/dev/./fd/N` are not recognised,
 #    and on bash 5.2 the `-f` test rejects them, so the gate denies. Shared
 #    with deny-escaped-backticks-in-pr-body.sh and deny-private-project-refs.sh.
+#  - The `xargs -n1` fast path's miss is listed in `_lib_command_words`'s
+#    header in _lib.sh.
+#    The fallback tokenizer's residual over-denies and misses are listed in
+#    split-command-words.py's module docstring.
 #  - A capped `cat` of a message-source file that ends in any nonzero status
 #    denies; _lib_status_consistent_with_cap_kill only picks whether the
 #    message says "killed".
@@ -415,18 +423,6 @@ while IFS=$'\t' read -r config_lineno line; do
 done < <(_lib_config_lines "$PII_PATTERNS_FILE")
 fi
 
-# --- Extract `-F` / `--file` commit-message-source paths -----------------
-# xargs tokenization mirrors deny-private-project-refs.sh: flag-like text
-# inside a quoted value is one token and never matched as a standalone flag.
-extract_commit_message_source_paths() {
-  printf '%s\n' "$1" | xargs -n1 2>/dev/null | awk '
-    BEGIN { cap = 0 }
-    cap { print; cap = 0; next }
-    /^(--file|-F)$/ { cap = 1; next }
-    /^(--file=|-F=)/ { sub(/^[^=]*=/, ""); print }
-  '
-}
-
 # --- Build the scan target -----------------------------------------------
 # Always exclude this hook's own synthetic-PII test fixtures, plus every
 # user-configured `exclude:` glob. `:(top,exclude)` is repo-root-relative.
@@ -502,7 +498,12 @@ if [ "$HEAD_SCAN_NEEDED" -eq 1 ]; then
   fi
 fi
 
-COMMIT_MSG_SOURCES=$(extract_commit_message_source_paths "$COMMAND")
+COMMIT_MSG_SOURCES=$(_lib_git_commit_message_source_paths "$COMMAND")
+COMMIT_MSG_SOURCES_STATUS=$?
+if [ "$COMMIT_MSG_SOURCES_STATUS" -ne 0 ]; then
+  emit_deny "$(_lib_command_words_deny_reason 'git commit' '-F/--file' "$COMMIT_MSG_SOURCES_STATUS")"
+  exit 0
+fi
 if [ -n "$COMMIT_MSG_SOURCES" ]; then
   while IFS= read -r msg_path; do
     [ -z "$msg_path" ] && continue
