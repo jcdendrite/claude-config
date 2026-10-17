@@ -2,7 +2,7 @@
 
 ## Context
 
-Enable `pyright-lsp` (Python code-intelligence) for claude-config itself, scoped to this repo only — not to fix stale `file:line` references (LSP doesn't touch that), but for its own real benefit: automatic post-edit diagnostics and precise navigation across the repo's 149 Python files (~110K lines, mostly hooks and their tests), which today get no diagnostics feedback beyond a manually-run `ruff check` / `pytest`.
+Enable `pyright-lsp` (Python code-intelligence) for claude-config itself, scoped to this repo only. This isn't to fix stale `file:line` references — LSP doesn't touch that. The real benefit is automatic post-edit diagnostics and precise navigation across the repo's 149 Python files (~110K lines, mostly hooks and their tests). Today the repo gets no diagnostics feedback beyond a manually-run `ruff check` / `pytest`.
 
 Ask: enable pyright-lsp for this repo only (original request, prior session, paraphrased from Context); narrowed this session to contributors: "Pyright-lsp should only be installed for contributors to the repo so it should actually be part of install-dev.sh" — paraphrase accepted via label "Accept the Ask line".
 

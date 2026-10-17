@@ -142,8 +142,8 @@ def _run_script_with_pty_stdin(
     caller must pass a reply, because otherwise the prompt waits until
     `_PTY_RUN_TIMEOUT_SECONDS` expires. For this helper, EOF is spelled
     `"\x04"` (the terminal's EOF character, Ctrl-D), not `""` as for the
-    piped `TestConfirmPluginInstall` helper, because an empty reply leaves
-    the prompt waiting until the timeout."""
+    piped `TestConfirmPluginInstall` helper. An empty reply here would
+    leave the prompt waiting until the timeout."""
     env = _script_env(fake_home, stub_bin)
     master_fd, slave_fd = pty.openpty()
     try:
@@ -289,11 +289,10 @@ def _link_real_jq(bin_dir: Path) -> None:
 
 
 def _pyright_lsp_baseline(repo_root_stub: Path) -> tuple[Path, Path]:
-    """A healthy .venv plus a python3 stub whose ensurepip check passes and
-    whose `-m venv` call touches a sentinel — the shared setup for every
-    TestPyrightLspStep case. Returns (bin_dir, venv_created_sentinel); the
-    sentinel proves Step 7 never feeds into check_venv_healthy's recreate
-    path."""
+    """Builds a healthy `.venv` and a python3 stub for `TestPyrightLspStep`.
+    The stub's `ensurepip` check passes. Its `-m venv` call touches a
+    sentinel. Returns `(bin_dir, venv_created_sentinel)`. The sentinel
+    proves Step 7 never feeds into `check_venv_healthy`'s recreate path."""
     _make_healthy_venv_stub(repo_root_stub)
     sentinel = repo_root_stub / "venv_created.flag"
     bin_dir = repo_root_stub / "bin"
