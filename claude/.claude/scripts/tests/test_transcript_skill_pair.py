@@ -5,7 +5,7 @@ from transcript_analysis import skill_pair
 from ._skill_helpers import _TS_FIXED, _skill_pair_args
 from .conftest import _asst, _skill_use, _table_cols, _write_jsonl, _write_subagent_jsonl
 
-# Boundary timestamps for test 7 (ISO week boundary Sun → Mon)
+# Boundary timestamps for the ISO week boundary (Sunday W20 to Monday W21).
 _TS_SUNDAY = "2026-05-17T23:59:59Z"   # ISO 2026-W20 (Sunday = last day of W20)
 _TS_MONDAY = "2026-05-18T00:00:01Z"   # ISO 2026-W21 (Monday = first day of W21)
 

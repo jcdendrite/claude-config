@@ -25,15 +25,13 @@ still-unmigrated friction/command-shape helpers likewise call `denials.py`'s
 `build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
 The still-unmigrated context-composition code separately reads `read_scope.py`'s
 `_READ_SCOPE_CHARS_PER_TOKEN` by name from the shim.
-`review_trace.py` also imports `reviewer_yield.py`, for its own reviewer-spawn detection
-(`reviewer_yield._is_reviewer_subagent_type`), and `review_rounds.py`, for its `/slash`-invocation
-skill-name matching (`review_rounds._round_skill_name`, `review_rounds._SLASH_COMMAND_RE`) — the
-package's first two imports from one command-group module into another.
-`subagent_mix.py` likewise imports `review_rounds.py`, for `REVIEW_SKILLS` and
-`compute_review_round_counts`.
-`review_trace.py` also imports `skill_invocation.py`, for its emitted skill label
-(`skill_invocation._normalize_skill_name`). `judgment_pair.py` imports `review_rounds.py` for
-`REVIEW_SKILLS`, and `skill_invocation.py` imports it for `_SLASH_COMMAND_RE`.
+A command-group module may import another by module (attribute access). Among the review modules,
+`reviewer_yield.py` and `review_rounds.py` import no other command-group module. `review_rounds.py`
+is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_counts`),
+`judgment_pair.py` (for `REVIEW_SKILLS`), `skill_invocation.py` (for `_SLASH_COMMAND_RE`), and
+`author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`). `review_trace.py` imports `reviewer_yield.py` (for
+`_is_reviewer_subagent_type`), `review_rounds.py` (for `_round_skill_name` and
+`_SLASH_COMMAND_RE`), and `skill_invocation.py` (for `_normalize_skill_name`).
 `build_parser()` likewise wires up `pr_cost.py`'s `cmd_pr_cost` (with its two
 `--asof-window-days`/`--plan-file-glob` default constants) and `pr_cost_export.py`'s
 `cmd_pr_cost_export` from the shim.
@@ -53,6 +51,10 @@ name from the shim.
 `build_parser()` registers judgment-pair, skill-invocation, and skill-pair by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
+The shim also binds `cmd_judgment_pair`, `cmd_skill_invocation`, and `cmd_skill_pair`, and those
+bindings exist only for test files, which read them as `_mod.cmd_<command>`. They are read-only test
+affordances: a test that needs to steer a moved command patches the module whose binding the
+handler reads at call time, not the shim name.
 
 ## The package
 
@@ -241,8 +243,8 @@ detector both the default output and `--deny-summary` share (`_review_trace_sess
 Imports `corpus`, `denials`, `render`, `reviewer_yield`, `review_rounds`, `scope`, and
 `skill_invocation` all by module (attribute access), matching `cost.py`'s convention; calls
 `reviewer_yield._is_reviewer_subagent_type` for its own reviewer-spawn detection and `review_rounds._round_skill_name`/
-`review_rounds._SLASH_COMMAND_RE` for its `/slash`-invocation skill matching — see that module's own
-section above for why these are the package's first cross-command-group imports.
+`review_rounds._SLASH_COMMAND_RE` for its `/slash`-invocation skill matching — see the intro for the
+cross-command-group import rule.
 `_review_trace_session_events` reads `skill_invocation._normalize_skill_name` for the emitted display
 label's directory-only strip.
 `cmd_review_trace` and `REVIEW_TRACE_SKILLS` are the two names reached bare from the shim's own
@@ -455,8 +457,7 @@ assistant output with the user's next fresh prompt, and the `_add_judgment_pair_
 registration. Imports `corpus`, `redaction`, `render`, `review_rounds`, and `scope` all by module
 (attribute access), matching `cost.py`'s convention; `review_rounds.REVIEW_SKILLS` is the default
 for its `--skills` flag. `_add_judgment_pair_subparser` is the one name `build_parser()` reaches
-bare. The shim also binds `cmd_judgment_pair`, and that binding exists only for test files, which
-read it as `_mod.cmd_judgment_pair`.
+bare.
 
 ### `skill_invocation.py`
 
@@ -466,9 +467,7 @@ qualifier from a skill name, and the `_add_skill_invocation_subparser` registrat
 `corpus`, `render`, `review_rounds`, and `scope` all by module (attribute access), matching
 `cost.py`'s convention. `_normalize_skill_name` has its one definition here, and `review_trace.py`
 reads it. The `/slash` pattern is `review_rounds._SLASH_COMMAND_RE`.
-`_add_skill_invocation_subparser` is the one name `build_parser()` reaches bare. The shim also binds
-`cmd_skill_invocation`, and that binding exists only for test files, which read it as
-`_mod.cmd_skill_invocation`.
+`_add_skill_invocation_subparser` is the one name `build_parser()` reaches bare.
 
 ### `skill_pair.py`
 
@@ -476,8 +475,6 @@ The skill-pair command: `cmd_skill_pair`, the ISO-week rate at which a follower 
 sessions where a leader skill fired on the main thread, and the `_add_skill_pair_subparser`
 registration. Imports `corpus`, `pricing`, and `scope` all by module (attribute access), matching
 `cost.py`'s convention. `_add_skill_pair_subparser` is the one name `build_parser()` reaches bare.
-The shim also binds `cmd_skill_pair`, and that binding exists only for test files, which read it as
-`_mod.cmd_skill_pair`.
 
 ## Sibling scripts
 
@@ -536,7 +533,12 @@ across junit XML runs. Its seeded-defect self-test is split by subject:
 `tests/test_transcript_move_fidelity_test_ids.py` covers `test-ids`,
 `tests/test_transcript_move_fidelity_parser.py` covers the parser dump and
 `compare-captures --moved-callable`, and `tests/test_transcript_move_fidelity.py` covers the rest.
-Run the module with `--help` for usage.
+Run `tests/_move_fidelity.py` with `--help` for usage.
+`tests/_move_fidelity_helpers.py`, a plain module, not a test file itself, holds the helpers
+the self-test files share: `_invoke` and `_checks` (run the harness and read its output) and `_write`
+and `_write_capture` (write input files and capture directories). The test-ids file imports only
+`_invoke` and `_checks`. A new self-test file imports these helpers instead of defining its own
+copies.
 
 The cache-rebuild family splits along thematic seams rather than one file per module:
 

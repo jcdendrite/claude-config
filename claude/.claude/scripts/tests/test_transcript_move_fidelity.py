@@ -12,32 +12,15 @@ import json
 import os
 import subprocess
 import sys
-import textwrap
 import tokenize
 from pathlib import Path
 
 import pytest
 
-from ._move_fidelity import CAPTURE_TARGET_MODULE_NAME, capture, main
+from ._move_fidelity import CAPTURE_TARGET_MODULE_NAME, capture
+from ._move_fidelity_helpers import _checks, _invoke, _write, _write_capture
 
 HELPER_PATH = Path(__file__).with_name("_move_fidelity.py")
-
-
-def _invoke(capsys, *argv) -> tuple[int, list[str], str]:
-    code = main([str(arg) for arg in argv])
-    captured = capsys.readouterr()
-    return code, captured.out.splitlines(), captured.err
-
-
-def _checks(lines: list[str]) -> list[str]:
-    """Check names of the finding lines; the last output line is always the summary, and diff lines are indented."""
-    return [line.split(":", 1)[0] for line in lines[:-1] if not line.startswith(" ")]
-
-
-def _write(directory: Path, name: str, source: str) -> Path:
-    path = directory / name
-    path.write_text(textwrap.dedent(source))
-    return path
 
 
 # --- nodes -------------------------------------------------------------------
@@ -881,13 +864,6 @@ def test_capture_exits_2_when_nothing_is_requested(capsys, tmp_path, echo_target
 
     assert code == 2
     assert "nothing to capture" in err
-
-
-def _write_capture(directory: Path, files: dict[str, str]) -> Path:
-    directory.mkdir()
-    for name, text in files.items():
-        (directory / name).write_text(text)
-    return directory
 
 
 def test_compare_captures_identical_directories_are_clean(capsys, tmp_path):

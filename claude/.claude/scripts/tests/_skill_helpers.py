@@ -7,7 +7,7 @@ from transcript_analysis import review_rounds
 
 from .conftest import _asst, _user_msg
 
-# Fixed timestamp used for tests 1–6, 8–10: 2026-05-12T12:00:00Z → ISO 2026-W20
+# Shared fixed timestamp: 2026-05-12T12:00:00Z, ISO week 2026-W20.
 _TS_FIXED = "2026-05-12T12:00:00Z"
 
 

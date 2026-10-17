@@ -41,7 +41,6 @@ def _normalize_skill_name(raw: str) -> str:
     return raw.rsplit("/", 1)[-1]
 
 
-
 def cmd_skill_invocation(args: argparse.Namespace) -> None:
     """Per-skill invocation-source tally across the full corpus.
 

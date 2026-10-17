@@ -10,19 +10,7 @@ from xml.sax.saxutils import quoteattr
 
 import pytest
 
-from ._move_fidelity import main
-
-
-def _invoke(capsys, *argv) -> tuple[int, list[str], str]:
-    code = main([str(arg) for arg in argv])
-    captured = capsys.readouterr()
-    return code, captured.out.splitlines(), captured.err
-
-
-def _checks(lines: list[str]) -> list[str]:
-    """Check names of the finding lines; the last output line is always the summary, and diff lines are indented."""
-    return [line.split(":", 1)[0] for line in lines[:-1] if not line.startswith(" ")]
-
+from ._move_fidelity_helpers import _checks, _invoke
 
 TREE = "claude..claude.scripts.tests"
 OTHER_TREE = "claude..claude.hooks.tests"
