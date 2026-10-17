@@ -16,9 +16,8 @@ select = ["E", "F", "B", "I", "UP", "SIM"]
 
 [tool.pytest.ini_options]
 pythonpath = ["claude/.claude/tests", "claude/.claude/scripts", "evals", "plugins/skill-management/scripts", "plugins/lovable-cloud/tests"]
-# -n auto parallelizes the documented `pytest claude/.claude/` command itself
-# (not the command string, which is an exact-match permission grant in two
-# settings.json files) — pass -n0 on the CLI to debug serially (-s / --pdb / -x),
+# -n auto parallelizes the documented full-suite pytest command itself —
+# pass -n0 on the CLI to debug serially (-s / --pdb / -x),
 # which overrides this cleanly. --strict-markers makes a typo'd marker name a
 # collection error instead of a silently-unfiltered test. -ra prints skip reasons in the
 # summary, so CI logs show why a test skipped.
@@ -32,10 +31,11 @@ markers = [
   "timing: asserts a wall-clock bound, or needs serial isolation to avoid subprocess-spawn contention flakiness; run serially (-m timing -n0) — see claude/.claude/tests/test_pytest_collection_config.py",
 ]
 # Setting norecursedirs replaces pytest's built-in default list rather than
-# extending it, so all nine defaults are restated here alongside "worktrees" —
+# extending it, so all nine defaults are restated here alongside the repo's own entries —
 # dropping any of them (".*" especially) would silently re-expose hidden
 # directories to collection. See claude/.claude/tests/test_pytest_collection_config.py.
+# evals/fixtures holds a sample project whose test imports a module on no configured pythonpath.
 norecursedirs = [
   "*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}",
-  "worktrees",
+  "worktrees", "evals/fixtures",
 ]

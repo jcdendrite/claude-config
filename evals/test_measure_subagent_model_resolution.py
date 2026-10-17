@@ -510,6 +510,7 @@ class TestRunClaudeToCompletion:
             b"git_config_global=/dev/null", b"marker=kept", b"path=" + os.environ["PATH"].encode(),
         ]
 
+    @pytest.mark.timing
     def test_deadline_holds_for_a_child_that_goes_silent_below_one_read_buffer(self, tmp_path: Path) -> None:
         start = time.monotonic()
         lines, timed_out = msmr._run_claude_to_completion(["sh", "-c", "printf abc; sleep 30"], tmp_path, 1)
@@ -519,6 +520,7 @@ class TestRunClaudeToCompletion:
         assert elapsed < 10
         assert lines == []
 
+    @pytest.mark.timing
     def test_timeout_kills_descendants_of_the_child(self, tmp_path: Path) -> None:
         pid_file = tmp_path / "grandchild.pid"
 
@@ -527,6 +529,7 @@ class TestRunClaudeToCompletion:
         assert timed_out is True
         self._assert_stops_running(int(pid_file.read_text()))
 
+    @pytest.mark.timing
     def test_keyboard_interrupt_kills_the_childs_process_group_and_propagates(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -543,6 +546,7 @@ class TestRunClaudeToCompletion:
 
         self._assert_stops_running(int(pid_file.read_text()))
 
+    @pytest.mark.timing
     def test_abort_launches_stops_a_running_child_from_another_thread(self, tmp_path: Path) -> None:
         pid_file = tmp_path / "grandchild.pid"
         outcome: dict[str, msmr.LaunchAbortedError | None] = {"error": None}

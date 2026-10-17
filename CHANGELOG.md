@@ -6,6 +6,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Changed
 
+- **CI now collects and lints `evals/`, and `select-tests.py`'s fail-open fallback runs the same four roots as CI.** The `evals/` unit tests stub every `claude` subprocess. Every fail-open reason (empty diff, global trigger, unmatched path, git unavailable) now runs the whole `evals/` root along with the other three roots. A parity test pins the fallback's roots to the pytest and lint steps in `tests.yml`.
 - **`/handoff` keeps its marker activation as the first step, run as its own Bash call, and now creates the handoffs directory just before drafting.**
   - The two one-line recipes no longer sit next to each other. `enforce-marker-script-shape.sh` denies the activation chained to a non-`marker.sh` command.
   - A run that the warrant check stops no longer creates the directory.

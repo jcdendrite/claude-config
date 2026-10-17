@@ -43,7 +43,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Detect hook-relevant changes
+      - name: Detect which checks the diff needs
         id: detect
         run: |
           set -euo pipefail
@@ -114,9 +114,9 @@ jobs:
             echo "shell_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Skip — no hook-relevant changes
+      - name: Skip — no test-relevant changes
         if: steps.detect.outputs.changed != 'true'
-        run: echo "No hook-relevant files changed; skipping pytest."
+        run: echo "No test-relevant files changed; skipping pytest and ruff."
 
       # Gated on either output: shellcheck ships as a pip wheel, so a PR that
       # touches only SKIP_REGEX-skipped (pytest-irrelevant) paths but also a
@@ -156,18 +156,18 @@ jobs:
       - name: Run tests (parallel)
         # This step's `if:` must keep matching "Install stow and direnv" above and "Run tests (timing, serial)" below — see that step's own comment.
         if: steps.detect.outputs.changed == 'true'
-        run: pytest claude/.claude/ claude-skills/ plugins/ -v -m "not timing"
+        run: pytest claude/.claude/ claude-skills/ plugins/ evals/ -v -m "not timing"
 
       # !cancelled() (not bare `if:`) so a parallel-pass failure above doesn't
       # suppress this step's own report in the same run.
       # This step's `if:` must keep matching "Install stow and direnv" and "Run tests (parallel)" above — see that step's own comment.
       - name: Run tests (timing, serial)
         if: ${{ !cancelled() && steps.detect.outputs.changed == 'true' }}
-        run: pytest claude/.claude/ claude-skills/ plugins/ -v -m timing -n0
+        run: pytest claude/.claude/ claude-skills/ plugins/ evals/ -v -m timing -n0
 
       - name: Lint
         if: steps.detect.outputs.changed == 'true'
-        run: ruff check claude/.claude/ claude-skills/ plugins/
+        run: ruff check claude/.claude/ claude-skills/ plugins/ evals/
 
       - name: Shellcheck
         if: steps.detect.outputs.shell_changed == 'true'
