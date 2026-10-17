@@ -1263,6 +1263,44 @@ def absolute_git_dir(repo: Path) -> Path:
     return Path(_run_git(repo, "rev-parse", "--absolute-git-dir").strip())
 
 
+def ignore_agent_reviews(repo: Path) -> None:
+    """Add `agent-reviews/` to `repo`'s info/exclude, as findings-path-suffix.sh does, so a
+    review-ledger `--out` target under it passes the git-ignored check. The file is the one
+    `git rev-parse --git-path info/exclude` names (the common repo's, in a linked worktree),
+    resolved against `repo` and not the process cwd. Idempotent. Asserts the entry took effect."""
+    exclude_file = repo / _run_git(repo, "rev-parse", "--git-path", "info/exclude").strip()
+    exclude_file.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude_file.read_text() if exclude_file.exists() else ""
+    if "agent-reviews/" not in existing.splitlines():
+        separator = "" if existing == "" or existing.endswith("\n") else "\n"
+        exclude_file.write_text(f"{existing}{separator}agent-reviews/\n")
+    check = subprocess.run(
+        ["git", "-C", str(repo), "check-ignore", "-q", "--", "agent-reviews/sample.md"], capture_output=True
+    )
+    assert check.returncode == 0, f"agent-reviews/ is not ignored in {repo} after writing {exclude_file}"
+
+
+def isolated_git_config_env(home: Path) -> dict[str, str]:
+    """Environment that keeps ambient git config from changing an ignore verdict. `home` is created if
+    absent and stands in for both HOME and XDG_CONFIG_HOME."""
+    home.mkdir(parents=True, exist_ok=True)
+    return {
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home),
+    }
+
+
+def unwrapped_check_ignore_status(repo: Path, relative_path: str, env: dict[str, str]) -> int:
+    """Exit status of a bare `git check-ignore -q` on `relative_path` under `os.environ` overlaid with `env`,
+    with none of review-ledger's environment scrubbing. A premise check for a refusal that depends on it."""
+    return subprocess.run(
+        ["git", "-C", str(repo), "check-ignore", "-q", "--", relative_path],
+        capture_output=True, env={**os.environ, **env}, check=False,
+    ).returncode
+
+
 def _seed_tracked_file(repo: Path, file_name: str, content: str = "base\n") -> Path:
     """Ensure `file_name` exists, tracked, and committed in `repo`, so a
     conflict-building fixture has a common baseline both diverging sides
@@ -2322,15 +2360,14 @@ def run_ci_detect_step(repo: Path, base_sha: str, head_sha: str) -> dict[str, st
     return outputs
 
 
-def _make_git_exiting_with_status(bin_dir: Path, arg_pattern: str, exit_status: int) -> Path:
-    """Shim at bin_dir/git: exits exit_status at once when any argument
-    matches the shell `case` pattern arg_pattern, printing nothing; every
-    other invocation proxies to the real git. Stands in for a capped call
-    whose wrapper reports a cap-kill status without waiting for the cap.
-    Callers must set REAL_GIT in the shim's environment to a real git
-    binary path (e.g. via shutil.which("git"))."""
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    shim = bin_dir / "git"
+def _write_arg_matching_exit_shim(
+    shim: Path, real_tool_command: str, arg_pattern: str, exit_status: int
+) -> None:
+    """Write an executable bash shim at `shim` that exits `exit_status` at once,
+    printing nothing, when any argument matches the shell `case` pattern
+    `arg_pattern`, and otherwise execs `real_tool_command` (a bash-ready word,
+    already quoted) with the original arguments."""
+    shim.parent.mkdir(parents=True, exist_ok=True)
     shim.write_text(
         '#!/bin/bash\n'
         'for arg in "$@"; do\n'
@@ -2340,10 +2377,38 @@ def _make_git_exiting_with_status(bin_dir: Path, arg_pattern: str, exit_status: 
         '      ;;\n'
         '  esac\n'
         'done\n'
-        'exec "$REAL_GIT" "$@"\n'
+        f'exec {real_tool_command} "$@"\n'
     )
     shim.chmod(0o755)
+
+
+def _make_git_exiting_with_status(bin_dir: Path, arg_pattern: str, exit_status: int) -> Path:
+    """Shim at bin_dir/git: exits exit_status at once when any argument
+    matches the shell `case` pattern arg_pattern, printing nothing; every
+    other invocation proxies to the real git. Stands in for a capped call
+    whose wrapper reports a cap-kill status without waiting for the cap.
+    Callers must set REAL_GIT in the shim's environment to a real git
+    binary path (e.g. via shutil.which("git"))."""
+    shim = bin_dir / "git"
+    _write_arg_matching_exit_shim(shim, '"$REAL_GIT"', arg_pattern, exit_status)
     return shim
+
+
+def path_with_failing_tool_shim(bin_dir: Path, tool: str, arg_pattern: str | None = None) -> str:
+    """PATH value that puts a `tool` shim in `bin_dir` ahead of `os.environ["PATH"]`. With no
+    `arg_pattern` the shim exits 1 on every call. With one, it exits 1 only when an argument matches
+    the shell `case` pattern (e.g. `-s`, `*sort_by*`) and proxies every other call to the real tool,
+    which isolates the failure to one call shape. The caller skips a test that needs a tool the host lacks."""
+    shim = bin_dir / tool
+    if arg_pattern is None:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        shim.write_text("#!/bin/bash\nexit 1\n")
+        shim.chmod(0o755)
+    else:
+        real_tool = shutil.which(tool)
+        assert real_tool is not None, f"{tool} not found in PATH"
+        _write_arg_matching_exit_shim(shim, shlex.quote(real_tool), arg_pattern, 1)
+    return f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
 
 
 def _make_git_recording_argv(bin_dir: Path, log_file: Path, action: str = "") -> Path:

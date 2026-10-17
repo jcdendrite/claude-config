@@ -12,12 +12,23 @@ import json
 import os
 import re
 import shlex
+import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-from helpers import CLAUDE_DIR, SCRIPTS_DIR, init_git_repo
+from helpers import (
+    CLAUDE_DIR,
+    SCRIPTS_DIR,
+    _make_git_exiting_with_status,
+    ignore_agent_reviews,
+    init_git_repo,
+    isolated_git_config_env,
+    path_with_failing_tool_shim,
+    unwrapped_check_ignore_status,
+)
 
 # claude/.claude/ itself, so `hooks.tests...` below resolves, as in test_author_outcome.py.
 sys.path.insert(0, str(CLAUDE_DIR))
@@ -2015,77 +2026,141 @@ class TestRenderOutputFile:
         assert result.stdout.startswith(_DELIM_START)
 
 
-def _check_out(repo: Path, out: str, *, pr_json: str = "", ledger_dir: Path | None = None, cwd: Path | None = None):
+def _check_out(
+    repo: Path,
+    out: str,
+    subcommand: str,
+    *,
+    pr_json: str = "",
+    ledger_dir: Path | str | None = None,
+    cwd: Path | None = None,
+    env: dict | None = None,
+):
+    """`ledger_dir` None means a sibling directory outside the repo; "" is passed through as an empty argument."""
+    ledger_dir_argument = str(repo.parent / "ledger-dir") if ledger_dir is None else str(ledger_dir)
     return _call(
-        "_review_ledger_check_out", str(repo), out, pr_json, str(ledger_dir or repo.parent / "ledger-dir"),
-        cwd=cwd or repo,
+        "_review_ledger_check_out", str(repo), out, pr_json, ledger_dir_argument, subcommand,
+        cwd=cwd or repo, env=env,
     )
 
 
 class TestCheckOut:
+    @pytest.fixture(autouse=True)
+    def agent_reviews_is_ignored(self, repo):
+        """The allow cases below run with the ignore entry `findings-path-suffix.sh` adds."""
+        ignore_agent_reviews(repo)
+
+    @staticmethod
+    def _remove_ignore_entry(repo: Path) -> None:
+        (repo / ".git" / "info" / "exclude").write_text("")
+
+    @pytest.fixture
+    def git_config_env(self, tmp_path) -> dict[str, str]:
+        return isolated_git_config_env(tmp_path / "empty-home")
+
     @pytest.fixture
     def agent_reviews(self, repo) -> Path:
         directory = repo / "agent-reviews"
         directory.mkdir()
         return directory
 
+    @pytest.fixture(params=["render", "show"])
+    def subcommand(self, request) -> str:
+        return request.param
+
+    @pytest.fixture
+    def target_name(self, subcommand) -> str:
+        """A name `subcommand`'s grammar accepts."""
+        return {"render": "pr-body-1.md", "show": "review-history-1.md"}[subcommand]
+
     @pytest.mark.parametrize("form", ["relative", "dot-slash", "absolute"])
-    def test_a_file_directly_under_agent_reviews_is_accepted(self, repo, agent_reviews, form):
+    def test_a_file_directly_under_agent_reviews_is_accepted(self, repo, agent_reviews, subcommand, target_name, form):
         out = {
-            "relative": "agent-reviews/pr-body-1.md", "dot-slash": "./agent-reviews/pr-body-1.md",
-            "absolute": str(agent_reviews / "pr-body-1.md"),
+            "relative": f"agent-reviews/{target_name}", "dot-slash": f"./agent-reviews/{target_name}",
+            "absolute": str(agent_reviews / target_name),
         }[form]
 
-        assert _check_out(repo, out).returncode == 0
+        assert _check_out(repo, out, subcommand).returncode == 0
 
-    def test_a_target_that_does_not_exist_yet_under_a_missing_agent_reviews_is_accepted(self, repo):
-        assert _check_out(repo, "agent-reviews/pr-body-1.md").returncode == 0
+    def test_a_target_that_does_not_exist_yet_under_a_missing_agent_reviews_is_accepted(
+        self, repo, subcommand, target_name
+    ):
+        assert _check_out(repo, f"agent-reviews/{target_name}", subcommand).returncode == 0
 
-    def test_an_existing_regular_file_target_is_accepted(self, repo, agent_reviews):
-        (agent_reviews / "pr-body-1.md").write_text("stale")
+    def test_an_existing_regular_file_target_is_accepted(self, repo, agent_reviews, subcommand, target_name):
+        (agent_reviews / target_name).write_text("stale")
 
-        assert _check_out(repo, "agent-reviews/pr-body-1.md").returncode == 0
+        assert _check_out(repo, f"agent-reviews/{target_name}", subcommand).returncode == 0
 
-    def test_a_relative_target_is_taken_from_the_working_directory(self, repo, agent_reviews):
-        result = _check_out(repo, "agent-reviews/pr-body-1.md", cwd=repo / "agent-reviews")
+    def test_a_relative_target_is_taken_from_the_working_directory(
+        self, repo, agent_reviews, subcommand, target_name
+    ):
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand, cwd=repo / "agent-reviews")
 
         assert result.returncode == 1
         assert "must be a file directly under" in result.stderr
 
-    def test_a_rejected_relative_target_names_the_working_directory_it_was_resolved_from(self, repo, agent_reviews):
-        result = _check_out(repo, "agent-reviews/pr-body-1.md", cwd=agent_reviews)
+    def test_a_rejected_relative_target_names_the_working_directory_it_was_resolved_from(
+        self, repo, agent_reviews, subcommand, target_name
+    ):
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand, cwd=agent_reviews)
 
         assert f"resolved from the working directory {agent_reviews.resolve()}" in result.stderr
 
     def test_a_rejected_relative_subdirectory_target_names_the_working_directory_it_was_resolved_from(
-        self, repo, agent_reviews
+        self, repo, agent_reviews, subcommand, target_name
     ):
-        result = _check_out(repo, "sub/pr-body-1.md", cwd=agent_reviews)
+        result = _check_out(repo, f"sub/{target_name}", subcommand, cwd=agent_reviews)
 
         assert result.returncode == 1
         assert "not in a subdirectory" in result.stderr
         assert f"resolved from the working directory {agent_reviews.resolve()}" in result.stderr
 
-    def test_a_rejected_absolute_target_does_not_name_a_working_directory(self, repo, agent_reviews):
-        result = _check_out(repo, "/etc/passwd", cwd=agent_reviews)
+    def test_a_rejected_absolute_target_does_not_name_a_working_directory(self, repo, agent_reviews, subcommand):
+        result = _check_out(repo, "/etc/passwd", subcommand, cwd=agent_reviews)
 
         assert result.returncode == 1
         assert "working directory" not in result.stderr
+
+    def test_a_rejection_message_is_prefixed_with_the_subcommand_that_asked(self, repo, agent_reviews, subcommand):
+        result = _check_out(repo, "tracked.txt", subcommand)
+
+        assert result.stderr.startswith(f"review-ledger.sh: {subcommand}: --out 'tracked.txt'")
+
+    @pytest.mark.parametrize("unrecognized_subcommand", ["", "append", "Show", "render-all"])
+    def test_an_unrecognized_subcommand_is_refused_before_either_grammar_is_consulted(
+        self, repo, agent_reviews, unrecognized_subcommand
+    ):
+        result = _check_out(repo, "agent-reviews/review-history-1.md", unrecognized_subcommand)
+
+        assert result.returncode == 1
+        assert "unknown subcommand" in result.stderr
+
+    def test_a_missing_subcommand_argument_is_refused(self, repo, agent_reviews):
+        result = _call(
+            "_review_ledger_check_out", str(repo), "agent-reviews/pr-body-1.md", "", str(repo.parent / "ledger-dir"),
+            cwd=repo,
+        )
+
+        assert result.returncode == 1
+        assert "unknown subcommand" in result.stderr
 
     @pytest.mark.parametrize(
         ("out", "fragment"),
         [
             pytest.param("tracked.txt", "directly under", id="a file outside agent-reviews"),
             pytest.param("agent-reviews/../tracked.txt", "'..'", id="a dot-dot segment"),
-            pytest.param("agent-reviews//pr-body-1.md", "empty or '..'", id="an empty segment"),
-            pytest.param("agent-reviews/sub/pr-body-1.md", "not in a subdirectory", id="a subdirectory"),
+            pytest.param("agent-reviews//review-history-1.md", "empty or '..'", id="an empty segment"),
+            pytest.param("agent-reviews/sub/review-history-1.md", "not in a subdirectory", id="a subdirectory"),
             pytest.param("agent-reviews/", "directly under", id="the directory itself"),
             pytest.param("agent-reviews/a\tb.md", "control character", id="a tab in the name"),
             pytest.param("/etc/passwd", "directly under", id="an absolute path outside the repo"),
         ],
     )
-    def test_a_target_outside_the_confined_directory_is_rejected(self, repo, agent_reviews, out, fragment):
-        result = _check_out(repo, out)
+    def test_a_target_outside_the_confined_directory_is_rejected(
+        self, repo, agent_reviews, subcommand, out, fragment
+    ):
+        result = _check_out(repo, out, subcommand)
 
         assert result.returncode == 1
         assert fragment in result.stderr
@@ -2099,7 +2174,45 @@ class TestCheckOut:
         ],
     )
     def test_a_render_output_filename_is_accepted(self, repo, agent_reviews, name):
-        assert _check_out(repo, f"agent-reviews/{name}").returncode == 0
+        assert _check_out(repo, f"agent-reviews/{name}", "render").returncode == 0
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("review-history-1790921348-GH-1182-branch-scope.md", id="a hook-built review-history name"),
+            pytest.param("review-history-x.md", id="the shortest suffix"),
+        ],
+    )
+    def test_a_show_output_filename_is_accepted(self, repo, agent_reviews, name):
+        assert _check_out(repo, f"agent-reviews/{name}", "show").returncode == 0
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("review-history.md", id="the prefix with no suffix"),
+            pytest.param("review-history-.md", id="an empty suffix"),
+            pytest.param("review-history-x.txt", id="the right prefix with another extension"),
+            pytest.param("my-review-history-x.md", id="the prefix mid-name"),
+            pytest.param("staff-sdet-1790921348-GH-1182-branch-scope.md", id="a reviewer findings file"),
+            pytest.param("review-ledger-x.md", id="a render-grammar name"),
+            pytest.param("pr-body-x.md", id="a render-grammar pr-body name"),
+        ],
+    )
+    def test_a_name_outside_the_show_output_grammar_is_rejected_and_left_in_place(self, repo, agent_reviews, name):
+        existing = agent_reviews / name
+        existing.write_text("a peer file")
+
+        result = _check_out(repo, f"agent-reviews/{name}", "show")
+
+        assert result.returncode == 1
+        assert "must be named review-history-<suffix>.md" in result.stderr
+        assert existing.read_text() == "a peer file"
+
+    def test_a_show_output_name_is_rejected_for_render(self, repo, agent_reviews):
+        result = _check_out(repo, "agent-reviews/review-history-x.md", "render")
+
+        assert result.returncode == 1
+        assert "review-ledger-<suffix>.md or pr-body-<suffix>.md" in result.stderr
 
     @pytest.mark.parametrize(
         "name",
@@ -2118,49 +2231,51 @@ class TestCheckOut:
         existing = agent_reviews / name
         existing.write_text("a peer file")
 
-        result = _check_out(repo, f"agent-reviews/{name}")
+        result = _check_out(repo, f"agent-reviews/{name}", "render")
 
         assert result.returncode == 1
         assert "review-ledger-<suffix>.md or pr-body-<suffix>.md" in result.stderr
         assert existing.read_text() == "a peer file"
 
-    def test_an_existing_directory_is_rejected(self, repo, agent_reviews):
-        (agent_reviews / "review-ledger-adir.md").mkdir()
+    def test_an_existing_directory_is_rejected(self, repo, agent_reviews, subcommand, target_name):
+        (agent_reviews / target_name).mkdir()
 
-        result = _check_out(repo, "agent-reviews/review-ledger-adir.md")
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand)
 
         assert result.returncode == 1
         assert "not a regular file" in result.stderr
 
-    def test_a_symlink_is_rejected_even_when_dangling(self, repo, agent_reviews):
-        (agent_reviews / "review-ledger-dangling.md").symlink_to(repo / "nowhere.txt")
+    def test_a_symlink_is_rejected_even_when_dangling(self, repo, agent_reviews, subcommand, target_name):
+        (agent_reviews / target_name).symlink_to(repo / "nowhere.txt")
 
-        result = _check_out(repo, "agent-reviews/review-ledger-dangling.md")
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand)
 
         assert result.returncode == 1
         assert "symlink" in result.stderr
 
-    def test_a_symlinked_agent_reviews_directory_is_rejected_even_when_it_points_inside_the_repo(self, repo):
+    def test_a_symlinked_agent_reviews_directory_is_rejected_even_when_it_points_inside_the_repo(
+        self, repo, subcommand, target_name
+    ):
         (repo / "real-dir").mkdir()
         (repo / "agent-reviews").symlink_to(repo / "real-dir")
 
-        result = _check_out(repo, "agent-reviews/pr-body-1.md")
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand)
 
         assert result.returncode == 1
         assert "real directory" in result.stderr
 
-    def test_an_agent_reviews_that_is_a_file_is_rejected(self, repo):
+    def test_an_agent_reviews_that_is_a_file_is_rejected(self, repo, subcommand, target_name):
         (repo / "agent-reviews").write_text("not a directory")
 
-        assert _check_out(repo, "agent-reviews/pr-body-1.md").returncode == 1
+        assert _check_out(repo, f"agent-reviews/{target_name}", subcommand).returncode == 1
 
     def test_the_pr_json_path_is_rejected_as_the_target_and_another_pr_json_is_accepted(self, repo, agent_reviews):
         (agent_reviews / "pr-body-input.md").write_text("{}")
         (agent_reviews / "pr-body-1.md").write_text("stale")
 
-        same = _check_out(repo, "agent-reviews/pr-body-input.md", pr_json="agent-reviews/pr-body-input.md")
-        other = _check_out(repo, "agent-reviews/pr-body-1.md", pr_json="agent-reviews/pr-body-input.md")
-        from_stdin = _check_out(repo, "agent-reviews/pr-body-1.md", pr_json="-")
+        same = _check_out(repo, "agent-reviews/pr-body-input.md", "render", pr_json="agent-reviews/pr-body-input.md")
+        other = _check_out(repo, "agent-reviews/pr-body-1.md", "render", pr_json="agent-reviews/pr-body-input.md")
+        from_stdin = _check_out(repo, "agent-reviews/pr-body-1.md", "render", pr_json="-")
 
         assert same.returncode == 1 and "same file" in same.stderr
         assert other.returncode == 0, other.stderr
@@ -2170,19 +2285,174 @@ class TestCheckOut:
         (agent_reviews / "pr-body-input.md").write_text("{}")
         os.link(agent_reviews / "pr-body-input.md", agent_reviews / "review-ledger-alias.md")
 
-        result = _check_out(repo, "agent-reviews/review-ledger-alias.md", pr_json="agent-reviews/pr-body-input.md")
+        result = _check_out(
+            repo, "agent-reviews/review-ledger-alias.md", "render", pr_json="agent-reviews/pr-body-input.md"
+        )
 
         assert result.returncode == 1
         assert "same file" in result.stderr
 
-    def test_a_directory_at_or_under_the_ledger_directory_is_rejected(self, repo, agent_reviews):
-        at = _check_out(repo, "agent-reviews/pr-body-1.md", ledger_dir=agent_reviews)
-        under = _check_out(repo, "agent-reviews/pr-body-1.md", ledger_dir=repo)
-        elsewhere = _check_out(repo, "agent-reviews/pr-body-1.md", ledger_dir=repo.parent / "ledger-dir")
+    def test_a_directory_at_or_under_the_ledger_directory_is_rejected(
+        self, repo, agent_reviews, subcommand, target_name
+    ):
+        out = f"agent-reviews/{target_name}"
+        at = _check_out(repo, out, subcommand, ledger_dir=agent_reviews)
+        under = _check_out(repo, out, subcommand, ledger_dir=repo)
+        elsewhere = _check_out(repo, out, subcommand, ledger_dir=repo.parent / "ledger-dir")
 
         assert at.returncode == 1 and "ledger directory" in at.stderr
         assert under.returncode == 1 and "ledger directory" in under.stderr
         assert elsewhere.returncode == 0, elsewhere.stderr
+
+    def test_a_target_git_does_not_ignore_is_refused_naming_the_path_the_causes_and_the_remedy(
+        self, repo, agent_reviews, git_config_env, subcommand, target_name
+    ):
+        self._remove_ignore_entry(repo)
+        assert unwrapped_check_ignore_status(repo, f"agent-reviews/{target_name}", git_config_env) == 1
+
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand, env=git_config_env)
+
+        assert result.returncode == 1
+        assert f"{subcommand}: {repo.resolve()}/agent-reviews/{target_name} is not git-ignored" in result.stderr
+        assert "a negating pattern" in result.stderr
+        assert "it is tracked" in result.stderr
+        assert "findings-path-suffix.sh" in result.stderr
+
+    def test_a_tracked_target_is_refused_as_not_ignored(
+        self, repo, agent_reviews, git_config_env, subcommand, target_name
+    ):
+        (agent_reviews / target_name).write_text("a committed copy")
+        _git(repo, "add", "-f", f"agent-reviews/{target_name}")
+        assert unwrapped_check_ignore_status(repo, f"agent-reviews/{target_name}", git_config_env) == 1
+
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand, env=git_config_env)
+
+        assert result.returncode == 1
+        assert "is not git-ignored" in result.stderr
+
+    def test_an_empty_ledger_directory_argument_does_not_skip_the_ignore_check(
+        self, repo, agent_reviews, git_config_env, subcommand, target_name
+    ):
+        self._remove_ignore_entry(repo)
+
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand, ledger_dir="", env=git_config_env)
+
+        assert result.returncode == 1
+        assert "is not git-ignored" in result.stderr
+
+    def test_a_repository_root_that_is_not_a_repository_is_refused_as_unconfirmed(
+        self, tmp_path, git_config_env, subcommand, target_name
+    ):
+        not_a_repository = tmp_path / "plain-directory"
+        not_a_repository.mkdir()
+        isolation_env = {**git_config_env, "GIT_CEILING_DIRECTORIES": str(tmp_path)}
+        assert unwrapped_check_ignore_status(not_a_repository, f"agent-reviews/{target_name}", isolation_env) == 128
+
+        result = _check_out(not_a_repository, f"agent-reviews/{target_name}", subcommand, env=isolation_env)
+
+        assert result.returncode == 1
+        assert "could not confirm" in result.stderr
+        assert "exited 128" in result.stderr
+
+    @staticmethod
+    def _git_shim_env(tmp_path: Path, git_config_env: dict[str, str], check_ignore_status: int) -> dict[str, str]:
+        shim_dir = tmp_path / "git-shim"
+        _make_git_exiting_with_status(shim_dir, "check-ignore", check_ignore_status)
+        return {
+            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+            "REAL_GIT": shutil.which("git"),
+            **git_config_env,
+        }
+
+    def test_an_unexpected_check_ignore_status_is_refused_as_unconfirmed_and_names_the_status(
+        self, repo, tmp_path, agent_reviews, git_config_env, subcommand, target_name
+    ):
+        unexpected_status = 7
+        shim_env = self._git_shim_env(tmp_path, git_config_env, unexpected_status)
+
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand, env=shim_env)
+
+        assert result.returncode == 1
+        assert "could not confirm" in result.stderr
+        assert f"exited {unexpected_status}" in result.stderr
+        assert "timed out" not in result.stderr
+
+    @pytest.mark.parametrize("cap_kill_status", [124, 137, 143])
+    def test_a_check_ignore_killed_by_the_cap_is_refused_as_a_timeout_a_retry_may_clear(
+        self, repo, tmp_path, agent_reviews, git_config_env, subcommand, target_name, cap_kill_status
+    ):
+        shim_env = self._git_shim_env(tmp_path, git_config_env, cap_kill_status)
+
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand, env=shim_env)
+
+        assert result.returncode == 1
+        assert "could not confirm" in result.stderr
+        assert f"timed out, exit {cap_kill_status}" in result.stderr
+        assert "a retry may clear it" in result.stderr
+
+    def test_a_foreign_git_dir_environment_does_not_launder_the_check(
+        self, repo, tmp_path, agent_reviews, git_config_env, subcommand, target_name
+    ):
+        """A GIT_DIR naming another repository whose info/exclude ignores agent-reviews/ must not
+        make this repository's target look ignored."""
+        self._remove_ignore_entry(repo)
+        foreign = init_git_repo(tmp_path / "foreign")
+        ignore_agent_reviews(foreign)
+        foreign_env = {**git_config_env, "GIT_DIR": str(foreign / ".git")}
+        assert unwrapped_check_ignore_status(repo, f"agent-reviews/{target_name}", foreign_env) == 0
+
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand, env=foreign_env)
+
+        assert result.returncode == 1
+        assert "is not git-ignored" in result.stderr
+
+    def test_a_foreign_git_work_tree_environment_does_not_launder_the_check(
+        self, repo, tmp_path, agent_reviews, git_config_env, subcommand, target_name
+    ):
+        """A GIT_WORK_TREE naming a tree whose .gitignore lists agent-reviews/ must not make this
+        repository's target look ignored."""
+        self._remove_ignore_entry(repo)
+        foreign_tree = tmp_path / "foreign-tree"
+        foreign_tree.mkdir()
+        (foreign_tree / ".gitignore").write_text("agent-reviews/\n")
+        foreign_env = {**git_config_env, "GIT_WORK_TREE": str(foreign_tree)}
+        assert unwrapped_check_ignore_status(repo, f"agent-reviews/{target_name}", foreign_env) == 0
+
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand, env=foreign_env)
+
+        assert result.returncode == 1
+        assert "is not git-ignored" in result.stderr
+
+    def test_a_foreign_git_common_dir_environment_does_not_launder_the_check(
+        self, repo, tmp_path, agent_reviews, git_config_env, subcommand, target_name
+    ):
+        """A GIT_COMMON_DIR naming another repository whose info/exclude ignores agent-reviews/ must
+        not make this repository's target look ignored."""
+        self._remove_ignore_entry(repo)
+        foreign = init_git_repo(tmp_path / "foreign")
+        ignore_agent_reviews(foreign)
+        foreign_env = {**git_config_env, "GIT_COMMON_DIR": str(foreign / ".git")}
+        assert unwrapped_check_ignore_status(repo, f"agent-reviews/{target_name}", foreign_env) == 0
+
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand, env=foreign_env)
+
+        assert result.returncode == 1
+        assert "is not git-ignored" in result.stderr
+
+    def test_a_foreign_git_index_file_environment_does_not_make_a_tracked_target_look_ignored(
+        self, repo, tmp_path, agent_reviews, git_config_env, subcommand, target_name
+    ):
+        """A GIT_INDEX_FILE naming an index that lacks the target must not hide that the target is tracked."""
+        (agent_reviews / target_name).write_text("a committed copy")
+        _git(repo, "add", "-f", f"agent-reviews/{target_name}")
+        foreign_env = {**git_config_env, "GIT_INDEX_FILE": str(tmp_path / "no-such-index")}
+        assert unwrapped_check_ignore_status(repo, f"agent-reviews/{target_name}", git_config_env) == 1
+        assert unwrapped_check_ignore_status(repo, f"agent-reviews/{target_name}", foreign_env) == 0
+
+        result = _check_out(repo, f"agent-reviews/{target_name}", subcommand, env=foreign_env)
+
+        assert result.returncode == 1
+        assert "is not git-ignored" in result.stderr
 
 
 class TestRemoveOut:
@@ -2219,6 +2489,15 @@ class TestRemoveOut:
         assert result.returncode == 1
         assert link.is_symlink() and referent.read_text() == "keep"
 
+    @pytest.mark.parametrize("subcommand", ["render", "show"])
+    def test_a_refusal_is_prefixed_with_the_subcommand_that_asked(self, tmp_path, subcommand):
+        directory = tmp_path / "adir"
+        directory.mkdir()
+
+        result = _call("_review_ledger_remove_out", str(directory), subcommand)
+
+        assert result.stderr.startswith(f"review-ledger.sh: {subcommand}: ")
+
     def test_a_delete_that_fails_reports_the_stale_path_even_as_root(self, tmp_path):
         stale = tmp_path / "body.md"
         stale.write_text("stale")
@@ -2251,6 +2530,74 @@ class TestRemoveOut:
         assert result.returncode == 1
         assert "could not delete the stale" in result.stderr
         assert stale.read_text() == "stale"
+
+
+class TestMakeOutDir:
+    def test_a_missing_directory_is_created_with_its_parents(self, tmp_path):
+        out = tmp_path / "a" / "b" / "review-history-x.md"
+
+        result = _call("_review_ledger_make_out_dir", str(out), "show")
+
+        assert result.returncode == 0, result.stderr
+        assert out.parent.is_dir()
+
+    def test_an_existing_directory_is_fine(self, tmp_path):
+        assert _call("_review_ledger_make_out_dir", str(tmp_path / "x.md")).returncode == 0
+
+    @pytest.mark.parametrize("subcommand", ["render", "show"])
+    def test_a_parent_that_is_a_file_is_refused_with_the_subcommand_prefix(self, tmp_path, subcommand):
+        (tmp_path / "blocker").write_text("a file")
+
+        result = _call("_review_ledger_make_out_dir", str(tmp_path / "blocker" / "x.md"), subcommand)
+
+        assert result.returncode == 1
+        assert f"review-ledger.sh: {subcommand}: could not create the directory for " in result.stderr
+
+
+class TestWriteOut:
+    def _write_out(self, out: Path, subcommand: str = "show", *, stdin: str = "row one\nrow two\n", **kwargs):
+        return _bash(f"_review_ledger_write_out {shlex.quote(str(out))} {subcommand}", stdin=stdin, **kwargs)
+
+    def test_stdin_is_written_to_the_target_at_mode_0600_and_changed_is_printed(self, tmp_path):
+        out = tmp_path / "review-history-x.md"
+
+        result = self._write_out(out)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"changed: {out}\n"
+        assert out.read_text() == "row one\nrow two\n"
+        assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+    def test_an_existing_target_is_replaced_and_no_temporary_file_is_left(self, tmp_path):
+        out = tmp_path / "review-history-x.md"
+        out.write_text("old")
+
+        result = self._write_out(out)
+
+        assert result.returncode == 0, result.stderr
+        assert out.read_text() == "row one\nrow two\n"
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["review-history-x.md"]
+
+    @pytest.mark.parametrize("subcommand", ["render", "show"])
+    def test_a_move_that_fails_leaves_no_target_and_names_the_subcommand(self, tmp_path, subcommand):
+        out = tmp_path / "review-history-x.md"
+        failing_mv_path = path_with_failing_tool_shim(tmp_path / "bin", "mv")
+
+        result = self._write_out(out, subcommand, env={"PATH": failing_mv_path})
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr.startswith(f"review-ledger.sh: {subcommand}: could not write {out}")
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["bin"]
+
+    def test_a_temporary_file_that_cannot_be_created_leaves_no_target(self, tmp_path):
+        out = tmp_path / "missing-dir" / "review-history-x.md"
+
+        result = self._write_out(out)
+
+        assert result.returncode == 1
+        assert "show: could not create a temporary file beside" in result.stderr
+        assert result.stdout == ""
 
 
 class TestRenderPrJsonFile:

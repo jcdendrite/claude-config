@@ -20,7 +20,11 @@ from helpers import (
     SKILLS_DIR,
     TRAVERSAL_SESSION_ID,
     git_toplevel,
+    ignore_agent_reviews,
+    isolated_git_config_env,
+    path_with_failing_tool_shim,
     plant_traversal_canary,
+    unwrapped_check_ignore_status,
 )
 from transcript_analysis import author_outcome as ao
 
@@ -29,6 +33,8 @@ from .conftest import _dead_pid, _review_ledger_path, _seed_session
 REVIEW_LEDGER_SCRIPT = SCRIPTS_DIR / "review-ledger.sh"
 
 SID = "test-session-abc"
+
+requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not found in PATH")
 
 
 def _run(
@@ -1789,6 +1795,7 @@ class TestReviewLedgerRenderAndRefReadOnlyTheResolvedFile:
     ):
         _git(git_repo, "checkout", "-q", "-b", "feature")
         _seed_session(isolated_home, SID)
+        ignore_agent_reviews(git_repo)
         _run(_defer_args(), cwd=git_repo, home=isolated_home)
         out_path = git_repo / "agent-reviews" / "pr-body-test.md"
         pr_json = json.dumps({"body": "Existing description"})
@@ -1818,6 +1825,10 @@ def _logged_id(home: Path, repo: Path) -> str:
 class TestReviewLedgerRenderOutConfinement:
     """`render --out` deletes its target first, so it accepts only a regular
     file directly under the repo's own agent-reviews directory."""
+
+    @pytest.fixture(autouse=True)
+    def agent_reviews_is_ignored(self, git_repo):
+        ignore_agent_reviews(git_repo)
 
     @pytest.fixture
     def logged_defer(self, isolated_home, git_repo):
@@ -3161,6 +3172,465 @@ class TestReviewLedgerShow:
             assert character not in result.stdout
         (row,) = _shown_rows(result)
         assert row["finding"] == "a b c d"
+
+
+class TestReviewLedgerShowOut:
+    """`show --out` writes the rows bare `show` prints to a review-history file
+    directly under agent-reviews/, deleting that target before any later step
+    that can exit."""
+
+    STALE = "previous run's rows"
+    OUT = "agent-reviews/review-history-test.md"
+    # A tag character, a bidirectional override and a zero-width space: format characters `show` cleans to spaces.
+    FORMAT_CHARACTERS = "\U000e0041\u202e\u200b"
+    BRANCH_FINDINGS = {"first finding", "second finding", "wording of the first two lines", "a b c d"}
+
+    @pytest.fixture(autouse=True)
+    def agent_reviews_is_ignored(self, git_repo):
+        ignore_agent_reviews(git_repo)
+
+    @pytest.fixture
+    def feature_repo(self, isolated_home, git_repo):
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        return git_repo
+
+    @pytest.fixture
+    def seeded_repo(self, isolated_home, feature_repo):
+        """Five rows: four in the branch file (two ADDRESS, a SETTLED engineer row with its quote, and one
+        carrying format characters) and one in the session file, dated before every branch row."""
+        for finding in ("first finding", "second finding"):
+            result = _run(_append_args(finding=finding), cwd=feature_repo, home=isolated_home)
+            assert result.returncode == 0, result.stderr
+        settled = _run(_engineer_args(), cwd=feature_repo, home=isolated_home)
+        assert settled.returncode == 0, settled.stderr
+        format_row = {"finding": f"a{self.FORMAT_CHARACTERS[0]}b{self.FORMAT_CHARACTERS[1]}c{self.FORMAT_CHARACTERS[2]}d"}
+        with _ledger_path(isolated_home, feature_repo).open("a") as branch_file:
+            branch_file.write(json.dumps({**format_row, "event_time": "2024-01-01T00:00:00Z"}, ensure_ascii=False) + "\n")
+        session_file = _session_ledger_path(isolated_home, feature_repo)
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.write_text(json.dumps({"finding": "session finding", "event_time": "2000-01-01T00:00:00Z"}) + "\n")
+        return feature_repo
+
+    @staticmethod
+    def _stale_target(repo: Path) -> Path:
+        stale = repo / "agent-reviews" / "review-history-test.md"
+        stale.parent.mkdir(exist_ok=True)
+        stale.write_text(TestReviewLedgerShowOut.STALE)
+        return stale
+
+    @pytest.mark.parametrize("form", ["relative", "absolute"])
+    def test_the_rows_bare_show_prints_are_written_at_mode_0600_and_stdout_reads_changed(
+        self, isolated_home, seeded_repo, form
+    ):
+        bare = _run(["show"], cwd=seeded_repo, home=isolated_home)
+        target = seeded_repo / self.OUT
+        out = self.OUT if form == "relative" else str(target)
+        self._stale_target(seeded_repo)
+
+        result = _run(["show", "--out", out], cwd=seeded_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"changed: {out}\n"
+        assert target.read_text() == bare.stdout
+        written = [json.loads(line) for line in target.read_text().splitlines()]
+        assert written[0]["finding"] == "session finding"
+        assert {row["finding"] for row in written[1:]} == self.BRANCH_FINDINGS
+        assert len(written) == 5
+        (settled_row,) = (row for row in written if row.get("disposition") == "SETTLED")
+        assert settled_row["engineer_quote"] == "keep it as written"
+        for character in self.FORMAT_CHARACTERS:
+            assert character not in target.read_text()
+        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert sorted(path.name for path in target.parent.iterdir()) == ["review-history-test.md"]
+
+    def test_the_header_stays_on_stderr(self, isolated_home, seeded_repo):
+        result = _run(["show", "--out", self.OUT], cwd=seeded_repo, home=isolated_home)
+
+        header = _show_header(result)
+        assert (header["scope"], header["rows"]) == ("branch", "5")
+
+    def test_an_absent_agent_reviews_directory_is_created(self, isolated_home, seeded_repo):
+        assert not (seeded_repo / "agent-reviews").exists()
+
+        result = _run(["show", "--out", self.OUT], cwd=seeded_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert (seeded_repo / self.OUT).is_file()
+
+    def test_a_ledger_holding_only_undecodable_lines_gives_unchanged_and_removes_the_stale_target(
+        self, isolated_home, feature_repo
+    ):
+        ledger = _ledger_path(isolated_home, feature_repo)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text("not json\n")
+        stale = self._stale_target(feature_repo)
+
+        result = _run(["show", "--out", self.OUT], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "unchanged\n"
+        assert _show_header(result)["rows"] == "0"
+        assert not stale.exists()
+
+    def test_no_ledger_gives_unchanged_with_the_notice_on_stderr_and_removes_the_stale_target(
+        self, isolated_home, feature_repo
+    ):
+        stale = self._stale_target(feature_repo)
+
+        result = _run(["show", "--out", self.OUT], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "unchanged\n"
+        assert "no ledger for this branch" in result.stderr
+        assert _show_header(result)["rows"] == "0"
+        assert not stale.exists()
+
+    def test_an_unchanged_run_leaves_an_empty_agent_reviews_directory_behind(self, isolated_home, feature_repo):
+        """The directory is created before the ledger is read, so "no file written" does not mean no directory."""
+        assert not (feature_repo / "agent-reviews").exists()
+
+        result = _run(["show", "--out", self.OUT], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "unchanged\n"
+        assert (feature_repo / "agent-reviews").is_dir()
+        assert list((feature_repo / "agent-reviews").iterdir()) == []
+
+    def test_a_directory_that_is_not_a_repository_exits_2_and_leaves_an_existing_target(
+        self, isolated_home, tmp_path
+    ):
+        """The repository-root lookup precedes the delete. The session is seeded, so only that lookup can exit 2."""
+        _seed_session(isolated_home, SID)
+        outside = tmp_path / "not-a-repository"
+        stale = outside / self.OUT
+        stale.parent.mkdir(parents=True)
+        stale.write_text(self.STALE)
+
+        result = _run(
+            ["show", "--out", self.OUT], cwd=outside, home=isolated_home,
+            extra_env={"GIT_CEILING_DIRECTORIES": str(tmp_path)},
+        )
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert "not inside a git repository" in result.stderr
+        assert stale.read_text() == self.STALE
+
+    @pytest.mark.parametrize(
+        ("out", "seeded_name", "fragment"),
+        [
+            pytest.param("file.txt", None, "directly under", id="a tracked file outside agent-reviews"),
+            pytest.param("agent-reviews/../file.txt", None, "'..'", id="a dot-dot segment back out"),
+            pytest.param(
+                "agent-reviews/review-ledger-test.md", "review-ledger-test.md",
+                "must be named review-history-<suffix>.md", id="a render-grammar name",
+            ),
+            pytest.param(
+                "agent-reviews/staff-sdet-1790921348-branch.md", "staff-sdet-1790921348-branch.md",
+                "must be named review-history-<suffix>.md", id="a reviewer findings file",
+            ),
+        ],
+    )
+    def test_a_refused_path_exits_2_and_deletes_nothing(self, isolated_home, feature_repo, out, seeded_name, fragment):
+        """The path check runs before the delete: neither the named file nor a stale target is removed."""
+        tracked_before = (feature_repo / "file.txt").read_text()
+        stale = self._stale_target(feature_repo)
+        named = None
+        if seeded_name is not None:
+            named = feature_repo / "agent-reviews" / seeded_name
+            named.write_text("a peer file")
+
+        result = _run(["show", "--out", out], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr.startswith("review-ledger.sh: ")
+        assert fragment in result.stderr
+        assert (feature_repo / "file.txt").read_text() == tracked_before
+        assert stale.read_text() == self.STALE
+        if named is not None:
+            assert named.read_text() == "a peer file"
+
+    def test_a_symlink_target_is_refused_and_its_referent_is_untouched(self, isolated_home, feature_repo):
+        (feature_repo / "agent-reviews").mkdir()
+        link = feature_repo / self.OUT
+        link.symlink_to(feature_repo / "file.txt")
+        tracked_before = (feature_repo / "file.txt").read_text()
+
+        result = _run(["show", "--out", self.OUT], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert "symlink" in result.stderr
+        assert link.is_symlink()
+        assert (feature_repo / "file.txt").read_text() == tracked_before
+
+    def test_a_target_that_is_a_directory_is_refused_and_left_in_place(self, isolated_home, feature_repo):
+        directory = feature_repo / self.OUT
+        directory.mkdir(parents=True)
+        (directory / "inner.md").write_text("inner")
+
+        result = _run(["show", "--out", self.OUT], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert (directory / "inner.md").read_text() == "inner"
+
+    def test_render_refuses_a_review_history_name_and_leaves_the_file(self, isolated_home, feature_repo):
+        stale = self._stale_target(feature_repo)
+
+        result = _run(["render", "--out", self.OUT], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert stale.read_text() == self.STALE
+
+    def test_a_session_resolution_failure_exits_2_with_empty_stdout_and_removes_the_stale_target(
+        self, isolated_home, git_repo
+    ):
+        """No session is seeded, so the session lookup exits 2 after the path check and the delete."""
+        stale = self._stale_target(git_repo)
+
+        result = _run(["show", "--out", self.OUT], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert not stale.exists()
+
+    @requires_jq
+    def test_a_jq_failure_exits_1_with_empty_stdout_and_leaves_no_file(self, isolated_home, seeded_repo, tmp_path):
+        failing_jq_path = path_with_failing_tool_shim(tmp_path / "bin", "jq")
+        stale = self._stale_target(seeded_repo)
+
+        result = _run(
+            ["show", "--out", self.OUT], cwd=seeded_repo, home=isolated_home,
+            extra_env={"PATH": failing_jq_path},
+        )
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert not stale.exists()
+
+    @requires_jq
+    def test_a_failed_summary_exits_1_with_empty_stdout_and_leaves_no_file(self, isolated_home, seeded_repo, tmp_path):
+        """Only the summary pass (jq -s) fails: bare `show` would still print the rows, `--out` writes nothing."""
+        summary_failing_path = path_with_failing_tool_shim(tmp_path / "bin", "jq", "-s")
+        stale = self._stale_target(seeded_repo)
+
+        result = _run(
+            ["show", "--out", self.OUT], cwd=seeded_repo, home=isolated_home,
+            extra_env={"PATH": summary_failing_path},
+        )
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "could not summarize ledger rows" in result.stderr
+        assert not stale.exists()
+
+    def test_a_write_that_fails_exits_1_with_empty_stdout_and_leaves_no_file(
+        self, isolated_home, seeded_repo, tmp_path
+    ):
+        failing_mv_path = path_with_failing_tool_shim(tmp_path / "bin", "mv")
+        stale = self._stale_target(seeded_repo)
+
+        result = _run(
+            ["show", "--out", self.OUT], cwd=seeded_repo, home=isolated_home,
+            extra_env={"PATH": failing_mv_path},
+        )
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "show: could not write" in result.stderr
+        assert not stale.exists()
+        assert list(stale.parent.iterdir()) == []
+
+    def test_a_stale_target_that_cannot_be_deleted_exits_1_before_the_session_is_resolved(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        """No session is seeded, so reaching session resolution would exit 2."""
+        stale = self._stale_target(git_repo)
+        failing_rm_path = path_with_failing_tool_shim(tmp_path / "bin", "rm")
+
+        result = _run(
+            ["show", "--out", self.OUT], cwd=git_repo, home=isolated_home,
+            extra_env={"PATH": failing_rm_path},
+        )
+
+        assert result.returncode == 1
+        assert "could not delete the stale" in result.stderr
+        assert result.stdout == ""
+        assert stale.read_text() == self.STALE
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            pytest.param(["--out"], id="--out with no value"),
+            pytest.param(["--out", ""], id="--out with an empty value"),
+            pytest.param([OUT, "--out"], id="a value with no flag"),
+            pytest.param(["--out", OUT, "extra"], id="an extra argument"),
+            pytest.param(["--out", OUT, "--out", OUT], id="--out twice"),
+            pytest.param(["--bogus"], id="an unknown flag"),
+            pytest.param(["extra"], id="a bare positional argument"),
+        ],
+    )
+    def test_a_malformed_argument_list_prints_usage_and_exits_2_without_touching_the_target(
+        self, isolated_home, feature_repo, args
+    ):
+        stale = self._stale_target(feature_repo)
+
+        result = _run(["show", *args], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert result.stderr.startswith("Usage: ")
+        assert result.stdout == ""
+        assert stale.read_text() == self.STALE
+
+    def test_a_symlinked_ledger_file_exits_2_with_empty_stdout_and_removes_the_stale_target(
+        self, isolated_home, feature_repo, tmp_path
+    ):
+        """The ledger refusal comes after the delete, so the stale target is gone and nothing is written."""
+        decoy = tmp_path / "decoy.jsonl"
+        decoy.write_text(json.dumps({"finding": "decoy row", "event_time": "2024-01-01T00:00:00Z"}) + "\n")
+        ledger = _ledger_path(isolated_home, feature_repo)
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.symlink_to(decoy)
+        stale = self._stale_target(feature_repo)
+
+        result = _run(["show", "--out", self.OUT], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert "must be a regular file" in result.stderr
+        assert not stale.exists()
+
+    @requires_jq
+    def test_a_failed_sort_exits_1_with_empty_stdout_and_removes_the_stale_target(
+        self, isolated_home, seeded_repo, tmp_path
+    ):
+        """Only the sort-and-clean jq call (the program holding `sort_by`) fails, after the delete."""
+        sort_failing_path = path_with_failing_tool_shim(tmp_path / "bin", "jq", "*sort_by*")
+        stale = self._stale_target(seeded_repo)
+
+        result = _run(
+            ["show", "--out", self.OUT], cwd=seeded_repo, home=isolated_home,
+            extra_env={"PATH": sort_failing_path},
+        )
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert not stale.exists()
+
+    def test_a_target_hard_linked_to_a_file_outside_agent_reviews_is_replaced_and_the_other_link_keeps_its_content(
+        self, isolated_home, seeded_repo
+    ):
+        bare = _run(["show"], cwd=seeded_repo, home=isolated_home)
+        other_link = seeded_repo / "other-link.md"
+        other_link.write_text("content of the other link")
+        target = seeded_repo / self.OUT
+        target.parent.mkdir()
+        os.link(other_link, target)
+
+        result = _run(["show", "--out", self.OUT], cwd=seeded_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == f"changed: {self.OUT}\n"
+        assert other_link.read_text() == "content of the other link"
+        assert target.read_text() == bare.stdout
+        assert not os.path.samefile(other_link, target)
+
+    def test_on_the_default_branch_the_session_files_rows_are_written_and_the_header_reads_scope_session(
+        self, isolated_home, git_repo
+    ):
+        _seed_session(isolated_home, SID)
+        assert _run(_append_args(finding="session scope row"), cwd=git_repo, home=isolated_home).returncode == 0
+        bare = _run(["show"], cwd=git_repo, home=isolated_home)
+
+        result = _run(["show", "--out", self.OUT], cwd=git_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert _show_header(result)["scope"] == "session"
+        assert (git_repo / self.OUT).read_text() == bare.stdout
+        assert [row["finding"] for row in _shown_rows(bare)] == ["session scope row"]
+
+    def test_bare_show_still_prints_the_no_ledger_notice_on_stdout_and_writes_no_file(
+        self, isolated_home, feature_repo
+    ):
+        result = _run(["show"], cwd=feature_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert "no ledger for this branch" in result.stdout
+        assert not (feature_repo / "agent-reviews").exists()
+
+
+class TestReviewLedgerOutRequiresAGitIgnoredTarget:
+    """`show --out` and `render --out` both refuse a target git does not confirm is ignored, since
+    the target is deleted first and holds ledger rows or engineer quotes."""
+
+    STALE = "previous run's output"
+
+    @pytest.fixture
+    def feature_repo(self, isolated_home, git_repo):
+        """On a feature branch with a session, and no `agent-reviews/` entry in the ignore list."""
+        _git(git_repo, "checkout", "-q", "-b", "feature")
+        _seed_session(isolated_home, SID)
+        return git_repo
+
+    @pytest.fixture
+    def git_env(self, isolated_home) -> dict[str, str]:
+        """Keeps `HOME` on the sandbox home, where `_run` puts the session and ledger state."""
+        return isolated_git_config_env(isolated_home)
+
+    @pytest.fixture(params=[
+        pytest.param(("show", "agent-reviews/review-history-test.md"), id="show"),
+        pytest.param(("render", "agent-reviews/review-ledger-test.md"), id="render"),
+    ])
+    def subcommand_and_target(self, request) -> tuple[str, str]:
+        return request.param
+
+    def test_a_target_git_does_not_ignore_exits_2_and_leaves_the_seeded_stale_target(
+        self, isolated_home, feature_repo, git_env, subcommand_and_target
+    ):
+        subcommand, target = subcommand_and_target
+        stale = feature_repo / target
+        stale.parent.mkdir()
+        stale.write_text(self.STALE)
+        assert unwrapped_check_ignore_status(feature_repo, target, git_env) == 1
+
+        result = _run([subcommand, "--out", target], cwd=feature_repo, home=isolated_home, extra_env=git_env)
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert f"{subcommand}: {git_toplevel(feature_repo)}/{target} is not git-ignored" in result.stderr
+        assert stale.read_text() == self.STALE
+
+    def test_a_tracked_target_exits_2_even_with_the_ignore_entry_and_leaves_the_committed_file(
+        self, isolated_home, feature_repo, git_env, subcommand_and_target
+    ):
+        subcommand, target = subcommand_and_target
+        ignore_agent_reviews(feature_repo)
+        committed = feature_repo / target
+        committed.parent.mkdir()
+        committed.write_text(self.STALE)
+        _git(feature_repo, "add", "-f", target)
+        _git(feature_repo, "commit", "-q", "-m", "commit the target")
+        assert unwrapped_check_ignore_status(feature_repo, target, git_env) == 1
+
+        result = _run([subcommand, "--out", target], cwd=feature_repo, home=isolated_home, extra_env=git_env)
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert f"{subcommand}: {git_toplevel(feature_repo)}/{target} is not git-ignored" in result.stderr
+        assert committed.read_text() == self.STALE
+
+    def test_an_absent_agent_reviews_directory_is_not_created_by_the_refusal(
+        self, isolated_home, feature_repo, git_env, subcommand_and_target
+    ):
+        subcommand, target = subcommand_and_target
+        assert unwrapped_check_ignore_status(feature_repo, target, git_env) == 1
+
+        result = _run([subcommand, "--out", target], cwd=feature_repo, home=isolated_home, extra_env=git_env)
+
+        assert result.returncode == 2
+        assert "is not git-ignored" in result.stderr
+        assert not (feature_repo / "agent-reviews").exists()
 
 
 class TestReviewLedgerLocking:

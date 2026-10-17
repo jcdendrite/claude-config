@@ -2566,6 +2566,7 @@ class TestReviewLedgerAppendAuthority:
         [
             f"{LEDGER} show",
             f"{LEDGER} render --out agent-reviews/x.md",
+            f"{LEDGER} show --out agent-reviews/review-history-x.md",
             "grep -rn review-ledger.sh claude/",
             f"{LEDGER} clear-stale",
             f"{LEDGER} clear-stale --dry-run",
