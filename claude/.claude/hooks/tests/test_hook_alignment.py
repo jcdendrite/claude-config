@@ -32,6 +32,12 @@ shape checks:
 - No hook in claude/.claude/hooks/*.sh (including _lib.sh and _config.sh) or
   plugins/*/hooks/*.sh (including each _lib.sh) pipes into a grep that can
   exit at its first match.
+- No hook in claude/.claude/hooks/*.sh or plugins/*/hooks/*.sh (excluding
+  each _lib.sh and _config.sh) tokenizes a command with a bare `xargs -n1`.
+  An xargs failure drops every word after the failing one, so a file named
+  by a later flag goes unscanned. Main hooks tokenize through
+  `_lib_command_words` instead. A plugin hook sources its own `_lib.sh`,
+  which does not define it, so it splits with another tool.
 - Every hook entry object inside `hooks.<Event>[].hooks[]` in
   claude/.claude/settings.json carries non-empty `type` and `command`
   fields — catches an entry left with only a `timeout` key and no `type`
@@ -43,10 +49,10 @@ shape checks:
   reintroducing the "Hook cancelled" regression it exists to fix.
 
 The first two carry a small, named exemption dict for a structural holdout
-that resisted conversion. The `\\s` check and the early-exit-grep check have
-none: no live occurrence remains anywhere in their scope. See
-`_all_hook_files` for why only those two checks also sweep each directory's
-_lib.sh.
+that resisted conversion. The `\\s` check, the early-exit-grep check, and the
+bare-xargs check have none: no live occurrence remains anywhere in their
+scope. See `_all_hook_files` for why only the `\\s` and early-exit-grep checks
+also sweep each directory's _lib.sh, and why the bare-xargs check sweeps none.
 
 Layer 2 — Behavior checks: every gate-class hook must deny on malformed
 input, empty stdin, non-object `.tool_input`, and missing `_lib.sh`; and
@@ -97,6 +103,10 @@ def _all_hook_files(*, include_lib: bool = False) -> list[Path]:
     Pass include_lib=True to add _lib.sh back in -- used by the `\\s` and
     early-exit-grep detectors, which are safe against _lib.sh because neither
     primitive is defined there.
+    The bare-xargs check does not opt in, so it sweeps no _lib.sh (the main
+    one or a plugin's) and no _config.sh: the main _lib.sh holds two
+    status-checked `xargs -n1` sites (in `_lib_command_words` and
+    `_lib_commit_fragment_has_worktree_target`) that a sweep would flag.
     _config.sh stays excluded even then: it exists only under
     claude/.claude/hooks/, so folding it into ALL_HOOKS_AND_LIBS would break
     test_all_hooks_and_libs_includes_every_lib_sh's one-_lib.sh-per-directory
@@ -1018,13 +1028,13 @@ _INLINE_COMMAND_MATCHER_EXEMPT_HOOKS: dict[str, str] = {
 
 def _strip_comment(line: str) -> str:
     """Strip a full-line or same-line trailing `#` comment from a shell
-    line, for the four detectors below.
+    line, for the detectors below.
 
     Naive substring split on " #", not shell-aware.
 
     Blind spot: no line in the current hook set has a literal " #" inside
     a string. A future line that legitimately needs one would have its
-    trailing content truncated -- a false negative in all four detectors
+    trailing content truncated -- a false negative in every detector
     below, not just a missed comment.
     """
     if line.lstrip().startswith("#"):
@@ -1316,7 +1326,7 @@ def test_no_gnu_backslash_s_regex_extension(hook: Path) -> None:
 def test_backslash_s_detector_flags_code_not_comments(tmp_path: Path) -> None:
     """Meta-test for _live_backslash_s_hits: a bare `\\s` in code is flagged,
     and the same literal inside a full-line or same-line-trailing comment is
-    not, since all four Layer-1 detectors share _strip_comment.
+    not, since every Layer-1 detector shares _strip_comment.
     """
     fixture = tmp_path / "fixture.sh"
     fixture.write_text(
@@ -1348,27 +1358,18 @@ _PIPE_INTO_EARLY_EXIT_GREP_RE = re.compile(
 )
 
 
-def _pipe_into_early_exit_grep_hits(hook: Path) -> list[str]:
-    """Return non-comment shell statements that pipe into a grep that can
-    exit at its first match (`-q`, `-l`, `-L`, `-m`, or their long forms).
+def _joined_shell_statements(hook: Path) -> list[tuple[str, str]]:
+    """Return each non-comment shell statement of `hook` as a
+    `(code, text)` pair.
 
     Line-based on `_strip_comment` output. A code line ending in a single
     `|` or in `\\` is joined with the following line first, so a pipe split
-    across lines is scanned as one statement. Each hit is the statement's
-    physical lines, stripped and joined by a space.
-
-    Blind spot: only a `|` followed directly by grep, optionally behind an
-    env assignment, `_lib_capped`, `_lib_capped_for N`, or `command`, is
-    caught.
-    - Misses grep behind another wrapper (`timeout`, `env`, `xargs`, a
-      function that forwards to grep).
-    - Misses grep spelled `/usr/bin/grep` or `\\grep`, or grouped as
-      `{ grep -q ...; }`.
-    - Misses an early-exit flag held in a variable, placed after the
-      pattern, or spelled as a GNU long-option abbreviation (`--quie`).
-    - Misses other early-exit readers (`head -1`, `sed q`, `awk ... exit`).
+    across lines is one statement. `code` is the joined comment-stripped
+    code, and `text` is the statement's physical lines, stripped and joined
+    by a space. A trailing continuation with no following line is returned
+    as the last statement.
     """
-    hits = []
+    statements: list[tuple[str, str]] = []
     statement_lines: list[str] = []
     statement_code = ""
     for line in hook.read_text().splitlines():
@@ -1383,12 +1384,36 @@ def _pipe_into_early_exit_grep_hits(hook: Path) -> list[str]:
             statement_code += code + " "
             continue
         statement_code += code
-        if _PIPE_INTO_EARLY_EXIT_GREP_RE.search(statement_code):
-            hits.append(" ".join(statement_lines))
+        statements.append((statement_code, " ".join(statement_lines)))
         statement_lines, statement_code = [], ""
-    if _PIPE_INTO_EARLY_EXIT_GREP_RE.search(statement_code):
-        hits.append(" ".join(statement_lines))
-    return hits
+    if statement_lines:
+        statements.append((statement_code, " ".join(statement_lines)))
+    return statements
+
+
+def _pipe_into_early_exit_grep_hits(hook: Path) -> list[str]:
+    """Return non-comment shell statements that pipe into a grep that can
+    exit at its first match (`-q`, `-l`, `-L`, `-m`, or their long forms).
+
+    Statements are joined as `_joined_shell_statements` describes. Each hit
+    is the statement's physical lines, stripped and joined by a space.
+
+    Blind spot: only a `|` followed directly by grep, optionally behind an
+    env assignment, `_lib_capped`, `_lib_capped_for N`, or `command`, is
+    caught.
+    - Misses grep behind another wrapper (`timeout`, `env`, `xargs`, a
+      function that forwards to grep).
+    - Misses grep spelled `/usr/bin/grep` or `\\grep`, or grouped as
+      `{ grep -q ...; }`.
+    - Misses an early-exit flag held in a variable, placed after the
+      pattern, or spelled as a GNU long-option abbreviation (`--quie`).
+    - Misses other early-exit readers (`head -1`, `sed q`, `awk ... exit`).
+    """
+    return [
+        text
+        for code, text in _joined_shell_statements(hook)
+        if _PIPE_INTO_EARLY_EXIT_GREP_RE.search(code)
+    ]
 
 
 # _config.sh is not in ALL_HOOKS_AND_LIBS (see `_all_hook_files`), but every
@@ -1550,6 +1575,262 @@ def test_early_exit_grep_detector_blind_spots_stay_unflagged(tmp_path: Path, sni
     fixture = tmp_path / "fixture.sh"
     fixture.write_text("#!/bin/bash\n" + snippet)
     assert _pipe_into_early_exit_grep_hits(fixture) == []
+
+
+# xargs as a command word: at statement start, after `|`, `;`, `&`, or `(`, or
+# behind a `command`/`time` prefix. `&` covers `&&`, `|` covers `||`, and `(`
+# covers `$(`.
+_XARGS_COMMAND_POSITION = r"(?:^|[|;&(])\s*(?:(?:command|time)\s+)*xargs"
+# One xargs option, with the value it may take (`-I {}`, `-P 4`) so a value
+# is not mistaken for the end of the option list.
+_XARGS_OPTION_WITH_OPTIONAL_VALUE = r"\s+-\S+(?:\s+[^-\s|;&<>]\S*)?"
+# The one-word-per-run spellings: `-n1`, `-n 1`, `--max-args=1`, `--max-args 1`.
+_XARGS_MAX_ARGS_ONE = r"\s+(?:-n\s*1|--max-args(?:=|\s+)1)(?=[\s|;&<>)]|$)"
+_BARE_XARGS_TOKENIZER_RE = re.compile(
+    _XARGS_COMMAND_POSITION
+    + r"(?:" + _XARGS_OPTION_WITH_OPTIONAL_VALUE + r")*?"
+    + _XARGS_MAX_ARGS_ONE
+)
+
+
+def _bare_xargs_tokenizer_hits(hook: Path) -> list[str]:
+    """Return non-comment shell statements that tokenize with a bare
+    `xargs -n1` (or `xargs -n 1`, `xargs --max-args=1`).
+
+    Statements are joined as `_joined_shell_statements` describes. Each hit
+    is the statement's physical lines, stripped and joined by a space. The
+    here-string spelling `xargs -n1 <<< "$cmd"` is caught too, since the
+    anchor needs no pipe.
+
+    A statement is caught only when all three sets match:
+    - Anchor set: `xargs` at statement start or directly after `|`, `;`, `&`,
+      or `(`, optionally behind `command` or `time`.
+    - Flag spellings: `-n1`, `-n 1`, or `--max-args` set to 1.
+    - Terminator set: whitespace, one of `|;&<>)`, or the end of the statement.
+    `&` covers `&&`, `|` covers `||`, and `(` covers `$(`.
+
+    Blind spots:
+    - Misses `xargs` behind another wrapper (`env xargs -n1`,
+      `nice xargs -n1`).
+    - Misses `xargs` after a keyword (`then`, `do`, `else`, `if`, `!`) or
+      in a `{ ...; }` group, since none of those is an anchor.
+    - Misses `xargs` spelled `/usr/bin/xargs` or `\\xargs`, or behind an
+      env assignment (`LC_ALL=C xargs -n1`).
+    - Misses a flag closed by a backtick (`` w=`... | xargs -n1` ``).
+    - Misses an option held in a variable.
+    - Misses a tokenizer other than xargs.
+    - Misses other spellings of the same failure: plain `xargs` with no
+      `-n`, `-L1`, `--max-lines`, `-n2`, and bundled forms such as `-rn1`
+      or `-0n1`.
+
+    Known false positives, with no exemption dict to recover from them:
+    - The option-value group takes the next bare word after any option as
+      that option's value, so another command's `-n1` after an xargs option
+      matches (`xargs -0 head -n1`, `xargs -0 rm -n1`).
+    - The match is quote- and heredoc-unaware, so a deny message or heredoc
+      body line that spells `| xargs -n1` matches.
+    """
+    return [
+        text
+        for code, text in _joined_shell_statements(hook)
+        if _BARE_XARGS_TOKENIZER_RE.search(code)
+    ]
+
+
+@pytest.mark.parametrize(
+    "hook",
+    ALL_HOOKS,
+    ids=[str(h.relative_to(_REPO_ROOT)) for h in ALL_HOOKS],
+)
+def test_hooks_tokenize_through_lib_command_words(hook: Path) -> None:
+    """No hook tokenizes a command with a bare `xargs -n1`.
+
+    A bare `xargs -n1` that fails on an unbalanced quote loses every word
+    after the failing one, so a file named by a later flag goes unscanned
+    and the gate fails open. `_lib_command_words` falls back to a second
+    tokenizer after an xargs failure.
+
+    There is no exemption dict. See `_all_hook_files` for why this check
+    sweeps no `_lib.sh` or `_config.sh`. Ids are repo-relative paths, so a
+    plugin hook is told apart from a main hook. See
+    _bare_xargs_tokenizer_hits for the detector's blind spots and known false
+    positives.
+    """
+    hits = _bare_xargs_tokenizer_hits(hook)
+    assert not hits, (
+        f"{hook.relative_to(_REPO_ROOT)}: bare `xargs -n1` tokenizer -- "
+        f"tokenize through `_lib_command_words` instead, so an xargs failure "
+        f"cannot leave a later flag's file unscanned. A plugin hook sources "
+        f"its own plugin's _lib.sh, not the main one, so it must not use a "
+        f"bare `xargs -n1` tokenizer either: split the command with a tool "
+        f"that keeps the words after a failure:\n" + "\n".join(hits)
+    )
+
+
+# Each snippet must produce exactly one hit.
+_BARE_XARGS_FLAGGED_SHAPES = {
+    "pipe-n1-with-stderr-redirect": (
+        "printf '%s\\n' \"$c\" | xargs -n1 2>/dev/null | awk '{print}'\n"
+    ),
+    "pipe-n-space-1": "printf '%s\\n' \"$c\" | xargs -n 1\n",
+    "pipe-long-max-args-equals": "printf '%s\\n' \"$c\" | xargs --max-args=1\n",
+    "pipe-long-max-args-space": "printf '%s\\n' \"$c\" | xargs --max-args 1\n",
+    "command-prefix": "printf '%s\\n' \"$c\" | command xargs -n1\n",
+    "time-prefix": "printf '%s\\n' \"$c\" | time xargs -n1\n",
+    "here-string": "xargs -n1 <<< \"$cmd\"\n",
+    "command-substitution-here-string": "words=$(xargs -n1 <<< \"$cmd\")\n",
+    "other-option-before-n1": "printf '%s\\n' \"$c\" | xargs -r -n1\n",
+    "option-with-value-before-n1": "printf '%s\\n' \"$c\" | xargs -I {} -n1\n",
+    "after-and-and": "true && printf '%s\\n' \"$c\" | xargs -n1\n",
+    "directly-after-and-and": "true && xargs -n1 <<< \"$cmd\"\n",
+    "directly-after-or-or": "false || xargs -n1 <<< \"$cmd\"\n",
+    "after-semicolon": "true; xargs -n1 <<< \"$cmd\"\n",
+    "pipe-split-across-lines-after-pipe": (
+        "printf '%s\\n' \"$c\" |\n"
+        "  xargs -n1 2>/dev/null\n"
+    ),
+    "pipe-split-across-lines-with-backslash": (
+        "printf '%s\\n' \"$c\" \\\n"
+        "  | xargs -n1 2>/dev/null\n"
+    ),
+    "flag-on-continuation-line": (
+        "printf '%s\\n' \"$c\" | xargs \\\n"
+        "  -n1 <<< \"$c\"\n"
+    ),
+    "flag-closed-by-close-paren": "words=$(printf '%s\\n' \"$c\" | xargs -n1)\n",
+    "flag-closed-by-pipe": "printf '%s\\n' \"$c\" | xargs -n1|awk '{print}'\n",
+    "flag-closed-by-semicolon": "xargs -n1; echo done\n",
+    "flag-closed-by-ampersand": "xargs -n1& wait\n",
+    "flag-closed-by-input-redirect": "xargs -n1<<<\"$cmd\"\n",
+    "flag-closed-by-output-redirect": "printf '%s\\n' \"$c\" | xargs -n1>/dev/null\n",
+}
+
+# Each snippet must produce no hit.
+_BARE_XARGS_UNFLAGGED_SHAPES = {
+    "xargs-without-max-args": "printf '%s\\n' \"$c\" | xargs -0 rm\n",
+    "case-pattern-line": "        time|nice|xargs|npx)\n",
+    "ere-string-containing-xargs": (
+        "EXECUTION_WRAPPER_TOKEN_RE='(^|[^A-Za-z0-9_])eval([^A-Za-z0-9_]|$)"
+        "|(^|[^A-Za-z0-9_])xargs([^A-Za-z0-9_]|$)'\n"
+    ),
+    "full-line-comment": "# printf '%s\\n' \"$c\" | xargs -n1\n",
+    "same-line-trailing-comment": "printf '%s\\n' \"$c\" | tr a b # was | xargs -n1\n",
+    "xargs-word-in-argument-position": "echo xargs -n1\n",
+    "n-value-ten": "printf '%s\\n' \"$c\" | xargs -n10 rm\n",
+    "n-space-value-hundred": "printf '%s\\n' \"$c\" | xargs -n 100 rm\n",
+    "max-args-value-twelve": "printf '%s\\n' \"$c\" | xargs --max-args=12 rm\n",
+}
+
+# Each snippet is a shape the detector documents as a blind spot.
+_BARE_XARGS_BLIND_SPOT_SHAPES = {
+    "env-wrapper": "printf '%s\\n' \"$c\" | env xargs -n1\n",
+    "nice-wrapper": "printf '%s\\n' \"$c\" | nice xargs -n1\n",
+    "option-in-variable": "printf '%s\\n' \"$c\" | xargs $xargs_split_flag\n",
+    "n-value-in-variable": "printf '%s\\n' \"$c\" | xargs -n \"$words_per_run\"\n",
+    "read-array-tokenizer": "read -ra words <<< \"$cmd\"\n",
+    "shlex-tokenizer": "printf '%s\\n' \"$c\" | python3 -c 'import shlex,sys; print(shlex.split(sys.stdin.read()))'\n",
+    "plain-xargs-no-n": "printf '%s\\n' \"$c\" | xargs\n",
+    "max-lines-short": "printf '%s\\n' \"$c\" | xargs -L1\n",
+    "max-lines-long": "printf '%s\\n' \"$c\" | xargs --max-lines=1\n",
+    "n2": "printf '%s\\n' \"$c\" | xargs -n2\n",
+    "bundled-rn1": "printf '%s\\n' \"$c\" | xargs -rn1\n",
+    "bundled-0n1": "printf '%s\\n' \"$c\" | xargs -0n1\n",
+    "then-keyword": "if true; then xargs -n1 <<< \"$cmd\"; fi\n",
+    "do-keyword": "for w in a; do xargs -n1 <<< \"$cmd\"; done\n",
+    "else-keyword": "if true; then :; else xargs -n1 <<< \"$cmd\"; fi\n",
+    "if-keyword": "if xargs -n1 <<< \"$cmd\"; then :; fi\n",
+    "negation": "! xargs -n1 <<< \"$cmd\"\n",
+    "brace-group": "{ xargs -n1 <<< \"$cmd\"; }\n",
+    "absolute-path": "/usr/bin/xargs -n1 <<< \"$cmd\"\n",
+    "backslash-escaped": "\\xargs -n1 <<< \"$cmd\"\n",
+    "env-assignment-prefix": "LC_ALL=C xargs -n1 <<< \"$cmd\"\n",
+    "backtick-closed": "words=`printf '%s\\n' \"$c\" | xargs -n1`\n",
+}
+
+# Each snippet is a documented false positive and must produce exactly one
+# hit. Narrowing the detector fails these tests, which prompts the
+# docstring to change with it.
+_BARE_XARGS_KNOWN_FALSE_POSITIVE_SHAPES = {
+    "head-n1-after-xargs-option": "find . -print0 | xargs -0 head -n1\n",
+    "rm-n1-after-xargs-option": "find . -print0 | xargs -0 rm -n1\n",
+    "quoted-deny-message": "emit_deny \"do not pipe | xargs -n1 here\"\n",
+    "heredoc-body-line": "cat <<EOF\nrun: cmd | xargs -n1\nEOF\n",
+}
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    list(_BARE_XARGS_FLAGGED_SHAPES.values()),
+    ids=list(_BARE_XARGS_FLAGGED_SHAPES),
+)
+def test_bare_xargs_detector_flags_tokenizer_shapes(tmp_path: Path, snippet: str) -> None:
+    """Meta-test for _bare_xargs_tokenizer_hits: each bare `xargs -n1`
+    spelling the detector claims to catch is flagged exactly once -- `-n1`,
+    `-n 1`, both `--max-args` forms, the `command` and `time` prefixes, the
+    here-string form, each statement-start anchor (`&&` and `||` directly
+    before xargs included), an option before the flag, a pipeline split
+    across lines with `|` or `\\`, a flag that sits on the continuation
+    line of the xargs word, and a flag closed directly by each of `)`, `|`,
+    `;`, `&`, `<`, and `>` with no whitespace.
+    """
+    fixture = tmp_path / "fixture.sh"
+    fixture.write_text("#!/bin/bash\n" + snippet)
+    hits = _bare_xargs_tokenizer_hits(fixture)
+    assert len(hits) == 1, f"expected exactly 1 hit for {snippet!r}, got {hits!r}"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    list(_BARE_XARGS_UNFLAGGED_SHAPES.values()),
+    ids=list(_BARE_XARGS_UNFLAGGED_SHAPES),
+)
+def test_bare_xargs_detector_ignores_safe_shapes(tmp_path: Path, snippet: str) -> None:
+    """Negative controls for _bare_xargs_tokenizer_hits: an xargs without
+    `-n1`, a `case` pattern line, an ERE string, a mention in argument
+    position, a mention only in a comment, and a batch size that only
+    starts with 1 (`-n10`, `-n 100`, `--max-args=12`) stay unflagged,
+    proving the detector keys on `xargs` in command position with a
+    one-word flag rather than on the word `xargs` alone.
+    """
+    fixture = tmp_path / "fixture.sh"
+    fixture.write_text("#!/bin/bash\n" + snippet)
+    hits = _bare_xargs_tokenizer_hits(fixture)
+    assert hits == [], f"expected no hit for {snippet!r}, got {hits!r}"
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    list(_BARE_XARGS_BLIND_SPOT_SHAPES.values()),
+    ids=list(_BARE_XARGS_BLIND_SPOT_SHAPES),
+)
+def test_bare_xargs_detector_blind_spots_stay_unflagged(tmp_path: Path, snippet: str) -> None:
+    """Pins _bare_xargs_tokenizer_hits's documented blind spots as
+    executable: each shape is a wrapper, variable-held option, other
+    tokenizer, or other spelling the anchor and flag set do not match, so it
+    stays unflagged. Fails loudly if the detector ever widens to cover one,
+    prompting the docstring to change with it.
+    """
+    fixture = tmp_path / "fixture.sh"
+    fixture.write_text("#!/bin/bash\n" + snippet)
+    assert _bare_xargs_tokenizer_hits(fixture) == []
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    list(_BARE_XARGS_KNOWN_FALSE_POSITIVE_SHAPES.values()),
+    ids=list(_BARE_XARGS_KNOWN_FALSE_POSITIVE_SHAPES),
+)
+def test_bare_xargs_detector_known_false_positives_stay_flagged(tmp_path: Path, snippet: str) -> None:
+    """Pins _bare_xargs_tokenizer_hits's documented false positives as
+    executable: another command's `-n1` after an xargs option, and a
+    quote- or heredoc-unaware match on text that only mentions `| xargs -n1`,
+    each yield one hit. Fails loudly if the detector ever narrows past one,
+    prompting the docstring to change with it.
+    """
+    fixture = tmp_path / "fixture.sh"
+    fixture.write_text("#!/bin/bash\n" + snippet)
+    hits = _bare_xargs_tokenizer_hits(fixture)
+    assert len(hits) == 1, f"expected exactly 1 hit for {snippet!r}, got {hits!r}"
 
 
 def test_all_hooks_and_libs_includes_every_lib_sh() -> None:

@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 from helpers import (
+    HEREDOC_BODY_WITH_GAP_APOSTROPHE,
     HOOKS_DIR,
     LARGE_MULTILINE_TAIL,
     assert_brought_in_file_hidden_from_gate_base,
@@ -28,7 +29,9 @@ from helpers import (
     bash_input,
     build_conflicted_merge_with_clean_addition,
     build_conflicted_rebase,
+    build_path_with_silent_python3,
     build_path_without,
+    heredoc_substitution,
     run_hook,
     run_hook_reason,
 )
@@ -36,6 +39,23 @@ from helpers import (
 from .conftest import _write_conditional_sleep_shim
 
 DENY_PRIVATE_PROJECT_REFS_HOOK = HOOKS_DIR / "deny-private-project-refs.sh"
+
+
+# A double-quoted value spanning a newline: xargs fails on it, bash accepts it.
+XARGS_FAILING_MULTILINE_ECHO = 'echo "first line\nsecond line"'
+
+# Read-only gh commands that never reach tokenization, each carrying a multi-line quoted --jq value.
+READ_ONLY_GH_XARGS_FAILING_COMMANDS = [
+    'gh api repos/owner/repo/pulls --jq ".[]\n| .title"',
+    'gh pr view 12 --json title --jq ".title\n| ascii_downcase"',
+    'gh pr list --json title --jq ".[]\n| .title"',
+]
+
+
+def _stage_clean_file(repo: Path) -> None:
+    """Stage a tracker-free file so the commit branch sees a non-empty staged diff."""
+    (repo / "clean.txt").write_text("some content\n")
+    subprocess.run(["git", "add", "clean.txt"], cwd=repo, check=True)
 
 
 @pytest.fixture
@@ -1707,7 +1727,7 @@ class TestDenyPrivateProjectRefs:
     def test_gh_issue_body_file_allowlisted_only_allowed(self, claude_config_repo, tmp_path):
         """A body file that references only allowlisted tokens passes,
         mirroring test_gh_pr_body_file_allowlisted_only_allowed above for
-        the issue surface — proves the shared extract_body_source_paths/
+        the issue surface — proves the shared _lib_gh_body_source_paths/
         _lib_capped-cat extractor doesn't false-positive on clean content,
         not just that it denies tracker-bearing content."""
         body_file = tmp_path / "issue-body.md"
@@ -3760,7 +3780,7 @@ class TestDenyPrivateProjectRefs:
     # --- Quote-aware flag extraction: false-positive locks ---
 
     def test_body_source_fp_flag_in_title_allowed(self, claude_config_repo):
-        """extract_body_source_paths must not false-positive on '-F' that
+        """_lib_gh_body_source_paths must not false-positive on '-F' that
         appears inside a quoted --title value. Without the quote-stripping
         fix, this command was blocked by the hook with 'body-source file at
         and'."""
@@ -3798,7 +3818,7 @@ class TestDenyPrivateProjectRefs:
         )
 
     def test_commit_msg_source_fp_flag_in_message_allowed(self, claude_config_repo):
-        """extract_commit_message_source_paths must not false-positive on
+        """_lib_git_commit_message_source_paths must not false-positive on
         '-F' that appears inside a quoted -m message value. A clean file is
         staged so the diff-gated branch that calls the extractor is entered."""
         (claude_config_repo / "clean.txt").write_text("some content\n")
@@ -3994,6 +4014,260 @@ class TestDenyPrivateProjectRefs:
             )
             == "deny"
         )
+
+    # -- Commands xargs cannot tokenize ---------------------------------------
+    # xargs fails on a newline inside a double-quoted value or an unbalanced
+    # quote. The hook retries with the fallback tokenizer and denies only when
+    # that cannot split the command either.
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            f"{XARGS_FAILING_MULTILINE_ECHO} && git commit -F {{source_file}}",
+            f"{XARGS_FAILING_MULTILINE_ECHO} && gh pr create --body-file {{source_file}}",
+            f"{XARGS_FAILING_MULTILINE_ECHO} && gh issue create --body-file {{source_file}}",
+            f"{XARGS_FAILING_MULTILINE_ECHO} && gh api -X POST --input {{source_file}} repos/owner/repo/issues",
+            f"{XARGS_FAILING_MULTILINE_ECHO} && gh api -X POST -f body=@{{source_file}} repos/owner/repo/issues",
+        ],
+        ids=["git-commit-F", "gh-pr-body-file", "gh-issue-body-file", "gh-api-input", "gh-api-field-at"],
+    )
+    def test_source_file_after_xargs_failure_is_scanned(self, claude_config_repo, tmp_path, command_template):
+        """A source file named after a double-quoted value spanning lines is still read and scanned."""
+        source_file = tmp_path / "source.txt"
+        source_file.write_text("See WIDGET-123 for context.\n")
+        _stage_clean_file(claude_config_repo)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(command_template.format(source_file=source_file)),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "contains tracker-ID tokens" in reason
+        assert "WIDGET-123" in reason
+
+    @pytest.mark.parametrize(
+        ("command_template", "surface", "flags"),
+        [
+            ('git commit -m "unterminated -F {source_file}', "git commit", "-F/--file"),
+            ('gh pr create --title "unterminated --body-file {source_file}', "gh pr", "--body-file/--template/-F/-T"),
+            ('gh issue create --title "unterminated --body-file {source_file}', "gh issue", "--body-file/-F"),
+            (
+                'gh api -X POST -f body="unterminated --input {source_file} repos/owner/repo/issues',
+                "gh api",
+                "--input and -f/-F/--field/--raw-field key=@PATH",
+            ),
+        ],
+        ids=["git-commit", "gh-pr", "gh-issue", "gh-api"],
+    )
+    def test_untokenizable_gated_command_denied(
+        self, claude_config_repo, tmp_path, command_template, surface, flags
+    ):
+        """An unterminated quote defeats xargs and the fallback tokenizer, so each of the four
+        call sites denies instead of skipping the source file that follows."""
+        source_file = tmp_path / "source.txt"
+        source_file.write_text("Nothing private here.\n")
+        _stage_clean_file(claude_config_repo)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(command_template.format(source_file=source_file)),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert f"The {surface} command could not be tokenized" in reason
+        assert flags in reason
+        assert str(source_file) not in reason
+
+    @pytest.mark.parametrize(
+        ("command_template", "surface"),
+        [
+            ("git commit -F {source_file}", "git commit"),
+            ("gh pr create --body-file {source_file}", "gh pr"),
+            ("gh issue create --body-file {source_file}", "gh issue"),
+            ("gh api -X POST --input {source_file} repos/owner/repo/issues", "gh api"),
+        ],
+        ids=["git-commit", "gh-pr", "gh-issue", "gh-api"],
+    )
+    def test_python3_absent_denies_xargs_failing_gated_command(
+        self, claude_config_repo, tmp_path, command_template, surface
+    ):
+        """Any nonzero tokenizer status denies, not only the unbalanced-quote status: without
+        python3 a command xargs cannot split must not read as naming no source files."""
+        source_file = tmp_path / "source.txt"
+        source_file.write_text("Nothing private here.\n")
+        _stage_clean_file(claude_config_repo)
+        farm_dir = tmp_path / "path-without-python3"
+        farm_dir.mkdir()
+        command_text_marker = "distinctive-marker-text"
+        command = (
+            f'echo "{command_text_marker}\nsecond line" && {command_template.format(source_file=source_file)}'
+        )
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(command),
+            cwd=claude_config_repo,
+            extra_env={"PATH": build_path_without("python3", farm_dir)},
+        )
+        assert reason is not None
+        assert f"The {surface} command could not be checked" in reason
+        assert command_text_marker not in reason
+        assert str(source_file) not in reason
+
+    @pytest.mark.parametrize(
+        ("command_template", "surface"),
+        [
+            ("git commit -F {source_file}", "git commit"),
+            ("gh pr create --body-file {source_file}", "gh pr"),
+            ("gh issue create --body-file {source_file}", "gh issue"),
+            ("gh api -X POST --input {source_file} repos/owner/repo/issues", "gh api"),
+        ],
+        ids=["git-commit", "gh-pr", "gh-issue", "gh-api"],
+    )
+    def test_silent_python3_denies_xargs_failing_gated_command(
+        self, claude_config_repo, tmp_path, command_template, surface
+    ):
+        """A python3 that exits 0 with no output is denied as a tokenizer that found no words,
+        not allowed as a command naming no source files."""
+        source_file = tmp_path / "source.txt"
+        source_file.write_text("Nothing private here.\n")
+        _stage_clean_file(claude_config_repo)
+        shim_dir = tmp_path / "silent-python3"
+        shim_dir.mkdir()
+        command_text_marker = "distinctive-marker-text"
+        command = (
+            f'echo "{command_text_marker}\nsecond line" && {command_template.format(source_file=source_file)}'
+        )
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(command),
+            cwd=claude_config_repo,
+            extra_env={"PATH": build_path_with_silent_python3(shim_dir)},
+        )
+        assert reason is not None
+        assert f"The {surface} command could not be checked" in reason
+        assert "found no command words to check" in reason
+        assert "a tool in the extraction step failed" not in reason
+        assert command_text_marker not in reason
+        assert str(source_file) not in reason
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "git commit -m {substitution}",
+            "gh pr create --title Tidy --body {substitution}",
+            "gh issue create --title Tidy --body {substitution}",
+            "gh api -X POST repos/owner/repo/issues -f body={substitution}",
+        ],
+        ids=["git-commit", "gh-pr", "gh-issue", "gh-api"],
+    )
+    def test_heredoc_body_with_quotes_allowed(self, claude_config_repo, command_template):
+        """Over-deny guard: the dominant heredoc shape with a clean body passes through the
+        fallback tokenizer, whose heredoc-body strip is what keeps the apostrophe harmless."""
+        _stage_clean_file(claude_config_repo)
+        command = command_template.format(substitution=heredoc_substitution(HEREDOC_BODY_WITH_GAP_APOSTROPHE))
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
+
+    def test_chained_heredoc_commit_then_pr_body_file_scanned(self, claude_config_repo, tmp_path):
+        """A body file named by a later command in a chain that starts with a heredoc commit is
+        still read and scanned."""
+        body_file = tmp_path / "pr-body.md"
+        body_file.write_text("See WIDGET-123 for context.\n")
+        _stage_clean_file(claude_config_repo)
+        command = (
+            f"git commit -m {heredoc_substitution(HEREDOC_BODY_WITH_GAP_APOSTROPHE)}"
+            f" && gh pr create --body-file {body_file}"
+        )
+        reason = run_hook_reason(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo)
+        assert reason is not None
+        assert "contains tracker-ID tokens" in reason
+        assert "WIDGET-123" in reason
+
+    def test_untokenizable_command_outside_the_gated_surfaces_allowed(self, claude_config_repo):
+        """Scope guard: tokenization runs only after a gated surface is detected, so an unbalanced
+        quote in an unrelated command is not this gate's concern."""
+        _stage_clean_file(claude_config_repo)
+        command = 'echo "unterminated'
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
+
+    def test_untokenizable_amend_with_nothing_staged_allowed(self, claude_config_repo):
+        """Scope guard: a commit with an empty staged diff never reaches the message-source lookup,
+        so a message-only amend with an unbalanced quote is left to git."""
+        subprocess.run(["git", "reset", "HEAD"], cwd=claude_config_repo, check=True)
+        command = 'git commit --amend -m "unterminated'
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo) == "allow"
+
+    @pytest.mark.parametrize(
+        "command", READ_ONLY_GH_XARGS_FAILING_COMMANDS, ids=["gh-api-get", "gh-pr-view", "gh-pr-list"]
+    )
+    def test_read_only_gh_xargs_failing_commands_make_plain_xargs_fail(self, command):
+        """Precondition for the python3-absent allow cases below: each command must defeat plain
+        xargs, or those cases would pass without ever reaching the tokenization skip."""
+        if shutil.which("xargs") is None:
+            pytest.skip("xargs not on PATH")
+        result = subprocess.run(
+            ["xargs", "-n1"], input=command + "\n", capture_output=True, text=True, check=False
+        )
+        assert result.returncode != 0
+
+    @pytest.mark.parametrize("python3_available", [True, False], ids=["python3-present", "python3-absent"])
+    @pytest.mark.parametrize(
+        "command", READ_ONLY_GH_XARGS_FAILING_COMMANDS, ids=["gh-api-get", "gh-pr-view", "gh-pr-list"]
+    )
+    def test_read_only_gh_command_with_xargs_failing_value_allowed(
+        self, claude_config_repo, tmp_path, command, python3_available
+    ):
+        """Scope guard: a read-only gh api GET and a gh pr subcommand other than create/edit never
+        reach tokenization, so a quoted value xargs cannot split is allowed even without python3."""
+        _stage_clean_file(claude_config_repo)
+        extra_env = None
+        if not python3_available:
+            farm_dir = tmp_path / "path-without-python3"
+            farm_dir.mkdir()
+            extra_env = {"PATH": build_path_without("python3", farm_dir)}
+        decision = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=claude_config_repo, extra_env=extra_env
+        )
+        assert decision == "allow"
+
+    @pytest.mark.parametrize(
+        ("command_template", "failing_program_marker", "source_flag"),
+        [
+            ("gh api -X POST --input {source_file} repos/owner/repo/issues", "--input", "--input"),
+            ("gh api -X POST -f body=@{source_file} repos/owner/repo/issues", "--raw-field", "key=@PATH"),
+        ],
+        ids=["gh-api-input", "gh-api-field-at"],
+    )
+    def test_gh_api_extractor_awk_failure_denied(
+        self, claude_config_repo, tmp_path, command_template, failing_program_marker, source_flag
+    ):
+        """An awk that fails inside one gh api extractor denies instead of reading as no source files.
+        The shim fails only the awk program that names the marker, so each extractor's status check
+        is reached on its own: a PATH without awk would stop at the first one."""
+        real_awk = shutil.which("awk")
+        assert real_awk, "awk not found in PATH"
+        source_file = tmp_path / "source.txt"
+        source_file.write_text("Nothing private here.\n")
+        shim_dir = tmp_path / "awk-shim"
+        shim_dir.mkdir()
+        awk_shim = shim_dir / "awk"
+        awk_shim.write_text(
+            "#!/bin/bash\n"
+            'case "$*" in\n'
+            f"  *{failing_program_marker}*) exit 7 ;;\n"
+            "esac\n"
+            f'exec {shlex.quote(real_awk)} "$@"\n'
+        )
+        awk_shim.chmod(0o755)
+        _stage_clean_file(claude_config_repo)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(command_template.format(source_file=source_file)),
+            cwd=claude_config_repo,
+            extra_env={"PATH": f"{shim_dir}:{os.environ['PATH']}"},
+        )
+        assert reason is not None
+        assert "The gh api command could not be checked" in reason
+        assert "a tool in the extraction step failed (exit 7)" in reason
+        assert source_flag in reason
 
     # -- Shape-aware chain-detection hint ------------------------------------
     # When the command chains operations with && or ||, deny messages

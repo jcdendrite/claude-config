@@ -22,13 +22,16 @@ import textwrap
 
 import pytest
 from helpers import (
+    HEREDOC_BODY_WITH_GAP_APOSTROPHE,
     HOOKS_DIR,
     assert_brought_in_file_hidden_from_gate_base,
     assert_cap_engaged,
     bash_input,
     build_conflicted_merge_with_clean_addition,
     build_conflicted_rebase,
+    build_path_with_silent_python3,
     build_path_without,
+    heredoc_substitution,
     read_input,
     run_hook,
     run_hook_reason,
@@ -210,6 +213,28 @@ class TestDenyPiiInCommits:
     def test_unarmed_credential_value_in_diff_denied(self, isolated_home, git_repo):
         _stage(git_repo, "f.txt", f"x\ntoken {GHP_TOKEN}\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input("git commit -m wip"), cwd=git_repo) == "deny"
+
+    def test_unarmed_untokenizable_commit_command_denied(self, isolated_home, git_repo):
+        """The tokenizer deny does not wait for arming: an unterminated quote hides the -F that follows."""
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        msg_file = git_repo / "msg.txt"
+        msg_file.write_text("a clean commit summary\n")
+        command_text_marker = "distinctive-marker-text"
+        command = f'git commit -m "{command_text_marker} -F {msg_file}'
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo)
+        assert reason is not None
+        assert "The git commit command could not be tokenized" in reason
+        assert command_text_marker not in reason
+        assert str(msg_file) not in reason
+
+    def test_unarmed_credential_in_F_file_after_xargs_failure_denied(self, isolated_home, git_repo):
+        """The credential-value scan reads a -F file named after a value xargs cannot tokenize, with no arming."""
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        msg_file = git_repo / "msg.txt"
+        msg_file.write_text(f"commit summary\n\ntoken {GHP_TOKEN}\n")
+        command = f"echo {heredoc_substitution(HEREDOC_BODY_WITH_GAP_APOSTROPHE)} && git commit -F {msg_file}"
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo)
+        assert reason is not None and "Credential value" in reason, reason
 
     @pytest.mark.parametrize(
         ("config_key", "config_value", "attributes_line", "run_from_subdirectory"),
@@ -1237,6 +1262,100 @@ class TestDenyPiiInCommits:
         msg_file = git_repo / "msg.txt"
         msg_file.write_text("a clean commit summary\n")
         assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {msg_file}"), cwd=git_repo) == "allow"
+
+    def test_F_file_after_xargs_failure_is_scanned(self, isolated_home, git_repo, pii_patterns):
+        """A message file named after a value xargs cannot tokenize is still read and scanned."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        msg_file = git_repo / "msg.txt"
+        msg_file.write_text(f"commit summary\n\nseen SSN {SSN}\n")
+        command = f"echo {heredoc_substitution(HEREDOC_BODY_WITH_GAP_APOSTROPHE)} && git commit -F {msg_file}"
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo)
+        assert reason is not None
+        assert "US Social Security number" in reason
+
+    def test_untokenizable_commit_command_denied(self, isolated_home, git_repo, pii_patterns):
+        """An unterminated quote defeats xargs and the fallback tokenizer, so the gate denies
+        instead of skipping the -F that follows. The reason holds no part of the command, which
+        may carry the PII this gate guards."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        msg_file = git_repo / "msg.txt"
+        msg_file.write_text("a clean commit summary\n")
+        command_text_marker = "distinctive-marker-text"
+        command = f'git commit -m "{command_text_marker} -F {msg_file}'
+        reason = run_hook_reason(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo)
+        assert reason is not None
+        assert "The git commit command could not be tokenized" in reason
+        assert command_text_marker not in reason
+        assert str(msg_file) not in reason
+
+    def test_python3_absent_denies_xargs_failing_commit_command(
+        self, isolated_home, git_repo, pii_patterns, tmp_path
+    ):
+        """Any nonzero tokenizer status denies, not only the unbalanced-quote status: without
+        python3 a command xargs cannot split must not read as having no message-source files."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        msg_file = git_repo / "msg.txt"
+        msg_file.write_text("a clean commit summary\n")
+        farm_dir = tmp_path / "path-without-python3"
+        farm_dir.mkdir()
+        command_text_marker = "distinctive-marker-text"
+        command = f'echo "{command_text_marker}\nsecond line" && git commit -F {msg_file}'
+        reason = run_hook_reason(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input(command),
+            cwd=git_repo,
+            extra_env={"PATH": build_path_without("python3", farm_dir)},
+        )
+        assert reason is not None
+        assert "could not be checked" in reason
+        assert command_text_marker not in reason
+        assert str(msg_file) not in reason
+
+    def test_silent_python3_denies_xargs_failing_commit_command(
+        self, isolated_home, git_repo, pii_patterns, tmp_path
+    ):
+        """A python3 that exits 0 with no output is denied as a tokenizer that found no words,
+        not allowed as a command naming no message-source files."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        msg_file = git_repo / "msg.txt"
+        msg_file.write_text("a clean commit summary\n")
+        shim_dir = tmp_path / "silent-python3"
+        shim_dir.mkdir()
+        command_text_marker = "distinctive-marker-text"
+        command = f'echo "{command_text_marker}\nsecond line" && git commit -F {msg_file}'
+        reason = run_hook_reason(
+            DENY_PII_IN_COMMITS_HOOK,
+            bash_input(command),
+            cwd=git_repo,
+            extra_env={"PATH": build_path_with_silent_python3(shim_dir)},
+        )
+        assert reason is not None
+        assert "The git commit command could not be checked" in reason
+        assert "found no command words to check" in reason
+        assert "a tool in the extraction step failed" not in reason
+        assert command_text_marker not in reason
+        assert str(msg_file) not in reason
+
+    def test_untokenizable_non_commit_command_allowed(self, isolated_home, git_repo, pii_patterns):
+        """Scope guard: tokenization runs only for a git commit, so an unbalanced quote in an
+        unrelated command is not this gate's concern."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input('echo "unterminated'), cwd=git_repo) == "allow"
+
+    def test_heredoc_commit_message_with_quotes_and_apostrophes_allowed(
+        self, isolated_home, git_repo, pii_patterns
+    ):
+        """Over-deny guard: the dominant heredoc shape with a clean message passes through the
+        fallback tokenizer, whose heredoc-body strip is what keeps the apostrophe harmless."""
+        pii_patterns("# no user patterns\n")
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        command = f"git commit -m {heredoc_substitution(HEREDOC_BODY_WITH_GAP_APOSTROPHE)}"
+        assert run_hook(DENY_PII_IN_COMMITS_HOOK, bash_input(command), cwd=git_repo) == "allow"
 
     def test_F_device_file_denied_not_hung(self, isolated_home, git_repo, pii_patterns, tmp_path):
         """`-F /dev/zero` must deny without `cat` ever touching it: /dev/zero

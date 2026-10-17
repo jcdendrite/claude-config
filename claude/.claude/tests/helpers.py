@@ -5,6 +5,7 @@ explicitly from each test file that needs these symbols.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -49,6 +50,30 @@ LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
 # It is a control input for benign commands that allow with or without the SIGPIPE bug, not a regression trigger.
 # The size keeps the mask scan exercised at scale while staying under that cap.
 MASK_SAFE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 8)
+
+# The lone apostrophe sits between two closed double-quote regions, so a tokenizer that
+# skips the heredoc-body strip finds an unterminated single quote. xargs fails on the
+# newline inside the double-quoted value either way.
+# An allow guard built on this body passes only because the heredoc-body strip ran.
+HEREDOC_BODY_WITH_GAP_APOSTROPHE = 'Summary line\n\nCall it "it\'s" fine.'
+
+
+def heredoc_substitution(heredoc_body: str) -> str:
+    """The dominant `"$(cat <<'EOF' ... )"` shape, as a single double-quoted shell word."""
+    return f"\"$(cat <<'EOF'\n{heredoc_body}\nEOF\n)\""
+
+
+@functools.cache
+def xargs_is_gnu() -> bool:
+    """True when the `xargs` on PATH is GNU findutils. BSD xargs rejects `--version`, so its
+    output lacks the marker. Tests that pin GNU-specific xargs failures skip on a non-GNU xargs."""
+    xargs_path = shutil.which("xargs")
+    if xargs_path is None:
+        return False
+    result = subprocess.run(
+        [xargs_path, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False
+    )
+    return "GNU" in result.stdout + result.stderr
 
 
 def _sourced_value(var_name: str) -> str:
@@ -2065,6 +2090,16 @@ def build_path_without(binary: str, farm_dir: Path) -> str:
         f"{binary}: still resolvable on the built PATH {path_str!r} — farm construction bug"
     )
     return path_str
+
+
+def build_path_with_silent_python3(shim_dir: Path) -> str:
+    """Build a PATH whose first entry holds a `python3` that exits 0 with empty stdout, so a
+    caller sees a tokenizer that runs cleanly and prints nothing. `shim_dir` is caller-supplied
+    and already created."""
+    shim = shim_dir / "python3"
+    shim.write_text("#!/bin/bash\nexit 0\n")
+    shim.chmod(0o755)
+    return f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
 # -- Forced-fallback realpath shim -------------------------------------------

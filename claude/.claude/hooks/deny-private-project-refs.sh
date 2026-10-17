@@ -73,6 +73,17 @@
 #   Read-only `gh api` calls (default GET, no body-bearing flags) are
 #   intentionally not gated — they don't carry user-authored content
 #   into a body GitHub re-publishes.
+# - Fails closed when `_lib_command_words` returns nonzero for a command that
+#   needs a source-file lookup, because a source-file flag after the
+#   unsplittable value cannot be located. The conditions are in that
+#   function's header in _lib.sh. A commit whose staged diff is empty never
+#   reaches that lookup. The fallback tokenizer is uncapped without timeout
+#   or gtimeout; see split-command-words.py's docstring.
+# - A deny reason that concerns one source file names its path. That path is a
+#   command argument already in the Bash tool call, so naming it discloses
+#   nothing new (the rationale deny-pii-in-commits.sh's header states for its
+#   -F deny messages). The tokenizer deny names no path and echoes none of the
+#   command, because an unsplittable value is unbounded.
 #
 # Known gaps (documented, not closed by this hook):
 # - `gh pr create --fill|-f|--fill-first|--fill-verbose` sources the PR
@@ -131,8 +142,15 @@
 #   spellings such as `//dev/fd/N` or `/dev/./fd/N` are not recognised and
 #   can evade the scan of a body/message source. Accepted debt shared with
 #   deny-pii-in-commits.sh and deny-escaped-backticks-in-pr-body.sh.
-# - When xargs fails to tokenize a command (an unbalanced quote, say),
-#   body-source paths after the unparseable token are never read.
+# - The `xargs -n1` fast path's miss is listed in `_lib_command_words`'s header
+#   in _lib.sh.
+#   The fallback tokenizer's residual over-denies and misses are listed in
+#   split-command-words.py's module docstring.
+# - A body, message, or input source file whose content changes after the hook
+#   fires is not re-read, such as when another command in the same call rewrites
+#   an already-existing path.
+#   deny-pii-in-commits.sh's Known gaps bullet on a `-F <path>` message file
+#   holds the example shape.
 # - The gate's scope comes from the hook process's cwd, so a chained `cd`
 #   or a `-R`/`--repo` aimed at the checkout from outside it escapes the scan.
 # - The Slack-channel shape accepts digits, `s`, then end of line or any
@@ -421,74 +439,37 @@ fi
 #                                 content" for the rationale.
 OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|IEEE|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|AGPL|BSD|PROJ|TICKET)-'
 
-# Extract paths passed to any gh-pr or gh-issue body-source flag. Covers:
-#   --body-file <path>    --body-file=<path>
-#   -F <path>             -F=<path>
-#   --template <path>     --template=<path>
-#   -T <path>             -T=<path>
-# gh issue create/comment has no --template/-T flag, but shares the same
-# --body-file/-F shape as gh pr, so both surfaces reuse this extractor.
-# One path per output line. Uses xargs tokenization so flag-like text
-# inside a quoted argument value (e.g. a PR title containing "-F") is
-# part of a multi-word token and is never matched as a standalone flag.
-# xargs strips outer quotes from real file-path arguments, so quoted
-# paths (e.g. --body-file "/path/body.md") are extracted correctly.
-# Paths containing whitespace are not supported — xargs emits them as
-# multiple tokens; the resulting path fails the readability check below
-# and the hook fail-closes with a clear message. xargs failure is
-# suppressed; paths before the failing token are still emitted and later
-# ones are not (fail-open for unparseable input, consistent with the
-# documented shell-expansion gap).
-extract_body_source_paths() {
-  local cmd="$1"
-  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
-    BEGIN { cap = 0 }
-    cap { print; cap = 0; next }
-    /^(--body-file|--template|-F|-T)$/ { cap = 1; next }
-    /^(--body-file=|--template=|-F=|-T=)/ { sub(/^[^=]*=/, ""); print }
-  '
-}
+# The gh-pr, gh-issue, and git-commit source-path extractors are
+# _lib_gh_body_source_paths and _lib_git_commit_message_source_paths in
+# _lib.sh. Every extractor tokenizes through _lib_command_words, so flag-like
+# text inside a quoted argument value (a PR title containing "-F") is part of
+# a multi-word token and never matches as a standalone flag. In a chained
+# command the same path can come back from two extractors and get scanned
+# twice, which is harmless.
 
-# Extract paths passed to any git-commit message-source flag. Covers:
-#   -F <path>             -F=<path>
-#   --file <path>         --file=<path>
-# Same tokenization behavior as extract_body_source_paths. Note that
-# `git commit -F` and `gh pr create -F` both use the `-F` short form
-# for "file with text" — they refer to different files, but the union
-# of both flag sets is what each scan path needs to read; in a chained
-# command the same path may appear via both extractors and get scanned
-# twice (cheap, harmless).
-extract_commit_message_source_paths() {
-  local cmd="$1"
-  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
-    BEGIN { cap = 0 }
-    cap { print; cap = 0; next }
-    /^(--file|-F)$/ { cap = 1; next }
-    /^(--file=|-F=)/ { sub(/^[^=]*=/, ""); print }
-  '
-}
-
-# Extract paths passed to gh-api request-body-source flag. Covers:
+# Extract paths passed to gh-api request-body-source flag from the words
+# _lib_command_words printed for the command. Covers:
 #   --input <path>        --input=<path>
 # Inline `-f body="..."` / `-F body="..."` literal content already
 # lives in the command string and is scanned via the SCAN_TARGET +=
 # COMMAND step in the gh-api branch. The separate `@<path>` form
 # (`-f body=@<path>` / `-F body=@<path>`) is a different surface — gh
 # resolves the file at invocation time — and is extracted by
-# extract_gh_api_field_at_paths below. Same xargs tokenization behavior
-# as extract_body_source_paths.
+# extract_gh_api_field_at_paths below.
+# Returns awk's status, so a missing awk denies instead of reading as no paths.
 extract_gh_api_input_paths() {
-  local cmd="$1"
-  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
+  local tokenized_words="$1"
+  awk '
     BEGIN { cap = 0 }
     cap { print; cap = 0; next }
     /^--input$/ { cap = 1; next }
     /^--input=/ { sub(/^--input=/, ""); print }
-  '
+  ' <<< "$tokenized_words"
 }
 
 # Extract paths passed via the `@<path>` field-value form on gh-api
-# field flags. Covers:
+# field flags, from the words _lib_command_words printed for the command.
+# Covers:
 #   -f key=@<path>        -f=key=@<path>
 #   -F key=@<path>        -F=key=@<path>
 #   --field key=@<path>   --field=key=@<path>
@@ -497,13 +478,12 @@ extract_gh_api_input_paths() {
 # field value, so a tracker token in the file ships in the request
 # body identically to inline `-f key="..."`. The pseudo-file form
 # `@-` reads stdin (rejected by _lib_is_pseudo_file_path).
-# Field key must start with letter or underscore; whitespace inside
-# the path truncates the same way as the other extractors. Same
-# xargs tokenization behavior as extract_body_source_paths prevents
-# false positives from `key=@`-shaped text inside quoted field values.
+# Field key must start with letter or underscore. Tokenized words keep
+# `key=@`-shaped text inside a quoted field value from matching.
+# Returns awk's status, so a missing awk denies instead of reading as no paths.
 extract_gh_api_field_at_paths() {
-  local cmd="$1"
-  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
+  local tokenized_words="$1"
+  awk '
     BEGIN { cap = 0 }
     cap {
       if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*=@/) { sub(/^[^@]*@/, ""); print }
@@ -514,7 +494,7 @@ extract_gh_api_field_at_paths() {
       val = $0; sub(/^[^=]*=/, "", val)
       if (val ~ /^[A-Za-z_][A-Za-z0-9_]*=@/) { sub(/^[^@]*@/, "", val); print val }
     }
-  '
+  ' <<< "$tokenized_words"
 }
 
 # Detect && / || chain operators in the command and append a corrective
@@ -576,7 +556,12 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
     # nothing staged) preserve their historical "let git decide" pass —
     # sound for the shapes deny-invisible-commit-content.sh denies. See
     # its header's "Known gaps" list for what still isn't.
-    COMMIT_MSG_SOURCES=$(extract_commit_message_source_paths "$COMMAND")
+    COMMIT_MSG_SOURCES=$(_lib_git_commit_message_source_paths "$COMMAND")
+    COMMIT_MSG_SOURCES_STATUS=$?
+    if [ "$COMMIT_MSG_SOURCES_STATUS" -ne 0 ]; then
+      emit_deny "$(_lib_command_words_deny_reason 'git commit' '-F/--file' "$COMMIT_MSG_SOURCES_STATUS")"
+      exit 0
+    fi
     if [ -n "$COMMIT_MSG_SOURCES" ]; then
       while IFS= read -r commit_msg_path; do
         [ -z "$commit_msg_path" ] && continue
@@ -617,7 +602,12 @@ if [ "$IS_GH_PR" -eq 1 ]; then
   # files whose contents are NOT in the command string. Read each
   # referenced file and append its contents. Fail-closed if any
   # referenced path is unreadable or is a pseudo-file.
-  BODY_SOURCES=$(extract_body_source_paths "$COMMAND")
+  BODY_SOURCES=$(_lib_gh_body_source_paths "$COMMAND")
+  BODY_SOURCES_STATUS=$?
+  if [ "$BODY_SOURCES_STATUS" -ne 0 ]; then
+    emit_deny "$(_lib_command_words_deny_reason 'gh pr' '--body-file/--template/-F/-T' "$BODY_SOURCES_STATUS")"
+    exit 0
+  fi
   if [ -n "$BODY_SOURCES" ]; then
     while IFS= read -r body_source_path; do
       [ -z "$body_source_path" ] && continue
@@ -647,12 +637,17 @@ if [ "$IS_GH_ISSUE" -eq 1 ]; then
   SCAN_TARGET+=$'\n'"$COMMAND"
 
   # `--body-file` (short form `-F`) references an external file whose
-  # contents are NOT in the command string. Reuses extract_body_source_
+  # contents are NOT in the command string. Reuses _lib_gh_body_source_
   # paths — gh issue has no --template/-T flag, but that pattern simply
   # never matches an issue command, so sharing the extractor is safe.
   # Read each referenced file and append its contents. Fail-closed if
   # any referenced path is unreadable or is a pseudo-file.
-  ISSUE_BODY_SOURCES=$(extract_body_source_paths "$COMMAND")
+  ISSUE_BODY_SOURCES=$(_lib_gh_body_source_paths "$COMMAND")
+  ISSUE_BODY_SOURCES_STATUS=$?
+  if [ "$ISSUE_BODY_SOURCES_STATUS" -ne 0 ]; then
+    emit_deny "$(_lib_command_words_deny_reason 'gh issue' '--body-file/-F' "$ISSUE_BODY_SOURCES_STATUS")"
+    exit 0
+  fi
   if [ -n "$ISSUE_BODY_SOURCES" ]; then
     while IFS= read -r issue_body_source_path; do
       [ -z "$issue_body_source_path" ] && continue
@@ -687,7 +682,20 @@ if [ "$IS_GH_API" -eq 1 ]; then
   # contents are NOT in the command string. Read each referenced file
   # and append its contents. Fail-closed if any referenced path is
   # unreadable or is a pseudo-file.
-  GH_API_INPUT_SOURCES=$(extract_gh_api_input_paths "$COMMAND")
+  # Both gh-api extractors read the same words, so the command is tokenized once.
+  GH_API_SOURCE_FLAGS='--input and -f/-F/--field/--raw-field key=@PATH'
+  GH_API_WORDS=$(_lib_command_words "$COMMAND")
+  GH_API_WORDS_STATUS=$?
+  if [ "$GH_API_WORDS_STATUS" -ne 0 ]; then
+    emit_deny "$(_lib_command_words_deny_reason 'gh api' "$GH_API_SOURCE_FLAGS" "$GH_API_WORDS_STATUS")"
+    exit 0
+  fi
+  GH_API_INPUT_SOURCES=$(extract_gh_api_input_paths "$GH_API_WORDS")
+  GH_API_INPUT_SOURCES_STATUS=$?
+  if [ "$GH_API_INPUT_SOURCES_STATUS" -ne 0 ]; then
+    emit_deny "$(_lib_command_words_deny_reason 'gh api' "$GH_API_SOURCE_FLAGS" "$GH_API_INPUT_SOURCES_STATUS")"
+    exit 0
+  fi
   if [ -n "$GH_API_INPUT_SOURCES" ]; then
     while IFS= read -r gh_api_input_path; do
       [ -z "$gh_api_input_path" ] && continue
@@ -715,7 +723,12 @@ if [ "$IS_GH_API" -eq 1 ]; then
   # passes the tracker-ID scan trivially (no tracker shape there);
   # the file content does not. Read each referenced file and append
   # its contents. Same fail-closed posture as --input.
-  GH_API_FIELD_AT_SOURCES=$(extract_gh_api_field_at_paths "$COMMAND")
+  GH_API_FIELD_AT_SOURCES=$(extract_gh_api_field_at_paths "$GH_API_WORDS")
+  GH_API_FIELD_AT_SOURCES_STATUS=$?
+  if [ "$GH_API_FIELD_AT_SOURCES_STATUS" -ne 0 ]; then
+    emit_deny "$(_lib_command_words_deny_reason 'gh api' "$GH_API_SOURCE_FLAGS" "$GH_API_FIELD_AT_SOURCES_STATUS")"
+    exit 0
+  fi
   if [ -n "$GH_API_FIELD_AT_SOURCES" ]; then
     while IFS= read -r gh_api_field_at_path; do
       [ -z "$gh_api_field_at_path" ] && continue
