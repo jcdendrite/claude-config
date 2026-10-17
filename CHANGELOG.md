@@ -7,6 +7,15 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 ### Changed
 
 - **Gate hooks now block the tool call when they cannot start, abort (for example on an unset variable), are killed, print invalid JSON, or time out, instead of allowing it.** Every gate registration, in `settings.json` and in each plugin's `hooks.json`, sets `onFailure: "block"`, and every gate ends with `exit 0`. This needs Claude Code 2.1.295 or newer, because older versions may ignore or reject the `onFailure` field (unverified). One documented allow changes: on a machine with neither `timeout` nor `gtimeout`, a hung `gh pr view` in `require-ready-for-review.sh` now blocks `git push` and `gh pr ready` at the harness timeout (`gh pr create` never reaches that call). A fast `gh pr view` failure, or a missing `gh`, still releases.
+- **`/handoff` keeps its marker activation as the first step, run as its own Bash call, and now creates the handoffs directory just before drafting.**
+  - The two one-line recipes no longer sit next to each other. `enforce-marker-script-shape.sh` denies the activation chained to a non-`marker.sh` command.
+  - A run that the warrant check stops no longer creates the directory.
+- **code-review's DEFER criterion 2 and respond-pr's `OUT-OF-SCOPE`/`DEFERRED` replies take a documented limit by default, and a ticket is filed only on request.**
+  - A criterion-2 DEFER row names where the remediation would land, and the PR body carries it.
+  - A respond-pr `none — documented at <file:line>` reply names a line on the pushed branch.
+  - The reply says no follow-up is scheduled, and that the reviewer can ask for a ticket in a reply.
+  - A reply with no line to name states the limit itself, as `none — documented in this reply`.
+- **respond-pr `FIXED` replies carry a required `other-sites` field, and step 6 applies each fix at sibling sites in the PR's changed files.**
 - **A main-thread `review-orchestrator` dispatch now counts as a `code-review` round in `review-round-cost`, `cost-counts` and `author-outcome`.** The agent runs its round in its own transcript, so these subcommands previously opened no round for it and its spend landed in the non-round remainder. `review-round-cost` now prices the dispatch, its reviewers and its `code-writer` dispatches into the round. `author-outcome` also classifies the round: it reads the orchestrator's own transcript for the marker write and for nested `code-writer` dispatches. It gains a data-quality counter, `orchestrator dispatches with no readable transcript records`.
   - **Retroactive:** figures are recomputed from surviving transcripts, so a re-run differs from an earlier published figure for any session holding such a dispatch.
   - **Halted dispatches:** a dispatch that halted before invoking a review skill, or that never ran (a gate denial or a user rejection still leaves its `tool_use` block), still counts as a round, so `author-outcome` can newly count its session as a round-number mismatch. See `docs/transcript-analysis.md` § "author-outcome".

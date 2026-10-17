@@ -2078,18 +2078,21 @@ _COMMENT_ID = 1001
 # a placeholder. These reply texts and the field tokens below are hand-copied:
 # no test reads SKILL.md, so an edit to its reply format does not fail them.
 # Drift surfaces only as a zero-candidate run.
+_RESPOND_PR_FIXED_EXAMPLE_OTHER_SITES = "other-sites: handlers/import.ts:31"
 _RESPOND_PR_FIXED_EXAMPLE = (
     "> **[Claude Code]** Fixed. Applied the reviewer's intent (validate before writing) but checked at the handler "
     "level rather than inline at the call site — the call site is shared by three paths and an inline check would "
     "need to be duplicated. `disposition: fixed-with-modification` | `rationale: moved check to handler boundary to "
-    "avoid three-way duplication` | `commit_sha: <sha>`"
+    f"avoid three-way duplication` | `{_RESPOND_PR_FIXED_EXAMPLE_OTHER_SITES}` | `commit_sha: <sha>`"
 )
 _RESPOND_PR_EXPLAIN_DESIGN_EXAMPLE = (
     "> **[Claude Code]** The early return is intentional — when the session token is absent we want a fast 401 with "
     "no DB round-trip. The alternative (falling through to a null-check deeper in the stack) would silently succeed "
     "for unauthenticated callers in contexts where the token field is optional. `where-documented: auth/middleware.ts:42`"
 )
-# The step has no worked example for these, so each is written from the step's field lists.
+# The step has no worked example for these, so each is written from its field lists. The two
+# `_DOCUMENTED_LIMIT_` fixtures pin that a reply's deferral class depends only on the deferral field names being
+# present, not on their values, including a `none — documented at <file:line>` value.
 _RESPOND_PR_OUT_OF_SCOPE_REPLY = (
     "**[Claude Code]** Real, but a separate PR. `acknowledgment: confirmed` | `where-tracked: backlog` | "
     "`link-or-ticket: will create`"
@@ -2097,6 +2100,16 @@ _RESPOND_PR_OUT_OF_SCOPE_REPLY = (
 _RESPOND_PR_DEFERRED_REPLY = (
     "**[Claude Code]** Valid, left for later. `acknowledgment: confirmed` | `deferral-reason: needs a schema change` | "
     "`follow-up-ticket: will create: add the column`"
+)
+_RESPOND_PR_DEFERRED_DOCUMENTED_LIMIT_REPLY = (
+    "**[Claude Code]** Valid, left for later. No follow-up is scheduled; ask in a reply if you want a ticket. "
+    "`acknowledgment: confirmed` | `deferral-reason: needs a schema change` | "
+    "`follow-up-ticket: none — documented at db/schema.sql:12`"
+)
+_RESPOND_PR_OUT_OF_SCOPE_DOCUMENTED_LIMIT_REPLY = (
+    "**[Claude Code]** Real, but outside this PR's subject. No follow-up is scheduled; ask in a reply if you want a "
+    "ticket. `acknowledgment: confirmed` | `where-tracked: documented limit` | "
+    "`link-or-ticket: none — documented at db/schema.sql:12`"
 )
 _RESPOND_PR_AGREE_NO_CHANGE_REPLY = (
     "**[Claude Code]** Agreed, and the caller already guards it. `acknowledgment: confirmed` | "
@@ -2111,6 +2124,16 @@ _RESPOND_PR_LATEST_COMMIT_REPLY = (
 
 def _fixed_reply_body(sha_text: str) -> str:
     return _RESPOND_PR_FIXED_EXAMPLE.replace("<sha>", sha_text)
+
+
+def _fixed_reply_body_without_other_sites(sha_text: str) -> str:
+    """A `FIXED` reply with no `other-sites` field, the shape of replies posted before that field existed.
+
+    `rationale` sits directly before `commit_sha`.
+    """
+    body = _fixed_reply_body(sha_text).replace(f"`{_RESPOND_PR_FIXED_EXAMPLE_OTHER_SITES}` | ", "")
+    assert "other-sites" not in body, "the removal no-opped: the example's field segment changed shape"
+    return body
 
 
 class _FakeGh:
@@ -3648,8 +3671,27 @@ class TestClassifyReply:
             pytest.param(_fixed_reply_body("0123ab"), ("fixed-without-sha", None), id="six-hex-sha"),
             pytest.param(_fixed_reply_body(_FORTY_HEX + "0"), ("fixed-without-sha", None), id="forty-one-hex-sha"),
             pytest.param(_fixed_reply_body("0123abcxyz"), ("fixed-without-sha", None), id="sha-with-trailing-garbage"),
+            pytest.param(
+                _fixed_reply_body("").replace(
+                    _RESPOND_PR_FIXED_EXAMPLE_OTHER_SITES, "other-sites: not swept — gh pr diff failed near deadbeef0",
+                ),
+                ("fixed-without-sha", None),
+                id="hex-word-in-other-sites-is-not-taken-as-the-sha",
+            ),
             pytest.param(_RESPOND_PR_OUT_OF_SCOPE_REPLY, ("out-of-scope-or-deferred", None), id="out-of-scope"),
             pytest.param(_RESPOND_PR_DEFERRED_REPLY, ("out-of-scope-or-deferred", None), id="deferred"),
+            pytest.param(
+                _RESPOND_PR_DEFERRED_DOCUMENTED_LIMIT_REPLY, ("out-of-scope-or-deferred", None),
+                id="deferred-with-a-documented-limit",
+            ),
+            pytest.param(
+                _RESPOND_PR_OUT_OF_SCOPE_DOCUMENTED_LIMIT_REPLY, ("out-of-scope-or-deferred", None),
+                id="out-of-scope-with-a-documented-limit",
+            ),
+            pytest.param(
+                _fixed_reply_body_without_other_sites(_FORTY_HEX), ("FIXED", _FORTY_HEX),
+                id="fixed-reply-without-other-sites-keeps-its-sha",
+            ),
             pytest.param(_RESPOND_PR_EXPLAIN_DESIGN_EXAMPLE, ("not-fixed", None), id="explain-design"),
             pytest.param(_RESPOND_PR_AGREE_NO_CHANGE_REPLY, ("not-fixed", None), id="agree-no-change"),
         ],

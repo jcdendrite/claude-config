@@ -14,16 +14,7 @@ using the structure below.
 ~/.claude/scripts/marker.sh activate handoff
 ```
 
-Run this first, before the warrant check below: it suppresses `nudge-handoff-near-context-cap.sh`'s hard block for this session from the moment this skill loads, closing the window between skill load and reaching the warrant check itself. Failure is non-fatal; continue to the warrant check regardless. If the block fires anyway, see "Before writing: collect in-flight background dispatches" below. If the warrant check below finds a handoff is not warranted, deactivate the marker before stopping — see that section's closing note.
-
-## Before writing: create the handoffs directory
-
-Run the command below before writing — the directory is not guaranteed to exist yet.
-
-<!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory is created at the expected path, not just that the prose says so. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
-```bash
-~/.claude/scripts/ensure-account-dir.sh handoffs
-```
+Run this first, before the warrant check below, as its own Bash call, never chained — `enforce-marker-script-shape.sh` denies it chained to a non-`marker.sh` command such as the warrant check's `--check`. It suppresses `nudge-handoff-near-context-cap.sh`'s hard block for this session from the moment this skill loads, closing the window between skill load and reaching the warrant check itself. Failure is non-fatal; continue to the warrant check regardless. If the block fires anyway, see "Before writing: collect in-flight background dispatches" below. If the warrant check below finds a handoff is not warranted, deactivate the marker before stopping — see that section's closing note.
 
 ## Before writing: is a handoff warranted?
 
@@ -45,6 +36,15 @@ A dispatch still running when you check does not require staying in this turn: t
 This step applies only to `/handoff` run in a main interactive session — a subagent never reaches it as remediation for its own hard block, since the nudge hook's subagent gate exits before any escalation logic runs.
 
 If the hard block fires again during this wait, that's expected, not a new problem — it just means the session is still past its threshold while following the block's own remediation. It ends the current turn the same way. Resume the collect step on the next turn.
+
+## Before writing: create the handoffs directory
+
+Run the command below before writing — the directory is not guaranteed to exist yet.
+
+<!-- HOOK_TEST_FIXTURE: write-target — the skill test suite executes this exact recipe in an isolated $HOME to verify the directory is created at the expected path, not just that the prose says so. Do not duplicate the recipe elsewhere; the test re-reads it from here. -->
+```bash
+~/.claude/scripts/ensure-account-dir.sh handoffs
+```
 
 ## Verify the handoff file with Bash, never Read
 
