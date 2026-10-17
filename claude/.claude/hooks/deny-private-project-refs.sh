@@ -195,14 +195,16 @@
 #   one whose first content byte is invalid, and this is unverified on other
 #   BSD greps. `deny-pii-in-commits.sh` shares the added-line extraction.
 # - Surfaces this hook never scans (such as `gh pr comment` and writing files)
-#   and the gaps above are listed in
+#   are listed in
 #   `docs/private-project-redaction.md` § "Opting in another repository".
-# - In a marker-armed repo, the blocklist deny echoes the user's matching
-#   private-projects.md entries into that session, so any repo that commits
-#   the marker can surface them. Only an entry that matches content the
-#   session itself supplied is echoed, so the echo confirms that a word is on
-#   the user's list and reveals no other entry. A match found only in the
-#   quote-stripped copy of the command echoes the joined form.
+# - The blocklist deny echoes an entry, with up to three matched lines, whenever
+#   the entry whole-word matches the gated content, so any repo that commits
+#   the marker can make a session surface entries.
+# - The gated content includes the staged diff and any referenced body,
+#   message, --input or @file source that the session may never have read.
+# - A referenced file that holds the list itself can therefore echo every entry.
+# - A match found only in the quote-stripped copy of the command echoes the
+#   joined form.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
@@ -232,8 +234,8 @@
 # 3 lines per entry, each truncated to 200 chars). The matched token is
 # the user's own private-project name, already in the staged content
 # and in ~/.claude/private-projects.md; naming it lets the agent remove it in
-# one pass rather than bisecting the diff manually. The one disclosure the
-# echo creates is in the Known gaps bullet on the blocklist echo.
+# one pass rather than bisecting the diff manually. The disclosure the echo
+# creates is described in the Known gaps bullets on the blocklist echo.
 #
 # Allowlist extension: append to OSS_ALLOWLIST below if a legitimate
 # open-source prefix is blocked. Do NOT add private-project-specific
@@ -453,8 +455,6 @@ fi
 # Repos with neither legitimately reference their own tracker IDs, so the gate stays silent there.
 # `git config --get` prints nothing for a missing remote, so a no-remote repo falls through to the marker test.
 # The marker is read from the working tree, not a committed ref, because it can only add restriction.
-# A repo armed only by the marker gets OPTIN_DENY_NOTE appended to each content-match deny and loses the OSS_ALLOWLIST advice from the tracker deny.
-# Only claude-config excludes its own hook tests from the staged-diff scan; a marker-armed repo scans every path.
 # See `docs/private-project-redaction.md` § "Opting in another repository"
 OPTIN_DENY_NOTE=""
 TRACKER_REMEDY_LEAD="If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite"
@@ -589,7 +589,10 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
   # Repo or user diff config (color, external diff, textconv, diff.relative) can change the output at exit 0 so the `^\+` filter below drops added lines.
   # `-c diff.relative=false` outranks that config and keeps the diff repo-wide from a subdirectory cwd.
   # `-U0` drops context lines, which the `^\+` filter below discards anyway.
-  STAGED_DIFF=$(git -c diff.relative=false diff --cached -U0 --no-color --no-ext-diff --no-textconv -- "$STAGED_DIFF_PATHSPEC" 2>/dev/null)
+  # An inherited pathspec variable such as GIT_LITERAL_PATHSPECS reads `:(top)` as a literal name and empties the diff at exit 0.
+  # The unset runs inside the command substitution's subshell, so the parent environment is unchanged.
+  STAGED_DIFF=$(unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
+    git -c diff.relative=false diff --cached -U0 --no-color --no-ext-diff --no-textconv -- "$STAGED_DIFF_PATHSPEC" 2>/dev/null)
   STAGED_DIFF_STATUS=$?
   if [ "$STAGED_DIFF_STATUS" -ne 0 ]; then
     emit_deny "Commit — git diff --cached failed (exit ${STAGED_DIFF_STATUS}), so the redaction gate cannot read the staged diff. The hook hides git's own error, so run \`git diff --cached >/dev/null\` to see only git's error (exit status 128 or higher means git was killed or hit a fatal error). Fail-closed because unscanned content is exactly the leak vector this hook guards against. See repo CLAUDE.md section 'Redact private-project-identifying content'."

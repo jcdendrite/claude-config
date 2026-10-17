@@ -440,12 +440,12 @@ codename is a common standalone word, use a multi-word form (`ART pipeline`
 instead of `ART` alone) — the longer phrase is more selective — or rely on
 reviewer discipline instead of mechanical match.
 
-❌ **Don't add a word that is part of your home-directory username.** A hyphen,
-a dot, or any other non-word character except an underscore is a word
-boundary, so an entry equal to one word of a username split by such a
-character matches that username everywhere it appears. The structural scan already
-denies home-rooted paths, so the additional denials land on remote URLs, handles, and
-author lines naming `<username>`.
+❌ **Don't add a word that is part of your home-directory username.** Every
+non-word character except an underscore is a word boundary, including a hyphen
+and a dot. An entry equal to one word of a username split by such a character
+therefore matches that username everywhere it appears. The structural scan
+already denies home-rooted paths. The additional denials land on remote URLs,
+handles, and author lines naming `<username>`.
 
 **Rule of thumb:**
 
@@ -472,13 +472,12 @@ repo-root `.gitignore` has a belt-and-suspenders entry for
 ## What the deny message reports
 
 When the blocklist or tracker-ID scan blocks a commit or PR, the deny
-message names each matched blocklist entry or tracker-ID token and quotes
-the offending line(s) from the staged content — the token is already
-present in the staged diff, so quoting it discloses nothing new and lets
-the agent fix it in one pass instead of bisecting the diff. In a repo armed by
-the opt-in marker, a blocklist deny also confirms that a word in the session's
-own text is on your private-projects list. It reveals no entry the session did
-not already supply; see [Opting in another repository](#opting-in-another-repository).
+message names each matched blocklist entry or tracker-ID token. A blocklist
+deny also quotes the offending line(s) from the gated content, which lets the
+agent fix the match in one pass instead of bisecting the diff. A blocklist entry can reach
+the session through this echo even when the session never read the matched
+content; the hook header's Known-gaps bullet on the blocklist echo states the
+scope.
 
 Structural-scan denials name only the detector label, not the matched text,
 because a structural match (e.g. a hex ID or hostname) can itself be
@@ -555,20 +554,10 @@ scans a written file's added lines, never its path. A commit made outside a Clau
 Code session is not gated either. The backstop is a repo-owned pre-commit or
 server-side check; see [Limitations](security-hardening.md#limitations).
 
-Four narrower gaps also leave content unscanned:
-
-- A commit whose staged diff is empty (`git commit --amend -m`,
-  `git commit --allow-empty -m`, or nothing staged) has its message unscanned.
-- The staged-diff read passes `--no-textconv`, so a binary file that a
-  textconv driver maps to text is unscanned.
-- The staged-diff scan drops a line that begins with `++` once it is added,
-  because the added line renders as `+++`, the shape of a file header.
-  `deny-pii-in-commits.sh` shares that filter.
-- An added line that contains a byte invalid in the active locale may be
-  dropped by grep, depending on the grep implementation and locale. GNU grep
-  3.11 drops such a line. BSD grep drops one whose first content byte is
-  invalid, and this is unverified on other BSD greps.
-  `deny-pii-in-commits.sh` shares the extraction.
+Four narrower gaps also leave content unscanned: the message of a commit with
+an empty staged diff, a binary file that a textconv driver maps to text, an
+added line that begins with `++`, and an added line holding a byte invalid in
+the active locale. The hook header's Known gaps states each.
 
 **Opt in.** From the repo's toplevel, write a short self-describing comment
 into the marker and commit it. The hook reads the marker only at the
@@ -616,12 +605,9 @@ entries that collide with your username, see
 
 **Why it fires.** A collaborator who sees these denies finds
 `.claude/private-projects-optin` at the toplevel, and the deny names it. The
-repo controls activation. Activation can only add denies. A blocklist deny
-here echoes the matching entry, so a repo that commits the marker can make a
-session probe your list: the deny confirms which words in the session's own
-text are on it. The session supplied those words, so no other entry is
-revealed. The hook header's Known gaps bullet on the blocklist echo states the
-mechanism in full.
+repo controls activation. Activation can only add denies. Activation also
+exposes blocklist entries through the deny echo, and the hook header's
+Known-gaps bullet on the blocklist echo states its scope.
 
 **Opt out.** `git rm` the marker and commit. The change reaches each checkout
 when it pulls or rebases. A local-only delete disarms that checkout too, but it

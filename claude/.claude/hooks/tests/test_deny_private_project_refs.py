@@ -142,6 +142,20 @@ def _stage_tracker_line_under_diff_config(
     return subdirectory
 
 
+# `GIT_LITERAL_PATHSPECS` reads the staged-diff pathspec's `:(top)` magic as a
+# literal path name, so an inherited value empties the diff at exit 0. The hook
+# also unsets `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS` and
+# `GIT_ICASE_PATHSPECS` as defense, but only the literal variable is exercised
+# here because the others leave the diff intact with or without the unset.
+_STAGED_DIFF_EMPTYING_PATHSPEC_ENV_VARIABLE = "GIT_LITERAL_PATHSPECS"
+
+
+def _stage_tracker_line(repo: Path) -> None:
+    """Stage a tracker line in file.txt."""
+    (repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+
+
 # Commands whose gate is armed by the opt-in marker: the commit-concluding
 # `--continue` forms scan the staged diff, and the gh forms scan the command text.
 _OPTIN_MARKER_ARMED_COMMANDS = [
@@ -534,6 +548,11 @@ class TestDenyPrivateProjectRefs:
         "Rewrite the commit message / staged content / PR body / issue body / gh api body "
         "without the tracker ID before retrying."
     )
+    # The claude-config tracker deny's closing remedy: the default lead "Otherwise rewrite" joined to the shared tail.
+    _CLAUDE_CONFIG_TRACKER_REWRITE_SENTENCE = (
+        "Otherwise rewrite the commit message / staged content / PR body / issue body / gh api body "
+        "without the tracker ID before retrying."
+    )
     # The tracker deny's remedy for claude-config; it is wrong advice in any other repo.
     _OSS_ALLOWLIST_ADVICE = "add the prefix to the OSS_ALLOWLIST variable"
     _TRACKER_COMMIT_COMMAND = "git commit -m 'Fix WIDGET-123 regression'"
@@ -866,6 +885,36 @@ class TestDenyPrivateProjectRefs:
         assert reason is not None
         assert "WIDGET-123" in reason
 
+    def test_optin_marker_staged_diff_scan_ignores_literal_pathspecs_environment(
+        self, private_projects_optin_repo
+    ):
+        """An inherited `GIT_LITERAL_PATHSPECS` must not turn the
+        `:(top)` pathspec into a literal name and empty the scanned diff."""
+        _stage_tracker_line(private_projects_optin_repo)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+            extra_env={_STAGED_DIFF_EMPTYING_PATHSPEC_ENV_VARIABLE: "1"},
+        )
+        assert reason is not None
+        assert "WIDGET-123" in reason
+
+    def test_claude_config_staged_diff_scan_ignores_literal_pathspecs_environment(
+        self, claude_config_repo
+    ):
+        """An inherited `GIT_LITERAL_PATHSPECS` must not turn the
+        `:(top,exclude)` pathspec into a literal name and empty the scanned diff."""
+        _stage_tracker_line(claude_config_repo)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=claude_config_repo,
+            extra_env={_STAGED_DIFF_EMPTYING_PATHSPEC_ENV_VARIABLE: "1"},
+        )
+        assert reason is not None
+        assert "WIDGET-123" in reason
+
     def test_optin_marker_does_not_scan_files_marked_no_diff_known_gap(self, private_projects_optin_repo):
         """Pins an accepted Known gap in the hook header: a file that
         `.gitattributes` marks `-diff` renders without added lines, so a
@@ -1016,8 +1065,7 @@ class TestDenyPrivateProjectRefs:
 
     def test_claude_config_denies_when_staged_diff_cannot_be_read(self, claude_config_repo):
         """The fail-closed staged-diff-read deny is not marker-conditional: a
-        claude-config checkout with a corrupt index gets the same deny and no
-        opt-in note."""
+        claude-config checkout with a corrupt index gets the same deny."""
         (claude_config_repo / ".git" / "index").write_bytes(b"not an index")
         reason = run_hook_reason(
             DENY_PRIVATE_PROJECT_REFS_HOOK,
@@ -1027,8 +1075,6 @@ class TestDenyPrivateProjectRefs:
         assert reason is not None
         assert "git diff --cached failed" in reason
         assert self._STAGED_DIFF_FAILURE_REMEDY in reason
-        assert self._OPTIN_NOTE_PHRASE not in reason
-        assert self._OPTIN_NOTE_MISROUTE_PHRASE not in reason
 
     def test_claude_config_deny_carries_no_optin_note(self, claude_config_repo):
         reason = run_hook_reason(
@@ -1043,6 +1089,7 @@ class TestDenyPrivateProjectRefs:
         assert self._OPTIN_NOTE_RETARGET_PHRASE not in reason
         assert self._OSS_ALLOWLIST_ADVICE in reason
         assert "not on the allowlist" in reason
+        assert self._CLAUDE_CONFIG_TRACKER_REWRITE_SENTENCE in reason
         assert self._OPTIN_TRACKER_REWRITE_SENTENCE not in reason
 
     def test_claude_config_repo_that_also_has_marker_gets_no_optin_note(self, claude_config_repo):
@@ -1061,6 +1108,7 @@ class TestDenyPrivateProjectRefs:
         assert self._OPTIN_MARKER_PATH not in reason
         assert self._OPTIN_NOTE_PHRASE not in reason
         assert self._OSS_ALLOWLIST_ADVICE in reason
+        assert self._CLAUDE_CONFIG_TRACKER_REWRITE_SENTENCE in reason
 
     def test_claude_config_repo_that_also_has_marker_keeps_hook_test_path_exemption(self, claude_config_repo):
         """The hook-tests exemption follows the origin URL, so a marker in a
@@ -1107,6 +1155,7 @@ class TestDenyPrivateProjectRefs:
         )
         assert reason is not None
         assert expected_infrastructure_text in reason
+        assert str(missing_file) in reason
         assert self._OPTIN_NOTE_PHRASE not in reason
         assert self._OPTIN_NOTE_MISROUTE_PHRASE not in reason
         assert self._OPTIN_NOTE_RETARGET_PHRASE not in reason
@@ -1673,33 +1722,35 @@ class TestDenyPrivateProjectRefs:
             == "deny"
         )
 
-    def test_blocklist_match_in_gh_pr_body_file_denied(self, claude_config_repo, private_projects_file, tmp_path):
-        """Blocklist applies to body-file content, not just the inline command."""
+    def test_blocklist_match_in_gh_pr_body_file_denied_names_entry(
+        self, claude_config_repo, private_projects_file, tmp_path
+    ):
+        """Blocklist applies to body-file content, not just the inline command;
+        the matched entry is named in the deny reason."""
         private_projects_file("Acme Corp\n")
         body_file = tmp_path / "pr-body.md"
         body_file.write_text("## Summary\n\nAcme Corp integration polish.\n")
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input(f"gh pr create --body-file {body_file}"),
-                cwd=claude_config_repo,
-            )
-            == "deny"
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(f"gh pr create --body-file {body_file}"),
+            cwd=claude_config_repo,
         )
+        assert reason is not None
+        assert "Acme Corp" in reason
 
-    def test_blocklist_match_in_staged_diff_denied(self, claude_config_repo, private_projects_file):
-        """Added lines in the staged diff are scanned against the blocklist."""
+    def test_blocklist_match_in_staged_diff_denied_names_entry(self, claude_config_repo, private_projects_file):
+        """Added lines in the staged diff are scanned against the blocklist;
+        the matched entry is named in the deny reason."""
         private_projects_file("Acme Corp\n")
         (claude_config_repo / "file.txt").write_text("first\nsecond\n# Acme Corp section\n")
         subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Generic refactor'"),
-                cwd=claude_config_repo,
-            )
-            == "deny"
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Generic refactor'"),
+            cwd=claude_config_repo,
         )
+        assert reason is not None
+        assert "Acme Corp" in reason
 
     def test_blocklist_comments_and_blanks_ignored(self, claude_config_repo, private_projects_file):
         """File with `#` comments and blank lines + a real entry must
@@ -1966,6 +2017,23 @@ class TestDenyPrivateProjectRefs:
         reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
         assert "Acme Corp" in reason
         assert "Foo Bar Inc" in reason
+
+    @pytest.mark.parametrize("repo_fixture_name", ["claude_config_repo", "private_projects_optin_repo"])
+    def test_blocklist_deny_omits_entry_not_matched_by_content(
+        self, request, private_projects_file, repo_fixture_name
+    ):
+        """A blocklist deny echoes only the entries that match the scanned
+        content, so an entry the content does not name stays out of the reason."""
+        repo = request.getfixturevalue(repo_fixture_name)
+        private_projects_file("Acme Corp\nFoo Bar Inc\n")
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'fix Acme Corp integration'"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "Acme Corp" in reason
+        assert "Foo Bar Inc" not in reason
 
     def test_blocklist_deny_truncates_long_offending_line(self, claude_config_repo, private_projects_file, tmp_path):
         """An offending line longer than 200 chars is truncated with an ellipsis."""
