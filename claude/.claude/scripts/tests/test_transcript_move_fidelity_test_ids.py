@@ -2,7 +2,7 @@
 
 Every test-ids check is proved by junit XML written under tmp_path: a clean case yields no findings,
 and one seeded defect per check yields exactly the finding that names it.
-The other subcommands' seeds live in test_transcript_move_fidelity.py.
+The other subcommands' seeds live in test_transcript_move_fidelity.py and test_transcript_move_fidelity_parser.py.
 """
 from __future__ import annotations
 

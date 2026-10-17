@@ -2,7 +2,8 @@
 
 Every check these subcommands report is proved by a synthetic source or script written under tmp_path:
 a clean case yields no findings, and one seeded defect per check yields exactly the finding that names it.
-The test-ids seeds live in test_transcript_move_fidelity_test_ids.py.
+The test-ids seeds live in test_transcript_move_fidelity_test_ids.py, and the parser-dump and --moved-callable seeds
+in test_transcript_move_fidelity_parser.py.
 """
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import tokenize
 from pathlib import Path
 
 import pytest
@@ -229,27 +231,78 @@ def test_nodes_flags_a_rename_that_no_compared_node_applied_as_rename_unused(cap
 
 
 @pytest.mark.parametrize(
-    ("before_source", "after_source"),
+    ("before_source", "after_source", "expected_checks"),
     [
         pytest.param(
             'def moved_fn(value):\n    raise ValueError("helper failed")\n',
             'def moved_fn(value):\n    raise ValueError("util.helper failed")\n',
+            ["node-ast", "rename-unused"],
             id="inside-a-string-literal",
         ),
         pytest.param(
             "def moved_fn(value):\n    # helper failed\n    return value\n",
             "def moved_fn(value):\n    # util.helper failed\n    return value\n",
+            ["node-comments", "rename-unused"],
             id="inside-a-comment",
+        ),
+        pytest.param(
+            'def moved_fn(value):\n    return f"helper failed: {value}"\n',
+            'def moved_fn(value):\n    return f"util.helper failed: {value}"\n',
+            ["node-ast", "rename-unused"],
+            id="inside-f-string-literal-text",
         ),
     ],
 )
-def test_nodes_reversal_is_textual_so_a_new_name_only_in_a_string_or_comment_passes_as_a_used_rename(
+def test_nodes_does_not_reverse_a_new_name_inside_a_string_or_comment(
+    capsys, tmp_path, before_source, after_source, expected_checks
+):
+    code, lines = _run_nodes(capsys, tmp_path, before_source, [after_source], *RENAME_HELPER)
+
+    assert (code, _checks(lines)) == (1, expected_checks)
+
+
+@pytest.mark.parametrize(
+    ("before_source", "after_source"),
+    [
+        pytest.param(
+            'def moved_fn(value):\n    """Calls util.helper."""\n    return helper(value)\n',
+            'def moved_fn(value):\n    """Calls util.helper."""\n    return util.helper(value)\n',
+            id="code-after-a-one-line-docstring-naming-the-new-name",
+        ),
+        pytest.param(
+            'def moved_fn(value):\n    return helper(value) or "fallback"\n',
+            'def moved_fn(value):\n    return util.helper(value) or "fallback"\n',
+            id="code-before-a-string-on-the-same-line",
+        ),
+        pytest.param(
+            'def moved_fn(value):\n    return f"{helper(value)}"\n',
+            'def moved_fn(value):\n    return f"{util.helper(value)}"\n',
+            id="inside-an-f-string-replacement-field",
+        ),
+        pytest.param(
+            'def moved_fn(value):\n    """Calls things.\n\n    Last line names util.helper."""\n    return helper(value)\n',
+            'def moved_fn(value):\n    """Calls things.\n\n    Last line names util.helper."""\n    return util.helper(value)\n',
+            id="code-after-a-three-line-docstring-naming-the-new-name",
+        ),
+    ],
+)
+def test_nodes_reverses_a_new_name_that_occurs_as_code_beside_a_string_naming_it(
     capsys, tmp_path, before_source, after_source
 ):
-    # Documented limit: the reversal regex runs over raw text, so a string or comment edit passes as a rename.
     code, lines = _run_nodes(capsys, tmp_path, before_source, [after_source], *RENAME_HELPER)
 
     assert (code, lines) == (0, ["compared-nodes: 1"])
+
+
+def test_nodes_rename_exits_2_when_tokenize_reports_no_f_string_tokens(capsys, tmp_path, monkeypatch):
+    monkeypatch.delattr(tokenize, "FSTRING_MIDDLE")
+
+    code, lines, err = _run_nodes_with_stderr(capsys, tmp_path, MOVED_BEFORE, [MOVED_AFTER], *RENAME_HELPER)
+    plain_code, plain_lines = _run_nodes(capsys, tmp_path, MOVED_BEFORE, [MOVED_BEFORE])
+
+    assert (code, lines) == (2, [])
+    assert "Python 3.12" in err
+    assert (plain_code, plain_lines) == (0, ["compared-nodes: 1"])
 
 
 def test_nodes_accepts_a_rename_used_only_by_the_second_of_two_compared_nodes(capsys, tmp_path):
