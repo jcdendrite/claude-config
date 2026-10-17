@@ -49,8 +49,9 @@ comment for that grammar's one residual rather than restating it here.
    project without naming it directly — see "The six structural detectors"
    below.
 3. **Private-projects blocklist (opt-in).** Reads `<config-dir>/private-projects.md`
-   at hook runtime when that file exists, else `~/.claude/private-projects.md`.
-   `<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`.
+   at hook runtime when that file exists, else the same-named file in the
+   default `~/.claude` directory. `<config-dir>` means `$CLAUDE_CONFIG_DIR`
+   when set, else `~/.claude`.
    The scan blocks commits/PRs whose content contains any
    non-comment, non-blank line from the file as a case-insensitive whole-word
    match.
