@@ -443,6 +443,64 @@ def test_transcript_analysis_review_trace_deny_summary_subprocess_finds_seeded_d
     assert "code-review" in result.stdout
 
 
+def test_transcript_analysis_skill_invocation_help_exits_zero():
+    """Proves, in a fresh interpreter, that build_parser calls the skill-invocation registrar."""
+    result = _run("transcript-analysis.py", "skill-invocation", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--include-subagents" in result.stdout
+
+
+def test_transcript_analysis_skill_pair_help_exits_zero():
+    """Proves, in a fresh interpreter, that build_parser calls the skill-pair registrar."""
+    result = _run("transcript-analysis.py", "skill-pair", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "LEADER" in result.stdout
+
+
+def test_transcript_analysis_judgment_pair_help_exits_zero():
+    """Proves, in a fresh interpreter, that build_parser calls the judgment-pair registrar."""
+    result = _run("transcript-analysis.py", "judgment-pair", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--truncate-chars" in result.stdout
+
+
+def test_transcript_analysis_skill_invocation_subprocess_finds_seeded_skill_invocation(tmp_path):
+    """Proves, in a fresh interpreter, that real argparse dispatches skill-invocation to cmd_skill_invocation
+    through set_defaults(func=...) and that the command reads the seeded corpus."""
+    config_dir = _seed_review_trace_skill_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "skill-invocation", "--projects", "*")
+
+    assert result.returncode == 0, result.stderr
+    # The user-slash column exists only in skill-invocation output, so a sibling command bound here fails.
+    cols = _table_cols(result.stdout, header_contains="user-slash", row_contains="code-review", row_startswith=True)
+    assert (int(cols["top-level"]), int(cols["routed"]), int(cols["user-slash"])) == (1, 0, 0), cols
+
+
+def test_transcript_analysis_skill_pair_subprocess_finds_seeded_leader_week(tmp_path):
+    """Proves, in a fresh interpreter, that real argparse dispatches skill-pair to cmd_skill_pair through
+    set_defaults(func=...) and that the command buckets the seeded leader invocation into its ISO week."""
+    config_dir = _seed_review_trace_skill_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "skill-pair", "code-review", "plan-review")
+
+    assert result.returncode == 0, result.stderr
+    # The seed's 2026-05-19T10:00:00Z leader invocation falls in ISO week 2026-W21.
+    cols = _table_cols(result.stdout, header_contains="Lead", row_contains="2026-W21", row_startswith=True)
+    assert int(cols["Lead"]) == 1, cols
+
+
+def test_transcript_analysis_judgment_pair_subprocess_finds_seeded_review_skill(tmp_path):
+    """Proves, in a fresh interpreter, that real argparse dispatches judgment-pair to cmd_judgment_pair through
+    set_defaults(func=...) and that the command pairs the seeded review-skill invocation."""
+    config_dir = _seed_review_trace_skill_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "judgment-pair")
+
+    assert result.returncode == 0, result.stderr
+    assert "Skill: code-review" in result.stdout
+
+
 def test_transcript_analysis_read_scope_help_exits_zero():
     result = _run("transcript-analysis.py", "read-scope", "--help")
     assert result.returncode == 0, result.stderr

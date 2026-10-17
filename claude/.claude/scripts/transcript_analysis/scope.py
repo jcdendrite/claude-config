@@ -24,6 +24,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Iterable, Iterator, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -897,7 +898,7 @@ def _single_level_projects_glob(value: str) -> str:
     """Runtime validator for --projects in each multi-root branch that
     matches the value against one directory name with fnmatch.
 
-    Its callers are _resolve_project_scope and transcript-analysis.py's
+    Its callers are _resolve_project_scope and skill_invocation.py's
     cmd_skill_invocation, which inlines the equivalent branch.
     It is not an argparse type=, because whether the one-level restriction
     applies depends on how many roots the invocation resolves, not on the
@@ -1101,6 +1102,15 @@ def _parse_since_nd_arg(args: argparse.Namespace, subcommand: str) -> tuple[floa
             print(f"{subcommand}: --since: expected Nd like '35d', got {since_raw!r}", file=sys.stderr)
             sys.exit(1)
     return since_ts, since_raw
+
+
+def _iso_date(s: str) -> str:
+    """argparse type: validate a YYYY-MM-DD date string."""
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a valid YYYY-MM-DD date: {s!r}") from None
+    return s
 
 
 def _parse_absolute_window_args(

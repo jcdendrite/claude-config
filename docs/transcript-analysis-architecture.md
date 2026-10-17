@@ -16,7 +16,8 @@ circular import is possible while `cmd_*` functions remain split across both the
 package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `review_trace.py`,
 `read_scope.py`, `pr_cost.py`, `pr_cost_export.py`, `cache_rebuild.py`, `audit_routing.py`,
 `cost_ledger.py`, `workstream_cost.py`, `subagents.py`, `subagent_mix.py`, `rearm_backtest.py`,
-`spend_over_threshold.py`, `plan_boundary.py`, and `handoff_signal_response.py` are the only modules
+`spend_over_threshold.py`, `plan_boundary.py`, `handoff_signal_response.py`, `judgment_pair.py`,
+`skill_invocation.py`, and `skill_pair.py` are the only modules
 the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. Two
 still-unmigrated friction/command-shape helpers likewise call `denials.py`'s
@@ -30,6 +31,9 @@ skill-name matching (`review_rounds._round_skill_name`, `review_rounds._SLASH_CO
 package's first two imports from one command-group module into another.
 `subagent_mix.py` likewise imports `review_rounds.py`, for `REVIEW_SKILLS` and
 `compute_review_round_counts`.
+`review_trace.py` also imports `skill_invocation.py`, for its emitted skill label
+(`skill_invocation._normalize_skill_name`). `judgment_pair.py` imports `review_rounds.py` for
+`REVIEW_SKILLS`, and `skill_invocation.py` imports it for `_SLASH_COMMAND_RE`.
 `build_parser()` likewise wires up `pr_cost.py`'s `cmd_pr_cost` (with its two
 `--asof-window-days`/`--plan-file-glob` default constants) and `pr_cost_export.py`'s
 `cmd_pr_cost_export` from the shim.
@@ -46,6 +50,9 @@ name from the shim.
 `spend_over_threshold.py`'s `cmd_spend_over_threshold` from the shim.
 `build_parser()` likewise wires up `plan_boundary.py`'s `cmd_plan_boundary` and
 `handoff_signal_response.py`'s `cmd_handoff_signal_response` from the shim.
+`build_parser()` registers judgment-pair, skill-invocation, and skill-pair by calling each owning
+module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
+module's own registration binds `set_defaults(func=...)` to its own handler.
 
 ## The package
 
@@ -79,6 +86,9 @@ The rule itself is documented in `docs/transcript-analysis.md` under "Subagent a
 `scope.py` also owns `_add_project_scope_args`, which registers the mutually exclusive
 `--projects`/`--this-repo` flags on a subparser. `_resolve_project_scope` reads the `this_repo`
 attribute that function defines.
+
+`scope.py` also owns `_iso_date`, the argparse `type=` validator for every YYYY-MM-DD flag, which
+`_parse_absolute_window_args` relies on.
 
 Read reassignable module globals (`scope.PROJECTS_DIR`, `scope.config_dir`,
 `pricing._usage_drift_warned`) via attribute access, never `from module import NAME` — the latter
@@ -124,7 +134,7 @@ into one record per API call). Self-contained: no dependency on `scope.py` or `r
 Small display-formatting and text-normalization helpers with no state of their own: model-family
 labels (`_fam`), markdown/table rendering, `_content_text`, `_fmt_usd`, `_pct_of`,
 `_strip_task_notifications`, `_is_fresh_user_prompt`. Self-contained. `_is_fresh_user_prompt` has its
-one definition here; the shim's judgment-pair, `review_rounds.py`'s round-window detection, and
+one definition here; `judgment_pair.py`, `review_rounds.py`'s round-window detection, and
 `rearm_backtest.py`'s boundary detection all read it.
 
 ### `cost.py`
@@ -169,12 +179,12 @@ main-thread round-opening record never needs. `REVIEW_SKILLS`, `compute_review_r
 and `round_opened_by_spawn` are the public names here. `spawn_round_skill` maps a spawn block to the
 review skill it opens (`author_outcome.py` is its consumer), and `round_opened_by_spawn` reports
 whether a record's round came from a spawn block rather than a `Skill` block (the review-bench
-miner's round filter is its consumer). `REVIEW_SKILLS` is back-imported by the still-unmigrated
-`cmd_judgment_pair` in the shim for its own `--skills` default, one instance of the one-directional exception noted
-above. `_round_skill_name` and `_SLASH_COMMAND_RE` are two more instances, both back-imported by
-the still-unmigrated review-trace code: `_round_skill_name` for its own `REVIEW_TRACE_SKILLS`
-membership test and `--skill` filter comparison, `_SLASH_COMMAND_RE` to extract a `/slash`-invoked
-skill name before `_round_skill_name` normalizes it.
+miner's round filter is its consumer). `REVIEW_SKILLS` is read by `judgment_pair.py`, for
+judgment-pair's `--skills` default, and by the shim's `build_parser()`, for review-round-cost's
+`--skill` choices. `_round_skill_name` and `_SLASH_COMMAND_RE` are read by `review_trace.py`:
+`_round_skill_name` for its `REVIEW_TRACE_SKILLS` membership test and `--skill` filter comparison, and
+`_SLASH_COMMAND_RE` to extract a `/slash`-invoked skill name before `_round_skill_name` normalizes it.
+`_SLASH_COMMAND_RE` is also `skill_invocation.py`'s `/slash` pattern, and this is its one definition.
 `detect_round_windows` is public (no leading
 underscore) for a separate reason: `author_outcome.py` is a second consumer, reading only each
 window's own `open_idx`/`skill`.
@@ -228,14 +238,13 @@ The review-trace command family: `cmd_review_trace` and every helper used only b
 `--deny-summary`'s grouped denial/friction accumulation and report (`compute_deny_summary_data`,
 promoted from a shim-private `_compute_deny_summary_data`), and the per-session event-timeline
 detector both the default output and `--deny-summary` share (`_review_trace_session_events`).
-Imports `corpus`, `denials`, `render`, `reviewer_yield`, `review_rounds`, and `scope` all by module
-(attribute access), matching `cost.py`'s convention; calls `reviewer_yield._is_reviewer_subagent_type`
-for its own reviewer-spawn detection and `review_rounds._round_skill_name`/
+Imports `corpus`, `denials`, `render`, `reviewer_yield`, `review_rounds`, `scope`, and
+`skill_invocation` all by module (attribute access), matching `cost.py`'s convention; calls
+`reviewer_yield._is_reviewer_subagent_type` for its own reviewer-spawn detection and `review_rounds._round_skill_name`/
 `review_rounds._SLASH_COMMAND_RE` for its `/slash`-invocation skill matching — see that module's own
 section above for why these are the package's first cross-command-group imports.
-`_review_trace_session_events` re-expresses its own `_normalize_skill_name` (the emitted display
-label's lighter directory-only strip) locally rather than back-importing the shim's copy — the same
-re-expression pattern `review_rounds.py` uses for `_SLASH_COMMAND_RE`.
+`_review_trace_session_events` reads `skill_invocation._normalize_skill_name` for the emitted display
+label's directory-only strip.
 `cmd_review_trace` and `REVIEW_TRACE_SKILLS` are the two names reached bare from the shim's own
 still-monolithic `build_parser()` — see the exception noted above. `compute_deny_summary_data` is
 read by `cost_ledger.py`'s own `_cost_ledger_report` as `review_trace.compute_deny_summary_data`, a
@@ -439,6 +448,37 @@ convention. The multi-root `--no-redact` refusal lives inline in `cmd_handoff_si
 existing `scope.config_dir` patch isolates it. `cmd_handoff_signal_response` is the one name reached
 bare from the shim, from `build_parser()`.
 
+### `judgment_pair.py`
+
+The judgment-pair command: `cmd_judgment_pair`, which pairs each review skill's last main-thread
+assistant output with the user's next fresh prompt, and the `_add_judgment_pair_subparser`
+registration. Imports `corpus`, `redaction`, `render`, `review_rounds`, and `scope` all by module
+(attribute access), matching `cost.py`'s convention; `review_rounds.REVIEW_SKILLS` is the default
+for its `--skills` flag. `_add_judgment_pair_subparser` is the one name `build_parser()` reaches
+bare. The shim also binds `cmd_judgment_pair`, and that binding exists only for test files, which
+read it as `_mod.cmd_judgment_pair`.
+
+### `skill_invocation.py`
+
+The skill-invocation command: `cmd_skill_invocation`, the per-skill tally of top-level, routed, and
+`/slash` invocations, `_normalize_skill_name`, the display-label helper that strips a directory
+qualifier from a skill name, and the `_add_skill_invocation_subparser` registration. Imports
+`corpus`, `render`, `review_rounds`, and `scope` all by module (attribute access), matching
+`cost.py`'s convention. `_normalize_skill_name` has its one definition here, and `review_trace.py`
+reads it. The `/slash` pattern is `review_rounds._SLASH_COMMAND_RE`.
+`_add_skill_invocation_subparser` is the one name `build_parser()` reaches bare. The shim also binds
+`cmd_skill_invocation`, and that binding exists only for test files, which read it as
+`_mod.cmd_skill_invocation`.
+
+### `skill_pair.py`
+
+The skill-pair command: `cmd_skill_pair`, the ISO-week rate at which a follower skill fires in
+sessions where a leader skill fired on the main thread, and the `_add_skill_pair_subparser`
+registration. Imports `corpus`, `pricing`, and `scope` all by module (attribute access), matching
+`cost.py`'s convention. `_add_skill_pair_subparser` is the one name `build_parser()` reaches bare.
+The shim also binds `cmd_skill_pair`, and that binding exists only for test files, which read it as
+`_mod.cmd_skill_pair`.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -477,7 +517,7 @@ on. `tests/conftest.py` carries the shared fixtures that reach across the shim/p
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
 `cost_ledger_file`, `cost_ledger_enabled`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`,
 `_compact_boundary_rec`, `_cost_ledger_args`, `_cost_ledger_row`, `_two_declared_roots`,
-`_exit_plan_mode`, `_priced_opus`, `_priced_sidechain_asst`, `_read_use`, `_thinking_block`); see its own
+`_exit_plan_mode`, `_priced_opus`, `_priced_sidechain_asst`, `_read_use`, `_skill_use_rec`, `_thinking_block`); see its own
 docstrings for why `fake_projects` patches four `config_dir` bindings: `scope.config_dir`, plus
 `cost_ledger.config_dir`, `ledger_common.config_dir`, and
 `pr_cost_ledger.config_dir` (each module's own by-name binding, mirroring `scope.py`'s pattern). `author_outcome.py`'s own tests
@@ -490,10 +530,13 @@ test file that uses them needs no `transcript-analysis.py` loader of its own.
 `tests/test_transcript_shared_fixtures.py` requests them from a file that loads no shim.
 
 `tests/_move_fidelity.py` checks a code move between files: moved-node AST equality modulo a rename
-map, what remains of each source file, byte-compared CLI captures under a pinned environment, and
-per-test outcomes across junit XML runs. Its seeded-defect self-test is split by subcommand:
-`tests/test_transcript_move_fidelity_test_ids.py` covers `test-ids`, and
-`tests/test_transcript_move_fidelity.py` covers the rest. Run the module with `--help` for usage.
+map applied to code only, what remains of each source file, byte-compared CLI captures under a pinned
+environment, a per-subcommand dump of each parser's argparse configuration, and per-test outcomes
+across junit XML runs. Its seeded-defect self-test is split by subject:
+`tests/test_transcript_move_fidelity_test_ids.py` covers `test-ids`,
+`tests/test_transcript_move_fidelity_parser.py` covers the parser dump and
+`compare-captures --moved-callable`, and `tests/test_transcript_move_fidelity.py` covers the rest.
+Run the module with `--help` for usage.
 
 The cache-rebuild family splits along thematic seams rather than one file per module:
 
@@ -586,3 +629,15 @@ than one file reads: `_spend_over_threshold_args`, `_rearm_backtest_args`,
 `_rearm_backtest_args`, for its cross-subcommand table. All consumers import it relatively, as `from ._handoff_nudge_helpers import ...`
 — see `.claude/rules/test-tree-packaging.md` for why. Each file keeps its other family-only helpers
 local to itself.
+
+The skill command group splits at command seams, one test file per module:
+`tests/test_transcript_skill_invocation.py` covers `cmd_skill_invocation` (invocation buckets,
+`--branches` and `--include-subagents` scoping, name normalization, provenance, the repo-scoped
+default, and the `/slash` `<command-args>` exclusion), `tests/test_transcript_skill_pair.py` covers
+`cmd_skill_pair`, and `tests/test_transcript_judgment_pair.py` covers `cmd_judgment_pair`. None of the
+three loads the shim: each imports its package module directly and relies on the loader-free
+`fake_projects` fixture. `tests/_skill_helpers.py`, a plain module, not a test file itself, holds the
+helpers more than one of those files, or `tests/test_transcript_analysis.py`, reads. The legacy file
+imports it too, as `from ._skill_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for
+why. `TestIsFreshUserPrompt` stays in `tests/test_transcript_analysis.py` because it tests
+`render.py`, not the judgment-pair command.
