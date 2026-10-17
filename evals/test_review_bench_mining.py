@@ -75,6 +75,39 @@ def _set_origin_main(repo: Path, sha: str) -> None:
     subprocess.run(["git", "update-ref", "refs/remotes/origin/main", sha], cwd=repo, check=True)
 
 
+def _rewrite_author_date_output(monkeypatch, rewrite) -> list[str]:
+    """Passes the stdout of every `git log -1 --format=%aI` call through `rewrite`, so a miner sees a
+    chosen spelling of the author date whichever git version is installed. Returns the live list of
+    each intercepted call's stdout as git printed it, before `rewrite`."""
+    real_run = subprocess.run
+    printed_by_git: list[str] = []
+
+    def run(command, **kwargs):
+        result = real_run(command, **kwargs)
+        if list(command[:4]) == ["git", "log", "-1", "--format=%aI"]:
+            is_bytes = isinstance(result.stdout, bytes)
+            printed = result.stdout.decode("utf-8") if is_bytes else result.stdout
+            printed_by_git.append(printed)
+            rewritten = rewrite(printed)
+            result.stdout = rewritten.encode("utf-8") if is_bytes else rewritten
+        return result
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return printed_by_git
+
+
+def _print_zero_offset_as_z(monkeypatch) -> list[str]:
+    """Makes git's strict-ISO author date spell a zero UTC offset `Z`, as git 2.45 and later print it.
+    Returns what `_rewrite_author_date_output` returns."""
+    return _rewrite_author_date_output(monkeypatch, lambda date_text: date_text.replace("+00:00", "Z"))
+
+
+def _assert_git_printed_a_zero_offset(printed_by_git: list[str]) -> None:
+    """Fails when the rewrite never ran, or ran only on dates with no zero offset to respell."""
+    assert printed_by_git, "no `git log -1 --format=%aI` call was intercepted"
+    assert any(printed.strip().endswith(("+00:00", "Z")) for printed in printed_by_git), printed_by_git
+
+
 # Engineer-side git settings that change the text `git diff` prints.
 ENGINEER_GIT_SETUPS = (
     "color-ui-always", "diff-external-config", "external-diff-env", "diff-opts-env", "xdg-default-attributes-file",
@@ -240,6 +273,22 @@ class TestCandidateAndConfirmedDefectSchema:
     def test_bad_fix_date_is_rejected(self):
         with pytest.raises(ValueError, match="fix_date"):
             Candidate(**_candidate_kwargs(fix_date="not-a-date"))
+
+    @pytest.mark.parametrize(
+        ("git_iso", "expected"),
+        [
+            pytest.param("2026-01-04T00:00:00Z", "2026-01-04T00:00:00+00:00", id="z-becomes-zero-offset"),
+            pytest.param("2026-01-04T00:00:00+00:00", "2026-01-04T00:00:00+00:00", id="zero-offset-is-unchanged"),
+            pytest.param("2026-01-04T00:00:00-05:00", "2026-01-04T00:00:00-05:00", id="author-offset-is-not-converted-to-utc"),
+        ],
+    )
+    def test_canonical_fix_date_spells_a_zero_offset_one_way_and_keeps_the_author_offset(self, git_iso, expected):
+        assert defects.canonical_fix_date(git_iso) == expected
+
+    @pytest.mark.parametrize("git_iso", ["not-a-date", ""])
+    def test_canonical_fix_date_rejects_text_that_is_not_a_date_naming_the_field(self, git_iso):
+        with pytest.raises(ValueError, match="fix_date"):
+            defects.canonical_fix_date(git_iso)
 
     def test_unknown_ref_status_is_rejected(self):
         with pytest.raises(ValueError, match="ref_status"):
@@ -917,7 +966,7 @@ class TestMineSzz:
         _write(repo, "app.py", "def f():\n    return bad_value\n")
         introducing_sha = _commit(repo, "add f")
         _write(repo, "app.py", "def f():\n    return good_value\n")
-        fix_sha = _commit(repo, "fix wrong return value")
+        fix_sha = _commit_at(repo, "fix wrong return value", "2026-01-04T00:00:00+0000")
         _set_origin_main(repo, fix_sha)
 
         candidates = mine_szz.mine(repo, base_ref="origin/main")
@@ -925,7 +974,24 @@ class TestMineSzz:
         candidate = candidates[0]
         assert candidate.head_commit == introducing_sha
         assert candidate.fix_commit == fix_sha
+        assert candidate.fix_date == "2026-01-04T00:00:00+00:00"
         assert candidate.evidence["low_confidence"] is False
+
+    def test_a_fix_date_git_prints_with_z_is_stored_with_a_zero_offset(self, tmp_path, monkeypatch):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "app.py", "def f():\n    pass\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", "def f():\n    return bad_value\n")
+        _commit(repo, "add f")
+        _write(repo, "app.py", "def f():\n    return good_value\n")
+        fix_sha = _commit_at(repo, "fix wrong return value", "2026-01-04T00:00:00+0000")
+        _set_origin_main(repo, fix_sha)
+        printed_by_git = _print_zero_offset_as_z(monkeypatch)
+
+        (candidate,) = mine_szz.mine(repo, base_ref="origin/main")
+
+        _assert_git_printed_a_zero_offset(printed_by_git)
+        assert candidate.fix_date == "2026-01-04T00:00:00+00:00"
 
     def test_blank_comment_and_markdown_lines_are_ignored(self, tmp_path):
         """Only the code-line removal in util.py is mined; the blank and comment
@@ -2017,6 +2083,15 @@ class TestMineReviewRoundsAgainstRealGit:
             "introducing_sha": introducing_sha, "first_fix_sha": first_fix_sha, "cited_path": cited_path,
         }
 
+    def test_a_fix_date_git_prints_with_z_is_stored_with_a_zero_offset(self, tmp_path, monkeypatch):
+        built = self._build(tmp_path, monkeypatch, relative_path="pkg/app.py")
+        printed_by_git = _print_zero_offset_as_z(monkeypatch)
+
+        (candidate,) = mine_review_rounds.mine(built["repo"], roots=built["roots"])
+
+        _assert_git_printed_a_zero_offset(printed_by_git)
+        assert candidate.fix_date == "2026-01-04T12:00:00+00:00"
+
     @pytest.mark.parametrize(
         ("relative_path", "expected_lens", "expected_markdown"),
         [
@@ -2061,6 +2136,23 @@ class TestMineReviewRoundsAgainstRealGit:
 
         assert mine_review_rounds.mine(built["repo"], roots=built["roots"]) == []
         assert "2 citation(s) skipped for unresolved commits" in capsys.readouterr().err  # one per earlier round
+
+
+class TestCommitDateWhenGitPrintsNothing:
+    @pytest.mark.parametrize(
+        "commit_date",
+        [
+            pytest.param(mine_review_rounds._commit_date, id="review-rounds"),
+            pytest.param(mine_pr_comments._commit_date, id="pr-comments"),
+        ],
+    )
+    def test_empty_git_output_is_no_date(self, tmp_path, monkeypatch, commit_date):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "app.py", "line0\n")
+        sha = _commit(repo, "seed")
+        _rewrite_author_date_output(monkeypatch, lambda _date_text: "")
+
+        assert commit_date(repo, sha) is None
 
 
 # --- PR-comment miner ----------------------------------------------------------
@@ -2353,6 +2445,16 @@ class TestProviderPayloadShapesFailClosed:
 
 
 class TestMinePrComments:
+    def test_a_fix_date_git_prints_with_z_is_stored_with_a_zero_offset(self, tmp_path, monkeypatch):
+        repo, _main_sha, introducing_sha, fix_sha = _pr_comment_repo(tmp_path)
+        thread = [_pr_review_comment(introducing_sha), _pr_thread_reply(_fixed_reply_body(fix_sha))]
+        printed_by_git = _print_zero_offset_as_z(monkeypatch)
+
+        (candidate,), _fake_gh = _mine_pr_comments(repo, thread)
+
+        _assert_git_printed_a_zero_offset(printed_by_git)
+        assert candidate.fix_date == "2026-01-04T00:00:00+00:00"
+
     def test_owner_comment_with_a_fixed_reply_yields_a_candidate_with_blamed_and_replied_commits(self, tmp_path):
         repo, main_sha, introducing_sha, fix_sha = _pr_comment_repo(tmp_path)
         thread = [_pr_review_comment(introducing_sha), _pr_thread_reply(_fixed_reply_body(fix_sha))]
