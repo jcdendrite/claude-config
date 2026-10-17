@@ -181,11 +181,28 @@
 # - A file git classifies as binary, including one a `.gitattributes` rule
 #   marks `-diff` or `binary`, renders without added lines, so its content is
 #   never scanned.
+# - The staged-diff scan reads with `--no-textconv`, so a binary file that a
+#   textconv driver maps to text is unscanned.
+# - The `^\+\+\+` file-header filter also drops an added content line that
+#   begins with `++`, so a token on such a line is unscanned.
+# - A commit whose staged diff is empty (`--amend -m`, `--allow-empty -m`, or
+#   nothing staged) leaves its message unscanned. In claude-config the staged
+#   diff also reads as empty when only files under
+#   `claude/.claude/hooks/tests/` are staged, because that path is excluded.
+# - An added line that contains a byte invalid in the active locale may be
+#   dropped by grep, depending on the grep implementation and locale. GNU grep
+#   3.11 drops such a line, as `deny-pii-in-commits.sh` records. BSD grep drops
+#   one whose first content byte is invalid, and this is unverified on other
+#   BSD greps. `deny-pii-in-commits.sh` shares the added-line extraction.
 # - Surfaces this hook never scans (such as `gh pr comment` and writing files)
-#   are listed in `docs/private-project-redaction.md` § "Opting in another repository".
+#   and the gaps above are listed in
+#   `docs/private-project-redaction.md` § "Opting in another repository".
 # - In a marker-armed repo, the blocklist deny echoes the user's matching
 #   private-projects.md entries into that session, so any repo that commits
-#   the marker can surface them.
+#   the marker can surface them. Only an entry that matches content the
+#   session itself supplied is echoed, so the echo confirms that a word is on
+#   the user's list and reveals no other entry. A match found only in the
+#   quote-stripped copy of the command echoes the joined form.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
@@ -214,9 +231,9 @@
 # and quotes the offending line(s) from the scanned content (capped at
 # 3 lines per entry, each truncated to 200 chars). The matched token is
 # the user's own private-project name, already in the staged content
-# and in ~/.claude/private-projects.md; naming it in the deny
-# discloses it to no new party while letting the agent remove it in
-# one pass rather than bisecting the diff manually.
+# and in ~/.claude/private-projects.md; naming it lets the agent remove it in
+# one pass rather than bisecting the diff manually. The one disclosure the
+# echo creates is in the Known gaps bullet on the blocklist echo.
 #
 # Allowlist extension: append to OSS_ALLOWLIST below if a legitimate
 # open-source prefix is blocked. Do NOT add private-project-specific
@@ -571,10 +588,11 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
   # `:(top)` alone matches every path, which is what a marker-armed repo scans.
   # Repo or user diff config (color, external diff, textconv, diff.relative) can change the output at exit 0 so the `^\+` filter below drops added lines.
   # `-c diff.relative=false` outranks that config and keeps the diff repo-wide from a subdirectory cwd.
-  STAGED_DIFF=$(git -c diff.relative=false diff --cached --no-color --no-ext-diff --no-textconv -- "$STAGED_DIFF_PATHSPEC" 2>/dev/null)
+  # `-U0` drops context lines, which the `^\+` filter below discards anyway.
+  STAGED_DIFF=$(git -c diff.relative=false diff --cached -U0 --no-color --no-ext-diff --no-textconv -- "$STAGED_DIFF_PATHSPEC" 2>/dev/null)
   STAGED_DIFF_STATUS=$?
   if [ "$STAGED_DIFF_STATUS" -ne 0 ]; then
-    emit_deny "Commit — git diff --cached failed (exit ${STAGED_DIFF_STATUS}), so the redaction gate cannot read the staged diff. Fail-closed because unscanned content is exactly the leak vector this hook guards against. Repair the repository index, then retry. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+    emit_deny "Commit — git diff --cached failed (exit ${STAGED_DIFF_STATUS}), so the redaction gate cannot read the staged diff. The hook hides git's own error, so run \`git diff --cached >/dev/null\` to see only git's error (exit status 128 or higher means git was killed or hit a fatal error). Fail-closed because unscanned content is exactly the leak vector this hook guards against. See repo CLAUDE.md section 'Redact private-project-identifying content'."
     exit 0
   fi
   if [ -n "$STAGED_DIFF" ]; then

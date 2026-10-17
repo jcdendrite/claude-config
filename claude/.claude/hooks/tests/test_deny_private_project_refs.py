@@ -111,6 +111,54 @@ def _stage_extra_line(repo: Path) -> None:
     subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
 
 
+# Repo diff config that changes the staged diff's shape at exit 0: escape codes
+# before each added line, an external driver that prints nothing, paths scoped
+# to the cwd subdirectory, and a textconv driver that replaces the file's text
+# with nothing. Each row is (config key, config value, `.git/info/attributes` line or None).
+_STAGED_DIFF_CONFIG_HAZARDS = [
+    pytest.param("color.ui", "always", None, id="color_always"),
+    pytest.param("diff.external", "true", None, id="external_diff_driver"),
+    pytest.param("diff.relative", "true", None, id="relative_diff"),
+    pytest.param("diff.blank.textconv", "true", "file.txt diff=blank", id="textconv_prints_nothing"),
+]
+
+
+def _stage_tracker_line_under_diff_config(
+    repo: Path, config_key: str, config_value: str, attributes_line: str | None
+) -> Path:
+    """Apply one diff-config hazard to `repo`, stage a tracker line in
+    file.txt, and return a subdirectory to run the hook from. The
+    subdirectory gives `diff.relative` a cwd to scope to. The attributes line
+    lives in `.git/info/attributes` so no tracked file carries it."""
+    subdirectory = repo / "nested"
+    subdirectory.mkdir()
+    subprocess.run(["git", "config", config_key, config_value], cwd=repo, check=True)
+    if attributes_line is not None:
+        attributes_file = repo / ".git" / "info" / "attributes"
+        attributes_file.parent.mkdir(parents=True, exist_ok=True)
+        attributes_file.write_text(attributes_line + "\n")
+    (repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+    return subdirectory
+
+
+# Commands whose gate is armed by the opt-in marker: the commit-concluding
+# `--continue` forms scan the staged diff, and the gh forms scan the command text.
+_OPTIN_MARKER_ARMED_COMMANDS = [
+    pytest.param("git merge --continue", id="merge_continue"),
+    pytest.param("git rebase --continue", id="rebase_continue"),
+    pytest.param("git cherry-pick --continue", id="cherry_pick_continue"),
+    pytest.param("git revert --continue", id="revert_continue"),
+    pytest.param("gh issue create --body 'Fixes WIDGET-123'", id="gh_issue_create"),
+    pytest.param("gh issue comment 42 --body 'Fixes WIDGET-123'", id="gh_issue_comment"),
+    pytest.param("gh issue edit 42 --body 'Fixes WIDGET-123'", id="gh_issue_edit"),
+    pytest.param(
+        "gh api repos/x/y/issues/1/comments -X POST -f body='Fixes WIDGET-123'", id="gh_api_explicit_post"
+    ),
+    pytest.param("gh api repos/x/y/issues/1/comments -f body='Fixes WIDGET-123'", id="gh_api_implicit_post"),
+]
+
+
 class TestDenyPrivateProjectRefs:
     @pytest.fixture(autouse=True)
     def _isolate_home_for_blocklist(self, monkeypatch, tmp_path):
@@ -489,6 +537,8 @@ class TestDenyPrivateProjectRefs:
     # The tracker deny's remedy for claude-config; it is wrong advice in any other repo.
     _OSS_ALLOWLIST_ADVICE = "add the prefix to the OSS_ALLOWLIST variable"
     _TRACKER_COMMIT_COMMAND = "git commit -m 'Fix WIDGET-123 regression'"
+    # The staged-diff-failure deny's remedy: the hook hides git's error, so the deny sends the caller to rerun the diff.
+    _STAGED_DIFF_FAILURE_REMEDY = "run `git diff --cached >/dev/null`"
 
     @pytest.mark.parametrize(
         ("command", "blocklist", "expected_scan_text"),
@@ -539,6 +589,31 @@ class TestDenyPrivateProjectRefs:
         long_hex_token = "ab12" * 10
         (private_projects_optin_repo / "file.txt").write_text(f"first\nsecond\ndigest {long_hex_token}\n")
         subprocess.run(["git", "add", "file.txt"], cwd=private_projects_optin_repo, check=True)
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Pin the digest'"),
+            cwd=private_projects_optin_repo,
+        )
+        assert reason is not None
+        assert "long hex identifier" in reason
+
+    @pytest.mark.parametrize(
+        "staged_path",
+        [
+            pytest.param("package-lock.json", id="lockfile_path"),
+            pytest.param("yarn.lock", id="lock_suffix_path"),
+            pytest.param("vendor/lib/data.txt", id="vendored_path"),
+        ],
+    )
+    def test_optin_marker_scans_long_hex_under_lockfile_and_vendored_paths(
+        self, private_projects_optin_repo, staged_path
+    ):
+        """The marker arm has no per-path exclusion, so a long-hex line under a
+        lockfile-shaped or vendored path denies like any other."""
+        staged_file = private_projects_optin_repo / staged_path
+        staged_file.parent.mkdir(parents=True, exist_ok=True)
+        staged_file.write_text(f"digest {'ab12' * 10}\n")
+        subprocess.run(["git", "add", staged_path], cwd=private_projects_optin_repo, check=True)
         reason = run_hook_reason(
             DENY_PRIVATE_PROJECT_REFS_HOOK,
             bash_input("git commit -m 'Pin the digest'"),
@@ -756,35 +831,15 @@ class TestDenyPrivateProjectRefs:
             == "deny"
         )
 
-    @pytest.mark.parametrize(
-        ("config_key", "config_value", "attributes_line"),
-        [
-            ("color.ui", "always", None),
-            ("diff.external", "true", None),
-            ("diff.relative", "true", None),
-            ("diff.blank.textconv", "true", "file.txt diff=blank"),
-        ],
-        ids=["color_always", "external_diff_driver", "relative_diff", "textconv_prints_nothing"],
-    )
+    @pytest.mark.parametrize(("config_key", "config_value", "attributes_line"), _STAGED_DIFF_CONFIG_HAZARDS)
     def test_optin_marker_staged_diff_scan_ignores_diff_config(
         self, private_projects_optin_repo, config_key, config_value, attributes_line
     ):
-        """Repo diff config that changes the diff's shape at exit 0 (escape
-        codes before each added line, an external driver that prints nothing,
-        paths scoped to the cwd subdirectory, a textconv driver that replaces
-        the file's text with nothing) must not hide a staged tracker token
-        from the scan. The hook runs from a subdirectory so the relative case
-        has a cwd to scope to. The textconv attributes line lives in
-        `.git/info/attributes` so no tracked file carries it."""
-        subdirectory = private_projects_optin_repo / "nested"
-        subdirectory.mkdir()
-        subprocess.run(["git", "config", config_key, config_value], cwd=private_projects_optin_repo, check=True)
-        if attributes_line is not None:
-            attributes_file = private_projects_optin_repo / ".git" / "info" / "attributes"
-            attributes_file.parent.mkdir(parents=True, exist_ok=True)
-            attributes_file.write_text(attributes_line + "\n")
-        (private_projects_optin_repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
-        subprocess.run(["git", "add", "file.txt"], cwd=private_projects_optin_repo, check=True)
+        """Repo diff config that changes the diff's shape at exit 0 must not
+        hide a staged tracker token from the scan."""
+        subdirectory = _stage_tracker_line_under_diff_config(
+            private_projects_optin_repo, config_key, config_value, attributes_line
+        )
         reason = run_hook_reason(
             DENY_PRIVATE_PROJECT_REFS_HOOK,
             bash_input("git commit -m 'Refactor the parser'"),
@@ -793,17 +848,20 @@ class TestDenyPrivateProjectRefs:
         assert reason is not None
         assert "WIDGET-123" in reason
 
-    def test_claude_config_staged_diff_scan_ignores_diff_config(self, claude_config_repo):
+    @pytest.mark.parametrize(("config_key", "config_value", "attributes_line"), _STAGED_DIFF_CONFIG_HAZARDS)
+    def test_claude_config_staged_diff_scan_ignores_diff_config(
+        self, claude_config_repo, config_key, config_value, attributes_line
+    ):
         """The staged-diff read hardening is not marker-conditional: a
-        claude-config checkout with `color.ui=always` still denies a staged
-        tracker token instead of scanning escape-prefixed lines."""
-        subprocess.run(["git", "config", "color.ui", "always"], cwd=claude_config_repo, check=True)
-        (claude_config_repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
-        subprocess.run(["git", "add", "file.txt"], cwd=claude_config_repo, check=True)
+        claude-config checkout with the same diff config still denies a staged
+        tracker token."""
+        subdirectory = _stage_tracker_line_under_diff_config(
+            claude_config_repo, config_key, config_value, attributes_line
+        )
         reason = run_hook_reason(
             DENY_PRIVATE_PROJECT_REFS_HOOK,
             bash_input("git commit -m 'Refactor the parser'"),
-            cwd=claude_config_repo,
+            cwd=subdirectory,
         )
         assert reason is not None
         assert "WIDGET-123" in reason
@@ -812,18 +870,133 @@ class TestDenyPrivateProjectRefs:
         """Pins an accepted Known gap in the hook header: a file that
         `.gitattributes` marks `-diff` renders without added lines, so a
         synthetic tracker token inside it is not scanned and the commit is
-        allowed. A change that closes or widens the gap must flip this test."""
-        (private_projects_optin_repo / ".gitattributes").write_text("generated.lock -diff\n")
-        (private_projects_optin_repo / "generated.lock").write_text("// WIDGET-123 fixed\n")
-        subprocess.run(["git", "add", "generated.lock"], cwd=private_projects_optin_repo, check=True)
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Refactor the parser'"),
-                cwd=private_projects_optin_repo,
-            )
-            == "allow"
+        allowed. Removing the attribute then denies the same staged file, so
+        the allow is caused by `-diff` and not by the file's content or path.
+        A change that closes or widens the gap must flip this test."""
+        gitattributes = private_projects_optin_repo / ".gitattributes"
+        gitattributes.write_text("payload.dat -diff\n")
+        (private_projects_optin_repo / "payload.dat").write_text("// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "payload.dat"], cwd=private_projects_optin_repo, check=True)
+        decision_with_diff_attribute_set = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
         )
+        gitattributes.unlink()
+        reason_with_attribute_removed = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        assert decision_with_diff_attribute_set == "allow"
+        assert reason_with_attribute_removed is not None
+        assert "WIDGET-123" in reason_with_attribute_removed
+
+    def test_optin_marker_allows_tracker_commit_when_staged_diff_is_empty(self, private_projects_optin_repo):
+        """Documented carve-out: an empty staged diff leaves the commit
+        command out of the scan so git decides on its own. Staging a clean
+        file then denies the same command, so the allow is caused by the empty
+        diff and not by a marker that failed to arm."""
+        subprocess.run(["git", "reset", "HEAD"], cwd=private_projects_optin_repo, check=True)
+        decision_with_empty_staged_diff = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(self._TRACKER_COMMIT_COMMAND),
+            cwd=private_projects_optin_repo,
+        )
+        _stage_clean_file(private_projects_optin_repo)
+        reason_with_clean_file_staged = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(self._TRACKER_COMMIT_COMMAND),
+            cwd=private_projects_optin_repo,
+        )
+        assert decision_with_empty_staged_diff == "allow"
+        assert reason_with_clean_file_staged is not None
+        assert "WIDGET-123" in reason_with_clean_file_staged
+
+    def test_optin_marker_does_not_scan_added_line_starting_with_plus_plus_known_gap(
+        self, private_projects_optin_repo
+    ):
+        """Pins an accepted Known gap in the hook header: an added line that
+        begins with `++` renders as `+++`, which the file-header filter drops,
+        so a synthetic tracker token on it is not scanned and the commit is
+        allowed. The same token on a line that does not begin with `++` denies,
+        so the allow is caused by the leading `++`. A change that closes or
+        widens the gap must flip this test."""
+        scanned_file = private_projects_optin_repo / "notes.txt"
+        scanned_file.write_text("++ WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "notes.txt"], cwd=private_projects_optin_repo, check=True)
+        decision_with_plus_plus_line = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        scanned_file.write_text("// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "notes.txt"], cwd=private_projects_optin_repo, check=True)
+        reason_without_plus_plus = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        assert decision_with_plus_plus_line == "allow"
+        assert reason_without_plus_plus is not None
+        assert "WIDGET-123" in reason_without_plus_plus
+
+    def test_optin_marker_does_not_scan_textconv_mapped_binary_file_known_gap(self, private_projects_optin_repo):
+        """Pins an accepted Known gap in the hook header: the staged-diff read
+        passes `--no-textconv`, so a binary file that a textconv driver maps to
+        text renders without added lines and a synthetic tracker token inside it
+        is not scanned. A textconv read of the same staged file shows the token,
+        and the same token in a file without a NUL byte denies, so the allow is
+        caused by the binary classification. A change that closes or widens the
+        gap must flip this test."""
+        repo = private_projects_optin_repo
+        subprocess.run(["git", "config", "diff.passthrough.textconv", "cat"], cwd=repo, check=True)
+        attributes_file = repo / ".git" / "info" / "attributes"
+        attributes_file.parent.mkdir(parents=True, exist_ok=True)
+        attributes_file.write_text("payload.bin diff=passthrough\n")
+        binary_file = repo / "payload.bin"
+        binary_file.write_bytes(b"\0// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "payload.bin"], cwd=repo, check=True)
+        textconv_diff = subprocess.run(
+            ["git", "diff", "--cached", "--textconv", "--no-color"], cwd=repo, check=True, capture_output=True, text=True
+        ).stdout
+        decision_with_binary_file = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=repo,
+        )
+        binary_file.write_text("// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "payload.bin"], cwd=repo, check=True)
+        reason_without_nul_byte = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=repo,
+        )
+        assert "WIDGET-123" in textconv_diff
+        assert decision_with_binary_file == "allow"
+        assert reason_without_nul_byte is not None
+        assert "WIDGET-123" in reason_without_nul_byte
+
+    @pytest.mark.parametrize("command", _OPTIN_MARKER_ARMED_COMMANDS)
+    def test_optin_marker_arms_continue_and_gh_write_surfaces(self, private_projects_optin_repo, command):
+        """Each `--continue` commit-concluding form and each gh write surface
+        denies in a marker-armed repo, as it does in claude-config."""
+        (private_projects_optin_repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=private_projects_optin_repo, check=True)
+        reason = run_hook_reason(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=private_projects_optin_repo)
+        assert reason is not None
+        assert "WIDGET-123" in reason
+        assert self._OPTIN_MARKER_PATH in reason
+
+    @pytest.mark.parametrize("command", _OPTIN_MARKER_ARMED_COMMANDS)
+    def test_unrelated_remote_without_marker_allows_continue_and_gh_write_surfaces(
+        self, unrelated_remote_repo, command
+    ):
+        """Control for the marker-armed cases: the same staged tracker token and
+        command allow when the repo is neither claude-config nor opted in."""
+        (unrelated_remote_repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", "file.txt"], cwd=unrelated_remote_repo, check=True)
+        assert run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=unrelated_remote_repo) == "allow"
 
     def test_optin_marker_denies_when_staged_diff_cannot_be_read(self, private_projects_optin_repo):
         """A corrupt index makes the staged-diff read exit nonzero. The gate
@@ -837,6 +1010,23 @@ class TestDenyPrivateProjectRefs:
         )
         assert reason is not None
         assert "git diff --cached failed" in reason
+        assert self._STAGED_DIFF_FAILURE_REMEDY in reason
+        assert self._OPTIN_NOTE_PHRASE not in reason
+        assert self._OPTIN_NOTE_MISROUTE_PHRASE not in reason
+
+    def test_claude_config_denies_when_staged_diff_cannot_be_read(self, claude_config_repo):
+        """The fail-closed staged-diff-read deny is not marker-conditional: a
+        claude-config checkout with a corrupt index gets the same deny and no
+        opt-in note."""
+        (claude_config_repo / ".git" / "index").write_bytes(b"not an index")
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "git diff --cached failed" in reason
+        assert self._STAGED_DIFF_FAILURE_REMEDY in reason
         assert self._OPTIN_NOTE_PHRASE not in reason
         assert self._OPTIN_NOTE_MISROUTE_PHRASE not in reason
 
