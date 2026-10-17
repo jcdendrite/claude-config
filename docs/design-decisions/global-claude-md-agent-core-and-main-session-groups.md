@@ -57,7 +57,7 @@ Four readings of the clause still let a fork or subagent ship:
 - "On its own" can read as "on its own initiative".
 - The audience partition is self-declared: a non-fork subagent told, or injected with text saying, "you are a fork" inherits Main session's Shipping autonomy text. The existing review-state gates bound this.
 
-Closing the first three readings needs an edit that fits the Byte margin section's headroom. The fourth reading is not closable by wording. The post-merge fork spot-check is the control.
+Closing the first three readings needs an edit that fits under the 30,720-byte limit. The fourth reading is not closable by wording. The post-merge fork spot-check is the control.
 
 ## Accepted risk: duplicate headings
 

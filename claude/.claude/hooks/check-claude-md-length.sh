@@ -49,6 +49,8 @@ DENY_GATE_LABEL="CLAUDE.md length"
 # (claude-skills/skills/ai-instruction-and-memory-files/REFERENCES.md's
 # "Cross-vendor size table" section). Applies to every stow consumer's
 # CLAUDE.md/AGENTS.md, the same scope the 200-line check above already has.
+# The 30,720 figure is checked per file and says nothing about a combined
+# AGENTS.md chain (Codex's combined-size behavior is not verified here).
 #
 # Dated log of prior values (one line per raise: date, old value, new value,
 # one-line reason); append here on every future change.
