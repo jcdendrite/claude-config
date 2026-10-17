@@ -2,7 +2,8 @@
 # Run a tool from the main checkout's contributor .venv, from the main checkout or any linked worktree.
 # Usage: scripts/venv-run.sh <tool> [args...]
 # Exit 2: usage error. Exit 127: the main checkout, its .venv, or the tool was not found.
-# On bash 5.x an exec-time failure (e.g. a stale console-script shebang) also exits 127 but is reported by bash itself, with its own `scripts/venv-run.sh: line N:` prefix instead of this script's `venv-run.sh:` prefix.
+# An exec-time failure (e.g. a stale console-script shebang) also exits 127.
+# On bash 5.x, bash reports it with a `scripts/venv-run.sh: line N:` prefix instead of this script's `venv-run.sh:` prefix.
 # Stale-venv recovery, in the main checkout: `rm -rf .venv`, then `./install-dev.sh`.
 set -euo pipefail
 

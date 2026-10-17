@@ -15,8 +15,8 @@ Fixture defaults, applied by `_make_fixture`:
 
 Isolation: `_clean_env` removes the four repository-selection variables
 (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`) and the DIRENV
-and gh-credential variables, for the calls made in this file. It does not
-cover the conftest builders, which call git with the inherited environment.
+and gh-credential variables. Every git call in this file goes through `_git`,
+which applies it.
 """
 from __future__ import annotations
 
@@ -24,13 +24,14 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
 
-from .conftest import _base_test_env, _commit, _init_repo
+from .conftest import _base_test_env
 
 _SCRIPT = Path(__file__).resolve().parents[4] / "scripts" / "venv-run.sh"
 
@@ -41,6 +42,8 @@ _WORKTREE_BRANCH = "T-1/topic-slug"
 _ARGUMENT_WITH_SPACE = "sentinel arg"
 
 _STUB_EXIT_CODE = 3
+
+_PROCESS_TIMEOUT_SECONDS = 30
 
 _REPORT_STUB_SOURCE = textwrap.dedent("""\
     #!/usr/bin/env bash
@@ -86,13 +89,18 @@ def _write_executable(path: Path, source: str) -> None:
 def _make_fixture(tmp_path: Path) -> _Fixture:
     base = tmp_path.resolve() / "dir with space"
     main = base / "main"
-    _init_repo(main)
+    main.mkdir(parents=True)
+    _git(main, "init", "-q", "-b", "main")
+    _git(main, "config", "user.email", "t@t.com")
+    _git(main, "config", "user.name", "t")
     hooks_dir = base / "hooks"
     hooks_dir.mkdir()
     _git(main, "config", "core.hooksPath", str(hooks_dir))
     with (main / ".git" / "info" / "exclude").open("a") as exclude_file:
         exclude_file.write(".claude/worktrees/\n.venv/\n")
-    _commit(main, "init")
+    (main / "file.txt").write_text("init\n")
+    _git(main, "add", "file.txt")
+    _git(main, "commit", "-q", "-m", "init")
 
     # shutil.copy keeps the source mode; the copy is deliberately not chmod'ed, so a lost
     # exec bit on the real script surfaces as a failed invocation.
@@ -222,10 +230,34 @@ class TestSuccess:
             stdout=subprocess.PIPE,
             text=True,
         )
-        stdout, _ = wrapper_process.communicate()
+        stdout, _ = wrapper_process.communicate(timeout=_PROCESS_TIMEOUT_SECONDS)
 
         assert wrapper_process.returncode == 0
         assert int(stdout) == wrapper_process.pid
+
+    def test_runs_a_real_venv_python_so_the_prefix_is_the_main_checkout_venv(self, venv_checkout):
+        """Python derives its prefix from the path it was invoked by, so the wrapper must not resolve the venv symlink."""
+        main_venv = venv_checkout.main / ".venv"
+        shutil.rmtree(main_venv)
+        venv_build = subprocess.run(
+            [sys.executable, "-m", "venv", "--without-pip", str(main_venv)],
+            env=_clean_env(),
+            capture_output=True,
+            text=True,
+            timeout=_PROCESS_TIMEOUT_SECONDS,
+        )
+        assert venv_build.returncode == 0, venv_build.stderr
+
+        result = _run_wrapper(
+            "scripts/venv-run.sh",
+            "python3",
+            "-c",
+            "import sys; print(sys.prefix)",
+            cwd=venv_checkout.worktree,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert Path(result.stdout.strip()) == main_venv
 
 
 class TestUsageErrors:

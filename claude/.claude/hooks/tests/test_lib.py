@@ -3600,6 +3600,10 @@ class TestFragmentCommandWord:
         the command."""
         assert _fragment_command_word("grep -rn black .") == "grep"
 
+    def test_venv_run_wrapper_is_the_command_word_not_a_shared_runner(self) -> None:
+        """deny-reviewer-tree-mutation.sh's header says why the wrapper stays out of the shared runner words."""
+        assert _fragment_command_word("scripts/venv-run.sh ruff format x.py") == "scripts/venv-run.sh"
+
     def test_empty_fragment_returns_empty(self) -> None:
         assert _fragment_command_word("") == ""
 
