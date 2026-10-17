@@ -1872,6 +1872,21 @@ class TestRespondPrPromiseRedemption:
         assert "re-running `/pr-description`" in self._body()
 
 
+class TestRespondPrEditBoundary:
+    """Pins respond-pr step 6's sweep-boundary sentence.
+
+    The sweep's edits stay inside files the PR already changes, and the step-8 commit carrying them needs a clean
+    /code-review of that staged diff (require-code-review.sh). The sweep therefore needs no confirmation stop for
+    hook, gate or permission files.
+    """
+
+    def test_step6_bounds_the_sweep_to_the_changed_files_the_pr_lists(self):
+        assert (
+            "The sweep's edits stay inside the PR's changed files, which `gh pr diff --name-only` lists."
+            in _skill_file("respond-pr").read_text()
+        )
+
+
 class TestReadyForReviewBodyFileGuard:
     """Pin that step 8 rejects a whitespace-only body file, not merely an empty one.
 
