@@ -156,6 +156,12 @@ def _stage_tracker_line(repo: Path) -> None:
     subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
 
 
+def _stage_added_line(repo: Path, added_line: str) -> None:
+    """Stage `added_line` as a new last line of file.txt."""
+    (repo / "file.txt").write_text(f"first\nsecond\n{added_line}\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+
+
 # Commands whose gate is armed by the opt-in marker: the commit-concluding
 # `--continue` forms scan the staged diff, and the gh forms scan the command text.
 _OPTIN_MARKER_ARMED_COMMANDS = [
@@ -170,6 +176,26 @@ _OPTIN_MARKER_ARMED_COMMANDS = [
         "gh api repos/x/y/issues/1/comments -X POST -f body='Fixes WIDGET-123'", id="gh_api_explicit_post"
     ),
     pytest.param("gh api repos/x/y/issues/1/comments -f body='Fixes WIDGET-123'", id="gh_api_implicit_post"),
+]
+
+
+# Each scan the opt-in marker arms, as (command, blocklist content, staged added line, expected deny text).
+# The marker-armed deny test and its unmarked-repo silence control both run these.
+_OPTIN_WHOLE_HOOK_SCAN_CASES = [
+    pytest.param("git commit -m 'Fix WIDGET-123 regression'", None, None, "WIDGET-123", id="tracker_id"),
+    pytest.param(
+        "git commit -m 'Working on Acme Corp integration'", "Acme Corp\n", None, "Acme Corp", id="blocklist_entry"
+    ),
+    pytest.param(
+        "git commit -m 'The internal service lives at 10.20.30.40 in the VPC'",
+        None,
+        None,
+        "IPv4 literal",
+        id="structural_ipv4",
+    ),
+    pytest.param(
+        "git commit -m 'Pin the digest'", None, f"digest {'ab12' * 10}", "long hex identifier", id="staged_long_hex"
+    ),
 ]
 
 
@@ -560,21 +586,23 @@ class TestDenyPrivateProjectRefs:
     _STAGED_DIFF_FAILURE_REMEDY = "run `git diff --cached >/dev/null`"
 
     @pytest.mark.parametrize(
-        ("command", "blocklist", "expected_scan_text"),
-        [
-            ("git commit -m 'Fix WIDGET-123 regression'", None, "WIDGET-123"),
-            ("git commit -m 'Working on Acme Corp integration'", "Acme Corp\n", "Acme Corp"),
-            ("git commit -m 'The internal service lives at 10.20.30.40 in the VPC'", None, "IPv4 literal"),
-        ],
-        ids=["tracker_id", "blocklist_entry", "structural_ipv4"],
+        ("command", "blocklist", "staged_added_line", "expected_scan_text"), _OPTIN_WHOLE_HOOK_SCAN_CASES
     )
     def test_optin_marker_arms_whole_hook(
-        self, private_projects_optin_repo, private_projects_file, command, blocklist, expected_scan_text
+        self,
+        private_projects_optin_repo,
+        private_projects_file,
+        command,
+        blocklist,
+        staged_added_line,
+        expected_scan_text,
     ):
-        """Each of the three scans denies in an opted-in repo, and the deny
+        """Each of the scans denies in an opted-in repo, and the deny
         carries the opt-in note naming the marker."""
         if blocklist is not None:
             private_projects_file(blocklist)
+        if staged_added_line is not None:
+            _stage_added_line(private_projects_optin_repo, staged_added_line)
         reason = run_hook_reason(
             DENY_PRIVATE_PROJECT_REFS_HOOK,
             bash_input(command),
@@ -587,6 +615,37 @@ class TestDenyPrivateProjectRefs:
         assert self._OPTIN_NOTE_MISROUTE_PHRASE in reason
         assert self._OPTIN_NOTE_BLOCKLIST_PHRASE in reason
         assert self._OPTIN_NOTE_RETARGET_PHRASE in reason
+
+    @pytest.mark.parametrize(
+        ("command", "blocklist", "staged_added_line", "expected_scan_text"), _OPTIN_WHOLE_HOOK_SCAN_CASES
+    )
+    def test_unrelated_remote_without_marker_allows_every_scan(
+        self, unrelated_remote_repo, private_projects_file, command, blocklist, staged_added_line, expected_scan_text
+    ):
+        """Control for test_optin_marker_arms_whole_hook: the same command, blocklist,
+        and staged content allow when the repo is neither claude-config nor opted in,
+        so no scan runs ahead of the scope check."""
+        if blocklist is not None:
+            private_projects_file(blocklist)
+        if staged_added_line is not None:
+            _stage_added_line(unrelated_remote_repo, staged_added_line)
+        verdict = run_hook(DENY_PRIVATE_PROJECT_REFS_HOOK, bash_input(command), cwd=unrelated_remote_repo)
+        assert verdict == "allow", f"unmarked repo did not allow on {expected_scan_text!r}"
+
+    def test_optin_marker_arms_gate_in_repo_path_with_space_and_non_ascii(
+        self, private_projects_optin_repo, tmp_path
+    ):
+        """A checkout path holding a space and a non-ASCII character still
+        arms the gate, so the toplevel and marker lookups survive such a path."""
+        awkward_path_repo = private_projects_optin_repo.rename(tmp_path / "repo ünï dir")
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(self._TRACKER_COMMIT_COMMAND),
+            cwd=awkward_path_repo,
+        )
+        assert reason is not None
+        assert "WIDGET-123" in reason
+        assert self._OPTIN_MARKER_PATH in reason
 
     def test_optin_tracker_deny_omits_oss_allowlist_advice(self, private_projects_optin_repo):
         """The tracker deny's remedy of adding a prefix to OSS_ALLOWLIST edits a
@@ -603,18 +662,6 @@ class TestDenyPrivateProjectRefs:
         assert self._OSS_ALLOWLIST_ADVICE not in reason
         assert "not on the allowlist" not in reason
         assert "OSS_ALLOWLIST" in reason
-
-    def test_optin_marker_arms_long_hex_scan_of_staged_diff(self, private_projects_optin_repo):
-        long_hex_token = "ab12" * 10
-        (private_projects_optin_repo / "file.txt").write_text(f"first\nsecond\ndigest {long_hex_token}\n")
-        subprocess.run(["git", "add", "file.txt"], cwd=private_projects_optin_repo, check=True)
-        reason = run_hook_reason(
-            DENY_PRIVATE_PROJECT_REFS_HOOK,
-            bash_input("git commit -m 'Pin the digest'"),
-            cwd=private_projects_optin_repo,
-        )
-        assert reason is not None
-        assert "long hex identifier" in reason
 
     @pytest.mark.parametrize(
         "staged_path",
@@ -1062,6 +1109,20 @@ class TestDenyPrivateProjectRefs:
         assert self._STAGED_DIFF_FAILURE_REMEDY in reason
         assert self._OPTIN_NOTE_PHRASE not in reason
         assert self._OPTIN_NOTE_MISROUTE_PHRASE not in reason
+
+    def test_unrelated_remote_without_marker_allows_when_staged_diff_cannot_be_read(self, unrelated_remote_repo):
+        """Control for the marker-armed corrupt-index deny: the fail-closed
+        staged-diff read sits below the scope exit, so an unmarked repo with a
+        corrupt index still allows."""
+        (unrelated_remote_repo / ".git" / "index").write_bytes(b"not an index")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Refactor the parser'"),
+                cwd=unrelated_remote_repo,
+            )
+            == "allow"
+        )
 
     def test_claude_config_denies_when_staged_diff_cannot_be_read(self, claude_config_repo):
         """The fail-closed staged-diff-read deny is not marker-conditional: a
@@ -5643,6 +5704,22 @@ class TestDenyPrivateProjectRefs:
                 DENY_PRIVATE_PROJECT_REFS_HOOK,
                 bash_input("gh pr create --body 'Fixes WIDGET-123'"),
                 cwd=claude_config_repo,
+                extra_env={"PATH": restricted_path},
+            )
+            == "deny"
+        )
+
+    def test_infrastructure_deny_applies_in_repo_outside_scope(self, unrelated_remote_repo, tmp_path):
+        """The fail-closed infrastructure denies sit above the scope exit, so a
+        missing sed denies even in a repo that is neither claude-config nor opted in."""
+        farm_dir = tmp_path / "path-without-sed"
+        farm_dir.mkdir()
+        restricted_path = build_path_without("sed", farm_dir)
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("gh pr create --body 'Fixes the parser'"),
+                cwd=unrelated_remote_repo,
                 extra_env={"PATH": restricted_path},
             )
             == "deny"

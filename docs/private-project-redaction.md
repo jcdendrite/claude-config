@@ -525,7 +525,9 @@ whole hook there: all three scans, with no per-scan switch.
 
 - Any off-allowlist tracker-ID token, including the repo's own, in an added
   diff line, in PR/issue text, or in a commit message whose commit stages a
-  non-empty diff.
+  non-empty diff. The scan covers the gated command's whole text, so a
+  tracker-shaped branch name or path argument denies too, and dropping the
+  argument is the only remedy.
 - Every structural detector over added diff lines and command text. Long-hex
   hits include SHA-pinned workflow actions, image digests, lockfile hashes,
   full commit SHAs quoted in a PR body, and UUID fixtures. See
@@ -541,7 +543,8 @@ tracker IDs or carry hex digests, unless you accept rewording them. The tracker
 scan also denies ordinary technical terms shaped like uppercase letters, a
 hyphen, and digits, such as cipher, encoding, and time-zone names, when their
 prefix is not on the hook's allowlist. Those false positives go to the human,
-who extends the allowlist upstream in claude-config.
+who extends the allowlist upstream in claude-config. The tracker scan also
+denies a tracker-shaped branch name or path argument in a gated command.
 
 **Coverage.** The gate catches a cooperative agent's honest mistakes. It is not
 a confidentiality control. The marker is a per-machine control, not a
@@ -599,9 +602,8 @@ remedy.
 **Blocklist.** `<config-dir>/private-projects.md` is one user-wide file, and an
 entry naming the opted-in repo's own project blocks that repo from naming
 itself. The exits are: do not opt in that repo, or reword. Never edit the file
-to get past a deny. Deleting or shortening the entry is not a remedy, because
-that also drops claude-config's protection. For
-entries that collide with your username, see
+to get past a deny: deleting or shortening an entry also drops claude-config's
+protection. For entries that collide with your username, see
 [What to put in the file (and what NOT to)](#what-to-put-in-the-file-and-what-not-to).
 
 **Why it fires.** A collaborator who sees these denies finds

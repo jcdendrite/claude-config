@@ -24,9 +24,13 @@
 # does.
 #
 # Scope and limits:
-# - Runs only in claude-config (origin URL contains `claude-config`) or in a
-#   repo with `.claude/private-projects-optin` at its toplevel. It is silent
-#   in every other repo.
+# - Runs its content scans only in claude-config (origin URL contains
+#   `claude-config`) or in a repo with `.claude/private-projects-optin` at its
+#   toplevel. Those scans are silent in every other repo.
+# - Its fail-closed infrastructure denies (a failed `_lib.sh` source,
+#   unparseable tool input, a failed quote-strip, fragment split, or
+#   commit-conclusion check) run before the
+#   scope test, so they apply in every repo.
 # - Catches the mechanical category (tracker IDs shaped like [A-Z]{2,}-\d+).
 # - Catches a second mechanical category when the user creates
 #   ~/.claude/private-projects.md: a literal, case-insensitive
