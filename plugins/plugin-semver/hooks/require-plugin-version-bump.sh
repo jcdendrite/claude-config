@@ -267,3 +267,5 @@ done
 REASON="$REASON"$'\n'"Bump the affected plugin's .claude-plugin/plugin.json 'version' — see the plugin-semver skill for choosing patch/minor/major."
 
 emit_deny "$REASON"
+
+exit 0

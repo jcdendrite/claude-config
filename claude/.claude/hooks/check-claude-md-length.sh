@@ -125,3 +125,5 @@ limit_for() {
 # files in arbitrary subdirectories (e.g. foo/CLAUDE.md) — only root-level
 # and .claude/-scoped files.
 _lib_staged_length_gate "$REPO_ROOT" '^(CLAUDE\.md|AGENTS\.md|(.*/)?\.claude/(CLAUDE|AGENTS)\.md)$' "one or more files grew past the 200-line or ${GLOBAL_CLAUDE_MD_BYTE_LIMIT}-byte limit." "$GLOBAL_CLAUDE_MD_BYTE_LIMIT"
+
+exit 0

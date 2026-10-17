@@ -1125,3 +1125,5 @@ code already carry the verdict. For a multi-line commit message, write it to
 a file with the Write tool and chain 'git commit -F' on that file. Never use a
 heredoc or -m \"\$(cat ...)\" (code-review's SKILL.md, \"Authoring the commit
 message\", gives why)."
+
+exit 0

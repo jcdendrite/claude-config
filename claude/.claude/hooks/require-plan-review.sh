@@ -344,3 +344,5 @@ else
 
 The model judges which case applies from conversation context. Plans live wherever you put them — typically .claude/plans/, but also /tmp/<slug>.md, handoff docs, or external design doc URLs. The hook does not try to detect plan-change correlation.${UNDETERMINED_BASE_NOTE}"
 fi
+
+exit 0

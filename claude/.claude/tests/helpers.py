@@ -174,6 +174,22 @@ def _build_subprocess_env(
     return env
 
 
+# Both header comments (`# hook-class:` and `# tier-threat-model:`) live within a
+# hook file's first several lines, tolerating blank lines before either.
+_HEADER_SCAN_LINE_COUNT = 6
+
+
+def _hook_class(hook: Path) -> str | None:
+    """Return the hook-class value from line 2, or None if absent."""
+    lines = hook.read_text(errors="replace").splitlines()
+    # Line 2 is index 1. Search first 5 lines to tolerate blank shebang lines.
+    for line in lines[1:_HEADER_SCAN_LINE_COUNT]:
+        m = re.match(r"[#]\s*hook-class:\s*(\S+)", line)
+        if m:
+            return m.group(1)
+    return None
+
+
 # -- Shell-exec guard ---------------------------------------------------------
 #
 # A shipped shell file whose shebang is `#!/usr/bin/env bash` resolves bash
@@ -181,12 +197,20 @@ def _build_subprocess_env(
 # gets exit 126/127 from `env`, which the `run_hook*` runners map to "allow",
 # so the test passes without the script ever running. The guard turns that
 # silent pass into a failure.
+#
+# It also holds every `hook-class: gate` hook to the harness's failure rule: a
+# gate that exits other than 0 or 2, or prints an invalid PreToolUse envelope,
+# is blocked by `onFailure: "block"` in production even when it printed JSON
+# that allows the action.
 
 _ENV_BASH_SHEBANG = b"#!/usr/bin/env bash"
 
 # POSIX: 126 is "found but not executable", 127 is "not found". `env` uses both
 # when it cannot exec its program.
 _EXEC_FAILURE_EXIT_CODES = frozenset({126, 127})
+
+# A gate's exits that the harness accepts: 0 (decision on stdout, or none) and 2 (block, reason on stderr).
+_GATE_ALLOWED_EXIT_CODES = frozenset({0, 2})
 
 # Bounds the first-line read so a binary target with no newline is not read whole.
 _SHEBANG_READ_BYTE_LIMIT = 256
@@ -258,6 +282,46 @@ def _has_env_bash_shebang(target: Path) -> bool:
     return first_line.rstrip(b"\r\n") == _ENV_BASH_SHEBANG
 
 
+def _is_gate_hook(target: Path) -> bool:
+    """True when `target` is a script whose header declares `# hook-class: gate`.
+
+    Checks 3 and 4 apply only to a gate that is argv[0]. A gate run as
+    `bash <gate>` or under `shell=True` is not inspected by them.
+    """
+    try:
+        with target.open("rb") as handle:
+            if handle.read(2) != b"#!":
+                return False
+        return _hook_class(target) == "gate"
+    except OSError:
+        return False
+
+
+def _gate_output_problem(stdout) -> str | None:
+    """Why a gate's stdout is not a valid PreToolUse reply, or None when it is.
+
+    Plain-text stdout is not a problem: the CLI does not count it as a failure.
+    The `permissionDecision` value is not checked, because the CLI validates
+    its own enum and a copy here would go stale.
+    """
+    if stdout is None:
+        return None
+    text = stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else stdout
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        envelope = json.loads(stripped)
+    except json.JSONDecodeError as parse_error:
+        return f"stdout starts with `{{` but is not valid JSON ({parse_error})"
+    hook_specific_output = envelope.get("hookSpecificOutput")
+    if isinstance(hook_specific_output, dict) and "hookEventName" in hook_specific_output:
+        event_name = hook_specific_output["hookEventName"]
+        if event_name != "PreToolUse":
+            return f"hookSpecificOutput.hookEventName is {event_name!r}, not 'PreToolUse'"
+    return None
+
+
 def _env_passed_without_path(env) -> bool:
     if env is None:
         return False
@@ -314,6 +378,24 @@ def check_shell_exec(argv, env, cwd, completed) -> None:
             f"under (exit {completed.returncode}), so the script never ran. "
             "Call helpers.link_bash_into on the curated PATH directory."
         )
+
+    # Gate hooks: the harness blocks a gate that exits other than 0 or 2, or prints an invalid envelope.
+    # Exit 2 carries its reason on stderr and the harness ignores stdout, so check 4 applies to exit 0 only.
+    # Check 1 runs first, so a gate that never ran reports the missing bash, not a generic gate exit.
+    if target is not None and _is_gate_hook(target):
+        if completed.returncode not in _GATE_ALLOWED_EXIT_CODES:
+            raise ShellExecGuardError(
+                f"{target} is a `hook-class: gate` hook and exited {completed.returncode}. "
+                "The harness counts any exit other than 0 or 2 as a hook failure, "
+                'and `onFailure: "block"` then blocks the call even if the gate printed JSON that allows it.'
+            )
+        if completed.returncode == 0:
+            output_problem = _gate_output_problem(completed.stdout)
+            if output_problem is not None:
+                raise ShellExecGuardError(
+                    f"{target} is a `hook-class: gate` hook and exited 0, but {output_problem}. "
+                    'The harness rejects an invalid PreToolUse reply, and `onFailure: "block"` then blocks the call.'
+                )
 
 
 def install_shell_exec_guard(monkeypatch: pytest.MonkeyPatch) -> None:

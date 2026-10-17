@@ -433,3 +433,5 @@ elif [ "$BASE_STATUS" -eq 2 ]; then
   DENY_REASON="${DENY_REASON} Note: this commit was gated against HEAD, not a novel-content base (the base could not be computed), so a mismatch mid-merge/cherry-pick/rebase is expected here rather than a review gap."
 fi
 emit_deny "$DENY_REASON"
+
+exit 0

@@ -887,3 +887,5 @@ See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_
     exit 0
   fi
 fi
+
+exit 0

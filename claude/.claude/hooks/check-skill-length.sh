@@ -135,3 +135,5 @@ limit_for() {
 # A repo-root skill has no override path in limit_for() and resolves to the
 # 200-line default, same as plugins/*/skills/.
 _lib_staged_length_gate "$REPO_ROOT" '(claude-skills/skills/|plugins/[^/]+/skills/).+/SKILL\.md|^skills/.+/SKILL\.md$|^\.claude/skills/.+/SKILL\.md$|^claude-skills/skills/plan-review/ROUTING\.md$|^claude-skills/skills/pr-description/DEFAULT_TEMPLATE\.md$' "one or more SKILL.md files grew past their per-skill limit."
+
+exit 0

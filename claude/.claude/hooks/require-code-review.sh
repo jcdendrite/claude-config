@@ -239,3 +239,5 @@ if [ "$GATE_DIFF_BASE_STATUS" -eq 2 ]; then
   DENY_REASON="${DENY_REASON} Note: this repo appears to be mid-merge/rebase/cherry-pick/revert, but the novel-content base could not be computed (a git call timed out, was killed, or its binary was missing), so this gate fell back to the full HEAD-relative diff instead of excluding already-reviewed upstream content."
 fi
 emit_deny "$DENY_REASON"
+
+exit 0

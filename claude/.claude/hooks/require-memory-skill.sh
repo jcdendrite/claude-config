@@ -143,3 +143,5 @@ if _lib_active_bypass_marker_live_and_touch ".memory-skill-active.d" "$SESSION_I
 fi
 
 emit_deny "Memory write — You are writing to $FILE_PATH, which is part of Claude Code's auto-memory file system (MEMORY.md index or a new topic file). Invoke the ai-instruction-and-memory-files skill via the Skill tool first — it covers MEMORY.md index format, topic-file frontmatter, length budgets, and the type classification (user / feedback / project / reference). The skill's Step 0 activates a bypass marker so all memory writes in the session pass through after the skill is loaded."
+
+exit 0

@@ -420,3 +420,5 @@ elif $is_gh_pr_create; then
 else
   emit_deny "Push to a branch with an open PR — no /ready-for-review gate run covering this branch's current HEAD was found — either this branch has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this push will be allowed through. Do not ask the user for permission — run the skill, address any findings, and retry the push. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and push without re-asking the user."
 fi
+
+exit 0
