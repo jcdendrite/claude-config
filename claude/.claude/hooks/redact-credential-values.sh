@@ -2,17 +2,19 @@
 # hook-class: informational
 # PostToolUse redactor on Bash|Read|WebFetch|Grep|Task results: replaces credential-value shapes (GitHub token prefix, full PEM private-key block) with [REDACTED-CREDENTIAL] before the model's next turn reads them -- the value-shape backstop for credentials that reach context through a path deny-credential-bash-reads.sh/deny-credential-file-reads.sh don't cover (WebFetch body, Grep match, subagent output).
 # That parenthetical names the motivating channels, not the full matcher -- Bash and Read are also covered above, Read backstopped further by deny-data-file-reads.sh's size cap.
-# Only recognizes vendor-fixed value shapes (GitHub token prefix, AWS access key ID, PEM header/footer); .netrc, .git-credentials, Docker/Kube credential values have no fixed shape and rely on the path gates instead. Fails open on any parse/extraction failure -- an informational hook has no deny primitive.
+# Only recognizes vendor-fixed value shapes (GitHub token prefix, AWS access key ID, PEM header/footer); .netrc, .git-credentials, Docker/Kube credential values have no fixed shape and rely on the path gates instead. Fails open on any parse/extraction failure -- an informational hook has no deny primitive. The one exception is a failed `_lib.sh` source (for example a bash below the floor in README.md): the hook exits 1 with a stderr line, so the transcript shows a hook error. Exit 1 is non-blocking, so the tool result is still delivered, unredacted.
 # Also fails open (skips redaction, returns the original content) when tool_response exceeds _LIB_SIZE_THRESHOLD_BYTES (5 MB): this is the one channel-specific residual, since WebFetch/Grep/Task -- the channels this hook exists to backstop -- have no other size cap the way Read does via deny-data-file-reads.sh.
 
 set -uo pipefail
 
-# Fail-open on malformed stdin: exiting non-zero would break the triggering tool call.
+# Malformed stdin exits 0: there is no parseable result to redact, so a hook error would only add noise. A failed _lib.sh source below exits 1 instead.
 INPUT=$(cat) || exit 0
 [ -n "$INPUT" ] || exit 0
 
 if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
-  exit 0
+  # Exit 1, not 0, so the harness shows a hook error while redaction is off.
+  printf 'could not source _lib.sh: credential redaction is OFF for this result. Either bash on the PATH Claude Code started with is below the floor in README.md "Requirements", or a stale stow link needs ./install.sh.\n' >&2
+  exit 1
 fi
 
 # One _lib_jq call extracts both fields (0x1f-delimited) to avoid a second jq spawn on this hook's every-Bash/Read/WebFetch/Grep/Task invocation rate.

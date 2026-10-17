@@ -67,6 +67,9 @@
 
 set -euo pipefail
 
+# shellcheck source=../hooks/_config.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_config.sh"
+
 # progress / clear_progress, collect_process_cwds / worktree_in_use, and
 # resolve_worktree_for_branch are shared with cleanup-merged-branches.sh.
 # shellcheck source=_worktree-lib.sh

@@ -8,7 +8,8 @@
 # (which define emit_deny before sourcing), this also fails closed rather
 # than open on the one reachable divergent `$0` shape: a bare filename.
 # Other hook classes intentionally stay fail-open on a missing _lib.sh
-# regardless of this substitution.
+# regardless of this substitution, except redact-credential-values.sh, which
+# exits 1 with a stderr line so the transcript shows a hook error.
 
 # _config.sh defines _lib_config_dir (config-dir resolution) and the
 # _config_*/config-key primitives every hook needs — sourced here, via

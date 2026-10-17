@@ -2746,6 +2746,81 @@ def test_swept_gate_hooks_exhaustive() -> None:
     )
 
 
+# Each chain is a gate plus the files its bootstrap sources. `plugin_dir` is None for a stow gate,
+# whose chain is the gate, `_lib.sh` and `_config.sh`; a plugin gate is copied with its whole plugin
+# `hooks/` and `lib/` trees, and `CLAUDE_PLUGIN_ROOT` names the copy.
+_PLUGINS_DIR = _REPO_ROOT / "plugins"
+_BELOW_FLOOR_PLUGIN_GATES = [h for h in GATE_HOOKS if h.parent.parent.parent == _PLUGINS_DIR]
+_BELOW_FLOOR_CHAINS = [
+    pytest.param(_MAIN_HOOKS_DIR / "deny-credential-file-reads.sh", None, id="deny-credential-file-reads"),
+    *[pytest.param(gate, gate.parent.parent, id=gate.name) for gate in _BELOW_FLOOR_PLUGIN_GATES],
+]
+
+
+def test_below_floor_chains_cover_every_plugin_with_a_floor_copy() -> None:
+    """The chains are derived from the plugin gates, so a plugin that gains a
+    `_lib.sh` floor copy but no gate chain (or the reverse) fails here by name."""
+    plugins_with_floor_copy = {p.parent.parent.name for p in _PLUGINS_DIR.glob("*/hooks/_lib.sh")}
+    plugins_with_gate_chain = {gate.parent.parent.name for gate in _BELOW_FLOOR_PLUGIN_GATES}
+    assert plugins_with_gate_chain == plugins_with_floor_copy
+    assert len(plugins_with_gate_chain) == 4
+
+
+def _deny_text(result: subprocess.CompletedProcess) -> str:
+    """The deny reason: the envelope's reason on exit 0, stderr on exit 2."""
+    if result.returncode == 0:
+        return json.loads(result.stdout.strip())["hookSpecificOutput"]["permissionDecisionReason"]
+    return result.stderr
+
+
+@pytest.mark.parametrize(("hook", "plugin_dir"), _BELOW_FLOOR_CHAINS)
+def test_below_floor_bash_denied(hook: Path, plugin_dir: Path | None, tmp_path: Path) -> None:
+    """Raising the floor past the running bash makes the floor check return 1, which each
+    gate's `_lib.sh` bootstrap turns into a deny. The control run first proves the same
+    chain sources cleanly with the floor intact, so the deny cannot come from a copy defect."""
+    if plugin_dir is None:
+        hooks_copy = tmp_path / "hooks"
+        hooks_copy.mkdir()
+        for source in (hook, hook.parent / "_lib.sh", hook.parent / "_config.sh"):
+            shutil.copy2(source, hooks_copy / source.name)
+        floor_file = hooks_copy / "_config.sh"
+        plugin_root_env: dict[str, str] = {}
+    else:
+        plugin_root = tmp_path / plugin_dir.name
+        shutil.copytree(plugin_dir / "hooks", plugin_root / "hooks")
+        if (plugin_dir / "lib").is_dir():
+            shutil.copytree(plugin_dir / "lib", plugin_root / "lib")
+        hooks_copy = plugin_root / "hooks"
+        floor_file = hooks_copy / "_lib.sh"
+        plugin_root_env = {"CLAUDE_PLUGIN_ROOT": str(plugin_root)}
+    hook_copy = hooks_copy / hook.name
+    payload = json.dumps(bash_input("echo hello"))
+
+    control = _run_hook_raw(hook_copy, payload, cwd=tmp_path, env=plugin_root_env or None)
+    assert "could not source _lib.sh" not in control.stdout + control.stderr, (
+        f"{hook.name} [control]: the chain failed to source with the floor intact: "
+        f"stdout={control.stdout!r} stderr={control.stderr!r}"
+    )
+    assert control.returncode in (0, 2), f"{hook.name} [control]: exit {control.returncode}"
+
+    floor_text = floor_file.read_text()
+    raised_text, replaced = re.subn(r"^_BASH_FLOOR_MAJOR=\d+$", "_BASH_FLOOR_MAJOR=99", floor_text, flags=re.MULTILINE)
+    assert replaced == 1, f"{floor_file.name}: expected exactly one _BASH_FLOOR_MAJOR assignment"
+    floor_file.write_text(raised_text)
+
+    raised = _run_hook_raw(hook_copy, payload, cwd=tmp_path, env=plugin_root_env or None)
+    assert raised.returncode in (0, 2), f"{hook.name} [raised-floor]: exit {raised.returncode}"
+    _assert_blocks(raised, hook.name, "raised-floor", "could not source _lib.sh")
+
+    if plugin_dir is not None:
+        major = re.search(r"^_BASH_FLOOR_MAJOR=(\d+)$", (plugin_dir / "hooks" / "_lib.sh").read_text(), re.MULTILINE)
+        minor = re.search(r"^_BASH_FLOOR_MINOR=(\d+)$", (plugin_dir / "hooks" / "_lib.sh").read_text(), re.MULTILINE)
+        assert major and minor
+        deny_text = _deny_text(raised)
+        for key_phrase in ("separate terminal", "brew install bash", f"{major.group(1)}.{minor.group(1)}"):
+            assert key_phrase in deny_text, f"{hook.name}: deny text missing {key_phrase!r}: {deny_text!r}"
+
+
 @pytest.mark.parametrize("hook", _SWEPT_GATE_HOOKS, ids=[h.name for h in _SWEPT_GATE_HOOKS])
 def test_slash_free_dollar_zero_fails_closed(hook: Path) -> None:
     """`executable=` is invalid here: the kernel rewrites `argv[0]` before

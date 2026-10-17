@@ -27,6 +27,9 @@
 
 set -euo pipefail
 
+# shellcheck source=../hooks/_config.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_config.sh"
+
 SCRIPT_NAME="worktree-removal-status.sh"
 
 # shellcheck source=_worktree-lib.sh

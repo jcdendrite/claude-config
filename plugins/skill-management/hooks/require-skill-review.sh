@@ -118,7 +118,7 @@ emit_deny() {
 }
 
 if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
-  emit_deny "Blocked by skill-review gate: could not source _lib.sh."
+  emit_deny "Blocked by skill-review gate: could not source _lib.sh. A bash older than 5.2 first on the PATH Claude Code started with also causes this: ask the user to install bash 5.2 or newer in a separate terminal (macOS: brew install bash), put it first on that PATH, and restart Claude Code."
   exit 0
 fi
 

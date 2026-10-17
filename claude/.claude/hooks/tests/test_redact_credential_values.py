@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -376,3 +377,49 @@ class TestRedactCredentialValues:
         assert result is not None
         assert "dpl_abcdefghijklmno" not in result["stdout"]
         assert REDACTED in result["stdout"]
+
+    def _run_redactor_copy(self, hook_dir, payload):
+        result = subprocess.run(
+            [str(hook_dir / REDACT_CREDENTIAL_VALUES_HOOK.name)],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result
+
+    def _assert_redaction_off_hook_error(self, result):
+        assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert result.stdout == ""
+        first_stderr_line = result.stderr.splitlines()[0]
+        assert first_stderr_line.startswith("could not source _lib.sh")
+        assert "credential redaction is OFF" in first_stderr_line
+        # The hook must not echo the unredacted result it failed to scrub.
+        assert GHP_TOKEN not in result.stdout + result.stderr
+
+    def test_failed_lib_sh_source_exits_1_with_redaction_off_stderr(self, tmp_path):
+        """A `_lib.sh` that fails to source must surface as a hook error, not a
+        silent exit 0 that leaves the result unredacted. The hook is copied
+        beside a stub `_lib.sh` so `${0%/*}/_lib.sh` resolves to the stub."""
+        shutil.copy2(REDACT_CREDENTIAL_VALUES_HOOK, tmp_path / REDACT_CREDENTIAL_VALUES_HOOK.name)
+        (tmp_path / "_lib.sh").write_text("return 1\n")
+
+        result = self._run_redactor_copy(tmp_path, _posttooluse_input("Grep", {"content": f"token={GHP_TOKEN}"}))
+
+        self._assert_redaction_off_hook_error(result)
+
+    def test_below_floor_bash_through_the_real_lib_chain_exits_1_with_redaction_off_stderr(self, tmp_path):
+        """Same outcome through the real `_lib.sh` -> `_config.sh` chain, with
+        the copied `_config.sh`'s floor raised past the running bash."""
+        for source in (REDACT_CREDENTIAL_VALUES_HOOK, HOOKS_DIR / "_lib.sh", HOOKS_DIR / "_config.sh"):
+            shutil.copy2(source, tmp_path / source.name)
+        config_copy = tmp_path / "_config.sh"
+        raised_text, replaced = re.subn(
+            r"^_BASH_FLOOR_MAJOR=\d+$", "_BASH_FLOOR_MAJOR=99", config_copy.read_text(), flags=re.MULTILINE
+        )
+        assert replaced == 1
+        config_copy.write_text(raised_text)
+
+        result = self._run_redactor_copy(tmp_path, _posttooluse_input("Grep", {"content": f"token={GHP_TOKEN}"}))
+
+        self._assert_redaction_off_hook_error(result)

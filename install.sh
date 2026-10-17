@@ -7,6 +7,32 @@ set -e
 
 echo "=== claude-config Setup ==="
 
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them with `$0` set to a tmp repo's install.sh. Keep
+# both markers on their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: bash-floor-check — start
+# pwd -P (not pwd) canonicalizes away any symlink in the invocation path, so
+# REPO_DIR matches the canonicalized form the marketplace-registration check
+# below compares against — otherwise a symlink-adjacent invocation of this
+# script could make REPO_DIR byte-differ from the marketplace's recorded
+# .path even though they name the same directory, thrashing (remove+re-add)
+# the registration on every run.
+REPO_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+cd "$REPO_DIR"
+# Sourced from its own known repo-relative path, not ~/.claude/hooks/...,
+# which doesn't exist yet at this point in a fresh install (this repo isn't
+# stowed yet). _config.sh opens with the bash floor check, so a below-floor
+# bash prints its platform-specific fix and ends this run here, before any
+# mutation. _lib_config_dir is the single bash definition of config-dir
+# resolution, shared with every hook via _lib.sh.
+# This line and everything above it must parse and run on bash 3.2.
+# shellcheck source=claude/.claude/hooks/_config.sh
+. "$REPO_DIR/claude/.claude/hooks/_config.sh" || exit 1
+echo "bash floor check passed: bash $BASH_VERSION ($BASH)."
+echo "Claude Code's PATH can differ from this terminal's: hooks use the first bash on the PATH Claude Code starts with."
+echo "If gates still deny with \"could not source _lib.sh\", see docs/hooks.md § \"Gate deadlock recovery\"."
+# INSTALL_TEST_FIXTURE: bash-floor-check — end
+
 # INSTALL_TEST_FIXTURE: presence-check — start
 missing=()
 for cmd in stow git gh jq sha256sum claude python3; do
@@ -35,14 +61,6 @@ if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 
 fi
 # INSTALL_TEST_FIXTURE: python-floor-check — end
 
-# pwd -P (not pwd) canonicalizes away any symlink in the invocation path, so
-# REPO_DIR matches the canonicalized form the marketplace-registration check
-# below compares against — otherwise a symlink-adjacent invocation of this
-# script could make REPO_DIR byte-differ from the marketplace's recorded
-# .path even though they name the same directory, thrashing (remove+re-add)
-# the registration on every run.
-REPO_DIR="$(cd "$(dirname "$0")" && pwd -P)"
-cd "$REPO_DIR"
 mkdir -p "$HOME/.local/bin"
 # Both target directories are created before stow runs so stow links their
 # contents entry by entry. Without this, stow tree-folds a target that does
@@ -423,13 +441,6 @@ if [ -f "$HOME/.claude.json" ]; then
   chmod 600 "$HOME/.claude.json" || echo "[install] warning: could not chmod 600 ~/.claude.json" >&2
 fi
 # INSTALL_TEST_FIXTURE: continuity-hardening — end
-
-# Sourced from its own known repo-relative path, not ~/.claude/hooks/...,
-# which doesn't exist yet at this point in a fresh install (this repo isn't
-# stowed yet). _lib_config_dir is the single bash definition of config-dir
-# resolution, shared with every hook via _lib.sh.
-# shellcheck source=claude/.claude/hooks/_config.sh
-. "$REPO_DIR/claude/.claude/hooks/_config.sh"
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on

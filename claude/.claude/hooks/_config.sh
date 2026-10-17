@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# The bash floor check, below this header, is this file's first command, so a below-floor bash stops there before any later construct is parsed.
 # Shared config-key reader/writer for every bash consumer: hooks (sourced
 # transitively via _lib.sh, which sources this file), install.sh (sourced
 # directly by repo-relative path, since install.sh runs before stow exists),
@@ -18,9 +19,7 @@
 #
 # Every empty-array iteration below is guarded with a `${#arr[@]}` count
 # check first, never a bare `"${arr[@]}"` on a possibly-empty array.
-# Expanding an unset array under `set -u` is an error on bash before 4.4
-# (macOS system bash is 3.2), and this file cannot assume its caller has
-# already turned `-u` off.
+# Redundant on the supported bash floor; kept to avoid churn.
 #
 # Every resolution-chain call (_config_value/_config_enabled/
 # _config_schema_field/_config_read_key_from_file/_config_file_lines) does
@@ -28,6 +27,51 @@
 # call sites -- accepted for local-disk/single-machine deployment; a stuck
 # read (e.g. a hung network mount under $CLAUDE_CONFIG_DIR) blocks the
 # calling hook with no timeout backstop.
+
+# Everything down to this block's `return 1` must parse and run on bash 3.2.
+_BASH_FLOOR_MAJOR=5
+_BASH_FLOOR_MINOR=2
+
+# Returns 0 when MAJOR MINOR are numeric and at or above the floor, else 1.
+_bash_version_meets_floor() {
+  case "${1-}" in '' | *[!0-9]*) return 1 ;; esac
+  case "${2-}" in '' | *[!0-9]*) return 1 ;; esac
+  if [ "$1" -gt "$_BASH_FLOOR_MAJOR" ]; then
+    return 0
+  fi
+  [ "$1" -eq "$_BASH_FLOOR_MAJOR" ] && [ "$2" -ge "$_BASH_FLOOR_MINOR" ]
+}
+
+if ! _bash_version_meets_floor "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"; then
+  {
+    printf 'bash %s (%s) is older than the bash %s.%s this repo requires.\n' \
+      "$BASH_VERSION" "$BASH" "$_BASH_FLOOR_MAJOR" "$_BASH_FLOOR_MINOR"
+    printf '%s\n' \
+      'Fix it from a terminal, not from inside Claude Code. See README.md § "Requirements".'
+    case "$(uname -s 2>/dev/null)" in
+      Darwin)
+        # Literal command text for the user to run; double quotes would expand it here instead of printing it.
+        # shellcheck disable=SC2016
+        printf '%s\n' \
+          'macOS ships bash 3.2 as /bin/bash. Install a newer bash:' \
+          '  brew install bash' \
+          'Confirm the install:' \
+          '  "$(brew --prefix)/bin/bash" --version' \
+          'Then re-run the failed command with that bash first on PATH, because the bash that ran this check may still come first. For install, from the repo root:' \
+          '  PATH="$(brew --prefix)/bin:$PATH" ./install.sh' \
+          "Also put Homebrew's bin directory before /bin on the PATH Claude Code starts with, then restart Claude Code."
+        ;;
+      *)
+        printf '%s\n' \
+          'A distro-packaged bash on an older LTS host can be below the floor (e.g. Ubuntu 22.04, Debian 11, RHEL 9).' \
+          "Install bash $_BASH_FLOOR_MAJOR.$_BASH_FLOOR_MINOR or newer and put it first on PATH: a newer distro release or backport package, Homebrew on Linux, or a source build." \
+          'Then re-run the failed command (for install, ./install.sh from the repo root), and restart Claude Code.'
+        ;;
+    esac
+  } >&2
+  return 1
+fi
+
 _CONFIG_SCHEMA_FILE="$(dirname "${BASH_SOURCE[0]}")/config-keys.psv"
 _CONFIG_STATE_FILENAME="claude-config.toml"
 
@@ -131,7 +175,7 @@ _config_trim() {
 # file's content before this function ever sees a single line — see
 # _config_read_key_from_file for where that happens.
 #
-# Exit 0: KEY_VAR/VALUE_VAR populated via `printf -v` (bash-3.1+-safe).
+# Exit 0: KEY_VAR/VALUE_VAR populated via `printf -v` .
 # Exit 1: blank line or a full-line `#` comment — not a parse error, never
 # warned by any caller.
 # Exit 2: anything else — the caller decides whether/how to warn (skip-and-
@@ -139,8 +183,8 @@ _config_trim() {
 #
 # The value is case-folded via `tr '[:upper:]' '[:lower:]'` before the
 # subset check, so a hand-authored `TRUE`/`True`/`FALSE` still resolves.
-# `tr`, not `${value,,}` (bash 4+): macOS system bash is 3.2, matching
-# install.sh:626's own idiom. The `tr` invocation itself is prefixed with
+# `tr`, not `${value,,}`: redundant on the supported bash floor; kept to
+# avoid churn. The `tr` invocation itself is prefixed with
 # `LC_ALL=C`, not just this function's own `local LC_ALL=C`. That `local`
 # is a shell variable assignment and does not propagate to a child
 # process, so the `tr` subprocess needs its own prefix. `LC_ALL=C` here is
@@ -1150,7 +1194,7 @@ _config_set() {
 # default row that duplicates the same value. Function-level contract, not
 # left to caller-side "first run" gating alone.
 #
-# EXCLUDE_LIST is an optional space-separated (bash-3.2-safe) list of keys
+# EXCLUDE_LIST is an optional space-separated list of keys
 # to leave absent even though they have no row — migrate-legacy-config.sh
 # is the only caller that passes one, populated from a legacy-file read
 # failure (any key) or a deferred enforcement-critical import gated on a
