@@ -7,7 +7,7 @@ name, a truncation caveat, or the execution-surface match list still holds.
 
 ## What `review-pr-acquire.sh` fetches (Step 1)
 
-`gh pr view --json title,body,author,isCrossRepository,baseRefOid,headRefOid,headRepositoryOwner,url,files,changedFiles,commits,reviewDecision,mergeable,mergeStateStatus`, plus a separate `gh pr view --json headRefOid,statusCheckRollup` call, a second REST call, a paginated existing-reviews fetch, and a paginated inline-review-comments fetch — all inside the one script call, not typed out per-run.
+`gh pr view --json title,body,author,isCrossRepository,baseRefOid,headRefOid,headRepositoryOwner,url,files,changedFiles,commits,reviewDecision,mergeable,mergeStateStatus`, plus a separate `gh pr view --json headRefOid,statusCheckRollup` call, a second REST call, a `gh api user` call, a paginated existing-reviews fetch, and a paginated inline-review-comments fetch — all inside the one script call, not typed out per-run.
 
 - **The printed document overwrites `gh pr view`'s `files` and `commits`
   keys with different shapes.** `files` is an array of path strings and
@@ -50,6 +50,14 @@ name, a truncation caveat, or the execution-surface match list still holds.
   checks, `gh pr view --json headRefOid,statusCheckRollup` exits 0 with
   `"statusCheckRollup": []` (observed), so an absent key is treated as
   unavailable.
+- **`selfAuthored` comes from a `gh api user` call on the ambient token.**
+  That token is the account `review-pr-post.sh` posts as, so the lookup never
+  uses `CI_CHECKS_GH_TOKEN`. A failed lookup yields `null` rather than
+  aborting. An unreadable PR author (no `author` object, or a `login` that is
+  not a string) also yields `null`. `review_pr_authorship`
+  (`_review-pr-lib.sh`) owns the comparison.
+  `review-pr-post.sh` repeats it for `request-changes` before it consumes the
+  marker, so the document's value is advisory.
 - **`mergeable` and `mergeStateStatus` are frequently `UNKNOWN`.** GitHub
   computes mergeability asynchronously; a first request routinely returns
   `UNKNOWN` with no signal that a retry would resolve it. The skill never
@@ -555,6 +563,19 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
     completion marker needs. Until `finish` runs, only SKILL.md's instruction
     stops a re-arm; no mechanism does. Recovery is a hand-post of the approved
     body or a fresh `/review-pr`.
+  - The own-PR or could-not-tell refusal of `request-changes` (the latter
+    also covers an unreadable PR author) leaves the marker armed, because it
+    runs before the marker is consumed. Both refusals say "Nothing was posted
+    and the completion marker was not consumed". Posting the same body as
+    `comment` after the human confirms that exact body is the recovery for
+    either refusal. After the could-not-tell refusal, which a transient
+    lookup failure can cause, one re-run of the same verb after the human
+    re-confirms is also safe. After the own-PR refusal a re-run is pointless.
+    The body already carries the blocking-finding count line unless
+    `selfAuthored` was `false`, and a `comment` recovery on a `false`
+    document adds the line first, which re-presents the body and re-writes the
+    marker. The hand-post or fresh-run recovery stays for an unknown post
+    outcome.
   - `review-pr-post.sh` never emits `--approve`: its two `gh pr review` calls
     carry the literal `--comment` and `--request-changes`. This is the only
     unbypassable property of the gate.

@@ -47,8 +47,13 @@ TENANT_PR_URL = f"https://octocat.ghe.com/{OWNER_REPO}/pull/{PR_NUMBER}"
 # A secret-shaped payload gh might echo on a failed call.
 CHECKS_ERROR_PAYLOAD = "Resource not accessible leaked-token=ghp_" + "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII"
 
+# `pr_author_field` value that leaves the `author` key out of the `gh pr view` document.
+_NO_AUTHOR_KEY = object()
+# `pr_author_field` default: an `author` object holding `pr_author_login`.
+_AUTHOR_FROM_LOGIN = object()
+
 _KNOWN_API_ENDPOINT = re.compile(
-    rf"repos/{re.escape(OWNER_REPO)}/pulls/{re.escape(PR_NUMBER)}(/(files|commits|reviews|comments)\?per_page=100)?$"
+    rf"(repos/{re.escape(OWNER_REPO)}/pulls/{re.escape(PR_NUMBER)}(/(files|commits|reviews|comments)\?per_page=100)?|user)$"
 )
 
 
@@ -95,6 +100,13 @@ def _gh_shim_source(
     checks_exit_status: int = 0,
     checks_head_ref_oid: str | None = None,
     checks_raw_stdout: str | None = None,
+    pr_author_login: str = "someone",
+    pr_author_field: object = _AUTHOR_FROM_LOGIN,
+    operator_login: str = "operator",
+    api_user_exit_status: int = 0,
+    api_user_stderr: str = "",
+    api_user_stdout_on_failure: bool = False,
+    api_user_extra_fields: dict | None = None,
 ) -> str:
     """gh shim recording every invocation in `call_log`.
     `capped_files`/`capped_commits` model `gh pr view --json files/commits`'
@@ -123,7 +135,12 @@ def _gh_shim_source(
     - `checks_head_ref_oid` overrides the `headRefOid` that call returns, to
       model a head that moved.
     - `checks_raw_stdout` replaces that call's JSON, to model an unusable
-      response."""
+      response.
+    The metadata call's `author` is an object holding `pr_author_login`.
+    `pr_author_field` replaces it verbatim, and `_NO_AUTHOR_KEY` leaves the key out.
+    `gh api user` prints `operator_login` as `.login` plus `api_user_extra_fields`.
+    A non-zero `api_user_exit_status` makes it print `api_user_stderr` and exit with that status instead, 124 being a cap kill.
+    `api_user_stdout_on_failure` makes that failed call print its usual stdout first, as gh does with an HTTP error body."""
     capped_files = capped_files if capped_files is not None else []
     full_files = full_files if full_files is not None else capped_files
     capped_commits = capped_commits if capped_commits is not None else []
@@ -133,6 +150,13 @@ def _gh_shim_source(
     status_check_rollup = status_check_rollup if status_check_rollup is not None else []
     rest_changed_files = len(full_files) if rest_changed_files is None else rest_changed_files
     rest_commits_total = len(full_commits) if rest_commits_total is None else rest_commits_total
+    api_user_extra_fields = api_user_extra_fields or {}
+    omit_author = pr_author_field is _NO_AUTHOR_KEY
+    author_field = pr_author_field
+    if pr_author_field is _AUTHOR_FROM_LOGIN:
+        author_field = {"login": pr_author_login}
+    elif omit_author:
+        author_field = None  # replaced by popping the key in the shim
     return textwrap.dedent(f"""\
         #!/usr/bin/env python3
         import json
@@ -167,6 +191,13 @@ def _gh_shim_source(
         CHECKS_EXIT_STATUS = {checks_exit_status!r}
         CHECKS_HEAD_REF_OID = {checks_head_ref_oid!r}
         CHECKS_RAW_STDOUT = {checks_raw_stdout!r}
+        AUTHOR_FIELD = {author_field!r}
+        OMIT_AUTHOR = {omit_author!r}
+        OPERATOR_LOGIN = {operator_login!r}
+        API_USER_EXIT_STATUS = {api_user_exit_status!r}
+        API_USER_STDERR = {api_user_stderr!r}
+        API_USER_STDOUT_ON_FAILURE = {api_user_stdout_on_failure!r}
+        API_USER_EXTRA_FIELDS = {api_user_extra_fields!r}
         {GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE}
         args = sys.argv[1:]
         with open(CALL_LOG, "a") as f:
@@ -178,7 +209,7 @@ def _gh_shim_source(
             if FAIL_PR_VIEW:
                 sys.exit(1)
             doc = {{
-                "title": "t", "body": "b", "author": {{"login": "someone"}},
+                "title": "t", "body": "b", "author": AUTHOR_FIELD,
                 "isCrossRepository": False, "baseRefOid": "0" * 40,
                 "headRefOid": HEAD_REF_OID, "headRepositoryOwner": {{"login": "foo"}},
                 "url": PR_URL,
@@ -207,7 +238,17 @@ def _gh_shim_source(
                     doc["headRefOid"] = CHECKS_HEAD_REF_OID
             if PR_URL is None:
                 doc.pop("url")
+            if OMIT_AUTHOR:
+                doc.pop("author")
             print(json.dumps({{name: doc[name] for name in requested if name in doc}}))
+            sys.exit(0)
+        if args[:2] == ["api", "user"]:
+            if API_USER_EXIT_STATUS:
+                if API_USER_STDOUT_ON_FAILURE:
+                    print(json.dumps({{"login": OPERATOR_LOGIN, **API_USER_EXTRA_FIELDS}}))
+                print(API_USER_STDERR, file=sys.stderr)
+                sys.exit(API_USER_EXIT_STATUS)
+            print(json.dumps({{"login": OPERATOR_LOGIN, **API_USER_EXTRA_FIELDS}}))
             sys.exit(0)
         if args[:1] == ["api"]:
             path, _, query = (args[1] if len(args) > 1 else "").partition("?")
@@ -531,6 +572,86 @@ class TestSuccessfulAcquire:
         assert len(doc["existingReviews"]) == 1
         pr_view_calls = [c for c in _read_calls(call_log) if c[:2] == ["pr", "view"]]
         assert "reviews" not in pr_view_calls[0][pr_view_calls[0].index("--json") + 1].split(",")
+
+
+class TestSelfAuthored:
+    """`selfAuthored` is advice for step 8's verb recommendation (GH-1236).
+    review-pr-post.sh re-derives authorship before it posts.
+    A lookup that fails or yields no usable login gives null and never aborts the run."""
+
+    def test_default_document_reports_the_operator_did_not_author_the_pr(self, isolated_home, tmp_path):
+        result, _ = _run(isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40)
+        assert result.returncode == 0, result.stderr
+        document = json.loads(result.stdout)
+        assert document["selfAuthored"] is False
+
+    def test_operator_login_equal_to_the_author_ignoring_case_is_self_authored(self, isolated_home, tmp_path):
+        result, _ = _run(isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, operator_login="SOMEONE")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["selfAuthored"] is True
+
+    @pytest.mark.parametrize("exit_status", [1, 124], ids=["gh-failed", "cap-kill-124"])
+    def test_a_failed_user_lookup_gives_null_and_does_not_abort(self, isolated_home, tmp_path, exit_status):
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, api_user_exit_status=exit_status,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["selfAuthored"] is None
+
+    def test_a_failed_user_lookup_with_a_usable_login_on_stdout_still_gives_null(self, isolated_home, tmp_path):
+        # GH-1236: gh prints an HTTP error body on stdout; the explicit status test keeps it from being read as a verdict.
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, operator_login="SOMEONE",
+            api_user_exit_status=1, api_user_stdout_on_failure=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["selfAuthored"] is None
+
+    @pytest.mark.parametrize(
+        "author_field",
+        [
+            _NO_AUTHOR_KEY, None, "someone", [{"login": "someone"}], {}, {"login": None}, {"login": False}, {"login": 7},
+        ],
+        ids=[
+            "no-author-key", "null-author", "string-author", "array-author", "author-without-login-key",
+            "null-login", "false-login", "numeric-login",
+        ],
+    )
+    def test_an_unreadable_pr_author_gives_null_not_false_and_does_not_abort(self, isolated_home, tmp_path, author_field):
+        # GH-1236: review-pr-post.sh refuses an unreadable author, so advice of `false` would recommend a verb it then refuses.
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, pr_author_field=author_field,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["selfAuthored"] is None
+
+    def test_a_pr_author_with_an_empty_login_gives_false(self, isolated_home, tmp_path):
+        result, _ = _run(isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, pr_author_login="")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["selfAuthored"] is False
+
+    def test_an_operator_login_that_is_not_login_shaped_gives_null_and_does_not_abort(self, isolated_home, tmp_path):
+        result, _ = _run(isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, operator_login="bad login")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["selfAuthored"] is None
+
+    def test_a_pr_author_that_is_not_login_shaped_gives_false_and_does_not_abort(self, isolated_home, tmp_path):
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, pr_author_login="app/some-bot",
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["selfAuthored"] is False
+
+    def test_exactly_one_user_lookup_runs_on_the_ambient_credentials(self, isolated_home, tmp_path):
+        """The override token is for the check-status call alone; the lookup must name the account review-pr-post.sh posts as."""
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            extra_env={"GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN},
+            checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
+        assert result.returncode == 0, result.stderr
+        user_calls = [entry for entry in _logged_gh_calls(call_log) if entry["args"] == ["api", "user"]]
+        assert [(entry["gh_token"], entry["gh_host"]) for entry in user_calls] == [(AMBIENT_TOKEN, None)]
 
 
 class TestExistingInlineComments:
@@ -1272,3 +1393,27 @@ class TestGhFailureNeverBypassesTheScrub:
             assert CHECKS_ERROR_PAYLOAD not in surface
             assert CHECKS_OVERRIDE_TOKEN not in surface
             assert AMBIENT_TOKEN not in surface
+
+    @pytest.mark.parametrize(
+        "user_shim_kwargs",
+        [
+            {"api_user_extra_fields": {"name": CHECKS_ERROR_PAYLOAD}},
+            {"api_user_exit_status": 1, "api_user_stderr": CHECKS_ERROR_PAYLOAD, "api_user_stdout_on_failure": True},
+        ],
+        ids=["secret-shaped-body-field", "secret-shaped-stderr-on-failure"],
+    )
+    def test_user_lookup_response_and_error_text_never_reach_output_or_context_json(
+        self, isolated_home, tmp_path, user_shim_kwargs
+    ):
+        """The `/user` payload and gh's stderr on a failed lookup are discarded.
+        Neither a secret-shaped value nor the operator's login reaches any surface."""
+        operator_login = "operator-login-that-must-not-leak"
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, operator_login=operator_login,
+            **user_shim_kwargs,
+        )
+        assert result.returncode == 0, result.stderr
+        context_file = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.context.json"
+        for surface in (result.stdout, result.stderr, context_file.read_text()):
+            assert CHECKS_ERROR_PAYLOAD not in surface
+            assert operator_login not in surface

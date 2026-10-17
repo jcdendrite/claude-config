@@ -7,6 +7,11 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 ### Changed
 
 - **CI now collects and lints `evals/`, and `select-tests.py`'s fail-open fallback runs the same four roots as CI.** The `evals/` tests of code that shells out to `claude` or `gh` substitute those calls. Every fail-open reason (empty diff, global trigger, unmatched path, git unavailable) now runs the whole `evals/` root along with the other three roots. A parity test pins the fallback's roots to the pytest and lint steps in `tests.yml`.
+- **`/review-pr` can now post a review that holds a blocking finding, and handles a PR the operator authored.**
+  - **Marker:** a blocking finding no longer withholds the completion marker. Step 7 withholds it only while a claim the session could still settle is open, or after the head moved.
+  - **`selfAuthored`:** `review-pr-acquire.sh` reports it, from a `gh api user` call on the ambient token. It is `null` when the lookup fails or the PR's author cannot be read, and acquire carries on.
+  - **Own PR:** step 8 routes to `comment`, and the body carries a blocking-finding count line whenever `selfAuthored` is not `false`, so a `comment` posted after a refusal keeps it.
+  - **Post refusal:** `review-pr-post.sh` refuses `request-changes` before it consumes the marker when the operator authored the PR or when it cannot tell (tokens that cannot read `GET /user`, and a transient `/user` failure, can no longer post `request-changes` on that attempt). The marker stays armed, so the same body can post as `comment` after the human confirms it.
 - **`/handoff` keeps its marker activation as the first step, run as its own Bash call, and now creates the handoffs directory just before drafting.**
   - The two one-line recipes no longer sit next to each other. `enforce-marker-script-shape.sh` denies the activation chained to a non-`marker.sh` command.
   - A run that the warrant check stops no longer creates the directory.

@@ -19,11 +19,14 @@ equals both that identity and this repo's origin remote (owner/repo); the
 findings-body file is readable and its sha256 still equals
 the marker's recorded hash; and the marker's PR number/owner/repo names a
 real PR whose current headRefOid still matches the marker's recorded HEAD.
-Fails closed (no gh call) on any missing or mismatched piece. The marker is
-consumed before the post call, and a failure to consume it refuses before
-any post: gh pr review has no idempotency key, so a retry after a post that
-landed, or that failed after landing, could double-post. A post that fails
-therefore leaves it unknown whether the review landed.
+Fails closed (no gh pr review call) on any missing or mismatched piece. The
+marker is consumed before the post call, and a failure to consume it refuses
+before any post: gh pr review has no idempotency key, so a retry after a post
+that landed, or that failed after landing, could double-post. A post that
+fails therefore leaves it unknown whether the review landed.
+For request-changes, the script also checks that the PR's author is not the
+account gh posts as, and a match, a failed lookup, or an unreadable author
+refuses before the marker is consumed.
 EOF
 }
 
@@ -45,6 +48,15 @@ esac
 
 # shellcheck source=../hooks/_lib.sh
 . "$(dirname "$0")/../hooks/_lib.sh"
+# shellcheck source=_review-pr-lib.sh
+. "$(dirname "$0")/_review-pr-lib.sh"
+
+# Refuses when the account gh posts as could not be compared with the PR's author.
+# The text is fixed: it names no login and echoes no gh output.
+refuse_authorship_not_established() {
+  echo "review-pr-post.sh: could not tell if the account gh posts as authored PR $OWNER_REPO#$PR_NUMBER (the gh api user lookup failed or returned no usable login, or the PR's author could not be read). Nothing was posted and the completion marker was not consumed, so re-running the same verb after the human re-confirms is safe. The same body can be posted with the comment verb only after the human confirms that exact body for comment." >&2
+  exit 2
+}
 
 if ! TARGET_FIELDS=$(_lib_parse_pr_identity "$2"); then
   echo "review-pr-post.sh: target '$2' is not a valid <owner>/<repo>#<number>." >&2
@@ -144,15 +156,49 @@ fi
 # and compare it to the marker's recorded value: a mismatch means
 # PR_NUMBER/OWNER_REPO does not name the reviewed PR, so abort before
 # constructing a review against the wrong one.
+# The same fetch carries the PR's author for the request-changes check below.
+# Between the head check and the unlink there is one capped local jq read
+# (review_pr_authorship) and no network call.
 #
 # 10s: a network GET carrying no payload, more slack than _lib_capped's 5s
 # local-read default but less than the write-path headroom
 # GH_PR_REVIEW_TIMEOUT_SECONDS gives the POST calls below.
 GH_PR_VIEW_TIMEOUT_SECONDS=10
-CURRENT_PR_HEAD=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid --jq .headRefOid 2>/dev/null) || CURRENT_PR_HEAD=""
+# The lookup runs before the head fetch so its latency stays outside the window between the head check and the unlink.
+# Its exit status is tested explicitly: gh prints an HTTP error body on stdout with a non-zero exit, and that body must not be read as the operator's login.
+OPERATOR_USER_JSON=""
+if [[ "$1" == "request-changes" ]] && ! OPERATOR_USER_JSON=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" api user 2>/dev/null); then
+  refuse_authorship_not_established
+fi
+PR_VIEW_JSON=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid,author 2>/dev/null) || PR_VIEW_JSON=""
+CURRENT_PR_HEAD=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.headRefOid // empty' 2>/dev/null) || CURRENT_PR_HEAD=""
+# An `.author` object whose `.login` is an empty string reads as another account. A missing or non-object `.author`, an absent, null or non-string `.login`, or a failed
+# extraction, would also yield an empty string that review_pr_authorship reads as other, which fails open.
+# The failure is therefore kept in PR_AUTHOR_READ_FAILED and refuses after the head check.
+PR_AUTHOR_LOGIN=""
+PR_AUTHOR_READ_FAILED=false
+if [[ "$1" == "request-changes" ]] && ! PR_AUTHOR_LOGIN=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r \
+  'if (.author | type) == "object" and (.author.login | type) == "string" then .author.login else error("author login is not a string") end' 2>/dev/null); then
+  PR_AUTHOR_READ_FAILED=true
+fi
 if [[ -z "$CURRENT_PR_HEAD" || "$CURRENT_PR_HEAD" != "$MARKER_HEAD_REF_OID" ]]; then
   echo "review-pr-post.sh: PR $OWNER_REPO#$PR_NUMBER's current headRefOid does not match the completion marker's recorded HEAD -- PR_NUMBER/OWNER_REPO may not name the reviewed PR. Abort without posting." >&2
   exit 2
+fi
+
+# The operator's own PR posts only as comment; refusing here keeps the marker armed for that post.
+if [[ "$1" == "request-changes" ]]; then
+  if [[ "$PR_AUTHOR_READ_FAILED" == true ]]; then
+    refuse_authorship_not_established
+  fi
+  case "$(review_pr_authorship "$PR_AUTHOR_LOGIN" "$OPERATOR_USER_JSON")" in
+    other) ;;
+    self)
+      echo "review-pr-post.sh: PR $OWNER_REPO#$PR_NUMBER was authored by the account gh posts as, and /review-pr posts only a comment review on the operator's own PR. Nothing was posted and the completion marker was not consumed. The same body can be posted with the comment verb only after the human confirms that exact body for comment." >&2
+      exit 2
+      ;;
+    *) refuse_authorship_not_established ;;
+  esac
 fi
 
 # The marker is consumed before the post: a gh pr review POST has no
