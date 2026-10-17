@@ -44,15 +44,16 @@ set -uo pipefail
 
 DENY_GATE_LABEL="CLAUDE.md length"
 
-# Byte limit: 25,600 bytes = 25 KiB (binary reading), the nearest in-family
-# precedent — MEMORY.md's documented "200 lines or 25KB" threshold
+# Byte limit: 30,720 bytes = 30 KiB (binary reading), a repo-owned ceiling
+# under the 32 KiB Codex project_doc_max_bytes truncation
 # (claude-skills/skills/ai-instruction-and-memory-files/REFERENCES.md's
 # "Cross-vendor size table" section). Applies to every stow consumer's
 # CLAUDE.md/AGENTS.md, the same scope the 200-line check above already has.
 #
 # Dated log of prior values (one line per raise: date, old value, new value,
-# one-line reason) — empty today; append here on every future change.
-GLOBAL_CLAUDE_MD_BYTE_LIMIT=25600
+# one-line reason); append here on every future change.
+# 2026-10-17: 25600 -> 30720; the global CLAUDE.md was already over 25600 and needed to grow. 25600 was MEMORY.md's 25KB load window extrapolated to CLAUDE.md; 30720 is 30 KiB, under Codex's 32 KiB project_doc_max_bytes truncation, with headroom for the file's growth.
+GLOBAL_CLAUDE_MD_BYTE_LIMIT=30720
 
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
