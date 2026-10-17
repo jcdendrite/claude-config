@@ -5059,11 +5059,9 @@ def _scope_exempt_change_type_row_text(skill_md_path: Path) -> str:
     """Full row-line text of the Change-type row SCOPE_EXEMPT_ROW's shorthand
     resolves to.
 
-    Shared row-lookup for `test_code_review_staged_diff_instruction_lives_in_its_own_note_only`
-    and `test_comment_discipline_row_points_to_its_deferral`. Both need the
-    row's full text, not just the left-column shorthand
-    `_change_type_table_left_columns` returns, to check for a literal
-    string reference.
+    Shared row-lookup for the tests that check the comment/prose row for a
+    literal string. They need the row's full text, not just the left-column
+    shorthand `_change_type_table_left_columns` returns.
     """
     exempt_shorthand = _extract_scope_anchor_region(skill_md_path, "SCOPE_EXEMPT_ROW")
     for line in _change_type_table_rows(skill_md_path):
@@ -5363,6 +5361,45 @@ def test_comment_discipline_row_points_to_its_deferral() -> None:
         f"{skill_md_path}: the comment/prose row no longer points to its own "
         "deferral out of staged-diff commit-gate rounds"
     )
+
+
+_CODE_REVIEW_STEP_0_6_HEADING = "## Step 0.6 — Pre-judgment table check"
+
+
+def test_comment_discipline_row_states_its_whole_diff_lane() -> None:
+    """The comment/prose row keeps its any-language, whole-diff lane
+    statement, the guard against narrowing by file type dropping shell or
+    TOML comments.
+    """
+    skill_md_path = _skill_file("code-review")
+    row_text = _scope_exempt_change_type_row_text(skill_md_path)
+    for literal in (
+        "Its lane is every comment and durable-doc prose site in the diff, "
+        "whatever the file's language or type.",
+        "Hand it the whole diff, never a per-spawn file subset",
+    ):
+        assert literal in row_text, (
+            f"{skill_md_path}: the comment/prose row no longer carries "
+            f"the exact literal {literal!r}"
+        )
+
+
+def test_step_0_6_narrowing_keys_lanes_by_change_not_file_type() -> None:
+    """Step 0.6 keeps its statements that lanes key on what a change does and
+    that the comment/prose row is exempt from per-spawn narrowing, the guard
+    against narrowing by file type dropping a reviewer's in-lane files.
+    """
+    skill_md_path = _skill_file("code-review")
+    section_text = _heading_section_text(skill_md_path, _CODE_REVIEW_STEP_0_6_HEADING)
+    for literal in (
+        "Judge a lane by what each file's change does, the way the Change type "
+        "column keys its rows, never by file type.",
+        "The comment-discipline row's spawn instruction exempts that row from "
+        "this per-spawn narrowing.",
+    ):
+        assert literal in section_text, (
+            f"{skill_md_path}: Step 0.6 no longer carries the exact literal {literal!r}"
+        )
 
 
 _HANDOFF_WARRANT_CHECK_HEADING = "## Before writing: is a handoff warranted?"
