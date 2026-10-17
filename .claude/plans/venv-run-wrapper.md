@@ -14,11 +14,11 @@ Intended outcome. One repo-root, non-stowed wrapper finds the main checkout's `.
 
 ## Approach
 
-Add one repo-root script that is not stowed: `scripts/venv-run.sh <tool> [args...]`. It finds the main checkout from its own on-disk location with `git -C <script dir> rev-parse --path-format=absolute --git-common-dir` followed by `dirname`, validates the tool name and the target, and `exec`s `<main>/.venv/bin/<tool>` without resolving symlinks. The same text then runs from the main checkout and from a linked worktree at any depth. The documented contributor commands, one exact-match select-tests allow rule, and the hooks' runner-skip lists all switch to it, and `select-tests.py` gains a rule for repo-root `scripts/`.
+Add one repo-root script that is not stowed: `scripts/venv-run.sh <tool> [args...]`. It finds the main checkout from its own on-disk location with `git -C <script dir> rev-parse --path-format=absolute --git-common-dir` followed by `dirname`, validates the tool name and the target, and `exec`s `<main>/.venv/bin/<tool>` without resolving symlinks. The same text then runs from the main checkout and from a linked worktree at any depth. The documented contributor commands and one exact-match select-tests allow rule switch to it, `deny-reviewer-tree-mutation.sh` strips the wrapper word from a fragment whose command word is the wrapper (gate-local, not through the shared runner list), and `select-tests.py` gains a rule for repo-root `scripts/`.
 
 Wrapper algorithm, in order:
 1. Check the arguments first, since that needs no I/O. No argument or an empty first argument exits 2. A tool name containing `/` exits 2.
-2. Resolve the common dir inside `if ! common_dir=$(git -C "$script_dir" rev-parse ... 2>/dev/null)`, where `script_dir` is `dirname -- "${BASH_SOURCE[0]}"`. A bare assignment would abort under `set -e` with git's own 128 and print no message of ours. On failure exit 127 with a message that names `$script_dir` and says git failed or returned nothing.
+2. Resolve the common dir inside `if ! common_dir=$(git -C "$script_dir" rev-parse ... 2>/dev/null)`, where `script_dir` is `dirname -- "${BASH_SOURCE[0]}"`. A bare assignment would abort under `set -e` with git's own 128 and print no message of ours. On failure exit 127 with a message that names `$script_dir` and says git failed. There is no empty-output arm: git does not print an empty common dir with exit 0, and the `.venv` checks in steps 3 and 4 are the guard.
 3. Set `main=$(dirname -- "$common_dir")`. If `$main/.venv` is not a directory, exit 127 with `run ./install-dev.sh in <main>`.
 4. If `$main/.venv/bin/$tool` is not both `-f` and `-x`, exit 127 with a message that names the tool and `<main>/.venv/bin` and says to run `./install-dev.sh` in `<main>`. `install-dev.sh` recreates an unhealthy `.venv`, so the remedy fits a dangling interpreter link as well as a missing venv.
 5. `tool=$1; shift; exec "$main/.venv/bin/$tool" "$@"`.
@@ -69,7 +69,7 @@ Conditions the plan could change by editing this repository and deliberately doe
 - M5. Resolve the main checkout with the inline `git -C <script dir> rev-parse --path-format=absolute --git-common-dir` formula rather than sourcing `_lib.sh`, with no output guard. anchors: row9, row10, row12.
 - M6. One allow rule, `Bash(scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py)`, replaces `.claude/settings.json:11-12`. The main session makes this edit, not a code-writer. anchors: row1, row5, row15, row33, row41, row42.
 - M7. All documented command sites switch to the wrapper form in this PR, including README's "exactly three levels" sentence. anchors: row2, row25, row34, row40.
-- M8. Add `venv-run.sh` to the runner list in `_lib.sh:1852` and to the mirrored list in `deny-repo-relocation.sh:137`, with tests in `test_lib.py`. anchors: row16, row17, row18.
+- M8. Strip the wrapper word gate-locally in `deny-reviewer-tree-mutation.sh` (helper `_strip_venv_run_wrapper_word`), only when `_lib_fragment_invokes_tool "$fragment" venv-run.sh` says the wrapper is the command word. Any other fragment (`cp /tmp/x scripts/venv-run.sh`, `> scripts/venv-run.sh`, `tee scripts/venv-run.sh`) is left as typed, so the write-target scan still sees its destination. The shared runner list in `_lib.sh` and the mirror in `deny-repo-relocation.sh` stay unchanged. The first design added the word to both lists. Code-review round 4 disproved it (rows 18, 45-47). anchors: row16, row17, row18, row45, row46, row47.
 - M9. New constant `ROOT_SCRIPTS_DIR = "scripts"` and a `CROSS_DOMAIN_EXCEPTIONS` row mapping it to `(HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR)`. anchors: row20, row21, row22, row23.
 - M10. A subprocess test against a real repo plus a linked worktree four levels deep, with one case per failure branch. No `_<topic>-lib.sh` extraction. anchors: root, row13, row37.
 - M11. A CHANGELOG `[Unreleased]` entry. No `docs/scripts.md` entry. anchors: row35.
@@ -97,18 +97,18 @@ Conditions the plan could change by editing this repository and deliberately doe
 9. `[verified: install.sh:103, install.sh:432]` The consult's claim that sourcing `_lib.sh` would be "the first root-to-`claude/` dependency" is wrong: `install.sh` already sources `_stow_migration_lib.sh` and `_config.sh`. It would be the first `scripts/`-to-`claude/` dependency. The remaining ground stands: sourcing the hook library would break the test runner whenever a branch breaks `_lib.sh`, which is exactly when the runner is needed.
 10. `[verified: claude/.claude/hooks/_lib.sh:580-601]` `_lib_main_repo_root` exists, but it resolves from cwd, not from a given directory. Reusing it would need a subshell `cd` on top of sourcing the library.
 11. `[verified: README.md:97]` git >= 2.31 is declared, and `install.sh` does not check it.
-12. `[unverified]` git older than 2.31 prints `--path-format=absolute` as an output line and exits 0. This is documented at `_lib.sh:584-585` but was not run this session. The wrapper carries no guard for it, because row 11 declares git >= 2.31 and a guard would need its own test (the architect consult recommended deleting it).
+12. `[unverified]` The wrapper relies on git printing a non-empty common dir on exit 0, and on git older than 2.31 printing `--path-format=absolute` as an output line and exits 0. This is documented at `_lib.sh:584-585` but was not run this session. The wrapper carries no guard for it, because row 11 declares git >= 2.31 and a guard would need its own test (the architect consult recommended deleting it).
 13. `[verified: claude/.claude/scripts/select-tests.py:1011-1018]` `select-tests.py` finds pytest via `Path(sys.executable).with_name("pytest")`. Exec'ing a resolved `/usr/bin/python3.X` would miss the venv's pytest.
 14. `[unverified]` PEP 405, quoted from memory and not fetched: "If a pyvenv.cfg file is found either adjacent to the Python executable or one directory above it (if the executable is a symlink, it is not dereferenced), this file is scanned for lines of the form key = value." Row 13 independently requires the unresolved path.
 15. `[verified: claude/.claude/scripts/tests/test_review_pr_post.py:883-920]` The new allow entry passes `_allow_entry_matches_script_invocation`. Its head, `venv-run.sh`, is not in `SHELL_WRAPPER_HEADS`; it names no gated script; it has no wildcard. Adding `venv-run.sh` to `SHELL_WRAPPER_HEADS` would fail this entry. M2's `/` rejection is what keeps the wrapper away from `~/.claude/scripts/*`.
-16. `[verified: deny-reviewer-tree-mutation.sh:467-481; _lib.sh:1848-1855]` Without the runner entry, `scripts/venv-run.sh ruff check --fix` resolves to the command word `scripts/venv-run.sh`. The reviewer gate's deny for ruff `--fix`/`format` would then miss the newly documented form. `../../../.venv/bin/ruff` resolves today because matching is on the basename.
-17. `[engineer-verified: "Yes, add to both lists (Recommended)"]` Add the entry to both lists, with a test in `test_lib.py`'s `_lib_fragment_command_word` block and hook review of the change.
+16. `[verified: deny-reviewer-tree-mutation.sh:467-481; _lib.sh:1848-1855]` Without handling the wrapper word, `scripts/venv-run.sh ruff check --fix` resolves to the command word `scripts/venv-run.sh`. The reviewer gate's deny for ruff `--fix`/`format` would then miss the newly documented form. `../../../.venv/bin/ruff` resolves today because matching is on the basename.
+17. `[superseded by row 47]` The engineer first chose "Yes, add to both lists (Recommended)", on the premise in the first version of row 18 that the entry can only widen what the gates catch. Row 45 shows that premise false.
 18. `[verified: tier lines and call sites of _lib_fragment_invokes_tool / _lib_command_invokes_tool_subcmd]` Gates whose verdict goes through `_lib_fragment_command_word`:
     - `cooperative, untrusted-input, irreversible`: `block-gh-pr-merge.sh`, `enforce-marker-script-shape.sh`
     - `cooperative, irreversible`: `deny-reviewer-tree-mutation.sh`, `deny-invisible-commit-content.sh`
     - `cooperative`: `deny-repo-relocation.sh`, `deny-escaped-backticks-in-pr-body.sh`, `require-stow-reminder.sh`
 
-    The change can only widen what these gates catch. Resolution moves past a first word only when its basename is `venv-run.sh`, so every fragment that matched a tool before still matches. One caller uses a match to skip a re-check (`deny-invisible-commit-content.sh:419-421`). The masked-text worktree-target check at `:390` still runs on that same fragment unconditionally, and `.venv/bin/git` does not exist.
+    Two of these gates use a resolver match to skip a check, not to deny: `deny-invisible-commit-content.sh:361-366, 419-421` (skips the stripped-text re-check) and `require-stow-reminder.sh:173-180` (skips the marker scan for a body-less `gh pr edit`). Any word added to the shared runner list therefore shrinks their coverage. The first design (row 17) added the word to the shared list and wrongly held that it could only widen. Row 45 records the counterexample. Only `deny-reviewer-tree-mutation.sh` needs the wrapper word handled, so the final design strips it there alone (M8).
 19. `[verified: claude/.claude/hooks/deny-network-installs.sh:121-131, 257-264]` That gate matches `pip` as any word, not as the command word. `scripts/venv-run.sh pip install <pkg>` is still denied.
 20. `[engineer-verified: "Keep it as you chose"]` Add a `select-tests.py` rule for repo-root `scripts/**`. The quote covers adding the rule. The domain choice in row 21 is mine.
 21. `[verified: claude/.claude/hooks/tests/test_shellcheck.py:31; claude/.claude/hooks/tests/test_shell_lib_function_liveness.py:66; grep of claude-skills]` The hooks tests read repo-root `scripts/` (they run `list-shell-files.sh` and lint or scan every tracked shell file). The new `test_venv_run.py` is in the scripts tests. No skills test reads repo-root `scripts/`.
@@ -135,6 +135,12 @@ Conditions the plan could change by editing this repository and deliberately doe
 42. `[engineer-verified: "Yes, add the replacement rule (Recommended)"]` The single replacement allow rule in M6 is added. The quote covers adding that one rule. The exposure in row 41 was raised by the CISO review and characterized by the architect consult, and the engineer's earlier "I don’t think this is a real concern. Check with the architect" covers the exposure only.
 43. `[engineer-verified: "Follow the architect (Recommended)"]` The extra tests are the architect's set: one trimmed gate-level deny and allow case in `test_deny_reviewer_tree_mutation.py`, and no depth-text tripwire and no allow-entry pin. The quote covers that choice. The case wording is the session's.
 44. `[unverified]` Inherited `GIT_DIR`, `GIT_COMMON_DIR` or `GIT_WORK_TREE` can steer the resolution call. The wrapper does not scope them, because the callers that set them (git hooks) do not run it, and scoping would need its own test. The limitation is recorded here and in Out of scope. Traced from git's documented behaviour, not run.
+
+45. `[verified: probe run in the implementing session, script /tmp/probe-venv-run-commit-gate.sh]` With `venv-run.sh` in the shared runner list, `scripts/venv-run.sh git commit -m"a b" file.txt` is denied by `deny-invisible-commit-content.sh` at the merge-base and allowed on the branch. Plain `git commit -m"a b" file.txt` is allowed at both, so the masker gap is pre-existing. `scripts/venv-run.sh git commit -a -m x` is denied at both. The stow-reminder case in row 18 is a read-only trace, not run.
+46. `[engineer-verified: "I'd say fix it in this PR. Ask the architect"]` The commit-gate regression in row 45 is fixed in this PR. The engineer's later answers: "Ask fable for an adversarial review of that plan" and "Fix it in this PR (Recommended)" for the stow case.
+47. `[engineer-verified: "Reverse: wrapper only in the reviewer gate (Recommended)"]` After the adversarial review offered it, the engineer chose to drop the shared-list entry and handle the wrapper only in `deny-reviewer-tree-mutation.sh`. The label is the engineer's; the description of the option is the session's. This reverses row 17's first choice. It removes both regressions without editing `deny-invisible-commit-content.sh` or `require-stow-reminder.sh`. The pre-existing `-m""` tokenizer gap and the plain create-then-edit skip in `require-stow-reminder.sh` stay out of scope.
+
+48. `[engineer-verified: "Fable's trimmed set (Recommended)"]` and `[engineer-verified: "Adopt Fable's triage (Recommended)"]` These were the engineer's selected labels after the round-1 plan review and Fable's adversarial review. They set Phase 2's trimmed test set (superseding row 43's "one trimmed" wording for that set), limit the plan edits to the ones made, delete the wrapper's `-z "$common_dir"` arm, and leave `GIT_COMMON_DIR` unverified and unscoped (row 44). The option descriptions are the session's.
 
 ## Critical files
 
@@ -176,17 +182,16 @@ The phase verification commands below are not allow-listed, so a code-writer's B
   - Do not touch `_KNOWN_CROSS_DOMAIN_READS` (row 23).
 - Phase 1 verification, run by the main session after it stages the new files: `scripts/venv-run.sh pytest claude/.claude/scripts/tests/test_venv_run.py claude/.claude/scripts/tests/test_select_tests.py`, then `scripts/venv-run.sh shellcheck scripts/venv-run.sh`, then `git ls-files -s scripts/venv-run.sh` shows mode `100755`.
 
-**Phase 2 — runner-skip lists** (one `code-writer`)
-- `claude/.claude/hooks/_lib.sh:1852` — append `venv-run.sh` to the case list. Add one line above it: `# venv-run.sh is claude-config's contributor runner (scripts/venv-run.sh), which execs a .venv/bin tool.`
-- `claude/.claude/hooks/deny-repo-relocation.sh:137` — the same word, so the two lists stay identical.
-- `claude/.claude/hooks/tests/test_lib.py`, `TestFragmentCommandWord` (around line 3383), reusing the `_fragment_command_word` helper at line 3353. Two cases:
-  - `scripts/venv-run.sh ruff check --fix x.py` resolves to `ruff`.
-  - `scripts/venv-run.sh python3 -m black src/x.py` resolves to `black`.
-- `claude/.claude/hooks/tests/test_deny_reviewer_tree_mutation.py`, `TestCommandWordResolution` (around line 795-846), one case per runner as the existing cases do. Two cases:
-  - Deny `scripts/venv-run.sh ruff format x.py` for a review-only agent.
-  - Allow `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/`, the documented reviewer command, so a false deny fails.
-- The `deny-repo-relocation.sh` edit is parity-only: its verdict is the same with or without the entry, so no behavioral test can exist for it, and Verification step 6 is its check.
-- Phase 2 verification, run by the main session: `scripts/venv-run.sh pytest claude/.claude/hooks/tests/test_lib.py claude/.claude/hooks/tests/test_deny_repo_relocation.py claude/.claude/hooks/tests/test_deny_reviewer_tree_mutation.py`. Then the session runs `claude-hook-review:claude-hook-review` on this diff with row 18's tier check.
+**Phase 2 — reviewer-gate wrapper handling** (one `code-writer`)
+- `claude/.claude/hooks/deny-reviewer-tree-mutation.sh` — helper `_strip_venv_run_wrapper_word`, called in the Bash arm only inside `if _lib_fragment_invokes_tool "$fragment" venv-run.sh; then ...; fi`. The shared resolver is position-aware and case-folded, so `scripts/venv-run.sh ruff format x.py` and `sudo scripts/venv-run.sh ruff format x.py` resolve to `ruff`, while a fragment whose command word is `cp`, `tee` or `echo` is never altered. The helper's own word match is case-insensitive, its `*venv-run.sh*` substring pre-check (case-sensitive) is deleted, and it skips words that begin with `>`, `<` or a digit followed by a redirect, because the resolver counts a glued `>scripts/venv-run.sh` as the wrapper word and stripping it would drop the write target. The existing header sentence "stripped from each fragment before any check" (about lines 124-125) is rewritten to the command-word condition. The header also records that the strip is local to this gate and that `bash scripts/venv-run.sh ruff format` stays in the accepted indirection class. The helper strips the first matching word, not the word the resolver selected, so a contrived `FOO=x/venv-run.sh scripts/venv-run.sh ruff format` still passes. That is accepted at the cooperative tier.
+- `scripts/venv-run.sh` — delete the `|| [[ -z "$common_dir" ]]` arm and reword the message to "git failed" (the wrapper otherwise relies on git's non-empty output, row 12). Phase 1 is already staged, so this fix-up edit belongs to the Phase 2 dispatch.
+- `claude/.claude/hooks/_lib.sh`, `deny-repo-relocation.sh` and `test_lib.py` are not edited (row 47).
+- `claude/.claude/hooks/tests/test_deny_reviewer_tree_mutation.py`, `TestCommandWordResolution`:
+  - Four test functions (seven collected items), a trimmed set after Fable's adversarial review (row 48). `test_lib.py` has no look-alike-basename case for `_lib_fragment_invokes_tool`, and none is added here; the gap is accepted.
+  - Deny `scripts/venv-run.sh ruff format x.py` and `sudo scripts/venv-run.sh ruff format x.py` for a review-only agent.
+  - Allow `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/`, so a false deny fails.
+  - One parametrized deny over `cp /tmp/x scripts/venv-run.sh`, `echo x > scripts/venv-run.sh`, `tee scripts/venv-run.sh` and `>scripts/venv-run.sh echo x`: a wrapper word that is not a real command word must not hide a write target.
+- Phase 2 verification, run by the main session: `scripts/venv-run.sh pytest claude/.claude/hooks/tests/test_deny_reviewer_tree_mutation.py`. Then the session runs `claude-hook-review:claude-hook-review` on this diff, and re-runs the row 45 probe (`scripts/venv-run.sh git commit -m"a b" file.txt` must be denied on the branch).
 
 **Phase 3 — documentation and hints** (one `code-writer`)
 - `CLAUDE.md`
@@ -200,7 +205,7 @@ The phase verification commands below are not allow-listed, so a code-writer's B
   - Line 547: drop the "Same worktree-relative substitution…" sentence and keep the rest.
 - `install-dev.sh:113-115` and `install.sh:954,970` — swap the `.venv/bin/` prefix for `scripts/venv-run.sh ` and keep each line's existing arguments. Keep both `INSTALL_TEST_FIXTURE` markers.
 - `CHANGELOG.md` — `## [Unreleased]` / `### Changed`, appended as new entries:
-  - One entry: contributor commands now go through `scripts/venv-run.sh`, which works from a worktree at any depth. The two select-tests allow rules are replaced by one, so the `.venv/bin/python3` and `../../../.venv/bin/python3` forms now prompt. Sub-bullet: `venv-run.sh` joins the runner words the command-word gates look past, so `scripts/venv-run.sh ruff --fix` is denied to review-only agents.
+  - One entry: contributor commands now go through `scripts/venv-run.sh`, which works from a worktree at any depth. The two select-tests allow rules are replaced by one, so the `.venv/bin/python3` and `../../../.venv/bin/python3` forms now prompt. Sub-bullets: the reviewer-tree-mutation gate strips the wrapper word, so `scripts/venv-run.sh ruff --fix` is denied to review-only agents and the shared runner words are unchanged; `./install-dev.sh` run inside a linked worktree still builds a worktree-local `.venv` while the printed commands use the main checkout's; a **Migration** note that branches cut before this change lack the wrapper until rebased.
   - A second entry: a change under repo-root `scripts/` now selects the hooks and scripts tests instead of falling open to the full suite.
 - Phase 3 verification, run by the main session: `scripts/venv-run.sh pytest claude/.claude/hooks/tests/test_install_sh_contributor_intent_prompt.py claude/.claude/scripts/tests/test_install_dev.py`, then `scripts/venv-run.sh shellcheck install.sh install-dev.sh`.
 
@@ -208,7 +213,7 @@ The phase verification commands below are not allow-listed, so a code-writer's B
 - `.claude/settings.json` — replace lines 11-12 with the single entry `"Bash(scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py)"`. Leave lines 10 and 13 untouched. Then run `/review-permissions`.
 - `.claude/plans/venv-run-wrapper.md` — this plan.
 
-That is 15 files in total; this list is the change's file limit.
+That is 13 files in total; this list is the change's file limit. The first design listed 15: `_lib.sh`, `deny-repo-relocation.sh` and `test_lib.py` dropped out (row 47), and `deny-reviewer-tree-mutation.sh` joined.
 
 ## Verification
 
@@ -216,13 +221,13 @@ That is 15 files in total; this list is the change's file limit.
 1. Final scoped test run from this worktree, which sits at `.claude/worktrees/GH-1252/venv-run-wrapper` — four levels deep, so this run is itself the end-to-end check of the fix: `scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py`. This is the newly allow-listed form. From the main tree, the command documented until now is `.venv/bin/python3 claude/.claude/scripts/select-tests.py`; after this PR CLAUDE.md documents the same wrapper string there. Expect reason `global-trigger` and a full-suite run, because `select-tests.py` changed (row 24). That run covers:
    - `test_review_pr_post.py` around lines 867-935
    - `TestCrossDomainReadCompleteness`, which now checks the new row against three test files
-   - `test_shellcheck.py`
+   - `test_shellcheck.py`'s non-binary tests (its 5 shellcheck-binary tests skip locally because the wrapper does not put `.venv/bin` on `PATH`; step 3 is the local shellcheck gate, and CI runs them)
    - `test_hook_alignment.py`'s settings wildcard tests
 2. `scripts/venv-run.sh ruff check claude/.claude/ claude-skills/`
 3. `scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck`
 4. `git ls-files -s scripts/venv-run.sh` shows mode `100755`.
 5. Grep `\.\./\.\./\.\./\.venv` outside `.claude/plans/`, `docs/case-studies/`, `docs/reports/` and `CHANGELOG.md` (whose new entry names the old form on purpose). The only hits should be `reviewer_yield.py:285` and `test_transcript_reviewer_yield.py:1708-1712`.
-6. Grep the runner case lines in `_lib.sh` and `deny-repo-relocation.sh` and confirm the two lists are identical.
+6. `git diff HEAD -- claude/.claude/hooks/_lib.sh claude/.claude/hooks/deny-repo-relocation.sh` and `git diff origin/main...HEAD -- claude/.claude/hooks/_lib.sh claude/.claude/hooks/deny-repo-relocation.sh` are both empty (the shared runner list is unchanged; the merge-base form is immune to `origin/main` advancing), and the row 45 probe shows `scripts/venv-run.sh git commit -m"a b" file.txt` denied on the branch.
 7. Reviews:
    - `claude-hook-review:claude-hook-review` on Phase 2
    - `/review-permissions` on the settings edit
@@ -238,7 +243,8 @@ That is 15 files in total; this list is the change's file limit.
 - Allow-listing the shellcheck pipeline. It is not allow-listed today, and an exact-match rule does not fit a pipeline.
 - Extending `test_no_bash4_constructs.py` to cover repo-root scripts.
 - Making `install-dev.sh` refuse to run from a linked worktree (row 32). The wrapper's missing-venv message points to the main checkout instead.
-- A parity test for the two duplicated runner lists (an observation, not a decision).
+- The pre-existing `-m""` tokenizer gap in `deny-invisible-commit-content.sh` (plain `git commit -m"a b" file.txt` is allowed at the merge-base) and the plain `gh pr create --fill && gh pr edit ...` skip in `require-stow-reminder.sh`. Neither is caused by this change after row 47.
+- An `install-dev.sh` guard against running in a linked worktree (code-review round 4 raised the stale-pin case; the CHANGELOG records the behavior).
 - Mapping `install-dev.sh` in `select-tests.py`; it still falls open to the full suite.
 - Making the pytest arguments consistent across sites: the install hints use `claude/.claude/`, while CLAUDE.md and README use `claude/.claude/ claude-skills/`.
 - Adding `venv-run.sh` to `SHELL_WRAPPER_HEADS` in `test_review_pr_post.py`. Doing so would fail the new allow entry (row 15).

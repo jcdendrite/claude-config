@@ -7,12 +7,12 @@ govern any contribution (human or agent).
 ## Commands
 
 ```bash
-./install.sh                                                 # first-time setup (stow + plugin registration)
-./install-dev.sh                                             # contributor venv setup from requirements-dev.txt (one-time, run from repo root)
-.venv/bin/python3 claude/.claude/scripts/select-tests.py     # test suite, scoped to the domains your changes touch
-.venv/bin/pytest claude/.claude/ claude-skills/ plugins/ evals/      # full test suite
-.venv/bin/ruff check claude/.claude/ claude-skills/ plugins/ evals/  # lint (Python)
-scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck         # lint (shell, all tracked scripts)
+./install.sh                                                                     # first-time setup (stow + plugin registration)
+./install-dev.sh                                                                 # contributor venv setup from requirements-dev.txt (one-time, run from the main checkout's root)
+scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py               # test suite, scoped to the domains your changes touch
+scripts/venv-run.sh pytest claude/.claude/ claude-skills/ plugins/ evals/        # full test suite
+scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/    # lint (Python)
+scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck            # lint (shell, all tracked scripts)
 ```
 
 Agents: run `select-tests.py`, not the full suite — including in
@@ -34,7 +34,7 @@ in its rule table, not a licence to widen the run by hand.
 
 See README.md's Tests section for `select-tests.py`'s domain-mapping
 mechanism, ShellCheck flag sourcing, `pytest-xdist` debugging flags, and
-the worktree-relative `.venv` paths.
+how `scripts/venv-run.sh` reaches the shared `.venv` from a linked worktree.
 
 ## Working in this repo
 

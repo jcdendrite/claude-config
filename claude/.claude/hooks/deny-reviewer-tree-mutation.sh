@@ -121,6 +121,23 @@
 #     and glob- or variable-built command words.
 #     Each is undecidable here, the same as the `bash -c` gap below.
 #     The class is accepted.
+#   - The `venv-run.sh` wrapper word is stripped only from fragments whose
+#     command word is the wrapper, a guard applied at the call site.
+#     Under that guard `scripts/venv-run.sh ruff format` resolves to `ruff`,
+#     while `cp /tmp/x scripts/venv-run.sh` keeps its write target because
+#     its command word is `cp`, not the wrapper.
+#     The strip is local to this gate and is not part of _lib.sh's runner
+#     words, which also feed gates that skip a check on a match.
+#     `bash scripts/venv-run.sh ruff format` is not unwrapped and stays in the
+#     accepted indirection class above.
+#   - The strip removes the first word whose basename is `venv-run.sh`, not
+#     the command word the guard classified, so
+#     `FOO=a/venv-run.sh scripts/venv-run.sh ruff format x.py` passes; the
+#     cooperative tier accepts this.
+#   - A redirect-led command word (`2>w ruff format`, `<w ruff format`) is
+#     allowed, with or without the wrapper, because the command-word resolver
+#     skips no redirect word. The unwrapped `2>/dev/null ruff format` is
+#     allowed the same way.
 #   - A git-write or in-place-edit reached through a command name quoted
 #     directly in the Bash arm's own command text (`'sed' -i file`) IS
 #     caught: the Bash arm strips quote characters from $COMMAND before
@@ -194,6 +211,49 @@ SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. Treat 
 _fragment_has_token_prefix() {
   local fragment="$1" prefix="$2"
   [[ "$fragment" =~ (^|[[:space:]])${prefix} ]]
+}
+
+# Removes the first word whose basename is exactly `venv-run.sh` (bare or
+# path-prefixed) from the fragment held in the variable named by $1, so the
+# tool it launches becomes the command word. Leaves the variable untouched
+# when no word matches. The match is case-insensitive, like
+# _lib_fragment_invokes_tool.
+#
+# Caller contract: quote-blind, same as every other word-walk in this file.
+# The function strips the first wrapper-named word wherever it sits, so the
+# caller must guarantee that the fragment's command word is the wrapper and
+# not a redirect such as `2>x/venv-run.sh`.
+_strip_venv_run_wrapper_word() {
+  local target_name="$1"
+  local text="${!target_name}"
+  local saved_opts=$-
+  set -f
+  shopt -s nocasematch
+  local word rebuilt="" stripped=false
+  for word in $text; do
+    if ! $stripped && [[ "$word" == venv-run.sh || "$word" == */venv-run.sh ]]; then
+      stripped=true
+      continue
+    fi
+    rebuilt+=" $word"
+  done
+  rebuilt="${rebuilt# }"
+  shopt -u nocasematch
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  if $stripped; then printf -v "$target_name" '%s' "$rebuilt"; fi
+}
+
+# True iff the fragment's command word is the venv-run.sh wrapper and not a
+# redirect operator word (`>x`, `2>x`, `<x`) whose destination merely ends in
+# `/venv-run.sh`.
+_fragment_launches_venv_run_wrapper() {
+  local fragment="$1"
+  _lib_fragment_invokes_tool "$fragment" venv-run.sh || return 1
+  local command_word
+  command_word=$(_lib_fragment_command_word "$fragment")
+  # In a variable because an unquoted `<` or `>` inside `[[ =~ ]]` is a bash syntax error.
+  local redirect_word_pattern='^[0-9]*[<>]'
+  [[ ! "$command_word" =~ $redirect_word_pattern ]]
 }
 
 # Prints, one per line, every destination a `cp`/`mv`/`tee` invocation or a
@@ -407,6 +467,9 @@ case "$TOOL_NAME" in
       exit 0
     fi
     while IFS= read -r fragment; do
+      if _fragment_launches_venv_run_wrapper "$fragment"; then
+        _strip_venv_run_wrapper_word fragment
+      fi
       [ -z "$fragment" ] && continue
 
       if _lib_fragment_invokes_git "$fragment"; then

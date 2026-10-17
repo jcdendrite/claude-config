@@ -845,6 +845,75 @@ class TestCommandWordResolution:
     def test_reviewer_pnpm_exec_eslint_fix_denied(self):
         assert run_hook(HOOK, bash_input("pnpm exec eslint --fix src/x.ts", agent_type="staff-frontend-engineer")) == "deny"
 
+    # GH-1252: the gate strips the venv-run.sh wrapper word, so the tool behind it is the command word.
+    def test_reviewer_venv_run_ruff_format_denied(self):
+        assert run_hook(HOOK, bash_input("scripts/venv-run.sh ruff format x.py", agent_type="staff-sdet")) == "deny"
+
+    def test_reviewer_sudo_venv_run_ruff_format_denied(self):
+        command = "sudo scripts/venv-run.sh ruff format x.py"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    def test_reviewer_venv_run_ruff_check_documented_command_allowed(self):
+        command = "scripts/venv-run.sh ruff check claude/.claude/ claude-skills/"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cp /tmp/x scripts/venv-run.sh",
+            "echo x > scripts/venv-run.sh",
+            "tee scripts/venv-run.sh",
+            ">scripts/venv-run.sh echo x",
+            "scripts/venv-run.sh ruff check > scripts/venv-run.sh",
+        ],
+    )
+    def test_reviewer_venv_run_non_command_word_keeps_write_target_denied(self, command):
+        # GH-1252: a wrapper word that is not a real command word must not hide a write target.
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # The wrapper is the command word of its own fragment after a `cd` or a pipe.
+            "cd /tmp && scripts/venv-run.sh ruff format x.py",
+            "echo x | scripts/venv-run.sh ruff format x.py",
+            # A mutating flag on a tool the wrapper otherwise allows.
+            "scripts/venv-run.sh ruff check --fix x.py",
+            # The wrapper-name match is case-insensitive, like _lib_fragment_invokes_tool.
+            "scripts/VENV-RUN.SH ruff format x.py",
+        ],
+    )
+    def test_reviewer_venv_run_wrapped_mutating_tool_denied(self, command):
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # The documented shellcheck lint command and the documented select-tests command both stay usable.
+            "scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck",
+            "scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py",
+        ],
+    )
+    def test_reviewer_venv_run_documented_read_only_command_allowed(self, command):
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "2>scripts/venv-run.sh ruff format x.py",
+            "<scripts/venv-run.sh ruff format x.py",
+            "2>/dev/null scripts/venv-run.sh ruff format x.py",
+            "2>/dev/null ruff format x.py",
+            "FOO=a/venv-run.sh scripts/venv-run.sh ruff format x.py",
+        ],
+    )
+    def test_reviewer_venv_run_known_gate_gap_commands_allowed(self, command):
+        # Pins known gate gaps, not safety properties; each command runs `ruff format`, which the gate fails to see.
+        # The redirect-led cases hit the gap where the command-word resolver skips no redirect word.
+        # The `FOO=a/venv-run.sh` case hits the hook header's known gap on the strip: it removes the first
+        # word whose basename is `venv-run.sh`, not the command word the guard classified.
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
 
 class TestPureFormatterCheckModesDenied:
     """Pure formatters (black, isort, gofmt, prettier, rustfmt, terraform/tofu
