@@ -25,7 +25,7 @@ from pathlib import Path, PurePosixPath
 import _config  # noqa: F401 -- test files patch _mod._config's attributes as a module passthrough
 
 # audit_routing/cache_rebuild/cache_rebuild_rules/cost/cost_ledger/denials/gh_cli/
-# handoff_nudge/handoff_signal_response/ledger_common/plan_boundary/pr_cost/pr_cost_export/
+# handoff_nudge/handoff_signal_response/ledger_common/period_cost/plan_boundary/pr_cost/pr_cost_export/
 # pr_cost_ledger/pricing/read_scope/rearm_backtest/redaction/render/review_trace/
 # reviewer_yield/spend_over_threshold/subagent_mix/subagents/workstream_cost are read only
 # via _mod.<module> from test files (unit-testing a private helper, or patching module-owned
@@ -43,6 +43,7 @@ from transcript_analysis import (  # noqa: F401
     handoff_nudge,
     handoff_signal_response,
     ledger_common,
+    period_cost,
     plan_boundary,
     pr_cost,
     pr_cost_export,
@@ -133,6 +134,11 @@ from transcript_analysis.judgment_pair import (
     # _mod.cmd_judgment_pair from test files.
     _add_judgment_pair_subparser,
     cmd_judgment_pair,  # noqa: F401
+)
+from transcript_analysis.period_cost import (
+    # Read bare by this file's own build_parser (the period-cost
+    # subcommand's own set_defaults).
+    cmd_period_cost,
 )
 from transcript_analysis.plan_boundary import (
     # Read bare by this file's own build_parser (the plan-boundary
@@ -4361,6 +4367,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_cost_counts.set_defaults(func=cmd_cost_counts)
 
+    p_period_cost = sub.add_parser(
+        "period-cost",
+        help=(
+            "Per-PR and per-review Claude Code spend for an inclusive UTC date range, grouped by repository, as"
+            " Slack mrkdwn. The scope is fixed to the active account's whole projects directory, for an account"
+            " that works for one project owner; no scope flags. Calls gh. --sample prints a synthetic report."
+        ),
+    )
+    p_period_cost.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
+    p_period_cost.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
+    p_period_cost.add_argument(
+        "--sample", action="store_true",
+        help="Print the synthetic sample report; reads no transcript and runs no git or gh. Refuses --since and --until.",
+    )
+    p_period_cost.set_defaults(func=cmd_period_cost)
+
     p_rearm_backtest = sub.add_parser(
         "rearm-backtest",
         help=(
@@ -4648,13 +4670,13 @@ def main() -> None:
         # subcommand actually resolves (this top-level one would validate
         # one account while the subcommand scans another). Most resolve
         # their own scan roots via their own --config-dir (_resolve_cost_roots);
-        # cost-counts is the one exception, registering no --config-dir flag
-        # of its own at all (see scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR).
+        # cost-counts and period-cost are the two exceptions, each registering no
+        # --config-dir flag of its own at all (see scope._SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR).
         if parsed.subcommand in _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR:
             # hasattr, not a hardcoded subcommand list: True only when the
             # invoked subparser itself registered --config-dir (dest
             # extra_config_dirs), so the hint never recommends a flag that
-            # doesn't exist on cost-counts's own parser.
+            # doesn't exist on cost-counts's or period-cost's own parser.
             if hasattr(parsed, "extra_config_dirs"):
                 own_scope_clause = (
                     "this subcommand resolves its own scan roots via its own --config-dir "

@@ -17,7 +17,7 @@ package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `revi
 `read_scope.py`, `pr_cost.py`, `pr_cost_export.py`, `cache_rebuild.py`, `audit_routing.py`,
 `cost_ledger.py`, `workstream_cost.py`, `subagents.py`, `subagent_mix.py`, `rearm_backtest.py`,
 `spend_over_threshold.py`, `plan_boundary.py`, `handoff_signal_response.py`, `judgment_pair.py`,
-`skill_invocation.py`, and `skill_pair.py` are the only modules
+`skill_invocation.py`, `skill_pair.py`, and `period_cost.py` are the only modules
 the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. Two
 still-unmigrated friction/command-shape helpers likewise call `denials.py`'s
@@ -46,8 +46,9 @@ The still-unmigrated context-composition code reads `subagents.py`'s `_MCP_TOOL_
 name from the shim.
 `build_parser()` likewise wires up `rearm_backtest.py`'s `cmd_rearm_backtest` and
 `spend_over_threshold.py`'s `cmd_spend_over_threshold` from the shim.
-`build_parser()` likewise wires up `plan_boundary.py`'s `cmd_plan_boundary` and
-`handoff_signal_response.py`'s `cmd_handoff_signal_response` from the shim.
+`build_parser()` likewise wires up `plan_boundary.py`'s `cmd_plan_boundary`,
+`handoff_signal_response.py`'s `cmd_handoff_signal_response`, and `period_cost.py`'s `cmd_period_cost`
+from the shim.
 `build_parser()` registers judgment-pair, skill-invocation, and skill-pair by calling each owning
 module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
 module's own registration binds `set_defaults(func=...)` to its own handler.
@@ -278,7 +279,7 @@ through this one binding. `cost_ledger.py` reads the other six names by attribut
 
 ### `gh_cli.py`
 
-gh and git-remote access shared by pr-link, pr-cost, and workstream-cost: origin
+gh and git-remote access shared by pr-link, pr-cost, workstream-cost, and period-cost: origin
 host/owner/repo parsing, gh stderr classification, rate-limit backoff, auth preflight,
 effective-repo pinning, and merged/closed PR discovery. Imports `pr_cost_ledger` and `redaction` by
 module — `pr_cost_ledger` for the two degraded-status constants `_gh_call_with_backoff` returns
@@ -290,6 +291,25 @@ pr-link reaches bare from the shim: `_classify_gh_error`, `_GH_ERROR_KIND_NETWOR
 `_resolve_pinned_gh_repo`, `_gh_discover_merged_prs`, and `_gh_discover_closed_unmerged_pr_branches`
 by attribute access (`gh_cli.<name>`), matching every other package module's cross-module
 discipline.
+
+The period-cost command shares four pieces of this module:
+
+- **`_gh_pr_list`** is the one bulk `gh pr list` call. It returns `(payload, status)` and aborts
+  nothing: an empty status is success, and `_GH_PR_LIST_UNPARSEABLE` is gh answering with stdout that
+  is not JSON. It takes `max_attempts` (period-cost passes 1, so a failing call never sleeps) and
+  `command_name`, which prefixes every message `_gh_call_with_backoff` prints. The merged and closed
+  discovery helpers go through it and keep their own abort messages.
+- **`_is_plain_owner_repo`** is the Python copy of the owner/repo grammar in `_lib_parse_pr_identity`
+  (`claude/.claude/hooks/_lib.sh`), with parity tests against the bash parser.
+- **`_GH_TOKEN_ENV_VARS`** names the four variables gh reads as tokens. Every child process that needs
+  no gh credential gets an environment without them.
+- **`_origin_identity_at`** resolves a recorded directory's `origin` where the cwd lookup resolves the
+  process's own. It runs `git --no-pager -c safe.bareRepository=explicit -C <directory> remote get-url
+  origin`. The child's environment drops git's repository-local variables and gh's token variables, and
+  `HOME` goes first in `GIT_CEILING_DIRECTORIES` when it is non-empty, colon-free, and absolute. It
+  returns an identity only when the URL passes `_vetted_origin_identity_from_url`, which keeps a
+  credentialed URL, a relative path, a port, a transport helper, and an unvetted host or owner/name out
+  of every later output. It returns `None` on any failure and prints nothing.
 
 ### `pr_cost_ledger.py`
 
@@ -476,6 +496,22 @@ sessions where a leader skill fired on the main thread, and the `_add_skill_pair
 registration. Imports `corpus`, `pricing`, and `scope` all by module (attribute access), matching
 `cost.py`'s convention. `_add_skill_pair_subparser` is the one name `build_parser()` reaches bare.
 
+### `period_cost.py`
+
+The period-cost command: `cmd_period_cost` and every helper used only by it — the inclusive UTC
+window refusals, the per-session stream assignment, the anchor directories, the review windows, the
+repository resolver, the per-repository PR join, the Slack report renderer, and the stderr notices.
+The stream assignment runs the PR-cost attribution and pricing primitives per record
+(`pricing.dedup_turns_by_request_id`, `scope._attributed_branch`, `pricing._price_turn`) instead of
+calling `cost._compute_pr_cost_branch_totals`, which takes no time window. Imports `corpus`, `cost`,
+`gh_cli`, `pr_cost_ledger`, `pricing`, `render`, `review_rounds`, and `scope` all by module (attribute
+access), matching `cost.py`'s convention; the `cost` import reaches only `_LIST_PRICE_CAVEAT` and
+`_CORPUS_COVERAGE_WARNING_THRESHOLD_SECONDS`. It reads its one root, `scope.config_dir() / "projects"`,
+as `scope.config_dir` by attribute access, per the rule under `scope.py` above, and registers no
+`--config-dir` flag. Its subprocess calls are `gh_cli._origin_identity_at` per recorded directory,
+`gh auth status` per host other than github.com, and `gh_cli._gh_pr_list` per repository.
+`cmd_period_cost` is the one name reached bare from the shim, from `build_parser()`.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -623,6 +659,10 @@ again at its detection/reporting seam:
 - `tests/test_transcript_handoff_signal_response.py` covers its reporting side: spend ranking,
   curation cards, the startup-burn benchmark, the renderers, and `cmd_handoff_signal_response` end
   to end
+- `tests/test_transcript_period_cost.py` covers `period_cost.py`: the window refusals, review windows,
+  anchor directories, repository resolution, PR join, report rendering, notices, and `cmd_period_cost`
+  end to end against a fake `subprocess.run`. Its golden test compares `--sample` to the sample in
+  `docs/transcript-analysis.md`.
 
 `tests/_handoff_nudge_helpers.py`, a plain module, not a test file itself, holds the six helpers more
 than one file reads: `_spend_over_threshold_args`, `_rearm_backtest_args`,

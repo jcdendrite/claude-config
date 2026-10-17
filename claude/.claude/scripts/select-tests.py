@@ -162,7 +162,8 @@ REVIEW_PR_AUDIT_SCRIPT = "claude-skills/skills/review-pr/audit-execution-surface
 
 # SCRIPTS_TESTS_DIR's test_review_pr_post.py reads this exact file by path, to
 # compare its literal script invocations against the settings allow entries,
-# and test_review_pr_lib.py reads it for the BASE_IS_DEFAULT_BRANCH token.
+# test_review_pr_lib.py reads it for the BASE_IS_DEFAULT_BRANCH token, and
+# test_transcript_period_cost.py reads it for the acquire invocation and skill name.
 REVIEW_PR_SKILL_MD = "claude-skills/skills/review-pr/SKILL.md"
 
 # test_doc_counts.py reads the SKILL.md frontmatter of every name-only skill
@@ -307,7 +308,8 @@ CHANGELOG_MD = "CHANGELOG.md"
 # this exact file by path.
 TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD = "docs/transcript-analysis-architecture.md"
 
-# test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads each of these files by path.
+# test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads each of these files by path,
+# and test_transcript_period_cost.py reads the first for its golden sample.
 TRANSCRIPT_ANALYSIS_DOC_MD = "docs/transcript-analysis.md"
 PRIVATE_PROJECT_REDACTION_DOC_MD = "docs/private-project-redaction.md"
 
