@@ -51,6 +51,15 @@ comment-discipline-reviewer.md's Scope section and resolves to a
 core-review-angle header. It lives here because it reuses assertion 7's
 angle-header parser.
 
+Assertion 9 checks that the committed regression fixture
+claude/.claude/hooks/tests/fixtures/paragraph-readability.json still names a
+current comment-discipline-reviewer.md angle header, still hashes to that
+angle's current text (so a rewording is caught rather than silently
+drifting from what Phase 2 measured), and still carries every literal and
+carve-out excerpt that keeps its must_flag/must_pass pair non-vacuous. It
+lives here because it reuses assertion 7's angle-header parser and
+angle-block boundaries.
+
 Why hooks/tests/ instead of tests/ or skills/tests/:
   This module imports helpers.CLAUDE_DIR from the sibling helpers path. It
   lives in hooks/tests/ to match the co-location of test_doc_counts.py,
@@ -59,6 +68,8 @@ Why hooks/tests/ instead of tests/ or skills/tests/:
 from __future__ import annotations
 
 import datetime
+import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -623,7 +634,11 @@ _SCOPE_SECTION_RE = re.compile(r"^## Scope$\n(.*?)(?=^## |\Z)", re.DOTALL | re.M
 # This tuple is maintained by hand.
 # Update it whenever the Scope section cites a new angle.
 # The check runs only from the tuple to the file, so an angle the Scope section cites but the tuple omits goes unchecked.
-_SCOPE_CITED_ANGLE_NAMES = ("Multi-fact comment structure", "PR-defined terminology")
+_SCOPE_CITED_ANGLE_NAMES = (
+    "Multi-fact comment structure",
+    "PR-defined terminology",
+    "Prose at the wrong altitude",
+)
 
 
 def _scope_cited_angle_violations(
@@ -733,6 +748,168 @@ def _index_mismatch_message(bullet_names: list[str], headers: list[str]) -> str:
         "don't match comment-discipline-reviewer.md's core review angle "
         f"headers {headers}, in order"
     )
+
+
+_PARAGRAPH_READABILITY_FIXTURE_PATH = (
+    CLAUDE_DIR / "hooks" / "tests" / "fixtures" / "paragraph-readability.json"
+)
+_BACKTICK_SPAN_RE = re.compile(r"`[^`]+`")
+_DIGIT_RUN_RE = re.compile(r"\d+")
+# Anchored at the start of the excerpt string itself (not re.MULTILINE) --
+# the excerpt is checked as a standalone string, not a line inside a larger
+# text.
+_BOLD_LABEL_CARVE_OUT_RE = re.compile(r"^- \*\*[^*]+\*\* — ")
+_MUST_PASS_CARVE_OUT_SHAPES = frozenset(
+    {"cause_and_effect", "claim_and_hedge", "bold_label_and_definition"}
+)
+
+
+def _angle_block_text(agent_text: str, angle_name: str) -> str | None:
+    """The named angle's own block within 'Core review angles' -- from its
+    header line (inclusive, starting at its leading `**`) to the line
+    before the next angle header or the end of the section. This is the
+    slice assertion 9's hash check pins: whitespace-collapsed and hashed
+    with sha256, so a rewording of the block changes the hash on purpose.
+    Returns None when the angle isn't found or the section is missing.
+
+    A genuine angle header always opens a new paragraph, so it is preceded
+    by the section start or a blank line. Requiring that excludes a
+    bold-dash line that reads like a header but is actually a nested list
+    item mistakenly left without its leading '- ' -- such a line sits
+    directly after other body text with no blank line before it."""
+    section_match = _CORE_REVIEW_ANGLES_SECTION_RE.search(agent_text)
+    if not section_match:
+        return None
+    section_text = section_match.group(1)
+    header_matches = [
+        match
+        for match in _CORE_REVIEW_ANGLE_HEADER_RE.finditer(section_text)
+        if match.start() == 0 or section_text[: match.start()].endswith("\n\n")
+    ]
+    for index, header_match in enumerate(header_matches):
+        if header_match.group(1) != angle_name:
+            continue
+        start = header_match.start()
+        end = (
+            header_matches[index + 1].start()
+            if index + 1 < len(header_matches)
+            else len(section_text)
+        )
+        return section_text[start:end]
+    return None
+
+
+def _literal_occurs_outside_longer_run(literal: str, haystack: str) -> bool:
+    """True when `literal` occurs in `haystack` without being embedded
+    inside a longer alphanumeric run -- e.g. '30' inside '130' doesn't
+    count. Bare substring containment would let a renumbered digit literal
+    (must_flag's '30 days' corrupted to '130 days' in must_pass) pass
+    undetected; this check applies the same alnum-boundary rule to a
+    backtick span too, for consistency, though a backtick span's own
+    delimiters already make it boundary-safe in practice."""
+    pattern = r"(?<![0-9A-Za-z])" + re.escape(literal) + r"(?![0-9A-Za-z])"
+    return re.search(pattern, haystack) is not None
+
+
+def _paragraph_readability_fixture_violations(
+    fixture: dict, agent_text: str
+) -> list[str]:
+    violations: list[str] = []
+    headers = _core_review_angle_headers(agent_text)
+    if not headers:
+        return [_NO_ANGLE_HEADERS_VIOLATION]
+
+    angle_name = fixture.get("angle", "")
+    if angle_name not in headers:
+        return [
+            f"paragraph-readability.json: 'angle' {angle_name!r} is not a "
+            f"current angle header (found {headers}) -- the angle was "
+            "renamed or removed."
+        ]
+
+    block = _angle_block_text(agent_text, angle_name)
+    expected_hash = hashlib.sha256(" ".join(block.split()).encode("utf-8")).hexdigest()
+    actual_hash = fixture.get("angle_text_sha256", "")
+    if actual_hash != expected_hash:
+        violations.append(
+            f"paragraph-readability.json: 'angle_text_sha256' {actual_hash!r} "
+            f"does not match the angle's current text (recomputed: "
+            f"{expected_hash!r}) -- the angle was reworded. Before updating "
+            "the hash, re-run the three Phase 2 fixture cells: old body on "
+            "must_flag <= 1/5, new body on must_flag >= 4/5, new body on "
+            "must_pass <= 1/5 (see "
+            "docs/design-decisions/paragraph-readability-review-angle.md "
+            "for the full re-run procedure). The fixture's own 'note' field "
+            "records which of those three bars the last measurement "
+            "actually met -- not all three."
+        )
+
+    must_flag = fixture.get("must_flag", "")
+    must_pass = fixture.get("must_pass", "")
+    flag_backticks = _BACKTICK_SPAN_RE.findall(must_flag)
+    flag_digits = _DIGIT_RUN_RE.findall(must_flag)
+    if not flag_backticks:
+        violations.append(
+            "paragraph-readability.json: 'must_flag' carries no backticked span."
+        )
+    if not flag_digits:
+        violations.append(
+            "paragraph-readability.json: 'must_flag' carries no digit run."
+        )
+    missing_literals = sorted(
+        {
+            literal
+            for literal in flag_backticks + flag_digits
+            if not _literal_occurs_outside_longer_run(literal, must_pass)
+        }
+    )
+    if missing_literals:
+        violations.append(
+            f"paragraph-readability.json: must_flag literal(s) {missing_literals} "
+            "do not also appear in 'must_pass' -- must_pass would pass "
+            "trivially by dropping a fact must_flag carries."
+        )
+
+    carve_outs = fixture.get("must_pass_carve_outs", {})
+    carve_out_names = set(carve_outs)
+    if carve_out_names != _MUST_PASS_CARVE_OUT_SHAPES:
+        violations.append(
+            f"paragraph-readability.json: 'must_pass_carve_outs' names "
+            f"{sorted(carve_out_names)}, expected exactly "
+            f"{sorted(_MUST_PASS_CARVE_OUT_SHAPES)}."
+        )
+    for shape_name, excerpt in carve_outs.items():
+        if excerpt not in must_pass:
+            violations.append(
+                f"paragraph-readability.json: must_pass_carve_outs[{shape_name!r}] "
+                "excerpt does not occur verbatim in 'must_pass'."
+            )
+        if shape_name == "bold_label_and_definition" and not _BOLD_LABEL_CARVE_OUT_RE.match(
+            excerpt
+        ):
+            violations.append(
+                f"paragraph-readability.json: must_pass_carve_outs"
+                f"['bold_label_and_definition'] excerpt {excerpt!r} does not "
+                f"match {_BOLD_LABEL_CARVE_OUT_RE.pattern!r}."
+            )
+    return violations
+
+
+def test_paragraph_readability_fixture_matches_agent_angle() -> None:
+    """Assertion 9: the committed paragraph-readability.json regression
+    fixture still names a current comment-discipline-reviewer.md angle
+    header, still hashes to that angle's current whitespace-collapsed text,
+    carries every must_flag literal inside must_pass too, and names exactly
+    the three must_pass_carve_outs shapes with each excerpt occurring
+    verbatim in must_pass."""
+    fixture = json.loads(
+        _PARAGRAPH_READABILITY_FIXTURE_PATH.read_text(encoding="utf-8")
+    )
+    agent_path = CLAUDE_DIR / "agents" / "comment-discipline-reviewer.md"
+    violations = _paragraph_readability_fixture_violations(
+        fixture, agent_path.read_text(encoding="utf-8")
+    )
+    assert not violations, "\n".join(violations)
 
 
 class TestFaultInjection:
@@ -1546,3 +1723,206 @@ class TestFaultInjection:
         assert len(violations) == 2
         assert "cited angle 'PR-defined terminology' is not a header" in violations[0]
         assert "does not cite angle 'PR-defined terminology'" in violations[1]
+
+    # Assertion 9: paragraph-readability.json fixture checks. Plain-string
+    # fixtures with no tmp_path directory, mirroring the item-12a-index and
+    # scope-cited-angle groups above -- the checked function parses a
+    # fixture dict and an agent-file string directly.
+    _PARAGRAPH_READABILITY_AGENT_TEXT = (
+        "## Core review angles\n\n"
+        "**Comment verbosity** — a comment stating too much.\n\n"
+        "**Paragraph readability** — a paragraph whose arrangement hides the instruction.\n\n"
+        "**Prose at the wrong altitude** — content placed where its reader doesn't match.\n\n"
+        "## How to work\n"
+    )
+    _PARAGRAPH_READABILITY_ANGLE_HASH = hashlib.sha256(
+        "**Paragraph readability** — a paragraph whose arrangement hides the instruction.".encode()
+    ).hexdigest()
+    _VALID_PARAGRAPH_READABILITY_FIXTURE = {
+        "angle": "Paragraph readability",
+        "angle_text_sha256": _PARAGRAPH_READABILITY_ANGLE_HASH,
+        "must_flag": "The cache stores a `token`. It expires after 30 days.",
+        "must_pass": (
+            "The cache stores a `token`. It expires after 30 days.\n\n"
+            "A write must hold the lock, because two writers can otherwise corrupt it.\n\n"
+            "The sweep runs nightly, though an emergency can trigger it early.\n\n"
+            "- **Dry run** — a mode that validates inputs without writing any entry.\n"
+        ),
+        "must_pass_carve_outs": {
+            "cause_and_effect": "A write must hold the lock, because two writers can otherwise corrupt it.",
+            "claim_and_hedge": "The sweep runs nightly, though an emergency can trigger it early.",
+            "bold_label_and_definition": "- **Dry run** — a mode that validates inputs without writing any entry.",
+        },
+    }
+
+    def test_paragraph_readability_fixture_violations_accepts_valid_fixture(self) -> None:
+        """The hand-built valid fixture and agent text pair, used as the
+        mutation base for every fault test below, itself produces no
+        violations -- proves the fault tests' single mutation is what
+        trips each one, not a baseline already in error."""
+        violations = _paragraph_readability_fixture_violations(
+            self._VALID_PARAGRAPH_READABILITY_FIXTURE,
+            self._PARAGRAPH_READABILITY_AGENT_TEXT,
+        )
+        assert violations == []
+
+    def test_paragraph_readability_fixture_detects_renamed_angle(self) -> None:
+        """The agent's header is renamed while the fixture's 'angle' field
+        still names the old text -- the name no longer resolves to a
+        current header."""
+        agent_text = self._PARAGRAPH_READABILITY_AGENT_TEXT.replace(
+            "**Paragraph readability**", "**Paragraph clarity**"
+        )
+        violations = _paragraph_readability_fixture_violations(
+            self._VALID_PARAGRAPH_READABILITY_FIXTURE, agent_text
+        )
+        assert len(violations) == 1
+        assert "is not a current angle header" in violations[0]
+
+    def test_paragraph_readability_fixture_detects_removed_angle(self) -> None:
+        """The angle is deleted from the agent file entirely -- the
+        fixture's 'angle' field names a header that no longer exists at
+        all, not merely a renamed one."""
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "**Prose at the wrong altitude** — content placed where its reader doesn't match.\n\n"
+            "## How to work\n"
+        )
+        violations = _paragraph_readability_fixture_violations(
+            self._VALID_PARAGRAPH_READABILITY_FIXTURE, agent_text
+        )
+        assert len(violations) == 1
+        assert "is not a current angle header" in violations[0]
+
+    def test_paragraph_readability_fixture_detects_reworded_angle_text(self) -> None:
+        """The header name survives but its body text changes -- the stored
+        hash no longer matches the recomputed one, which is the rewording
+        drift the hash pin exists to catch."""
+        agent_text = self._PARAGRAPH_READABILITY_AGENT_TEXT.replace(
+            "a paragraph whose arrangement hides the instruction.",
+            "a paragraph whose arrangement buries the instruction.",
+        )
+        violations = _paragraph_readability_fixture_violations(
+            self._VALID_PARAGRAPH_READABILITY_FIXTURE, agent_text
+        )
+        assert len(violations) == 1
+        assert "does not match the angle's current text" in violations[0]
+
+    def test_paragraph_readability_fixture_accepts_block_through_nested_bold_dash_line(
+        self,
+    ) -> None:
+        """A bullet inside the angle's own body written as '**Note** — ...'
+        instead of '- **Note** — ...' is header-shaped but not preceded by a
+        blank line, so the block still extends through it to the real next
+        angle header -- proving _angle_block_text doesn't truncate early at
+        a false-positive bold-dash line."""
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "**Paragraph readability** — a paragraph whose arrangement hides the instruction.\n"
+            "**Note** — a bullet missing its leading '- ', so it reads like a header.\n\n"
+            "**Prose at the wrong altitude** — content placed where its reader doesn't match.\n\n"
+            "## How to work\n"
+        )
+        correctly_bounded_block = (
+            "**Paragraph readability** — a paragraph whose arrangement hides the instruction. "
+            "**Note** — a bullet missing its leading '- ', so it reads like a header."
+        )
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["angle_text_sha256"] = hashlib.sha256(
+            correctly_bounded_block.encode("utf-8")
+        ).hexdigest()
+        violations = _paragraph_readability_fixture_violations(fixture, agent_text)
+        assert violations == []
+
+    def test_paragraph_readability_fixture_detects_dropped_literal(self) -> None:
+        """must_pass drops the digit run must_flag carries -- a vacuous
+        must_pass could otherwise pass by dropping a fact must_flag states."""
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["must_pass"] = fixture["must_pass"].replace("30 days", "some days")
+        violations = _paragraph_readability_fixture_violations(
+            fixture, self._PARAGRAPH_READABILITY_AGENT_TEXT
+        )
+        assert len(violations) == 1
+        assert "do not also appear in 'must_pass'" in violations[0]
+        assert "30" in violations[0]
+
+    def test_paragraph_readability_fixture_detects_renumbered_digit_literal(self) -> None:
+        """must_pass's digit run is renumbered rather than dropped -- '30
+        days' corrupted to '130 days'. Bare substring containment would let
+        '30' match inside '130' and miss this; the boundary-aware check
+        must still catch it."""
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["must_pass"] = fixture["must_pass"].replace("30 days", "130 days")
+        violations = _paragraph_readability_fixture_violations(
+            fixture, self._PARAGRAPH_READABILITY_AGENT_TEXT
+        )
+        assert len(violations) == 1
+        assert "do not also appear in 'must_pass'" in violations[0]
+        assert "30" in violations[0]
+
+    def test_paragraph_readability_fixture_detects_must_flag_with_no_literal(self) -> None:
+        """must_flag carries neither a backticked span nor a digit run --
+        two separate violations, one per missing literal class."""
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["must_flag"] = "The cache stores data and expires it eventually."
+        violations = _paragraph_readability_fixture_violations(
+            fixture, self._PARAGRAPH_READABILITY_AGENT_TEXT
+        )
+        assert len(violations) == 2
+        assert "carries no backticked span" in violations[0]
+        assert "carries no digit run" in violations[1]
+
+    def test_paragraph_readability_fixture_detects_renamed_carve_out_key(self) -> None:
+        """A must_pass_carve_outs key renamed (or, equivalently, dropped and
+        a differently-named one added) no longer matches the expected
+        exact shape set -- the set equality guards against a silently
+        vacuous or mismatched carve-out collection."""
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["must_pass_carve_outs"] = dict(fixture["must_pass_carve_outs"])
+        fixture["must_pass_carve_outs"]["cause_effect"] = fixture[
+            "must_pass_carve_outs"
+        ].pop("cause_and_effect")
+        violations = _paragraph_readability_fixture_violations(
+            fixture, self._PARAGRAPH_READABILITY_AGENT_TEXT
+        )
+        assert len(violations) == 1
+        assert "'must_pass_carve_outs' names" in violations[0]
+        assert "cause_effect" in violations[0]
+
+    def test_paragraph_readability_fixture_detects_carve_out_excerpt_absent_from_must_pass(
+        self,
+    ) -> None:
+        """A must_pass_carve_outs excerpt that doesn't occur verbatim in
+        must_pass -- the carve-out shape it claims to demonstrate isn't
+        actually present."""
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["must_pass_carve_outs"] = dict(fixture["must_pass_carve_outs"])
+        fixture["must_pass_carve_outs"]["claim_and_hedge"] = (
+            "The sweep runs weekly, though an emergency can trigger it early."
+        )
+        violations = _paragraph_readability_fixture_violations(
+            fixture, self._PARAGRAPH_READABILITY_AGENT_TEXT
+        )
+        assert len(violations) == 1
+        assert "does not occur verbatim in 'must_pass'" in violations[0]
+
+    def test_paragraph_readability_fixture_detects_bold_label_carve_out_wrong_shape(
+        self,
+    ) -> None:
+        """A bold_label_and_definition excerpt that occurs verbatim in
+        must_pass but uses a colon instead of the leading '- ' and em dash
+        the carve-out's own bold-label-dash shape requires."""
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["must_pass_carve_outs"] = dict(fixture["must_pass_carve_outs"])
+        wrong_shape_excerpt = (
+            "**Dry run**: a mode that validates inputs without writing any entry."
+        )
+        fixture["must_pass_carve_outs"]["bold_label_and_definition"] = wrong_shape_excerpt
+        fixture["must_pass"] = fixture["must_pass"] + wrong_shape_excerpt + "\n"
+        violations = _paragraph_readability_fixture_violations(
+            fixture, self._PARAGRAPH_READABILITY_AGENT_TEXT
+        )
+        assert len(violations) == 1
+        assert "does not match" in violations[0]

@@ -65,7 +65,7 @@ Two conditions this plan accepts but could change are recorded in Out of scope r
 19. **Vacuity.** A test that only checks that the agent names the angle duplicates `test_item_12a_index_matches_agent_angle_headers` and never reads the fixture. `[verified: test_design_decision_files.py lines 605–618]` *Answer:* every M7 assertion reads a field from the fixture.
 20. **Lockstep removal.** The item 12a test compares two sequences. It still passes if the angle is deleted from both files in the same change. `[verified: same file, lines 594–601]` *Answer:* the fixture's `angle` field must match a current header, so removing or renaming the angle fails CI.
 21. **Rewording drift.** A reworded angle can stop covering the fixture's shape while CI stays green, because no structural test can judge coverage (G1). *Answer:* the fixture stores a hash of the angle's text, so any rewording fails CI until someone updates the hash. Residual `[unverified]`: an editor can update the hash without re-running the measurement. That is the same honor system the rule file already relies on, but it now has a trigger.
-22. **Caricature.** The old reviewer would also catch a hand-written dense paragraph, so such a fixture cannot show that the change mattered. `evals/README.md` records that two synthetic seed fixtures "measured non-discriminating". `[verified: evals/README.md lines 354–358]` *Answer:* `must_flag` is built to fit inside the current carve-outs (see M7's properties), and Phase 2 runs the old body on it.
+22. **Caricature.** The old reviewer would also catch a hand-written dense paragraph, so such a fixture cannot show that the change mattered. `evals/README.md` records that two synthetic seed fixtures "measured non-discriminating". `[verified: evals/README.md lines 354–358]` *Answer:* `must_flag` is built to fit inside the current carve-outs (see M7's properties), and Phase 2 runs the old body on it. *Amended:* the three-parallel-rule property this row originally relied on was dropped for the same reason — the old Multi-fact angle already catches that shape. `[engineer-verified: "Approve amendment"]`
 23. **Vacuous negative.** A `must_pass` that drops facts would pass trivially. *Answer:* M7 checks that every backticked span and number in `must_flag` also appears in `must_pass`. Phase 2 also runs the new body on `must_pass`.
 24. **Self-flagging.** A `.md` fixture would match the row's "doc files" scope, and the new angle would then flag it on this PR. `[unverified]` *Answer:* store the pair as JSON test data under `claude/.claude/hooks/tests/fixtures/`. If the cumulative pass still flags it, DEFER the finding as deliberate test data.
 25. **Scratchpad rule.** `.claude/rules/skill-and-agent-self-review.md` says "Keep the fixtures in a scratchpad". `[verified: that file]` The engineer asked for a regression fixture. `[engineer-verified: "I actually think a regression fixture would be a good idea"]` The rule's stated reason fits leak-type content, not a synthetic paragraph whose only defect is its shape. This plan commits the fixture and records the exception in the decision record. The engineer settled the conflict in favor of committing. `[engineer-verified: "Commit the fixture (Recommended)"]`
@@ -75,7 +75,7 @@ Two conditions this plan accepts but could change are recorded in Out of scope r
 29. **Wrapper fidelity.** A `general-purpose` dispatch that carries an agent body is not the registered agent. Its tools differ, and its effort setting is unknown. `[unverified]` This defense covers the fixture comparison only, where both arms use the same wrapper. Phase 0's gate and Phase 2's site bar are absolute thresholds, so Phase 0 runs the registered agent instead (M8).
 30. **Replay input.** A merged commit already carries the author's response to the complaint, so it is the wrong replay input. Each replay uses the complaint comment's `original_commit_id`. `[unverified: that those commits can still be fetched]` Fallback: pass the comment's `diff_hunk` as literal diff text, which the agent's Input contract accepts, and tell the reviewer the surrounding file is unavailable. The reviewer's How-to-work step 1 reads changed files fully, so each site's changed files are extracted at that commit into the scratch root M8 names; otherwise the reviewer would read today's rewritten text.
 31. **Test placement.** A fixture in a new `evals/fixtures/` subdirectory matches no `select-tests.py` rule, so selection falls back to the full suite. Repo CLAUDE.md treats that fallback as a rule-table bug. `[verified: claude/.claude/scripts/select-tests.py lines 535–549]` *Answer:* put it in `claude/.claude/hooks/tests/fixtures/`. The `HOOKS_DIR` domain rule maps that directory, and one fixture already lives there.
-32. **Coverage residual.** The fixture tests M1's two shapes only. The replays test M2's bound, through #928's three-fact intro sentence, and M1 under the agent's widened Scope, through #928's `CLAUDE.md` site. No reviewer run can test the row widening, because spawning is orchestrator behavior.
+32. **Coverage residual.** The fixture tests M1's two shapes only. *Amended:* after the `must_flag` amendment (row 22), it tests only shape 2. No measurement exercises shape 1's "Three or more" threshold, because the old Multi-fact angle already catches that shape and a fixture cell for it could not discriminate. `[engineer-verified: "Accept, record residual (Recommended)"]` The replays test M2's bound, through #928's three-fact intro sentence, and M1 under the agent's widened Scope, through #928's `CLAUDE.md` site. No reviewer run can test the row widening, because spawning is orchestrator behavior.
 
 **Scope beyond the Ask line.** `/plan-review` listed three deliverables the Ask and the Step 4 selections do not call for. The engineer kept all three and asked for an adversarial review of them.
 
@@ -103,7 +103,7 @@ Two conditions this plan accepts but could change are recorded in Out of scope r
 
 49. **M1's lead contradicted its own second shape**, and the Not-a-violation list exempted only the claim-and-hedge half of the pair Multi-fact exempts, so an ordinary "do X because Y" comment would have been flagged (`staff-product-engineer`, BLOCKER). *Applied:* the lead no longer says "not any single sentence"; shape 2 names the single-sentence case as one carrying more than the one exempt pair; the last Not-a-violation bullet covers both halves of the pair; `must_pass` carries a cause-and-effect sentence. `agent-review` item 4 also found the new instruction-file adjacency unnamed in DO NOT TRIGGER. *Applied:* M5 (c) adds it, and the description's Focus list becomes a pointer to free the room (row 16's margin was about 36 characters).
 50. **Shape 1 needed a parallel-facts exemption**, or README paragraphs and changelog entries would be flagged (`staff-product-engineer`, CONCERN). *Applied:* a Not-a-violation bullet for parallel facts that are not rules. `agent-review` item 8 found the agent file crossing the 200-line target. *Applied:* Verification 9 states the reason.
-51. **"Several" had no threshold in the live text** (`staff-product-engineer`, CONCERN). *Applied:* shape 1 says "Three or more", M7 matches it, and the decision record states why three: the tightly coupled pair Multi-fact exempts is two, so the paragraph shape starts at three.
+51. **"Several" had no threshold in the live text** (`staff-product-engineer`, CONCERN). *Applied:* shape 1 says "Three or more", M7 matches it, and the decision record states why three: the tightly coupled pair Multi-fact exempts is two, so the paragraph shape starts at three. *Amended:* M7 no longer carries the three-parallel-rules property. `[engineer-verified: "Approve amendment"]`
 52. **Angle-count growth has no revisit trigger** (`staff-product-engineer`, FYI). *Applied:* the decision record names the trigger (M9). `[verified: comment-discipline-reviewer.md How-to-work step 2 asks the reviewer to check each fix against every other angle, so each angle raises that cost]`
 53. **GH-1006 closure was unstated** while #928's zero spawns stay unexplained (`staff-product-engineer`, CONCERN). *Applied:* Verification 8.
 54. **M7's hash-mismatch message and `must_pass` shapes were honor-system** (`staff-sdet`, two CONCERNs): the message only pointed at the decision record, and nothing checked that `must_pass` still carried its carve-out shapes. *Applied:* the message states the three pass bars inline; a `must_pass_carve_outs` field with verbatim excerpts is checked structurally; the hash slice convention is pinned in the docstring (FYI). The SDET confirmed by direct simulation that the angle-block hash is non-vacuous and that every test name in Verification 2 exists. `[verified: agent-reviews/staff-sdet-1792106835-GH-1006-prose-densit.md]`
@@ -157,10 +157,10 @@ Two conditions this plan accepts but could change are recorded in Out of scope r
     - a neutral synthetic topic;
     - five to seven sentences in one paragraph;
     - a distinct non-obvious fact in every sentence, so Comment verbosity's carve-out applies;
-    - at least three parallel rules as consecutive sentences, matching M1's "Three or more" threshold, so the angle's own two-sentence bullet stays clear of it;
     - one instruction whose rationale comes before it or interrupts it;
     - at least one backticked span and one number;
     - nothing that any other angle would flag.
+    - **Amended:** dropped the "at least three parallel rules as consecutive sentences" property. The old Multi-fact comment structure angle already catches that shape by recommending a list, contradicting "nothing that any other angle would flag." `[engineer-verified: "Approve amendment"]`
   - `must_pass` holds the same facts, with each instruction first, its rationale after, and parallel rules as a list. It also holds three carve-out shapes the angle must leave alone: one cause-and-effect sentence of the "do X because Y" form, one claim-and-hedge sentence, and one bold-label-and-definition bullet. A `must_pass_carve_outs` field lists those three shapes, each with a verbatim excerpt of the sentence that realizes it.
   - Add assertion 9 to `test_design_decision_files.py` as a pure `_paragraph_readability_fixture_violations()` function, following the module's idiom. It checks five things:
     - `angle` matches a current angle header;
@@ -176,7 +176,7 @@ Two conditions this plan accepts but could change are recorded in Out of scope r
     - (L) two or more consecutive sentences become a list;
     - (O) an instruction moves ahead of, or splits from, rationale or an exception that preceded or interrupted it;
     - (S) one sentence's facts split apart. S covers #928's three-fact intro sentence, which tests M2.
-  - A run **catches** a site when a finding quotes at least six consecutive words verbatim from the registered line range and its concrete fix has that site's shape. A paraphrase with no six-word verbatim run does not count, so every prompt asks the reviewer to quote each flagged site verbatim. The angle label is ignored, because the old body cannot emit the new label. The fixture cells use the same predicate, with L or O for `must_flag`. A site whose registered complaint is placement rather than arrangement is reported but not gated, so Phase 2's "rework the angle" step never pulls M1 toward placement.
+  - A run **catches** a site when a finding quotes at least six consecutive words verbatim from the registered line range and its concrete fix has that site's shape. A paraphrase with no six-word verbatim run does not count, so every prompt asks the reviewer to quote each flagged site verbatim. The angle label is ignored, because the old body cannot emit the new label. The fixture cells use the same predicate, with O only for `must_flag`. A site whose registered complaint is placement rather than arrangement is reported but not gated, so Phase 2's "rework the angle" step never pulls M1 toward placement. #972's lines 135–143 complaint and #928's `docs/private-project-redaction.md` paragraph complaint are reclassified this way too, though neither is a placement complaint: the first is about where the justification sits relative to the instruction, which M1's fix order already prescribes, and the second is about a conceptual defect, a paragraph that conflated what may be counted with how it may be reported, which no arrangement rule can reach. `[engineer-verified: "Reclassify both"]`
   - **Dispatch forms.** Phase 0 runs the registered `comment-discipline-reviewer` with `model: sonnet`, after confirming that the stowed agent file is byte-identical to `origin/main`'s. A registered dispatch reads the stowed agent file, which cannot see this worktree's uncommitted Phase 1 edit, so every run that needs the new body goes through a wrapper instead. The fixture arms and the Phase 2 site runs each use one `general-purpose` dispatch with `model: sonnet`, whose prompt names the agent body's path (the scratch copy for the old body, the worktree file for the new) and the diff path, and asks for inline output. Bodies travel by path, not verbatim, so the parent's context does not carry up to 39 copies of a 195-line file.
   - **Logging.** Record each run's quoted text, angle, and fix word for word in the scratch root, so a second session can re-score.
   - **Sample sizes are smoke checks.** The fixture bars borrow `evals/README.md`'s disposition-fidelity gates, treatment ≥ 0.8 and a baseline drift alarm at ≥ 0.3, which at K=5 become ≥ 4/5 and ≤ 1/5. The site bar is 2 of 3. Neither certifies a rate; both catch a gross failure (row 46). Nominal budget is 39 dispatches, worst case about 93 over two iterations.
@@ -204,7 +204,53 @@ Two conditions this plan accepts but could change are recorded in Out of scope r
   - If the new body misses a gated site or `must_flag`, rework the angle's wording, which also changes the hash.
   - If the `must_pass` cell fails, rework the Not-a-violation list or `must_pass`.
   - Iterate at most twice, then report to the engineer.
-  - A second, small `code-writer` dispatch writes the measured rates, date, and model into `note`.
+  - A second, small `code-writer` dispatch owns three edits:
+    - It writes the measured rates, date, and model into `note`.
+    - It updates the decision record as the last bullet of Phase 2 outcome states.
+    - It adds a sentence to M7's hash-mismatch message pointing at `note` for which bars the last measurement met. Without that pointer, the message presents all three bars as met.
+
+### Phase 2 outcome
+
+Iteration 1 ran on 2026-10-16 with Sonnet (`general-purpose`, `model: sonnet`). It used the amended `must_flag` (M7) and the predicates registered in the scratch root's `predicates.md` under "Iteration 1 registration". Iteration 0 failed its bars and led to that amendment. Beyond M8, iteration 1 added a control arm at #972 and #963: the old body through the same wrapper, three runs per site.
+
+Fixture cells (n=5):
+
+- Old body on `must_flag`: 2/5 under the literal predicate. The bar is ≤ 1/5, so the cell **fails**. At a true per-run catch rate of 0.1, 0.2, or 0.3, a result of 2 or more out of 5 occurs about 8%, 26%, or 47% of the time (exact binomial). So one run over the bar does not separate noise from a fixture that still fails to discriminate.
+- New body on `must_flag`: 5/5, which **passes**. Every run diagnosed both rationale-first sites as O.
+- New body on `must_pass`: 0/5 runs gave any finding, which **passes**.
+
+Sites (n=3 per arm; new body, then control):
+
+- #972 site b, gated: 0/3 and 0/3, so the site **fails**. New-body findings at its range were S splits, never a lead sentence plus a list.
+- #972 site c, gated: 3/3 and 3/3, so the site **passes**. It does not separate the bodies: every run in both arms caught the same semicolon ladder through Multi-fact comment structure.
+- #963 site a, gated: 2/3 and 0/3, so the site **passes**. One run in each arm proposed an inline colon-and-semicolon list at lines 146–148 rather than a separate list. Its fix shape is borderline for L, so both were scored as misses. Counting both would make the result 3/3 and 1/3.
+- #972 site a, reported only: 0/3 and 0/3.
+- #928's `docs/private-project-redaction.md` site, reported only: 0/3. The intended three-fact intro sentence may sit just above the registered range. `[unverified: architect inference]`
+- #928's `CLAUDE.md` site, reported only: 0/3.
+
+Decision: after the report, the engineer selected "Ship with caveats (Recommended)" and "Literal: 2/5, fails (Recommended)". `[engineer-verified: "Ship with caveats (Recommended)", "Literal: 2/5, fails (Recommended)"]` The option descriptions and the claim scope below were proposed by the session, not by the engineer.
+
+- **Claimed:**
+  - The new body's O diagnosis on `must_flag`: 5/5, against the old body's 2/5 under the same registered predicate.
+  - The #963 site a separation, 2/3 against 0/3. This is descriptive. No separation threshold was registered for the control arm, which M8 did not plan.
+- **Reported as not achieved:**
+  - #972 site b.
+  - The old-body cell at 2/5 literal.
+  - #972 site c, which does not separate the bodies.
+- Each site rate is stated with its sample size. Row 46 gives the n=3 binomial context, and the old-body bullet above gives the n=5 context.
+- Measurement detail only, not a claim: both old-body catching runs called the cause-and-effect pairs "fine" and led with the instruction only incidentally, in a list rewrite. A diagnosis reading, which was not registered before the runs, would score them 0/5.
+- #972 site b is wontfix. `[engineer-verified: "Wontfix, close at merge (Recommended)"]` Per a `plan-architect` consult this session, the paragraph sits inside the angle's own carve-outs:
+  - It already leads with its claim.
+  - Its rules are mixed in kind and interleaved with a definition and an examples line, so they are not shape 1's parallel, consecutive rules.
+  - Reaching it would take a density rule, which Alternatives declines.
+- The fixture `note` holds the measured fixture rates, date, and model, copied from this section.
+- The decision record names the ship-with-caveats outcome and the three not-achieved items, and points at the note for the rates. It describes every site by shape, the #972 site b residual included, with no scratch site label, since a site label would be PR-defined terminology in a durable doc. Example wording: "a dense paragraph of mixed rules that already leads with its claim draws sentence splits, not a lead plus a list."
+
+Quote provenance, confirmed at `/plan-review` after the plan's last commit:
+
+- Ship call, with the claim scope as the question showed it ("claim the fixture's O diagnosis (5/5) and #963 site a; report #972 site b, the old-body cell, and #972 site c as not achieved" — site labels reworded post-hoc from the issue-number-plus-letter shape for the redaction gate's Slack-channel-shape detector; same sites, same scope): `[engineer-verified: "Confirmed (Recommended)"]`.
+- The literal 2/5 old-body score: `[engineer-verified: "Confirmed (Recommended)"]`.
+- "Approve amendment" (M7, rows 22 and 51) and "Reclassify both" (M8): `[engineer-verified: "Both confirmed (Recommended)"]`.
 
 ## Critical files
 
@@ -239,7 +285,7 @@ Reuse rather than reimplement:
    - assertion 9 and its fault-injection tests
    - the design-decision shape assertions, run against the new record
 3. **Lint.** Run `.venv/bin/ruff check claude/.claude/`. No shell files change, so ShellCheck does not apply.
-4. **Phase 2 bars met.** The fixture's `note` is the one home for the fixture-cell rates. The PR body points at it and holds only the uncommitted site-replay counts.
+4. **Phase 2 outcome reported, including the failed bars** (see Phase 2 outcome). The fixture's `note` is the one durable home for the fixture-cell rates; this plan's Phase 2 outcome is the session record it is copied from. The PR body points at the note and holds only the uncommitted site-replay counts. It names every item in Phase 2 outcome's "Reported as not achieved" list: #972 site b, the old-body cell, and #972 site c.
 5. **Review pipeline** (per `.claude/rules/review-pipeline-dispatch.md`):
    - `/skill-review` for `code-review/SKILL.md`, hook-enforced at commit;
    - `/agent-review` for both agent files;
@@ -247,7 +293,7 @@ Reuse rather than reimplement:
    - `/ready-for-review`'s cumulative pass then runs the comment row over the full diff.
 6. **Dogfood.** In that cumulative pass, every prose site the diff adds or rewrites must pass Paragraph readability: the new angle text, the Multi-fact carve-out, the agent's Scope, description, and intro, the row, item 12a, `code-writer.md` line 138, the decision record, the CHANGELOG entry, and the README edit. If the decision record cannot be worded honestly in a way that passes, the angle's predicate is wrong and goes back to design.
 7. **Redaction.** The commit passes `deny-private-project-refs.sh`, and the fixture holds no tracker-ID shape.
-8. **Ticket disposition.** The PR body uses no closing keyword for GH-1006. It links the follow-up issue on #928's zero spawns (Out of scope), and says that GH-1006 stays open until that issue settles whether `/code-review` ran on that branch at all. Closing GH-1006 is the engineer's call after that.
+8. **Ticket disposition.** The PR body links the follow-up issue on #928's zero spawns (Out of scope), which must be opened before the PR. GH-1006 closes at merge. Whether that happens through a closing keyword or a manual close is the engineer's call when the PR opens. #972 site b is wontfix, and the decision record carries it as a known residual. `[engineer-verified: "Wontfix, close at merge (Recommended)"]`
 9. **Agent length.** The agent file will run to about 220 lines after M1, M2, and M5 (a), past `agent-review`'s 200-line target. Every added line is an anti-pattern description or a carve-out that changes the reviewer's verdict on a realistic input, which is the load-bearing reason that checklist accepts (row 50). `code-writer` reports the final count in its return.
 
 ## Out of scope
