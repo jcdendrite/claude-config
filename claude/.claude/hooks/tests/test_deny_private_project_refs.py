@@ -146,7 +146,7 @@ def _stage_tracker_line_under_diff_config(
 # literal path name, so an inherited value empties the diff at exit 0. The hook
 # also unsets `GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS` and
 # `GIT_ICASE_PATHSPECS` as defense, but only the literal variable is exercised
-# here because the others leave the diff intact with or without the unset.
+# here because the other three cannot empty the diff with or without the unset.
 _STAGED_DIFF_EMPTYING_PATHSPEC_ENV_VARIABLE = "GIT_LITERAL_PATHSPECS"
 
 
@@ -1926,14 +1926,16 @@ class TestDenyPrivateProjectRefs:
         actually runs) is caught because SCAN_TARGET_BOTH's stripped side
         reassembles it before this tier's `grep -iw -F` match runs."""
         private_projects_file("AcmeCorp\n")
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input('git commit -m \'Acme"Corp" release notes\''),
-                cwd=claude_config_repo,
-            )
-            == "deny"
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input('git commit -m \'Acme"Corp" release notes\''),
+            cwd=claude_config_repo,
         )
+        assert reason is not None
+        assert "private-projects.md blocklist" in reason
+        assert "  - AcmeCorp" in reason
+        # The raw command has no `AcmeCorp` run; only the quote-stripped copy does.
+        assert "    git commit -m AcmeCorp release notes" in reason
 
     def test_blocklist_word_adjacent_quote_split_denied(self, claude_config_repo, private_projects_file):
         """Regression guard, mirroring test_word_adjacent_tracker_id_quote_split_denied

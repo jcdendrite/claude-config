@@ -49,8 +49,9 @@ comment for that grammar's one residual rather than restating it here.
    project without naming it directly — see "The six structural detectors"
    below.
 3. **Private-projects blocklist (opt-in).** Reads `<config-dir>/private-projects.md`
-   (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`)
-   at hook runtime and blocks commits/PRs whose content contains any
+   at hook runtime when that file exists, else `~/.claude/private-projects.md`.
+   `<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`.
+   The scan blocks commits/PRs whose content contains any
    non-comment, non-blank line from the file as a case-insensitive whole-word
    match.
 
@@ -545,13 +546,12 @@ who extends the allowlist upstream in claude-config.
 a confidentiality control. The marker is a per-machine control, not a
 repo-level one: it works only in Claude Code sessions on machines with
 claude-config's hooks installed, and the blocklist scan depends on each
-contributor's own file, per config dir. Wrapper forms, `$(...)`, `--fill`, and
+contributor's own file. Wrapper forms, `$(...)`, `--fill`, and
 `git -C` or `cd` into another checkout evade it; the hook header's Known gaps
 lists them. Surfaces it never scans include `gh pr comment`, `gh pr review`,
 `gh release create`, `gh gist create`, writing files, and any file git
 classifies as binary or a `.gitattributes` rule marks `-diff`. A later commit
-scans a written file's added lines, never its path. A commit made outside a Claude
-Code session is not gated either. The backstop is a repo-owned pre-commit or
+scans a written file's added lines, never its path. The backstop is a repo-owned pre-commit or
 server-side check; see [Limitations](security-hardening.md#limitations).
 
 Four narrower gaps also leave content unscanned: the message of a commit with
@@ -610,9 +610,10 @@ exposes blocklist entries through the deny echo, and the hook header's
 Known-gaps bullet on the blocklist echo states its scope.
 
 **Opt out.** `git rm` the marker and commit. The change reaches each checkout
-when it pulls or rebases. A local-only delete disarms that checkout too, but it
-is an unsupported shape, covered by the hook header's Known-gaps bullet on the
-marker needing to be present at that exact path, not a per-user disable.
+when it pulls or rebases. A local-only delete disarms that checkout too.
+It is an unsupported shape, not a per-user disable.
+The hook header's Known-gaps bullet on the marker needing to be present at that
+exact path covers it.
 
 **Deny pointer.** The deny messages cite the repo's CLAUDE.md section
 "Redact private-project-identifying content". Add a section with exactly that
