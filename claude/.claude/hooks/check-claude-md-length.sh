@@ -52,7 +52,7 @@ DENY_GATE_LABEL="CLAUDE.md length"
 #
 # Dated log of prior values (one line per raise: date, old value, new value,
 # one-line reason); append here on every future change.
-# 2026-10-17: 25600 -> 30720; the global CLAUDE.md was already over 25600 and needed to grow. 25600 was MEMORY.md's 25KB load window extrapolated to CLAUDE.md; 30720 is 30 KiB, under Codex's 32 KiB project_doc_max_bytes truncation, with headroom for the file's growth.
+# 2026-10-17: 25600 -> 30720; the global CLAUDE.md was already over 25600.
 GLOBAL_CLAUDE_MD_BYTE_LIMIT=30720
 
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.

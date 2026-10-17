@@ -7792,25 +7792,40 @@ def test_review_orchestrator_return_spawn_decisions_line_exists_in_code_review_o
     )
 
 
+_REVIEW_PR_STEP_7_HEADING = "## Step 7 — Synthesize and record completion"
+
+
 @pytest.mark.parametrize(
-    "phrase",
+    "phrase, heading",
     [
         pytest.param(
             "report findings, change nothing, write no completion marker, edit no PR body",
+            None,
             id="standing-override-report-only",
         ),
         pytest.param(
             "apply a correction only after verifying it",
+            _REVIEW_PR_STEP_7_HEADING,
             id="verify-before-apply-correction",
         ),
     ],
 )
-def test_review_pr_skill_carries_retained_control(phrase: str) -> None:
-    """Wiring-presence tripwire: review-pr/SKILL.md still carries each control
-    it keeps after deferring the data-not-instructions rule to Agent Core.
-    Claims presence only, not that the agent obeys it."""
-    skill_text = " ".join(_skill_file("review-pr").read_text().split())
-    assert phrase in skill_text, (
-        f"review-pr/SKILL.md no longer carries {phrase!r}, a control that "
-        "survives the data-not-instructions rule living in the global CLAUDE.md."
+def test_review_pr_skill_carries_retained_control(
+    phrase: str, heading: str | None
+) -> None:
+    """Wiring-presence tripwire: review-pr/SKILL.md carries the report-only
+    standing override and the verify-before-apply rule. The override sits above
+    the first `##` heading, so it is checked file-wide; the verify rule is
+    checked in step 7's consult section. Claims presence only, not that the
+    agent obeys it."""
+    skill_path = _skill_file("review-pr")
+    if heading is None:
+        searched_text = " ".join(skill_path.read_text().split())
+        searched_where = "review-pr/SKILL.md"
+    else:
+        searched_text = _heading_section_text(skill_path, heading)
+        searched_where = f"review-pr/SKILL.md's {heading!r} section"
+    assert phrase in searched_text, (
+        f"{searched_where} no longer carries {phrase!r}, a control that "
+        "review-pr keeps itself rather than deferring to Agent Core."
     )
