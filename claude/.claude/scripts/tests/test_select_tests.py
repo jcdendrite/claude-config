@@ -1152,6 +1152,16 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
 
+    def test_install_dev_sh_change_selects_hooks_and_scripts_tests(self):
+        """test_install_dev.py (SCRIPTS_TESTS_DIR) reads install-dev.sh by
+        path. test_shellcheck.py (HOOKS_TESTS_DIR) also lints it, and
+        test_deny_network_installs.py and
+        test_install_sh_contributor_intent_prompt.py (both HOOKS_TESTS_DIR)
+        each reference it."""
+        result = _mod.select_pytest_targets([_mod.INSTALL_DEV_SH])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR}
+
     def test_claude_settings_json_change_selects_hooks_skills_and_scripts_tests(self):
         """test_hook_alignment.py and test_doc_counts.py (HOOKS_TESTS_DIR)
         read this file's permissions and skillOverrides entries by path.
@@ -1930,6 +1940,7 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     *sorted(_mod.HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS),
     _mod.README_MD,
     _mod.INSTALL_SH,
+    _mod.INSTALL_DEV_SH,
     _mod.CLAUDE_SETTINGS_JSON,
     _mod.HANDOFF_SKILL_MD,
     _mod.MARKER_CLEAR_STALE_PY,

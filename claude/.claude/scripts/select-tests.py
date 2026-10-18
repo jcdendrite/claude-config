@@ -332,6 +332,14 @@ README_MD = "README.md"
 # HOOKS_TESTS_DIR, read this file by path.
 INSTALL_SH = "install.sh"
 
+# test_install_dev.py (SCRIPTS_TESTS_DIR) reads this file by path.
+# test_shellcheck.py (HOOKS_TESTS_DIR) also lints it as part of its
+# tracked-shell-script sweep. test_deny_network_installs.py
+# (HOOKS_TESTS_DIR) pins its pip-install command as a regression test.
+# test_install_sh_contributor_intent_prompt.py (HOOKS_TESTS_DIR) asserts
+# that install.sh's hint text names this filename.
+INSTALL_DEV_SH = "install-dev.sh"
+
 # test_skills.py (SKILLS_TESTS_DIR) and test_doc_counts.py (HOOKS_TESTS_DIR)
 # each read it by path. test_nudge_transcript_toolkit.py's
 # TestNeverFiresOnMarkdown (HOOKS_TESTS_DIR) also picks it up via its
@@ -697,8 +705,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # (SCRIPTS_TESTS_DIR) reads this exact file by path, in addition to the
 # DOCS_DIR blanket below.
 # TRANSCRIPT_ANALYSIS_DOC_MD and PRIVATE_PROJECT_REDACTION_DOC_MD: see their own comment above for citation.
-# DOCS_DIR, README_MD, INSTALL_SH, and CLAUDE_SETTINGS_JSON: see each
-# constant's own comment above for its citation.
+# DOCS_DIR, README_MD, INSTALL_SH, INSTALL_DEV_SH, and CLAUDE_SETTINGS_JSON:
+# see each constant's own comment above for its citation.
 # GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and
 # ROOT_SETTINGS_JSON: see each constant's own comment above for its citation.
 # STATUSLINE_COMMAND_SH: see its own comment above for citation.
@@ -790,6 +798,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: _is_under(p, DOCS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == README_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == INSTALL_SH, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == INSTALL_DEV_SH, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: p == CLAUDE_SETTINGS_JSON, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: p == GLOBAL_CLAUDE_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == ROOT_CLAUDE_MD, (HOOKS_TESTS_DIR,)),
