@@ -67,6 +67,9 @@ TEST_FILES = (
     "test_transcript_review_trace.py",
     "test_transcript_reviewer_yield.py",
     "test_transcript_shared_fixtures.py",
+    "test_transcript_judgment_pair.py",
+    "test_transcript_skill_invocation.py",
+    "test_transcript_skill_pair.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --
