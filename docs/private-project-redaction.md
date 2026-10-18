@@ -555,8 +555,11 @@ repo-level one: it works only in Claude Code sessions on machines with
 claude-config's hooks installed, and the blocklist scan depends on each
 contributor's own file. Wrapper forms, `$(...)`, `--fill`, and
 `git -C` or `cd` into another checkout evade it; the hook header's Known gaps
-lists them. Surfaces it never scans include `gh pr comment`, `gh pr review`,
-`gh release create`, `gh gist create`, writing files, and any file git
+lists them. The hook scans only the surfaces its header's Gate and Dispatch
+paragraphs list. Surfaces it never scans include `gh pr comment`, `gh pr review`,
+`gh release create`, `gh gist create`, `gh issue|pr close --comment`,
+`gh repo create|edit --description`, annotated tag messages, a conflict-free
+`git merge -m` message, writing files, and any file git
 classifies as binary or a `.gitattributes` rule marks `-diff`. A later commit
 scans a written file's added lines, never its path. The hook never reads the
 current branch name, so `git push` and a `gh pr create` without `--head`
@@ -586,7 +589,9 @@ git commit -m "Opt in to the private-project redaction gate"
 git ls-files .claude/private-projects-optin
 ```
 
-`git ls-files` must list the marker. If `.claude/` is gitignored, the marker
+Run the commit as its own command: the gate reads the staged diff before the
+gated command runs, so a chained add-and-commit leaves the marker's comment
+unscanned. `git ls-files` must list the marker. If `.claude/` is gitignored, the marker
 needs `git add -f`, or it never reaches other clones. Presence alone counts. A
 regular file or a symlink to one counts; a directory does not.
 

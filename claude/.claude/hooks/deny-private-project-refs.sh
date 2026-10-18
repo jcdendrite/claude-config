@@ -28,7 +28,7 @@
 #   `claude-config`) or in a repo with `.claude/private-projects-optin` at its
 #   toplevel. Those scans are silent in every other repo.
 # - Its fail-closed infrastructure denies (a failed `_lib.sh` source,
-#   unparseable tool input, a failed quote-strip, fragment split, or
+#   unparseable tool input, a failed command-text quote-strip, fragment split, or
 #   commit-conclusion check) run before the
 #   scope test, so they apply in every repo.
 # - Catches the mechanical category (tracker IDs shaped like [A-Z]{2,}-\d+).
@@ -36,7 +36,7 @@
 #   ~/.claude/private-projects.md: a literal, case-insensitive
 #   whole-word scan against entries in that user-local file. See the
 #   "Deliberate scope" section below for the full design.
-# - Catches six structural shapes, always on (not gated by
+# - Catches six structural shapes, wherever its content scans run (not gated by
 #   private-projects.md): an IPv4 literal, an SSH config-directory or
 #   id_<algorithm> key path reference, a /Users/ or /home/ home-rooted
 #   filesystem path, a 32+ hex-char or UUID-shaped identifier, an
@@ -190,23 +190,26 @@
 # - The `^\+\+\+` file-header filter also drops an added content line that
 #   begins with `++`, so a token on such a line is unscanned.
 # - A commit whose staged diff is empty (`--amend -m`, `--allow-empty -m`, or
-#   nothing staged) leaves its message unscanned. In claude-config the staged
-#   diff also reads as empty when only files under
+#   nothing staged) leaves its message unscanned.
+# - In claude-config the staged diff also reads as empty when only files under
 #   `claude/.claude/hooks/tests/` are staged, because that path is excluded.
 # - An added line that contains a byte invalid in the active locale may be
-#   dropped by grep, depending on the grep implementation and locale. GNU grep
-#   3.11 drops such a line, as `deny-pii-in-commits.sh` records. BSD grep drops
-#   one whose first content byte is invalid, and this is unverified on other
-#   BSD greps. `deny-pii-in-commits.sh` shares the added-line extraction.
+#   dropped by grep, depending on the grep implementation and locale.
+# - GNU grep 3.11 drops an added line that contains a byte invalid in the
+#   active locale, as `deny-pii-in-commits.sh` records.
+# - BSD grep drops an added line whose first content byte is invalid, and this
+#   is unverified on other BSD greps.
+# - `deny-pii-in-commits.sh` shares this hook's added-line extraction.
 # - On macOS, BSD sed aborts the quote-strip on scanned text holding a byte
 #   invalid in the active UTF-8 locale, such as a staged added line whose
-#   invalid byte is not its first content byte. The hook then fails closed
-#   with a "could not quote-strip the scanned content" deny that lists a
-#   missing, killed, or errored tool as the cause. Re-encode the file, or stop
-#   and ask the human. GNU grep 3.11 drops such a staged line before the
-#   quote-strip, so on Linux that line goes unscanned instead of denied. An
-#   `LC_ALL=C` change to the grep extraction and the quote-strip is a
-#   follow-up for both hooks.
+#   invalid byte is not its first content byte.
+# - The hook then fails closed with a "could not quote-strip the scanned
+#   content" deny that lists a missing, killed, or errored tool as the cause.
+# - On that deny, re-encode the file, or stop and ask the human.
+# - GNU grep 3.11 drops such a staged line before the quote-strip, so on Linux
+#   that line goes unscanned instead of denied.
+# - Closing this belongs in an `LC_ALL=C` change to the grep extraction and the
+#   quote-strip, in this hook and `deny-pii-in-commits.sh`.
 # - The hook never scans the path of a staged file, because the added-line
 #   filter drops path headers.
 # - The hook never reads the current branch name, which `git push` and a

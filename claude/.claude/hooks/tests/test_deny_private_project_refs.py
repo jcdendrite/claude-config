@@ -908,14 +908,13 @@ class TestDenyPrivateProjectRefs:
             cwd=private_projects_optin_repo,
             check=True,
         )
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Add new test case'"),
-                cwd=private_projects_optin_repo,
-            )
-            == "deny"
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Add new test case'"),
+            cwd=private_projects_optin_repo,
         )
+        assert reason is not None
+        assert "FAKEPROJ-42" in reason
 
     def test_optin_marker_scans_repo_root_files_when_hook_runs_from_subdirectory(self, private_projects_optin_repo):
         """The staged-diff pathspec is repo-wide, so a violating file at the
@@ -926,14 +925,13 @@ class TestDenyPrivateProjectRefs:
         subdirectory.mkdir(parents=True)
         (private_projects_optin_repo / "file.txt").write_text("first\nsecond\n// WIDGET-123 fixed\n")
         subprocess.run(["git", "add", "file.txt"], cwd=private_projects_optin_repo, check=True)
-        assert (
-            run_hook(
-                DENY_PRIVATE_PROJECT_REFS_HOOK,
-                bash_input("git commit -m 'Refactor the parser'"),
-                cwd=subdirectory,
-            )
-            == "deny"
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=subdirectory,
         )
+        assert reason is not None
+        assert "WIDGET-123" in reason
 
     @pytest.mark.parametrize(("config_key", "config_value", "attributes_line"), _STAGED_DIFF_CONFIG_HAZARDS)
     def test_optin_marker_staged_diff_scan_ignores_diff_config(
@@ -1110,6 +1108,56 @@ class TestDenyPrivateProjectRefs:
         assert decision_with_binary_file == "allow"
         assert reason_without_nul_byte is not None
         assert "WIDGET-123" in reason_without_nul_byte
+
+    def test_optin_marker_does_not_scan_staged_file_path_known_gap(self, private_projects_optin_repo):
+        """Pins an accepted Known gap in the hook header: the added-line filter
+        drops path headers, so a synthetic tracker token in a staged file's
+        path is not scanned and the commit is allowed. The same token in the
+        file's content denies, so the allow is caused by the token sitting in
+        the path. A change that closes or widens the gap must flip this test."""
+        tracker_named_file = private_projects_optin_repo / "WIDGET-123-notes.txt"
+        tracker_named_file.write_text("clean content\n")
+        subprocess.run(["git", "add", tracker_named_file.name], cwd=private_projects_optin_repo, check=True)
+        decision_with_token_in_path = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        tracker_named_file.write_text("// WIDGET-123 fixed\n")
+        subprocess.run(["git", "add", tracker_named_file.name], cwd=private_projects_optin_repo, check=True)
+        reason_with_token_in_content = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        assert decision_with_token_in_path == "allow"
+        assert reason_with_token_in_content is not None
+        assert "WIDGET-123" in reason_with_token_in_content
+
+    def test_optin_marker_does_not_scan_current_branch_name_known_gap(self, private_projects_optin_repo):
+        """Pins an accepted Known gap in the hook header: the hook never reads
+        the current branch name, so a `gh pr create` without `--head` that
+        publishes a tracker-named branch is allowed. Typing the same branch
+        with `--head` puts it in the scanned command text and denies, so the
+        allow is caused by the branch name living only in HEAD. A change that
+        closes or widens the gap must flip this test."""
+        tracker_named_branch = "WIDGET-123-fix"
+        subprocess.run(
+            ["git", "checkout", "-b", tracker_named_branch], cwd=private_projects_optin_repo, check=True
+        )
+        decision_with_branch_only_in_head = run_hook(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("gh pr create --title 'Add parser' --body 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        reason_with_branch_typed_via_head_flag = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(f"gh pr create --head {tracker_named_branch} --title 'Add parser' --body 'Refactor the parser'"),
+            cwd=private_projects_optin_repo,
+        )
+        assert decision_with_branch_only_in_head == "allow"
+        assert reason_with_branch_typed_via_head_flag is not None
+        assert "WIDGET-123" in reason_with_branch_typed_via_head_flag
 
     @pytest.mark.parametrize("command", _OPTIN_MARKER_ARMED_COMMANDS)
     def test_optin_marker_arms_continue_and_gh_write_surfaces(self, private_projects_optin_repo, command):
