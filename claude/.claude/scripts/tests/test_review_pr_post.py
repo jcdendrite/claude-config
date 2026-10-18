@@ -3,7 +3,7 @@
 The `gh` CLI is replaced by a PATH shim that records every invocation it
 receives (one JSON object per line) so tests can assert on call history --
 not just the script's exit code -- for the fail-closed paths' most
-important property: `gh` is never even invoked.
+important property: no `gh pr review` call.
 """
 from __future__ import annotations
 
@@ -265,8 +265,8 @@ def _pr_review_records(call_log: Path) -> list[dict]:
 
 def _read_pr_review_calls(call_log: Path) -> list[list[str]]:
     """Calls whose args start with the `pr review` verb -- filters out the
-    PR-identity cross-check's own `gh pr view` call, which every test that
-    reaches the posting calls also triggers."""
+    PR-identity cross-check's own `gh pr view` call and the `gh api user`
+    lookup that only request-changes makes."""
     return [args for args in _read_calls(call_log) if args[:2] == ["pr", "review"]]
 
 
@@ -496,7 +496,21 @@ class TestPrIdentityCrossCheck:
     the marker's body-hash check ran against. This class pins the
     `gh pr view` re-fetch that closes that gap."""
 
-    def test_pr_view_head_mismatch_fails_closed(self, isolated_home, git_repo, tmp_path):
+    @pytest.mark.parametrize(
+        ("verb", "authorship_shim_options"),
+        [
+            pytest.param("comment", {}, id="comment"),
+            # The PR is the operator's own, so the head check winning shows it runs before the own-PR refusal.
+            pytest.param(
+                "request-changes",
+                {"pr_author_login": "operator", "operator_login": "operator"},
+                id="request-changes-on-own-pr",
+            ),
+        ],
+    )
+    def test_pr_view_head_mismatch_fails_closed(
+        self, isolated_home, git_repo, tmp_path, verb, authorship_shim_options
+    ):
         """The PR's own current headRefOid disagrees with the completion
         marker's recorded HEAD -- PR_NUMBER/OWNER_REPO does not name the
         reviewed PR. Must abort before ever calling `gh pr review`."""
@@ -506,26 +520,33 @@ class TestPrIdentityCrossCheck:
         result, call_log = _run(
             git_repo,
             isolated_home,
-            ["comment", PR_IDENTITY],
+            [verb, PR_IDENTITY],
             tmp_path,
             pr_view_head_ref_oid="f" * 40,
+            **authorship_shim_options,
         )
-        assert result.returncode != 0
+        assert result.returncode == 2
         assert "headRefOid" in result.stderr
+        assert _OWN_PR_REFUSAL_PHRASE not in result.stderr
+        assert _COULD_NOT_TELL_PHRASE not in result.stderr
         assert _read_pr_review_calls(call_log) == []
         assert review_pr_completion_marker_path(isolated_home, git_repo, SID).exists(), (
             "a refusal before the claim leaves the marker armed"
         )
 
-    def test_pr_view_failure_fails_closed(self, isolated_home, git_repo, tmp_path):
+    @pytest.mark.parametrize("verb", ["comment", "request-changes"])
+    def test_pr_view_failure_fails_closed(self, isolated_home, git_repo, tmp_path, verb):
         """`gh pr view` itself fails or returns no output -- treated the
-        same as a mismatch, not as a pass-through."""
+        same as a mismatch, not as a pass-through. For request-changes the
+        author is unreadable too, and the head refusal still comes first."""
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
         _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash)
-        result, call_log = _run(git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path)
-        assert result.returncode != 0
+        result, call_log = _run(git_repo, isolated_home, [verb, PR_IDENTITY], tmp_path)
+        assert result.returncode == 2
         assert "headRefOid" in result.stderr
+        assert _OWN_PR_REFUSAL_PHRASE not in result.stderr
+        assert _COULD_NOT_TELL_PHRASE not in result.stderr
         assert _read_pr_review_calls(call_log) == []
         assert review_pr_completion_marker_path(isolated_home, git_repo, SID).exists()
 

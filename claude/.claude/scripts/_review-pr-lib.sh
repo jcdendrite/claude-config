@@ -175,7 +175,9 @@ review_pr_authorship() {
   if ! operator_login=$(printf '%s' "$user_json" | _lib_jq -s -j --arg login_pattern "\\A${_REVIEW_PR_LOGIN_CHAR_REGEX}+\\z" "$_REVIEW_PR_OPERATOR_LOGIN_JQ_FILTER" 2>/dev/null) \
     || [[ -z "$operator_login" ]]; then
     printf 'unknown'
-  # nocasematch folding is locale-dependent. ASCII logins are accepted as folded; a non-folding locale (unverified in tr_TR) reads other, the fail-open direction.
+  # nocasematch folding is locale-dependent.
+  # ASCII logins are accepted as folded.
+  # A non-folding locale (unverified in tr_TR) reads other, which fails open.
   elif [[ "$author_login" =~ ^${_REVIEW_PR_LOGIN_CHAR_REGEX}+$ ]] && ! _lib_case_insensitive_ne "$author_login" "$operator_login"; then
     printf 'self'
   else
