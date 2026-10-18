@@ -132,8 +132,8 @@
 #     accepted indirection class above.
 #   - The strip removes the first word whose basename is `venv-run.sh`, not
 #     the command word the guard classified, so
-#     `FOO=a/venv-run.sh scripts/venv-run.sh ruff format x.py` passes; the
-#     cooperative tier accepts this.
+#     `FOO=a/venv-run.sh scripts/venv-run.sh ruff format x.py` passes.
+#     The cooperative tier accepts this.
 #   - A redirect-led command word (`2>w ruff format`, `<w ruff format`) is
 #     allowed, with or without the wrapper, because the command-word resolver
 #     skips no redirect word. The unwrapped `2>/dev/null ruff format` is

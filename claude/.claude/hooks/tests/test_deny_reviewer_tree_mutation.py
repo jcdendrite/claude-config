@@ -881,6 +881,8 @@ class TestCommandWordResolution:
             "scripts/venv-run.sh ruff check --fix x.py",
             # The wrapper-name match is case-insensitive, like _lib_fragment_invokes_tool.
             "scripts/VENV-RUN.SH ruff format x.py",
+            # Deny twin of the documented shellcheck pipeline allow case below.
+            "scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh ruff format",
         ],
     )
     def test_reviewer_venv_run_wrapped_mutating_tool_denied(self, command):
@@ -908,11 +910,8 @@ class TestCommandWordResolution:
         ],
     )
     def test_reviewer_venv_run_known_gate_gap_commands_allowed(self, command):
-        # Pins known gate gaps, not safety properties; each command runs `ruff format`, which the gate fails to see.
-        # The redirect-led cases hit the gap where the command-word resolver skips no redirect word.
-        # Unwrapped `2>/dev/null ruff format x.py` is a pre-existing resolver gap, not a wrapper effect.
-        # The `FOO=a/venv-run.sh` case hits the hook header's known gap on the strip: it removes the first
-        # word whose basename is `venv-run.sh`, not the command word the guard classified.
+        # Pins known gate gaps, not safety properties: the gate misses the `ruff format` each command runs.
+        # The hook header records each gap's cause.
         assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
 
 
