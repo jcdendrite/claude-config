@@ -2159,6 +2159,8 @@ class TestOriginIdentityAtRealGit:
         assert self._identity_at_silently(capfd, inside_layout) is None
 
     def test_hostile_clone_config_runs_no_configured_program(self, capfd):
+        """Pins that production runs a command executing no configured program (the command class), not that the hardening
+        flags defend against hostile config."""
         clone = self._clone_with_origin()
         hooks_dir = self.home / "hostile-hooks"
         hooks_dir.mkdir()
@@ -2184,6 +2186,8 @@ class TestOriginIdentityAtRealGit:
         assert not self.sentinel_log.exists()
 
     def test_transport_helper_origin_runs_no_program_and_returns_none(self, capfd):
+        """Pins that production runs a command executing no configured program (the command class), not that the hardening
+        flags defend against hostile config."""
         clone = self._clone_with_origin(name="ext-clone")
         ext_script = _write_sentinel_script(self.home / "ext helper.sh", self.sentinel_log, "ext", exit_code=1)
         _git(clone, "config", "remote.origin.url", f"ext::{_escape_for_ext_transport(ext_script)}").check_returncode()

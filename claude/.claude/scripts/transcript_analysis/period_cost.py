@@ -57,7 +57,9 @@ _NOTICE_TAGS = (
     _NOTICE_STALE_PRICING, _NOTICE_PRICING_INTEGRITY, _NOTICE_REVIEW_WINDOW_FALLBACK, _NOTICE_GH_UNAVAILABLE,
     _NOTICE_PR_LIST_LIMIT, _NOTICE_OTHER_BREAKDOWN,
 )
-_NOTICE_LIST_CAP = 10  # Bounds each notice's entry count, not the entries' length.
+# Bounds the entry count of the SCOPE repository list, the OTHER BREAKDOWN branch and review lists, REVIEW WINDOW FALLBACK,
+# and GH UNAVAILABLE. Entry length is not bounded, and EXCLUDED SPEND is not capped.
+_NOTICE_LIST_CAP = 10
 
 _REPORT_FIRST_LINE_PREFIX = "*Claude Code spend, "
 _UNDETERMINED_GROUP_LABEL = "Repository not determined"
@@ -1322,7 +1324,8 @@ def _table_widths(displayed: Sequence[tuple[_ReportGroup, Sequence[tuple[_Report
 
 
 def _flag_notes(flags: _ReportFlags) -> list[str]:
-    """Notes 5 to 8: the conditions that can make the figures understate or rest on stale rates."""
+    """The coverage, read-failure, excluded-spend, and stale-rate notes: the conditions that can make the figures understate or
+    rest on stale rates."""
     notes: list[str] = []
     if flags.coverage_date is not None:
         notes.append(
@@ -1346,7 +1349,8 @@ def _flag_notes(flags: _ReportFlags) -> list[str]:
 def _table_notes(
     displayed: Sequence[tuple[_ReportGroup, Sequence[tuple[_ReportRow, Decimal]]]], omitted: bool, flags: _ReportFlags,
 ) -> tuple[list[str], list[str]]:
-    """(notes 1 to 3, notes 9 to 13) for a report that shows a table."""
+    """(the period, outside-period-marker, and fallback-marker notes; the unavailable-list, under-half-cent, list-limit,
+    title-unavailable, and time-limit notes) for a report that shows a table."""
     rows = [(group, row) for group, shown in displayed for row, _cents in shown]
     leading = ["_Each row counts only spend dated within this period._"]
     if any(row.outside_spend for _group, row in rows):

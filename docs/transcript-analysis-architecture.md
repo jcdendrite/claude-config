@@ -304,12 +304,8 @@ The period-cost command shares four pieces of this module:
 - **`_GH_TOKEN_ENV_VARS`** names the four variables gh reads as tokens. Every child process that needs
   no gh credential gets an environment without them.
 - **`_origin_identity_at`** resolves a recorded directory's `origin` where the cwd lookup resolves the
-  process's own. It runs `git --no-pager -c safe.bareRepository=explicit -C <directory> remote get-url
-  origin`. The child's environment drops git's repository-local variables and gh's token variables, and
-  `HOME` goes first in `GIT_CEILING_DIRECTORIES` when it is non-empty, colon-free, and absolute. It
-  returns an identity only when the URL passes `_vetted_origin_identity_from_url`, which keeps a
-  credentialed URL, a relative path, a port, a transport helper, and an unvetted host or owner/name out
-  of every later output. It returns `None` on any failure and prints nothing.
+  process's own, so it lives in `gh_cli` beside that lookup. It returns `None` on any failure and prints
+  nothing. See docs/transcript-analysis.md, "Repository resolution", for the git call and the vetting.
 
 ### `pr_cost_ledger.py`
 

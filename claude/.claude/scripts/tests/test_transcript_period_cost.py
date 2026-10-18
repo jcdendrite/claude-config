@@ -57,6 +57,8 @@ _DEFAULT_CWD = "/srv/work/checkout"
 _DEFAULT_BRANCH = "main"
 _FEATURE_BRANCH = "feature-x"
 _GH_TOKEN_NAMES = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+# The leading argv of every git child the origin resolver runs, up to and including the -C flag whose value is the directory.
+_GIT_ARGV_PREFIX = ["git", "--no-pager", "-c", "safe.bareRepository=explicit", "-C"]
 
 
 class _Which:
@@ -169,9 +171,12 @@ def _slash_invocation(position: int, skill: str = "review-pr", **kwargs) -> dict
     return _user_prompt(position, f"<command-name>/{skill}</command-name>", **kwargs)
 
 
-def _assistant_blocks(position: int, blocks: list, **kwargs) -> dict:
+def _assistant_blocks(position: int, blocks: list, *, record_id: int | None = None, **kwargs) -> dict:
+    """An assistant record with `blocks`; `record_id` makes it a priced turn carrying the signed usage for that id."""
     rec = _plain("assistant", position, **kwargs)
     rec["message"] = {"model": _MODEL, "content": blocks}
+    if record_id is not None:
+        rec["message"]["usage"] = _signed(record_id, position)["message"]["usage"]
     return rec
 
 
@@ -366,7 +371,7 @@ def _fake_period_cost_run(
         env = kwargs.get("env")
         if (
             len(cmd) == 9
-            and cmd[:5] == ["git", "--no-pager", "-c", "safe.bareRepository=explicit", "-C"]
+            and cmd[:5] == _GIT_ARGV_PREFIX
             and cmd[6:] == ["remote", "get-url", "origin"]
         ):
             assert env is not None, "the git child must get an explicit environment"
@@ -1387,7 +1392,9 @@ class TestStoredGhLoginWorks:
         captured: dict = {}
 
         def fake_run(cmd, *args, **kwargs):
-            captured.update(cmd=cmd, env=kwargs["env"], timeout=kwargs["timeout"])
+            captured.update(
+                cmd=cmd, env=kwargs["env"], timeout=kwargs["timeout"], capture_output=kwargs["capture_output"]
+            )
             return _completed(cmd)
 
         monkeypatch.setattr(subprocess, "run", fake_run)
@@ -1398,6 +1405,7 @@ class TestStoredGhLoginWorks:
         assert not set(captured["env"]) & set(_GH_TOKEN_NAMES)
         assert captured["env"]["HOME"] == os.environ["HOME"]
         assert captured["timeout"] == gh_cli._GH_CALL_TIMEOUT_S
+        assert captured["capture_output"] is True
 
     @pytest.mark.parametrize("returncode,expected", [(0, True), (1, False), (4, False)])
     def test_the_exit_status_decides(self, monkeypatch, returncode, expected):
@@ -1413,6 +1421,28 @@ class TestStoredGhLoginWorks:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         assert period_cost._stored_gh_login_works("ghe.example") is None
+
+    def test_the_call_matches_the_preflight_check_in_gh_cli_except_for_the_environment(self, monkeypatch):
+        calls: dict[str, tuple] = {}
+
+        def recording_run(label):
+            def fake_run(cmd, *args, **kwargs):
+                calls[label] = (cmd, args, kwargs)
+                return _completed(cmd)
+
+            return fake_run
+
+        monkeypatch.setattr(subprocess, "run", recording_run("stored_login"))
+        period_cost._stored_gh_login_works("ghe.example")
+        monkeypatch.setattr(subprocess, "run", recording_run("preflight"))
+        gh_cli._gh_auth_preflight_ok("ghe.example")
+
+        stored_cmd, stored_args, stored_kwargs = calls["stored_login"]
+        preflight_cmd, preflight_args, preflight_kwargs = calls["preflight"]
+        assert stored_cmd == preflight_cmd
+        assert stored_args == preflight_args
+        assert {key: value for key, value in stored_kwargs.items() if key != "env"} == preflight_kwargs
+        assert set(stored_kwargs) - set(preflight_kwargs) == {"env"}
 
 
 class TestFetchPrLists:
@@ -1837,6 +1867,112 @@ def _branch_key(branch: str, own: str = _WIDGETS_DIR, successor: str | None = No
 
 def _review_key(number: int, owner_repo: str = "acme/widgets", directory: str | None = _WIDGETS_DIR):
     return period_cost._ReviewKey(directory, owner_repo, number)
+
+
+class TestDirectoriesToResolve:
+    @pytest.mark.parametrize(
+        "totals,expected",
+        [
+            pytest.param(
+                _hand_totals(branch={_branch_key("feat-a", own="/srv/work/own"): 1.0}),
+                ["/srv/work/own"],
+                id="own_anchor_of_an_in_period_branch",
+            ),
+            pytest.param(
+                _hand_totals(branch={_branch_key("feat-a", own="/srv/work/own", successor="/srv/work/successor"): 1.0}),
+                ["/srv/work/own", "/srv/work/successor"],
+                id="successor_anchor_of_an_in_period_branch",
+            ),
+            pytest.param(
+                _hand_totals(review={_review_key(12, directory="/srv/work/review"): 1.0}),
+                ["/srv/work/review"],
+                id="window_directory_of_an_identified_review",
+            ),
+            pytest.param(
+                _hand_totals(default={"/srv/work/default": 1.0}),
+                ["/srv/work/default"],
+                id="default_branch_anchor",
+            ),
+            pytest.param(
+                _hand_totals(unidentified={("/srv/work/unidentified", "2026-09-15"): 1.0}),
+                ["/srv/work/unidentified"],
+                id="directory_of_an_unidentified_review",
+            ),
+            pytest.param(
+                _hand_totals(outside_branch=[_branch_key("feat-a", own="/srv/work/outside-own")]),
+                ["/srv/work/outside-own"],
+                id="own_anchor_of_an_outside_only_branch",
+            ),
+            pytest.param(
+                _hand_totals(
+                    outside_branch=[_branch_key("feat-a", own="/srv/work/outside-own", successor="/srv/work/outside-successor")]
+                ),
+                ["/srv/work/outside-own", "/srv/work/outside-successor"],
+                id="successor_anchor_of_an_outside_only_branch",
+            ),
+            pytest.param(
+                _hand_totals(outside_review=[_review_key(12, directory="/srv/work/outside-review")]),
+                ["/srv/work/outside-review"],
+                id="window_directory_of_an_outside_only_review",
+            ),
+        ],
+    )
+    def test_each_source_yields_its_directories_when_it_is_the_only_source(self, totals, expected):
+        assert period_cost._directories_to_resolve(totals) == expected
+
+    def test_every_in_period_directory_precedes_every_outside_only_directory(self):
+        in_period = {
+            "/srv/work/branch-own",
+            "/srv/work/branch-successor",
+            "/srv/work/review",
+            "/srv/work/default",
+            "/srv/work/unidentified",
+        }
+        outside_only = {"/srv/work/outside-branch", "/srv/work/outside-successor", "/srv/work/outside-review"}
+        totals = _hand_totals(
+            branch={_branch_key("feat-a", own="/srv/work/branch-own", successor="/srv/work/branch-successor"): 1.0},
+            review={_review_key(12, directory="/srv/work/review"): 1.0},
+            default={"/srv/work/default": 1.0},
+            unidentified={("/srv/work/unidentified", "2026-09-15"): 1.0},
+            outside_branch=[_branch_key("feat-b", own="/srv/work/outside-branch", successor="/srv/work/outside-successor")],
+            outside_review=[_review_key(13, directory="/srv/work/outside-review")],
+        )
+
+        resolved = period_cost._directories_to_resolve(totals)
+
+        assert set(resolved) == in_period | outside_only
+        assert set(resolved[: len(in_period)]) == in_period
+
+    def test_a_directory_with_in_period_and_outside_only_spend_is_listed_once_among_the_in_period_directories(self):
+        totals = _hand_totals(
+            default={"/srv/work/shared": 1.0, "/srv/work/in-period-only": 1.0},
+            outside_branch=[_branch_key("feat-a", own="/srv/work/outside-only"), _branch_key("feat-b", own="/srv/work/shared")],
+        )
+
+        assert period_cost._directories_to_resolve(totals) == [
+            "/srv/work/shared",
+            "/srv/work/in-period-only",
+            "/srv/work/outside-only",
+        ]
+
+    def test_a_key_with_no_directory_is_dropped(self):
+        totals = _hand_totals(
+            review={_review_key(12, directory=None): 1.0},
+            outside_review=[_review_key(13, directory=None)],
+            branch={_branch_key("feat-a", own="/srv/work/own", successor=None): 1.0},
+        )
+
+        assert period_cost._directories_to_resolve(totals) == ["/srv/work/own"]
+
+    def test_the_same_directory_named_by_several_keys_collapses_to_one_entry(self):
+        totals = _hand_totals(
+            branch={_branch_key("feat-a", own="/srv/work/shared"): 1.0, _branch_key("feat-b", own="/srv/work/shared"): 1.0},
+            review={_review_key(12, directory="/srv/work/shared"): 1.0},
+            default={"/srv/work/shared": 1.0},
+            unidentified={("/srv/work/shared", "2026-09-15"): 1.0},
+        )
+
+        assert period_cost._directories_to_resolve(totals) == ["/srv/work/shared"]
 
 
 class TestAssembleGroups:
@@ -2302,11 +2438,10 @@ class TestRenderSlackReport:
         ],
     )
     def test_a_maximal_width_table_row_stays_within_the_utf8_byte_bound_the_output_capacity_arithmetic_uses(self, title):
-        # The Bash tool cuts output above 30,000 bytes, so the bound is in UTF-8 bytes, not code points. The widest row
-        # has a review label with a 5-digit PR number (a PR number above 99,999 or a cost above $9,999.99 widens every
-        # row by one byte, past this bound), the longest status, a $9,999.99 cost, both marker characters, and a title
-        # cell of the cap's code points at 4 bytes each, the most UTF-8 allows. With those maxima a row is 195 bytes
-        # (194 and a newline).
+        # The harness cuts output above 30,000 bytes, so the bound is in UTF-8 bytes, not code points.
+        # The widest row has a 5-digit review number, the longest status, a $9,999.99 cost, both markers, and a
+        # 40-code-point title at 4 bytes each, which is 195 bytes counting the newline.
+        # A PR number above 99,999 or a cost above $9,999.99 widens every row by one byte.
         widest_label = len("Rev #99999")
         widest_status = max(len(status) for status in period_cost._SHOWN_PR_STATES)
         widest_cost = len("$9,999.99")
@@ -3131,6 +3266,69 @@ class TestPeriodStreamTotals:
 
         assert _decoded(totals.review_dollars) == {_REVIEW_IDENTITY_KEY: frozenset({1})}
         assert _decoded(totals.branch_dollars) == {period_cost._BranchKey(_DIR_C, None, _FEATURE_BRANCH): frozenset({2})}
+
+    def test_a_usage_bearing_opener_is_inside_its_own_window_not_in_the_branch_key_around_it(self):
+        records = [
+            _signed(1, 1, branch=_FEATURE_BRANCH, cwd=_DIR_C),
+            _skill_invocation(2, record_id=2, branch=_FEATURE_BRANCH, cwd=_DIR_C),
+            _acquire_record(3, branch=_FEATURE_BRANCH, cwd=_DIR_C),
+            _finish_record(4, branch=_FEATURE_BRANCH, cwd=_DIR_C),
+            _user_prompt(5, branch=_FEATURE_BRANCH, cwd=_DIR_C),
+            _signed(4, 6, branch=_FEATURE_BRANCH, cwd=_DIR_C),
+        ]
+
+        totals = _totals(records)
+
+        assert _decoded(totals.review_dollars) == {_REVIEW_IDENTITY_KEY: frozenset({2})}
+        assert _decoded(totals.branch_dollars) == {
+            period_cost._BranchKey(_DIR_C, None, _FEATURE_BRANCH): frozenset({1, 4})
+        }
+
+    def test_back_to_back_reviews_split_at_the_second_invocation_turn_with_the_first_finish_turn_in_the_first(self):
+        first_review_key = period_cost._ReviewKey(_DIR_C, "acme/widgets", 12)
+        second_review_key = period_cost._ReviewKey(_DIR_C, "acme/widgets", 13)
+        records = [
+            _skill_invocation(1, record_id=1, cwd=_DIR_C),
+            _acquire_record(2, "acme/widgets#12", record_id=2, cwd=_DIR_C),
+            _finish_record(3, record_id=4, cwd=_DIR_C),
+            _skill_invocation(4, record_id=8, cwd=_DIR_C),
+            _acquire_record(5, "acme/widgets#13", record_id=16, cwd=_DIR_C),
+            _finish_record(6, record_id=32, cwd=_DIR_C),
+        ]
+
+        totals = _totals(records)
+
+        assert _decoded(totals.review_dollars) == {
+            first_review_key: frozenset({1, 2, 4}),
+            second_review_key: frozenset({8, 16, 32}),
+        }
+        assert dict(totals.branch_dollars) == {}
+
+    def test_a_review_window_whose_records_carry_two_valid_directories_is_keyed_on_the_first(self):
+        records = [
+            _skill_invocation(1, record_id=1, cwd=_DIR_A),
+            _acquire_record(2, record_id=2, cwd=_DIR_B),
+            _signed(4, 3, cwd=_DIR_B),
+            _finish_record(4, record_id=8, cwd=_DIR_B),
+        ]
+
+        totals = _totals(records)
+
+        assert _decoded(totals.review_dollars) == {
+            period_cost._ReviewKey(_DIR_A, "acme/widgets", 12): frozenset({1, 2, 4, 8})
+        }
+
+    def test_a_leading_default_branch_stretch_whose_successor_entry_has_no_directory_keeps_its_own_default_part(self):
+        records = [
+            _signed(1, 1, branch="main", cwd=_DIR_A),
+            _signed(2, 2, branch="feature-y", cwd=None),
+        ]
+
+        totals = _totals(records)
+
+        assert _decoded(totals.default_dollars) == {_DIR_A: frozenset({1})}
+        assert dict(totals.branch_dollars) == {}
+        assert _ids(totals.no_anchor_dollars) == frozenset({2})
 
     def test_in_period_window_spend_adds_to_the_key_and_out_of_period_spend_only_marks_it(self):
         records = [
@@ -4014,7 +4212,7 @@ class TestRepositoryReachedOnlyByMovedOnSpend:
         def run_and_pass_the_deadline_after_alpha_resolves(cmd, *args, **kwargs):
             call_log.append(list(cmd))
             result = inner(cmd, *args, **kwargs)
-            if successor == "not_checked" and cmd[:5] == ["git", "--no-pager", "-c", "safe.bareRepository=explicit", "-C"]:
+            if successor == "not_checked" and cmd[:5] == _GIT_ARGV_PREFIX:
                 clock.now = _DEADLINE + 1
             return result
 
@@ -4029,6 +4227,124 @@ class TestRepositoryReachedOnlyByMovedOnSpend:
         listed = [cmd[cmd.index("--repo") + 1] for cmd in call_log if cmd[:3] == ["gh", "pr", "list"]]
         assert listed == (["github.com/acme/beta"] if successor == "other_repository" else [])
         assert "*Total: $5.00*" in report.splitlines()
+
+
+class TestDirectoriesOnlyAKeyCarriesAreResolved:
+    """A directory named by one key and nothing else still resolves, and an in-period directory resolves before an
+    outside-only one."""
+
+    @staticmethod
+    def _review_records(directory: str, *, owner_repo: str | None, dollars: int) -> list[dict]:
+        records = [_slash_invocation(1, cwd=directory, day=_FIRST_DAY)]
+        if owner_repo is not None:
+            records.append(_acquire_record(2, owner_repo, cwd=directory, day=_FIRST_DAY))
+        records += [
+            _hand_priced(3, dollars, cwd=directory, day=_FIRST_DAY),
+            _finish_record(4, cwd=directory, day=_FIRST_DAY),
+            _user_prompt(5, cwd=directory, day=_FIRST_DAY),
+        ]
+        return records
+
+    def test_a_review_only_directory_on_another_host_groups_under_that_host_and_is_listed_there(
+        self, tmp_path, projects_dir, monkeypatch
+    ):
+        tools_checkout = _make_dir(tmp_path / "repos", "tools")
+        _write_session(projects_dir, "review-only", self._review_records(tools_checkout, owner_repo="acme/tools#8", dollars=4))
+        call_log = _install_fake(
+            monkeypatch,
+            origins_by_dir={tools_checkout: "https://ghe.example/acme/tools.git"},
+            pr_lists_by_repo={"ghe.example/acme/tools": [_listed_pr(8, "reviewed-branch", title="Tools review", state="MERGED")]},
+        )
+
+        report, _notices = _run_report()
+
+        assert _parsed_rows(report) == {
+            "ghe.example/acme/tools": [("Rev #8", "Review: Tools review", "merged", "$4.00", "")]
+        }
+        listed = [cmd[cmd.index("--repo") + 1] for cmd in call_log if cmd[:3] == ["gh", "pr", "list"]]
+        assert listed == ["ghe.example/acme/tools"]
+
+    def test_an_unidentified_review_in_a_repository_with_no_other_spend_lands_in_that_repositorys_other_row(
+        self, tmp_path, projects_dir, monkeypatch
+    ):
+        widgets_checkout = _make_dir(tmp_path / "repos", "widgets")
+        _write_session(projects_dir, "unidentified-review", self._review_records(widgets_checkout, owner_repo=None, dollars=3))
+        _install_fake(
+            monkeypatch,
+            origins_by_dir={widgets_checkout: "https://github.com/acme/widgets.git"},
+            pr_lists_by_repo={"github.com/acme/widgets": []},
+        )
+
+        report, _notices = _run_report()
+
+        assert _parsed_rows(report) == {"acme/widgets": [("Other", "Work not linked to a listed PR", "", "$3.00", "")]}
+
+    def _sessions_with_outside_only_spend_in_a_second_clone(self, tmp_path, projects_dir):
+        """In-period spend on a PR branch in one clone, and out-of-period spend on the same branch in a clone seen nowhere
+        in the period."""
+        in_period_clone = _make_dir(tmp_path / "repos", "widgets")
+        outside_only_clone = _make_dir(tmp_path / "repos", "widgets-second-clone")
+        _write_session(
+            projects_dir,
+            "in-period",
+            [_hand_priced(1, 2, day=15, branch="feature-x", cwd=in_period_clone)],
+            session_id="in-period",
+        )
+        _write_session(
+            projects_dir,
+            "outside-only",
+            [_hand_priced(1, 5, day=25, branch="feature-x", cwd=outside_only_clone)],
+            session_id="outside-only",
+        )
+        origins = {
+            in_period_clone: "https://github.com/acme/widgets.git",
+            outside_only_clone: "https://github.com/acme/widgets.git",
+        }
+        return in_period_clone, outside_only_clone, origins
+
+    def test_a_pr_whose_only_outside_period_spend_is_in_a_directory_unseen_in_period_still_shows_the_plus_marker(
+        self, tmp_path, projects_dir, monkeypatch
+    ):
+        _in_period_clone, _outside_only_clone, origins = self._sessions_with_outside_only_spend_in_a_second_clone(
+            tmp_path, projects_dir
+        )
+        _install_fake(
+            monkeypatch,
+            origins_by_dir=origins,
+            pr_lists_by_repo={"github.com/acme/widgets": [_listed_pr(10, "feature-x", title="Feature X")]},
+        )
+
+        report, _notices = _run_report(window=_window("2026-09-10", "2026-09-20"))
+
+        assert _parsed_rows(report)["acme/widgets"] == [("#10", "Feature X", "open", "$2.00", "+")]
+
+    def test_when_the_deadline_passes_after_the_first_git_call_the_in_period_directory_is_the_one_resolved(
+        self, tmp_path, projects_dir, monkeypatch, clock
+    ):
+        in_period_clone, _outside_only_clone, origins = self._sessions_with_outside_only_spend_in_a_second_clone(
+            tmp_path, projects_dir
+        )
+        inner = _fake_period_cost_run(
+            origins_by_dir=origins,
+            pr_lists_by_repo={"github.com/acme/widgets": [_listed_pr(10, "feature-x", title="Feature X")]},
+        )
+        git_directories: list[str] = []
+
+        def run_and_pass_the_deadline_after_the_first_git_call(cmd, *args, **kwargs):
+            result = inner(cmd, *args, **kwargs)
+            if cmd[:5] == _GIT_ARGV_PREFIX:
+                git_directories.append(cmd[5])
+                clock.now = _DEADLINE + 1
+            return result
+
+        monkeypatch.setattr(subprocess, "run", run_and_pass_the_deadline_after_the_first_git_call)
+
+        report, _notices = _run_report(window=_window("2026-09-10", "2026-09-20"))
+
+        assert git_directories == [in_period_clone]
+        rows = _parsed_rows(report)
+        assert [row[3] for row in rows["acme/widgets"]] == ["$2.00"]
+        assert "Repository not determined" not in rows
 
 
 class TestResolutionFailures:
@@ -4704,6 +5020,32 @@ class TestNoticesAtReportLevel:
             "_Note: these figures use list rates that were due to be rechecked on 2026-09-20, so any rate change since then is"
             " not reflected._"
         ) in report.splitlines()
+
+    def test_a_model_whose_rate_expires_on_the_run_date_is_not_stale_and_one_that_expired_a_day_earlier_is(
+        self, projects_dir, monkeypatch
+    ):
+        day_before_run = _TODAY - timedelta(days=1)
+        monkeypatch.setattr(
+            pricing,
+            "_MODEL_RATE_EXPIRES",
+            {"claude-sonnet-5": _TODAY, "claude-opus-5": day_before_run},
+        )
+        _write_session(
+            projects_dir,
+            "models",
+            [
+                _hand_priced(1, 1, day=_FIRST_DAY, cwd=None),
+                _hand_priced(2, 1, day=_FIRST_DAY, cwd=None, model="claude-opus-5"),
+            ],
+        )
+        _install_fake(monkeypatch, origins_by_dir={}, pr_lists_by_repo={})
+
+        _report, notices = _run_report()
+
+        assert _lines_for(notices, "STALE PRICING") == [
+            f"list rates were due to be rechecked: claude-opus-5 (due {day_before_run.isoformat()}); any rate change since is"
+            " not reflected"
+        ]
 
     def test_pricing_integrity_fires_when_same_request_id_records_disagree_on_input_usage(self, projects_dir, monkeypatch):
         first = _priced(_MODEL, output=1000, input=1, ts=_stamp(1, _FIRST_DAY), request_id="req-1")
@@ -5422,6 +5764,8 @@ class TestPeriodCostReportSkillTripwire:
       misreports spend. Each route to the fallback must still point at Step 0's terminal-run duties.
     - Retention and settings: advice that raises `cleanupPeriodDays` without naming its cost, or an agent that edits a
       settings file, keeps every transcript of the account on disk longer without the engineer deciding it.
+    - Coverage limit: an agent that reads a quiet COVERAGE WARNING as proof of complete coverage lets an understated
+      report go out as complete.
     - The `GH UNAVAILABLE` kind list: a renamed or new kind otherwise leaves the skill with a dead or missing branch."""
 
     @staticmethod
@@ -5518,6 +5862,11 @@ class TestPeriodCostReportSkillTripwire:
             "The alternatives that add no retention are to run on the period's final day, or to run per week and keep the"
             " figures in the engineer's own terminal."
         ) in retention_item
+
+    def test_the_retention_item_says_no_coverage_warning_is_not_proof_of_complete_coverage(self):
+        retention_item = self._pinned_item_text("retention")
+
+        assert "no warning is not proof of complete coverage" in retention_item
 
     def test_the_pricing_integrity_hold_presents_nothing_and_bars_sending_on_a_persisting_notice(self):
         hold_item = self._pinned_item_text("pricing_integrity_hold")

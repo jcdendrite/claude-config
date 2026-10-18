@@ -88,7 +88,8 @@ def _origin_url_match(url: str) -> re.Match[str] | None:
 
 def _origin_identity_from_url(url: str) -> tuple[str, str] | None:
     """Case-folded (host, owner/name) parsed from a git remote URL, or None when the URL is not a recognizable
-    host/owner/repo shape. Lenient by design: it accepts every shape the cwd-based callers have always accepted."""
+    host/owner/repo shape. Lenient by design: it accepts every shape `_GIT_REMOTE_HOST_OWNER_REPO_RE` matches,
+    including shapes `_vetted_origin_identity_from_url` rejects."""
     m = _origin_url_match(url)
     if m is None:
         return None

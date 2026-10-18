@@ -4374,8 +4374,12 @@ def build_parser() -> argparse.ArgumentParser:
             " that works for one project owner; no scope flags. Calls gh. --sample prints a synthetic report."
         ),
     )
-    p_period_cost.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
-    p_period_cost.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
+    p_period_cost.add_argument(
+        "--since", metavar="DATE", type=_iso_date, help="Inclusive start date, zero-padded YYYY-MM-DD; required unless --sample",
+    )
+    p_period_cost.add_argument(
+        "--until", metavar="DATE", type=_iso_date, help="Inclusive end date, zero-padded YYYY-MM-DD; required unless --sample",
+    )
     p_period_cost.add_argument(
         "--sample", action="store_true",
         help="Print the synthetic sample report; reads no transcript and runs no git or gh. Refuses --since and --until.",
