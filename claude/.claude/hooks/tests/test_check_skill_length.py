@@ -589,10 +589,10 @@ class TestCheckSkillLength:
 
     def test_byte_limit_never_fires_for_this_caller(self, isolated_home, new_skill_repo):
         """check-skill-length.sh calls _lib_staged_length_gate in its 2-arg
-        form, omitting BYTE_LIMIT — a new SKILL.md well over 25,600 bytes but
+        form, omitting BYTE_LIMIT — a new SKILL.md well over 30,720 bytes but
         under its line limit must still be allowed, proving the opt-in byte
         check stays opt-out for this caller."""
-        (new_skill_repo / SKILL_PATH).write_text("a" * 30000 + "\n")
+        (new_skill_repo / SKILL_PATH).write_text("a" * 40000 + "\n")
         subprocess.run(["git", "add", SKILL_PATH], cwd=new_skill_repo, check=True)
         assert (
             run_hook(
