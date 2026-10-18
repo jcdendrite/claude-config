@@ -32,6 +32,7 @@ from helpers import (
     build_path_with_silent_python3,
     build_path_without,
     heredoc_substitution,
+    init_git_repo,
     run_hook,
     run_hook_reason,
 )
@@ -723,6 +724,43 @@ class TestDenyPrivateProjectRefs:
             )
             == "deny"
         )
+
+    def _unborn_marker_repo_with_staged_file(self, tmp_path, staged_content):
+        """A remote-less repo with no commits, the marker written but uncommitted, and one file staged."""
+        repo = init_git_repo(tmp_path / "unborn-repo")
+        marker = repo / ".claude" / "private-projects-optin"
+        marker.parent.mkdir()
+        marker.write_text("")
+        (repo / "file.txt").write_text(staged_content)
+        subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+        return repo
+
+    def test_optin_marker_allows_clean_commit_in_repo_with_no_remote_and_no_commits(self, tmp_path):
+        """Control for the deny below: an armed repo with an unborn HEAD still
+        allows a commit whose staged content and message are clean."""
+        repo = self._unborn_marker_repo_with_staged_file(tmp_path, "def parse():\n    pass\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Refactor the parser'"),
+                cwd=repo,
+            )
+            == "allow"
+        )
+
+    def test_optin_marker_denies_staged_tracker_token_in_repo_with_no_remote_and_no_commits(self, tmp_path):
+        """A marker-armed repo with an unborn HEAD and no remote still scans
+        the staged diff, so a tracker token in staged content denies even
+        when the commit message is clean."""
+        repo = self._unborn_marker_repo_with_staged_file(tmp_path, "# Fix WIDGET-123 regression\n")
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input("git commit -m 'Refactor the parser'"),
+            cwd=repo,
+        )
+        assert reason is not None
+        assert "WIDGET-123" in reason
+        assert self._OPTIN_MARKER_PATH in reason
 
     def test_optin_marker_arms_gh_pr_create(self, private_projects_optin_repo):
         assert (

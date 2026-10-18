@@ -198,6 +198,19 @@
 #   3.11 drops such a line, as `deny-pii-in-commits.sh` records. BSD grep drops
 #   one whose first content byte is invalid, and this is unverified on other
 #   BSD greps. `deny-pii-in-commits.sh` shares the added-line extraction.
+# - On macOS, BSD sed aborts the quote-strip on scanned text holding a byte
+#   invalid in the active UTF-8 locale, such as a staged added line whose
+#   invalid byte is not its first content byte. The hook then fails closed
+#   with a "could not quote-strip the scanned content" deny that lists a
+#   missing, killed, or errored tool as the cause. Re-encode the file, or stop
+#   and ask the human. GNU grep 3.11 drops such a staged line before the
+#   quote-strip, so on Linux that line goes unscanned instead of denied. An
+#   `LC_ALL=C` change to the grep extraction and the quote-strip is a
+#   follow-up for both hooks.
+# - The hook never scans the path of a staged file, because the added-line
+#   filter drops path headers.
+# - The hook never reads the current branch name, which `git push` and a
+#   `gh pr create` without `--head` publish.
 # - Surfaces this hook never scans (such as `gh pr comment` and writing files)
 #   are listed in
 #   `docs/private-project-redaction.md` § "Opting in another repository".

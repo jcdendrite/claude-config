@@ -526,9 +526,9 @@ whole hook there: all three scans, with no per-scan switch.
 
 - Any off-allowlist tracker-ID token, including the repo's own, in an added
   diff line, in PR/issue text, or in a commit message whose commit stages a
-  non-empty diff. The scan covers the gated command's whole text, so a
-  tracker-shaped branch name or path argument denies too, and dropping the
-  argument is the only remedy.
+  non-empty diff. The scan covers the text typed into the gated command, so a
+  tracker-shaped branch name or path typed there denies too, and dropping it
+  from the command is the only remedy.
 - Every structural detector over added diff lines and command text. Long-hex
   hits include SHA-pinned workflow actions, image digests, lockfile hashes,
   full commit SHAs quoted in a PR body, and UUID fixtures. See
@@ -544,7 +544,10 @@ tracker IDs or carry hex digests, unless you accept rewording them. The tracker
 scan also denies ordinary technical terms shaped like uppercase letters, a
 hyphen, and digits, such as cipher, encoding, and time-zone names, when their
 prefix is not on the hook's allowlist. Those false positives go to the human,
-who extends the allowlist upstream in claude-config.
+who extends the allowlist upstream in claude-config. On macOS, scanned text
+holding a byte invalid in the active UTF-8 locale also denies, because BSD sed
+aborts the quote-strip, and the remedy is to re-encode the file; the hook
+header's Known gaps has the rest.
 
 **Coverage.** The gate catches a cooperative agent's honest mistakes. It is not
 a confidentiality control. The marker is a per-machine control, not a
@@ -555,7 +558,9 @@ contributor's own file. Wrapper forms, `$(...)`, `--fill`, and
 lists them. Surfaces it never scans include `gh pr comment`, `gh pr review`,
 `gh release create`, `gh gist create`, writing files, and any file git
 classifies as binary or a `.gitattributes` rule marks `-diff`. A later commit
-scans a written file's added lines, never its path. The backstop is a repo-owned pre-commit or
+scans a written file's added lines, never its path. The hook never reads the
+current branch name, so `git push` and a `gh pr create` without `--head`
+publish it unscanned. The backstop is a repo-owned pre-commit or
 server-side check; see [Limitations](security-hardening.md#limitations).
 
 Four narrower gaps also leave content unscanned: the message of a commit with
@@ -573,6 +578,7 @@ mkdir -p .claude
 cat > .claude/private-projects-optin <<'EOF'
 # Arms claude-config's private-project redaction gate in this repo.
 # Presence of this file is the whole switch.
+# Not a repo-level check: it screens only Claude Code sessions on machines with claude-config's hooks installed.
 EOF
 
 git add .claude/private-projects-optin
