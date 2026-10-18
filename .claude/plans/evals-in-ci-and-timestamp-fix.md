@@ -66,7 +66,10 @@ Add `evals/` as a fourth collection root to both CI pytest passes and to the Lin
   - `evals/test_review_bench_runner.py`: :789-818.
   - The implementer also greps the other evals test files for `perf_counter`, `elapsed`, `time.sleep` and subprocess timeouts, and marks any further test that asserts a wall-clock bound.
   - Each addition is listed in the PR body.
-- `install-dev.sh:113-114`: the printed "Run tests" and "Run lint" commands carry the same four roots as the root `CLAUDE.md` Commands block. `install.sh:954,970`: the printed `pytest` hints carry those roots too, and the block's heading `Optional (contributors): run the hook test suite` stays unchanged because `test_install_sh_contributor_intent_prompt.py:92-117` pins it.
+- `install-dev.sh:113-114`: the printed "Run tests" and "Run lint" commands carry the same four roots as the root `CLAUDE.md` Commands block.
+- `install.sh:954,970`: the printed `pytest` hints carry those four roots too.
+  - The block's heading `Optional (contributors): run the hook test suite` stays unchanged.
+  - `test_install_sh_contributor_intent_prompt.py:92-117` pins that heading.
 - `claude/.claude/scripts/tests/test_select_tests.py`:
   - Replace the two tests at :976-996 (and fold in the :998 claude-path variant) with one test parametrized over both fail-open trigger kinds, `pyproject.toml` and `.gitignore`: an evals path beside the trigger selects exactly `FULL_SUITE_TARGETS`. The parametrization keeps both return sites (`select-tests.py:861` global trigger, :865 unmatched path) covered, so a regression in either alone fails.
   - Replace :1572-1581 with a test that the `evals/` root absorbs `REVIEW_BENCH_TEST_GLOB` and `MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST`.
@@ -180,7 +183,9 @@ Rows:
 30. [engineer-verified: "mine_szz fix_date assertion"] The `mine_szz` `fix_date` assertion stays in scope.
 31. [engineer-verified: "README :101 pointer"] The README :101 pointer edit stays in scope.
 32. [engineer-verified: "Mark them timing (Recommended)"] The wall-clock-bound evals tests get the `timing` marker, which adds three test files to Critical files.
-33. [engineer-verified: "Include them"] `install-dev.sh:113-114` and `install.sh:954,970` are updated in this PR. `install-dev.sh` matches `SHELL_REGEX`, so Verification adds a shellcheck run; `test_install_sh_contributor_intent_prompt.py:92-117` pins only the hint block's heading, not the command lines [verified: grep].
+33. [engineer-verified: "Include them"] `install-dev.sh:113-114` and `install.sh:954,970` are updated in this PR.
+    - `install-dev.sh` matches `SHELL_REGEX`, so Verification adds a shellcheck run.
+    - `test_install_sh_contributor_intent_prompt.py:92-117` pins only the hint block's heading, not the command lines [verified: grep].
 34. Pytest prunes `evals/fixtures`, and ruff may still lint it.
     - [verified: pytest 8.4.2 `_pytest/pathlib.py:446-452`, `_pytest/main.py:427-428`, relayed from the SDET reviewer's read] A `norecursedirs` pattern containing `/` matches the full path, so `evals/fixtures` prunes that directory.
     - That resolves row 17's unverified status for pytest.

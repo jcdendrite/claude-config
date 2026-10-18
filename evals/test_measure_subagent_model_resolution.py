@@ -524,7 +524,8 @@ class TestRunClaudeToCompletion:
     def test_timeout_kills_descendants_of_the_child(self, tmp_path: Path) -> None:
         pid_file = tmp_path / "grandchild.pid"
 
-        _, timed_out = msmr._run_claude_to_completion(self._sleeping_grandchild_command(pid_file), tmp_path, 1)
+        # The deadline leaves the shell time to write the pid file before the group is killed. Nothing can write it afterwards.
+        _, timed_out = msmr._run_claude_to_completion(self._sleeping_grandchild_command(pid_file), tmp_path, 3)
 
         assert timed_out is True
         self._assert_stops_running(int(pid_file.read_text()))

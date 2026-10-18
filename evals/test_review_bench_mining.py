@@ -2167,19 +2167,23 @@ class TestMineReviewRoundsAgainstRealGit:
 
 class TestCommitDateWhenGitPrintsNothing:
     @pytest.mark.parametrize(
-        "commit_date",
+        ("commit_date", "empty_stdout"),
         [
-            pytest.param(mine_review_rounds._commit_date, id="review-rounds"),
-            pytest.param(mine_pr_comments._commit_date, id="pr-comments"),
+            pytest.param(mine_review_rounds._commit_date, "", id="review-rounds"),
+            pytest.param(mine_pr_comments._commit_date, b"", id="pr-comments"),
         ],
     )
-    def test_empty_git_output_is_no_date(self, tmp_path, monkeypatch, commit_date):
-        repo = _init_repo(tmp_path / "repo")
-        _write(repo, "app.py", "line0\n")
-        sha = _commit(repo, "seed")
-        _rewrite_author_date_output(monkeypatch, lambda _date_text: "")
+    def test_empty_git_output_is_no_date(self, tmp_path, monkeypatch, commit_date, empty_stdout):
+        """Pins that a zero-exit `git log` with empty stdout yields None rather than raising. A real `git log -1`
+        on an existing commit never prints nothing, so this guards the helper's empty-output branch, which
+        `canonical_fix_date("")` would otherwise turn into a ValueError. The review-rounds helper reads text and
+        the pr-comments helper reads bytes, so each gets its own type."""
+        monkeypatch.setattr(
+            subprocess, "run",
+            lambda command, **_kwargs: subprocess.CompletedProcess(command, returncode=0, stdout=empty_stdout),
+        )
 
-        assert commit_date(repo, sha) is None
+        assert commit_date(tmp_path, "deadbeef") is None
 
 
 # --- PR-comment miner ----------------------------------------------------------
