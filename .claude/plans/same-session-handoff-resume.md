@@ -67,14 +67,16 @@ The body has these steps:
 
 0. Run only when the engineer asked to resume in this session. Never run the skill on your own, including right after writing a handoff or brief (row 39). If this conversation already loaded a file through this skill, run the script again only with an explicit argument. With no argument, tell the engineer and stop.
 1. If `$ARGUMENTS` starts with `-` or contains any character outside `[A-Za-z0-9._/@+-]`, do not run the script; tell the engineer the accepted forms. Otherwise run `~/.claude/scripts/resume-context-same-session.sh $ARGUMENTS` as one Bash call (row 40). Never `Read` a path under `<config-dir>/handoffs/` or `<config-dir>/briefs/`, because that `Read` consumes the file before any check runs (row 7).
-2. On `LOAD:`, `Read` that path in full. Tell the engineer which `SOURCE:` file was consumed and its `AGE:`.
-   - First compare `SESSION_TARGET:` with the directory this session started in. The script keys on the Bash `$PWD`, so an earlier `cd` into another worktree yields a verdict for that worktree. If they differ, say so and stop without acting on the file.
-   - Then check the target. When the script printed `FILE_TARGET: none` and the file's §4 header (§3 in a brief) names a directory other than this session's, say so and stop without acting on the file. Tell the engineer to `cd` to that directory and run `claude --append-system-prompt-file <LOAD path>`. Also tell them that `find-consumed-continuity-file.sh <slug>` finds the copy later.
+2. On `LOAD:`, compare before reading.
+   - First compare `SESSION_TARGET:` with the worktree this session is anchored in: the working directory the environment context shows, or the `EnterWorktree` target. The script keys on the Bash `$PWD`, so an earlier `cd` into another worktree yields a verdict for that worktree. When `SESSION_TARGET:` is `none`, they match only if the anchored directory is not inside a linked worktree of any repository. If they differ, say so and stop before any `Read`, without acting on the file, and give the recovery text.
+   - Otherwise `Read` the `LOAD:` path in full. Tell the engineer which `SOURCE:` file was consumed and its `AGE:`.
+   - Then check the target. When the script printed `FILE_TARGET: none` and the file's §4 header (§3 in a brief) names a directory other than this session's, say so and stop without acting on the file, and give the recovery text.
+   - Recovery text: the file is already consumed, so tell the engineer to `cd` to the directory named here and run `claude --append-system-prompt-file <LOAD path>`. Also tell them that `~/.claude/scripts/find-consumed-continuity-file.sh <slug>` finds the copy later. The directory is the `FILE_TARGET:` path when it is a path (on `LOAD:` it equals `SESSION_TARGET:`), otherwise the directory the file's §4 header (§3 in a brief) names if the file was read and it is an absolute path made only of `[A-Za-z0-9._/@+-]`. When neither gives such a directory, the text says the directory is unknown and must come from the session that wrote the file, and names none.
    - Otherwise, continue from the file. Its artifact preamble governs.
-   - Track its pending and in-progress task-list items from the file, not from memory. Use the session's task-list tool if one exists, otherwise track them inline. This is the directive the shell path passes at `resume-context.sh:367`.
+   - Track its pending and in-progress task-list items from the file, not from memory. Use the session's task-list tool if one exists, otherwise track them inline. This is the directive the shell path passes at `resume-context.sh:379`.
    - Do not call `EnterWorktree`, and do not run the file's §7/§7.5 command. The script already matched the file to this session.
-3. On `SHELL_COMMAND:`, relay the line verbatim as a command for a new terminal, not as a slash command. When `FILE_TARGET: none` appears, add that the file names no worktree, so the command must be run from the directory the file was written in. When `SESSION_TARGET: unknown` appears, add that this session's worktree could not be determined (a path with a space or a failed git call), not that the file names another worktree. The file is still pending. Stop.
-4. On `CANDIDATE:` lines, relay them with any `MORE:` and `SKIPPED_UNPRINTABLE:` lines, and suggest `/resume-context <file name>` using a candidate's file name. On `STOP_REASON:`, relay it. Stop.
+3. On `SHELL_COMMAND:`, relay the line verbatim as a command for a new terminal, not as a slash command. When `FILE_TARGET: none` appears, add that the file names no worktree, so the command must be run from the directory the file was written in. When `SESSION_TARGET: unknown` appears, add that this session's worktree could not be determined (a path with a space or a failed git call), not that the file names another worktree. When `FILE_TARGET: unknown` appears, add that the script could not resolve one directory from the file, so the printed command has none, and that the engineer should check the file's own resume command outside this session (a `Read` here consumes it) and run that command in place of the printed one. The file is still pending. Stop.
+4. On `CANDIDATE:` lines, relay them with any `MORE:` lines, and relay `SKIPPED_UNPRINTABLE:` whenever it appears, saying that n pending files under `<config-dir>/handoffs/` or `<config-dir>/briefs/` have names with a character outside `[A-Za-z0-9._/@+-]`, so the script does not print them, that the engineer can resume one with the shell `resume-context` and its full path, and not listing or naming them. Suggest `/resume-context <file name>` only for a candidate whose `target` is the same path as `SESSION_TARGET:`, or is `none` when `SESSION_TARGET: none`, and never when either is `unknown`. Any other candidate needs the shell command on its `CANDIDATE:` line, and the list gets step 3's `SESSION_TARGET: unknown` caveat once when that line appears, while a `target none` or `target unknown` candidate gets step 3's caveat for that `FILE_TARGET:` value beside its shell command. On `STOP_REASON:`, relay it. Stop.
 5. On any other output, or when no recognized line appears, report the output and stop.
 
 One line of the body distinguishes `/resume-context` from the code-fenced shell `resume-context`.
@@ -88,65 +90,77 @@ One line of the body distinguishes `/resume-context` from the code-fenced shell 
 - **Pending set.** It holds the regular, non-symlink files that match `"$CONFIG_DIR"/handoffs/*-handoff.md` and `"$CONFIG_DIR"/briefs/*-task.md`.
   - A missing directory contributes nothing.
   - The glob skips names with a leading dot, which the hooks' `case` patterns do match (row 45). A test pins this difference.
-  - Names that fail the allowlist are dropped before any newline-joined collection is built. They are counted in one `SKIPPED_UNPRINTABLE: <n>` line, which is also printed beside `nothing-pending`.
+  - Names that fail the allowlist are dropped before any newline-joined collection is built. They are counted in one `SKIPPED_UNPRINTABLE: <n>` line. That line is printed with the candidate list and beside `nothing-pending`, and never with `not-pending`, the two-match list, `SHELL_COMMAND:` or `LOAD:`. So a `/resume-context <slug>` run whose own file has an unprintable name, while a different printable file is pending, gets `not-pending` with no skipped count (an accepted edge, because writers produce allowlisted names).
 - **Session target.** The script calls `_lib_linked_worktree_root "$PWD"` and maps the result to one of three states (rows 55, 56):
   - `linked`: exit 0 with a root.
   - `not-linked`: exit 0 with empty output. This covers a main checkout and a directory outside any repository.
   - `unknown`: exit 1.
 
   It prints `SESSION_TARGET: <path|none|unknown>` on every path that reaches a verdict.
-- **File target.** `F` is `_lib_continuity_file_resume_cwd <file>`. It is empty when the file's last own-basename resume command carries no usable `--cwd`.
+- **File target.** `F` is `_lib_continuity_file_resume_cwd <file>`, with three values: empty (the file holds no `--cwd` text anywhere), one absolute path (usable), or `unknown` (the script could not resolve one directory from the file). The script prints `FILE_TARGET: none`, the path, or `unknown`.
 - **Canonicalization.** A non-empty root and a non-empty `F` pass through `worktree_canon_path` before the comparison. §7's path is model-written (row 9), so it can name the same directory through a symlink.
 - **Verdict.** `_lib_resume_context_verdict STATE ROOT F` prints `load` or `shell`:
   - `linked`: `load` if `F` equals the root, otherwise `shell`.
   - `not-linked`: `load` if `F` is empty, otherwise `shell`.
   - `unknown`: always `shell`.
 
-  A main-checkout file whose model-written §7 carries `--cwd <main root>` therefore gets `shell`, which is safe but not seamless (Out of scope, residuals).
+  An `F` of `unknown` never equals a root and is never empty, so it gets `shell` in every state, and its `SHELL_COMMAND:` omits `--cwd`. A main-checkout file whose model-written §7 carries `--cwd <main root>` therefore gets `shell`, which is safe but not seamless (Out of scope, residuals).
 - **No argument.**
-  - Nothing pending → `STOP_REASON: nothing-pending`, naming `find-consumed-continuity-file.sh`.
+  - Nothing pending (checked before any argument, so an explicit-argument run on an empty pending set stops here too) → `STOP_REASON: nothing-pending`, naming `find-consumed-continuity-file.sh`. When `SKIPPED_UNPRINTABLE` is non-zero, the sentence says no pending file has a name inside the printable allowlist, not that none exists.
+  - Auto-load applies only to a `linked` session. A `not-linked` or `unknown` session has no target match, so it lists candidates, and the file name the announce gives is the argument to pass.
   - A target match is a pending file whose `F` is non-empty and equals a `linked` root. A fresh file is under 7 days old (`find -mtime +6` is false).
   - The script loads a file when exactly one fresh target match exists. Stale matches do not count toward "exactly one".
-  - Otherwise it lists up to 5 pending files as `CANDIDATE:` lines. Target matches come first, then everything else, each group newest first. Each line carries the file name, an age bucket, `target <path|none>`, and the file's shell command. A final `MORE: <n>` line appears when more files are pending. A stale match is listed, not loaded.
+  - Otherwise it lists up to 5 pending files as `CANDIDATE:` lines. Target matches come first, then everything else, each group newest first. Each line carries the file name, an age bucket, `target <path|none|unknown>`, and the file's shell command. A final `MORE: <n>` line appears when more files are pending. A stale match is listed, not loaded.
+  - **Parse bound.** A linked session parses every pending file once, because the target decides selection and order. A not-linked or unknown session sorts the pending set without parsing and parses only the at most 5 files it lists. Cache lookups total at most 5 times the pending count. Each parse runs a `grep` and a `tail`, and nothing sweeps pending files, so a linked no-argument run costs time proportional to the pending count (Out of scope, residuals).
 - **Explicit argument.** The argument matches a pending file only by exact equality with its full path, its file name, `<arg>-handoff.md`, or `<arg>-task.md`. The script never builds a path from the argument and never matches it as a pattern.
-  - No match → `STOP_REASON: not-pending`, naming `find-consumed-continuity-file.sh <arg>` and the accepted forms.
+  - No match among a non-empty pending set → `STOP_REASON: not-pending`, naming `find-consumed-continuity-file.sh <arg>` and the accepted forms.
   - Two matches (a handoff and a brief that share a slug) → a `CANDIDATE:` line for each, keyed by file name. Nothing moves.
-  - One match → the verdict decides. On `shell`, the script prints `SESSION_TARGET:`, `FILE_TARGET: <path|none>` and `SHELL_COMMAND: resume-context [--cwd F] <file>`.
+  - One match → the verdict decides. On `shell`, the script prints `SESSION_TARGET:`, `FILE_TARGET: <path|none|unknown>` and `SHELL_COMMAND: resume-context [--cwd F] <file>`.
 - **Load path.**
   - The script computes the age bucket from the pending path before the consume.
-  - Before consuming, `_lib_resume_context_tmpdir_root` must pass the allowlist. Otherwise the script prints `STOP_REASON: tmpdir-unprintable` and moves nothing. `mktemp`'s suffix is alphanumeric, so a passing root yields a printable destination.
-  - The script runs `resume-context.sh --consume-only <file>` and captures its stdout and exit status separately. It finds that script as its sibling, or through the test-only `RESUME_CONTEXT_CONSUMER` override, which mirrors `RESUME_CONTEXT_LAUNCHER` at `resume-context.sh:37-41`.
-  - The script accepts the result only when the exit is 0 and stdout is one line naming an existing regular file under the tmpdir root. It then prints `LOAD: <dest>`, `SOURCE: <file>`, `AGE: <bucket>`, `SESSION_TARGET:` and `FILE_TARGET: <path|none>`. It writes `_lib_print_recovery_hint <dest>` to stderr and exits 0.
-  - Any other result is a failure. If `<file>` still exists, the script prints `STOP_REASON: consume-failed` and the file stays pending. Otherwise it prints `STOP_REASON: consumed-elsewhere-or-partial`, naming `find-consumed-continuity-file.sh <slug>` (rows 41, 42). It never prints `LOAD:` after a failure and never tries another candidate.
+  - Before consuming, `_lib_resume_context_tmpdir_root` must be an absolute path that passes the allowlist. Otherwise the script prints `STOP_REASON: tmpdir-unprintable`, with the `resume-context [--cwd F] <file>` command to run for that file, and moves nothing. `mktemp`'s suffix is alphanumeric, so a passing root yields a printable destination.
+  - The script runs `resume-context.sh --consume-only <file>` and captures its stdout and exit status separately. It finds that script as its sibling, or through the test-only `RESUME_CONTEXT_CONSUMER` override, which mirrors `RESUME_CONTEXT_LAUNCHER` at `resume-context.sh:38-42`. The call sets `RESUME_CONTEXT_EXACT_SOURCE=1`, so the consumer never falls back to the legacy `$HOME/.claude` copy of a file that vanished after enumeration.
+  - The script accepts the result only when the exit is 0 and stdout is one line naming a regular, non-symlink file directly under the tmpdir root, owned by the caller with mode 0600. It then prints `LOAD: <dest>`, `SOURCE: <file>`, `AGE: <bucket>`, `SESSION_TARGET:` and `FILE_TARGET: <path|none>`, because `unknown` never loads. It writes `_lib_print_recovery_hint <dest>` to stderr and exits 0.
+  - Any other result is a failure. If `<file>` still exists, the script prints `STOP_REASON: consume-failed`, with the shell command to run for that file, and the file stays pending. Otherwise it prints `STOP_REASON: consumed-elsewhere-or-partial`, naming `find-consumed-continuity-file.sh <slug>` (rows 41, 42). It never prints `LOAD:` after a failure and never tries another candidate. The consumer's stderr passes through, so a lost race can print one of its own messages (`source file not found`, `failed to set permissions` or `failed to move`) beside `consumed-elsewhere-or-partial`.
 - **Age buckets.** The buckets are `<1d`, `1-7d` and `>7d`, computed with `find <file> -mtime +0` and `-mtime +6` on the pending path. The script uses neither `stat` nor `date -r`.
-- **Bash 3.2 and BSD.**
+- **Bash 3.2 and BSD** `[unverified]`: no Bash 3.2 or BSD userland was available, and CI runs only on `ubuntu-24.04`, so nothing here exercises it. The script follows these rules:
   - No arrays, `mapfile`, or associative arrays. Collections are positional parameters or newline-separated allowlisted paths, each with an emptiness guard (precedent: `nudge-handoff-near-context-cap.sh:372-381`).
   - Newest-first ordering uses `ls -t --` over allowlisted paths.
   - No `\s`.
+  - The constructs it still relies on, and most at risk on those platforms, are the runtime `LC_ALL=C` assignment before `${#tail_text}` (byte-count semantics), `set -- $tail_text ""` newline splitting under `set -f`, the `ls -ld` mode text with a trailing ACL marker, `find -maxdepth 0 -mtime` and `tail -c N < file`.
   - The script never prints file content, and every path it prints passes the allowlist.
 
 **Helpers in `claude/.claude/hooks/_lib.sh`**, beside the existing resume-context helpers (row 12).
 - `_lib_linked_worktree_root DIR` is extracted from `announce-resume-command.sh:85-96` (row 33). It has three outcomes, and it follows the precedent that exit 1 with empty stdout means "no result" (row 55):
   - Exit 0 with the root: DIR is in a linked worktree whose root passes `_lib_passes_path_char_allowlist`.
-  - Exit 0 with empty output: git answered "not linked". Either the git-dir equals the common-dir, or `rev-parse --git-dir` exited 128, which means not a repository (row 56).
+  - Exit 0 with empty output: git answered "not linked". Either the git-dir equals the common-dir, or `rev-parse --git-dir` exited 128, which is read as not a repository. 128 is also git's status for other fatal errors, so a dubious-ownership refusal, a working directory that no longer exists and a pruned worktree read the same way (row 56).
   - Exit 1 with empty output: unknown. This covers an empty DIR (no git runs), any other git status (a fired cap, a missing git, a later call failing), a git-dir or common-dir that is not a single-line absolute path (git older than 2.31, row 43; idiom at `_lib.sh:588-601`), and a linked root that fails the allowlist.
   - It keeps the exact call order and arguments of `:87-91`: `git -C DIR rev-parse --git-dir`, then `--absolute-git-dir`, then `--path-format=absolute --git-common-dir`, then `--show-toplevel`. Each call goes through `_lib_capped` (5s). The announce tests' git stub and timing shim match on those argument positions.
   - Callers capture it as `if root=$(…); then …; else …; fi`, which is safe under `set -euo pipefail`.
-- `_lib_continuity_file_resume_cwd FILE` returns the `--cwd` token of the last `resume-context` command in FILE whose path argument has FILE's own basename. §7 and §7.5 are the last numbered sections (row 60).
-  - It strips backticks and one trailing `/` from the token.
-  - It returns empty when no such command exists, when that command has no `--cwd`, when the token does not start with `/` (for example `.`, `../W` or `~`), or when the token fails the allowlist.
-  - It is a single `while IFS= read -r` loop using `case` and POSIX classes. It contains no `grep -m … |` pipe, which the `_lib.sh` lint sweeps in `test_hook_alignment.py` reject.
+- `_lib_continuity_file_resume_cwd FILE` returns what FILE's own `resume-context` commands say about `--cwd`. An own command is a line holding a `resume-context` or `*/resume-context` word and a word naming FILE's basename anywhere on it. §7 and §7.5 are the last numbered sections (row 60). On an own line, a `--cwd TOKEN` must be followed directly by FILE's basename, or that line's token is `unknown`: `--cwd /x other.md file.md` is such a line, while `--cwd /x other.md` alone names no own file and is ignored. It has three answers, and "absent" requires positive evidence:
+  - **Absent (empty).** `grep -q -F -e --cwd -- FILE` over the whole file, not piped, finds no match. This is the only answer that rests on that search. A grep status of 2 or more reads `unknown`.
+  - **Usable (one absolute path).** The file holds `--cwd` text, and the own commands in the scanned tail all name that one path, with backticks and one trailing `/` stripped and the allowlist satisfied.
+  - **`unknown` (`$_LIB_RESUME_CWD_UNUSABLE`).** Everything else: `--cwd=`, a missing, quoted, relative, `~`, non-allowlisted or space-split token (the word after the token must be FILE's basename), two disagreeing own tokens, `--cwd` text with no own command carrying it in the tail (a decorated line such as `**resume-context --cwd … file**`, `resume-context.sh`, or a command before the tail), and an unreadable file. An own command without `--cwd` neither overrides nor hides one with it, in either order.
+  - It tokenizes only the last 8192 bytes, dropping the cut first line, and only lines containing `resume-context`. The whole-file `--cwd` search is linear in the file's size. A trailing CR is ignored and a backslash-continued command is joined.
+  - It is in-memory splitting under `set -f` in a subshell, with `IFS` pinned. It contains no `grep -m … |` pipe, which the `_lib.sh` lint sweeps in `test_hook_alignment.py` reject.
   - It exits 0 in every case.
+  - **Why a sentinel.** The `unknown` answer rides stdout, though the session state uses an exit status (Alternatives set aside). A status cannot ride the script's cache rows (`<path> <target>`) or the verdict's three string arguments, and a non-zero status would abort the `set -e` script. `unknown` cannot collide with a usable value, because every usable value is an absolute path.
 - `_lib_resume_context_verdict STATE ROOT F` is the pure verdict described above. It exits 0, and its input matrix is unit-tested directly.
 
 **Announce hook** (row 33).
 - **Helper call.** The hook calls `_lib_linked_worktree_root "$PAYLOAD_CWD"` in place of the inline block. Exit 1 gives the bare command, as a failed git call does today. Its header's fail-posture list says so.
-- **Verdict.** The hook reads the written file's own target with `_lib_continuity_file_resume_cwd`, using the raw token without canonicalization. It runs `_lib_resume_context_verdict` against its own measured state. It advertises `/resume-context` only on `load`. Raw equality implies canonical equality, so the announce can under-promise but never promises a load that the script will refuse in the same worktree.
-- **`systemMessage` on `load`:** "Resume in this worktree — after /clear, or in a new session started here: /resume-context <file name>. Resume anywhere else (run in your shell): `<cmd>`". When the hook computed no `--cwd`, "this worktree" becomes "this checkout".
-- **`systemMessage` otherwise:** "Resume (run in your shell): `<cmd>`. /resume-context cannot confirm this file belongs to this worktree, because its resume command names a different --cwd or none."
-- **`systemMessage` on helper exit 1 (unknown session state):** "Resume (run in your shell): `<cmd>`. /resume-context cannot confirm this file belongs to this worktree, because this session's worktree could not be determined." The "different --cwd or none" reason would be false here.
-- **`additionalContext`** names the commands it advertised. It tells the model to relay them to the engineer and run none itself. It keeps the instruction to "use it verbatim instead of reconstructing it".
-- **No `--cwd` outside a linked worktree.** When the session is not in a linked worktree, neither message contains `--cwd` text.
+- **Verdict.** The hook reads the written file's own target with `_lib_continuity_file_resume_cwd`, using the raw token without canonicalization. It runs `_lib_resume_context_verdict` against its own measured state. It advertises `/resume-context` only on `load`. Raw equality implies canonical equality, so the announce can under-promise but never promises a load that the script will refuse in the same worktree. A `--cwd` that reaches the worktree through a symlink is the known difference: the hook withholds the slash form while the script canonicalizes and loads. A hook test pins it.
+- **`systemMessage` on `load`:** "Resume in this worktree -- after /clear, or in a new session started here: /resume-context <file name>. Resume in a new process (from any shell): `<cmd>`; change --cwd to resume in a different worktree". When the hook computed no `--cwd` (a session outside a linked worktree), "this worktree" becomes "this directory" and "(from any shell)" becomes "(run it from this directory)", because only `--cwd` pins where the new process starts; the "change --cwd" clause is dropped.
+- **`systemMessage` otherwise:** "Resume (run in your shell): `<cmd>`. /resume-context cannot confirm this file belongs to this worktree, because <reason>." A session outside a linked worktree reads "this directory" in place of "this worktree", as the `load` message does.
+  - **One rule for the command's `--cwd`, in both arms.** When the helper returned a usable `<F>` (non-empty, not `unknown`) that also passes the hook's own `_lib_passes_path_char_allowlist` re-check, the advertised command is `resume-context --cwd <F> <file>`. This is the command the script prints as `SHELL_COMMAND:` for the same file, except that the script spells a symlinked `<F>` by its canonical path and the hook prints the file's raw token. An `<F>` that fails the re-check reads as unusable. Without a usable `<F>`, the command keeps `--cwd <root>` (linked) or has no `--cwd` (outside a linked worktree).
+  - A linked session whose file names a usable `<F>` other than the root: "its resume command targets `<F>`, not this worktree (`<root>`)".
+  - A linked session with an absent, relative or unreadable target: "its resume command does not name this worktree (`<root>`) as an absolute --cwd".
+  - A session outside a linked worktree, with a usable target `<F>`: "its resume command targets `<F>`, and this session is not in a linked worktree".
+  - A session outside a linked worktree, with an unreadable target: "its resume target could not be resolved to one directory, and this session is not in a linked worktree". This wording holds for both causes of an unreadable target: an own `--cwd` that could not be read, and `--cwd` text elsewhere in a file whose own command carries none.
+- **`systemMessage` on helper exit 1 (unknown session state):** "Resume (run in your shell): `<cmd>`. /resume-context cannot confirm this file belongs to this worktree, because this session's worktree could not be determined." The other reasons would be false here.
+- **`additionalContext`** names the commands it advertised, with the scope "(in this worktree)" or "(in this directory)" after `/resume-context <file name>` on the `load` arm. It tells the model to relay them to the engineer and run none itself. It keeps the instruction to "use them verbatim instead of reconstructing them".
+  - **Provenance.** By default it says the commands "were computed from the resolved config dir and the working directory of this session". When the command's `--cwd` is a usable file target, it instead says the commands were computed from the resolved config dir except that the `--cwd` directory comes from the written file's own resume command, passed the path-character allowlist, and was not measured by the hook. It then also carries the mismatch reason beside the command, so the model never presents a file-written directory as session-derived.
+- **No `--cwd` text without a usable target outside a linked worktree.** A session outside a linked worktree with no usable `<F>` (an absent target, or one that could not be resolved) gets the bare form that the skills' templates prescribe, and neither message contains `--cwd` text. With a usable `<F>`, the `--cwd <F>` of the one rule above applies, so the command no longer depends on the directory the engineer runs it from and the message has no "run from `<F>`" clause.
 - **File name, not slug.** Both messages use the file name, not the slug. A handoff and a brief can share a slug but never a file name (row 64).
 
 **Kill switch.** The script consumes the file whether or not the `consume_durable_continuity` kill switch is set, as the shell `resume-context` does (row 29). The `Read` hook remains the backstop for a direct `Read`.
@@ -165,7 +179,7 @@ One line of the body distinguishes `/resume-context` from the code-fenced shell 
 - **A sidecar recording the writer's PID or worktree**, to find "this process's" file: it adds new state with its own cleanup, while §7 already tells files apart (Out of scope, row 9).
 - **Reading empty helper output as "not linked":** a linked worktree whose path holds a space, or a git timeout, would then load a file with no `--cwd` into the wrong worktree.
 - **A stdout sentinel such as `unknown` for the third state:** it mixes a token into a path-valued output. Exit 1 already means "no result" in `_lib_repo_root` and `_lib_main_repo_root` (row 55).
-- **Explaining the refusal only in the script:** after `/clear`, the script cannot know the writer's worktree, so it cannot offer the measured `--cwd`. Only the announce hook has that root in hand.
+- **Explaining the refusal only in the script:** after `/clear`, the script cannot know the writer's worktree, so it cannot offer the writer's measured `--cwd` root. Only the announce hook has that root in hand, and it offers it only when the file names no usable target of its own.
 - **Having the announce tell the model to `Edit` §7 when its `--cwd` disagrees:** it makes §7 partly mechanical (Out of scope, row 9), and it rests on unverified edit-after-write behavior.
 
 ### Compact as an alternative to handoff (D1 option A, D3)
@@ -224,7 +238,7 @@ One line of the body distinguishes `/resume-context` from the code-fenced shell 
 
 **Alternatives set aside:**
 - **A compact branch in the warrant step:** this is D1 option B.
-- **Changing the consumers' reading rule**, so that `already_fired` with `over_threshold:false` means "nudged earlier": this edits `ready-for-review/SKILL.md` and `plan-it/SKILL.md`, which are outside the Ask, plus their pins (`test_skills.py:5667`, `:5718`, `:5776`). The problem lies in how one field is computed.
+- **Changing the consumers' reading rule**, so that `already_fired` with `over_threshold:false` means "nudged earlier": this edits `ready-for-review/SKILL.md` and `plan-it/SKILL.md`, which are outside the Ask, plus their pins (`test_skills.py:5784`, `:5835`, `:5893`). The problem lies in how one field is computed.
 - **Resetting the fired marker on compaction**, through a SessionStart(compact) hook or shrink detection on the fire path: the hook would then re-fire at an estimate below an earlier fire's. The lag join's first-crossing rule maps that fire back to the pre-compaction turn, and `rearm-backtest`'s band simulation does not model the reset (row 20).
 - **A `# Compact instructions` section in CLAUDE.md:** it is always loaded, and it also steers auto-compactions.
 - **SessionStart(compact) injection:** it fires after the choice has been made.
@@ -263,9 +277,9 @@ Resolved: option A, via the engineer's selected label "A: pin, don't delete (Rec
 | 4 | Compaction is offered as an option. The shipped criteria (D3, rows 51-52) replace the quoted phrasing: the efficiency conjunct became the timing sentence, and the docs' "corrected more than twice" clause was added | `[engineer-verified: "Make compact an efficient option to use if the same files need to be opened by the main session and it would be more efficient to use compaction than clearing and resuming from handoff file"]` |
 | 5 | Same-session resume and the compact option ship together | `[engineer-verified: "Those options aren't mutually exclusive"]` |
 | 6 | `token-cost-reduction.md:173-174` records "Compaction is not an acceptable mechanism in this workflow". Its objection, the continuity of the review narrative (`:80-88`), is mitigated by the always-loaded instruction to run `review-ledger.sh render` after compaction mid-review | `[verified: token-cost-reduction.md:73-92, :173-174; claude/.claude/CLAUDE.md:123]` |
-| 7 | A `Read` of `<config-dir>/handoffs/*-handoff.md` or `briefs/*-task.md` consumes the file. The `mktemp` destination matches neither glob | `[verified: consume-durable-continuity-file-on-read.sh:119-131; resume-context.sh:321]` |
-| 8 | `--consume-only` is the single implementation of the move (move, index row, `chmod 600`), and its stdout is exactly the destination | `[verified: resume-context.sh:11-16, :68-70, :321-347]` |
-| 9 | The authoring model writes §7 and §7.5 from the skill template ("If §4 named a worktree"). The announce hook computes its own command and writes nothing into the file. `check-handoff.py` checks only that §7 names its own file. So §7's `--cwd` can be absent, can name the directory through a symlink, or can carry `~` | `[verified: handoff/SKILL.md:133; brief/SKILL.md:97; announce-resume-command.sh:98-113; check-handoff.py:173-184]` |
+| 7 | A `Read` of `<config-dir>/handoffs/*-handoff.md` or `briefs/*-task.md` consumes the file. The `mktemp` destination matches neither glob | `[verified: consume-durable-continuity-file-on-read.sh:123-133; resume-context.sh:333]` |
+| 8 | `--consume-only` is the single implementation of the move (move, index row, `chmod 600`), and its stdout is exactly the destination | `[verified: resume-context.sh:11-17, :73-75, :326-358]` |
+| 9 | The authoring model writes §7 and §7.5 from the skill template ("If §4 named a worktree"). The announce hook writes nothing into the file. It builds its command from its own measured root, or from the file's own usable `--cwd` target when the file names one that differs from the session's. `check-handoff.py` checks only that §7 names its own file. So §7's `--cwd` can be absent, can name the directory through a symlink, or can carry `~` | `[verified: handoff/SKILL.md:133; brief/SKILL.md:97; announce-resume-command.sh:130-134, :165-183 (the root-built command and the file-target arm); check-handoff.py:173-184]` |
 | 10 | §4's header is free-form prose | `[verified: handoff/SKILL.md:121]` |
 | 11 | The linked-worktree predicate is written inline at six sites with no shared helper. `_lib_repo_root` and `_lib_main_repo_root` compute a different predicate | `[verified: grep git-common-dir across hooks/ and scripts/ (prior draft); _lib.sh:573-601]` |
 | 12 | The resume-context helpers already in `_lib.sh` are used only by scripts | `[verified: grep — _lib_resume_context_tmpdir_root, _lib_resume_context_index_dir and _lib_print_recovery_hint appear only in _lib.sh, resume-context.sh and find-consumed-continuity-file.sh]` |
@@ -297,11 +311,11 @@ Resolved: option A, via the engineer's selected label "A: pin, don't delete (Rec
 | 38 | Composing the focus line every time costs less than a round trip past the threshold. The round trip re-reads the whole context, by the nudge's own premise that per-turn cost rises with carried context | `[unverified]` |
 | 39 | Name-only lets the model invoke the skill by name. Only step 0 and the announce wording keep it from invoking the skill on its own | `[verified: docs/skills.md:85]`; that the guard holds: `[unverified]` (7g; fallback row 57) |
 | 40 | The charset `[A-Za-z0-9._/@+-]` contains no shell metacharacter or quote | `[verified: _lib.sh:318-327]` |
-| 41 | `--consume-only` can exit 1 after the move, when `chmod` fails | `[verified: resume-context.sh:321-342]` |
-| 42 | Two concurrent consumes of one file have a single winner. The loser exits 1 without moving the file and leaves an empty file from `mktemp` | `[verified: resume-context.sh:292-326]` |
+| 41 | `--consume-only` can exit 1 at two positions when `chmod` fails: before the move, from `chmod 600 -- "$SRC"` with the file still pending, and after the move, from the destination `chmod`, with the file already moved | `[verified: resume-context.sh:328-331, :351-354]` |
+| 42 | Two concurrent consumes of one file have a single winner. The loser exits 1 without moving the file. Depending on when it arrives, it fails at the existence check (`source file not found`), at the source `chmod` (`failed to set permissions`), or at its own `mv` (`failed to move`). Only the last leaves an empty 0600 file from `mktemp`, because the first two fail before `mktemp` runs | `[verified: resume-context.sh:297-304, :328-338]`; the race ordering is read from the code, not run |
 | 43 | Git older than 2.31 echoes `--path-format=absolute` as output and exits 0 | `[verified: _lib.sh:584-587]` |
 | 44 | `_lib_config_dir` strips a trailing slash and refuses a relative `CLAUDE_CONFIG_DIR` | `[verified: _config.sh:71-85]` |
-| 45 | A shell glob skips names with a leading dot, which the hooks' `case` patterns match | `[verified: announce-resume-command.sh:78-81]` |
+| 45 | A shell glob skips names with a leading dot, which the hooks' `case` patterns match | `[verified: announce-resume-command.sh:110-113]` |
 | 46 | `permissions.allow` holds only exact-match entries, and the repo bars wildcards. An exact entry cannot match an argument form | `[verified: settings.json:3-33; CLAUDE.md "No wildcards in permissions.allow"]` |
 | 47 | Pending files are never swept, so stale files accumulate | `[unverified]` (platform review's observation) |
 | 48 | An edit to `settings.json` triggers `permissions.ask` | `[verified: settings.json:44]` |
@@ -312,7 +326,7 @@ Resolved: option A, via the engineer's selected label "A: pin, don't delete (Rec
 | 53 | The vendor docs say five things. `/compact` reads the conversation it summarizes, while `/clear` costs nothing. Compaction works when the discarded context is no longer needed. A mid-session `/compact` reads a warm cache, while after a break longer than the cache lifetime it "reprocesses the full history as uncached input" and "costs the most". The docs say to clear "when switching to unrelated work". The docs also say that a session corrected "more than twice on the same issue" should be cleared | `[verified: code.claude.com/docs/en/costs § "Why usage climbs in a long session"; code.claude.com/docs/en/prompt-caching § "Compacting the conversation"; code.claude.com/docs/en/context-window § "When your context fills up"; code.claude.com/docs/en/best-practices § "Course-correct early and often"; fetched 2026-10-17 by the session's verify-sources run; quoted in this dispatch, not re-fetched here]` |
 | 54 | PostToolBatch exit 2 "Stops the agentic loop before the next model call", so no model composes a focus line at a hard block. A bare `/compact` is a valid form | `[verified: docs/handoff-nudge.md:22; .claude/plans/handoff-hard-block.md:28 quoting code.claude.com/docs/en/hooks]`; bare form: `[verified: row 53's prompt-caching quote, "run `/compact` at a natural break"]` |
 | 55 | `_lib_repo_root` and `_lib_main_repo_root` signal "no result" with exit 1 and empty stdout. A caller that branches on `_lib_capped`'s exit status must fail closed on every status it does not recognise | `[verified: _lib.sh:571-572, :586-587, :114-117]` |
-| 56 | `git rev-parse --git-dir` exits 128 outside a repository. 128 is also git's status for other fatal errors, such as a dubious-ownership refusal, which therefore reads as "not linked" | `[unverified]`; the outside-repo half is pinned by a `test_lib.py` case |
+| 56 | `git rev-parse --git-dir` exits 128 outside a repository. 128 is also git's status for other fatal errors, so three causes read as "not linked": a dubious-ownership refusal, a working directory that no longer exists, and a linked worktree whose gitdir entry was pruned | Removed working directory: `[verified: git -C <nonexistent dir> rev-parse --git-dir printed "fatal: cannot change to …" and exited 128, run this session]`. Dubious ownership and pruned worktree: `[unverified]`. The outside-repo half is pinned by a `test_lib.py` case |
 | 57 | `user-invocable-only` hides the skill and bars model invocation while keeping it typeable by the user | `[verified: docs/skills.md:86]` |
 | 58 | The cost-lever register supersedes a row with a dated follow-up paragraph instead of editing it. Its row on `/compact` guidance gives the narrowed compaction stance as part of its reason | `[verified: docs/cost-levers-considered.md:12-15, :330]` |
 | 59 | `--check` returns from `run_check_mode`, called at `:450-451`, before the fire path's top-level marker read at `:565-578` runs. A function it calls must be defined above `:450` | `[verified: nudge-handoff-near-context-cap.sh:313, :450-451, :565-578]` |
@@ -320,7 +334,7 @@ Resolved: option A, via the engineer's selected label "A: pin, don't delete (Rec
 | 61 | Four detector tests already run the hard block's previous wording through the detector | `[verified: test_transcript_handoff_signal_response_detection.py:24-41, five references to _handoff_hard_block_attachment()]` |
 | 62 | A transcript marks a compaction with an `isCompactSummary` record. Whether that record tells a user `/compact` from an auto-compaction is unknown | Record: `[verified: handoff_nudge.py:363-368]`; distinction: `[unverified]` |
 | 63 | `RESUME_CONTEXT_TMPDIR` relocates both the consume destination and the consumed-file index | `[verified: _lib.sh:4515-4552]` |
-| 64 | A handoff and a brief can share a slug but never a file name, since their suffixes differ | `[verified: announce-resume-command.sh:79]` |
+| 64 | A handoff and a brief can share a slug but never a file name, since their suffixes differ | `[verified: announce-resume-command.sh:111]` |
 | 65 | Row 52's acceptance covers both reshapings of row 4's condition (efficiency conjunct → timing sentence; corrections clause added) | `[engineer-verified: "Yes, both covered"]` |
 | 66 | Skill bodies larger than the 5,000-token post-compaction re-injection cap (row 26) come back partial. Measured with `wc -c`: `code-review` 82,154 bytes, `plan-review` 32,117, `ready-for-review` 25,163, `handoff` 19,108, `plan-it` 18,180, `brief` 11,915. At about 4 bytes per token (an estimate, not measured), that is roughly 20.5k, 8.0k, 6.3k, 4.8k, 4.5k and 3.0k tokens, so three exceed the cap | `[verified: wc -c this session]`; which end of a body survives: `[unverified]` |
 | 67 | `handoff_signal_response.py:254` counts a `--check` result as a signal when `over_threshold` or `already_fired` is true, so signal counts before and after this PR's merge date are not like-for-like | `[verified: handoff_signal_response.py:254, reported by this session's staff-product review]` |
@@ -356,7 +370,7 @@ Row 4's first conjunct survives as the criterion about files already read. Its e
   - A stdout sentinel mixes a token into a path-valued output, while exit 1 already means "no result" in two `_lib.sh` helpers.
 - **The announce hook runs the same verdict before advertising the slash form** (`anchors: row9`, `row33`). Two lighter options were checked:
   - Always advertising it promises a load the script refuses whenever the model left `--cwd` out of §7.
-  - Explaining the refusal only in the script cannot offer the writer's measured `--cwd`, because after `/clear` only the announce hook ever had it.
+  - Explaining the refusal only in the script cannot offer the writer's measured worktree root, because after `/clear` only the announce hook ever had it. The hook offers that root only when the file names no usable target of its own.
 - **File names, not slugs, in the announce and candidate lines** (`anchors: row64`). The lighter option is to keep slugs. It fails because a handoff and a brief sharing a slug make the suggested argument resolve to two files.
 - **Consuming via `--consume-only`, then reading the temp path, with a check of the tmpdir root first and every failed consume mapped to a `STOP_REASON`** (`anchors: row7`, `row8`, `row29`, `row41`, `row42`). The lighter option is to let the `Read` hook consume the file. It fails twice:
   - That hook honors a kill switch an explicit resume should ignore.
@@ -400,22 +414,34 @@ Each dispatch verifies with `.venv/bin/python3 claude/.claude/scripts/select-tes
   - calls the helper in place of `:85-96`;
   - runs the verdict on the written file before advertising `/resume-context <file name>`;
   - gets the new messages.
-  - Its header changes in three places: the fail-posture line, a line saying it reads the written file's own resume command, and a "Known gaps" line saying that a worktree path with a space drops both `--cwd` and the slash form.
+  - Its header changes in these places: the fail-posture line, a line saying it reads the written file's own resume command, the list of the three reasons for a shell-only announce (with "this directory" for a session outside a linked worktree), the rule that a usable file target becomes the shell command's `--cwd` in both mismatch arms, the allowlist paragraph (the file's target is checked again before interpolation), the note that a removed or git-refused worktree reads as "not in a linked worktree", and a "Known gaps" line saying that a worktree path with a space drops both `--cwd` and the slash form. The Known gaps also gain the raw-token comparison (a symlinked spelling of this worktree gets the shell-only announce), and the same-character-set directive residual now covers the file's `--cwd` directory as well as the filename.
 - `claude/.claude/settings.json` — adds `"resume-context": "name-only"` to `skillOverrides` (row 2a). This edit triggers the engineer's approval prompt (row 48).
-- `claude/.claude/scripts/resume-context.sh` — header comment `:13-16` only, naming the new caller of `--consume-only`.
+- `claude/.claude/scripts/resume-context.sh` — header comment `:13-17` naming the new caller of `--consume-only`, plus the `RESUME_CONTEXT_EXACT_SOURCE` opt-out of the legacy-location fallback, and a `chmod 600 -- "$SRC"` (`:328`) after the symlink refusal and launcher check but before `mktemp` and `mv`, so no moment exists at which another uid could open the destination. The shell `resume-context` path shares this edit: when that `chmod` fails it now exits 1 before consuming, with the file still pending. Before, its only exit 1 of this kind came after the move, from the destination `chmod` (`:351`), which stays.
+- `claude/.claude/scripts/select-tests.py` — one `CROSS_DOMAIN_EXCEPTIONS` row sending `resume-context/SKILL.md` to `SCRIPTS_TESTS_DIR`, because the script's test reads that file by path (for the key names and the argument character set).
+- `claude/.claude/scripts/tests/test_select_tests.py` — the table-completeness tests need two entries for that row: `RESUME_CONTEXT_SKILL_MD` in `_EXACT_MATCH_LITERAL_PATH_CONSTANTS`, and the pair (`test_resume_context_same_session.py`, `resume-context/SKILL.md`) in `_KNOWN_CROSS_DOMAIN_READS`.
+- `claude/.claude/scripts/tests/test_resume_context.py` — two consumer-layer tests of the source `chmod`, both through a PATH-shimmed command:
+  - `test_source_is_owner_only_when_the_move_runs`: a shimmed `mv` lists every non-option argument, so the source entry is captured wherever `--` sits, and the test asserts that source entry reads `-rw-------` at the instant `mv` runs, from a 0664 source.
+  - `test_source_chmod_failure_exits_before_the_move_and_leaves_the_source_pending`: a shimmed `chmod` that fails when the source is an argument gives exit 1, empty stdout, a "failed to set permissions" message, the source untouched (content and mode) and no `resume-context.*` file under the temp-dir root.
 - `claude/.claude/hooks/consume-durable-continuity-file-on-read.sh` — header comment `:3-12` only. A direct `Read` is the backstop, and `/resume-context` consumes through `resume-context.sh` and reads a temp path the globs don't match.
 - `claude-skills/skills/tests/test_skills.py`:
-  - `_RESUME_CONTEXT_SAME_SESSION_OUTPUT_KEYS = ("LOAD", "SOURCE", "AGE", "SESSION_TARGET", "FILE_TARGET", "SHELL_COMMAND", "CANDIDATE", "MORE", "SKIPPED_UNPRINTABLE", "STOP_REASON")`. The body must name each key backticked. The precedent is `_PLAN_PUSH_PREFLIGHT_OUTPUT_KEYS` and its parametrized test at `:5621`, `:5647`.
-  - Right-bounded pins of nine clauses:
+  - The output-key list has one home, `_EMITTED_KEYS` in `test_resume_context_same_session.py`, which also checks that the body names each key backticked.
+  - Right-bounded pins of sixteen clauses:
     - step 0's run-only-when-asked;
     - step 0's no-argument re-run guard;
-    - step 2's `SESSION_TARGET:` comparison with the starting directory;
-    - step 3's `SESSION_TARGET: unknown` relay clause;
     - step 1's refuse-and-tell condition, including the literal bracket set;
     - step 1's never-`Read`;
+    - step 2's `SESSION_TARGET:` comparison with the anchored worktree, including the `none` rule, which stops before any `Read`;
+    - step 2's `Read` of the `LOAD:` path only after the comparison;
     - step 2's `FILE_TARGET: none` check-then-stop;
+    - step 2's recovery text;
     - step 2's no-`EnterWorktree`/no-§7;
-    - step 3's relay-and-stop.
+    - step 3's `FILE_TARGET: none` relay clause, which tells the engineer to run the command from the directory the file was written in, and which step 4 defers to for a `target none` candidate;
+    - step 3's `SESSION_TARGET: unknown` relay clause;
+    - step 3's `FILE_TARGET: unknown` relay clause, which names the engineer's own command as the one to run in place of the printed one;
+    - step 3's relay-and-stop;
+    - step 4's slash form only for a candidate whose `target` equals `SESSION_TARGET:`, or is `none` when `SESSION_TARGET: none`, never when either is `unknown`;
+    - step 4's caveats: the `SESSION_TARGET: unknown` caveat once for the list, and the `target none` / `target unknown` caveat beside each shell command;
+    - step 4's `SKIPPED_UNPRINTABLE:` relay, which gives the meaning and the shell `resume-context` route.
   - No change to `COMMAND_SKILLS`.
 - `claude/.claude/hooks/tests/test_lib.py` — new classes beside its existing tests of the resume-context helpers. Using this file instead of a new `test_lib_*.py` keeps the count of "six lib-level test files" in `.claude/rules/bash-unit-test-seams.md` true. Each case runs under `set -euo pipefail` and records both stdout and exit status through `if out=$(…); then …; else rc=$?; fi`.
   - `_lib_linked_worktree_root`, asserting status and output:
@@ -428,28 +454,37 @@ Each dispatch verifies with `.venv/bin/python3 claude/.claude/scripts/select-tes
   - `_lib_continuity_file_resume_cwd`: fixtures copy the producers' real shapes.
     - §7 in backticks, with and without `--cwd`;
     - a brief's §7.5 under its "§7 Out of scope" heading;
-    - a line naming another file, which is ignored;
-    - two own-basename commands with different `--cwd` values, where the last wins;
+    - `--cwd` text on a line naming another file, which reads `unknown`;
+    - two own-basename commands with different `--cwd` values, which read `unknown`; two agreeing ones read the path;
+    - `--cwd /x other.md file.md` beside a valid own line, which reads `unknown` (an own line whose token is not followed by FILE's basename), and `--cwd /x other.md` beside a valid own line, which names no own file and is ignored;
+    - a later own line without `--cwd` is ignored, and an earlier one does not hide a later one with it;
     - a trailing slash;
-    - `--cwd` values of `.`, `../W`, `~`, a space, `$(` and `;`, each returning empty;
-    - no match, which returns 0 with empty output.
-  - `_lib_resume_context_verdict`: seven cases. `linked` is crossed with `F` empty, equal or different. `not-linked` and `unknown` are each crossed with `F` empty or non-empty. `unknown` with `F` empty must give `shell`.
+    - a `--cwd` token that would glob to one real allowlisted directory (`workdi?`) reads `unknown`, with a control that the spelled-out directory reads that path;
+    - `--cwd` values of `.`, `../W`, `~`, `$(` and `;`, each reading `unknown`;
+    - a `--cwd` value split by a space, `**resume-context --cwd … {file}**` and `resume-context.sh --cwd … {file}`, each reading `unknown`;
+    - `--cwd` prose such as `yarn --cwd pkg` beside a bare §7 reads `unknown`, and beside a `--cwd` §7 reads that path;
+    - a file longer than the scanned tail: a bare own command in the tail with no `--cwd` text anywhere reads empty, and a `--cwd` command before the tail beside a bare own line in it reads `unknown`;
+    - no match with no `--cwd` text, which returns 0 with empty output;
+    - the whole-file `--cwd` search exiting with status 2 or more, and the search being unable to run, each read `unknown` and never the absent answer, and a failing tail read does the same. A `not-linked` verdict on each is `shell`, with a no-override control reading empty and `load` (`TestLibContinuityFileResumeCwd`, `test_only_a_whole_file_search_finding_no_cwd_text_reads_as_naming_no_worktree`, ids `search-exits-2`, `search-cannot-run`, `tail-fails`, `no-override-names-no-worktree`).
+  - `_lib_resume_context_verdict`: thirteen cases. `linked` is crossed with `F` empty, equal, different or `unknown`, and with an empty root and `F` empty or non-empty. `not-linked` is crossed with `F` empty, non-empty or `unknown`. The `unknown` state is crossed with the same three `F` values, and must give `shell` for `F` empty. One unrecognized state gives `shell`.
   - Build linked worktrees from `git_repo` (`hooks/tests/conftest.py:475`) with `git worktree add`.
 - `claude/.claude/scripts/tests/test_resume_context_same_session.py` (new).
-  - **Shared runner.** One runner builds the environment from scratch: `HOME`, `CLAUDE_CONFIG_DIR`, `RESUME_CONTEXT_TMPDIR` and `TMPDIR` under `tmp_path`, with `CDPATH` unset unless a test sets it. The runner rejects any stdout line whose key is outside a module-level `_EMITTED_KEYS` tuple (the same ten keys; duplication is allowed in test code). One test reads `claude-skills/skills/resume-context/SKILL.md` and asserts that it names each key backticked.
+  - **Shared runner.** One runner builds the environment from scratch: `HOME`, `CLAUDE_CONFIG_DIR`, `RESUME_CONTEXT_TMPDIR` and `TMPDIR` under `tmp_path`, with only `PATH` carried over, so `CDPATH` is absent by construction. The runner rejects any stdout line whose key is outside a module-level `_EMITTED_KEYS` tuple (the ten keys of the script's header contract). One test reads `claude-skills/skills/resume-context/SKILL.md` and asserts that it names each key backticked.
   - **Decoy test.** One test points `CLAUDE_CONFIG_DIR` elsewhere and asserts that a decoy under a stand-in `$HOME/.claude/handoffs` stays untouched.
   - **Fixtures.** Worktrees come from `scripts/tests/conftest.py::_make_worktree` (`:1532`) and `helpers.init_git_repo_with_commit` (`claude/.claude/tests/helpers.py:918`). Mtimes are set with `os.utime`, using values well inside each bucket (about 2 hours, 3 days, 10 days).
   - **One subprocess case per branch:**
     - No argument:
       - LOAD with decoys: another worktree's file, a file with no `--cwd`, and another slug all stay untouched; the file is moved and an index row written;
       - several fresh matches give candidates;
+      - a sole match aged half a day under 7 days loads and one aged half a day over is listed, and `AGE` reads `<1d` at 0.5 days, `1-7d` at 1.5 and 6.5 days and `>7d` at 7.5 days;
+      - a parse-count test with 12 pending files carrying `--cwd` counts 12 `tail` calls in a linked session and 5 elsewhere;
       - a stale match alone is listed, not loaded;
       - a fresh match plus a stale match for the same worktree loads the fresh one;
       - no match prints `SESSION_TARGET:`;
       - past 5 files, with distinct mtimes, target matches are listed first, then the newest others, and `MORE:` carries the right count;
       - a main checkout with one file that has no `--cwd` gives `CANDIDATE:` and no load;
       - nothing pending, with both directories missing and with only one present;
-      - all pending names unprintable gives `nothing-pending` beside `SKIPPED_UNPRINTABLE:`.
+      - all pending names unprintable gives `nothing-pending` beside `SKIPPED_UNPRINTABLE:`, with a sentence that does not claim no pending file exists.
     - Explicit argument:
       - by slug, by file name, and by absolute path;
       - a file older than 10 days, named by slug, loads with `AGE: >7d`;
@@ -459,12 +494,12 @@ Each dispatch verifies with `.venv/bin/python3 claude/.claude/scripts/select-tes
       - a slug that is a prefix of another slug does not match.
     - Verdicts and targets:
       - a file targeting another worktree gives `SHELL_COMMAND` and stays pending;
+      - in a main checkout and in a linked worktree, the decorated, long-file, unquoted-space and bare-own-line shapes each give `FILE_TARGET: unknown`, a `SHELL_COMMAND` without `--cwd`, and the file still pending; the earlier-without, later-with order gives the shell command with that `--cwd`;
       - a main-checkout file with no `--cwd` loads from a main checkout and prints `FILE_TARGET: none` on the LOAD path;
       - a linked-worktree session naming a file with no `--cwd` gives `SHELL_COMMAND`, `SESSION_TARGET: <root>` and `FILE_TARGET: none`, and the file stays pending;
       - unknown session state: a linked worktree under a path containing a space, and a git shim exiting 1, each with a file that has no `--cwd`, give no `LOAD:`, `SESSION_TARGET: unknown`, and the file still pending;
       - a session in a directory outside any git repo and one in a subdirectory of a worktree each print a defined token;
-      - a `--cwd` reached through a symlink still loads;
-      - `CDPATH` set gives the same result.
+      - a `--cwd` reached through a symlink still loads.
     - Config dir:
       - a non-default `CLAUDE_CONFIG_DIR` works;
       - a relative `CLAUDE_CONFIG_DIR` gives `config-dir-unresolved`;
@@ -477,30 +512,44 @@ Each dispatch verifies with `.venv/bin/python3 claude/.claude/scripts/select-tes
       - a tmpdir containing a space gives `tmpdir-unprintable`, and the file stays pending;
       - exit 1 with the file untouched gives `consume-failed`, and the file stays pending;
       - a stub that moves the file and exits 1 gives `consumed-elsewhere-or-partial` with no `LOAD`;
-      - exit 0 with empty stdout, with two lines, with a path outside the tmpdir root, or with a nonexistent path each give no `LOAD:` and a `STOP_REASON` that matches the file's state;
-      - a second run after a load gives `not-pending`.
+      - exit 0 with an unusable destination gives no `LOAD:` and a `STOP_REASON` that matches the file's state. Each of eight shapes breaks exactly one acceptance rule and runs with the file moved and untouched: empty stdout, two lines, a path outside the tmpdir root, a nonexistent path, a `..` segment, a nested subdirectory, a symlink, and a group- and world-readable file. A valid stub destination loads as the positive control. The `[ -O ]` ownership leg has no deny case;
+      - a stop before the move (a tmpdir containing a space, or a consumer that exits 1) names the file and the shell command to run for it;
+      - with `RESUME_CONTEXT_EXACT_SOURCE` set, a file that vanishes before the consume never loads the `$HOME/.claude` copy, and a control run that drops the variable does load it;
+      - a load leaves the destination owner-only and the consume in the production index;
+      - a second run after a load gives `not-pending` while another file is pending, and `nothing-pending` when none is.
     - Round trip: for a fixture file name containing dots and digits, run `announce-resume-command.sh` with a synthetic PostToolUse `Write` payload. Take the `/resume-context <file name>` it announces and assert that the script loads exactly that file. Also assert that every `CANDIDATE:` file name from a listing resolves to exactly that candidate.
-    - Every exit: a parametrized assertion that every non-zero exit prints a token.
+    - Hook-versus-script parity: for a non-symlink target `F`, the shell command the hook advertises equals the script's `SHELL_COMMAND:` for the same file. Two fixtures cover it: a linked session whose file names another worktree, and a main-checkout session whose file names a worktree. The symlink spelling is the one known difference.
+    - Every exit: `_Sandbox.run` asserts on every subprocess call that exit 0 comes with `LOAD:` and that a non-zero exit prints at least one `STOP_REASON:`, `CANDIDATE:` or `SHELL_COMMAND:` line. The check is any-of, so a non-zero exit with a stray `SHELL_COMMAND:` and no `STOP_REASON:` passes.
+    - **Skill contract.** `SKILL.md` is read by path for three checks. The key names it backticks equal the keys in the script's header contract. The bracket set in its step 1 equals the script's allowlist, compared over printable ASCII with `_lib_passes_path_char_allowlist`. The script applies that allowlist to its argument, with `a:b` refused and `a+b` passed.
   - **Rows 7 and 27.** Feed a `Read` of a real `LOAD:` path to every hook `settings.json` registers on PreToolUse `Read` (read from `settings.json` at test time) and to `consume-durable-continuity-file-on-read.sh`. Assert no deny and no move.
     - `settings.json` registers the hooks as `~/.claude/hooks/<name>.sh` while the runner pins `HOME` under `tmp_path`, so executing the literal string would run nothing. Resolve each registered command to `HOOKS_DIR/<basename>` as `test_announce_resume_command.py:23-30` does, and assert the file exists.
     - Add a positive control per hook (the same hook denies a path it is built to deny). For the consume hook, the control is that a `Read` of a pending `handoffs/*-handoff.md` path does move it.
 - `claude/.claude/hooks/tests/test_announce_resume_command.py`:
   - Replace the bare `"resume-context" in` checks with the full computed command (row 30).
-  - `/resume-context <file name>` appears in both channels in three cases: a linked worktree whose file carries the matching `--cwd`, a main checkout with no `--cwd`, and a file name containing dots and digits.
-  - The slash form is absent, with the shell command and the reason clause present, for a linked worktree whose file has no `--cwd` and for a main checkout whose file carries a `--cwd`.
+  - `/resume-context <file name>` appears in both channels in three cases: a linked worktree whose file carries the matching `--cwd`, a main checkout with no `--cwd`, and a file name containing dots and digits. The linked-worktree case also pins "(in this worktree)" and the session-measured provenance sentence in `additionalContext`, as the main-checkout case pins "(in this directory)".
+  - The slash form is absent, with the shell command and the reason clause present, in three cases:
+    - a linked worktree whose file has no `--cwd`, which keeps `--cwd <root>`;
+    - a linked worktree whose file names another usable directory `F`, which gets `--cwd F` and the reason "targets `F`, not this worktree";
+    - a main checkout whose file carries a usable `--cwd F`, which gets `--cwd F` with no "from `F`" clause.
+  - For the two `--cwd F` cases, `additionalContext` carries the reason and says the `--cwd` directory comes from the written file's own resume command and was not measured by the hook. It does not say the commands were computed from the session's working directory.
+  - A metacharacter-bearing `--cwd` in the file (`;`, `$(`, a leading `-`) is never interpolated in either session kind, and the announce falls back to the unresolved-target reason. A stand-in `_lib_continuity_file_resume_cwd` that wrongly returns such a path tests the hook's own allowlist re-check, with an allow twin that returns a clean path and sees it interpolated.
   - `additionalContext` carries the instruction to relay the commands and run none.
-  - The copy for a session outside a linked worktree contains no `--cwd`.
-  - A helper exit 1 falls back to the bare command, with no slash form, and its message carries the "could not be determined" reason, not the "different --cwd or none" reason.
+  - The load-arm copy for a session outside a linked worktree contains no `--cwd`. It reads "this directory" and "(run it from this directory)", never "from any shell". The not-confirmed copy without a usable target contains no `--cwd` either.
+  - A file whose `--cwd` reaches this worktree through a symlink gets the shell-only announce. This pins the known difference from the script, which canonicalizes and loads.
+  - A helper exit 1 falls back to the bare command, with no slash form, and its message carries the "could not be determined" reason, not the "does not name this worktree" reason. A missing payload cwd gives the same reason.
+  - An unreadable `--cwd` (`~`, relative, `.`) gives the shell-only announce with the "does not name this worktree" reason in a linked session. In a session outside a linked worktree it gives the "could not be resolved to one directory" reason, with no `--cwd` text and no word "different". `--cwd` prose beside a bare §7 in a main checkout gives that same reason, which does not claim that the command names a directory.
+  - A session outside a linked worktree reads "this directory", not "this worktree", in the not-confirmed sentence.
+  - A directory outside any repository (git exit 128) advertises the slash form for a file that names no `--cwd`. This pins the accepted residual of row 56.
   - The tests driven by the stub (`:350`, `:373`) and the timing test keep passing. Update only their message-text assertions.
 - `docs/skills.md`:
-  - A new `/resume-context` bullet, which is the canonical home for the two resume paths. It also states that the skill path loads the file into the conversation, where a later auto-compaction can summarize it, rather than into the system prompt. It notes that after `EnterWorktree` plus `/clear`, project hooks stay bound to the launch directory (G4).
+  - A new `/resume-context` bullet, which is the canonical home for the two resume paths. It states that a no-argument run auto-loads only in a linked worktree and lists candidates elsewhere, such as a main checkout, where the file name the announce gives is the argument. It also states that the skill path loads the file into the conversation, where a later auto-compaction can summarize it, rather than into the system prompt. It notes that after `EnterWorktree` plus `/clear`, project hooks stay bound to the launch directory (G4).
   - A `` | `/resume-context` | `` table row.
   - Counts updated per row 14, including `:35`'s list gaining the eleventh workflow utility and `:48`'s "ten of the eleven".
   - The `/handoff` and `/brief` bullets point to the new bullet.
 - `docs/scripts.md`:
   - A new entry for the script, covering its tokens, the three session states, candidate ordering and cap, the age buckets, the consume semantics and `RESUME_CONTEXT_CONSUMER`.
   - The `resume-context.sh` entry's list of callers of `--consume-only`.
-- `docs/hooks.md` — the `:178` (announce, now reading the file's resume command) and `:206` (consume) entries.
+- `docs/hooks.md` — the `:178` (announce, now reading the file's resume command, with the reason list and the file-sourced `--cwd` provenance), `:181` (the worktree-path-with-a-space known-gaps sub-bullet), `:185` (the raw-token comparison sub-bullet), `:186` (the directive residual sub-bullet) and `:207` (consume) entries.
 - `README.md` — `:74` (consume paths) and `:489` (resume sentence).
 
 **Phase 2 — compact alternative**
@@ -573,11 +622,13 @@ Each dispatch verifies with `.venv/bin/python3 claude/.claude/scripts/select-tes
 3. Run `.venv/bin/ruff check claude/.claude/ claude-skills/` and `scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck`.
 4. Confirm `git ls-files -s claude/.claude/scripts/resume-context-same-session.sh` shows `100755`.
 5. Run `/skill-review` on `resume-context/SKILL.md`; it is hook-enforced at commit.
-6. Before merge, `~/.claude/scripts` and `~/.claude/skills` resolve into the main checkout. So run this worktree's script by absolute path. Set both `CLAUDE_CONFIG_DIR` and `RESUME_CONTEXT_TMPDIR` to scratch directories created with mode 0700, never the real ones (row 63).
-   - a. Use a file whose §7 targets the current linked worktree. Expect `LOAD:`, the file gone from `handoffs/`, and a row printed by `find-consumed-continuity-file.sh <slug>` under the same two variables.
-   - b. Name a file that targets another worktree by its file name. Expect `SHELL_COMMAND:`, with the file still pending.
-   - c. From a main checkout, name a file with no `--cwd`. Expect `LOAD:` and `FILE_TARGET: none`.
-   - d. From a linked worktree, name a file with no `--cwd`. Expect `SHELL_COMMAND:` and `FILE_TARGET: none`, with the file still pending.
+6. Before merge, `~/.claude/scripts` and `~/.claude/skills` resolve into the main checkout. So run this worktree's script by absolute path. Set both `CLAUDE_CONFIG_DIR` and `RESUME_CONTEXT_TMPDIR` to scratch directories created with mode 0700, never the real ones (row 63). The script keys on the Bash `$PWD`, so each step names its cwd.
+   - Invocation, with `<scratch>` made by `mkdir -m 700`, `<scratch>/config/handoffs` and `<scratch>/tmp` created beneath it, and `<this-worktree>` this branch's checkout: `CLAUDE_CONFIG_DIR=<scratch>/config RESUME_CONTEXT_TMPDIR=<scratch>/tmp <this-worktree>/claude/.claude/scripts/resume-context-same-session.sh smoke-handoff.md`.
+   - Fixture: `<scratch>/config/handoffs/smoke-handoff.md` whose last line is `` `resume-context --cwd <path> <scratch>/config/handoffs/smoke-handoff.md` ``, or the same line without `--cwd <path>`. Recreate it before each step.
+   - a. Run from linked worktree A, with `<path>` set to A. Expect `LOAD:`, the file gone from `handoffs/`, and a row printed by `CLAUDE_CONFIG_DIR=<scratch>/config RESUME_CONTEXT_TMPDIR=<scratch>/tmp ~/.claude/scripts/find-consumed-continuity-file.sh smoke`.
+   - b. Run from linked worktree A, with `<path>` set to another linked worktree B. Expect `SHELL_COMMAND:`, with the file still pending.
+   - c. Run from the main checkout, with no `--cwd` in the fixture. Expect `LOAD:` and `FILE_TARGET: none`.
+   - d. Run from linked worktree A, with no `--cwd` in the fixture. Expect `SHELL_COMMAND:` and `FILE_TARGET: none`, with the file still pending.
 7. After merge, run these live checks. The PR body lists them as post-merge smoke checks. It also states that rows 36, 37 and 39 are unverified at merge. If row 36 proves false, the first `--check` after a compaction still reads stale, which is today's behavior. Record `claude --version`, each session's permission mode, and the results in a PR comment.
    - a. Re-run the probe (`/tmp/handoff-probe/probe.sh setup`, `snap`, `report`) and confirm G2 and G4. If the probe is gone, compare line 1 of `<config-dir>/sessions/<PID>` across a `/clear`.
    - b. In a linked worktree, run `/handoff`, `/clear`, then `/resume-context` with no argument.
@@ -622,15 +673,22 @@ Each dispatch verifies with `.venv/bin/python3 claude/.claude/scripts/select-tes
 - **Reviewer suggestions not taken:**
   - `/resume-context` lines inside the §7 and §7.5 templates. Whoever reads the file has already resumed, and the human sees the announce message instead.
   - A usage hint in `resume-context.sh`.
-  - A per-file line cap on the §7 parse. §7 is the file's last section, so a head cap would miss it, and pending files are small files the skills write.
+  - A head-anchored line cap on the §7 parse. §7 is the file's last section, so a head cap would miss it. The helper bounds tokenizing with a tail byte window instead (the last 8192 bytes, `_LIB_RESUME_CWD_TAIL_BYTES`), because pending files are not assumed small. The whole-file `--cwd` search stays linear in the file's size.
   - Composing the focus line only on request (row 38).
-  - A parity test between the skill's bracket set and `_lib.sh`'s allowlist. The step-1 pin already fixes the literal bracket set, and row 40 verifies that the literal holds no shell metacharacter.
   - A new test pinning the old hard-block wording against the detector. Four detector tests already do (row 61).
-  - A timing step for the no-argument scan. Nothing measured is slow. If the no-argument path is ever visibly slow, time `_lib_continuity_file_resume_cwd` over the real pending set then.
+  - A wall-clock test for the no-argument scan. The per-state parse bound is pinned by the parse-count test instead.
 - **FYI residuals:**
-  - An empty 0600 `resume-context.XXXXXX` file is left behind when a concurrent consume loses the race (row 42).
+  - An empty 0600 `resume-context.XXXXXX` file is left behind only when a concurrent consume passes the source `chmod`, then loses the race at its own `mv` (row 42). A loser that arrives earlier fails before `mktemp` and leaves nothing.
   - On macOS without `timeout`/`gtimeout`, each capped git call prints "running git uncapped" to stderr, which the skill ignores.
-  - A dubious-ownership refusal also exits 128, so it reads as "not linked" (row 56). A file with no `--cwd` could then load into such a checkout through an explicit argument.
+  - The announce hook echoes the file name, and the file's own `--cwd` directory when it is usable, verbatim into `additionalContext`. A same-character-set English directive (an instruction spelled only from `[A-Za-z0-9._/@+-]`) in either passes the allowlist. This is an accepted residual, recorded in the hook header. The `--cwd` directory is labelled in `additionalContext` as taken from the file, not measured by the hook.
+  - A dubious-ownership refusal, a removed working directory and a pruned worktree also exit 128, so each reads as "not linked" (row 56). Only the removed working directory was observed. A file with no `--cwd` could then load into such a session.
+  - With no argument, one fresh file whose own text names this worktree loads without a further choice. That text is model-written and unauthenticated, so a file planted in the shared directory can be selected this way; an explicit argument avoids it. The script header and `docs/scripts.md` record it. A decorated `--cwd` line (for example `**resume-context --cwd <other> file**`) beside a plain own command that names this worktree is ignored, so the file still loads.
+  - A rewrite of a pending file between the parse and the move loads bytes the verdict never saw. It needs a same-uid writer, who can already plant a matching file.
+  - The destination's `[ -O ]` ownership check has no deny test, because a foreign-owned fixture needs a second uid.
+  - `chmod 600 -- "$SRC"` follows a symlink, and it runs after the `[ -L ]` check. A same-uid swap in that gap narrows the file the symlink points to. It needs a same-uid writer, who can already `chmod` that file.
+  - A linked session's no-argument run parses every pending file (Script, No argument), and nothing sweeps pending files (row 47). One run of the helper over 200 pending files of 20 KB each took 1.4 s (about 7 ms per file) on this machine, so the accepted n is about 200 pending files. The figure covers the helper only, and one run is not a distribution. A retention sweep is the remedy past that and is out of scope.
+  - Any `--cwd` text in a main-checkout file, even in prose such as `yarn --cwd pkg`, reads `unknown` and gets the shell route instead of a load (`test_cwd_prose_beside_a_bare_own_command_is_unusable`). That is the fail-closed direction and costs seamlessness only.
+  - The skill's comparison of `SESSION_TARGET:` with the anchored worktree is prose, because no mechanical source for the anchor exists. Verification 7j tests one direction (an earlier `cd` into another worktree).
   - A main-checkout file whose §7 carries `--cwd <main root>` gets `SHELL_COMMAND` rather than a load. The verdict compares `F` only with a linked root.
   - A file with no `--cwd`, named explicitly from another project's main checkout, loads. Step 2's §4 check, which now runs before acting, catches the mismatch after the consume, and the recovery hint names the copy.
 - **Justified skill-review hits (platform-genericness).** The `Read`, `Bash` and `EnterWorktree` verbs and the §4/§7/§7.5 references in the skill body are deliberate. The skill is coupled to this repo's handoff and brief artifacts and to the consume-on-`Read` hazard.
