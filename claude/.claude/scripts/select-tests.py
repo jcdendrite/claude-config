@@ -406,11 +406,10 @@ MAPPED_ROOT_CLAUDE_DIRS: frozenset[str] = frozenset({
     Path(ROOT_SKILLS_DIR).name,
 })
 
-# Matches CI's own collectible pytest scope verbatim (see
-# .github/workflows/tests.yml's `pytest claude/.claude/ claude-skills/ plugins/` step).
-# Targeting plugins/ instead of enumerating individual plugin subtrees means
-# a new plugin gaining a tests/ directory is covered automatically.
-FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "claude-skills/", "plugins/")
+# Matches the positional roots of CI's pytest steps in .github/workflows/tests.yml.
+# Targeting plugins/ and evals/ instead of enumerating individual subtrees means
+# a new plugin or evals test gets covered automatically.
+FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "claude-skills/", "plugins/", "evals/")
 
 # Each path below forces a full-suite run rather than a domain selection:
 # - claude/.claude/tests/helpers.py's own DOMAIN_RULES match alone would
@@ -825,15 +824,6 @@ class SelectionResult(NamedTuple):
     triggering_paths: tuple[str, ...] = ()
 
 
-def _targets_outside_full_suite(targets: Iterable[str]) -> tuple[str, ...]:
-    """The targets no FULL_SUITE_TARGETS root's pytest walk collects (e.g.
-    the evals/ tests), sorted."""
-    roots = [root.rstrip("/") for root in FULL_SUITE_TARGETS]
-    return tuple(sorted(
-        target for target in targets if not any(_is_under(target, root) for root in roots)
-    ))
-
-
 def select_pytest_targets(changed_paths: Iterable[str]) -> SelectionResult:
     """Map a changed-path set to pytest targets via DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS.
 
@@ -841,11 +831,6 @@ def select_pytest_targets(changed_paths: Iterable[str]) -> SelectionResult:
     - the diff is empty
     - a global-trigger path is present (a domain match can never suppress it)
     - any changed path matches no rule at all
-
-    The two non-empty fail-open results also keep every domain-selected
-    target outside FULL_SUITE_TARGETS' roots (e.g. the evals/ tests), which
-    the full suite would not otherwise collect. The empty diff selects no
-    domain, so it adds none.
     """
     changed = list(changed_paths)
     if not changed:
@@ -868,13 +853,9 @@ def select_pytest_targets(changed_paths: Iterable[str]) -> SelectionResult:
 
     global_trigger_paths = tuple(path for path in changed if path in GLOBAL_TRIGGER_PATHS)
     if global_trigger_paths:
-        return SelectionResult(
-            FULL_SUITE_TARGETS + _targets_outside_full_suite(targets), True, "global-trigger", global_trigger_paths,
-        )
+        return SelectionResult(FULL_SUITE_TARGETS, True, "global-trigger", global_trigger_paths)
     if unmatched_paths:
-        return SelectionResult(
-            FULL_SUITE_TARGETS + _targets_outside_full_suite(targets), True, "unmatched-path", tuple(unmatched_paths),
-        )
+        return SelectionResult(FULL_SUITE_TARGETS, True, "unmatched-path", tuple(unmatched_paths))
 
     return SelectionResult(tuple(sorted(targets)), False, "domain-selected")
 

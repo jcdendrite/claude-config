@@ -801,6 +801,7 @@ class TestRecallAnswerParser:
         assert adjudicate.parse_recall_answer(answer, expected_ids=list(findings), normalized_findings_by_id=findings) is None
 
 
+@pytest.mark.timing
 class TestAnswerFormatMatchingIsLinearTime:
     _MAX_SECONDS = 1.0
     _LONG_LINE_LENGTH = 20_000

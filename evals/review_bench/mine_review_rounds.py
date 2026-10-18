@@ -32,7 +32,14 @@ if str(_SCRIPTS_DIR) not in sys.path:
 from transcript_analysis import corpus, pricing, review_rounds, reviewer_yield, scope  # noqa: E402
 
 from review_bench import mine_szz  # noqa: E402
-from review_bench.defects import Candidate, assert_unique_ids, escape_for_terminal, guess_lens, is_markdown_path  # noqa: E402
+from review_bench.defects import (  # noqa: E402
+    Candidate,
+    assert_unique_ids,
+    canonical_fix_date,
+    escape_for_terminal,
+    guess_lens,
+    is_markdown_path,
+)
 
 
 def resolve_scoped_sessions(roots: Sequence[Path] | None = None):
@@ -384,7 +391,8 @@ def _commit_date(repo_dir: Path, commit: str) -> str | None:
         )
     except _LOCAL_GIT_ERRORS:
         return None
-    return result.stdout.strip() or None
+    author_date = result.stdout.strip()
+    return canonical_fix_date(author_date) if author_date else None
 
 
 def _paths_touched_on_branch(repo_dir: Path, base: str, ref: str) -> frozenset[str]:

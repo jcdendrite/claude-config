@@ -33,6 +33,9 @@ This rationale applies equally to `measure_subagent_model_resolution.py` (see
 [below](#subagent-model-resolution-experiment)) — same subscription-auth
 subprocess launch, same never-CI posture.
 
+The harness scripts never run in CI. The `evals/test_*.py` unit tests do,
+because the tests of code that shells out to `claude` or `gh` substitute those calls.
+
 ## Usage
 
 ```bash
@@ -391,13 +394,8 @@ in `claude-skills/skills/tests/test_trigger_detector.py`; the fixtures live in
 
 ## Linting
 
-CI lints `claude/.claude/` only (`ruff check claude/.claude/`). For `evals/`:
-
-```bash
-ruff check evals/
-```
-
-Run locally before committing harness changes.
+CI lints `evals/` with the rest of the repo. The local command lives in the
+repo README's Tests section.
 
 ## Subagent model resolution experiment
 

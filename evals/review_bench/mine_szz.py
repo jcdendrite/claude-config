@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from review_bench.defects import Candidate, assert_unique_ids, guess_lens, is_markdown_path
+from review_bench.defects import Candidate, assert_unique_ids, canonical_fix_date, guess_lens, is_markdown_path
 from review_bench.identifiers import validate_base_ref
 
 # A candidate fix commit's subject must mention fix/bug/regression to be considered.
@@ -263,7 +263,7 @@ def _build_candidate(
 ) -> Candidate | None:
     try:
         parent = _run_git(["rev-parse", f"{introducing_sha}^"], cwd=repo_dir).strip()
-        fix_date = _run_git(["log", "-1", "--format=%aI", fix_commit], cwd=repo_dir).strip()
+        author_date = _run_git(["log", "-1", "--format=%aI", fix_commit], cwd=repo_dir).strip()
     except _GIT_CALL_ERRORS:
         # introducing_sha is a root commit with no parent, or a wedged git
         # call -- see _MineStats's own docstring for why these share one
@@ -273,6 +273,9 @@ def _build_candidate(
         return None
     if not parent:
         return None
+    # Git always prints a parseable date for a real commit.
+    # A bad value raises ValueError, which _GIT_CALL_ERRORS does not catch, so it aborts the sweep.
+    fix_date = canonical_fix_date(author_date)
     pr_match = _PR_SUFFIX_RE.search(subject)
     return Candidate(
         id=f"szz:{fix_commit[:12]}:{introducing_sha[:12]}:{path}",
