@@ -64,6 +64,8 @@ if [[ "$claude_version_output" =~ ([0-9]{1,9})\.([0-9]{1,9})\.([0-9]{1,9}) ]]; t
       break
     fi
   done
+else
+  echo "[install] warning: could not read a version from \`claude --version\`; confirm it is $CLAUDE_CODE_MINIMUM_VERSION or newer." >&2
 fi
 # INSTALL_TEST_FIXTURE: claude-code-version-check — end
 

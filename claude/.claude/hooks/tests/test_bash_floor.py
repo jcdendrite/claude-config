@@ -1,4 +1,4 @@
-"""Runtime bash floor check: the predicate, its five copies, and who reaches it.
+"""Runtime bash floor check: the predicate, its copies, and who reaches it.
 
 `_config.sh` opens with the floor check, and each hook-bearing plugin's `_lib.sh`
 carries a copy of the same constants, predicate and call. Below the floor the
@@ -6,12 +6,13 @@ sourcing file returns 1, which every gate bootstrap turns into a deny.
 
 Sections:
 
-- the predicate over a version matrix, in all five copies;
-- parity of the five copies, as sourced values and as normalized call text;
+- the predicate over a version matrix, in every copy;
+- parity of the copies, as sourced values and as normalized call text;
 - placement: the check is the first command, and no other shipped file defines it;
-- a text tripwire over six regions for post-3.2 syntax: the top of `_config.sh` and of each of
-  the four plugin `_lib.sh` copies through the `return 1` that closes the floor check, and the
-  top of `install.sh` through its `_config.sh` source line;
+- a text tripwire for post-3.2 syntax over these regions:
+  - the top of `_config.sh`, through the `return 1` that closes the floor check;
+  - the top of each plugin `_lib.sh` copy, through the same `return 1`;
+  - the top of `install.sh`, through its `_config.sh` source line;
 - the documentation headings the floor messages and floor docs cite;
 - sourcing `_config.sh` below, at and above the floor;
 - the scripts that source `_config.sh` and stop when it fails;
@@ -266,7 +267,7 @@ class TestPlacement:
             if rel_path not in definition_files
             and defines_floor((REPO_ROOT / rel_path).read_text(encoding="utf-8", errors="replace"))
         ]
-        assert definers == [], f"floor constants or predicate defined outside the five copies: {definers}"
+        assert definers == [], f"floor constants or predicate defined outside the floor copies: {definers}"
 
 
 _BANNED_PRE_FLOOR_PATTERNS = {
@@ -320,11 +321,7 @@ class TestFloorCheckRegionAvoidsPost32Syntax:
     and CI never has one, so these constructs would otherwise reach a user as a parse error
     instead of the fix message.
 
-    Six regions are scanned: the top of `_config.sh` and of each of the four plugin `_lib.sh`
-    copies through the `return 1` that closes the floor check, and the top of `install.sh`
-    through its `_config.sh` source line. The gate pre-bootstrap region (the code above each
-    gate's `_lib.sh` source line) and the pre-source region of the scripts that source
-    `_config.sh` or `_lib.sh` are not scanned, though `.claude/rules/shell-floor.md` binds both.
+    The module docstring lists the scanned and unscanned regions.
 
     The banned list is a recall net for the common spellings of each construct, not a parser."""
 

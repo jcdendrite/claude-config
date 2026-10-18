@@ -7,7 +7,7 @@ The block is extracted by its INSTALL_TEST_FIXTURE markers and run with a stub
 runs, and ends the script with a sentinel line, so a block that let a failed
 `claude --version` abort the run keeps the sentinel from printing. The stub
 answers only the exact argv `--version`, so a block that asks for the version any
-other way sees no version and stays silent.
+other way sees no version and warns that it could not read one.
 """
 from __future__ import annotations
 
@@ -27,21 +27,38 @@ _BASH = shutil.which("bash") or "bash"
 _FIXTURE_START = "# INSTALL_TEST_FIXTURE: claude-code-version-check — start\n"
 _FIXTURE_END = "# INSTALL_TEST_FIXTURE: claude-code-version-check — end"
 
+_PRESENCE_FIXTURE_START = "# INSTALL_TEST_FIXTURE: presence-check — start\n"
+_PRESENCE_FIXTURE_END = "# INSTALL_TEST_FIXTURE: presence-check — end"
+
+# Every tool in install.sh's presence-check loop except `claude`.
+_TOOLS_OTHER_THAN_CLAUDE = ("stow", "git", "gh", "jq", "sha256sum", "python3")
+
 _AFTER_BLOCK_SENTINEL = "reached the line after the block"
 
 # EX_USAGE from sysexits.h: the exit status for a command invoked with the wrong arguments.
 _STUB_USAGE_EXIT_STATUS = 64
 
+# Bounds a hung local bash run; no vendor value applies.
+_BASH_RUN_TIMEOUT_SECONDS = 10
 
-def _extract_claude_code_version_check_block() -> str:
+
+def _extract_marked_block(fixture_start: str, fixture_end: str) -> str:
     """Same marker-delimited extraction strategy as the other
     test_install_sh_*.py files."""
     install_text = _INSTALL_SH.read_text()
-    start = install_text.find(_FIXTURE_START)
-    assert start != -1, f"{_FIXTURE_START!r} not found in {_INSTALL_SH}"
-    end = install_text.find(_FIXTURE_END, start)
-    assert end != -1, f"{_FIXTURE_END!r} not found after start marker in {_INSTALL_SH}"
-    return install_text[start + len(_FIXTURE_START) : end]
+    start = install_text.find(fixture_start)
+    assert start != -1, f"{fixture_start!r} not found in {_INSTALL_SH}"
+    end = install_text.find(fixture_end, start)
+    assert end != -1, f"{fixture_end!r} not found after start marker in {_INSTALL_SH}"
+    return install_text[start + len(fixture_start) : end]
+
+
+def _extract_claude_code_version_check_block() -> str:
+    return _extract_marked_block(_FIXTURE_START, _FIXTURE_END)
+
+
+def _extract_presence_check_block() -> str:
+    return _extract_marked_block(_PRESENCE_FIXTURE_START, _PRESENCE_FIXTURE_END)
 
 
 def _claude_code_minimum_version() -> str:
@@ -50,23 +67,21 @@ def _claude_code_minimum_version() -> str:
     return match.group(1)
 
 
-def _run_claude_code_version_check(tmp_path: Path, *, version_script: str | None) -> subprocess.CompletedProcess:
+def _run_claude_code_version_check(tmp_path: Path, *, version_script: str) -> subprocess.CompletedProcess:
     """Run the block under `set -e` like install.sh, with a stub `claude` that runs
-    `version_script` for the argv `--version` and exits 64 silently for any other argv.
-    A None `version_script` leaves no `claude` on PATH."""
+    `version_script` for the argv `--version` and exits 64 silently for any other argv."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    if version_script is not None:
-        stub = bin_dir / "claude"
-        stub.write_text(
-            "#!/bin/sh\n"
-            'if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then\n'
-            f"{version_script}\n"
-            "else\n"
-            f"exit {_STUB_USAGE_EXIT_STATUS}\n"
-            "fi\n"
-        )
-        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+    stub = bin_dir / "claude"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then\n'
+        f"{version_script}\n"
+        "else\n"
+        f"exit {_STUB_USAGE_EXIT_STATUS}\n"
+        "fi\n"
+    )
+    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
     env = {"PATH": str(bin_dir), "HOME": str(tmp_path)}
     script = "set -e\n" + _extract_claude_code_version_check_block() + f"\necho '{_AFTER_BLOCK_SENTINEL}'\n"
     return subprocess.run(
@@ -75,7 +90,7 @@ def _run_claude_code_version_check(tmp_path: Path, *, version_script: str | None
         text=True,
         check=False,
         env=env,
-        timeout=10,
+        timeout=_BASH_RUN_TIMEOUT_SECONDS,
     )
 
 
@@ -124,13 +139,6 @@ class TestClaudeCodeVersionCheckBlock:
         assert result.stderr == ""
         assert result.stdout == f"{_AFTER_BLOCK_SENTINEL}\n"
 
-    def test_an_absent_claude_is_silent(self, tmp_path: Path) -> None:
-        result = _run_claude_code_version_check(tmp_path, version_script=None)
-
-        assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
-        assert result.stderr == ""
-        assert result.stdout == f"{_AFTER_BLOCK_SENTINEL}\n"
-
     @pytest.mark.parametrize(
         "version_script",
         [
@@ -139,12 +147,42 @@ class TestClaudeCodeVersionCheckBlock:
             pytest.param("exit 3", id="version-flag-fails"),
         ],
     )
-    def test_an_unparsable_version_is_silent(self, tmp_path: Path, version_script: str) -> None:
+    def test_an_unparsable_version_warns_once_naming_the_minimum_and_does_not_end_the_run(
+        self, tmp_path: Path, version_script: str
+    ) -> None:
         result = _run_claude_code_version_check(tmp_path, version_script=version_script)
 
         assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
-        assert result.stderr == ""
+        stderr_lines = result.stderr.splitlines()
+        assert len(stderr_lines) == 1, f"expected exactly one warning line, got stderr={result.stderr!r}"
+        assert stderr_lines[0].startswith("[install] warning:")
+        assert "could not read" in stderr_lines[0]
+        assert _claude_code_minimum_version() in stderr_lines[0]
         assert result.stdout == f"{_AFTER_BLOCK_SENTINEL}\n"
+
+
+class TestPresenceCheckReportsAnAbsentClaude:
+    def test_claude_absent_from_path_is_reported_by_the_presence_check_and_exits_1(self, tmp_path: Path) -> None:
+        """The presence check reports a missing `claude` and exits 1."""
+        bin_dir = tmp_path / "bin-no-claude"
+        bin_dir.mkdir()
+        for tool in _TOOLS_OTHER_THAN_CLAUDE:
+            stub = bin_dir / tool
+            stub.write_text("#!/bin/sh\nexit 0\n")
+            stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+        script = "set -e\n" + _extract_presence_check_block()
+
+        result = subprocess.run(
+            [_BASH, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"PATH": str(bin_dir), "HOME": str(tmp_path)},
+            timeout=_BASH_RUN_TIMEOUT_SECONDS,
+        )
+
+        assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert result.stdout.splitlines()[:1] == ["Missing dependencies: claude"], f"stdout={result.stdout!r}"
 
 
 class TestMinimumVersionMatchesTheDocumentedRequirement:

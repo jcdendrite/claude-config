@@ -43,7 +43,7 @@ if ! _bash_version_meets_floor "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"; then
     printf 'bash %s (%s) is older than the bash %s.%s this repo requires.\n' \
       "$BASH_VERSION" "$BASH" "$_BASH_FLOOR_MAJOR" "$_BASH_FLOOR_MINOR"
     printf '%s\n' \
-      'Fix it from a terminal, not from inside Claude Code. See README.md § "Requirements".'
+      "Fix it from a terminal, not from inside Claude Code. See claude-config's README.md § \"Requirements\"."
     case "$(uname -s 2>/dev/null)" in
       Darwin)
         # Literal command text for the user to run; double quotes would expand it here instead of printing it.
@@ -171,7 +171,7 @@ _config_trim() {
 # file's content before this function ever sees a single line — see
 # _config_read_key_from_file for where that happens.
 #
-# Exit 0: KEY_VAR/VALUE_VAR populated via `printf -v` .
+# Exit 0: KEY_VAR/VALUE_VAR populated via `printf -v`.
 # Exit 1: blank line or a full-line `#` comment — not a parse error, never
 # warned by any caller.
 # Exit 2: anything else — the caller decides whether/how to warn (skip-and-
@@ -179,7 +179,7 @@ _config_trim() {
 #
 # The value is case-folded via `tr '[:upper:]' '[:lower:]'` before the
 # subset check, so a hand-authored `TRUE`/`True`/`FALSE` still resolves.
-# The `tr` invocation itself is prefixed with
+# The `tr` invocation is prefixed with
 # `LC_ALL=C`, not just this function's own `local LC_ALL=C`. That `local`
 # is a shell variable assignment and does not propagate to a child
 # process, so the `tr` subprocess needs its own prefix. `LC_ALL=C` here is

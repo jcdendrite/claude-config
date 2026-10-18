@@ -290,8 +290,7 @@ Hooks resolve bash through `env` on the harness PATH, and README.md's Requiremen
 Of those, `redact-credential-values.sh` exits 1 with a first stderr line that begins "could not source _lib.sh" and says "credential redaction is OFF for this result".
 Whether and how the transcript surfaces that exit is unverified.
 The others stop silently, including `restore-authorization-boundary-on-compact.sh` and `advance-past-commit-stall.sh`.
-Tools with no gate registration (for example Grep, Glob, WebFetch, WebSearch, NotebookEdit and MCP tools) stay usable, with redaction off, for the whole lockout.
-Until Claude Code is restarted on a good PATH, stop using that session, because redaction and the post-compaction authorization-boundary restore are off and ungated tools stay usable.
+Tools with no gate registration (for example Grep, Glob, WebFetch, WebSearch, NotebookEdit and MCP tools) stay usable for the whole lockout, and of those only Grep and WebFetch are in the redactor's matcher (`Bash|Read|WebFetch|Grep|Task`) and lose redaction. Stop using that session until Claude Code is restarted on a good PATH, because the post-compaction authorization-boundary restore is also off.
 Each plugin's `_lib.sh` carries the same check.
 Code above that check, and above a hook's `_lib.sh` bootstrap, must parse and run on bash 3.2, so a below-floor bash reaches the check instead of a syntax error.
 Every gate registration sets `onFailure: "block"`, and every gate ends with `exit 0`, so on Claude Code 2.1.295 or later a gate that cannot start, exits other than 0 or 2, prints invalid output or times out blocks the call.

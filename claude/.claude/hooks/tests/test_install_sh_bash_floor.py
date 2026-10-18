@@ -12,6 +12,7 @@ under `set -e`, is tested in `test_install_sh_claude_code_version_check.py`.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import stat
 import subprocess
@@ -39,6 +40,9 @@ _FIXTURE_END = "# INSTALL_TEST_FIXTURE: bash-floor-check — end"
 _STUB_MARKER = "stub _config.sh was sourced"
 _AFTER_BLOCK_SENTINEL = "reached the line after the block"
 
+# Bounds a hung local bash run; no vendor value applies.
+_BASH_RUN_TIMEOUT_SECONDS = 10
+
 
 def _extract_bash_floor_check_block() -> str:
     """Same marker-delimited extraction strategy as the other
@@ -63,9 +67,9 @@ def _write_config_sh(tmp_repo: Path, text: str) -> None:
 
 def _config_sh_with_floor_99_0() -> str:
     text = _REAL_CONFIG_SH.read_text()
-    for constant, value in (("_BASH_FLOOR_MAJOR=5", "_BASH_FLOOR_MAJOR=99"), ("_BASH_FLOOR_MINOR=2", "_BASH_FLOOR_MINOR=0")):
-        assert text.count(constant) == 1, f"{constant} not found exactly once in {_REAL_CONFIG_SH}"
-        text = text.replace(constant, value)
+    for constant, value in (("_BASH_FLOOR_MAJOR", "99"), ("_BASH_FLOOR_MINOR", "0")):
+        text, replaced = re.subn(rf"^{constant}=\d+$", f"{constant}={value}", text, flags=re.MULTILINE)
+        assert replaced == 1, f"{constant} not assigned exactly once in {_REAL_CONFIG_SH}"
     return text
 
 
@@ -96,7 +100,7 @@ def _run_block(
         check=False,
         cwd=tmp_repo,
         env=env,
-        timeout=10,
+        timeout=_BASH_RUN_TIMEOUT_SECONDS,
     )
     return result, home
 

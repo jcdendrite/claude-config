@@ -59,7 +59,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from helpers import build_path_without
+from helpers import build_path_without, link_bash_into
 
 # install-dev.sh lives at the repo root: climb from scripts/tests/ (parents[0])
 # → scripts/ (parents[1]) → claude/.claude/ (parents[2]) → claude/ (parents[3])
@@ -98,8 +98,18 @@ def _script_env(
     stub_bin. A caller that needs a binary genuinely absent from PATH (e.g.
     jq, which some platforms ship at /usr/bin) passes a path built by
     helpers.build_path_without instead — /usr/bin:/bin's own contents are
-    platform-dependent and cannot be relied on to omit a given binary."""
-    system_path = path_tail if path_tail is not None else "/usr/bin:/bin"
+    platform-dependent and cannot be relied on to omit a given binary.
+
+    Without a path_tail, a directory holding the caller's bash leads PATH, so
+    `#!/usr/bin/env bash` resolves to the bash running the suite, not the
+    system's. A path_tail from build_path_without already carries bash."""
+    if path_tail is not None:
+        system_path = path_tail
+    else:
+        caller_bash_dir = fake_home.parent / "caller-bash"
+        caller_bash_dir.mkdir(exist_ok=True)
+        link_bash_into(caller_bash_dir)
+        system_path = f"{caller_bash_dir}:/usr/bin:/bin"
     path_val = f"{stub_bin}:{system_path}" if stub_bin else system_path
     env = {"PATH": path_val, "HOME": str(fake_home)}
     if extra_env:
