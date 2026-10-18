@@ -132,4 +132,6 @@ wrong or its review loop is converging:
   checkout, not proof the branch was never reviewed: the ledger is keyed by
   branch name, and per-session when HEAD is detached or on the default branch.
 - In any other case — the line says unavailable, no such line is present, or the
-  named file cannot be read — state that under what you did not verify.
+  named file cannot be read — state that under what you did not verify. A
+  size-limit error on Read of the named file is not "cannot be read": page it
+  with Grep or an offset/limit Read instead.

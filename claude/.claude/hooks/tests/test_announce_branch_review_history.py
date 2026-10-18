@@ -191,6 +191,12 @@ class TestAnnounceBranchReviewHistory:
         decision = run_hook(HOOKS_DIR / "deny-data-file-reads.sh", read_input(str(history_file)), home=isolated_home)
 
         assert decision == "allow"
+        # Liveness control: "allow" is also what an unarmed guard returns, so a denied shape must be denied here.
+        sibling_with_denied_extension = history_file.with_suffix(".jsonl")
+        assert (
+            run_hook(HOOKS_DIR / "deny-data-file-reads.sh", read_input(str(sibling_with_denied_extension)), home=isolated_home)
+            == "deny"
+        )
 
     def test_announces_no_rows_and_writes_no_file_when_the_ledger_holds_none(
         self, isolated_home, tmp_path, outside_cwd

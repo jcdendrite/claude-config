@@ -797,7 +797,7 @@ _review_ledger_confirm_ignored() {
   case "$ignore_status" in
     0) return 0 ;;
     1)
-      _review_ledger_reject "$subcommand: $target is not git-ignored, and --out deletes its target, so it will not run. Either no ignore entry matches it, a negating pattern re-includes it, or it is tracked. For the first, findings-path-suffix.sh adds agent-reviews/ to the ignore list; the dispatching session runs it, not a review-only agent"
+      _review_ledger_reject "$subcommand: $target is not git-ignored, and --out deletes its target, so it will not run. Either no ignore entry matches it, a negating pattern re-includes it, or it is tracked. For the first, findings-path-suffix.sh adds agent-reviews/ to the ignore list, and the dispatching session runs it, not a review-only agent. Adding an agent-reviews/ line to .gitignore or .git/info/exclude does the same"
       return 1
       ;;
     *)
