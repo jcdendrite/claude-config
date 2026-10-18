@@ -74,8 +74,8 @@
 #     index is corrupt, git still lists its name C-quoted, or its name does
 #     not survive argv normalization.
 # - Known gap: with neither timeout nor gtimeout on PATH, every _lib_capped
-#   site runs uncapped and a stalled git releases the commit at the harness
-#   timeout; see "Latency" in
+#   site runs uncapped and a stalled git holds the commit until the harness
+#   timeout; see `_lib_capped_for`'s header in this plugin's _lib.sh and "Latency" in
 #   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
 # - Known gap: the validator reads each listed path's blob by re-resolving its
 #   name, so a hand-built index with aliased entry names leaves an invalid entry

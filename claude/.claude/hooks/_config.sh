@@ -14,12 +14,8 @@
 #
 # Deliberately no `set -uo pipefail` here: `source` runs in the caller's own
 # shell, so a `set` here would silently change the caller's own options for
-# the rest of its run. Matches the same reasoning install.sh:99-101 gives
-# for executing rather than sourcing its own migration scripts.
-#
-# Every empty-array iteration below is guarded with a `${#arr[@]}` count
-# check first, never a bare `"${arr[@]}"` on a possibly-empty array.
-# Redundant on the supported bash floor; kept to avoid churn.
+# the rest of its run. Matches the same reasoning install.sh gives, in the
+# note above `. _stow_migration_lib.sh`, for not sourcing relocate-claude-config.sh.
 #
 # Every resolution-chain call (_config_value/_config_enabled/
 # _config_schema_field/_config_read_key_from_file/_config_file_lines) does
@@ -183,8 +179,7 @@ _config_trim() {
 #
 # The value is case-folded via `tr '[:upper:]' '[:lower:]'` before the
 # subset check, so a hand-authored `TRUE`/`True`/`FALSE` still resolves.
-# `tr`, not `${value,,}`: redundant on the supported bash floor; kept to
-# avoid churn. The `tr` invocation itself is prefixed with
+# The `tr` invocation itself is prefixed with
 # `LC_ALL=C`, not just this function's own `local LC_ALL=C`. That `local`
 # is a shell variable assignment and does not propagate to a child
 # process, so the `tr` subprocess needs its own prefix. `LC_ALL=C` here is
@@ -1259,8 +1254,6 @@ _config_scaffold() {
       ''|'#'*) continue ;;
     esac
     already=1
-    # Count-guarded (${#arr[@]} first): redundant on the supported bash floor;
-    # kept to avoid churn.
     if [ "${#present_keys[@]}" -gt 0 ]; then
       for present_key in "${present_keys[@]}"; do
         [ "$present_key" = "$schema_key" ] && already=0 && break

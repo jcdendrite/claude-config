@@ -7,7 +7,8 @@ to a tmp repo's install.sh, so the block's repo-relative `_config.sh` path lands
 on a stub or a copy there. The harness adds no `set -e` and ends the script with a
 sentinel line, so only the block's own `|| exit 1` can keep the sentinel from
 printing. `HOME` is an empty tmp directory in every case, to prove the block
-touches nothing under it.
+touches nothing under it. The separate Claude Code version-check block, which runs
+under `set -e`, is tested in `test_install_sh_claude_code_version_check.py`.
 """
 from __future__ import annotations
 
@@ -19,7 +20,13 @@ from pathlib import Path
 import pytest
 from helpers import HOOKS_DIR, REPO_ROOT
 
-from .test_bash_floor import SUB_FLOOR_BASH, exact_output_env, requires_sub_floor_bash
+from .test_bash_floor import (
+    HOOKS_DOC_GATE_DEADLOCK_RECOVERY,
+    README_REQUIREMENTS,
+    SUB_FLOOR_BASH,
+    exact_output_env,
+    requires_sub_floor_bash,
+)
 
 _INSTALL_SH = REPO_ROOT / "install.sh"
 _REAL_CONFIG_SH = HOOKS_DIR / "_config.sh"
@@ -145,7 +152,7 @@ class TestBashFloorCheckBlock:
             "99.0",
             running_version,
             running_bash,
-            'README.md § "Requirements"',
+            README_REQUIREMENTS.text,
             "./install.sh",
             "from the repo root",
         )
@@ -165,8 +172,10 @@ class TestBashFloorCheckBlock:
         result, home = _run_block(tmp_path, tmp_repo)
 
         assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert "install.sh's own bash" in result.stdout
+        assert HOOKS_DOC_GATE_DEADLOCK_RECOVERY.text in result.stdout
         assert running_version in result.stdout
-        assert "Claude Code's PATH can differ" in result.stdout
+        assert result.stdout.count("\n") == 2, "the success banner is one line"
         assert _AFTER_BLOCK_SENTINEL in result.stdout
         assert list(home.iterdir()) == []
 

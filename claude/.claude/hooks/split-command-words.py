@@ -66,8 +66,9 @@ The 2 MiB cap bounds memory, not time. `shlex` is quadratic in the length of
 one word, and the heredoc scan is quadratic in the number of unterminated
 openers. The caller's 5 s cap (`_lib_capped` in _lib.sh) is the only runtime
 bound. A machine with neither `timeout` nor `gtimeout` does not kill an
-over-long run, and a hook that outlives the harness timeout leaves the call
-un-gated (see `_lib_capped_for`'s header in _lib.sh).
+over-long run. See `_lib_capped_for`'s header in _lib.sh for whether a hook
+that outlives the harness timeout blocks the call, including the effect of
+`onFailure`.
 
 parse-git-command.py keeps its own heredoc stripper, which skips an opener
 that follows an odd quote count on its line.

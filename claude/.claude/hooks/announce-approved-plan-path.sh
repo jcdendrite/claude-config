@@ -114,7 +114,6 @@ PREFIXED_LINE_COUNT=0
 PATH_WITHHELD=false
 PATHS_JOINED=""
 # Here-string, not a pipe, so the loop runs in the current shell and keeps its state.
-# String concatenation, not an array: redundant on the supported bash floor; kept to avoid churn.
 while IFS= read -r OUTPUT_LINE; do
   case "$OUTPUT_LINE" in
     "$_LIB_PLAN_REVIEW_COVERED_PATH_PREFIX"*) ;;

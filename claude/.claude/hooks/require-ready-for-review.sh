@@ -86,10 +86,8 @@
 #   specifically, a coincidental branch-name match can skip the entire
 #   review/test/lint gate on a push, tracked as GH-899.
 # - If gh pr view fails, times out, or is missing from the hook's PATH, the
-#   gh pr ready arm is released with no completion marker. The exception is a
-#   hung gh pr view on a machine with neither `timeout` nor `gtimeout`, which
-#   blocks at the harness timeout. A fast failure or a missing gh still
-#   releases.
+#   gh pr ready arm is released with no completion marker. The hung-gh
+#   exception under "Bypass cases" applies here too; a missing gh still releases.
 # - After the repo and default-branch checks, gh pr view runs for any command
 #   text matching `gh pr ready`, including a free-text mention, unless a
 #   `gh pr create` is also detected.
@@ -389,8 +387,8 @@ fi
 # Uses _lib_capped rather than a bare `timeout 5`: without GNU coreutils, bare
 # `timeout 5` is "command not found" (127), which silently fails this check open.
 # On a machine with neither timeout(1) nor gtimeout(1), _lib_capped runs this
-# call uncapped, governed only by the harness's own hook timeout.
-# Gate registrations set `onFailure: "block"`, so on Claude Code 2.1.295 or later a timed-out gate blocks the call instead.
+# call uncapped, governed only by the harness's own hook timeout. See
+# `_lib_capped_for`'s Bound list in _lib.sh for what that timeout does, including the effect of `onFailure`.
 if ! $is_gh_pr_create; then
   PR_NUMBER=$(cd "$CWD" 2>/dev/null && _lib_capped gh pr view --json number --jq '.number' 2>/dev/null)
   if [ -z "$PR_NUMBER" ]; then

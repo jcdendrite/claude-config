@@ -9,12 +9,18 @@ Sections:
 - the predicate over a version matrix, in all five copies;
 - parity of the five copies, as sourced values and as normalized call text;
 - placement: the check is the first command, and no other shipped file defines it;
+- a text tripwire over six regions for post-3.2 syntax: the top of `_config.sh` and of each of
+  the four plugin `_lib.sh` copies through the `return 1` that closes the floor check, and the
+  top of `install.sh` through its `_config.sh` source line;
+- the documentation headings the floor messages and floor docs cite;
 - sourcing `_config.sh` below, at and above the floor;
 - the scripts that source `_config.sh` and stop when it fails;
 - sourcing the copies under a real below-floor bash, where one is available;
 - the CI runner's bash equals the floor.
 
 The platform-specific message sections are asserted in `test_install_sh_bash_floor.py`.
+The tripwire does not scan the gate pre-bootstrap region or the script pre-source region,
+which `.claude/rules/shell-floor.md` also binds to bash 3.2 syntax.
 """
 
 from __future__ import annotations
@@ -24,15 +30,17 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
-from helpers import HOOKS_DIR, REPO_ROOT, SCRIPTS_DIR
+from helpers import HOOKS_DIR, REPO_ROOT, SCRIPTS_DIR, heading_texts, normalize_heading
 
 from .test_shell_dialect import _shipped_shell_files
 
 _BASH = shutil.which("bash") or "bash"
 
 _CONFIG_SH = HOOKS_DIR / "_config.sh"
+_INSTALL_SH = REPO_ROOT / "install.sh"
 _PLUGIN_LIBS = sorted((REPO_ROOT / "plugins").glob("*/hooks/_lib.sh"))
 _FLOOR_COPIES = [_CONFIG_SH, *_PLUGIN_LIBS]
 _FLOOR_COPY_PARAMS = [pytest.param(path, id=str(path.relative_to(REPO_ROOT))) for path in _FLOOR_COPIES]
@@ -40,6 +48,22 @@ _FLOOR_COPY_PARAMS = [pytest.param(path, id=str(path.relative_to(REPO_ROOT))) fo
 _EXPECTED_PLUGINS_WITH_A_FLOOR_COPY = frozenset({"skill-management", "npm-semver", "plugin-semver", "lovable-cloud"})
 
 _CALL_LINE = 'if ! _bash_version_meets_floor "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"; then'
+
+
+class Citation(NamedTuple):
+    """A heading in a repo document that a floor message or floor doc cites."""
+
+    document: str
+    heading: str
+
+    @property
+    def text(self) -> str:
+        return f'{self.document} § "{self.heading}"'
+
+
+README_REQUIREMENTS = Citation("README.md", "Requirements")
+HOOKS_DOC_GATE_DEADLOCK_RECOVERY = Citation("docs/hooks.md", "Gate deadlock recovery")
+HOOKS_DOC_BASH_VERSION = Citation("docs/hooks.md", "Bash version")
 
 
 def exact_output_env() -> dict[str, str]:
@@ -134,6 +158,9 @@ class TestPredicate:
             pytest.param("5", "1", 1, id="5.1-below"),
             pytest.param("5", "2", 0, id="5.2-at-floor"),
             pytest.param("5", "3", 0, id="5.3-above"),
+            pytest.param("5", "10", 0, id="5.10-two-digit-minor-above"),
+            pytest.param("5", "20", 0, id="5.20-two-digit-minor-above"),
+            pytest.param("4", "10", 1, id="4.10-two-digit-minor-below"),
             pytest.param("6", "0", 0, id="6.0-above"),
             pytest.param("", "", 1, id="empty-both"),
             pytest.param("5", "", 1, id="empty-minor"),
@@ -240,6 +267,137 @@ class TestPlacement:
             and defines_floor((REPO_ROOT / rel_path).read_text(encoding="utf-8", errors="replace"))
         ]
         assert definers == [], f"floor constants or predicate defined outside the five copies: {definers}"
+
+
+_BANNED_PRE_FLOOR_PATTERNS = {
+    "associative array": re.compile(r"\b(?:declare|local|typeset|readonly)\s+-\w*A"),
+    "mapfile/readarray": re.compile(r"\b(?:mapfile|readarray)\b"),
+    "case-modifying expansion": re.compile(
+        r"\$\{!?(?:[A-Za-z_]\w*(?:\[[^\]]*\])?|[0-9]+|[@*?$!#-])(?:,,?|\^\^?)[^}]*\}"
+    ),
+    "[[ -v": re.compile(r"(?:\[\[?|&&|\|\|)\s+(?:!\s+)?-v\s"),
+    "case fall-through terminator": re.compile(r";;?&"),
+    "|&": re.compile(r"\|&"),
+    "&>>": re.compile(r"&>>"),
+    "nameref": re.compile(r"\b(?:local|declare|typeset)\s+-[A-Za-z]*n"),
+}
+
+
+def banned_pre_floor_constructs(text: str) -> list[str]:
+    """Names of the post-3.2 constructs found on a non-comment line of `text`."""
+    code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    return [name for name, pattern in _BANNED_PRE_FLOOR_PATTERNS.items() if pattern.search(code)]
+
+
+_FLOOR_CALL_RE = re.compile(r"if\s+!\s+_bash_version_meets_floor\s")
+_RETURN_1_RE = re.compile(r"return\s+1\b")
+_INSTALL_SH_CONFIG_SOURCE_RE = re.compile(r'\.\s+"\$REPO_DIR/claude/\.claude/hooks/_config\.sh"\s+\|\|\s+exit\s+1')
+
+_FLOOR_REGION_FILES = [
+    *_FLOOR_COPY_PARAMS,
+    pytest.param(_INSTALL_SH, id="install.sh"),
+]
+
+
+def _floor_region(path: Path) -> str:
+    """The text from the top of `path` through the end of its floor check.
+
+    A floor copy ends at the `return 1` that closes its check. install.sh ends at the line
+    that ends the run when `_config.sh` fails to source. Whitespace between tokens is
+    matched loosely, as `test_call_line_and_return_are_the_pinned_text` normalizes it."""
+    text = path.read_text()
+    if path == _INSTALL_SH:
+        region_end = _INSTALL_SH_CONFIG_SOURCE_RE.search(text)
+    else:
+        call = _FLOOR_CALL_RE.search(text)
+        region_end = call and _RETURN_1_RE.search(text, call.end())
+    assert region_end, f"{path.relative_to(REPO_ROOT)}: cannot find the end of the floor-check region to scan"
+    return text[: region_end.end()]
+
+
+class TestFloorCheckRegionAvoidsPost32Syntax:
+    """Text-level tripwire: a bash below the floor can only be run where one is installed,
+    and CI never has one, so these constructs would otherwise reach a user as a parse error
+    instead of the fix message.
+
+    Six regions are scanned: the top of `_config.sh` and of each of the four plugin `_lib.sh`
+    copies through the `return 1` that closes the floor check, and the top of `install.sh`
+    through its `_config.sh` source line. The gate pre-bootstrap region (the code above each
+    gate's `_lib.sh` source line) and the pre-source region of the scripts that source
+    `_config.sh` or `_lib.sh` are not scanned, though `.claude/rules/shell-floor.md` binds both.
+
+    The banned list is a recall net for the common spellings of each construct, not a parser."""
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param("declare -A seen\n", ["associative array"], id="declare-associative"),
+            pytest.param("local -A seen\n", ["associative array"], id="local-associative"),
+            pytest.param("mapfile -t lines < f\n", ["mapfile/readarray"], id="mapfile"),
+            pytest.param("readarray -t lines < f\n", ["mapfile/readarray"], id="readarray"),
+            pytest.param('echo "${value,,}"\n', ["case-modifying expansion"], id="lowercase-all"),
+            pytest.param('echo "${value^^}"\n', ["case-modifying expansion"], id="uppercase-all"),
+            pytest.param('echo "${arr[0],}"\n', ["case-modifying expansion"], id="lowercase-first-of-element"),
+            pytest.param('echo "${1,,}"\n', ["case-modifying expansion"], id="lowercase-all-of-positional"),
+            pytest.param('echo "${@^^}"\n', ["case-modifying expansion"], id="uppercase-all-of-special-parameter"),
+            pytest.param('[[ -v name ]] && echo set\n', ["[[ -v"], id="double-bracket-v"),
+            pytest.param('[ -v name ] && echo set\n', ["[[ -v"], id="single-bracket-v"),
+            pytest.param("[[ ! -v name ]]\n", ["[[ -v"], id="double-bracket-negated-v"),
+            pytest.param("[ ! -v name ]\n", ["[[ -v"], id="single-bracket-negated-v"),
+            pytest.param('[[ -n "$a" && -v name ]]\n', ["[[ -v"], id="v-joined-by-and"),
+            pytest.param('[[ -z "$a" || -v name ]]\n', ["[[ -v"], id="v-joined-by-or"),
+            pytest.param('[[ -n "$a" && ! -v name ]]\n', ["[[ -v"], id="negated-v-joined-by-and"),
+            pytest.param("case $x in a) echo a ;& b) echo b ;; esac\n", ["case fall-through terminator"], id="case-fall-through"),
+            pytest.param(
+                "case $x in a) echo a ;;& b) echo b ;; esac\n", ["case fall-through terminator"], id="case-continue-testing"
+            ),
+            pytest.param("a |& b\n", ["|&"], id="pipe-both"),
+            pytest.param("cmd &>> log\n", ["&>>"], id="append-both"),
+            pytest.param("local -n ref=target\n", ["nameref"], id="local-nameref"),
+            pytest.param("declare -n ref=target\n", ["nameref"], id="declare-nameref"),
+            pytest.param("declare -a plain\nlocal -a words=()\n", [], id="indexed-arrays"),
+            pytest.param('printf "%s" "${1-}" "${2:-a,b}"\n', [], id="plain-expansions-with-a-comma-in-the-default"),
+            pytest.param('[ -n "$x" ] && [[ "$x" =~ ^[0-9]+$ ]]\n', [], id="tests-available-on-3.2"),
+            pytest.param("command -v foo >/dev/null 2>&1\n", [], id="command-v-is-not-a-variable-test"),
+            pytest.param('[ -n "$x" ] && command -v foo\n', [], id="command-v-after-a-joiner"),
+            pytest.param("case $x in a) echo a ;; b) echo b ;; esac\n", [], id="case-terminators-on-3.2"),
+            pytest.param('printf "%s" "${1-}" "${@:-x}"\n', [], id="positional-expansions-without-case-modification"),
+            pytest.param("a >log 2>&1 | b\n", [], id="redirects-and-pipes"),
+            pytest.param("# declare -A mapfile ${x,,} [[ -v |& &>> local -n\n", [], id="comment-only-mentions"),
+        ],
+    )
+    def test_banned_construct_control_table(self, text: str, expected: list[str]) -> None:
+        assert banned_pre_floor_constructs(text) == expected
+
+    @pytest.mark.parametrize("path", _FLOOR_REGION_FILES)
+    def test_the_region_holds_no_post_3_2_construct(self, path: Path) -> None:
+        region = _floor_region(path)
+        assert len(region.splitlines()) > 5, (
+            f"{path.relative_to(REPO_ROOT)}: the region is vacuous, the slice found nothing to scan"
+        )
+        assert banned_pre_floor_constructs(region) == []
+
+
+class TestFloorMessageCitationsResolve:
+    """The floor messages and floor docs are the only on-ramp while every gate denies,
+    so a renamed heading they cite must fail here. The README Requirements and
+    docs/hooks.md Gate deadlock recovery citations are also asserted against rendered
+    output in test_install_sh_bash_floor.py. The "Bash version" citation appears only in
+    static docs and comments, so for it this test checks only that the heading exists."""
+
+    @pytest.mark.parametrize(
+        "citation",
+        [
+            pytest.param(README_REQUIREMENTS, id="readme-requirements"),
+            pytest.param(HOOKS_DOC_GATE_DEADLOCK_RECOVERY, id="hooks-doc-gate-deadlock-recovery"),
+            pytest.param(HOOKS_DOC_BASH_VERSION, id="hooks-doc-bash-version"),
+        ],
+    )
+    def test_cited_heading_exists_in_the_cited_document(self, citation: Citation) -> None:
+        document_text = (REPO_ROOT / citation.document).read_text()
+        assert normalize_heading(citation.heading) in heading_texts(document_text), (
+            f"{citation.document} has no heading {citation.heading!r}"
+        )
 
 
 class TestSourcingConfigSh:

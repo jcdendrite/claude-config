@@ -293,8 +293,7 @@ if [ "$PARSER_EXIT" -ne 0 ]; then
   exit 0
 fi
 
-# Pulled from _lib.sh. Built via a read loop, not `mapfile`: redundant on the
-# supported bash floor; kept to avoid churn.
+# Pulled from _lib.sh.
 ALLOWED_SUBCMDS=()
 while IFS= read -r subcmd; do
   ALLOWED_SUBCMDS+=("$subcmd")

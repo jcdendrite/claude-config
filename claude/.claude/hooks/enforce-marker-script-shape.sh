@@ -803,10 +803,9 @@ _script_op_scan() {
 # The Bash arm at its full MARKER_WRITE_REALPATH_BUDGET of 10 candidates makes
 # two calls per candidate with CLAUDE_CONFIG_DIR set (280 s, or 420 s with
 # `grealpath`).
-# settings.json sets no `timeout` on this hook. A timed-out command hook does
-# not block the tool call by default (see `_lib_capped_for`'s Bound list in
-# _lib.sh). Gate registrations set `onFailure: "block"`, so on Claude Code
-# 2.1.295 or later a total above the harness timeout blocks the call instead.
+# settings.json sets no `timeout` on this hook. A total above the harness
+# timeout is handled as `_lib_capped_for`'s Bound list in _lib.sh describes,
+# including the effect of `onFailure`.
 # The ledger Bash arm costs none on the common path (no subagent, or no
 # `review-ledger.sh` in the command), since both of its predicates gate their
 # detectors behind pure-bash `case` matches. The Write/Edit/MultiEdit arm

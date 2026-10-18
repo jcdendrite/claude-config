@@ -124,9 +124,8 @@
 #  - None of this hook's own forks carries an internal timeout, except
 #    `_lib_mask_shell_quotes`'s own 5s `_lib_capped_for` cap (see `_lib.sh`) — a
 #    wedged or replaced grep/sed/tr/awk/xargs binary is unbounded, so it
-#    just means this gate silently did not run (per the harness's
-#    PreToolUse contract, code.claude.com/docs/en/hooks, fetched
-#    2026-09-01).
+#    holds the call until the harness's hook timeout, whose outcome
+#    `_lib_capped_for`'s header in `_lib.sh` states.
 #  - Hoisting COMMAND_UNQUOTED's computation ahead of the fast-reject
 #    widened this hook's failure blast radius from commit-shaped Bash
 #    calls only to every Bash call in the session on a missing or wedged

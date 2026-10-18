@@ -216,9 +216,7 @@ read_configured_roots() {
 # same repo contribute it only once.
 declare -a DISCOVERED_REPOS=()
 discover_repo_roots() {
-  # Linear membership scan, not an associative array: redundant on the
-  # supported bash floor; kept to avoid churn. Fine at the scale a machine's
-  # own repo count reaches.
+  # Linear membership scan; fine at the scale a machine's own repo count reaches.
   local root git_dir repo_root already_seen _existing_repo
   for root in "${CONFIGURED_ROOTS[@]}"; do
     if [ ! -d "$root" ]; then
@@ -612,8 +610,7 @@ else:
 # per branch. Distinct-PR-number reasons (open PR, stale name) differ per
 # branch and so stay one line each, unaffected by the grouping.
 print_skip_reason_lines() {
-  # Linear scan against parallel arrays, not an associative array — see the
-  # note on discover_repo_roots above.
+  # Linear scan against parallel arrays; fine for the handful of distinct skip reasons.
   local -a _reason_messages=()
   local -a _reason_branch_lists=()
   local -a _reason_counts=()

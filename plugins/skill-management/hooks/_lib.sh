@@ -96,9 +96,8 @@ _lib_config_dir() {
 # install.sh warns about missing timeout at onboarding time.
 # Security implication: on BSD/macOS without coreutils, a stalled or
 # replaced jq binary can hold a gate hook open until the harness's own hook
-# timeout, which does not block the tool call by default (see _lib_capped_for
-# below). Gate registrations set `onFailure: "block"`, so on Claude Code
-# 2.1.295 or later a timed-out gate blocks the call instead.
+# timeout. See _lib_capped_for below for whether that blocks the call,
+# including the effect of `onFailure`.
 _lib_jq() {
   if command -v timeout >/dev/null 2>&1; then
     timeout 5 jq "$@"

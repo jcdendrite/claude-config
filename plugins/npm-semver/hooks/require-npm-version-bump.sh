@@ -211,8 +211,7 @@ is_gated_source_file() {
 # --- Package root detection --------------------------------------------------
 
 # Memoization cache for find_package_root, keyed by starting directory.
-# Two parallel arrays (not `declare -A`): redundant on the supported bash
-# floor; kept to avoid churn. CACHED_ROOTS holds either the resolved root
+# Two parallel arrays. CACHED_ROOTS holds either the resolved root
 # directory or the sentinel "__NONE__" for a confirmed miss, so a miss (which
 # still costs a full ancestor walk to confirm) is cached too, not just a hit.
 CACHED_DIRS=()
@@ -264,8 +263,6 @@ find_package_root() {
     dir=$(dirname -- "$dir")
   done
 
-  # Guard before iterating: redundant on the supported bash floor; kept to
-  # avoid churn.
   local visited
   if [ "${#visited_dirs[@]}" -gt 0 ]; then
     for visited in "${visited_dirs[@]}"; do
@@ -286,7 +283,6 @@ while IFS= read -r CHANGED_FILE; do
   ROOT=$(find_package_root "$CHANGED_FILE") || continue
   [ -z "$ROOT" ] && continue
   ALREADY_SEEN=0
-  # Same empty-array guard as above, redundant on the supported bash floor.
   if [ "${#PACKAGE_ROOTS[@]}" -gt 0 ]; then
     for EXISTING_ROOT in "${PACKAGE_ROOTS[@]}"; do
       if [ "$EXISTING_ROOT" = "$ROOT" ]; then

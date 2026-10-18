@@ -35,8 +35,7 @@ fi
 # time.
 # Security implication: on a machine with neither binary, a stalled or
 # replaced jq binary can hold a gate hook open until the harness's own hook
-# timeout, which does not block the tool call by default — see _lib_capped_for's header.
-# Gate registrations set `onFailure: "block"`, so on Claude Code 2.1.295 or later a timed-out gate blocks the call instead.
+# timeout. See _lib_capped_for's header for whether that blocks the call, including the effect of `onFailure`.
 _lib_jq() {
   _lib_capped_for 5 jq "$@"
 }
@@ -321,7 +320,7 @@ _lib_normalize_path_lexically() {
 
 # Succeeds only when $1 is non-empty and every byte is in [A-Za-z0-9._/@+-].
 # Matched in bash rather than grep, because BSD grep's -z still anchors ^/$ at each embedded newline.
-# The body is a subshell that sets LC_ALL=C. Redundant on the supported bash floor; kept to avoid churn.
+# The body is a subshell, so its LC_ALL=C does not leak into the caller.
 _lib_passes_path_char_allowlist() (
   LC_ALL=C
   case "${1-}" in
@@ -531,8 +530,7 @@ _lib_parse_tool_input_or_deny() {
   fi
   # -d '' (NUL delimiter, absent from the input) is required rather than the
   # default newline delimiter, because COMMAND may legitimately contain
-  # embedded newlines. Using `read` rather than mapfile/readarray is
-  # redundant on the supported bash floor; kept to avoid churn.
+  # embedded newlines.
   # `read -r -d ''` returns non-zero at EOF without ever
   # finding that delimiter, on every invocation including this one's own
   # success path, hence the trailing `|| true`.
@@ -2304,7 +2302,6 @@ _lib_tool_argv_from_subcmd() {
 # the literal string "--". WORDS-side: _lib_tool_argv_from_subcmd strips
 # every "-*"-shaped word, including a bare "--", before it reaches
 # got_subcmd. PREFIX-side: want_subcmd is always a hardcoded literal.
-# No local -n/declare -n: redundant on the supported bash floor; kept to avoid churn.
 _lib_words_start_with() {
   local -a words=()
   while [ "$#" -gt 0 ] && [ "$1" != -- ]; do

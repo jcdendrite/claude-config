@@ -309,7 +309,7 @@ def _has_env_bash_shebang(target: Path) -> bool:
 def _is_gate_hook(target: Path) -> bool:
     """True when `target` is a script whose header declares `# hook-class: gate`.
 
-    Checks 3 and 4 apply only to a gate that is argv[0]. A gate run as
+    The gate-exit and gate-output checks apply only to a gate that is argv[0]. A gate run as
     `bash <gate>` or under `shell=True` is not inspected by them.
     """
     try:
@@ -404,8 +404,8 @@ def check_shell_exec(argv, env, cwd, completed) -> None:
         )
 
     # Gate hooks: the harness blocks a gate that exits other than 0 or 2, or prints an invalid envelope.
-    # Exit 2 carries its reason on stderr and the harness ignores stdout, so check 4 applies to exit 0 only.
-    # Check 1 runs first, so a gate that never ran reports the missing bash, not a generic gate exit.
+    # Exit 2 carries its reason on stderr and the harness ignores stdout, so the gate-output check applies to exit 0 only.
+    # The never-ran check runs first, so a gate that never ran reports the missing bash, not a generic gate exit.
     if target is not None and _is_gate_hook(target):
         if completed.returncode not in _GATE_ALLOWED_EXIT_CODES:
             raise ShellExecGuardError(
@@ -427,6 +427,7 @@ def install_shell_exec_guard(monkeypatch: pytest.MonkeyPatch) -> None:
 
     A `shell=True` call is not inspected: its argv is one command string with no
     argv[0] to inspect, so the guard cannot tell which file the shell execs.
+    `Popen`, `call` and `check_call` bypass the guard: it wraps `subprocess.run` only.
     """
     real_run = subprocess.run
 

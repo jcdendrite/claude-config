@@ -490,7 +490,7 @@ def test_check_shell_exec_gate_exit_control_table(
 
 
 def test_check_shell_exec_does_not_inspect_a_gate_run_through_bash(tmp_path: Path) -> None:
-    """Known gap: checks 3 and 4 see only a gate that is argv[0], so `bash <gate>` is not inspected."""
+    """Known gap: the gate-exit and gate-output checks see only a gate that is argv[0], so `bash <gate>` is not inspected."""
     gate = _write_hook_stub(tmp_path, "gate", "", exit_status=0)
     argv = ["bash", str(gate)]
 

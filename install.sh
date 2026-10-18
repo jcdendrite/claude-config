@@ -28,9 +28,7 @@ cd "$REPO_DIR"
 # This line and everything above it must parse and run on bash 3.2.
 # shellcheck source=claude/.claude/hooks/_config.sh
 . "$REPO_DIR/claude/.claude/hooks/_config.sh" || exit 1
-echo "bash floor check passed: bash $BASH_VERSION ($BASH)."
-echo "Claude Code's PATH can differ from this terminal's: hooks use the first bash on the PATH Claude Code starts with."
-echo "If gates still deny with \"could not source _lib.sh\", see docs/hooks.md § \"Gate deadlock recovery\"."
+echo "bash floor check passed for install.sh's own bash $BASH_VERSION ($BASH) only; its child scripts and Claude Code's hooks resolve bash from PATH (docs/hooks.md § \"Gate deadlock recovery\")."
 # INSTALL_TEST_FIXTURE: bash-floor-check — end
 
 # INSTALL_TEST_FIXTURE: presence-check — start
@@ -44,6 +42,30 @@ if [ ${#missing[@]} -gt 0 ]; then
   exit 1
 fi
 # INSTALL_TEST_FIXTURE: presence-check — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them with a stubbed `claude` on PATH. Keep both
+# markers on their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: claude-code-version-check — start
+# Claude Code 2.1.295 is the first version that honors `"onFailure": "block"` on gate registrations.
+# Non-fatal: this script does not run on `git pull`, so it cannot guard the pull itself.
+# Compared field by field, because a lexical comparison ranks 2.1.1000 below 2.1.295.
+CLAUDE_CODE_MINIMUM_VERSION="2.1.295"
+claude_version_output=$(claude --version 2>/dev/null) || claude_version_output=""
+if [[ "$claude_version_output" =~ ([0-9]{1,9})\.([0-9]{1,9})\.([0-9]{1,9}) ]]; then
+  claude_version_fields=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+  IFS=. read -r -a claude_minimum_fields <<< "$CLAUDE_CODE_MINIMUM_VERSION"
+  for field_index in 0 1 2; do
+    if (( 10#${claude_version_fields[field_index]} > 10#${claude_minimum_fields[field_index]} )); then
+      break
+    fi
+    if (( 10#${claude_version_fields[field_index]} < 10#${claude_minimum_fields[field_index]} )); then
+      echo "[install] warning: claude ${claude_version_fields[0]}.${claude_version_fields[1]}.${claude_version_fields[2]} is older than $CLAUDE_CODE_MINIMUM_VERSION, which gate registrations need for \"onFailure\": \"block\". Update Claude Code, restart it, and confirm /hooks lists the gates and /permissions shows the deny rules." >&2
+      break
+    fi
+  done
+fi
+# INSTALL_TEST_FIXTURE: claude-code-version-check — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under a stubbed `python3` on PATH. Keep both
@@ -560,8 +582,7 @@ configure_machine_level_opt_ins() {
 # row moved to config-keys.psv: a committed file is the git-native idiom
 # for a repo-level toggle, and moving these into the per-machine state file
 # would break exactly the property they exist for. Flat, pipe-delimited
-# rows rather than an associative array (redundant on the supported bash
-# floor; kept to avoid churn). Schema (no
+# rows. Schema (no
 # surrounding whitespace around any `|` -- IFS='|' read -r would otherwise
 # bake leading/trailing spaces into every field): path-template|human-name|
 # docs-anchor. Every row defaults to `disabled` (presence-enables); no

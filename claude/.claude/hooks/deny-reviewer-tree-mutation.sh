@@ -531,5 +531,5 @@ case "$TOOL_NAME" in
     ;;
 esac
 
-# shellcheck disable=SC2317 # Every arm above exits; this line backstops a later arm that does not. Dropping the arms' own `exit 0` so they fall through here would make it reachable, but it changes gate logic.
+# shellcheck disable=SC2317 # Every arm above exits; this `exit 0` backstops a later arm that does not.
 exit 0
