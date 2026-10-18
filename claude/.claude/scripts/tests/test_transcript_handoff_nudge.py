@@ -1,14 +1,17 @@
 """Tests for transcript_analysis/handoff_nudge.py: fire threshold, ramp curve, per-session turn
 extraction and scope, and nudge-log parsing, including a contract test against the real hook."""
-import importlib.util
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 from helpers import HOOKS_DIR
+from transcript_analysis import (
+    corpus,
+    handoff_nudge,
+    pricing,
+)
 
 from ._handoff_nudge_helpers import _ramp_curve_from_records
 from .conftest import (
@@ -19,15 +22,6 @@ from .conftest import (
     _write_jsonl,
 )
 
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
-
 
 class TestHookEffectiveFireThreshold:
     def test_200k_window_model_fires_at_40pct_not_the_abs_cap(self):
@@ -35,12 +29,12 @@ class TestHookEffectiveFireThreshold:
         its own window) -- well under the 1M-window arm's 150,000 cap, so
         using the cap uniformly for every session would understate how early
         such sessions actually get nudged today."""
-        assert _mod.handoff_nudge._hook_effective_fire_threshold("claude-sonnet-4-5") == 80_000
+        assert handoff_nudge._hook_effective_fire_threshold("claude-sonnet-4-5") == 80_000
 
     def test_1m_window_model_fires_at_the_abs_cap_not_40pct(self):
         """A 1M-context-window model's 40% figure (400,000) exceeds
         _HANDOFF_NUDGE_ABS_CAP, so the cap governs instead."""
-        assert _mod.handoff_nudge._hook_effective_fire_threshold("claude-sonnet-5") == 150_000
+        assert handoff_nudge._hook_effective_fire_threshold("claude-sonnet-5") == 150_000
 
 
 class TestRampCurveFromCorpus:
@@ -58,7 +52,7 @@ class TestRampCurveFromCorpus:
             300: "300+", 1000: "300+",
         }
         for turn_index, expected_label in cases.items():
-            assert _mod.handoff_nudge._ramp_curve_turn_index_bucket(turn_index) == expected_label, turn_index
+            assert handoff_nudge._ramp_curve_turn_index_bucket(turn_index) == expected_label, turn_index
 
     def test_sane_rate_and_mean_context_on_synthetic_corpus_with_known_growth(self):
         """A two-turn session with known input/output/context, both turns
@@ -69,7 +63,7 @@ class TestRampCurveFromCorpus:
             _priced("claude-sonnet-5", input=200_000, output=3000, ts="2026-05-19T10:01:00.000Z"),
         ]
         curve, total_output_tokens = _ramp_curve_from_records(recs)
-        rates = _mod._model_rates("claude-sonnet-5")
+        rates = pricing._model_rates("claude-sonnet-5")
         turn1_dollars = 100_000 / 1_000_000 * rates["input"] + 1000 / 1_000_000 * rates["output"]
         turn2_dollars = 200_000 / 1_000_000 * rates["input"] + 3000 / 1_000_000 * rates["output"]
         expected_rate = (turn1_dollars + turn2_dollars) / ((1000 + 3000) / 1000)
@@ -109,7 +103,7 @@ class TestParseNudgeLogEntries:
             "schema-drift session=def456 event=UserPromptSubmit\n"
             "handoff session=abc123\n"
         )
-        assert _mod.handoff_nudge._parse_nudge_log_entries(log_path) == [
+        assert handoff_nudge._parse_nudge_log_entries(log_path) == [
             {"kind": "nudged", "session": "abc123", "est": 400000, "model": "claude-opus-5",
              "window": 1000000, "event": "Stop"},
             {"kind": "schema-drift", "session": "def456", "event": "UserPromptSubmit"},
@@ -125,12 +119,12 @@ class TestParseNudgeLogEntries:
             "nudged session=abc bare-token-no-equals est=400000 model=x window=1000000 event=Stop\n"
             "nudged session=abc est=400000 model=x window=1000000 event=Stop\n"  # valid
         )
-        assert _mod.handoff_nudge._parse_nudge_log_entries(log_path) == [
+        assert handoff_nudge._parse_nudge_log_entries(log_path) == [
             {"kind": "nudged", "session": "abc", "est": 400000, "model": "x", "window": 1000000, "event": "Stop"},
         ]
 
     def test_missing_log_file_returns_empty_list(self, tmp_path):
-        assert _mod.handoff_nudge._parse_nudge_log_entries(tmp_path / "does-not-exist.log") == []
+        assert handoff_nudge._parse_nudge_log_entries(tmp_path / "does-not-exist.log") == []
 
     def test_action_block_field_is_captured_when_present(self, tmp_path):
         """A hard-block fire's nudged line carries action=block -- captured
@@ -142,7 +136,7 @@ class TestParseNudgeLogEntries:
         log_path.write_text(
             "nudged session=abc est=400000 model=x window=1000000 event=PostToolBatch action=block\n"
         )
-        assert _mod.handoff_nudge._parse_nudge_log_entries(log_path) == [
+        assert handoff_nudge._parse_nudge_log_entries(log_path) == [
             {"kind": "nudged", "session": "abc", "est": 400000, "model": "x",
              "window": 1000000, "event": "PostToolBatch", "action": "block"},
         ]
@@ -156,7 +150,7 @@ class TestParseNudgeLogEntries:
             "nudged session=abc est=400000 model=x window=1000000 event=PostToolBatch "
             "ignored=3 skills=handoff,memory-skill action=block\n"
         )
-        assert _mod.handoff_nudge._parse_nudge_log_entries(log_path) == [
+        assert handoff_nudge._parse_nudge_log_entries(log_path) == [
             {"kind": "nudged", "session": "abc", "est": 400000, "model": "x",
              "window": 1000000, "event": "PostToolBatch", "action": "block",
              "ignored": 3, "skills": "handoff,memory-skill"},
@@ -172,7 +166,7 @@ class TestParseNudgeLogEntries:
         log_path.write_text(
             "nudged session=abc est=400000 model=x window=1000000 event=Stop\n"
         )
-        entries = _mod.handoff_nudge._parse_nudge_log_entries(log_path)
+        entries = handoff_nudge._parse_nudge_log_entries(log_path)
         assert "ignored" not in entries[0]
         assert "skills" not in entries[0]
 
@@ -187,7 +181,7 @@ class TestParseNudgeLogEntries:
             "nudged session=abc est=400000 model=x window=1000000 event=Stop "
             "ignored=not-an-int skills=-\n"
         )
-        entries = _mod.handoff_nudge._parse_nudge_log_entries(log_path)
+        entries = handoff_nudge._parse_nudge_log_entries(log_path)
         assert len(entries) == 1
         assert "ignored" not in entries[0]
         assert entries[0]["skills"] == "-"
@@ -256,7 +250,7 @@ class TestParseNudgeLogEntriesRealHookLineContract:
         # assertions below are what actually validate the contract.
         assert nudged_lines[-1].endswith("action=block")
 
-        entries = _mod.handoff_nudge._parse_nudge_log_entries(log_path)
+        entries = handoff_nudge._parse_nudge_log_entries(log_path)
         block_entry = entries[-1]
         assert block_entry["action"] == "block"
         assert block_entry["ignored"] == 1
@@ -270,7 +264,7 @@ class TestOperatorResponseLagFromLog:
         log_entries = [
             {"kind": "nudged", "session": "abc", "est": 405_000, "model": "x", "window": 1_000_000, "event": "Stop"},
         ]
-        lags, excluded = _mod.handoff_nudge._operator_response_lag_from_log(session_traces, log_entries)
+        lags, excluded = handoff_nudge._operator_response_lag_from_log(session_traces, log_entries)
         assert lags == [410_000 - 405_000]
         assert excluded == 0
 
@@ -279,7 +273,7 @@ class TestOperatorResponseLagFromLog:
         log_entries = [
             {"kind": "nudged", "session": "does-not-exist", "est": 100, "model": "x", "window": 1, "event": "Stop"},
         ]
-        lags, excluded = _mod.handoff_nudge._operator_response_lag_from_log(session_traces, log_entries)
+        lags, excluded = handoff_nudge._operator_response_lag_from_log(session_traces, log_entries)
         assert lags == []
         assert excluded == 1
 
@@ -298,7 +292,7 @@ class TestOperatorResponseLagFromLog:
         (like this one) always satisfies."""
         session_traces = {"s": [100, 300, 500]}
         log_entries = [{"kind": "nudged", "session": "s", "est": 400, "model": "x", "window": 1, "event": "Stop"}]
-        lags, excluded = _mod.handoff_nudge._operator_response_lag_from_log(session_traces, log_entries)
+        lags, excluded = handoff_nudge._operator_response_lag_from_log(session_traces, log_entries)
         # First value >= est is 500 (index 2); peak at or after it is 500,
         # so lag = 500 - 400 = 100.
         assert lags == [100]
@@ -310,7 +304,7 @@ class TestOperatorResponseLagFromLog:
         counted, not a false join to whichever value happens to be closest."""
         session_traces = {"s": [100, 200, 300]}
         log_entries = [{"kind": "nudged", "session": "s", "est": 400, "model": "x", "window": 1, "event": "Stop"}]
-        lags, excluded = _mod.handoff_nudge._operator_response_lag_from_log(session_traces, log_entries)
+        lags, excluded = handoff_nudge._operator_response_lag_from_log(session_traces, log_entries)
         assert lags == []
         assert excluded == 1
 
@@ -324,7 +318,7 @@ class TestOperatorResponseLagFromLog:
             {"kind": "nudged", "session": "abc", "est": 405_000, "model": "x",
              "window": 1_000_000, "event": "PostToolBatch", "action": "block"},
         ]
-        lags, excluded = _mod.handoff_nudge._operator_response_lag_from_log(session_traces, log_entries)
+        lags, excluded = handoff_nudge._operator_response_lag_from_log(session_traces, log_entries)
         assert lags == []
         assert excluded == 1
 
@@ -338,7 +332,7 @@ class TestOperatorResponseLagFromLog:
         log_entries = [
             {"kind": "nudged", "session": "abc", "est": 400_000, "model": "x", "window": 1, "event": "Stop"},
         ]
-        lags, excluded = _mod.handoff_nudge._operator_response_lag_from_log(session_traces, log_entries)
+        lags, excluded = handoff_nudge._operator_response_lag_from_log(session_traces, log_entries)
         # True first crossing is index 1 (450_000 >= est); the peak at or
         # after it is 900_000, so lag = 900_000 - 400_000 = 500_000. A
         # nearest-est join would instead pick index 5 (449_000, closer to
@@ -353,32 +347,32 @@ class TestSessionMatchesRearmScope:
     docstring for why."""
 
     def test_session_excluded_when_first_timestamp_is_before_since_cutoff(self):
-        since_ts = _mod._parse_ts("2026-05-10T00:00:00.000Z")
+        since_ts = corpus._parse_ts("2026-05-10T00:00:00.000Z")
         records = [_asst("claude-sonnet-5", ts="2026-05-01T00:00:00.000Z")]
-        assert _mod.handoff_nudge._session_matches_rearm_scope(records, since_ts, None) is False
+        assert handoff_nudge._session_matches_rearm_scope(records, since_ts, None) is False
 
     def test_session_included_when_first_timestamp_is_exactly_at_the_since_boundary(self):
-        since_ts = _mod._parse_ts("2026-05-10T00:00:00.000Z")
+        since_ts = corpus._parse_ts("2026-05-10T00:00:00.000Z")
         records = [_asst("claude-sonnet-5", ts="2026-05-10T00:00:00.000Z")]
-        assert _mod.handoff_nudge._session_matches_rearm_scope(records, since_ts, None) is True
+        assert handoff_nudge._session_matches_rearm_scope(records, since_ts, None) is True
 
     def test_session_excluded_when_no_main_thread_turn_matches_branches(self):
         records = [_asst("claude-sonnet-5", branch="other")]
-        assert _mod.handoff_nudge._session_matches_rearm_scope(records, None, {"main"}) is False
+        assert handoff_nudge._session_matches_rearm_scope(records, None, {"main"}) is False
 
     def test_session_excluded_when_only_a_sidechain_turn_matches_the_branch_filter(self):
         """A sidechain turn sharing the target branch name must not count --
         --branches scopes to main-thread turns only, matching the
         `not bool(r.get("isSidechain"))` guard."""
         records = [_asst("claude-sonnet-5", branch="main", sidechain=True)]
-        assert _mod.handoff_nudge._session_matches_rearm_scope(records, None, {"main"}) is False
+        assert handoff_nudge._session_matches_rearm_scope(records, None, {"main"}) is False
 
     def test_session_included_when_branch_changes_mid_session_and_only_some_turns_match(self):
         records = [
             _asst("claude-sonnet-5", branch="other"),
             _asst("claude-sonnet-5", branch="main"),
         ]
-        assert _mod.handoff_nudge._session_matches_rearm_scope(records, None, {"main"}) is True
+        assert handoff_nudge._session_matches_rearm_scope(records, None, {"main"}) is True
 
 
 class TestExtractRearmSessionTurnsModelAndPosition:
@@ -393,7 +387,7 @@ class TestExtractRearmSessionTurnsModelAndPosition:
             _user_msg("go", ts="2026-05-19T10:00:01.000Z"),
             _priced("claude-sonnet-5", input=200, output=75, ts="2026-05-19T10:00:02.000Z"),
         ]
-        data = _mod.handoff_nudge._extract_rearm_session_turns(records)
+        data = handoff_nudge._extract_rearm_session_turns(records)
         assert data["main_thread_models"] == ["claude-opus-5", "claude-sonnet-5"]
         assert len(data["main_thread_record_positions"]) == len(data["main_thread_turns"])
         for turn_index, record_index in enumerate(data["main_thread_record_positions"]):
@@ -411,5 +405,5 @@ class TestExtractRearmSessionTurnsModelAndPosition:
             _priced_sidechain_asst("claude-opus-5", output_tokens=10, ts="2026-05-19T10:00:01.000Z"),
             _priced("claude-opus-5", input=100, output=50, ts="2026-05-19T10:00:02.000Z"),
         ]
-        data = _mod.handoff_nudge._extract_rearm_session_turns(records)
+        data = handoff_nudge._extract_rearm_session_turns(records)
         assert data["main_thread_record_positions"] == [2]

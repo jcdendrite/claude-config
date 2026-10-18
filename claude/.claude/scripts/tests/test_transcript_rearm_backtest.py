@@ -2,12 +2,17 @@
 parsing, and the report end to end."""
 import argparse
 import errno
-import importlib.util
-import sys
 from datetime import date
 from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    cost,
+    handoff_nudge,
+    pricing,
+    rearm_backtest,
+    scope,
+)
 
 from ._handoff_nudge_helpers import _rearm_backtest_args
 from .conftest import (
@@ -22,15 +27,6 @@ from .conftest import (
     _write_cost_root,
     _write_jsonl,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _tool_use_asst(model: str, tool_id: str, *, output: int = 100, ts: str = "2026-05-19T10:00:00.000Z") -> dict:
@@ -55,7 +51,7 @@ class TestHookObservableBoundaries:
             _tool_use_asst("claude-sonnet-5", "t3"),
             _user_msg("please continue"),
         ]
-        assert _mod.rearm_backtest._hook_observable_boundaries(records) == [0, 3]
+        assert rearm_backtest._hook_observable_boundaries(records) == [0, 3]
 
     def test_genuine_multi_turn_conversation_produces_one_boundary_per_turn(self):
         """Each turn immediately followed by a genuine user message
@@ -65,7 +61,7 @@ class TestHookObservableBoundaries:
             _priced("claude-sonnet-5", output=100), _user_msg("go on"),
             _priced("claude-sonnet-5", output=100), _user_msg("go on"),
         ]
-        assert _mod.rearm_backtest._hook_observable_boundaries(records) == [0, 1, 2, 3]
+        assert rearm_backtest._hook_observable_boundaries(records) == [0, 1, 2, 3]
 
     def test_session_end_with_no_trailing_user_message_still_surfaces_boundary(self):
         """A session whose last record is an assistant turn with no further
@@ -78,7 +74,7 @@ class TestHookObservableBoundaries:
             _priced("claude-sonnet-5", output=100),
             _priced("claude-sonnet-5", output=100),
         ]
-        assert _mod.rearm_backtest._hook_observable_boundaries(records) == [0, 2]
+        assert rearm_backtest._hook_observable_boundaries(records) == [0, 2]
 
 
 class TestSimulateRearmSpacing:
@@ -86,7 +82,7 @@ class TestSimulateRearmSpacing:
         """One band crossing splits the session into an actual-priced prefix
         and a ramp-priced remainder -- hand-computed against a synthetic ramp
         curve, not a bounds check against baseline or a naive reprice."""
-        ramp_curve = {label: {"rate": 1.0, "mean_context": 0.0} for label in _mod.handoff_nudge._RAMP_CURVE_BUCKET_LABELS}
+        ramp_curve = {label: {"rate": 1.0, "mean_context": 0.0} for label in handoff_nudge._RAMP_CURVE_BUCKET_LABELS}
         ramp_curve["0-5"] = {"rate": 2.0, "mean_context": 100.0}
         turns = [
             (0, 50, 5.0),
@@ -94,7 +90,7 @@ class TestSimulateRearmSpacing:
             (110, 10, 999.0),   # post-split turn 0: priced at ramp rate, not the (unreachable) actual 999.0
         ]
         boundaries = [0, 1, 2, 3]
-        total, _ctx_weighted, weight = _mod.rearm_backtest._simulate_rearm_spacing(
+        total, _ctx_weighted, weight = rearm_backtest._simulate_rearm_spacing(
             turns, boundaries, spacing=50, ramp_curve=ramp_curve, threshold=100,
         )
         assert total == pytest.approx(5.0 + 6.0 + (10 / 1000 * 2.0))
@@ -104,7 +100,7 @@ class TestSimulateRearmSpacing:
         """A remainder that itself crosses a second band splits again -- the
         compounding re-arm this feature exists to model, distinct from a
         one-shot baseline that only ever splits once."""
-        ramp_curve = {label: {"rate": 1.0, "mean_context": 0.0} for label in _mod.handoff_nudge._RAMP_CURVE_BUCKET_LABELS}
+        ramp_curve = {label: {"rate": 1.0, "mean_context": 0.0} for label in handoff_nudge._RAMP_CURVE_BUCKET_LABELS}
         turns = [
             (0, 50, 5.0),
             (50, 60, 6.0),       # split 1 after this turn (abs=110 >= 100)
@@ -113,7 +109,7 @@ class TestSimulateRearmSpacing:
             (320, 5, 999.0),     # ramp-priced again, turns-since-restart 0 (post split 2)
         ]
         boundaries = [0, 1, 2, 3, 4, 5]
-        total, _ctx_weighted, weight = _mod.rearm_backtest._simulate_rearm_spacing(
+        total, _ctx_weighted, weight = rearm_backtest._simulate_rearm_spacing(
             turns, boundaries, spacing=50, ramp_curve=ramp_curve, threshold=100,
         )
         expected = 5.0 + 6.0 + (10 / 1000 * 1.0) + (200 / 1000 * 1.0) + (5 / 1000 * 1.0)
@@ -123,17 +119,17 @@ class TestSimulateRearmSpacing:
     def test_response_lag_delays_the_split_point(self):
         """response_lag_tokens shifts a band's trigger point later -- the
         compliance-realistic model's operator-response-lag correction."""
-        ramp_curve = {label: {"rate": 5.0, "mean_context": 0.0} for label in _mod.handoff_nudge._RAMP_CURVE_BUCKET_LABELS}
+        ramp_curve = {label: {"rate": 5.0, "mean_context": 0.0} for label in handoff_nudge._RAMP_CURVE_BUCKET_LABELS}
         turns = [
             (0, 50, 5.0),
             (50, 60, 6.0),
             (110, 20, 7.0),
         ]
         boundaries = [0, 1, 2, 3]
-        total_no_lag, _c1, _w1 = _mod.rearm_backtest._simulate_rearm_spacing(
+        total_no_lag, _c1, _w1 = rearm_backtest._simulate_rearm_spacing(
             turns, boundaries, spacing=50, ramp_curve=ramp_curve, threshold=100, response_lag_tokens=0,
         )
-        total_with_lag, _c2, _w2 = _mod.rearm_backtest._simulate_rearm_spacing(
+        total_with_lag, _c2, _w2 = rearm_backtest._simulate_rearm_spacing(
             turns, boundaries, spacing=50, ramp_curve=ramp_curve, threshold=100, response_lag_tokens=20,
         )
         # No lag: the crossing fires after turn index 1 (abs=110 >= 100), so
@@ -149,19 +145,19 @@ class TestSimulateRearmSpacing:
 class TestParseRearmSpacingsArg:
     def test_default_value_when_spacings_is_unset(self):
         """--spacings absent falls back to _REARM_BACKTEST_DEFAULT_SPACINGS."""
-        assert _mod.rearm_backtest._parse_rearm_spacings_arg(argparse.Namespace(spacings=None)) == list(
-            _mod.rearm_backtest._REARM_BACKTEST_DEFAULT_SPACINGS
+        assert rearm_backtest._parse_rearm_spacings_arg(argparse.Namespace(spacings=None)) == list(
+            rearm_backtest._REARM_BACKTEST_DEFAULT_SPACINGS
         )
 
     def test_non_integer_token_exits_2(self, capsys):
         with pytest.raises(SystemExit) as exc_info:
-            _mod.rearm_backtest._parse_rearm_spacings_arg(argparse.Namespace(spacings="40000,not-a-number"))
+            rearm_backtest._parse_rearm_spacings_arg(argparse.Namespace(spacings="40000,not-a-number"))
         assert exc_info.value.code == 2
         assert "expected comma-separated integers" in capsys.readouterr().err
 
     def test_non_positive_value_exits_2(self, capsys):
         with pytest.raises(SystemExit) as exc_info:
-            _mod.rearm_backtest._parse_rearm_spacings_arg(argparse.Namespace(spacings="40000,0"))
+            rearm_backtest._parse_rearm_spacings_arg(argparse.Namespace(spacings="40000,0"))
         assert exc_info.value.code == 2
         assert "values must be positive" in capsys.readouterr().err
 
@@ -171,7 +167,7 @@ class TestParseRearmSpacingsArg:
         empty -- the same "at least one required" exit as an entirely blank
         flag, not a silent empty result."""
         with pytest.raises(SystemExit) as exc_info:
-            _mod.rearm_backtest._parse_rearm_spacings_arg(argparse.Namespace(spacings="   "))
+            rearm_backtest._parse_rearm_spacings_arg(argparse.Namespace(spacings="   "))
         assert exc_info.value.code == 2
         assert "at least one spacing value is required" in capsys.readouterr().err
 
@@ -191,10 +187,10 @@ class TestRearmBacktestReport:
             _priced("claude-sonnet-5", input=500_000, output=5_000, ts="2026-05-19T10:00:00.000Z"),
             _priced("claude-sonnet-5", input=500_000, output=5_000, ts="2026-05-19T10:01:00.000Z"),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         cost_total = _extract_grand_total(capsys.readouterr().out)
 
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Spacing", row_contains="baseline")
         baseline_total = float(cols["$"].replace(",", ""))
@@ -206,7 +202,7 @@ class TestRearmBacktestReport:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "Model routing and each session's own fire threshold" in out
         assert "NOT backtested" in out
@@ -221,7 +217,7 @@ class TestRearmBacktestReport:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "1 excluded" in out
 
@@ -236,9 +232,9 @@ class TestRearmBacktestReport:
         def _raise_value_error():
             raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
 
-        monkeypatch.setattr(_mod.scope, "config_dir", _raise_value_error)
+        monkeypatch.setattr(scope, "config_dir", _raise_value_error)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.rearm_backtest.cmd_rearm_backtest(_rearm_backtest_args())
+            rearm_backtest.cmd_rearm_backtest(_rearm_backtest_args())
         assert exc_info.value.code == 2
         assert "HOME is unset or empty" in capsys.readouterr().err
 
@@ -254,7 +250,7 @@ class TestRearmBacktestReport:
             _user_msg("continue", ts="2026-05-19T10:02:00.000Z"),
             _priced("claude-sonnet-4-5", input=90_000, output=5_000, ts="2026-05-19T10:03:00.000Z"),
         ])
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(spacings="40000"), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(spacings="40000"), date(2026, 8, 2))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Spacing", row_contains=["40,000", "perfect"])
         assert cols["DeltaUSD"] != "-0.00", "40k-spacing row must diverge from baseline once the 80k threshold fires"
@@ -267,7 +263,7 @@ class TestRearmBacktestReport:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-opus-4-7", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "WARNING" in out
         assert "ramp curve could not be computed" in out
@@ -285,19 +281,19 @@ class TestRearmBacktestReport:
         Runs the real pipeline end to end and checks a hand-computed dollar
         total, not merely a nonzero delta, so an index mismatch between the
         two functions actually fails the test."""
-        threshold = _mod.handoff_nudge._hook_effective_fire_threshold("claude-sonnet-5")
+        threshold = handoff_nudge._hook_effective_fire_threshold("claude-sonnet-5")
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-sonnet-5", ts="2026-05-19T10:00:00.000Z"),  # no usage block
             _priced("claude-sonnet-5", input=threshold, output=5_000, ts="2026-05-19T10:00:01.000Z"),
             _user_msg("continue", ts="2026-05-19T10:00:02.000Z"),
             _priced("claude-sonnet-5", input=500, output=2_000, ts="2026-05-19T10:00:03.000Z"),
         ])
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(spacings="40000"), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(spacings="40000"), date(2026, 8, 2))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Spacing", row_contains=["40,000", "perfect"])
         total = float(cols["$"].replace(",", ""))
 
-        rates = _mod._model_rates("claude-sonnet-5")
+        rates = pricing._model_rates("claude-sonnet-5")
         turn0_dollars = threshold / 1_000_000 * rates["input"] + 5_000 / 1_000_000 * rates["output"]
         turn1_dollars = 500 / 1_000_000 * rates["input"] + 2_000 / 1_000_000 * rates["output"]
         # Turn 0's own abs-tokens (threshold input + 5,000 output) clears the
@@ -325,7 +321,7 @@ class TestRearmBacktestReport:
         _write_jsonl(fake_projects / "super-secret-session.jsonl", [
             _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "super-secret-session" not in out
         assert "Fired sessions in scope: 1 (0 dropped -- no in-scope trace)" in out
@@ -357,7 +353,7 @@ class TestRearmBacktestReport:
             "nudged session=sess-b est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
         )
 
-        _mod.rearm_backtest._rearm_backtest_report(
+        rearm_backtest._rearm_backtest_report(
             _rearm_backtest_args(), date(2026, 8, 2), roots=[fake_projects.parent, acct_b / "projects"]
         )
         out = capsys.readouterr().out
@@ -384,7 +380,7 @@ class TestRearmBacktestReport:
         _write_jsonl(fake_projects / "sess-a.jsonl", [
             _priced("claude-sonnet-5", input=500_000, output=5_000, ts="2026-05-19T10:00:00.000Z"),
         ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
+        cost._cost_report(_cost_args(), date(2026, 8, 2))
         single_session_dollars = _extract_grand_total(capsys.readouterr().out)
 
         acct_b = fake_config_dir_factory("acct-b")
@@ -394,7 +390,7 @@ class TestRearmBacktestReport:
             _priced("claude-sonnet-5", input=500_000, output=5_000, ts="2026-05-19T10:00:00.000Z"),
         ])
 
-        _mod.rearm_backtest._rearm_backtest_report(
+        rearm_backtest._rearm_backtest_report(
             _rearm_backtest_args(), date(2026, 8, 2), roots=[fake_projects.parent, acct_b / "projects"]
         )
         out = capsys.readouterr().out
@@ -421,7 +417,7 @@ class TestRearmBacktestReport:
         )
         acct_b = fake_config_dir_factory("acct-b")  # no .handoff-nudge.log written for this root
         acct_b_root = acct_b / "projects"
-        _mod.rearm_backtest._rearm_backtest_report(
+        rearm_backtest._rearm_backtest_report(
             _rearm_backtest_args(), date(2026, 8, 2), roots=[fake_projects.parent, acct_b_root]
         )
         out = capsys.readouterr().out
@@ -471,7 +467,7 @@ class TestRearmBacktestReport:
         # Unreadable root iterates first so a regression turning `continue`
         # into `break` would abort before the readable sibling ever
         # contributes to the pooled total.
-        _mod.rearm_backtest._rearm_backtest_report(
+        rearm_backtest._rearm_backtest_report(
             _rearm_backtest_args(), date(2026, 8, 2), roots=[acct_b_root, fake_projects.parent]
         )
         out, _err = capsys.readouterr()
@@ -505,9 +501,9 @@ class TestRearmBacktestReport:
         # Sized to the exact byte length of the surviving tail so the tail
         # read boundary lands on a real newline, not mid-line -- isolating
         # the early_nudge/early_block drop from any partial-line noise.
-        monkeypatch.setattr(_mod.handoff_nudge, "_NUDGE_LOG_MAX_READ", len(surviving_tail.encode()))
+        monkeypatch.setattr(handoff_nudge, "_NUDGE_LOG_MAX_READ", len(surviving_tail.encode()))
 
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "[truncated -- oldest lines dropped]" in out
         cols = _table_cols(out, header_contains="Bucket", row_contains="voluntary")
@@ -525,9 +521,9 @@ class TestRearmBacktestReport:
         ])
         log_path = tmp_path / ".handoff-nudge.log"
         log_path.write_text("schema-drift session=x event=Stop\n")
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
-        ordinal = _mod._redaction_ordinals([fake_projects.parent])[fake_projects.parent.resolve()]
+        ordinal = scope._redaction_ordinals([fake_projects.parent])[fake_projects.parent.resolve()]
         assert f"account-{ordinal} nudge log: {log_path.stat().st_size:,} bytes" in out
 
     def test_conversion_bucket_and_rate_arithmetic_matches_hand_computed_counts(
@@ -579,7 +575,7 @@ class TestRearmBacktestReport:
         log_lines.append("nudged session=dropped-1 est=100 model=claude-sonnet-5 window=1000000 event=Stop")
         (tmp_path / ".handoff-nudge.log").write_text("\n".join(log_lines) + "\n")
 
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
 
         assert "Fired sessions in scope: 16 (1 dropped -- no in-scope trace)" in out
@@ -614,7 +610,7 @@ class TestRearmBacktestReport:
             " window=1000000 event=Stop\n"
             "handoff session=pidwalk-B\n"
         )
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "Join validity (fired sessions with a matching handoff line): 0" in out
 
@@ -628,7 +624,7 @@ class TestRearmBacktestReport:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "Fired sessions in scope: 0 (0 dropped -- no in-scope trace)" in out
         assert (
@@ -651,7 +647,7 @@ class TestRearmBacktestReport:
             " event=PostToolBatch ignored=2 skills=handoff,memory-skill action=block\n"
             "handoff session=forced-tele\n"
         )
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert "Fired sessions in scope: 1 (0 dropped -- no in-scope trace)" in out
         assert _table_cols(out, header_contains="Bucket", row_contains="forced")["Count"] == "1"
@@ -675,9 +671,9 @@ class TestRearmBacktestReport:
             "nudged session=voluntary-tele est=100 model=claude-sonnet-5 window=1000000 event=Stop\n"
             "handoff session=voluntary-tele\n"
         )
-        entries = _mod.handoff_nudge._parse_nudge_log_entries(log_path)
+        entries = handoff_nudge._parse_nudge_log_entries(log_path)
         session_traces = {"voluntary-tele": [100]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, {log_path.parent: entries})
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, {log_path.parent: entries})
         assert result["voluntary"] == 1
         assert result["dropped"] == 0
 
@@ -688,10 +684,10 @@ class TestRearmBacktestReport:
         before any log read."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
-            _mod.rearm_backtest.cmd_rearm_backtest(_rearm_backtest_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
+            rearm_backtest.cmd_rearm_backtest(_rearm_backtest_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
         assert exc_info.value.code == 2
         assert "--no-redact" in capsys.readouterr().err
 
@@ -703,7 +699,7 @@ class TestRearmBacktestReport:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert str(tmp_path / ".handoff-nudge.log") in out
         assert "account-1" not in out
@@ -725,7 +721,7 @@ class TestRearmBacktestReport:
             " window=1000000 event=Stop\n"
             "handoff session=leaky-session-1\n"
         )
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2))
         out = capsys.readouterr().out
         assert str(tmp_path / ".handoff-nudge.log") in out
         assert _table_cols(out, header_contains="Bucket", row_contains="voluntary")["Count"] == "1"
@@ -735,19 +731,19 @@ class TestRearmBacktestReport:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2))
         captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.out
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.err
 
     def test_default_redact_omits_do_not_publish_banner(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])
-        _mod.rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
+        rearm_backtest._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
         captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.err
+        assert scope._DO_NOT_PUBLISH_BANNER not in captured.out
+        assert scope._DO_NOT_PUBLISH_BANNER not in captured.err
 
 
 class TestRearmBacktestReportNoRedactGuard:
@@ -762,7 +758,7 @@ class TestRearmBacktestReportNoRedactGuard:
             _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])
         with pytest.raises(SystemExit) as exc_info:
-            _mod.rearm_backtest._rearm_backtest_report(
+            rearm_backtest._rearm_backtest_report(
                 _rearm_backtest_args(no_redact=True), date(2026, 8, 2), roots=[root_a, root_b]
             )
         assert exc_info.value.code == 2

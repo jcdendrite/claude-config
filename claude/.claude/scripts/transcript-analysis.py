@@ -7,7 +7,6 @@ Every subcommand is read-only except an explicit write flag: judgment-pair
 
 import argparse
 import contextlib
-import hashlib  # noqa: F401 -- test_transcript_reviewer_yield.py reads _mod.hashlib as a stdlib passthrough
 import json
 import math
 import os
@@ -22,24 +21,20 @@ from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-import _config  # noqa: F401 -- test files patch _mod._config's attributes as a module passthrough
-
-# audit_routing/cache_rebuild/cache_rebuild_rules/cost/cost_ledger/denials/gh_cli/
-# handoff_nudge/handoff_signal_response/ledger_common/plan_boundary/pr_cost/pr_cost_export/
-# pr_cost_ledger/pricing/read_scope/rearm_backtest/redaction/render/review_trace/
-# reviewer_yield/spend_over_threshold/subagent_mix/subagents/workstream_cost are read only
-# via _mod.<module> from test files (unit-testing a private helper, or patching module-owned
-# state). corpus and scope are the two modules this file's own code reads bare, as
-# corpus.split_command_segments and scope.PROJECTS_DIR.
+# cache_rebuild/cache_rebuild_rules/cost/cost_ledger/handoff_nudge/handoff_signal_response/
+# ledger_common/plan_boundary/pr_cost/pr_cost_export/pr_cost_ledger/pricing/redaction/
+# subagent_mix are read only via _mod.<module> from test files (unit-testing a private
+# helper, or patching module-owned state). corpus and scope are the two modules this
+# file's own code reads bare, as corpus.split_command_segments and scope.PROJECTS_DIR.
+# A module dropped from this list (e.g. audit_routing, denials, gh_cli) has no `_mod`
+# reader left; reintroducing a shim-loading test file for it without restoring its
+# binding here breaks that file's collection.
 from transcript_analysis import (  # noqa: F401
-    audit_routing,
     cache_rebuild,
     cache_rebuild_rules,
     corpus,
     cost,
     cost_ledger,
-    denials,
-    gh_cli,
     handoff_nudge,
     handoff_signal_response,
     ledger_common,
@@ -48,17 +43,9 @@ from transcript_analysis import (  # noqa: F401
     pr_cost_export,
     pr_cost_ledger,
     pricing,
-    read_scope,
-    rearm_backtest,
     redaction,
-    render,
-    review_trace,
-    reviewer_yield,
     scope,
-    spend_over_threshold,
     subagent_mix,
-    subagents,
-    workstream_cost,
 )
 from transcript_analysis.audit_routing import (
     # All three names below are read bare by this file's own still-monolithic build_parser
@@ -84,14 +71,11 @@ from transcript_analysis.corpus import (
     iter_sessions,
 )
 from transcript_analysis.cost import (
-    # The nine noqa'd names below are read only via _mod.<name> from test files (unit-testing
-    # a private helper directly, or a monkeypatch retarget). _compute_pr_cost_branch_totals is
-    # one of them: pr_cost.py's own code reads it as cost._compute_pr_cost_branch_totals instead.
+    # The seven noqa'd names below are read only via _mod.<name> from test files (unit-testing
+    # a private helper directly, or a monkeypatch retarget).
     # cmd_cost and cmd_cost_trend are the two names this file's own code calls bare -- via
     # p_cost/p_cost_trend.set_defaults below.
     _accumulate_per_account_turn,  # noqa: F401
-    _compute_pr_cost_branch_totals,  # noqa: F401
-    _compute_workstream_dollars,  # noqa: F401
     _cost_report,  # noqa: F401
     _cost_trend_report,  # noqa: F401
     _print_branch_exclusion_diagnostic,  # noqa: F401
@@ -221,18 +205,8 @@ from transcript_analysis.review_trace import (
     cmd_review_trace,
 )
 from transcript_analysis.reviewer_yield import (
-    # The names below are read only via _mod.<name> from test files (unit-testing a
-    # private helper directly) -- cmd_reviewer_yield and _is_reviewer_subagent_type.
-    # cmd_reviewer_yield is also read bare by this file's own still-monolithic code, via
+    # Read bare by this file's own still-monolithic code, via
     # p_reviewer_yield.set_defaults.
-    _CITED_PATH_CANDIDATE_MAX_CHARS,  # noqa: F401
-    _build_tool_result_ts_map,  # noqa: F401
-    _dispatch_self_reference_keys,  # noqa: F401
-    _extract_cited_paths,  # noqa: F401
-    _index_session_edits,  # noqa: F401
-    _is_reviewer_subagent_type,  # noqa: F401
-    _normalize_cited_path,  # noqa: F401
-    _reviewer_yield_cited_keys,  # noqa: F401
     cmd_reviewer_yield,
 )
 from transcript_analysis.scope import (

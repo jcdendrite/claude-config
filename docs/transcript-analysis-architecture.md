@@ -505,12 +505,15 @@ seven pr-cost-family test files, plus `tests/_pr_cost_helpers.py` (a plain modul
 itself — see `.claude/rules/test-tree-packaging.md` for why its own consumers import it as
 `from ._pr_cost_helpers import ...`), share the family-only fixtures the legacy pr-cost tests used:
 `_enable_pr_cost`, `_pr_cost_args`, `_pr_cost_export_args`, `_fake_pr_cost_subprocess_run`,
-`_argv_carries_repo_pin`, `_sample_pr_cost_row`, and `_legacy_row_line`. Each loads its own
-independent copy of `transcript-analysis.py` via the same `spec_from_file_location` boilerplate
-`test_transcript_analysis.py` uses, rather than importing that file's `_mod`. Each reaches a moved
-module's own private helpers as `_mod.<module>.<name>` (e.g. `_mod.denials.hook_denial_key`,
-`_mod.review_trace.cmd_review_trace`) — the same channel the shim-reimport exception above relies
-on. `tests/conftest.py` carries the shared fixtures that reach across the shim/package
+`_argv_carries_repo_pin`, `_sample_pr_cost_row`, and `_legacy_row_line`. A test file that reads
+only package-resident names imports those modules directly, unaliased, as `from
+transcript_analysis import <module>`, and reads `<module>.<name>`. A test file that reads a name
+only the shim has — `build_parser`, `main`, or a `cmd_*` function the shim itself defines — loads
+its own independent copy of `transcript-analysis.py` via `spec_from_file_location`, the same
+boilerplate `test_transcript_analysis.py` uses. It reaches package modules as
+`_mod.<module>.<name>` (e.g. `_mod.cost._cost_report`, `_mod.redaction._REDACT_MAP_MISS_TOKEN`)
+— the same channel the shim-reimport exception above relies on. `tests/conftest.py` carries the
+shared fixtures that reach across the shim/package
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
 `cost_ledger_file`, `cost_ledger_enabled`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`,
 `_compact_boundary_rec`, `_cost_ledger_args`, `_cost_ledger_row`, `_two_declared_roots`,
@@ -578,9 +581,12 @@ covers every path where `--record` must refuse and write nothing, plus each gate
 cases (`TestCostLedgerPublishSafety`, `TestCostLedgerSentinelGate`). `workstream_cost.py`'s own
 tests live in `tests/test_transcript_workstream_cost.py`, alongside `cost.py`'s
 `_compute_workstream_dollars` coverage. `tests/test_transcript_package_module_prefixes.py` pins the
-by-module import discipline of every module in its `PRODUCTION_MODULES` tuple, and the
-`_mod.<module>.<name>` reads in every test file in its `TEST_FILES` tuple, to real bindings — a
-permanent check rather than a one-time migration-time script.
+by-module import discipline of every module in its `PRODUCTION_MODULES` tuple. For every file in
+its `TEST_FILES` tuple, it checks both the `<module>.<name>` and `_mod.<module>.<name>` read
+shapes. It requires at least one such read per file. It holds the file to an unaliased
+whole-module import. It also fails any test file that imports from `transcript_analysis` without
+loading the shim and is missing from `TEST_FILES` — a permanent check rather than a one-time
+migration-time script.
 
 The subagent command family splits at command seams rather than one file per module:
 

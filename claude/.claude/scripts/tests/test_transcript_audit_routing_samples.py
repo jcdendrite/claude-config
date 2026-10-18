@@ -1,12 +1,13 @@
 """Tests for transcript_analysis/audit_routing.py (cmd_audit_routing_samples): seeded
 code-read turn samples, JSON and markdown."""
-import importlib.util
 import json
 import re
-import sys
-from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    audit_routing,
+    render,
+)
 
 from ._audit_routing_helpers import (
     _audit_routing_samples_args,
@@ -24,15 +25,6 @@ from .conftest import (
     _write_jsonl,
 )
 
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
-
 
 class TestAuditRoutingSamples:
     def test_code_read_turn_emitted(self, fake_projects, capsys):
@@ -41,7 +33,7 @@ class TestAuditRoutingSamples:
         _write_jsonl(fake_projects / "abc12345-test.jsonl", [
             _opus([_read_use("r1", "/foo/bar.py")], out=100),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 1
         rec = records[0]
@@ -55,7 +47,7 @@ class TestAuditRoutingSamples:
             _user_msg([{"type": "text", "text": "Please read the file"}]),
             _opus([_read_use("r1", "/a.py")], out=100),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 1
         assert records[0]["prior_user_message"] == "Please read the file"
@@ -65,7 +57,7 @@ class TestAuditRoutingSamples:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _opus([_read_use("r1", "/a.py")], out=100),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 1
         assert records[0]["prior_user_message"] == ""
@@ -76,7 +68,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/a.py")], out=100),
             _opus([_edit_use("e1")], out=200),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 1
         assert records[0]["next_assistant_action"] == "edit"
@@ -87,7 +79,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/a.py")], out=100),
             _opus([_agent_use("a1", "code-writer")], out=200),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 1
         assert records[0]["next_assistant_action"] == "dispatch"
@@ -98,7 +90,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/a.py")], out=100),
             _opus([_read_use("r2", "/b.py")], out=150),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         # Two code-read turns produce two records; only check the first turn here
         first = next(r for r in records if r["turn_index"] == 0)
@@ -110,7 +102,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/a.py")], out=100),
             _opus([{"type": "text", "text": "Here is what I found"}], out=50),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 1
         assert records[0]["next_assistant_action"] == "respond-to-user"
@@ -120,7 +112,7 @@ class TestAuditRoutingSamples:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _opus([_read_use("r1", "/a.py")], out=100),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 1
         assert records[0]["next_assistant_action"] == "other"
@@ -131,7 +123,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/a.py")], out=100),
             _opus([{"type": "text", "text": "I read the file and found the answer"}], out=50),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 1
         assert "I read the file" in records[0]["next_turn_excerpt"]
@@ -142,7 +134,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use(f"r{i}", f"/f{i}.py")], out=100) for i in range(10)
         ])
         args = _audit_routing_samples_args(sample=5, seed=0)
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 5
 
@@ -152,11 +144,11 @@ class TestAuditRoutingSamples:
             _opus([_read_use(f"r{i}", f"/f{i}.py")], out=100) for i in range(20)
         ])
         args_a = _audit_routing_samples_args(sample=5, seed=7)
-        _mod.audit_routing.cmd_audit_routing_samples(args_a)
+        audit_routing.cmd_audit_routing_samples(args_a)
         records_a = json.loads(capsys.readouterr().out)
 
         args_b = _audit_routing_samples_args(sample=5, seed=7)
-        _mod.audit_routing.cmd_audit_routing_samples(args_b)
+        audit_routing.cmd_audit_routing_samples(args_b)
         records_b = json.loads(capsys.readouterr().out)
 
         assert [r["turn_index"] for r in records_a] == [r["turn_index"] for r in records_b]
@@ -173,7 +165,7 @@ class TestAuditRoutingSamples:
             # Read after span closed — must be included
             _opus([_read_use("r2", "/normal.py")], out=77),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         # Only the post-span Read should appear
         assert len(records) == 1
@@ -188,7 +180,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r2", "/new.py")], out=100, ts=new_ts),
         ])
         args = _audit_routing_samples_args(since="1d")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 1
         assert records[0]["assistant_tool_call"]["input"]["file_path"] == "/new.py"
@@ -200,7 +192,7 @@ class TestAuditRoutingSamples:
             _opus([_agent_use("a1", "code-writer")], out=200),
             _opus([], out=50),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 0
 
@@ -225,13 +217,13 @@ class TestAuditRoutingSamples:
         ])
 
         # Run audit-routing-shape: sum D1 turn counts across all buckets
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         shape_out = capsys.readouterr().out
-        d1_total_turns = sum(_extract_shape_d1(shape_out, bkt)[0] for bkt in _mod.audit_routing._D1_BUCKETS)
+        d1_total_turns = sum(_extract_shape_d1(shape_out, bkt)[0] for bkt in audit_routing._D1_BUCKETS)
 
         # Run audit-routing-samples with a large sample to capture all eligible turns
         args = _audit_routing_samples_args(sample=1000, seed=0)
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         samples = json.loads(capsys.readouterr().out)
 
         assert len(samples) == d1_total_turns  # both should be 3
@@ -244,7 +236,7 @@ class TestAuditRoutingSamples:
             _user_msg([{"type": "text", "text": "looks good"}]),
             _opus([_edit_use("e1")], out=200),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 1
         assert records[0]["next_assistant_action"] == "edit"
@@ -256,7 +248,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/first.py")], out=100),
             _opus([_read_use("r2", "/second.py")], out=100),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 2
         # Both reads should trace back to the same user message
@@ -270,7 +262,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/a.py")], out=100),
             _opus([{"type": "text", "text": long_text}], out=50),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 1
         assert len(records[0]["next_turn_excerpt"]) == 200
@@ -281,11 +273,11 @@ class TestAuditRoutingSamples:
             _opus([_read_use(f"r{i}", f"/f{i}.py")], out=100) for i in range(20)
         ])
         args_a = _audit_routing_samples_args(sample=5, seed=1)
-        _mod.audit_routing.cmd_audit_routing_samples(args_a)
+        audit_routing.cmd_audit_routing_samples(args_a)
         records_a = json.loads(capsys.readouterr().out)
 
         args_b = _audit_routing_samples_args(sample=5, seed=99)
-        _mod.audit_routing.cmd_audit_routing_samples(args_b)
+        audit_routing.cmd_audit_routing_samples(args_b)
         records_b = json.loads(capsys.readouterr().out)
 
         assert [r["turn_index"] for r in records_a] != [r["turn_index"] for r in records_b]
@@ -296,7 +288,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/foo/bar.py")], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         assert out.startswith("# audit-routing-samples curation")
 
@@ -308,7 +300,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r3", "/c.py")], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md", sample=10)
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         # Count lines that start with '## ' (section headers, not the h1)
         section_headers = [line for line in out.splitlines() if line.startswith("## ")]
@@ -320,7 +312,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "src/foo/bar.py")], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         assert "**Read:** `src/foo/bar.py`" in out
 
@@ -331,7 +323,7 @@ class TestAuditRoutingSamples:
                     "input": {"pattern": "render_widget", "path": "src/"}}], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         assert "**Grep:** `render_widget` in `src/`" in out
 
@@ -343,21 +335,21 @@ class TestAuditRoutingSamples:
                     "input": {"command": long_command}}], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         assert "**Bash:**" in out
         # Extract the backtick-delimited command portion
         match = re.search(r"\*\*Bash:\*\* `([^`]*)`", out)
         assert match is not None
         rendered_command = match.group(1)
-        assert rendered_command == "a" * _mod.render._BASH_COMMAND_DISPLAY_CHARS + "…"
+        assert rendered_command == "a" * render._BASH_COMMAND_DISPLAY_CHARS + "…"
 
     def test_format_md_fallback_for_unknown_tool(self):
         """_pretty_tool_call renders an unrecognised tool name using the **<Name>:** fallback."""
         # SomeOtherTool is not in _CODE_READ_TOOLS, so a turn using only it would never
         # be classified as code-read and would not reach _pretty_tool_call via the full
         # pipeline.  Testing the helper directly exercises the fallback rendering path.
-        rendered = _mod.render._pretty_tool_call({"name": "SomeOtherTool", "input": {"x": 1}})
+        rendered = render._pretty_tool_call({"name": "SomeOtherTool", "input": {"x": 1}})
         assert "**SomeOtherTool:**" in rendered
 
     def test_format_md_blockquotes_multiline_user_message(self, fake_projects, capsys):
@@ -367,7 +359,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/a.py")], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         assert "> line one" in out
         assert "> line two" in out
@@ -378,7 +370,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/foo/bar.py")], out=100),
         ])
         args = _audit_routing_samples_args()  # output_format defaults to "json"
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         assert out.strip().startswith("[")
 
@@ -389,7 +381,7 @@ class TestAuditRoutingSamples:
                     "input": {"pattern": "**/*.ts", "path": "src/"}}], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         assert "**Glob:** `**/*.ts` in `src/`" in out
 
@@ -401,7 +393,7 @@ class TestAuditRoutingSamples:
                     "input": {"command": short_command}}], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         assert f"**Bash:** `{short_command}`" in out
         assert "…" not in out
@@ -413,7 +405,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/a.py")], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         lines = out.splitlines()
         # Find the blockquoted user section; the blank line between paragraphs must be ">"
@@ -428,7 +420,7 @@ class TestAuditRoutingSamples:
 
     def test_pretty_tool_call_bash_with_description(self):
         """_pretty_tool_call renders Bash with description as 'description — `cmd`'."""
-        result = _mod.render._pretty_tool_call({
+        result = render._pretty_tool_call({
             "name": "Bash",
             "input": {"command": "grep -rn foo bar/", "description": "Find foo"},
         })
@@ -436,7 +428,7 @@ class TestAuditRoutingSamples:
 
     def test_pretty_tool_call_bash_without_description(self):
         """_pretty_tool_call Bash without description falls back to bare command."""
-        result = _mod.render._pretty_tool_call({
+        result = render._pretty_tool_call({
             "name": "Bash",
             "input": {"command": "ls /tmp"},
         })
@@ -451,7 +443,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/foo/bar.py")], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         assert "**Recent agent narration:**" in out
         assert "Checking dependencies first." in out
@@ -462,7 +454,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/foo/bar.py")], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         assert "**Recent agent narration:**" not in out
 
@@ -473,7 +465,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/foo/bar.py")], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         assert "**Recent tool trail:**" in out
         assert "Read: /other.py" in out
@@ -484,7 +476,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/foo/bar.py")], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         assert "**Recent tool trail:**" not in out
 
@@ -498,7 +490,7 @@ class TestAuditRoutingSamples:
         candidate = _opus([_read_use("rc", "/candidate.py")], out=100)
         _write_jsonl(fake_projects / "sess.jsonl", prior_turns + [candidate])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         # Isolate only the card for /candidate.py (the last candidate turn)
         sections = out.split("---")
@@ -519,7 +511,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("rc", "/candidate.py")], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         narration_lines = [ln for ln in out.splitlines() if ln.startswith("> ") and "Only prior." in ln]
         assert len(narration_lines) == 1
@@ -538,7 +530,7 @@ class TestAuditRoutingSamples:
         candidate = _opus([_read_use("rc", "/candidate.py")], out=100)
         _write_jsonl(fake_projects / "sess.jsonl", text_bearing + tool_only + [candidate])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         # Isolate the candidate card and assert narration contains the text-bearing entries
         sections = out.split("---")
@@ -555,7 +547,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("rc", "/candidate.py")], out=100),
         ])
         args = _audit_routing_samples_args(output_format="md")
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         # Should appear as a single blockquote line with a space, not two separate lines
         assert "> Line one. Line two." in out
@@ -580,7 +572,7 @@ class TestAuditRoutingSamples:
             ) + "\n"
         )
         args = _audit_routing_samples_args(output_format="md", sample=10)
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         # Split by section headers and check B's card specifically.
         sections = out.split("---")
@@ -594,7 +586,7 @@ class TestAuditRoutingSamples:
             _opus([_read_use("r1", "/foo.py")], out=100),
         ])
         args = _audit_routing_samples_args()  # default JSON format
-        _mod.audit_routing.cmd_audit_routing_samples(args)
+        audit_routing.cmd_audit_routing_samples(args)
         out = capsys.readouterr().out
         records = json.loads(out)
         assert len(records) == 1
@@ -607,7 +599,7 @@ class TestAuditRoutingSamples:
     def test_since_malformed_value_exits_nonzero_with_subcommand_in_message(self, capsys):
         """A malformed --since value fails closed with the audit-routing-samples-specific error prefix."""
         with pytest.raises(SystemExit):
-            _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args(since="not-a-window"))
+            audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args(since="not-a-window"))
         assert "audit-routing-samples: --since: expected Nd like '35d'" in capsys.readouterr().err
 
     def test_request_id_group_tool_use_on_later_record_still_one_turn_at_index_zero(
@@ -623,7 +615,7 @@ class TestAuditRoutingSamples:
             _opus([_thinking_block()], out=20, request_id="req-1"),
             _opus([_read_use("r1", "/a.py")], out=20, request_id="req-1"),
         ])
-        _mod.audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
+        audit_routing.cmd_audit_routing_samples(_audit_routing_samples_args())
         records = json.loads(capsys.readouterr().out)
         assert len(records) == 1
         assert records[0]["turn_index"] == 0

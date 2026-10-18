@@ -1,11 +1,14 @@
 """Tests for transcript_analysis/review_trace.py (cmd_review_trace, --deny-summary)."""
 import argparse
-import importlib.util
-import sys
-from pathlib import Path
 
 import pytest
 from helpers import CONSULT_CLASSIFICATION_TABLE
+from transcript_analysis import (
+    corpus,
+    denials,
+    review_trace,
+    scope,
+)
 
 from .conftest import (
     _agent_use,
@@ -22,21 +25,12 @@ from .conftest import (
     _write_subagent_jsonl,
 )
 
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
-
 
 def _since_until_epochs(since: str | None, until: str | None) -> tuple[float | None, float | None]:
     """Mirror cmd_review_trace's own --since/--until date-string -> epoch-second
     boundary conversion, so a test calling _review_trace_session_events directly
     passes boundaries in the same form the CLI itself would compute."""
-    return _mod._parse_absolute_window_args(argparse.Namespace(since=since, until=until), "review-trace")
+    return scope._parse_absolute_window_args(argparse.Namespace(since=since, until=until), "review-trace")
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +46,7 @@ class TestReviewTrace:
                   ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -68,7 +62,7 @@ class TestReviewTrace:
                   ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "skill-management:skill-review")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -84,7 +78,7 @@ class TestReviewTrace:
                   ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", ".claude/worktrees/some-branch/claude:skill-review")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -99,7 +93,7 @@ class TestReviewTrace:
                   ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "claude:plan-it")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None, skill_filter="plan-it",
         )
         assert len(events) == 1
@@ -117,7 +111,7 @@ class TestReviewTrace:
                   ts="2026-05-19T10:01:00.000Z",
                   content=[_skill_use("s2", "claude:code-review")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None, skill_filter="plan-it",
         )
         assert len(events) == 1
@@ -133,7 +127,7 @@ class TestReviewTrace:
                   ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", ".claude/worktrees/some-branch/claude:skill-review")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -147,7 +141,7 @@ class TestReviewTrace:
             _user_msg("<command-name>/code-review</command-name>", branch="feat",
                        ts="2026-05-19T10:00:00.000Z"),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -162,7 +156,7 @@ class TestReviewTrace:
             _user_msg("<command-name>/skill-management:skill-review</command-name>",
                        branch="feat", ts="2026-05-19T10:00:00.000Z"),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -176,7 +170,7 @@ class TestReviewTrace:
             _user_msg("<command-name>/claude:plan-it</command-name>", branch="feat",
                        ts="2026-05-19T10:00:00.000Z"),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None, skill_filter="plan-it",
         )
         assert len(events) == 1
@@ -192,7 +186,7 @@ class TestReviewTrace:
             _user_msg("<command-name>/claude:code-review</command-name>", branch="feat",
                        ts="2026-05-19T10:01:00.000Z"),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None, skill_filter="plan-it",
         )
         assert len(events) == 1
@@ -207,7 +201,7 @@ class TestReviewTrace:
             _user_msg("<command-name>/.claude/worktrees/some-branch/claude:skill-review</command-name>",
                        branch="feat", ts="2026-05-19T10:00:00.000Z"),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -221,7 +215,7 @@ class TestReviewTrace:
             _user_msg("<command-name>/handoff</command-name>", branch="feat",
                        ts="2026-05-19T10:00:00.000Z"),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert events == []
@@ -237,7 +231,7 @@ class TestReviewTrace:
                 branch="feat", ts="2026-05-19T10:00:00.000Z",
             ),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -255,7 +249,7 @@ class TestReviewTrace:
             _user_msg("<command-name>/plan-review</command-name>", branch="fix",
                        ts="2026-05-19T10:01:00.000Z"),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 2
@@ -279,7 +273,7 @@ class TestReviewTrace:
                 branch="main", ts="2026-05-19T10:00:00.000Z",
             ),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 2
@@ -293,7 +287,7 @@ class TestReviewTrace:
             _user_msg("<command-name>/ </command-name>", branch="main",
                        ts="2026-05-19T10:00:00.000Z"),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert events == []
@@ -301,7 +295,7 @@ class TestReviewTrace:
     def test_denial_dict_blockingError_parsed(self):
         """hook_blocking_error with blockingError as a dict produces a denial event."""
         records = [_hook_deny("require-code-review", stringified=False)]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -311,10 +305,10 @@ class TestReviewTrace:
     def test_denial_stringified_blockingError_parsed_identically(self):
         """hook_blocking_error with blockingError as a JSON string produces
         an identical denial event to the dict form."""
-        dict_events, _tuc1, _pr1 = _mod.review_trace._review_trace_session_events(
+        dict_events, _tuc1, _pr1 = review_trace._review_trace_session_events(
             [_hook_deny("require-code-review", stringified=False)], None, None, None,
         )
-        str_events, _tuc2, _pr2 = _mod.review_trace._review_trace_session_events(
+        str_events, _tuc2, _pr2 = review_trace._review_trace_session_events(
             [_hook_deny("require-code-review", stringified=True)], None, None, None,
         )
         assert len(dict_events) == 1
@@ -338,7 +332,7 @@ class TestReviewTrace:
                 "blockingError": {"message": "non-fatal"},
             },
         }
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             [non_blocking_rec], None, None, None,
         )
         assert events == []
@@ -353,7 +347,7 @@ class TestReviewTrace:
                       _agent_use("a2", "general-purpose"),
                   ]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         reviewer_events = [e for e in events if e["kind"] == "reviewer-spawn"]
@@ -371,7 +365,7 @@ class TestReviewTrace:
                       _agent_use("a2", "skill-fidelity-reviewer"),
                   ]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         reviewer_types = {e["subagent_type"] for e in events if e["kind"] == "reviewer-spawn"}
@@ -388,7 +382,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nSome question.")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
@@ -400,7 +394,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_agent_use("a1", "plan-architect", prompt="MODE=plan-sections\n## Context")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert not any(e["kind"] == "architect-consult" for e in events)
@@ -412,7 +406,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_agent_use("a1", "plan-architect", prompt="")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
@@ -428,7 +422,7 @@ class TestReviewTrace:
                       "input": {"subagent_type": "plan-architect", "description": "x"},
                   }]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert sum(1 for e in events if e["kind"] == "architect-consult") == 1
@@ -442,7 +436,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_agent_use("a1", "plan-architect", prompt=first_line)]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         emitted_consult = any(e["kind"] == "architect-consult" for e in events)
@@ -456,7 +450,7 @@ class TestReviewTrace:
                   sidechain=True,
                   content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -472,7 +466,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_agent_use("a1", "staff-backend-engineer", prompt="Review this diff.")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert sum(1 for e in events if e["kind"] == "architect-consult") == 0
@@ -488,7 +482,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="feature-x", ts="2026-05-19T10:00:00.000Z",
                   content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         consult_events = [e for e in events if e["kind"] == "architect-consult"]
@@ -508,7 +502,7 @@ class TestReviewTrace:
                   content=[_agent_use("a1", "plan-architect",
                                        prompt="MODE=consult\nSecret rationale nobody should see.")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         consult_events = [e for e in events if e["kind"] == "architect-consult"]
@@ -526,7 +520,7 @@ class TestReviewTrace:
                   content=[_agent_use("a1", "plan-architect",
                                        prompt=f"MODE=consult\n{secret_rationale}")]),
         ])
-        _mod.review_trace.cmd_review_trace(_review_trace_args())
+        review_trace.cmd_review_trace(_review_trace_args())
         out = capsys.readouterr().out
         assert secret_rationale not in out
         assert "consult-session.jsonl" in out
@@ -538,7 +532,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
         ])
-        _mod.review_trace.cmd_review_trace(_review_trace_args())
+        review_trace.cmd_review_trace(_review_trace_args())
         out = capsys.readouterr().out
         assert "architect-consults=1" in out
 
@@ -550,7 +544,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
         ])
-        _mod.review_trace.cmd_review_trace(_review_trace_args())
+        review_trace.cmd_review_trace(_review_trace_args())
         out = capsys.readouterr().out
         assert "consult-only.jsonl" in out
         assert "consult      " in out
@@ -564,7 +558,7 @@ class TestReviewTrace:
                   sidechain=True,
                   content=[_skill_use("s1", "code-review")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -595,7 +589,7 @@ class TestReviewTrace:
                   ts="2026-05-19T10:05:00.000Z",
                   content=[_agent_use("a2", "plan-architect", prompt="MODE=consult\nquestion")]),
         ])
-        _mod.review_trace.cmd_review_trace(_review_trace_args())
+        review_trace.cmd_review_trace(_review_trace_args())
         out = capsys.readouterr().out
         assert "architect-consults=1" in out
         assert "thread=sidechain" in out
@@ -620,7 +614,7 @@ class TestReviewTrace:
             agent_type="review-orchestrator",
         )
 
-        _mod.review_trace.cmd_review_trace(_review_trace_args())
+        review_trace.cmd_review_trace(_review_trace_args())
         out = capsys.readouterr().out
 
         assert "skills=1" in out
@@ -640,7 +634,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="feat", sidechain=True, ts="2026-05-19T10:05:00.000Z",
                   content=[_skill_use("s3", "ready-for-review")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert [e["skill"] for e in events] == ["code-review", "ready-for-review", "plan-review"]
@@ -656,7 +650,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="feat", sidechain=True, ts="2026-05-19T09:00:00.000Z",
                   content=[_skill_use("s2", "plan-review")]),  # subagent record, earlier ts
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert events[0]["thread"] == "sidechain"
@@ -676,7 +670,7 @@ class TestReviewTrace:
             _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:10:00.000Z",
                   content=[_skill_use("s3", "ready-for-review")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert [e["skill"] for e in events] == ["code-review", "plan-review", "ready-for-review"]
@@ -693,7 +687,7 @@ class TestReviewTrace:
             _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s2", "plan-review")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert [e["skill"] for e in events] == ["code-review", "plan-review"]
@@ -710,7 +704,7 @@ class TestReviewTrace:
             _asst("claude-sonnet-4-6", branch="feat",
                   ts="2026-05-19T10:00:00.000Z", content=[_skill_use("s2", "plan-review")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert [e["thread"] for e in events] == ["main", "sidechain"]
@@ -732,7 +726,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="B", sidechain=True, ts="2026-05-19T10:05:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -754,7 +748,7 @@ class TestReviewTrace:
         # ts) is listed second -- pre-sort order is the reverse of
         # chronological order, so this exercises the merge sort as well as
         # dedup.
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             [attach, twin], None, None, None,
         )
         assert len(events) == 1
@@ -794,7 +788,7 @@ class TestReviewTrace:
                   ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s-a2-good", "ready-for-review")]),
         ])
-        _mod.review_trace.cmd_review_trace(_review_trace_args())
+        review_trace.cmd_review_trace(_review_trace_args())
         out = capsys.readouterr().out
         # agent-2's own unparseable-ts record (plan-review) must sort ahead
         # of agent-2's own later, real-ts record (ready-for-review), and
@@ -815,7 +809,7 @@ class TestReviewTrace:
                   content=[_skill_use("s1", "code-review")]),
         ]
         since_ts, until_epoch = _since_until_epochs("2026-05-19", None)
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, since_ts, until_epoch, None,
         )
         assert len(events) == 1
@@ -829,7 +823,7 @@ class TestReviewTrace:
                   content=[_skill_use("s1", "plan-review")]),
         ]
         since_ts, until_epoch = _since_until_epochs(None, "2026-05-19")
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, since_ts, until_epoch, None,
         )
         assert len(events) == 1
@@ -842,17 +836,17 @@ class TestReviewTrace:
                   content=[_skill_use("s1", "code-review")]),  # no ts field
         ])
         # No exception must be raised; the missing-timestamp record is silently skipped.
-        _mod.review_trace.cmd_review_trace(_review_trace_args(since="2026-05-01"))
+        review_trace.cmd_review_trace(_review_trace_args(since="2026-05-01"))
         # No crash; output may be empty (no matching events survive the date filter).
         capsys.readouterr()  # consume; success if no exception raised above
 
     def test_deny_only_restricts_to_denial_sessions(self):
         """--deny-only retains sessions with a denial event; a session with a
         reviewer spawn but no denial does not qualify."""
-        session_a, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        session_a, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             [_hook_deny("require-code-review")], None, None, None,
         )
-        session_b, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        session_b, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             [
                 _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                       content=[_agent_use("a1", "staff-backend-engineer")]),
@@ -870,7 +864,7 @@ class TestReviewTrace:
                   content=[_skill_use("s1", "code-review")]),
         ]
         since_ts, until_epoch = _since_until_epochs(None, "2026-05-10")
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, since_ts, until_epoch, None,
         )
         assert len(events) == 1
@@ -889,7 +883,7 @@ class TestReviewTrace:
                 "blockingError": error_dict,
             },
         }
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             [denial_rec], None, None, None,
         )
         assert len(events) == 1
@@ -903,7 +897,7 @@ class TestReviewTrace:
                   ts="2026-05-19T10:00:00.000Z",
                   content=[_bash_use("b1", "git status")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert events == []
@@ -911,7 +905,7 @@ class TestReviewTrace:
     def test_current_format_denial_detected(self):
         """A current-format is_error tool_result with a hook-denial signature produces a denial event."""
         records = [_hook_deny_current("Commit blocked by code-review gate: run /code-review.")]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -921,7 +915,7 @@ class TestReviewTrace:
     def test_current_format_ordinary_error_is_not_a_denial(self):
         """An is_error tool_result without a hook-denial signature produces no events."""
         records = [_hook_deny_current("npm ERR! command failed with exit code 1")]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert events == []
@@ -930,7 +924,7 @@ class TestReviewTrace:
         """A tool_result with denial-shaped text but no is_error flag produces no events."""
         rec = _hook_deny_current("Blocked by worktree-enforcement hook: not allowed.")
         rec["message"]["content"][0]["is_error"] = False
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             [rec], None, None, None,
         )
         assert events == []
@@ -945,7 +939,7 @@ class TestReviewTrace:
             "Blocked by worktree-enforcement hook: 'git add' not allowed.",
             tool_id="toolu_worktree",
         )
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             [attach, twin], None, None, None,
         )
         assert len(events) == 1
@@ -962,7 +956,7 @@ class TestReviewTrace:
             _hook_deny_current("Commit blocked by code-review gate.", tool_id="toolu_a"),
             _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="toolu_b"),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         denial_events = [e for e in events if e["kind"] == "denial"]
@@ -976,7 +970,7 @@ class TestReviewTrace:
         rec["message"]["content"][0]["content"] = [
             {"type": "text", "text": "Commit blocked by code-review gate: run /code-review."},
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             [rec], None, None, None,
         )
         assert len(events) == 1
@@ -985,10 +979,10 @@ class TestReviewTrace:
 
     def test_deny_only_matches_current_format_denial(self):
         """--deny-only retains a session whose only denial is current-format."""
-        denial_events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        denial_events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             [_hook_deny_current("Push to a branch blocked by ready-for-review gate.")], None, None, None,
         )
-        no_denial_events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        no_denial_events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             [
                 _asst("claude-opus-4-7", branch="feat", ts="2026-05-19T10:00:00.000Z",
                       content=[_agent_use("a1", "staff-sdet")]),
@@ -1010,7 +1004,7 @@ class TestReviewTrace:
             _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
         ])
-        _mod.review_trace.cmd_review_trace(_review_trace_args(deny_only=True))
+        review_trace.cmd_review_trace(_review_trace_args(deny_only=True))
         out = capsys.readouterr().out
         assert "denial-session.jsonl" in out
         assert "skill-only-session.jsonl" not in out
@@ -1022,7 +1016,7 @@ class TestReviewTrace:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _hook_deny_current("Blocked by code-review gate: could not source _lib.sh."),
         ])
-        _mod.review_trace.cmd_review_trace(_review_trace_args())
+        review_trace.cmd_review_trace(_review_trace_args())
         out = capsys.readouterr().out
         assert "cause=lib-source" in out
 
@@ -1043,19 +1037,19 @@ class TestReviewTrace:
                   content=[_agent_use("a1", "staff-backend-engineer")]),
         ]
 
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 2
         for evt in events:
             assert evt["branch"] == "feature-x", f"event must attribute to feature-x, not main: {evt!r}"
 
-        events_feature_x, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events_feature_x, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, {"feature-x"},
         )
         assert {e["kind"] for e in events_feature_x} == {"skill", "reviewer-spawn"}
 
-        events_main_only, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events_main_only, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, {"main"},
         )
         assert events_main_only == [], "the session's first-record branch must return zero events"
@@ -1069,7 +1063,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="feat-b", ts="2026-05-19T10:05:00.000Z",
                   content=[_agent_use("a1", "staff-backend-engineer")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert {e["branch"] for e in events} == {"feat-a", "feat-b"}
@@ -1082,7 +1076,7 @@ class TestReviewTrace:
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00.000Z"),
             _hook_deny("require-code-review", branch="feature-y", ts="2026-05-19T10:05:00.000Z"),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         denial_event = next(e for e in events if e["kind"] == "denial")
@@ -1095,7 +1089,7 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="main", ts="2026-05-19T10:00:00.000Z"),
             _hook_deny("require-code-review", branch="main", ts="2026-05-19T10:05:00.000Z"),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         denial_event = next(e for e in events if e["kind"] == "denial")
@@ -1106,7 +1100,7 @@ class TestReviewTrace:
             _asst("claude-sonnet-4-6", branch="", ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert events[0]["branch"] == "?"
@@ -1120,7 +1114,7 @@ class TestReviewTrace:
                   content=[_skill_use("s1", "code-review")]),
         ]
         since_ts, until_epoch = _since_until_epochs("2026-05-10", None)
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, since_ts, until_epoch, None,
         )
         assert len(events) == 1
@@ -1131,7 +1125,7 @@ class TestReviewTrace:
         drops it before deny_only's has_denial check ever sees it (filter-then-deny),
         not a session that still qualifies because it had a denial before filtering."""
         records = [_hook_deny("require-code-review", branch="wrong-branch")]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, {"right-branch"},
         )
         assert events == []
@@ -1147,7 +1141,7 @@ class TestReviewTrace:
         )
         records = [attach, twin]
 
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         denial_events = [e for e in events if e["kind"] == "denial"]
@@ -1159,7 +1153,7 @@ class TestReviewTrace:
         # event entirely. A filter-before-dedup implementation would instead
         # exclude attach before dedup ever runs, letting twin (branch-b) through
         # undeduped and yielding one event — the regression this pins against.
-        events_branch_b_only, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events_branch_b_only, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, {"branch-b"},
         )
         assert events_branch_b_only == []
@@ -1179,7 +1173,7 @@ class TestReviewTrace:
                   content=[_bash_use("b3", "git commit -m y")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b3"),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert dict(data["hook_counts"]) == {"code-review": 2, "ready-for-review": 1}
         assert dict(data["command_shape_counts"]) == {"git commit": 2, "git push": 1}
 
@@ -1189,8 +1183,8 @@ class TestReviewTrace:
         shape-axis counterpart to test_deny_summary_unmatched_hook_name_bucketed_not_dropped,
         isolated from that test's hook-axis unmatched-ness."""
         records = [_hook_deny_current("Commit blocked by code-review gate: run /code-review.")]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
-        assert dict(data["command_shape_counts"]) == {_mod.denials._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {denials._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
 
     def test_deny_summary_git_dash_c_flag_value_dropped_bucketed_as_true_subcommand(self):
         """'git -C <path> commit' buckets as 'git commit', not 'other' and not a
@@ -1204,7 +1198,7 @@ class TestReviewTrace:
                   content=[_bash_use("b1", "git -C ~/repo commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert dict(data["command_shape_counts"]) == {"git commit": 1}
 
     def test_deny_summary_git_dash_lowercase_c_flag_value_dropped_bucketed_as_true_subcommand(self):
@@ -1215,7 +1209,7 @@ class TestReviewTrace:
                   content=[_bash_use("b1", "git -c user.name=eng commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert dict(data["command_shape_counts"]) == {"git commit": 1}
 
     def test_deny_summary_git_dir_equals_attached_flag_value_dropped_bucketed_as_true_subcommand(self):
@@ -1227,7 +1221,7 @@ class TestReviewTrace:
                   content=[_bash_use("b1", "git --git-dir=~/repo/.git status")]),
             _hook_deny_current("Blocked by worktree-enforcement gate: not in a linked worktree.", tool_id="b1"),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert dict(data["command_shape_counts"]) == {"git status": 1}
 
     def test_deny_summary_work_tree_separate_token_flag_value_dropped_bucketed_as_true_subcommand(self):
@@ -1238,7 +1232,7 @@ class TestReviewTrace:
                   content=[_bash_use("b1", "git --work-tree ~/repo commit -m x")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert dict(data["command_shape_counts"]) == {"git commit": 1}
 
     def test_deny_summary_env_assignment_prefix_stripped_before_classification(self):
@@ -1259,7 +1253,7 @@ class TestReviewTrace:
                 tool_id="b1",
             ),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert dict(data["command_shape_counts"]) == {"marker.sh write": 1}
 
     def test_deny_summary_absolute_marker_script_path_basenamed_not_leaked(self):
@@ -1275,7 +1269,7 @@ class TestReviewTrace:
                 tool_id="b1",
             ),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert dict(data["command_shape_counts"]) == {"marker.sh activate": 1}
 
     def test_deny_summary_unenumerated_attached_flag_before_subcommand_falls_to_other_no_leak(self):
@@ -1289,8 +1283,8 @@ class TestReviewTrace:
                   content=[_bash_use("b1", "git --exec-path=~/secret-tools status")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
-        assert dict(data["command_shape_counts"]) == {_mod.denials._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {denials._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
 
     def test_deny_summary_esc_byte_in_trailing_argument_never_reaches_stdout(self):
         """An ESC byte embedded in an argument past the subcommand (e.g. a commit
@@ -1304,7 +1298,7 @@ class TestReviewTrace:
                   content=[_bash_use("b1", f'git commit -m "{esc_message}"')]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert dict(data["command_shape_counts"]) == {"git commit": 1}
 
     def test_deny_summary_unenumerated_non_flag_subcommand_token_falls_to_other_no_leak(self):
@@ -1318,8 +1312,8 @@ class TestReviewTrace:
                   content=[_bash_use("b1", f"git {credential_token} status")]),
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
-        assert dict(data["command_shape_counts"]) == {_mod.denials._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["command_shape_counts"]) == {denials._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
 
     def test_deny_summary_unmatched_hook_name_bucketed_not_dropped(self):
         """A denial matched via _HOOK_DENIAL_SIGNATURE's 'invocation denied' alternative,
@@ -1327,9 +1321,9 @@ class TestReviewTrace:
         dropped from --deny-summary's total. Its unresolvable tool_use_id also lands in
         the command-shape grouping's 'other' bucket."""
         records = [_hook_deny_current("Skill invocation denied.")]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
-        assert dict(data["hook_counts"]) == {_mod.denials._DENY_SUMMARY_UNMATCHED_HOOK: 1}
-        assert dict(data["command_shape_counts"]) == {_mod.denials._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {denials._DENY_SUMMARY_UNMATCHED_HOOK: 1}
+        assert dict(data["command_shape_counts"]) == {denials._DENY_SUMMARY_OTHER_COMMAND_SHAPE: 1}
 
     def test_deny_summary_covers_marker_invocation_denied_wording(self):
         """enforce-marker-script-shape.sh's 'marker.sh invocation denied ...' wording
@@ -1342,7 +1336,7 @@ class TestReviewTrace:
                 "Command (truncated): ~/.claude/scripts/marker.sh write ../foo"
             ),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert dict(data["hook_counts"]) == {"marker.sh": 1}
 
     def test_deny_summary_covers_self_labeled_gate_colon_wording(self):
@@ -1355,7 +1349,7 @@ class TestReviewTrace:
                 "per-skill limit. Reduce to the limit before committing."
             ),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert dict(data["hook_counts"]) == {"Skill length": 1}
 
     def test_deny_summary_unenumerated_colon_wording_falls_to_unmatched_no_leak(self):
@@ -1371,8 +1365,8 @@ class TestReviewTrace:
                 "read gate: the path is credential-shaped."
             ),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
-        assert dict(data["hook_counts"]) == {_mod.denials._DENY_SUMMARY_UNMATCHED_HOOK: 1}
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {denials._DENY_SUMMARY_UNMATCHED_HOOK: 1}
 
     @pytest.mark.parametrize(
         "message_template",
@@ -1389,8 +1383,8 @@ class TestReviewTrace:
         name is never returned as the label."""
         over_cap_name = "AKIA_FAKE_SECRET_ACCESS_KEY_" + "X" * 20  # 48 chars, over the 40-char cap
         records = [_hook_deny_current(message_template.format(name=over_cap_name))]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
-        assert dict(data["hook_counts"]) == {_mod.denials._DENY_SUMMARY_UNMATCHED_HOOK: 1}
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {denials._DENY_SUMMARY_UNMATCHED_HOOK: 1}
 
     def test_deny_summary_attachment_hookname_not_enumerated_falls_to_unmatched(self):
         """The legacy attachment branch's hookName field is bounded the same way as
@@ -1398,8 +1392,8 @@ class TestReviewTrace:
         predate this bound, so any historical value is unverified) is not echoed
         verbatim into the returned hook counts — it falls to 'unmatched'."""
         records = [_hook_deny("legacy-hook-slug")]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
-        assert dict(data["hook_counts"]) == {_mod.denials._DENY_SUMMARY_UNMATCHED_HOOK: 1}
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        assert dict(data["hook_counts"]) == {denials._DENY_SUMMARY_UNMATCHED_HOOK: 1}
 
     def test_deny_summary_replaces_per_session_listing(self, fake_projects, capsys):
         """--deny-summary suppresses the normal per-session event listing entirely —
@@ -1407,7 +1401,7 @@ class TestReviewTrace:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _hook_deny_current("Commit blocked by code-review gate."),
         ])
-        _mod.review_trace.cmd_review_trace(_review_trace_args(deny_summary=True))
+        review_trace.cmd_review_trace(_review_trace_args(deny_summary=True))
         out = capsys.readouterr().out
         assert "### " not in out
         assert "Denials by hook/gate" in out
@@ -1424,7 +1418,7 @@ class TestReviewTrace:
             _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
                   content=[_skill_use("s1", "code-review")]),
         ])
-        _mod.review_trace.cmd_review_trace(_review_trace_args(deny_summary=True))
+        review_trace.cmd_review_trace(_review_trace_args(deny_summary=True))
         out = capsys.readouterr().out
         assert "No denials found in scope." in out
         assert "Denials by hook/gate" not in out
@@ -1434,7 +1428,7 @@ class TestReviewTrace:
         `denial` event — no `friction` event, since a falsy toolDenialKind means
         the field is absent, not friction."""
         records = [_hook_deny_current("Commit blocked by code-review gate: run /code-review.")]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -1452,7 +1446,7 @@ class TestReviewTrace:
                 tool_id="toolu_both", tool_denial_kind="user-rejected",
             ),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -1479,7 +1473,7 @@ class TestReviewTrace:
                 ]},
             },
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         friction_events = [e for e in events if e["kind"] == "friction"]
@@ -1499,7 +1493,7 @@ class TestReviewTrace:
                 tool_denial_kind="interrupted",
             ),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         denial_events = [e for e in events if e["kind"] == "denial"]
@@ -1520,7 +1514,7 @@ class TestReviewTrace:
             "Request interrupted by user for tool use", tool_id=shared_id,
             tool_denial_kind="interrupted",
         )
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             [attach, friction_twin], None, None, None,
         )
         denial_events = [e for e in events if e["kind"] == "denial"]
@@ -1543,7 +1537,7 @@ class TestReviewTrace:
                 tool_denial_kind="interrupted", ts="2026-05-19T10:01:00.000Z",
             ),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         friction_events = [e for e in events if e["kind"] == "friction"]
@@ -1561,7 +1555,7 @@ class TestReviewTrace:
                 tool_denial_kind="some-future-kind",
             ),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         friction_events = [e for e in events if e["kind"] == "friction"]
@@ -1579,7 +1573,7 @@ class TestReviewTrace:
                 tool_denial_kind="interrupted",
             ),
         ]
-        data = _mod.review_trace.compute_deny_summary_data(
+        data = review_trace.compute_deny_summary_data(
             [("friction_only.jsonl", records)], deny_only=True,
         )
         assert data["any_session_matched"] is True
@@ -1596,7 +1590,7 @@ class TestReviewTrace:
                 tool_denial_kind="interrupted",
             ),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert len(events) == 1
@@ -1616,9 +1610,9 @@ class TestReviewTrace:
             _hook_deny_current("Push blocked by ready-for-review gate.",
                                 tool_id="b2", ts="2026-07-15T09:00:01.000Z"),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
-        assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-01T10:00:01.000Z")
-        assert data["corpus_max_ts"] == _mod._parse_ts("2026-07-15T09:00:01.000Z")
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["corpus_min_ts"] == corpus._parse_ts("2026-07-01T10:00:01.000Z")
+        assert data["corpus_max_ts"] == corpus._parse_ts("2026-07-15T09:00:01.000Z")
 
     def test_deny_summary_corpus_window_widened_by_consult_event_outside_denial_range(self):
         """The corpus min/max window reads every event kind, not just denial.
@@ -1633,9 +1627,9 @@ class TestReviewTrace:
             _asst("claude-opus-4-7", branch="main", ts="2026-07-20T09:00:00.000Z",
                   content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
-        assert data["corpus_min_ts"] == _mod._parse_ts("2026-07-01T10:00:01.000Z")
-        assert data["corpus_max_ts"] == _mod._parse_ts("2026-07-20T09:00:00.000Z")
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["corpus_min_ts"] == corpus._parse_ts("2026-07-01T10:00:01.000Z")
+        assert data["corpus_max_ts"] == corpus._parse_ts("2026-07-20T09:00:00.000Z")
 
     def test_deny_summary_pre_regime_record_excluded_from_kind_breakdown_and_counted_separately(self):
         """An errored, non-gate-signature tool_result timestamped before
@@ -1666,7 +1660,7 @@ class TestReviewTrace:
                 ts="2026-07-25T10:00:00.000Z",
             ),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert data["pre_regime_tool_result_count"] == 1
         assert dict(data["friction_counts"]) == {"interrupted": 1}
 
@@ -1707,7 +1701,7 @@ class TestReviewTrace:
                 tool_id="b6",
             ),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         # Marginals confirm the symmetric setup (both hooks 3, both shapes 3).
         assert dict(data["command_shape_counts"]) == {"git commit": 3, "git checkout": 3}
         # The cross-tab is what actually distinguishes the two hooks' shapes.
@@ -1739,7 +1733,7 @@ class TestReviewTrace:
                 tool_id="b6",
             ),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert data["hook_cause_counts"][("code-review", "behavioral")] == 2
         assert data["hook_cause_counts"][("code-review", "lib-source")] == 1
         assert data["hook_cause_counts"][("worktree-enforcement", "behavioral")] == 1
@@ -1755,7 +1749,7 @@ class TestReviewTrace:
             _hook_deny_current("Commit blocked by code-review gate: run /code-review.", tool_id="b1"),
             _hook_deny_current("Blocked by code-review gate: could not source _lib.sh.", tool_id="b2"),
         ])
-        _mod.review_trace.cmd_review_trace(_review_trace_args(deny_summary=True))
+        review_trace.cmd_review_trace(_review_trace_args(deny_summary=True))
         out = capsys.readouterr().out
         assert "## Denials by hook/gate x cause" in out
         cols = _table_cols(out, header_contains="behavioral", row_contains="code-review")
@@ -1888,9 +1882,9 @@ class TestReviewTrace:
                 tool_id="b14",
             ),
         ]
-        data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
-        assert data["command_shape_counts"].get(_mod.denials._DENY_SUMMARY_OTHER_COMMAND_SHAPE, 0) == 0
-        assert data["hook_counts"].get(_mod.denials._DENY_SUMMARY_UNMATCHED_HOOK, 0) == 0
+        data = review_trace.compute_deny_summary_data([("sess.jsonl", records)])
+        assert data["command_shape_counts"].get(denials._DENY_SUMMARY_OTHER_COMMAND_SHAPE, 0) == 0
+        assert data["hook_counts"].get(denials._DENY_SUMMARY_UNMATCHED_HOOK, 0) == 0
 
 
 class TestReviewTracePreBranchAttribution:
@@ -1911,7 +1905,7 @@ class TestReviewTracePreBranchAttribution:
         ]
 
     def test_prefix_skill_consult_and_sidechain_events_print_the_branch_entered(self):
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             self._prefix_session_records(), None, None, None,
         )
         assert {e["kind"] for e in events} == {"skill", "architect-consult"}
@@ -1926,7 +1920,7 @@ class TestReviewTracePreBranchAttribution:
             _asst("claude-opus-4-7", branch="main", ts="2026-05-19T10:00:00.000Z"),
             _asst("claude-opus-4-7", branch="feature-x", ts="2026-05-19T10:05:00.000Z"),
         ]
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, None, None, None,
         )
         assert [e["branch"] for e in events] == ["?"]
@@ -1935,7 +1929,7 @@ class TestReviewTracePreBranchAttribution:
         records = self._prefix_session_records()
         records[-1]["timestamp"] = "2026-05-20T10:05:00.000Z"  # the branch entry falls outside the window
         since_ts, until_epoch = _since_until_epochs(None, "2026-05-19")
-        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+        events, _tool_use_commands, _pre_regime = review_trace._review_trace_session_events(
             records, since_ts, until_epoch, None,
         )
         assert len(events) == 3
@@ -1944,14 +1938,14 @@ class TestReviewTracePreBranchAttribution:
     def test_header_and_branches_filter_follow_the_attributed_branch(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", self._prefix_session_records())
 
-        _mod.review_trace.cmd_review_trace(_review_trace_args(branches="feature-x"))
+        review_trace.cmd_review_trace(_review_trace_args(branches="feature-x"))
         kept = capsys.readouterr().out
-        _mod.review_trace.cmd_review_trace(_review_trace_args(branches="main"))
+        review_trace.cmd_review_trace(_review_trace_args(branches="main"))
         dropped = capsys.readouterr().out
 
         assert "branches=feature-x" in kept
         assert "skill        plan-it  (branch=feature-x model=opus)" in kept
-        assert _mod.review_trace._REVIEW_TRACE_NO_SESSIONS_MSG in dropped
+        assert review_trace._REVIEW_TRACE_NO_SESSIONS_MSG in dropped
 
 
 class TestComputeDenySummaryDataGroupBoundaryFreshRead:
@@ -1976,7 +1970,7 @@ class TestComputeDenySummaryDataGroupBoundaryFreshRead:
             _hook_deny_current("Push blocked by ready-for-review gate.", tool_id="b2"),
         ])
 
-        data = _mod.review_trace.compute_deny_summary_data([(jsonl, [])])
+        data = review_trace.compute_deny_summary_data([(jsonl, [])])
 
         assert dict(data["hook_counts"]) == {"code-review": 1, "ready-for-review": 1}
 
