@@ -7,6 +7,8 @@
 # to the subagent's additionalContext: the history file's path, "no rows", or "unavailable".
 # The line is chosen from show's own `changed: <path>` or `unchanged` output.
 #
+# The history file's slug is derived the way findings-path-suffix.sh derives its suffix slug.
+#
 # The settings.json registration matches agent type `plan-architect`, and this hook re-checks
 # hook_event_name and agent_type itself.
 #

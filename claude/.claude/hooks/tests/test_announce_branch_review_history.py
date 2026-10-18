@@ -19,7 +19,6 @@ from helpers import (
     install_review_ledger_scripts,
     read_input,
     run_hook,
-    symlink_hooks_lib_chain,
 )
 from validate_skill_structure import parse_frontmatter
 
@@ -240,7 +239,6 @@ class TestAnnounceBranchReviewHistory:
     ):
         # The stub home never links the production script: its review-ledger.sh is a regular file written here.
         stub_home = tmp_path / stub_name / "home"
-        symlink_hooks_lib_chain(stub_home / ".claude" / "hooks")
         stub_script = stub_home / ".claude" / "scripts" / "review-ledger.sh"
         stub_script.parent.mkdir(parents=True)
         stub_script.write_text(stub_body)
