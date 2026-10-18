@@ -14,9 +14,9 @@ Intended outcome: `plan-architect` holds `Edit` only (no `Write`, `Bash`, `Skill
 
 `plan-architect` gets `Edit` and writes its four sections into the plan file itself. Every plan now ends with the same four headings, in this order: `## Approach`, `## Critical files`, `## Verification` and `## Out of scope`. The agent owns everything from `## Approach` to the end of the file. When it cannot write, it returns that same region as text, and `/plan-it` Step 5 splices the text in place. A new gate lets a plan-writer agent `Edit` only an existing plan file directly under the repository's `.claude/plans/`. Step 5 hashes everything above `## Approach` before every dispatch, after every return and after any splice, and it stops if that text changed.
 
-**Decision: one agent, not two (row 48).** The engineer chose one agent, with consult mode limited by its charter only (M6).
-- Three of the four prescribed consult call sites pass a plan path, and so does the engineer-asked consult (row 32).
-- At those three sites the plan is already committed. A consult-mode `Edit` there re-arms the plan-review gate, so the session's next non-plan write is denied (row 9).
+**Decision: one agent, not two (rows 48, 78).** The engineer chose one agent, with consult mode limited by its charter only (M6).
+- Consults prescribed by `/code-review` (its fix-plan pilot only when `architect_fix_plan_pilot` is on) and `/ready-for-review` can pass a plan path, as can an engineer-asked consult (row 32). `/review-pr`'s consult passes no plan path but reads untrusted PR content (row 32).
+- At the `/code-review` and `/ready-for-review` sites the plan is already committed. A consult-mode `Edit` there re-arms the plan-review gate, so the session's next non-plan write is denied (row 9).
 - The gate limits such an `Edit` to repository plan files, and git recovers a committed one.
 - A split would remove this residual. But it adds a second agent description to every stow consumer's sessions, which is the cost §37 rejected (row 33).
 
@@ -79,9 +79,9 @@ Intended outcome: `plan-architect` holds `Edit` only (no `Write`, `Bash`, `Skill
 6. `[verified: deny-reviewer-tree-mutation.sh:24-31,163-172; _lib.sh:513]` `.agent_type` names the subagent type in the PreToolUse payload. `_lib_parse_tool_input_or_deny` parses it fail-closed. It already keys the one existing agent-scoped write gate.
 7. `[verified: claude-skills/skills/agent-review/REFERENCES.md:12]` The documented subagent `tools` field is an allowlist of tool names. No path-specifier form is documented for it.
 8. `[verified: _lib.sh:513; settings.json:393-410; log-reviewer-round.sh:123-130]` The parsed `Edit` payload carries tool name, command, cwd, session id, file path, agent type and agent id. It does not carry the dispatch prompt. A PreToolUse hook on `Agent|Task` does see `.tool_input.prompt` at dispatch time, and `log-reviewer-round.sh` already reads its first line after dispatch. A dispatch-time consult latch is therefore possible. Row 46 gives its cost.
-9. `[verified: require-plan-review.sh:4-6,26-33,263-269; claude-skills/skills/plan-it/SKILL.md:126-129]` An edit to a plan file makes the file active and changes the plan-set hash.
+9. `[verified: require-plan-review.sh:4-6,26-33,263-269; claude-skills/skills/plan-it/SKILL.md:139-144]` An edit to a plan file makes the file active and changes the plan-set hash.
    - If the plan was committed and clean, that re-arms the plan-review gate, and the session's next non-plan write is denied. The deny text does not name who made the edit.
-   - Step 7 commits the plan before implementation, so this holds at the three consult sites that pass a plan path (row 32).
+   - Step 7 commits the plan before implementation, so this holds at the `/code-review` and `/ready-for-review` consult sites that can pass a plan path (row 32).
    - If the plan is already active, as in a consult the engineer asks for mid-planning, a consult-mode `Edit` produces no new signal. It lands in a plan that Step 6's `/plan-review` is about to review.
 10. `[verified: log-reviewer-round.sh:20-24,123-130]` The consult latch checks that the prompt's first line is exactly `MODE=plan-sections`, so the plan file path goes on line 2.
 11. `[verified: docs/design-decisions/plan-review-gate-disarms-on-empty-active-plan-set.md:27-31; test_agent_roster.py:834-861]` The forged-anchor residual names "a Write/Edit-only actor".
@@ -106,8 +106,8 @@ Intended outcome: `plan-architect` holds `Edit` only (no `Write`, `Bash`, `Skill
 18. `[unverified]` Whether `Edit` can create a file. Not load-bearing: the gate denies a plan-writer `Edit` whose target does not exist.
 19. `[engineer-verified: "But no restow is needed!!! Git pull handles it perfectly."]` This answered the gate-home question. A `git pull` of the merged change delivers the new gate file with its `settings.json` registration and the charter edit, so the CHANGELOG entry carries no migration line (G2). The post-pull probe only reports, so nothing in this plan asks a consumer to re-stow (row 60).
 20. `[verified: test_hook_alignment.py:135-142,1631-1700,1708-1776; docs/hooks.md:49-93]` A `deny-*` file must declare `hook-class: gate`, put its tier line on line 3, and appear in both the docs/hooks.md tier table and the Gate hooks bullets. `_UNTRUSTED_INPUT_FLOOR` and `_IRREVERSIBLE_FLOOR` are one-sided, so adding to them is optional, but adding keeps the documented counts accurate.
-21. `[verified: claude/.claude/CLAUDE.md:178; claude-skills/skills/plan-it/SKILL.md:49,58,60-65; claude-skills/skills/code-review/SKILL.md:370; claude/.claude/agents/plan-architect.md:3,9-14,35-40; docs/hooks.md:199,250,254; _lib.sh:3464,3468; test_lib.py:6372; test_agent_roster.py:676-680,765-777; test_enforce_marker_script_shape.py:1654-1655; test_hook_alignment.py:1691,1708,1752; docs/cost-levers-considered.md:434]` These are the sites whose description of current behavior becomes false.
-    - `code-review/SKILL.md:370` restates the revision re-dispatch's purpose ("to insert the returned sections") instead of deferring to `plan-it` Step 5.
+21. `[verified: claude/.claude/CLAUDE.md:159; claude-skills/skills/plan-it/SKILL.md:49,58,60-65; claude-skills/skills/code-review/SKILL.md:362; claude/.claude/agents/plan-architect.md:3,9-14,35-40; docs/hooks.md:199,250,254; _lib.sh:3464,3468; test_lib.py:6372; test_agent_roster.py:676-680,765-777; test_enforce_marker_script_shape.py:1654-1655; test_hook_alignment.py:1691,1708,1752; docs/cost-levers-considered.md:434]` These are the sites whose description of current behavior becomes false.
+    - `code-review/SKILL.md:362` restates the revision re-dispatch's purpose ("to insert the returned sections") instead of deferring to `plan-it` Step 5.
     - `docs/hooks.md:254`'s "every agent in the set carries the `Write` tool" is already false for `Explore` and `Plan`, so it gets reworded, not merely extended. `test_enforce_marker_script_shape.py:1655` makes the same claim without backticks.
     - `docs/hooks.md:199` and `:250` both describe the roster as "the review-only personas plus `code-writer`".
     - `_lib.sh:3464` and `:3468` count three `_lib_list_contains` call sites, and so does `test_lib.py:6372`'s docstring ("The three call sites rely on ..."). The plan-writer predicate adds a fourth.
@@ -130,11 +130,12 @@ Intended outcome: `plan-architect` holds `Edit` only (no `Write`, `Bash`, `Skill
     - Put no install or re-stow text in the CHANGELOG or PR body.
     - This plan adopts the first and third items (M9, M10). The checks became one `test -e` that reports and never blocks (rows 51, 60, M11).
     - It reads "no install or re-stow text" as "no instruction", because `require-stow-reminder.sh` requires the body to mention `install.sh` or `stow` (row 25).
-32. `[verified: claude-skills/skills/code-review/SKILL.md:315,364,378; claude-skills/skills/ready-for-review/SKILL.md:86; claude/.claude/CLAUDE.md:178; claude-skills/skills/plan-it/SKILL.md:126-129]` Four prescribed consult call sites exist.
-    - Three pass a plan path: `/code-review`'s new-primitive route (:364), its contradiction route by reference to :364 (:378), and `/ready-for-review`'s Cap consult (:86). The Cap consult fires on a dirty pass once two or more records are newer than the newest clean one.
-    - The round-cap consult (:315) passes none.
-    - The engineer-asked consult is told to name the plan file (`CLAUDE.md:178`).
-    - For a plan made by `/plan-it`, all three plan-path sites run after Step 7 committed it.
+32. `[verified: claude-skills/skills/code-review/SKILL.md:311,356,370,379; claude-skills/skills/ready-for-review/SKILL.md:86; claude-skills/skills/review-pr/SKILL.md:140; claude/.claude/CLAUDE.md:159; claude-skills/skills/plan-it/SKILL.md:139-141]` The prescribed consult call sites differ in whether they pass a plan path.
+    - These can pass one: `/code-review`'s new-primitive route (:356), its contradiction route by reference to :356 (:370), the fix-plan pilot (:379, only when `architect_fix_plan_pilot` is on), and `/ready-for-review`'s Cap consult (:86). The Cap consult fires on a dirty pass once two or more records are newer than the newest clean one.
+    - The round-cap consult (:311) passes none.
+    - `/review-pr`'s consult (:140) passes none. It reads the findings body and the diff or worktree, which derive from untrusted PR content.
+    - The engineer-asked consult is told to name the plan file (`CLAUDE.md:159`).
+    - For a plan made by `/plan-it`, the `/code-review` and `/ready-for-review` sites run after Step 7 committed it (`plan-it/SKILL.md:139-141`).
 33. `[verified: docs/design-decisions/plan-architect-consult-mode.md:5,9]` §37 widened `plan-architect` instead of adding a second agent, because every agent description loads into every session's base context. Its falsification metric reads Opus spend per agent type from `subagent-mix`.
 34. `[verified: claude-skills/skills/plan-review/SKILL.md:96,114]` `/plan-review` sizes the plan against the Context's `Ask:` line. Its quote-provenance check covers added or changed quotes on the `Ask:` line and in `[engineer-verified]` rows. It does not cover unquoted Context text.
 35. `[verified: claude/.claude/scripts/tests/test_transcript_denials.py:291-344,601-720; claude/.claude/scripts/transcript_analysis/denials.py:128-163; require-plan-review.sh:54-63]` A gate built on `require-plan-review.sh`'s bootstrap declares `DENY_GATE_LABEL`.
@@ -182,7 +183,7 @@ Intended outcome: `plan-architect` holds `Edit` only (no `Write`, `Bash`, `Skill
     - Step 5 treats a refused command like a mismatch, which fails closed.
     - Verification 10 observes the first real run.
     - If the guard refuses the command, the fix is the repo's script-first convention (`docs/worktree-bash-guard.md:85-114`).
-54. `[verified: claude/.claude/CLAUDE.md:178; claude-skills/skills/plan-it/SKILL.md:53-54]` `plan-architect` reads files the dispatching session names, `agent-reviews/` findings files included, and a plan-sections prompt carries Step 3 findings and Step 4 answers. Its input therefore includes text the session did not author.
+54. `[verified: claude/.claude/CLAUDE.md:159; claude-skills/skills/plan-it/SKILL.md:53-54]` `plan-architect` reads files the dispatching session names, `agent-reviews/` findings files included, and a plan-sections prompt carries Step 3 findings and Step 4 answers. Its input therefore includes text the session did not author.
 55. `[verified: claude/.claude/settings.json:343-382; docs/worktree-bash-guard.md:107-110]` `settings.json` names every hook in the group by the literal path `~/.claude/hooks/<name>.sh`. That path names the same file under every config dir. One `test -e` on it therefore tells whether the gate is reachable.
 56. `[verified: docs/cost-levers-considered.md:430-434]` That table records a verdict on each lever from a vendor guide. Line 434's verdict ("Already implemented, under different names") does not rest on `plan-architect` being read-only.
 57. `[engineer-verified: "Adopt fixed headings (Recommended)"]` The engineer selected this after asking whether the return format still held with optional headings. Every plan carries all four section headings, in order, ending the file.
@@ -227,6 +228,9 @@ Intended outcome: `plan-architect` holds `Edit` only (no `Write`, `Bash`, `Skill
 74. `[verified: claude-skills/skills/tests/test_skills.py:83-88]` `test_skills.py` reads agent files through `_agent_body`. The one planned test can therefore pin `plan-architect.md` text without touching another test file.
 75. `[verified: docs/design-decisions/plan-it-step5-pinned-opus-dispatch.md:20,24]` §30 accepts two residual risks. The second says "a committed plan file can carry an entire section authored by a different agent, with no editorial pass by the session that reviews and commits it." The agent's direct write keeps that risk and changes its mechanism. The fallback path still inserts the text verbatim.
 76. `[verified: .claude/plans/add-shellcheck-lint.md:31,282; .claude/plans/claude-md-agent-core.md:68,103-125; the count of committed plans with no Approach line is the staff-backend reviewer's, made this session]` Committed plans exist whose region below `## Approach` carries other `## ` lines. One has a `## Testing` heading line, and another has `## ` lines inside a fenced block. Some committed plans have no `## Approach` line at all (the reviewer counted nine). A revision of the first kind cannot pass the Check without a restructure the charter does not authorize.
+77. `[engineer-verified: "Follow-up, fix record (Recommended)"]` Selected on 2026-10-16, scoped to the G1 question (whether agent-frontmatter `hooks:` fire for dispatched subagents): re-checking G1 is a follow-up, and the record is corrected to say so.
+78. `[engineer-verified: "Keep one agent (Recommended)"]` On 2026-10-16 the engineer re-confirmed one agent after `/review-pr`'s consult over untrusted PR content was added (row 32). Row 48 recorded the original choice.
+79. `[verified: docs/design-decisions/plan-architect-writes-its-own-plan-sections.md:19]` The decision file dates its frontmatter-hooks claim to the 2026-05-14 CLI check, which this plan did not re-run.
 
 **Mechanisms:**
 - **M1 — `tools: Read, Grep, Glob, Edit`** in `plan-architect.md`. anchors: root, row1, row3.
@@ -241,7 +245,7 @@ Intended outcome: `plan-architect` holds `Edit` only (no `Write`, `Bash`, `Skill
     - Why `untrusted-input`: the forged-anchor record will cite this gate as what confines `plan-architect` against hand-written `MERGE_HEAD` and `refs/remotes/...` targets. No cooperative agent takes that route, and only an `untrusted-input` tier may carry such a citation (rows 11, 45). The agent's input also includes text the session did not author (row 54).
     - Why `irreversible`: a bypass edits the dispatching session's uncommitted tree, which `docs/hooks.md:45` places in that tier. That is the same consequence class as `deny-reviewer-tree-mutation.sh`.
   - Lighter primitives, each set aside:
-    - Agent-frontmatter `hooks:` never fire for a dispatched subagent (G1).
+    - Agent-frontmatter `hooks:` never fire for a dispatched subagent, per the 2026-05-14 check (G1, row 79).
     - A path specifier in `tools:` is not documented for subagents (row 7).
     - `permissionMode: dontAsk` in the agent's frontmatter, plus an allow rule for the plans directory. The allow rule needs a wildcard, which the global `CLAUDE.md` bars from `permissions.allow`. It would also apply to every session, not to one agent. Whether the parent session's mode overrides the agent's is unverified (row 43).
     - A `permissions.deny` `Edit(...)` rule cannot key on agent identity, so it would bind the main session too.
@@ -428,8 +432,8 @@ Intended outcome: `plan-architect` holds `Edit` only (no `Write`, `Bash`, `Skill
 - `claude-skills/skills/tests/test_skills.py` — one test beside `TestPlanItStep7FallbackToJudgment`, in the shape of lines 6327-6336. Its docstring says it pins Step 5's Context-change check and the plan-grammar literals Step 5 is the single home of.
   - First assertion: every literal in one tuple is in `_skill_file("plan-it").read_text()`. The tuple holds `sed -n '1,/^## Approach$/p'`, `e3b0c442`, `the two digests differ`, `on every return`, `(pending: plan-architect)`, `## Approach`, `## Critical files`, `## Verification` and `## Out of scope`.
   - Second assertion: `_agent_body("plan-architect")` contains "never call `Edit`, even when the prompt names a plan file" (row 74).
-- `claude-skills/skills/code-review/SKILL.md:370` — delete ", to insert the returned sections" so the line defers to `plan-it` Step 5. The line sits inside the `DISPOSITION_RULE:code-review-new-primitive-route` region, so leave both anchors untouched.
-- `claude/.claude/CLAUDE.md:178` — change "(already read-only and Opus-pinned; no need to restate its charter)" to "(already Opus-pinned; no need to restate its charter)". The file is already over the byte limit, but the length gate denies only growth, so a 14-byte shrink cannot trip it (row 63).
+- `claude-skills/skills/code-review/SKILL.md:362` — delete ", to insert the returned sections" so the line defers to `plan-it` Step 5. The line sits inside the `DISPOSITION_RULE:code-review-new-primitive-route` region, so leave both anchors untouched.
+- `claude/.claude/CLAUDE.md:159` — change "(already read-only and Opus-pinned; no need to restate its charter)" to "(already Opus-pinned; no need to restate its charter)". The file is already over the byte limit, but the length gate denies only growth, so a 14-byte shrink cannot trip it (row 63).
 - `docs/design-decisions/plan-architect-writes-its-own-plan-sections.md` (new).
   - Format: H1, then `*2026-10-05.*`, with no `Formerly §N`.
   - Cite §30 and §37 by link. State the benefit qualitatively, with no figure.
@@ -447,7 +451,7 @@ Intended outcome: `plan-architect` holds `Edit` only (no `Write`, `Bash`, `Skill
     - `plan-it/SKILL.md` Step 5 is the single home of `(pending: plan-architect)` and the four heading literals. `plan-architect.md` cites it, and a `test_skills.py` test pins the literals there.
     - The hash command is one statement with none of the worktree guard's trigger shapes, and `sha256sum` is an `install.sh` prerequisite. A digest starting `e3b0c442` means nothing was hashed.
   - Accepted residuals:
-    - Consult mode is limited by its charter only. Three of the four prescribed consult call sites pass a plan path, as does the engineer-asked consult. A consult-mode `Edit` can reach Context and the `Ask:` line. A consult the engineer asks for mid-planning raises no signal: the plan is already active, so the plan-review gate does not re-arm, and the Context hash covers only plan-sections dispatches.
+    - Consult mode is limited by its charter only. Consults prescribed by `/code-review` (its fix-plan pilot only when `architect_fix_plan_pilot` is on) and `/ready-for-review` can pass a plan path, as can an engineer-asked consult. A `/review-pr` consult passes no plan path but reads untrusted PR content under the same charter-only limit on `Edit`. Which repository's plan files it can reach depends on the session's working directory at that step, which is unverified, and an `Edit` to an untracked plan there raises no signal. A consult-mode `Edit` can reach Context and the `Ask:` line. A consult the engineer asks for mid-planning raises no signal: the plan is already active, so the plan-review gate does not re-arm, and the Context hash covers only plan-sections dispatches.
     - A session that puts the plan path on prompt line 1 makes the dispatch classify as a consult, which writes the per-branch consult latch.
     - The two windows in which the gate does not run, which its header lists. One is an install whose hooks directory is "a real directory of per-file links", where the pull leaves the gate unlinked. The other is the unverified case of a session whose hook registrations predate the gate.
       - State what lapses: `plan-architect` holds an `Edit` confined only by its charter, over the whole tree. Forged-anchor targets (`MERGE_HEAD`, `refs/remotes/...`) are included.
@@ -551,7 +555,8 @@ Intended outcome: `plan-architect` holds `Edit` only (no `Write`, `Bash`, `Skill
 - **The tier of `deny-reviewer-tree-mutation.sh` versus the forged-anchor record's citation of it.** This is a pre-existing mismatch of the same shape that row 45 resolves for the new gate. Raise it to the reviewer.
 - **Renaming `deny-reviewer-tree-mutation.sh` into a generic per-agent write-scope gate.** That would rewrite a gate this change does not otherwise touch, along with every reference to its name.
 - **Removing the unfolded-install window by moving the confinement into a hook that is already linked.** The engineer chose the dedicated gate and accepted the window (rows 23, 30).
-- **Re-verifying G1, and probing session-start skew (row 44).** Each needs a throwaway live dispatch, and neither changes this design.
+- **Re-checking G1 (rows 77, 79).** It needs a throwaway live dispatch, so this plan leaves it as a post-merge follow-up.
+- **Probing session-start skew (row 44).** It needs a throwaway live dispatch and does not change this design.
 - **macOS realpath fallbacks.** CI runs Linux only, the same exposure the sibling gates have.
 - **Making the claim in `require-stow-reminder.sh` and the 21 bootstrap messages conditional.** Raise this to the engineer as a follow-up.
   - Both say, without qualification, that `git pull` does not link a new file nested in an existing `~/.claude` directory. The claim holds for a new top-level entry under `claude/.claude/` and for a per-file-link install. It does not hold for a new file inside an existing entry on the standard layout (G2, row 25).

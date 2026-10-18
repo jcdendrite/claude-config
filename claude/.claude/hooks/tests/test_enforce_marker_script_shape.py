@@ -1715,17 +1715,17 @@ class TestGateReleaseAuthorityFileWrites:
         ".claude/plan-review-markers/deadbeef.session",
         ".claude/skill-review-markers/deadbeef.session",
         ".claude/ready-for-review-markers/deadbeef.session",
+        ".claude/verification-markers/deadbeef.session",
         ".claude/.plan-review-active.d/session",
         ".claude/.plan-review-active.d/session.planmode-path",
+        ".claude/.review-pr-active.d/session.body",
     ]
 
     @pytest.fixture
     def marker_home(self, tmp_path):
         home = tmp_path / "home"
-        for kind in ("code-review-markers", "plan-review-markers", "skill-review-markers",
-                     "ready-for-review-markers"):
-            (home / ".claude" / kind).mkdir(parents=True)
-        (home / ".claude" / ".plan-review-active.d").mkdir(parents=True)
+        for relative_path in self.MARKER_RELATIVE_PATHS:
+            (home / relative_path).parent.mkdir(parents=True, exist_ok=True)
         return home
 
     @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
@@ -1968,25 +1968,50 @@ class TestGateReleaseAuthorityUnderCustomConfigDir:
     _lib_config_dir(), so the gate must too, or a no-gate-release agent can
     forge a passing review marker undetected."""
 
+    CONFIG_DIR_RELATIVE_STATE_PATHS = [
+        path.removeprefix(".claude/")
+        for path in TestGateReleaseAuthorityFileWrites.MARKER_RELATIVE_PATHS
+    ]
+
     @pytest.fixture
     def custom_config_dir(self, tmp_path):
         config_dir = tmp_path / "profile-container"
-        (config_dir / "code-review-markers").mkdir(parents=True)
+        for relative_path in self.CONFIG_DIR_RELATIVE_STATE_PATHS:
+            (config_dir / relative_path).parent.mkdir(parents=True, exist_ok=True)
+        # Only a config dir with no `.claude` segment in any letter case
+        # discriminates the hook's config-dir-anchored arm from its
+        # `.claude`-shape arm.
+        assert ".claude" not in {part.lower() for part in config_dir.parts}
         return config_dir
 
     @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
+    @pytest.mark.parametrize("relative_path", CONFIG_DIR_RELATIVE_STATE_PATHS)
     def test_marker_write_denied_under_config_dir_with_no_dotclaude_segment(
-        self, custom_config_dir, agent_type, tmp_path
+        self, custom_config_dir, agent_type, relative_path, tmp_path
     ):
         home = tmp_path / "home"
         home.mkdir()
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
-                write_input(
-                    str(custom_config_dir / "code-review-markers/deadbeef.session"),
-                    agent_type=agent_type,
-                ),
+                write_input(str(custom_config_dir / relative_path), agent_type=agent_type),
+                home=home,
+                extra_env={"CLAUDE_CONFIG_DIR": str(custom_config_dir)},
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize("relative_path", CONFIG_DIR_RELATIVE_STATE_PATHS)
+    def test_plan_writer_marker_edit_denied_under_config_dir_with_no_dotclaude_segment(
+        self, custom_config_dir, relative_path, tmp_path
+    ):
+        """plan-architect holds Edit, not Write, so its marker-state route is an Edit."""
+        home = tmp_path / "home"
+        home.mkdir()
+        assert (
+            run_hook(
+                ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
+                edit_input(str(custom_config_dir / relative_path), agent_type="plan-architect"),
                 home=home,
                 extra_env={"CLAUDE_CONFIG_DIR": str(custom_config_dir)},
             )

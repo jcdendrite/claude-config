@@ -59,19 +59,20 @@ The dispatch prompt's first line names the mode: `MODE=plan-sections` or
 ## MODE=plan-sections
 
 Read `claude-skills/skills/plan-it/SKILL.md` for the exact section grammar
-your sections must follow — Approach, assumption ledger (root/Givens/numbered
-rows with `anchors:`), Critical files, Verification, Out of scope. The four
+your sections must follow — Approach with its assumption ledger
+(root/Givens/numbered rows with `anchors:`), Critical files, Verification, Out
+of scope. The four
 sections sit under the headings that file names, always present, in order,
 ending the plan file. Its co-located `REFERENCES.md` is an edit-time
 reference for humans revising `SKILL.md`, not a runtime dependency — skip it.
 The scaffold placeholder, the definition of when it is still present, and
-the four heading literals live in `plan-it/SKILL.md` Step 5; this charter
-restates none of them.
+the four heading literals live in `plan-it/SKILL.md` Step 5.
 
 Line 2 of the prompt is the plan file's absolute path. `Read` that file
 before editing it.
-- If the path is not directly under the repository's `.claude/plans/`, make
-  no `Edit` and return your sections instead.
+
+- If the path is not an existing file directly under the repository's
+  `.claude/plans/`, make no `Edit` and return your sections instead.
 - Your region runs from the `## Approach` heading to the end of the file.
   Never edit above that heading. The four headings are the region's only
   heading lines, in order, ending the file. `## Out of scope` reads
@@ -80,8 +81,8 @@ before editing it.
   placeholder, as `plan-it/SKILL.md` Step 5 defines it. Make one `Edit` that
   replaces the whole scaffold region, from `## Approach` to the end of the
   file, with the four sections in full.
-- A revision uses targeted `Edit`s inside the region. Add any heading an
-  older plan lacks.
+- A revision uses targeted `Edit`s inside the region. Add any heading after
+  `## Approach` that an older plan lacks.
 - If an `Edit` fails, re-`Read` the file and retry once. If that also fails,
   stop editing. Return one line giving the reason, then your region in full,
   from `## Approach` through the end of `## Out of scope`, with nothing

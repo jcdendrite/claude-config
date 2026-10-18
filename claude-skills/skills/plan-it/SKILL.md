@@ -62,7 +62,11 @@ Do not add a CLAUDE.md path or read instruction — `plan-architect` loads it au
 
 **Plans without the four headings.** A file with more than the title and Context but no `## Approach` heading line cannot pass the Check below, and neither can one whose region from `## Approach` on carries a heading line other than the four. Treat either as a failed Check before any dispatch and ask the engineer through `AskUserQuestion`. Do not scaffold, dispatch, or restructure it.
 
-**Context hash.** Run `sed -n '1,/^## Approach$/p' "<plan path>" | sha256sum` immediately before each dispatch, after the scaffold and any Context edit of your own. Run it again on every return, failed and truncated returns included, before any splice or re-dispatch, and again after any splice. Stop and report to the engineer when the two digests differ, when either digest starts `e3b0c442` (the digest of empty input, which an unreadable path also yields), or when either run printed anything besides its digest line.
+**Context hash.** Run `sed -n '1,/^## Approach$/p' "<plan path>" | sha256sum` immediately before each dispatch, after the scaffold and any Context edit of your own. Run it again on every return, failed and truncated returns included, before any splice or re-dispatch, and again after any splice. Stop and report to the engineer when any of these holds:
+
+- the two digests differ;
+- either digest starts `e3b0c442`, the digest of empty input, which an unreadable path also yields;
+- either run printed anything besides its digest line.
 
 After every dispatch, `Read` the plan file. `plan-architect` writes its sections itself, so a successful return carries no `##` headings. When the return carries all four headings as heading lines, in order, splice it in with one `Edit` whose `old_string` is the file's region from its `## Approach` heading line to the end, replacing it with the return from its `## Approach` heading line on, verbatim. Every byte above that heading stays untouched; never use a whole-file `Write`. Relay the return's reason line to the engineer.
 

@@ -5797,7 +5797,6 @@ _PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE = (
 )
 
 _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING = "## MODE=plan-sections"
-_PLAN_ARCHITECT_CONSULT_HEADING = "## MODE=consult"
 
 _PLAN_ARCHITECT_LANDED_EDITS_RETURN_SENTENCE = (
     "When your edits land, your return carries no `## ` heading lines"
@@ -5901,7 +5900,7 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
 
     def test_consult_charter_never_calls_edit_sentence_matches_live_text(self) -> None:
         consult_section = _heading_section_text(
-            _AGENTS_DIR / "plan-architect.md", _PLAN_ARCHITECT_CONSULT_HEADING
+            _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_CONSULT_HEADING
         )
         assert _PLAN_ARCHITECT_CONSULT_NEVER_EDIT_SENTENCE in consult_section, (
             "plan-architect.md's MODE=consult charter no longer carries its "
@@ -5910,7 +5909,7 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
 
     def test_plan_sections_charter_return_carries_no_headings_when_edits_land(self) -> None:
         plan_sections_section = _heading_section_text(
-            _AGENTS_DIR / "plan-architect.md", _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING
+            _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING
         )
         assert _PLAN_ARCHITECT_LANDED_EDITS_RETURN_SENTENCE in plan_sections_section, (
             "plan-architect.md's MODE=plan-sections charter no longer says the return "
@@ -5920,7 +5919,7 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
 
     def test_plan_sections_charter_names_line_2_as_the_plan_path(self) -> None:
         plan_sections_section = _heading_section_text(
-            _AGENTS_DIR / "plan-architect.md", _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING
+            _PLAN_ARCHITECT_PATH, _PLAN_ARCHITECT_PLAN_SECTIONS_HEADING
         )
         assert _PLAN_ARCHITECT_PLAN_PATH_ON_LINE_2_SENTENCE in plan_sections_section, (
             "plan-architect.md's MODE=plan-sections charter no longer names prompt "
