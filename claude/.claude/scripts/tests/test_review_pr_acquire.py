@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
@@ -18,6 +19,13 @@ from pathlib import Path
 import pytest
 from helpers import SCRIPTS_DIR
 
+from ._review_pr_stack_helpers import (
+    STACK_UPPER_PR_NUMBER,
+    copy_script_with_stubbed_walk,
+    pr_list_calls,
+    pr_list_item,
+    pr_list_review,
+)
 from .conftest import (
     GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE,
     _assert_finish_and_clear_stale_each_empty_the_active_directory,
@@ -107,6 +115,9 @@ def _gh_shim_source(
     api_user_stderr: str = "",
     api_user_stdout_on_failure: bool = False,
     api_user_extra_fields: dict | None = None,
+    base_ref_name: str | None = "main",
+    base_default_branch: str | None = "main",
+    pr_list_replies: dict | None = None,
 ) -> str:
     """gh shim recording every invocation in `call_log`.
     `capped_files`/`capped_commits` model `gh pr view --json files/commits`'
@@ -140,7 +151,12 @@ def _gh_shim_source(
     `pr_author_field` replaces it verbatim, and `_NO_AUTHOR_KEY` leaves the key out.
     `gh api user` prints `operator_login` as `.login` plus `api_user_extra_fields`.
     A non-zero `api_user_exit_status` makes it print `api_user_stderr` and exit with that status instead, 124 being a cap kill.
-    `api_user_stdout_on_failure` makes that failed call print its usual stdout first, as gh does with an HTTP error body."""
+    `api_user_stdout_on_failure` makes that failed call print its usual stdout first, as gh does with an HTTP error body.
+    The REST payload's `base.ref` and `base.repo.default_branch` are `base_ref_name`
+    and `base_default_branch`; a value of None drops that field, and "" leaves it empty.
+    `gh pr list` is answered by the stack-walk double (_review_pr_stack_helpers.py)
+    from `pr_list_replies`, keyed by the exact `--head=` value; a branch with no
+    key answers `[]`, which leaves a stacked base clear."""
     capped_files = capped_files if capped_files is not None else []
     full_files = full_files if full_files is not None else capped_files
     capped_commits = capped_commits if capped_commits is not None else []
@@ -198,6 +214,11 @@ def _gh_shim_source(
         API_USER_STDERR = {api_user_stderr!r}
         API_USER_STDOUT_ON_FAILURE = {api_user_stdout_on_failure!r}
         API_USER_EXTRA_FIELDS = {api_user_extra_fields!r}
+        BASE_REF_NAME = {base_ref_name!r}
+        BASE_DEFAULT_BRANCH = {base_default_branch!r}
+        PR_LIST_REPLIES = json.loads({json.dumps(pr_list_replies or {})!r})
+        sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
+        from _review_pr_stack_helpers import answer_gh_pr_list
         {GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE}
         args = sys.argv[1:]
         with open(CALL_LOG, "a") as f:
@@ -205,6 +226,8 @@ def _gh_shim_source(
                 "args": args, "gh_token": os.environ.get("GH_TOKEN"), "gh_host": os.environ.get("GH_HOST"),
             }}) + chr(10))
 
+        if args[:2] == ["pr", "list"]:
+            sys.exit(answer_gh_pr_list(args[2:], PR_LIST_REPLIES))
         if args[:2] == ["pr", "view"]:
             if FAIL_PR_VIEW:
                 sys.exit(1)
@@ -303,6 +326,12 @@ def _gh_shim_source(
                     print(REST_ERROR_TEXT, file=sys.stderr)
                 sys.exit(1)
             rest_payload = {{"author_association": AUTHOR_ASSOCIATION}}
+            base_repo = {{}}
+            if BASE_DEFAULT_BRANCH is not None:
+                base_repo["default_branch"] = BASE_DEFAULT_BRANCH
+            rest_payload["base"] = {{"repo": base_repo}}
+            if BASE_REF_NAME is not None:
+                rest_payload["base"]["ref"] = BASE_REF_NAME
             if not OMIT_REST_COMMITS_TOTAL:
                 rest_payload["commits"] = REST_COMMITS_TOTAL
             if not OMIT_REST_CHANGED_FILES:
@@ -352,10 +381,12 @@ def _run(
     extra_env: dict | None = None,
     timeout_log: Path | None = None,
     path_prefix: Path | None = None,
+    script_path: Path = SCRIPT,
     **shim_kwargs,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     """`timeout_log`, when given, puts a logging `timeout` shim ahead of the real one on PATH.
-    `path_prefix`, when given, puts that directory ahead of everything else on PATH."""
+    `path_prefix`, when given, puts that directory ahead of everything else on PATH.
+    `script_path` names a copy of the script to run in its place."""
     _seed_session(home, SID)
     call_log = tmp_path / "gh_calls.jsonl"
     env = {**_shimmed_env(tmp_path, _gh_shim_source(call_log, **shim_kwargs)), "HOME": str(home)}
@@ -372,10 +403,12 @@ def _run(
     if extra_env:
         env.update(extra_env)
     result = subprocess.run(
-        ["bash", str(SCRIPT), *args], cwd=tmp_path, env=env, capture_output=True, text=True,
+        ["bash", str(script_path), *args], cwd=tmp_path, env=env, capture_output=True, text=True,
         timeout=_SUBPROCESS_TIMEOUT_SECONDS,
     )
-    _assert_gh_calls_are_read_only(_read_calls(call_log), known_api_endpoint=_KNOWN_API_ENDPOINT)
+    _assert_gh_calls_are_read_only(
+        _read_calls(call_log), known_api_endpoint=_KNOWN_API_ENDPOINT, allowed_pr_subcommands=("view", "list")
+    )
     return result, call_log
 
 
@@ -438,6 +471,7 @@ class TestGhFailureAborts:
             isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, fail_reviews=True,
         )
         assert result.returncode == 2
+        assert "could not fetch PR foo/bar#42's existing reviews" in result.stderr
         _assert_no_partial_document(result, isolated_home)
 
     def test_inline_comments_failure_aborts(self, isolated_home, tmp_path):
@@ -445,6 +479,7 @@ class TestGhFailureAborts:
             isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, fail_inline_comments=True,
         )
         assert result.returncode == 2
+        assert "could not fetch PR foo/bar#42's existing inline comments" in result.stderr
         _assert_no_partial_document(result, isolated_home)
 
     @pytest.mark.parametrize(
@@ -943,6 +978,22 @@ class TestStatusCheckRollupTokenContainment:
         logged_argv = json.dumps([entry["args"] for entry in _logged_gh_calls(call_log)])
         assert CHECKS_OVERRIDE_TOKEN not in logged_argv
 
+    def test_the_stack_walks_pr_list_calls_carry_the_ambient_credentials_not_the_override(self, isolated_home, tmp_path):
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            base_ref_name=_STACKED_BASE_BRANCH,
+            extra_env={"GH_TOKEN": AMBIENT_TOKEN, "CI_CHECKS_GH_TOKEN": CHECKS_OVERRIDE_TOKEN},
+            checks_required_token=CHECKS_OVERRIDE_TOKEN,
+        )
+        assert result.returncode == 0, result.stderr
+        walk_credentials = [
+            (entry["gh_token"], entry["gh_host"]) for entry in _logged_gh_calls(call_log) if entry["args"][:2] == ["pr", "list"]
+        ]
+        assert walk_credentials == [(AMBIENT_TOKEN, None)], "control: the stacked base made one lookup"
+        checks_credentials, other_credentials = self._credentials_by_call_kind(call_log)
+        assert checks_credentials == [(CHECKS_OVERRIDE_TOKEN, "github.com")]
+        assert set(other_credentials) == {(AMBIENT_TOKEN, None)}
+
     def test_the_checks_call_pins_lowercase_github_com_whatever_the_ambient_gh_host_spelling_while_other_calls_keep_it(
         self, isolated_home, tmp_path
     ):
@@ -1418,3 +1469,173 @@ class TestGhFailureNeverBypassesTheScrub:
         for surface in (result.stdout, result.stderr, context_file.read_text()):
             assert CHECKS_ERROR_PAYLOAD not in surface
             assert operator_login not in surface
+
+_STACKED_BASE_BRANCH = "feature/stacked"
+_UNREVIEWED_STACKED_PR_NUMBER = STACK_UPPER_PR_NUMBER
+
+
+def _active_dir(home: Path) -> Path:
+    return home / ".claude" / ".review-pr-active.d"
+
+
+def _assert_no_context_file_or_provenance(home: Path) -> None:
+    assert not (_active_dir(home) / f"{SID}.context.json").exists()
+    assert not (_active_dir(home) / f"{SID}.provenance").exists()
+
+
+def _jq_wrapper_that_fails_the_document_step(tmp_path: Path, *, exit_status: int) -> Path:
+    """A `jq` PATH wrapper that execs the real jq, except for the stack document's call (the one whose program holds
+    `recommendedChoice`), which reads stdin and exits `exit_status` with no stdout. Returns its directory."""
+    real_jq = shutil.which("jq")
+    assert real_jq is not None, "the real jq binary is required to delegate to"
+    wrapper_dir = tmp_path / "jq-wrapper"
+    wrapper_dir.mkdir()
+    wrapper = wrapper_dir / "jq"
+    wrapper.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import os
+        import sys
+        if any("recommendedChoice" in argument for argument in sys.argv[1:]):
+            sys.stdin.buffer.read()
+            sys.exit({exit_status!r})
+        os.execv({real_jq!r}, ["jq", *sys.argv[1:]])
+    """))
+    wrapper.chmod(0o755)
+    return wrapper_dir
+
+
+class TestBaseStack:
+    """The document's `baseStack`: the stacked-PR question's data, from one `gh pr list` lookup per ancestor PR."""
+
+    def test_an_unreviewed_ancestor_gives_a_base_stack_naming_it_as_the_fourth_key_and_still_exits_0(
+        self, isolated_home, tmp_path
+    ):
+        replies = {_STACKED_BASE_BRANCH: [pr_list_item(_UNREVIEWED_STACKED_PR_NUMBER, _STACKED_BASE_BRANCH, "main")]}
+
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            base_ref_name=_STACKED_BASE_BRANCH, pr_list_replies=replies,
+        )
+
+        assert result.returncode == 0, result.stderr
+        document = json.loads(result.stdout)
+        assert list(document)[:4] == ["filesComplete", "commitsComplete", "statusCheckRollupAvailable", "baseStack"]
+        assert document["baseStack"]["lowestUnreviewed"] == _UNREVIEWED_STACKED_PR_NUMBER
+        assert document["baseStack"]["choices"] == ["review-lowest", "stop"]
+        lookups = pr_list_calls(_read_calls(call_log))
+        assert len(lookups) == 1
+        assert lookups[0][lookups[0].index("-R") + 1] == OWNER_REPO
+
+    def test_a_base_stacks_decision_keys_come_first_so_a_head_preview_keeps_them(self, isolated_home, tmp_path):
+        result, _ = _run(isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40)
+
+        assert result.returncode == 0, result.stderr
+        assert list(json.loads(result.stdout)["baseStack"])[:5] == [
+            "stacked", "lowestUnreviewed", "recommendedChoice", "choices", "concerns",
+        ]
+
+    def test_a_pr_into_the_default_branch_gets_an_unstacked_base_stack_and_no_lookup(self, isolated_home, tmp_path):
+        bait_replies = {"main": [pr_list_item(99, "main", "elsewhere")]}
+
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, pr_list_replies=bait_replies,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["baseStack"]["stacked"] is False
+        assert pr_list_calls(_read_calls(call_log)) == []
+        assert any(call[:2] == ["pr", "view"] for call in _read_calls(call_log)), "control: other gh calls were logged"
+
+    def test_a_review_body_and_an_ancestors_head_branch_reach_neither_stdout_nor_the_context_file(
+        self, isolated_home, tmp_path
+    ):
+        injected_body = "INJECTED-REVIEW-BODY-SENTINEL"
+        sentinel_branch = "feature/HEAD-REF-SENTINEL"
+        reviews = [pr_list_review("reviewer", "COMMENTED", body=injected_body)]
+        replies = {sentinel_branch: [pr_list_item(_UNREVIEWED_STACKED_PR_NUMBER, sentinel_branch, "main", reviews=reviews)]}
+
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            base_ref_name=sentinel_branch, pr_list_replies=replies,
+        )
+
+        assert result.returncode == 0, result.stderr
+        context_file_text = (_active_dir(isolated_home) / f"{SID}.context.json").read_text()
+        for sentinel in (injected_body, sentinel_branch):
+            assert sentinel not in result.stdout
+            assert sentinel not in context_file_text
+            assert sentinel not in result.stderr
+        assert json.loads(result.stdout)["baseStack"]["ancestors"][0]["reviews"][0]["state"] == "COMMENTED", (
+            "control: the review itself reached the document"
+        )
+
+    def test_a_walk_failure_exits_2_even_when_gh_exits_4_and_writes_nothing(self, isolated_home, tmp_path):
+        """gh exits 4 when a command needs authentication; every walk failure still maps to this script's exit 2."""
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            base_ref_name=_STACKED_BASE_BRANCH, pr_list_replies={_STACKED_BASE_BRANCH: {"exit": 4}},
+        )
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        (failure_line,) = result.stderr.splitlines()
+        assert failure_line.startswith("review-pr-acquire.sh: ")
+        assert "failed (exit 4)" in failure_line
+        assert len(pr_list_calls(_read_calls(call_log))) == 1
+        _assert_no_context_file_or_provenance(isolated_home)
+
+    @pytest.mark.parametrize(
+        "document_step_exit_status", [1, 0], ids=["document-step-fails", "document-step-prints-nothing"],
+    )
+    def test_a_stack_document_step_that_yields_no_document_exits_2_and_writes_nothing(
+        self, isolated_home, tmp_path, document_step_exit_status
+    ):
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            path_prefix=_jq_wrapper_that_fails_the_document_step(tmp_path, exit_status=document_step_exit_status),
+        )
+
+        assert result.returncode == 2, result.stderr
+        assert result.stdout == ""
+        assert "could not assemble the stack document" in result.stderr
+        _assert_no_context_file_or_provenance(isolated_home)
+
+    @pytest.mark.parametrize(
+        ("base_ref_name", "base_default_branch", "named_field"),
+        [
+            (None, "main", "base.ref"),
+            ("", "main", "base.ref"),
+            ("main", None, "base.repo.default_branch"),
+            ("main", "", "base.repo.default_branch"),
+            (None, None, "base.ref"),
+        ],
+        ids=["base-ref-absent", "base-ref-empty", "default-branch-absent", "default-branch-empty", "both-absent"],
+    )
+    def test_a_rest_payload_without_a_usable_base_field_exits_2_naming_the_field_and_writes_nothing(
+        self, isolated_home, tmp_path, base_ref_name, base_default_branch, named_field
+    ):
+        result, call_log = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            base_ref_name=base_ref_name, base_default_branch=base_default_branch,
+        )
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert f"carried no usable {named_field}" in result.stderr
+        assert pr_list_calls(_read_calls(call_log)) == []
+        _assert_no_context_file_or_provenance(isolated_home)
+
+    @pytest.mark.parametrize(
+        "walk_stdout", ["surprise", "", "[]"], ids=["unrecognized-text", "empty", "json-array"],
+    )
+    def test_walk_output_that_is_not_a_document_exits_2_and_writes_nothing(self, isolated_home, tmp_path, walk_stdout):
+        script_with_stubbed_walk = copy_script_with_stubbed_walk(SCRIPT, tmp_path / "sandbox", walk_stdout)
+
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, script_path=script_with_stubbed_walk,
+        )
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert "printed no stack document" in result.stderr
+        _assert_no_context_file_or_provenance(isolated_home)

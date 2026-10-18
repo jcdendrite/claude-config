@@ -1872,31 +1872,35 @@ def _linear_stack(
 
 _WALK_JSON_FIELDS = {"number", "title", "author", "headRefName", "baseRefName", "isCrossRepository", "reviews"}
 
+_WALK_NEEDS_BOTH_BRANCH_NAMES_MESSAGE = (
+    "the stack walk needs the PR's base branch and the repository's default branch, and one is empty"
+)
+_WALK_UNUSABLE_IDENTITY_MESSAGE = "the stack walk was given a repository or PR number it cannot use"
+
+
 class TestWalkStackPreconditions:
     @pytest.mark.parametrize(
-        ("overrides", "stderr_fragment"),
+        ("overrides", "expected_message"),
         [
-            ({"base_ref": ""}, "base branch"),
-            ({"default_branch": ""}, "default branch"),
-            ({"owner_repo": "not-a-repository"}, "repository or PR number"),
-            ({"pr_number": "5x"}, "repository or PR number"),
-            ({"pr_number": "0"}, "PR number zero"),
-            ({"mode": "bogus"}, "unknown mode"),
+            ({"base_ref": ""}, _WALK_NEEDS_BOTH_BRANCH_NAMES_MESSAGE),
+            ({"default_branch": ""}, _WALK_NEEDS_BOTH_BRANCH_NAMES_MESSAGE),
+            ({"owner_repo": "not-a-repository"}, _WALK_UNUSABLE_IDENTITY_MESSAGE),
+            ({"pr_number": "5x"}, _WALK_UNUSABLE_IDENTITY_MESSAGE),
+            ({"pr_number": "0"}, "the stack walk was given PR number zero"),
+            ({"mode": "bogus"}, 'the stack walk was given an unknown mode "bogus"'),
         ],
         ids=[
             "empty-base", "empty-default-branch", "malformed-owner-repo", "non-digit-pr-number", "pr-number-zero",
             "unknown-mode",
         ],
     )
-    def test_a_bad_argument_fails_with_a_prefixed_stderr_line_and_no_gh_call(self, tmp_path, overrides, stderr_fragment):
+    def test_a_bad_argument_fails_with_its_exact_stderr_line_and_no_gh_call(self, tmp_path, overrides, expected_message):
         result = _run_walk(tmp_path, {}, **overrides)
 
         assert result.resolved_gh == str(result.shim_path)
         assert result.status == 1
         assert result.stdout == ""
-        (failure_line,) = result.stderr.splitlines()
-        assert failure_line.startswith(f"{_WALK_SCRIPT_NAME}: ")
-        assert stderr_fragment in failure_line
+        assert result.stderr == f"{_WALK_SCRIPT_NAME}: {expected_message}\n"
         assert result.calls == []
 
 
@@ -1982,9 +1986,7 @@ class TestWalkStackLookups:
 
         assert result.status == 1
         assert result.stdout == ""
-        (failure_line,) = result.stderr.splitlines()
-        assert failure_line.startswith(f"{_WALK_SCRIPT_NAME}: ")
-        assert "stack document" in failure_line
+        assert "stack document" in result.stderr
 
 
 class TestWalkStackLookupCap:
@@ -2220,10 +2222,8 @@ class TestWalkStackUnreadableVerdictLines:
         assert result.status == 1
         assert result.stdout == ""
         assert len(result.calls) == 1
-        (failure_line,) = result.stderr.splitlines()
-        assert failure_line.startswith(f"{_WALK_SCRIPT_NAME}: ")
-        assert "could not read" in failure_line
-        assert _shell_constant("REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE") not in failure_line
+        assert "could not read" in result.stderr
+        assert _shell_constant("REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE") not in result.stderr
 
     def test_an_ancestor_with_an_empty_base_branch_fails_before_a_lookup_by_an_empty_head(self, tmp_path):
         result = self._walk_with_verdict_line(tmp_path, "ancestor\t11\tfalse\t\t{}")
@@ -2254,9 +2254,7 @@ class TestWalkStackFailures:
         assert result.status == 1
         assert result.stdout == ""
         assert len(result.calls) == 2
-        (failure_line,) = result.stderr.splitlines()
-        assert failure_line.startswith(f"{_WALK_SCRIPT_NAME}: ")
-        assert f"failed (exit {gh_exit_status})" in failure_line
+        assert f"failed (exit {gh_exit_status})" in result.stderr
         assert self._GH_STDERR_SENTINEL not in result.stderr
         assert result.stderr.endswith(_shell_constant("REVIEW_PR_STACK_GH_FAILURE_NOTE") + "\n")
         assert _shell_constant("REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE") not in result.stderr
@@ -2387,8 +2385,8 @@ class TestWalkStackBranchNameEchoLimit:
         assert "r" * (limit + 1) not in result.stderr
 
 
-# The "435" in review-pr-checkout.sh's usage text: its worst failure path for a base that is not the default branch,
-# before any stack walk.
+# review-pr-checkout.sh's worst failure path for a base that is not the default branch, before any stack walk:
+# the 555 s its usage text states for a stacked PR, less the walk's 120 s.
 _CHECKOUT_STACKED_WORST_FAILURE_PATH_SECONDS = 435
 
 # The Bash tool's documented maximum timeout, 600000 ms (claude-skills/skills/review-pr/REFERENCES.md).

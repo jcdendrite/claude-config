@@ -23,6 +23,12 @@ Fetches everything /review-pr's later steps need in one call:
 - Existing review bodies and existing inline review comments.
 - `selfAuthored`, from a gh api user call: true or false, or null when the
   account gh runs as or the PR's author could not be read.
+- baseStack, from one `gh pr list` lookup per ancestor PR (review_pr_walk_stack
+  in _review-pr-lib.sh): the open same-repository PRs chained from the PR's base
+  branch down to the default branch, each with its reviews, plus the question's
+  choices, recommended choice and concerns. A PR whose base is the default
+  branch gets an unstacked baseStack and no lookup. A blocked stack is never a
+  refusal here: review-pr-checkout.sh and review-pr-diff.sh enforce the gate.
 
 Prints one JSON document on stdout and writes the identical document to
 $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.context.json, a backstop against
@@ -41,6 +47,9 @@ than the metadata call's. Then statusCheckRollup is null. An empty list is a
 successful fetch that found no registered checks. The run still exits 0 and
 prints one additional stderr line.
 
+`baseStack` follows those three keys, ahead of the gh pr view fields. Its
+decision keys come first, so a head preview of the document keeps them.
+
 Environment: CI_CHECKS_GH_TOKEN, when set, authenticates only the check-status
 fetch, and only when the PR's own url is on github.com.
 The token is sent to github.com whenever the PR url is on github.com, without
@@ -56,10 +65,12 @@ review-pr-checkout.sh and review-pr-diff.sh each rewrite it (mode
 marker.sh write review-pr accepts only those two modes, so an acquire-only
 session can never write a completion marker.
 
-Any gh failure other than the check-status fetch and the `selfAuthored`
-lookup aborts with no partial document written. gh's own stderr/error text
-is never echoed verbatim, since an API error payload can echo request
-parameters: only this script's own fixed messages reach stdout/stderr.
+A stack walk failure, a REST payload without `base.ref` or
+`base.repo.default_branch`, or any gh failure other than the check-status fetch
+and the `selfAuthored` lookup aborts with no partial document written. gh's own
+stderr/error text is never echoed verbatim, since an API error payload can echo
+request parameters: only this script's own fixed messages reach stdout/stderr,
+and a branch name appears only cut and escaped as a JSON string.
 EOF
 }
 
@@ -208,6 +219,24 @@ if PR_AUTHOR_LOGIN=$(review_pr_author_login "$PR_VIEW_JSON") \
   esac
 fi
 
+# The base branch and the repository's default branch both come from the REST payload above; the walk cannot decide without either.
+if ! BASE_REF_NAME=$(printf '%s' "$PR_REST_JSON" | _lib_jq -r '.base.ref // empty' 2>/dev/null) || [[ -z "$BASE_REF_NAME" ]]; then
+  echo "review-pr-acquire.sh: PR $OWNER_REPO#$PR_NUMBER's REST payload carried no usable base.ref. Abort." >&2
+  exit 2
+fi
+if ! BASE_DEFAULT_BRANCH=$(printf '%s' "$PR_REST_JSON" | _lib_jq -r '.base.repo.default_branch // empty' 2>/dev/null) || [[ -z "$BASE_DEFAULT_BRANCH" ]]; then
+  echo "review-pr-acquire.sh: PR $OWNER_REPO#$PR_NUMBER's REST payload carried no usable base.repo.default_branch. Abort." >&2
+  exit 2
+fi
+# The walk prints its own prefixed stderr line on failure. Any stdout but a document is refused, so a walk that returns 0 with other output never passes.
+if ! BASE_STACK_JSON=$(review_pr_walk_stack "review-pr-acquire.sh" "$OWNER_REPO" "$PR_NUMBER" "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH" document); then
+  exit 2
+fi
+if [[ "$BASE_STACK_JSON" != "{"* ]]; then
+  echo "review-pr-acquire.sh: the stack walk for PR $OWNER_REPO#$PR_NUMBER printed no stack document. Abort." >&2
+  exit 2
+fi
+
 # files/changedFiles: `gh pr view --json files` silently caps at 100
 # entries with no --paginate equivalent, and files is exactly what step 2's
 # passive-execution audit reads -- a file at position 101 would be
@@ -307,7 +336,7 @@ elif ! INLINE_COMMENTS_JSON=$(printf '%s' "$RAW_INLINE_COMMENTS" | _lib_jq -c -s
   exit 2
 fi
 
-# The four lists go to jq through files, not argv: a single argv string is
+# The lists go to jq through files, not argv: a single argv string is
 # capped (Linux MAX_ARG_STRLEN, 128 KiB), and a large PR's file list or
 # review bodies can exceed that. The directory is removed on every exit
 # path by the one EXIT trap this script registers.
@@ -321,7 +350,8 @@ if ! { printf '%s' "$FILES_JSON" > "$CONTEXT_TMP_DIR/files.json" \
   && printf '%s' "$COMMITS_JSON" > "$CONTEXT_TMP_DIR/commits.json" \
   && printf '%s' "$REVIEWS_JSON" > "$CONTEXT_TMP_DIR/reviews.json" \
   && printf '%s' "$INLINE_COMMENTS_JSON" > "$CONTEXT_TMP_DIR/inline-comments.json" \
-  && printf '%s' "$STATUS_CHECK_ROLLUP_JSON" > "$CONTEXT_TMP_DIR/status-check-rollup.json"; }; then
+  && printf '%s' "$STATUS_CHECK_ROLLUP_JSON" > "$CONTEXT_TMP_DIR/status-check-rollup.json" \
+  && printf '%s' "$BASE_STACK_JSON" > "$CONTEXT_TMP_DIR/base-stack.json"; }; then
   echo "review-pr-acquire.sh: could not stage the context document's lists in $CONTEXT_TMP_DIR. Abort." >&2
   exit 2
 fi
@@ -331,8 +361,8 @@ fi
 # variables, and double-quoting would trigger shell expansion inside the jq
 # filter instead of leaving the bindings to jq itself.
 # --slurpfile wraps each file's one JSON value in an array, hence `[0]`.
-# The completeness flags lead the document so a cut at the end of stdout
-# keeps the flags.
+# The completeness flags and baseStack lead the document, ahead of the gh pr view
+# payload, so a head preview of stdout keeps them.
 if ! CONTEXT_JSON=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -c \
   --arg prIdentity "$PR_IDENTITY" \
   --arg authorAssociation "$AUTHOR_ASSOCIATION" \
@@ -341,11 +371,12 @@ if ! CONTEXT_JSON=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -c \
   --argjson commitsComplete "$COMMITS_COMPLETE" \
   --argjson statusCheckRollupAvailable "$STATUS_CHECK_ROLLUP_AVAILABLE" \
   --slurpfile statusCheckRollup "$CONTEXT_TMP_DIR/status-check-rollup.json" \
+  --slurpfile baseStack "$CONTEXT_TMP_DIR/base-stack.json" \
   --slurpfile files "$CONTEXT_TMP_DIR/files.json" \
   --slurpfile commits "$CONTEXT_TMP_DIR/commits.json" \
   --slurpfile existingReviews "$CONTEXT_TMP_DIR/reviews.json" \
   --slurpfile existingInlineComments "$CONTEXT_TMP_DIR/inline-comments.json" \
-  '{filesComplete: $filesComplete, commitsComplete: $commitsComplete, statusCheckRollupAvailable: $statusCheckRollupAvailable} + . + {
+  '{filesComplete: $filesComplete, commitsComplete: $commitsComplete, statusCheckRollupAvailable: $statusCheckRollupAvailable, baseStack: $baseStack[0]} + . + {
      statusCheckRollup: $statusCheckRollup[0],
      prIdentity: $prIdentity,
      authorAssociation: $authorAssociation,

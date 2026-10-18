@@ -31,26 +31,34 @@ audit, and the checkout need rather than trusting them as arguments. In order:
    CONTRIBUTOR, and a cross-repository PR (including a deleted-fork PR, whose
    head.repo reads null), before any further fetch. Every refusal names
    review-pr-diff.sh as the path to use instead.
-3. Fetches the PR's own full, paginated file list (one JSON string per file
-   name, so a name holding a newline decodes intact) and its current
-   headRefOid and baseRefOid directly from `gh`, together with the base branch
-   name that read carries. Aborts on a baseRefOid that is not a full hex object
-   name, on a base branch name that differs from step 2's, and on a listing
-   whose length differs from the PR's own `changed_files` count.
-4. Re-fetches headRefOid and the base branch name to catch a force-push or a
+3. Fetches the PR's current headRefOid and baseRefOid directly from `gh`,
+   together with the base branch name that read carries. Aborts on a baseRefOid
+   that is not a full hex object name, and on a base branch name that differs
+   from step 2's.
+4. Only when the PR's base branch is not the base repository's default branch,
+   walks the chain of ancestor PRs behind it (review_pr_walk_stack in
+   _review-pr-lib.sh), one `gh pr list` lookup per level, down to the default
+   branch or to a branch with no open PR. Exits 4, before any file listing or
+   fetch of the PR's ref, when an ancestor PR has no submitted review (a review
+   in any state counts, a pending one does not), naming the lowest such PR.
+   A walk that cannot decide exits 2.
+5. Fetches the PR's own full, paginated file list (one JSON string per file
+   name, so a name holding a newline decodes intact) directly from `gh`. Aborts
+   on a listing whose length differs from the PR's own `changed_files` count.
+6. Re-fetches headRefOid and the base branch name to catch a force-push or a
    retarget landing while the file list was being paginated.
-5. Pipes the file list to audit-execution-surface.py. A stop verdict exits 3
+7. Pipes the file list to audit-execution-surface.py. A stop verdict exits 3
    before any fetch of the PR's ref, naming the matched paths and reasons on
    stderr, one line per match with the path as an ASCII-only JSON string,
    bounded (review_pr_audit_match_report in _review-pr-lib.sh). An audit that
    fails to return a verdict exits 2 with its stderr shown
    (review_pr_audit_verdict in _review-pr-lib.sh defines what counts as a
    verdict).
-6. On a clean audit, fetches refs/pull/<N>/head and asserts the fetched SHA
+8. On a clean audit, fetches refs/pull/<N>/head and asserts the fetched SHA
    equals the headRefOid fetched earlier in the same run. A mismatch means a
    force-push landed between audit and checkout, and aborts with no worktree
    left behind.
-7. Only when the PR's base branch is not the base repository's default branch,
+9. Only when the PR's base branch is not the base repository's default branch,
    audits every path the verified head changes from the default branch, since
    the checkout writes the whole head tree and a stacked base can carry files
    the PR's own file list never names. The default branch is fetched into
@@ -59,21 +67,21 @@ audit, and the checkout need rather than trusting them as arguments. In order:
    decode them, each run capped. A default-branch name git rejects as a ref
    name exits 2 before any fetch of it. A failed or capped run, a count that is
    not an integer, or a decoded list whose length differs from the count exits
-   2 before the audit runs. The audit then runs as in step 5: a stop exits 3,
+   2 before the audit runs. The audit then runs as in step 7: a stop exits 3,
    naming review-pr-diff.sh, the base branch, and the matched paths on stderr,
    and a missing verdict exits 2.
-8. Fetches the baseRefOid commit, since step 6 fetched only the PR's own ref,
-   and writes the three-dot diff from baseRefOid to the verified headRefOid to
-   $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff, the path review-pr-diff.sh
-   uses for its own diff. Aborts with no worktree created, and no diff file
-   written, when the base fetch fails, the diff cannot be computed, or the diff
-   is empty although the PR reports changed files. A failed diff write also
-   aborts with no worktree created, but may leave an incomplete diff file.
-9. Creates a new worktree under the main tree's .claude/worktrees/, named for
-   this session and the PR number plus a random suffix. A second run against
-   the same PR gets its own worktree; review-pr-finish.sh removes every
-   worktree of the session.
-10. Rewrites this session's provenance file with mode "checkout" (PR identity,
+10. Fetches the baseRefOid commit, since step 8 fetched only the PR's own ref,
+    and writes the three-dot diff from baseRefOid to the verified headRefOid to
+    $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.diff, the path review-pr-diff.sh
+    uses for its own diff. Aborts with no worktree created, and no diff file
+    written, when the base fetch fails, the diff cannot be computed, or the diff
+    is empty although the PR reports changed files. A failed diff write also
+    aborts with no worktree created, but may leave an incomplete diff file.
+11. Creates a new worktree under the main tree's .claude/worktrees/, named for
+    this session and the PR number plus a random suffix. A second run against
+    the same PR gets its own worktree; review-pr-finish.sh removes every
+    worktree of the session.
+12. Rewrites this session's provenance file with mode "checkout" (PR identity,
     the verified headRefOid, this session's Claude PID, the mode), never
     trusting review-pr-acquire.sh's mode "acquired" write.
 
@@ -90,11 +98,15 @@ Worst-case wall time: the per-step caps sum to 255 seconds on the success path
 calls, 30 for the PR-ref fetch, 10 for two more local git reads, 30 for the
 base fetch, 30 for the diff, 30 for worktree add) and 315 on the worst failure
 path (a failed worktree add followed by its two capped cleanups). A PR whose
-base branch is not the default branch adds 120 seconds to each path, for 375 and
-435 (5 for the ref-name check, 30 for the default-branch fetch, 5 for resolving
-it, 30 for the counting git run, 30 for the name-listing git run, 20 for four jq
-calls). The name-listing run writes to a temporary file that the decoding jq
-reads only after git has finished, so those two caps add rather than overlap.
+base branch is not the default branch adds 240 seconds to each path, for 495 and
+555: 120 for the stack walk (eight lookups, each a 10 second gh call and a 5
+second jq call) and 120 for the delta audit (5 for the ref-name check, 30 for
+the default-branch fetch, 5 for resolving it, 30 for the counting git run, 30
+for the name-listing git run, 20 for four jq calls). The name-listing run
+writes to a temporary file that the decoding jq reads only after git has
+finished, so those two caps add rather than overlap. The 555 leaves 45 seconds
+under the Bash tool's 600-second maximum, before the items this paragraph
+excludes.
 Each cap kill adds up to 2 seconds of SIGKILL grace. The diff write and
 the provenance write are uncapped, as is the audit script. The session lookup's
 capped ps calls add up to 10 seconds per process-ancestor hop. The caps apply
@@ -103,8 +115,10 @@ only when `timeout` or `gtimeout` is on PATH; otherwise every step is uncapped.
 Exit status: 0 on success, 3 when checkout is positively refused and
 review-pr-diff.sh is the path to use instead (the PR's trust class, a
 cross-repository head, or an audit stop verdict on the PR's files or on a
-stacked base's delta), 2 on every other refusal or
-failure the script itself detects, including a check that could not be completed.
+stacked base's delta), 4 when an ancestor PR of a stacked PR has no submitted
+review (step 4's gate; review-pr-diff.sh refuses the PR too), 2 on every other
+refusal or failure the script itself detects, including a check that could not
+be completed and a stack walk that could not decide.
 EOF
 }
 
@@ -257,8 +271,24 @@ fi
 # A retarget between the two reads would pair a base commit with the other base branch's decision, so the names must agree.
 if ! PR_VIEW_BASE_REF_NAME=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.baseRefName // empty' 2>/dev/null) \
   || [[ "$PR_VIEW_BASE_REF_NAME" != "$BASE_REF_NAME" ]]; then
-  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's base branch reads as $(review_pr_ascii_json_string "$BASE_REF_NAME") from the REST payload but as $(review_pr_ascii_json_string "$PR_VIEW_BASE_REF_NAME") alongside baseRefOid (or the second read failed) -- a retarget between the two reads, so whether the base is the default branch is undecided. Abort before any fetch of the PR's ref." >&2
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's base branch reads as $(review_pr_ascii_json_string "$BASE_REF_NAME" "$REVIEW_PR_STACK_TEXT_ECHO_LIMIT") from the REST payload but as $(review_pr_ascii_json_string "$PR_VIEW_BASE_REF_NAME" "$REVIEW_PR_STACK_TEXT_ECHO_LIMIT") alongside baseRefOid (or the second read failed) -- a retarget between the two reads, so whether the base is the default branch is undecided. Abort before any fetch of the PR's ref." >&2
   exit 2
+fi
+
+# A PR stacked on an ancestor with no submitted review is refused before the file listing, the ref fetch, any worktree or any provenance write.
+# A walk failure exits 2 here after the walk prints its own prefixed stderr line, so no gh status becomes this script's exit status (gh exits 4 when a command needs authentication). Only the gate below exits 4.
+if ! review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; then
+  if ! LOWEST_UNREVIEWED_ANCESTOR=$(review_pr_walk_stack "review-pr-checkout.sh" "$OWNER_REPO" "$PR_NUMBER" "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH" lowest-unreviewed); then
+    exit 2
+  fi
+  if [[ "$LOWEST_UNREVIEWED_ANCESTOR" =~ ^[1-9][0-9]*$ ]]; then
+    echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER is stacked on PR $OWNER_REPO#$LOWEST_UNREVIEWED_ANCESTOR, which has no submitted review. PR $OWNER_REPO#$LOWEST_UNREVIEWED_ANCESTOR clears once a review in any state is submitted on it on GitHub; a review kept local does not count. review-pr-diff.sh refuses PR $OWNER_REPO#$PR_NUMBER too. Abort before any fetch of the PR's ref." >&2
+    exit "$REVIEW_PR_EXIT_STACK_UNREVIEWED"
+  fi
+  if [[ "$LOWEST_UNREVIEWED_ANCESTOR" != "clear" ]]; then
+    echo "review-pr-checkout.sh: the stack walk for PR $OWNER_REPO#$PR_NUMBER printed neither clear nor an ancestor PR number, so whether its ancestors have reviews is undecided. Abort before any fetch of the PR's ref." >&2
+    exit 2
+  fi
 fi
 
 # 30s, not the 10s above: this walks every page of the files listing via
@@ -309,7 +339,7 @@ if [[ "$HEAD_REF_OID_RECHECK" != "$HEAD_REF_OID" ]]; then
   exit 2
 fi
 if [[ "$BASE_REF_NAME_RECHECK" != "$BASE_REF_NAME" ]]; then
-  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's base branch changed from $(review_pr_ascii_json_string "$BASE_REF_NAME") to $(review_pr_ascii_json_string "$BASE_REF_NAME_RECHECK") while its file list was being fetched -- a retarget race between the self-fetches, so the file list and the stacked-base decision may describe different bases. Abort before any fetch of the PR's ref." >&2
+  echo "review-pr-checkout.sh: PR $OWNER_REPO#$PR_NUMBER's base branch changed from $(review_pr_ascii_json_string "$BASE_REF_NAME" "$REVIEW_PR_STACK_TEXT_ECHO_LIMIT") to $(review_pr_ascii_json_string "$BASE_REF_NAME_RECHECK" "$REVIEW_PR_STACK_TEXT_ECHO_LIMIT") while its file list was being fetched -- a retarget race between the self-fetches, so the file list and the stacked-base decision may describe different bases. Abort before any fetch of the PR's ref." >&2
   exit 2
 fi
 
@@ -434,9 +464,9 @@ delta_diff_status_description() {
 # The delta runs head-side, after the PR-ref fetch: a base-side list would miss a
 # file that was on the base when the PR forked and was later removed from it.
 if ! review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; then
-  # Both names come from the API, so messages print them through review_pr_ascii_json_string.
-  BASE_DEFAULT_BRANCH_ESCAPED=$(review_pr_ascii_json_string "$BASE_DEFAULT_BRANCH")
-  BASE_REF_NAME_ESCAPED=$(review_pr_ascii_json_string "$BASE_REF_NAME")
+  # Both names come from the API, so messages print them cut and escaped through review_pr_ascii_json_string.
+  BASE_DEFAULT_BRANCH_ESCAPED=$(review_pr_ascii_json_string "$BASE_DEFAULT_BRANCH" "$REVIEW_PR_STACK_TEXT_ECHO_LIMIT")
+  BASE_REF_NAME_ESCAPED=$(review_pr_ascii_json_string "$BASE_REF_NAME" "$REVIEW_PR_STACK_TEXT_ECHO_LIMIT")
 
   # check-ref-format on the full ref rather than `--branch`, because the fetch below names the full ref, so a
   # name starting with `-` cannot read as an option and one holding `:` cannot add a refspec destination.

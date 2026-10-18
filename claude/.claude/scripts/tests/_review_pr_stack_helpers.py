@@ -1,13 +1,16 @@
 """The `gh pr list` test double for the review-pr stack walk.
 
-Consumers: test_review_pr_stack_helpers.py (the double's own tests) and
-test_review_pr_lib.py. The gh shim that write_gh_pr_list_shim writes imports
-this module through a `sys.path` insert of this directory, so it uses only the
-standard library and no relative import.
+Consumers: test_review_pr_stack_helpers.py (the double's own tests),
+test_review_pr_lib.py, and the acquire, checkout and diff script suites. Each
+gh shim, including the one write_gh_pr_list_shim writes, imports this module
+through a `sys.path` insert of this directory, so it uses only the standard
+library and no relative import.
 """
 from __future__ import annotations
 
 import json
+import shlex
+import shutil
 import stat
 import sys
 import textwrap
@@ -122,7 +125,7 @@ def answer_gh_pr_list(args: list[str], replies: dict) -> int:
     (see _parse_pr_list_args). Anything else prints a stderr line and returns 97.
 
     `replies` maps an exact `--head=` value to a reply:
-    - A list: the PR items for that branch, each object item projected to the requested `--json` fields it carries.
+    - A list: the complete PR items (see pr_list_item) for that branch, each projected to the requested `--json` fields.
       Every item is returned, so `--limit` is validated but never applied: a reply of more items than the limit
       reaches the caller whole.
     - A dict: `"sleep": seconds` is slept first, then `"stderr": text` is printed to stderr, then `"stdout": text`
@@ -157,12 +160,40 @@ def answer_gh_pr_list(args: list[str], replies: dict) -> int:
 
     if not isinstance(reply, list):
         return _usage_failure(f"reply for --head={head_branch} is neither a list nor a dict")
-    projected = [
-        {field: item[field] for field in requested_fields if field in item} if isinstance(item, dict) else item
-        for item in reply
-    ]
+    projected = []
+    for item in reply:
+        if not isinstance(item, dict) or any(field not in item for field in requested_fields):
+            return _usage_failure(
+                f"reply item for --head={head_branch} is not a complete pr_list_item holding {flags['--json']}"
+            )
+        projected.append({field: item[field] for field in requested_fields})
     print(json.dumps(projected))
     return 0
+
+
+# The PR numbers stack_replies gives its two PRs.
+STACK_LOWER_PR_NUMBER = 41
+STACK_UPPER_PR_NUMBER = 43
+
+
+def stack_replies(stacked_branch: str, lower_branch: str, *, lower_reviewed: bool) -> dict:
+    """`gh pr list` replies for a two-level stack: the upper PR (reviewed) has head `stacked_branch` and base `lower_branch`,
+    and the lower PR has head `lower_branch` and base main, with a review only when `lower_reviewed`."""
+    reviews = [pr_list_review("reviewer")]
+    return {
+        stacked_branch: [pr_list_item(STACK_UPPER_PR_NUMBER, stacked_branch, lower_branch, reviews=reviews)],
+        lower_branch: [pr_list_item(STACK_LOWER_PR_NUMBER, lower_branch, "main", reviews=reviews if lower_reviewed else [])],
+    }
+
+
+def pr_list_calls(calls: list[list[str]]) -> list[list[str]]:
+    """The `gh pr list` calls among a suite's logged argv lists."""
+    return [call for call in calls if call[:2] == ["pr", "list"]]
+
+
+def pr_list_head_values(calls: list[list[str]]) -> list[str]:
+    """The `--head=` value of each `gh pr list` call among a suite's logged argv lists, in call order."""
+    return [token.removeprefix("--head=") for call in pr_list_calls(calls) for token in call if token.startswith("--head=")]
 
 
 def write_gh_pr_list_shim(bin_dir: Path, call_log: Path, replies: dict) -> Path:
@@ -199,3 +230,21 @@ def logged_gh_calls(call_log: Path) -> list[list[str]]:
     if not call_log.exists():
         return []
     return [json.loads(line)["args"] for line in call_log.read_text().splitlines() if line.strip()]
+
+
+def copy_script_with_stubbed_walk(script_path: Path, sandbox_dir: Path, walk_stdout: str) -> Path:
+    """Copy `script_path` and its sourced libraries into `sandbox_dir`, with `review_pr_walk_stack` redefined to print
+    `walk_stdout` and return 0, and return the copy's path.
+
+    The scripts source `../hooks/_lib.sh` and `_review-pr-lib.sh` relative to themselves, so the sandbox holds a
+    `scripts/` copy and a `hooks/` symlink to the real directory.
+    A script suite uses the copy to drive a walk output the real walk never prints.
+    """
+    source_dir = script_path.parent
+    sandbox_scripts_dir = sandbox_dir / "scripts"
+    sandbox_scripts_dir.mkdir(parents=True)
+    shutil.copy2(script_path, sandbox_scripts_dir / script_path.name)
+    walk_stub = f"\nreview_pr_walk_stack() {{ printf '%s' {shlex.quote(walk_stdout)}; }}\n"
+    (sandbox_scripts_dir / "_review-pr-lib.sh").write_text((source_dir / "_review-pr-lib.sh").read_text() + walk_stub)
+    (sandbox_dir / "hooks").symlink_to(source_dir.parent / "hooks")
+    return sandbox_scripts_dir / script_path.name

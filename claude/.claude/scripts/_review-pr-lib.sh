@@ -115,7 +115,7 @@ REVIEW_PR_JQ_ASCII_JSON_STRING_DEFS='
 '
 
 # No protocol or vendor limit backs the value. One lookup costs at most 15 s (the 10 s gh cap plus one 5 s jq cap), so 8 lookups cost 120 s.
-# Added to the 435 s of review-pr-checkout.sh's stacked worst failure path, that is 555 s, under the Bash tool's 600 s maximum (claude-skills/skills/review-pr/REFERENCES.md).
+# review-pr-checkout.sh's usage text states 495 s and 555 s for a stacked PR, 120 s of each being this walk, and review-pr-diff.sh's states 305 s and 320 s. All are under the Bash tool's 600 s maximum (claude-skills/skills/review-pr/REFERENCES.md).
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_STACK_MAX_LOOKUPS=8
 
@@ -124,7 +124,7 @@ REVIEW_PR_STACK_MAX_LOOKUPS=8
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_STACK_LOOKUP_LIMIT=100
 
-# One request. The value matches the 10 s GH_PR_VIEW_TIMEOUT_SECONDS that review-pr-acquire.sh, review-pr-checkout.sh, review-pr-diff.sh and review-pr-post.sh give each single-request gh read.
+# A chosen default, not measured against a full reply of 100 PRs with their reviews. It matches the 10 s GH_PR_VIEW_TIMEOUT_SECONDS that review-pr-acquire.sh, review-pr-checkout.sh, review-pr-diff.sh and review-pr-post.sh give each single-request gh read.
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_STACK_LOOKUP_TIMEOUT_SECONDS=10
 

@@ -43,15 +43,6 @@ class TestProjection:
         assert status == 0
         assert json.loads(stdout) == [{"number": 11, "title": "Add the parser"}]
 
-    def test_a_requested_field_the_item_lacks_is_left_out(self, capsys):
-        item = pr_list_item(11, "feat/x", "main")
-        del item["title"]
-
-        status, stdout, _ = _answer(_lookup_args(fields="number,title"), {"feat/x": [item]}, capsys)
-
-        assert status == 0
-        assert json.loads(stdout) == [{"number": 11}]
-
     def test_a_field_outside_the_known_set_exits_1_naming_the_field(self, capsys):
         status, stdout, stderr = _answer(_lookup_args(fields="number,bogus"), {"feat/x": []}, capsys)
 
@@ -147,6 +138,22 @@ class TestUnmodeledCalls:
         assert status == UNMODELED_CALL_EXIT_STATUS
         assert stdout == ""
         assert stderr.startswith("gh pr list double:")
+
+
+class TestMalformedReplyItems:
+    @pytest.mark.parametrize(
+        "malformed_item",
+        [{"number": 11}, "not an object", None],
+        ids=["item-lacks-a-requested-field", "item-is-a-string", "item-is-null"],
+    )
+    def test_a_reply_item_that_is_not_a_complete_object_exits_97_with_a_double_stderr_line_not_a_traceback(
+        self, malformed_item, capsys
+    ):
+        status, stdout, stderr = _answer(_lookup_args(fields="number,title"), {"feat/x": [malformed_item]}, capsys)
+
+        assert status == UNMODELED_CALL_EXIT_STATUS
+        assert stdout == ""
+        assert stderr.startswith("gh pr list double: reply item for --head=feat/x")
 
 
 class TestItemBuilders:
