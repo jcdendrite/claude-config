@@ -607,20 +607,11 @@ class TestSelfAuthored:
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout)["selfAuthored"] is None
 
-    @pytest.mark.parametrize(
-        "author_field",
-        [
-            _NO_AUTHOR_KEY, None, "someone", [{"login": "someone"}], {}, {"login": None}, {"login": False}, {"login": 7},
-        ],
-        ids=[
-            "no-author-key", "null-author", "string-author", "array-author", "author-without-login-key",
-            "null-login", "false-login", "numeric-login",
-        ],
-    )
-    def test_an_unreadable_pr_author_gives_null_not_false_and_does_not_abort(self, isolated_home, tmp_path, author_field):
+    def test_an_unreadable_pr_author_gives_null_not_false_and_does_not_abort(self, isolated_home, tmp_path):
         # GH-1236: review-pr-post.sh refuses an unreadable author, so advice of `false` would recommend a verb it then refuses.
+        # review_pr_author_login's own tests own the shape matrix; one shape proves the script calls it.
         result, _ = _run(
-            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, pr_author_field=author_field,
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40, pr_author_field=_NO_AUTHOR_KEY,
         )
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout)["selfAuthored"] is None
@@ -847,9 +838,9 @@ class TestStatusCheckRollupUnavailable:
         assert "Possible cause" not in result.stderr
         assert "CI_CHECKS_GH_TOKEN" not in result.stderr
 
-    def test_the_checks_call_runs_under_a_positive_cap(self, isolated_home, tmp_path):
+    def test_the_checks_call_and_the_user_lookup_run_under_a_positive_cap(self, isolated_home, tmp_path):
         """A hung check-status fetch must not block the run it exists to
-        keep alive, so the call is capped with a positive value."""
+        keep alive, and neither may a hung `gh api user` lookup, so each call is capped with a positive value."""
         timeout_log = tmp_path / "timeout_calls.jsonl"
         result, _ = _run(
             isolated_home, [PR_IDENTITY], tmp_path, timeout_log=timeout_log, head_ref_oid="a" * 40,
@@ -862,6 +853,12 @@ class TestStatusCheckRollupUnavailable:
         ]
         assert len(seconds_by_status_check_call) == 1
         assert int(seconds_by_status_check_call[0]) > 0
+        seconds_by_user_lookup_call = [
+            argv[2] for argv in map(json.loads, timeout_log.read_text().splitlines())
+            if argv[3] == "gh" and argv[4:] == ["api", "user"]
+        ]
+        assert len(seconds_by_user_lookup_call) == 1
+        assert int(seconds_by_user_lookup_call[0]) > 0
 
     def test_a_head_that_moved_between_the_two_calls_marks_check_status_unavailable(
         self, isolated_home, tmp_path
@@ -1395,15 +1392,18 @@ class TestGhFailureNeverBypassesTheScrub:
             assert AMBIENT_TOKEN not in surface
 
     @pytest.mark.parametrize(
-        "user_shim_kwargs",
+        "user_shim_kwargs,expected_self_authored",
         [
-            {"api_user_extra_fields": {"name": CHECKS_ERROR_PAYLOAD}},
-            {"api_user_exit_status": 1, "api_user_stderr": CHECKS_ERROR_PAYLOAD, "api_user_stdout_on_failure": True},
+            ({"api_user_extra_fields": {"name": CHECKS_ERROR_PAYLOAD}}, False),
+            (
+                {"api_user_exit_status": 1, "api_user_stderr": CHECKS_ERROR_PAYLOAD, "api_user_stdout_on_failure": True},
+                None,
+            ),
         ],
         ids=["secret-shaped-body-field", "secret-shaped-stderr-on-failure"],
     )
     def test_user_lookup_response_and_error_text_never_reach_output_or_context_json(
-        self, isolated_home, tmp_path, user_shim_kwargs
+        self, isolated_home, tmp_path, user_shim_kwargs, expected_self_authored
     ):
         """The `/user` payload and gh's stderr on a failed lookup are discarded.
         Neither a secret-shaped value nor the operator's login reaches any surface."""
@@ -1413,6 +1413,7 @@ class TestGhFailureNeverBypassesTheScrub:
             **user_shim_kwargs,
         )
         assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["selfAuthored"] is expected_self_authored
         context_file = isolated_home / ".claude" / ".review-pr-active.d" / f"{SID}.context.json"
         for surface in (result.stdout, result.stderr, context_file.read_text()):
             assert CHECKS_ERROR_PAYLOAD not in surface

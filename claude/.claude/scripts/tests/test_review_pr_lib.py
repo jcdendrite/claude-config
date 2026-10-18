@@ -785,6 +785,48 @@ class TestChecksTokenSource:
         assert (status, output) == (0, "ambient")
 
 
+class TestAuthorLogin:
+    """review_pr_author_login reads `.author.login` from a `gh pr view --json author` response.
+    Only one JSON object with an `.author` object holding a string `.login` is readable.
+    An unreadable author is distinct from an empty-string login, which review_pr_authorship reads as other."""
+
+    @pytest.mark.parametrize(
+        "pr_view_json,expected_login",
+        [
+            ('{"author": {"login": "someone"}}', "someone"),
+            ('{"headRefOid": "abc", "author": {"login": "someone", "id": 7, "is_bot": false}}', "someone"),
+            ('{"author": {"login": ""}}', ""),
+        ],
+        ids=["plain-author", "multi-field-author-object", "empty-string-login"],
+    )
+    def test_a_string_login_on_an_author_object_is_printed(self, pr_view_json, expected_login):
+        assert _call("review_pr_author_login", pr_view_json) == (0, expected_login)
+
+    @pytest.mark.parametrize(
+        "pr_view_json",
+        [
+            "",
+            "not json",
+            '{"author": {"login": "someone"}}{"author": {"login": "someone"}}',
+            '{"headRefOid": "abc"}',
+            '{"author": null}',
+            '{"author": "someone"}',
+            '{"author": [{"login": "someone"}]}',
+            '{"author": 7}',
+            '{"author": {}}',
+            '{"author": {"login": null}}',
+            '{"author": {"login": false}}',
+            '{"author": {"login": 7}}',
+        ],
+        ids=[
+            "empty-input", "not-json", "two-documents", "absent-author-key", "null-author", "string-author",
+            "array-author", "number-author", "empty-author-object", "null-login", "false-login", "number-login",
+        ],
+    )
+    def test_anything_else_is_unreadable_and_prints_nothing(self, pr_view_json):
+        assert _call("review_pr_author_login", pr_view_json) == (1, "")
+
+
 class TestAuthorship:
     """review_pr_authorship compares a PR author's login with the `.login` of `gh api user`'s response.
     A USER_JSON that yields no login-shaped login is `unknown` whatever the author is.
@@ -801,6 +843,10 @@ class TestAuthorship:
     )
     def test_equal_logins_ignoring_case_are_self(self, author_login, operator_login):
         assert _call("review_pr_authorship", author_login, self._user_json(operator_login)) == (0, "self")
+
+    def test_a_multi_field_pretty_printed_user_response_is_read_for_its_login(self):
+        user_json = json.dumps({"login": "operator", "id": 1, "name": "Operator"}, indent=2)
+        assert _call("review_pr_authorship", "operator", user_json) == (0, "self")
 
     @pytest.mark.parametrize(
         "author_login",

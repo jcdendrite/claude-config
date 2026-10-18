@@ -53,8 +53,8 @@ name, a truncation caveat, or the execution-surface match list still holds.
 - **`selfAuthored` comes from a `gh api user` call on the ambient token.**
   That token is the account `review-pr-post.sh` posts as, so the lookup never
   uses `CI_CHECKS_GH_TOKEN`. A failed lookup yields `null` rather than
-  aborting. An unreadable PR author (no `author` object, or a `login` that is
-  not a string) also yields `null`. `review_pr_authorship`
+  aborting. A PR author that `review_pr_author_login` (`_review-pr-lib.sh`)
+  cannot read also yields `null`. `review_pr_authorship`
   (`_review-pr-lib.sh`) owns the comparison.
   `review-pr-post.sh` repeats it for `request-changes` before it consumes the
   marker, so the document's value is advisory.
@@ -563,19 +563,14 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
     completion marker needs. Until `finish` runs, only SKILL.md's instruction
     stops a re-arm; no mechanism does. Recovery is a hand-post of the approved
     body or a fresh `/review-pr`.
-  - The own-PR or could-not-tell refusal of `request-changes` (the latter
-    also covers an unreadable PR author) leaves the marker armed, because it
-    runs before the marker is consumed. Both refusals say "Nothing was posted
-    and the completion marker was not consumed". Posting the same body as
-    `comment` after the human confirms that exact body is the recovery for
-    either refusal. After the could-not-tell refusal, which a transient
-    lookup failure can cause, one re-run of the same verb after the human
-    re-confirms is also safe. After the own-PR refusal a re-run is pointless.
-    The body already carries the blocking-finding count line unless
-    `selfAuthored` was `false`, and a `comment` recovery on a `false`
-    document adds the line first, which re-presents the body and re-writes the
-    marker. The hand-post or fresh-run recovery stays for an unknown post
-    outcome.
+  - Both `request-changes` refusals, own-PR and could-not-tell (which also
+    covers an unreadable PR author), run before the marker is consumed, so it
+    stays armed, and both carry the phrase "Nothing was posted and the
+    completion marker was not consumed" that SKILL.md keys on. SKILL.md Step 8
+    owns the recovery for each. SKILL.md's blocking-count line goes in every
+    body that holds blocking findings, whoever authored the PR. `selfAuthored`
+    is advisory, and any body can end up posted as `comment`, including after
+    either refusal, with no edit when the verb changes.
   - `review-pr-post.sh` never emits `--approve`: its two `gh pr review` calls
     carry the literal `--comment` and `--request-changes`. This is the only
     unbypassable property of the gate.

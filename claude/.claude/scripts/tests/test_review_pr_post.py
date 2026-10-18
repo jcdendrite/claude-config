@@ -299,6 +299,15 @@ class TestApproveIsNotReachable:
         assert code.count('_lib_gh "$GH_PR_REVIEW_TIMEOUT_SECONDS" pr review "$PR_NUMBER"') == 2
 
 
+class TestWiringTripwires:
+    """Source-level checks that a call still routes through its cap; they do not pin the cap's value."""
+
+    def test_the_api_user_lookup_carries_the_view_timeout_cap(self):
+        # GH-1236: an uncapped `gh api user` lets a stalled lookup hang the post path before the marker is consumed.
+        code = _strip_comment_lines(SCRIPT.read_text())
+        assert code.count('_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" api user') == 1
+
+
 class TestUsageErrors:
     @pytest.mark.parametrize(
         "args",
@@ -560,7 +569,7 @@ class TestRequestChangesAuthorshipCheck:
     def test_request_changes_on_the_operators_own_pr_refuses_and_leaves_the_marker_armed(
         self, isolated_home, git_repo, tmp_path
     ):
-        # GH-1236: a GitHub rejection read as "whether the review posted is unknown" with the marker already consumed.
+        # GH-1236: an own-PR request-changes refuses before the marker is consumed, so the same body can still post as comment.
         _, marker_head, marker = self._arm_marker(isolated_home, git_repo)
         result, call_log = _run(
             git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
@@ -632,64 +641,58 @@ class TestRequestChangesAuthorshipCheck:
         assert result.returncode == 2
         self._assert_could_not_tell_refusal(result, call_log, marker)
 
-    @pytest.mark.parametrize(
-        "author_options",
-        [
-            {"pr_author_field": _NO_AUTHOR_KEY},
-            {"pr_author_field": None},
-            {"pr_author_field": _DISTINCT_AUTHOR_LOGIN},
-            {"pr_author_field": [{"login": _DISTINCT_AUTHOR_LOGIN}]},
-            {"pr_author_field": {"login": 7}},
-            {"pr_author_field": {}},
-            {"pr_author_field": {"login": None}},
-            {"pr_author_field": {"login": False}},
-        ],
-        ids=[
-            "no-author-key", "null-author", "string-author", "array-author", "numeric-login",
-            "author-without-login-key", "null-login", "false-login",
-        ],
-    )
-    def test_request_changes_refuses_when_the_pr_author_cannot_be_read(
-        self, isolated_home, git_repo, tmp_path, author_options
-    ):
+    def test_request_changes_refuses_when_the_pr_author_cannot_be_read(self, isolated_home, git_repo, tmp_path):
         # GH-1236: an unreadable author must not read as someone else's PR, or an own-PR request-changes would post.
+        # review_pr_author_login's own tests own the shape matrix; one shape proves the script calls it.
         _, marker_head, marker = self._arm_marker(isolated_home, git_repo)
         result, call_log = _run(
             git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
-            pr_view_head_ref_oid=marker_head, operator_login=_DISTINCT_OPERATOR_LOGIN, **author_options,
+            pr_view_head_ref_oid=marker_head, operator_login=_DISTINCT_OPERATOR_LOGIN, pr_author_field=_NO_AUTHOR_KEY,
         )
         assert result.returncode == 2
         self._assert_could_not_tell_refusal(result, call_log, marker)
 
-    @pytest.mark.parametrize(
-        "pr_author_field",
-        [_NO_AUTHOR_KEY, None, _DISTINCT_AUTHOR_LOGIN, {}, {"login": None}],
-        ids=["no-author-key", "null-author", "string-author", "author-without-login-key", "null-login"],
-    )
-    def test_comment_posts_whatever_the_pr_author_field_holds(
-        self, isolated_home, git_repo, tmp_path, pr_author_field
-    ):
+    def test_comment_posts_when_the_pr_author_cannot_be_read(self, isolated_home, git_repo, tmp_path):
         # GH-1236: the author is read for request-changes only; comment must not gain a failure mode.
         _, marker_head, _ = self._arm_marker(isolated_home, git_repo)
         result, call_log = _run(
             git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
-            pr_view_head_ref_oid=marker_head, pr_author_field=pr_author_field,
+            pr_view_head_ref_oid=marker_head, pr_author_field=_NO_AUTHOR_KEY,
         )
         assert result.returncode == 0, result.stderr
         assert len(_pr_review_records(call_log)) == 1
 
-    def test_comment_after_an_own_pr_refusal_posts_the_same_body_once(self, isolated_home, git_repo, tmp_path):
+    @pytest.mark.parametrize(
+        "refusal_options,recovery_verb,recovery_options",
+        [
+            ({"pr_author_login": "operator", "operator_login": "operator"}, "comment",
+             {"pr_author_login": "operator", "operator_login": "operator"}),
+            ({"api_user_exit_status": 1}, "comment", {"api_user_exit_status": 1}),
+            ({"api_user_exit_status": 1}, "request-changes", {"pr_author_login": "someone", "operator_login": "operator"}),
+        ],
+        ids=["own-pr-then-comment", "lookup-failure-then-comment", "lookup-failure-then-request-changes-on-someone-elses-pr"],
+    )
+    def test_the_same_body_posts_once_after_a_request_changes_refusal(
+        self, isolated_home, git_repo, tmp_path, refusal_options, recovery_verb, recovery_options
+    ):
         # GH-1236: the recovery the refusal message offers must work in the same session.
         body_file, marker_head, marker = self._arm_marker(isolated_home, git_repo)
-        shim_options = {"pr_view_head_ref_oid": marker_head, "pr_author_login": "operator", "operator_login": "operator"}
-        refused, _ = _run(git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path, **shim_options)
+        refused, refused_call_log = _run(
+            git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, **refusal_options,
+        )
         assert refused.returncode == 2
+        assert _pr_review_records(refused_call_log) == []
         assert marker.exists()
+        assert _NOT_CONSUMED_PHRASE in refused.stderr
 
-        posted, call_log = _run(git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, **shim_options)
+        posted, call_log = _run(
+            git_repo, isolated_home, [recovery_verb, PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, **recovery_options,
+        )
         assert posted.returncode == 0, posted.stderr
         (record,) = _pr_review_records(call_log)
-        assert "--comment" in record["args"]
+        assert f"--{recovery_verb}" in record["args"]
         assert bytes.fromhex(record["posted_bytes_hex"]) == body_file.read_bytes()
         assert not marker.exists()
 
@@ -735,7 +738,10 @@ class TestRequestChangesAuthorshipCheck:
         _, marker_head, _ = self._arm_marker(isolated_home, git_repo)
         result, call_log = _run(
             git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
-            extra_env={"GH_TOKEN": ambient_token, "GH_HOST": ambient_host}, pr_view_head_ref_oid=marker_head,
+            extra_env={
+                "GH_TOKEN": ambient_token, "GH_HOST": ambient_host, "CI_CHECKS_GH_TOKEN": "checks-override-token-value",
+            },
+            pr_view_head_ref_oid=marker_head,
         )
         assert result.returncode == 0, result.stderr
         records = _read_records(call_log)
@@ -1238,6 +1244,12 @@ class TestAllowEntryMatcher:
     )
     def test_does_not_match_an_unrelated_or_exact_zero_argument_entry(self, allow_entry):
         assert not _allow_entry_matches_script_invocation(allow_entry, "review-pr-post.sh")
+
+
+class TestSkillMdKeysOnTheRefusalPhrase:
+    def test_skill_md_names_the_phrase_both_request_changes_refusals_carry(self):
+        # SKILL.md Step 8 tells a session to recognise either refusal by this phrase, so the two must not drift apart.
+        assert _NOT_CONSUMED_PHRASE in SKILL_MD_PATH.read_text()
 
 
 class TestSettingsAllowlistKeepsReviewPrFetchAndPostBehindThePrompt:

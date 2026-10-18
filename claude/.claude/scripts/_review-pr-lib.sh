@@ -33,6 +33,7 @@
 #   review_pr_gh_status_description — "timed out" for a gh exit status of 124, else "failed (exit N)"
 #   review_pr_git_status_description — "exited N", plus a cap note when N is a status a cap kill produces
 #   review_pr_checks_token_source   — whether the check-status fetch uses the CI_CHECKS_GH_TOKEN override (PR url on github.com), withholds it, or runs on the ambient token
+#   review_pr_author_login          — a `gh pr view --json author` response's `.author.login`, printed only when the response is exactly one object whose `.author` is an object with a string `.login`
 #   review_pr_authorship            — whether a PR author's login equals the login `gh api user` returns: self, other or unknown
 #   review_pr_resolve_session_and_pid — sets SESSION_ID and CLAUDE_PID for the scripts that record provenance
 #
@@ -149,15 +150,28 @@ _REVIEW_PR_LOGIN_CHAR_REGEX='[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 # shellcheck disable=SC2016 # the text is jq source holding `$login_pattern`, and double quotes would expand it as a shell variable.
 _REVIEW_PR_OPERATOR_LOGIN_JQ_FILTER='if length == 1 and (.[0] | type) == "object" and (.[0].login | type) == "string" and (.[0].login | test($login_pattern)) then .[0].login else empty end'
 
+# The jq program that prints a `gh pr view --json author` response's `.author.login` only when the body is exactly one object whose `.author` is an object with a string `.login`.
+# Any other shape raises an error, so an empty-string login stays distinguishable from an unreadable one.
+_REVIEW_PR_AUTHOR_LOGIN_JQ_FILTER='if length == 1 and (.[0] | type) == "object" and (.[0].author | type) == "object" and (.[0].author.login | type) == "string" then .[0].author.login else error("unreadable author") end'
+
+# review_pr_author_login PR_VIEW_JSON
+# Prints the response's `.author.login` and returns 0 only when PR_VIEW_JSON is exactly one JSON object whose `.author` is an object with a string `.login`.
+# Returns 1, printing nothing, for anything else, including empty input, so a failed `gh pr view` is an unreadable author.
+# An empty-string login is readable: review_pr_authorship reads it as other.
+review_pr_author_login() {
+  printf '%s' "$1" | _lib_jq -s -j "$_REVIEW_PR_AUTHOR_LOGIN_JQ_FILTER" 2>/dev/null || return 1
+}
+
 # review_pr_authorship AUTHOR_LOGIN USER_JSON
 # Prints self when AUTHOR_LOGIN equals USER_JSON's .login (gh api user's response) ignoring case, else other.
 # Prints unknown when USER_JSON is not exactly one JSON object or its .login is not login-shaped; an empty or non-login-shaped AUTHOR_LOGIN is other.
 # Login-shaped means entirely letters, digits, `_` and `-`, so a bot login carrying `/` is other.
-# A login with an embedded or trailing newline, or an embedded NUL, is not login-shaped.
 # Always returns 0, so a caller under `set -e` reads the printed word.
 review_pr_authorship() {
   local author_login="$1" user_json="$2" operator_login
-  # The shape check runs inside jq so a login carrying the \u0000 escape is rejected rather than truncated. A raw NUL byte never reaches here, because the callers' command substitution drops it. \z, unlike $, does not tolerate a trailing newline.
+  # The shape check runs inside jq so a login carrying the \u0000 escape is rejected rather than truncated.
+  # A raw NUL byte never reaches here, because the callers' command substitution drops it.
+  # \z, unlike $, does not tolerate a trailing newline.
   if ! operator_login=$(printf '%s' "$user_json" | _lib_jq -s -j --arg login_pattern "\\A${_REVIEW_PR_LOGIN_CHAR_REGEX}+\\z" "$_REVIEW_PR_OPERATOR_LOGIN_JQ_FILTER" 2>/dev/null) \
     || [[ -z "$operator_login" ]]; then
     printf 'unknown'

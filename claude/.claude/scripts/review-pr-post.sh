@@ -172,13 +172,10 @@ if [[ "$1" == "request-changes" ]] && ! OPERATOR_USER_JSON=$(_lib_gh "$GH_PR_VIE
 fi
 PR_VIEW_JSON=$(_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" pr view "$PR_NUMBER" -R "$OWNER_REPO" --json headRefOid,author 2>/dev/null) || PR_VIEW_JSON=""
 CURRENT_PR_HEAD=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r '.headRefOid // empty' 2>/dev/null) || CURRENT_PR_HEAD=""
-# An `.author` object whose `.login` is an empty string reads as another account. A missing or non-object `.author`, an absent, null or non-string `.login`, or a failed
-# extraction, would also yield an empty string that review_pr_authorship reads as other, which fails open.
-# The failure is therefore kept in PR_AUTHOR_READ_FAILED and refuses after the head check.
+# An unreadable author would read as other, so the failure is kept in PR_AUTHOR_READ_FAILED and refuses after the head check.
 PR_AUTHOR_LOGIN=""
 PR_AUTHOR_READ_FAILED=false
-if [[ "$1" == "request-changes" ]] && ! PR_AUTHOR_LOGIN=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -r \
-  'if (.author | type) == "object" and (.author.login | type) == "string" then .author.login else error("author login is not a string") end' 2>/dev/null); then
+if [[ "$1" == "request-changes" ]] && ! PR_AUTHOR_LOGIN=$(review_pr_author_login "$PR_VIEW_JSON"); then
   PR_AUTHOR_READ_FAILED=true
 fi
 if [[ -z "$CURRENT_PR_HEAD" || "$CURRENT_PR_HEAD" != "$MARKER_HEAD_REF_OID" ]]; then
