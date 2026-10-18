@@ -112,7 +112,7 @@ For tests that guard against a specific past bug, include a comment or docstring
 
 - Use **factory/builder helpers** that supply sensible defaults; tests override only the fields relevant to the scenario
 - **Avoid magic values** — if a test uses `status: 3`, name the constant or comment why 3 matters
-- **Prefer inline construction** over shared fixtures when the data is central to the test's assertion. Repeating such data inline is fine; copying a named helper into a second test file is a defect. Define the helper once, in a plain module the consuming tests import from their nearest common ancestor directory
+- **Prefer inline construction** over shared fixtures when the data is central to the test's assertion. Repeating such data inline is fine. Copying a named helper into a second test file is a defect. Define the helper once, in a plain module the consuming tests import from their nearest common ancestor directory.
 - **Shared fixtures** are appropriate for expensive setup (DB schemas, server instances), not for simple data objects
 - For tests against shared databases, use unique prefixes/suffixes (run ID, timestamp) so parallel runs and stale data don't collide
 
