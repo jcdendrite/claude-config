@@ -161,7 +161,8 @@ def _assert_wrapper_failure(
     for fragment in fragments:
         assert fragment in result.stderr
     assert _ARGUMENT_WITH_SPACE not in result.stderr
-    # A pasteable deletion in a failure message is a hazard; `\b` keeps words like "form" passing.
+    # A pasteable deletion in a failure message is a hazard.
+    # The `\b` boundaries keep words like "form" passing.
     assert re.search(r"\brm\b", result.stderr) is None, result.stderr
 
 
