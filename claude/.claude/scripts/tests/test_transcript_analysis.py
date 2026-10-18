@@ -5624,6 +5624,44 @@ class TestBuildParser:
         with pytest.raises(SystemExit):
             parser.parse_args(["skill-invocation", "--this-repo", "--projects", "x"])
 
+    def test_bare_skill_invocation_leaves_projects_unset(self):
+        """None, not "*", is what makes skill-invocation default to this repo's worktrees."""
+        parsed = _mod.build_parser().parse_args(["skill-invocation"])
+        assert parsed.projects is None
+
+    @staticmethod
+    def _subcommand_flags(parser):
+        """Subcommand name -> its registered option strings, from the real registrar."""
+        subparsers = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        return {name: set(sub._option_string_actions) for name, sub in subparsers.choices.items()}
+
+    def test_subcommands_with_projects_but_no_this_repo_are_the_known_exemptions(self):
+        """A subcommand silently losing --this-repo would drop out of the exclusivity walk
+        below, so the set that has --projects without it is pinned explicitly."""
+        flags = self._subcommand_flags(_mod.build_parser())
+        assert {name for name, opts in flags.items() if "--projects" in opts and "--this-repo" not in opts} == {"user-input"}
+
+    def test_every_subcommand_with_both_scope_flags_refuses_them_together(self, capsys):
+        """Walks the real registrar, so a subcommand registered later is covered automatically.
+        Asserts argparse's own refusal text: a SystemExit from a missing required flag would
+        otherwise pass for the wrong reason. Collects every offender rather than stopping at the first."""
+        parser = _mod.build_parser()
+        both_flags = [name for name, opts in self._subcommand_flags(parser).items() if {"--projects", "--this-repo"} <= opts]
+        # One subcommand per registration path: the shim's helper call, the hand-rolled group
+        # in skill_invocation.py, and a module-registered subparser.
+        assert {"buckets", "skill-invocation", "skill-pair"} <= set(both_flags)
+        not_refused = []
+        for name in both_flags:
+            try:
+                parser.parse_args([name, "--this-repo", "--projects", "x"])
+            except SystemExit:
+                refused = "not allowed with argument" in capsys.readouterr().err
+            else:
+                refused = False
+            if not refused:
+                not_refused.append(name)
+        assert not not_refused, f"accepted both flags or exited for another reason: {not_refused}"
+
     def test_this_repo_alone_parses_without_error(self):
         parser = _mod.build_parser()
         parsed = parser.parse_args(["buckets", "--this-repo"])
