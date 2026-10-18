@@ -528,6 +528,21 @@ class TestAgentFrontmatter:
         """
         assert "isolation" not in parse_frontmatter(agent_path)
 
+    @pytest.mark.parametrize(
+        "agent_path", _AGENT_AND_PLUGIN_FILES, ids=lambda p: p.name
+    )
+    def test_no_agent_omits_the_global_claude_md(self, agent_path):
+        """No agent file may set `omitClaudeMd` true, which would drop every Agent Core rule for that agent.
+
+        Agent Core reaches an agent only through the global CLAUDE.md, since no skill preloads it.
+        Guards only this repo's agent frontmatter, not settings-level opt-outs, the built-in Plan agent,
+        or `context: fork` skills that name an `agent:`.
+        """
+        assert not parse_frontmatter(agent_path).get("omitClaudeMd"), (
+            f"{agent_path.name}: sets `omitClaudeMd`, so it would load no Agent Core rule; "
+            "preload Agent Core into the agent before relaxing this test."
+        )
+
     @pytest.mark.parametrize("agent_path", _AGENT_FILES, ids=lambda p: p.name)
     def test_description_length(self, agent_path):
         """Description must not exceed AGENT_DESCRIPTION_MAX_CHARS characters."""

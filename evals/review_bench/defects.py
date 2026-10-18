@@ -61,11 +61,21 @@ def _validate_source(source: str) -> None:
         raise ValueError(f"source {source!r} must be one of {sorted(KNOWN_SOURCES)}")
 
 
-def _validate_fix_date(fix_date: str) -> None:
+def _parse_fix_date(fix_date: str) -> datetime:
     try:
-        datetime.fromisoformat(fix_date)
+        return datetime.fromisoformat(fix_date)
     except ValueError as exc:
         raise ValueError(f"fix_date {fix_date!r} is not a valid ISO 8601 date/datetime") from exc
+
+
+def _validate_fix_date(fix_date: str) -> None:
+    _parse_fix_date(fix_date)
+
+
+def canonical_fix_date(git_iso: str) -> str:
+    """Returns git's strict-ISO date in one spelling, whichever form of zero UTC
+    offset (`Z` or `+00:00`) git printed. The author's offset is kept."""
+    return _parse_fix_date(git_iso).isoformat()
 
 
 def _validate_common(

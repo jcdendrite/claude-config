@@ -30,7 +30,7 @@ CLAUDE_MD_PATH = "claude/.claude/CLAUDE.md"
 # Mirrors GLOBAL_CLAUDE_MD_BYTE_LIMIT in check-claude-md-length.sh.
 # test_byte_limit_constant_matches_hook_source below cross-checks the two
 # stay in sync.
-BYTE_LIMIT = 25600
+BYTE_LIMIT = 30720
 
 _GLOBAL_CLAUDE_MD_BYTE_LIMIT_RE = re.compile(r"^GLOBAL_CLAUDE_MD_BYTE_LIMIT=(\d+)", re.MULTILINE)
 

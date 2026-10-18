@@ -14,6 +14,7 @@ import ast
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -21,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 from .conftest import _commit, _init_repo, _make_repo_with_remote
 
@@ -974,31 +976,24 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is True
         assert result.reason == "global-trigger"
 
-    def test_global_trigger_keeps_domain_targets_outside_the_full_suite_roots(self):
-        """FULL_SUITE_TARGETS never collects evals/, so a review-bench path
-        beside a global-trigger path must still contribute its own tests."""
-        result = _mod.select_pytest_targets(["pyproject.toml", "evals/review_bench/runner.py"])
+    @pytest.mark.parametrize(
+        ("fail_open_trigger", "expected_reason"),
+        [("pyproject.toml", "global-trigger"), (".gitignore", "unmatched-path")],
+    )
+    @pytest.mark.parametrize(
+        "domain_matched_path",
+        ["evals/review_bench/runner.py", "claude/.claude/scripts/mark-terminal.py"],
+    )
+    def test_fail_open_selects_exactly_the_full_suite_roots_beside_a_domain_matched_path(
+        self, fail_open_trigger, expected_reason, domain_matched_path,
+    ):
+        """Each root already collects its own domain's tests, so a fail-open
+        selection adds no domain target to FULL_SUITE_TARGETS. Both
+        fail-open return sites (global trigger, unmatched path) are covered."""
+        result = _mod.select_pytest_targets([fail_open_trigger, domain_matched_path])
         assert result.is_full_suite is True
-        assert result.reason == "global-trigger"
-        assert result.triggering_paths == ("pyproject.toml",)
-        assert result.target_paths == (
-            *_mod.FULL_SUITE_TARGETS,
-            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.REVIEW_BENCH_TEST_GLOB,
-        )
-
-    def test_unmatched_path_keeps_domain_targets_outside_the_full_suite_roots(self):
-        result = _mod.select_pytest_targets([".gitignore", "evals/review_bench/runner.py"])
-        assert result.is_full_suite is True
-        assert result.reason == "unmatched-path"
-        assert result.triggering_paths == (".gitignore",)
-        assert result.target_paths == (
-            *_mod.FULL_SUITE_TARGETS,
-            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.REVIEW_BENCH_TEST_GLOB,
-        )
-
-    def test_fail_open_does_not_duplicate_a_domain_target_a_full_suite_root_already_covers(self):
-        result = _mod.select_pytest_targets([".gitignore", "claude/.claude/scripts/mark-terminal.py"])
-        assert result.is_full_suite is True
+        assert result.reason == expected_reason
+        assert result.triggering_paths == (fail_open_trigger,)
         assert result.target_paths == _mod.FULL_SUITE_TARGETS
 
     def test_unmatched_path_falls_open_to_full_suite(self):
@@ -1271,7 +1266,7 @@ class TestSelectPytestTargets:
         """A path that matches a domain rule alongside a path that matches
         none still falls open to the full suite. The matched domain's targets
         add nothing to FULL_SUITE_TARGETS here because they sit inside its
-        roots; only a matched target outside them (e.g. evals/) is kept."""
+        roots."""
         result = _mod.select_pytest_targets(
             ["claude/.claude/scripts/mark-terminal.py", ".gitignore"],
         )
@@ -1580,16 +1575,14 @@ class TestResolveTargetPaths:
         )
         assert resolved == [_mod.SCRIPTS_TESTS_DIR]
 
-    def test_full_suite_roots_keep_the_evals_targets_beside_them(self):
-        """A fail-open selection's evals/ targets sit outside every
-        FULL_SUITE_TARGETS root, so none absorbs them."""
+    def test_evals_root_absorbs_the_evals_test_targets(self):
+        """The evals/ FULL_SUITE_TARGETS root's own pytest walk already
+        collects the review-bench glob's files and the model-resolution test."""
         resolved = _mod.resolve_target_paths(
             [*_mod.FULL_SUITE_TARGETS, _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST],
             repo_root=_REPO_ROOT,
         )
-        assert set(_mod.FULL_SUITE_TARGETS) <= set(resolved)
-        assert _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST in resolved
-        assert any(path.startswith("evals/test_review_bench_") for path in resolved)
+        assert resolved == sorted(_mod.FULL_SUITE_TARGETS)
 
     def test_three_level_containment_chain_collapses_to_the_outermost_container(self):
         """Structural, synthetic -- not an observed collision. The real
@@ -1641,13 +1634,12 @@ class TestResolveTargetPaths:
         DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS target, resolved, must leave no
         pair where one covers the other, so this self-updates when a row
         gains a target. Excludes FULL_SUITE_TARGETS (ledger rows 13/14).
-        Including it collapses the check to disjoint survivors
-        (claude/.claude/, claude-skills/, plugins/, and the evals/ test
-        files), making the assertion pass regardless of whether _covers
+        Including it collapses the check to the disjoint FULL_SUITE_TARGETS
+        roots, making the assertion pass regardless of whether _covers
         works -- and that combined universe (FULL_SUITE_TARGETS plus every
         inside-root domain target) isn't a selection select_pytest_targets
-        ever actually returns: its fail-open result adds only targets
-        outside those roots."""
+        ever actually returns: its fail-open result is FULL_SUITE_TARGETS
+        alone."""
         universe: set[str] = set()
         for _predicate, targets in (*_mod.DOMAIN_RULES, *_mod.CROSS_DOMAIN_EXCEPTIONS):
             universe.update(targets)
@@ -2045,6 +2037,67 @@ class TestKnownCrossDomainReadsAudit:
         assert expected == _mod.SKILL_FILES_READ_BY_HOOK_TESTS
 
 
+_TESTS_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "tests.yml"
+_CI_PYTEST_COMMAND = ("pytest",)
+_CI_LINT_COMMAND = ("ruff", "check")
+_CI_PYTEST_STEP_COUNT = 2
+
+
+def _leading_positional_roots(run_command: str, command_words: tuple[str, ...]) -> frozenset[str]:
+    """The `rstrip("/")` roots between `command_words` and the first
+    option-looking token of a shell command line."""
+    tokens = shlex.split(run_command)
+    assert tuple(tokens[:len(command_words)]) == command_words, run_command
+    roots: list[str] = []
+    for token in tokens[len(command_words):]:
+        if token.startswith("-"):
+            break
+        roots.append(token.rstrip("/"))
+    return frozenset(roots)
+
+
+def _steps_running(steps: list[dict], command_words: tuple[str, ...]) -> list[dict]:
+    return [step for step in steps if tuple(step.get("run", "").split()[:len(command_words)]) == command_words]
+
+
+def _ci_step_roots(steps: list[dict]) -> list[tuple[str, frozenset[str]]]:
+    """A (step name, positional roots) pair for every pytest step plus the
+    lint step. Each is found by its command (`pytest`, `ruff check`), not by
+    its step name, so a rename cannot hide a step from the parity check."""
+    pytest_steps = _steps_running(steps, _CI_PYTEST_COMMAND)
+    assert len(pytest_steps) == _CI_PYTEST_STEP_COUNT, (
+        f"expected {_CI_PYTEST_STEP_COUNT} pytest steps in tests.yml's tests job, "
+        f"found {[step.get('name') for step in pytest_steps]}"
+    )
+    lint_steps = _steps_running(steps, _CI_LINT_COMMAND)
+    assert len(lint_steps) == 1, (
+        f"expected exactly one `{' '.join(_CI_LINT_COMMAND)}` step in tests.yml's tests job, "
+        f"found {[step.get('name') for step in lint_steps]}"
+    )
+    (lint_step,) = lint_steps
+    return [
+        (
+            step.get("name", step["run"]),
+            _leading_positional_roots(step["run"], _CI_LINT_COMMAND if step is lint_step else _CI_PYTEST_COMMAND),
+        )
+        for step in [*pytest_steps, lint_step]
+    ]
+
+
+def _steps_whose_roots_differ_from(
+    steps: list[dict], expected_roots: frozenset[str],
+) -> list[tuple[str, frozenset[str]]]:
+    return [(name, roots) for name, roots in _ci_step_roots(steps) if roots != expected_roots]
+
+
+def _targets_outside_roots(targets: set[str], roots: tuple[str, ...]) -> list[str]:
+    stripped_roots = [root.rstrip("/") for root in roots]
+    return sorted(
+        target for target in targets
+        if not any(_mod._is_under(target, root) for root in stripped_roots)
+    )
+
+
 class TestRuleTablePathFidelity:
     """Catches silent drift if a rule-table target directory is later
     renamed or a glob pattern stops matching anything."""
@@ -2068,6 +2121,76 @@ class TestRuleTablePathFidelity:
             config = tomllib.load(f)
         norecursedirs = config["tool"]["pytest"]["ini_options"]["norecursedirs"]
         assert _mod.WORKTREES_DIR_NAME in norecursedirs
+
+    def test_every_domain_target_sits_under_a_full_suite_root(self):
+        """A fail-open selection is exactly FULL_SUITE_TARGETS, so a domain
+        target outside every root would be selected by a diff yet never run
+        by a fail-open fallback."""
+        # Checks root membership only, not norecursedirs pruning: no domain target sits under a pruned directory.
+        domain_targets: set[str] = set()
+        for _, targets in (*_mod.DOMAIN_RULES, *_mod.CROSS_DOMAIN_EXCEPTIONS):
+            domain_targets.update(targets)
+        assert _targets_outside_roots(domain_targets, _mod.FULL_SUITE_TARGETS) == []
+
+    def test_a_domain_target_outside_every_full_suite_root_is_reported(self):
+        outside_targets = _targets_outside_roots(
+            {"claude/.claude/hooks/tests", "docs/other"}, _mod.FULL_SUITE_TARGETS,
+        )
+        assert outside_targets == ["docs/other"]
+
+    def test_full_suite_targets_equal_the_roots_of_every_ci_pytest_and_lint_step(self):
+        steps = yaml.safe_load(_TESTS_WORKFLOW_PATH.read_text())["jobs"]["tests"]["steps"]
+        expected_roots = frozenset(root.rstrip("/") for root in _mod.FULL_SUITE_TARGETS)
+        assert _steps_whose_roots_differ_from(steps, expected_roots) == []
+
+    def test_a_ci_step_missing_a_root_is_reported_by_name(self):
+        steps = [
+            {"name": "Run tests (parallel)", "run": 'pytest a/ b/ -v -m "not timing"'},
+            {"name": "Run tests (timing, serial)", "run": "pytest a/ -v -m timing -n0"},
+            {"name": "Lint", "run": "ruff check a/ b/"},
+        ]
+        differing = _steps_whose_roots_differ_from(steps, frozenset({"a", "b"}))
+        assert differing == [("Run tests (timing, serial)", frozenset({"a"}))]
+
+    def test_a_renamed_lint_step_is_still_found_by_its_command(self):
+        steps = [
+            {"name": "Run tests (parallel)", "run": "pytest a/ -v"},
+            {"name": "Run tests (timing, serial)", "run": "pytest a/ -v -n0"},
+            {"name": "Static analysis", "run": "ruff check a/ b/"},
+        ]
+        differing = _steps_whose_roots_differ_from(steps, frozenset({"a"}))
+        assert differing == [("Static analysis", frozenset({"a", "b"}))]
+
+    def test_ci_roots_extraction_rejects_a_workflow_without_the_expected_pytest_steps(self):
+        steps = [
+            {"name": "Run tests (parallel)", "run": "pytest a/ -v"},
+            {"name": "Lint", "run": "ruff check a/"},
+        ]
+        with pytest.raises(AssertionError):
+            _ci_step_roots(steps)
+
+    def test_ci_roots_extraction_rejects_a_workflow_without_a_lint_step(self):
+        steps = [
+            {"name": "Run tests (parallel)", "run": "pytest a/ -v"},
+            {"name": "Run tests (timing, serial)", "run": "pytest a/ -v -n0"},
+            {"name": "Format", "run": "ruff format a/"},
+        ]
+        with pytest.raises(AssertionError):
+            _ci_step_roots(steps)
+
+    def test_ci_roots_extraction_rejects_a_workflow_with_two_lint_steps(self):
+        steps = [
+            {"name": "Run tests (parallel)", "run": "pytest a/ -v"},
+            {"name": "Run tests (timing, serial)", "run": "pytest a/ -v -n0"},
+            {"name": "Lint", "run": "ruff check a/"},
+            {"name": "Lint again", "run": "ruff check b/"},
+        ]
+        with pytest.raises(AssertionError):
+            _ci_step_roots(steps)
+
+    def test_leading_positional_roots_rejects_a_command_with_a_different_prefix(self):
+        with pytest.raises(AssertionError):
+            _leading_positional_roots("ruff format a/", _CI_LINT_COMMAND)
 
     def test_every_directory_target_exists_on_disk(self):
         directory_targets = [

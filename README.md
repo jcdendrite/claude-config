@@ -98,7 +98,7 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 - **`jq` version:** `review-pr-checkout.sh`'s stacked-base audit needs a `jq` whose `jq -R -s` keeps NUL bytes in raw input. That behavior was verified on jq 1.8.2 only. A `jq` that truncates raw input at NUL makes every stacked PR with a non-empty delta exit 2 there.
 - **`timeout` version:** `timeout` (or `gtimeout`) must accept `-k` (GNU coreutils, or BusyBox 1.35.0 or newer; other implementations are unverified), because a `timeout` that rejects `-k` makes every gate hook deny its tool calls, as `docs/hooks.md` § "Gate deadlock recovery" describes.
 - **Python:** `python3` >= 3.11. Stock macOS `/usr/bin/python3` is 3.9.6, Ubuntu 22.04 LTS ships 3.10, and Debian 11 ships 3.9 — all below this floor. Install a newer interpreter (e.g. via Homebrew or pyenv on macOS; your distro's `python3.11+` package or pyenv on Linux) so it resolves first on PATH. `install.sh` checks this and exits early if it isn't met.
-- **Optional:** `pytest` for running the test suite (`pytest claude/.claude/`; add `-n0` to run serially for `-s` / `--pdb` / `-x` debugging).
+- **Optional:** `pytest` for running the test suite (see the Tests section below for the command; add `-n0` to run serially for `-s` / `--pdb` / `-x` debugging).
 - **Claude Code CLI:** 2.1.295 or newer, because every gate registration sets `onFailure: "block"`, which older versions may ignore or reject (unverified). `install.sh` warns when the `claude` on its PATH reports an older version, or when it cannot read a version from `claude --version`. It does not run on `git pull`, so update Claude Code before pulling. If you pulled first, update Claude Code, restart it, and confirm `/hooks` lists the gates and `/permissions` shows the deny rules.
 
 **macOS:** `bash` 5.2 or newer and `sha256sum` come from Homebrew. `sha256sum` ships in GNU `coreutils`. Install with `brew install bash coreutils`, put Homebrew's bin directory before `/bin` on PATH (`export PATH="$(brew --prefix)/bin:$PATH"`), then add the gnubin directory to PATH so the unprefixed `sha256sum` resolves: `export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"`.
@@ -516,9 +516,9 @@ Pytest suite covering hooks (allow, deny, and ask paths) and skill description c
 
 ```bash
 ./install-dev.sh   # creates .venv, installs requirements-dev.txt, offers the pyright-lsp plugin (contributor only)
-.venv/bin/pytest claude/.claude/ claude-skills/
-.venv/bin/ruff check claude/.claude/ claude-skills/          # Python
-scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck  # shell
+.venv/bin/pytest claude/.claude/ claude-skills/ plugins/ evals/
+.venv/bin/ruff check claude/.claude/ claude-skills/ plugins/ evals/  # Python
+scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck         # shell
 ```
 
 ShellCheck takes no flags on the command line — they live in the repo-root
@@ -537,7 +537,7 @@ The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run se
 
 Test trees under `claude/.claude/` that carry their own `conftest.py` are Python packages, so each tree's conftest resolves to a distinct module name. [`.claude/rules/test-tree-packaging.md`](./.claude/rules/test-tree-packaging.md) states what a new tree must add; [`claude/.claude/tests/test_pytest_collection_config.py`](./claude/.claude/tests/test_pytest_collection_config.py) enforces it.
 
-`-n auto` resolves to the machine's logical CPU count. `select-tests.py` sizes `PYTEST_XDIST_AUTO_NUM_WORKERS` itself from the current 1-minute load average, never exceeding what `-n auto` would have picked. A run starting on an already-busy machine takes only the idle headroom instead of a full machine's worth. Check its stderr line for the count it picked. The bare `.venv/bin/pytest claude/.claude/ claude-skills/` command has no such sizing; cap it manually:
+`-n auto` resolves to the machine's logical CPU count. `select-tests.py` sizes `PYTEST_XDIST_AUTO_NUM_WORKERS` itself from the current 1-minute load average, never exceeding what `-n auto` would have picked. A run starting on an already-busy machine takes only the idle headroom instead of a full machine's worth. Check its stderr line for the count it picked. The bare `.venv/bin/pytest` command above has no such sizing; cap it manually:
 
 - Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment.
   - Checks ahead of xdist's own core-count detection.
@@ -547,9 +547,9 @@ Test trees under `claude/.claude/` that carry their own `conftest.py` are Python
 - When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value.
 - Agents' Bash-tool subprocesses inherit the environment `claude` had at launch rather than reading the shell live, so export it before starting that session — setting it afterward in a running session's terminal won't reach that session's test runs.
 
-CI runs the same pin set on every PR and main push via `.github/workflows/tests.yml`.
+CI runs the same pin set on every PR and main push via `.github/workflows/tests.yml`. It runs pytest in two passes: a parallel pass for everything not marked `timing`, then a serial pass for the `timing` tests, which flake under sibling-worker load. To reproduce the serial pass locally, add `-m timing -n0` to the pytest command above.
 
-For a faster local dev loop, `select-tests.py` runs pytest against just the test domains implicated by what you changed, instead of the whole suite. It computes the changed-file set as the merge-base diff against `origin/main` unioned with your dirty working tree. It then maps each changed path to its test domain. Any change it can't map with confidence fails open to running the full suite plus any domain-selected targets outside its roots (`evals/`):
+For a faster local dev loop, `select-tests.py` runs pytest against just the test domains implicated by what you changed, instead of the whole suite. It computes the changed-file set as the merge-base diff against `origin/main` unioned with your dirty working tree. It then maps each changed path to its test domain. Any change it can't map with confidence fails open to running the full suite:
 
 ```bash
 .venv/bin/python3 claude/.claude/scripts/select-tests.py

@@ -767,25 +767,30 @@ class TestSessionFlushWaitThroughExecuteRun:
         _patch_inner_prompt_to_match_build_review_prompt(scenario)
         monkeypatch.setattr(runner, "SESSION_FLUSH_TIMEOUT_S", 10.0)
         session_dir = config_root / "projects" / "some-hash"
-        late_sidecar = threading.Timer(
-            0.3, shutil.copytree, args=(scenario / "session-1" / "subagents", session_dir / "session-a" / "subagents"),
-        )
+        sidecar_arrives_after_sleep_count = 2
+        sleep_count = 0
+
+        def sleep_then_land_sidecar(seconds: float) -> None:
+            nonlocal sleep_count
+            sleep_count += 1
+            if sleep_count == sidecar_arrives_after_sleep_count:
+                shutil.copytree(scenario / "session-1" / "subagents", session_dir / "session-a" / "subagents")
+
+        monkeypatch.setattr(runner.time, "sleep", sleep_then_land_sidecar)
 
         def launch(cmd, cwd, timeout_s):
             shutil.copyfile(scenario / "session-1.jsonl", session_dir / "session-a.jsonl")
-            late_sidecar.start()
             return SUCCESS_STREAM_LINES, False
 
-        try:
-            record = runner.execute_run(
-                _flush_run_context(scenario), arm="current-rule", run_index=0, session_id="session-a", launch=launch,
-            )
-        finally:
-            late_sidecar.join()
+        record = runner.execute_run(
+            _flush_run_context(scenario), arm="current-rule", run_index=0, session_id="session-a", launch=launch,
+        )
 
+        assert sleep_count > sidecar_arrives_after_sleep_count
         assert record.status == runner.STATUS_OK
         assert record.findings_text == "Finding: file:1 looks fine."
 
+    @pytest.mark.timing
     def test_a_session_that_never_appears_is_waited_for_then_recorded_not_found(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_root: Path,
     ) -> None:
@@ -802,6 +807,7 @@ class TestSessionFlushWaitThroughExecuteRun:
         assert record.missing_reason == runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND
         assert wait_s <= elapsed < 5
 
+    @pytest.mark.timing
     def test_a_timed_out_run_is_not_waited_on(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_root: Path,
     ) -> None:
