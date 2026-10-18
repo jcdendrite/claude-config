@@ -56,7 +56,6 @@ assert _OUTPUT_TOKENS_PER_DOLLAR * _dollars_per_output_token(_MODEL) == pytest.a
 _DEFAULT_CWD = "/srv/work/checkout"
 _DEFAULT_BRANCH = "main"
 _FEATURE_BRANCH = "feature-x"
-_PERIOD_ARGS = Namespace(since="2026-09-01", until="2026-09-30", sample=False)
 _GH_TOKEN_NAMES = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
 
 
@@ -300,6 +299,22 @@ def _totals(*sessions: list[dict], since: str = "2026-09-01", until: str = "2026
 
 def _context(records: list[dict]):
     return scope._session_branch_context(records)
+
+
+def _fractional_cent_turn(turn_index: int) -> dict:
+    """A priced turn whose dollars are not a whole number of cents. Consecutive runs of 100 turn indexes share one session
+    (each stamp is the index within its session); the branch (40 values) and directory (25 values) pair gives 1,000 keys."""
+    rec = _priced(
+        _MODEL,
+        input=137 + turn_index % 211,
+        cache_read=4099 + turn_index % 997,
+        output=29 + turn_index % 101,
+        ts=_stamp(turn_index % 100),
+        branch=f"feature-{turn_index % 40}",
+        request_id=f"req-{turn_index}",
+    )
+    rec["cwd"] = f"/srv/work/checkout-{turn_index // 40 % 25}"
+    return rec
 
 
 # ---------------------------------------------------------------------------
@@ -636,8 +651,9 @@ _PARITY_IDENTITIES = [
 
 
 class TestAcquireIdentityParityWithLibParsePrIdentity:
-    """_acquire_identity reuses gh_cli._is_plain_owner_repo for the owner/repo half, whose parity Dispatch 1's tests hold;
-    these rows cover what _acquire_identity adds: the split at the last separator and the digits-only number."""
+    """_acquire_identity reuses gh_cli._is_plain_owner_repo for the owner/repo half, whose parity tests live in
+    test_transcript_gh_cli.py; these rows cover what _acquire_identity adds: the split at the last separator and the
+    digits-only number."""
 
     @pytest.mark.parametrize("identity", _PARITY_IDENTITIES)
     def test_agrees_with_the_bash_parser_on_each_identity_string(self, identity):
@@ -2765,16 +2781,6 @@ class TestNoticeLines:
         assert "acme/billing-api, acme/widgets" in line
         assert "zeta/app" not in line
 
-    @pytest.mark.parametrize("from_environment,source", [(True, "CLAUDE_CONFIG_DIR"), (False, "the default config directory")])
-    def test_scope_line_one_names_the_account_source_without_a_path(self, from_environment, source):
-        facts = _facts(account_source="CLAUDE_CONFIG_DIR" if from_environment else "the default config directory")
-
-        first = _lines_for(period_cost._notice_lines(facts), period_cost._NOTICE_SCOPE)[0]
-
-        assert first == (
-            f"only the active account's projects directory is read, taken from {source}; the declared-roots file is not read"
-        )
-
     def test_scope_line_two_reports_the_counts_and_the_read_failure_floor(self):
         facts = _facts(project_directories=4, transcripts=9, read_failure_floor=2)
 
@@ -3015,8 +3021,8 @@ class TestNoticeLines:
 
         assert line == (
             "acme/widgets: unlinked branches feat-a ($1.00), feat-b ($0.20); default-branch, detached, and unbranched spend"
-            " $0.85; leading default-branch spend from sessions that moved to another repository $0.30; unidentified reviews"
-            " started 2026-09-03 ($0.40); PR-candidate branches of an unavailable repository $2.00"
+            " $0.85; leading default-branch spend from sessions whose successor directory did not resolve to this repository"
+            " $0.30; unidentified reviews started 2026-09-03 ($0.40); PR-candidate branches of an unavailable repository $2.00"
         )
 
     def test_other_breakdown_prints_the_undetermined_parts_as_a_count_and_dollars_each(self):
@@ -3347,6 +3353,27 @@ class TestPeriodStreamTotals:
 
         assert pricing._format_drift_detected() is True
         assert "subagent spawns detected" in capsys.readouterr().err
+
+    def test_a_credit_that_drops_a_priced_turn_trips_the_conservation_guard(self, monkeypatch):
+        monkeypatch.setattr(period_cost, "_credit_target", lambda totals, target, dollars, *, in_period: None)
+
+        # Costs under 1e-3 dollars, so a tolerance loosened to 1e-3 would let its drop through.
+        sub_tenth_of_a_cent_turn = _priced(_MODEL, input=137, output=29, ts=_stamp(0), branch="feature-x", request_id="req-0")
+
+        with pytest.raises(AssertionError, match=r"keyed spend \(.*\) does not equal the in-period priced total"):
+            _totals([sub_tenth_of_a_cent_turn])
+
+    def test_fractional_cent_dollars_across_a_thousand_keys_stay_within_the_conservation_tolerance(self):
+        turns_per_session = 100
+        sessions = [
+            [_fractional_cent_turn(session * turns_per_session + position) for position in range(turns_per_session)]
+            for session in range(100)
+        ]
+
+        totals = _totals(*sessions)
+
+        assert len(totals.branch_dollars) == 1000
+        assert any(abs(dollars * 100 - round(dollars * 100)) > 1e-9 for dollars in totals.branch_dollars.values())
 
 
 class TestAnchorOracle:
@@ -3903,6 +3930,51 @@ class TestSubagentFiles:
         assert _lines_for(notices, "SCOPE")[1].startswith("project directories: 1; transcripts: 1; read failures: at least 0")
 
 
+_RESOLVE_ERRORS = [
+    pytest.param(OSError(errno.ELOOP, "too many levels of symbolic links"), id="os_error"),
+    pytest.param(RuntimeError("loop"), id="runtime_error"),
+]
+
+
+class TestContainedSessionsResolveFailures:
+    """A transcript or root whose `Path.resolve` raises is handled without aborting the scan. On some interpreter versions
+    non-strict `Path.resolve` does not raise on a symlink loop, so the injection stands in for the `RuntimeError` and
+    `OSError` cases of older interpreters."""
+
+    _ROOT = Path("/srv/account/projects")
+    _TRANSCRIPT = _ROOT / "project-a" / "session-1.jsonl"
+
+    @staticmethod
+    def _resolve_raises_for(monkeypatch, failing_path: Path, error: Exception) -> None:
+        def resolve(self, strict=False):
+            if self == failing_path:
+                raise error
+            return self
+
+        monkeypatch.setattr(Path, "resolve", resolve)
+
+    @pytest.mark.parametrize("error", _RESOLVE_ERRORS)
+    def test_a_transcript_whose_path_cannot_be_resolved_is_dropped_and_counted(self, monkeypatch, error):
+        self._resolve_raises_for(monkeypatch, self._TRANSCRIPT, error)
+        tally = period_cost._ScanTally()
+
+        kept = list(period_cost._contained_sessions([(self._TRANSCRIPT, [])], self._ROOT, tally))
+
+        assert kept == []
+        assert (tally.dropped, tally.transcripts) == (1, 0)
+
+    @pytest.mark.parametrize("error", _RESOLVE_ERRORS)
+    def test_an_unresolvable_root_falls_back_to_its_given_path_for_the_containment_check(self, monkeypatch, error):
+        outside = Path("/srv/elsewhere/session-2.jsonl")
+        self._resolve_raises_for(monkeypatch, self._ROOT, error)
+        tally = period_cost._ScanTally()
+
+        kept = list(period_cost._contained_sessions([(self._TRANSCRIPT, []), (outside, [])], self._ROOT, tally))
+
+        assert kept == [(self._TRANSCRIPT, [])]
+        assert (tally.dropped, tally.transcripts) == (1, 1)
+
+
 _UNDETERMINED_OTHER_ROW = ("Other", "Work not linked to a repository", "", "$3.00", "")
 
 
@@ -4451,8 +4523,8 @@ class TestNoticesAtReportLevel:
         assert breakdowns == [
             "acme/billing-api: PR-candidate branches of an unavailable repository $5.00",
             "acme/widgets: unlinked branches no-pr-yet ($1.00); default-branch, detached, and unbranched spend $2.00;"
-            " leading default-branch spend from sessions that moved to another repository $1.00; unidentified reviews started"
-            " 2026-09-01 ($3.00)",
+            " leading default-branch spend from sessions whose successor directory did not resolve to this repository $1.00;"
+            " unidentified reviews started 2026-09-01 ($3.00)",
             "Repository not determined: unresolved directories 1 ($1.00); records with no recorded directory 2 ($3.00)",
         ]
 
@@ -4822,11 +4894,7 @@ class TestNothingIdentifyingLeaks:
         for sentinel in self._sentinels(tmp_path, account):
             assert sentinel not in captured.err
 
-    def test_the_config_dir_refusal_exits_2_with_empty_stdout_and_a_pathless_message(self, monkeypatch, capfd):
-        def refuse():
-            raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
-
-        monkeypatch.setattr(scope, "config_dir", refuse)
+    def _refuse_config_dir(self, monkeypatch, capfd):
         call_log = _install_fake(monkeypatch, origins_by_dir={}, pr_lists_by_repo={})
 
         with pytest.raises(SystemExit) as exc_info:
@@ -4835,8 +4903,30 @@ class TestNothingIdentifyingLeaks:
         captured = capfd.readouterr()
         assert exc_info.value.code == 2
         assert captured.out == ""
-        assert captured.err == "period-cost: HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set\n"
+        assert captured.err == period_cost._CONFIG_DIR_UNRESOLVABLE_MESSAGE + "\n"
+        # The message is the engineer's only guide to fixing a refused run, so its wording is pinned apart from the constant.
+        refusal_line = captured.err.rstrip("\n")
+        assert "CLAUDE_CONFIG_DIR must be an absolute path" in refusal_line
+        assert "HOME must be set" in refusal_line
+        assert refusal_line.endswith("no report written")
         assert call_log == []
+        return captured
+
+    def test_a_relative_config_dir_value_is_refused_without_printing_the_value(self, monkeypatch, capfd):
+        sentinel = "leak-sentinel-relative-config"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", f"accounts/{sentinel}")
+        with pytest.raises(ValueError, match=sentinel):
+            scope.config_dir()  # The real refusal carries the value, so its absence below is meaningful.
+
+        captured = self._refuse_config_dir(monkeypatch, capfd)
+
+        assert sentinel not in captured.out + captured.err
+
+    def test_an_unset_home_with_no_config_dir_override_is_refused_with_the_same_fixed_message(self, monkeypatch, capfd):
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+        monkeypatch.delenv("HOME")
+
+        self._refuse_config_dir(monkeypatch, capfd)
 
 
 # ---------------------------------------------------------------------------
@@ -5081,6 +5171,125 @@ class TestCommandBehavior:
         assert which.calls == []
 
 
+class TestCommandWiring:
+    """`cmd_period_cost` alone binds the account source, the run deadline, and the run date to the pipeline."""
+
+    @staticmethod
+    def _run_command(capsys, *, until: str = "2026-09-30") -> tuple[list[str], list[str]]:
+        period_cost.cmd_period_cost(Namespace(since="2026-09-01", until=until, sample=False))
+        captured = capsys.readouterr()
+        return captured.out.splitlines(), captured.err.splitlines()
+
+    def test_scope_line_one_names_claude_config_dir_when_it_is_set(self, small_account, monkeypatch, capsys):
+        small_account.install(monkeypatch)
+
+        _report, notices = self._run_command(capsys)
+
+        assert _lines_for(notices, "SCOPE")[0] == (
+            "only the active account's projects directory is read, taken from CLAUDE_CONFIG_DIR; the declared-roots file is"
+            " not read"
+        )
+
+    @pytest.mark.parametrize("config_dir_value", [None, ""], ids=["unset", "empty"])
+    def test_an_unset_or_empty_config_dir_reads_the_default_directory_and_scope_line_one_says_so(
+        self, tmp_path, monkeypatch, capsys, config_dir_value
+    ):
+        if config_dir_value is None:
+            monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+        else:
+            monkeypatch.setenv("CLAUDE_CONFIG_DIR", config_dir_value)
+        default_projects = tmp_path / "home" / ".claude" / "projects"
+        default_projects.mkdir(parents=True)
+        _SmallAccount(tmp_path, default_projects).install(monkeypatch)
+
+        report, notices = self._run_command(capsys)
+
+        scope_lines = _lines_for(notices, "SCOPE")
+        assert scope_lines[0] == (
+            "only the active account's projects directory is read, taken from the default config directory; the"
+            " declared-roots file is not read"
+        )
+        assert scope_lines[1].startswith("project directories: 3; transcripts: 3;")
+        assert "*Total: $9.00*" in report
+
+    @pytest.mark.parametrize(
+        "clock_after_first_git_call,directories_not_checked",
+        [
+            pytest.param(period_cost._RUN_DEADLINE_S - 1, 0, id="one_second_before_the_deadline"),
+            pytest.param(period_cost._RUN_DEADLINE_S + 1, 2, id="one_second_past_the_deadline"),
+        ],
+    )
+    def test_the_run_deadline_cuts_off_later_git_and_gh_calls_only_once_the_clock_passes_it(
+        self, small_account, monkeypatch, capsys, clock, clock_after_first_git_call, directories_not_checked
+    ):
+        inner = _fake_period_cost_run(origins_by_dir=small_account.origins, pr_lists_by_repo=small_account.pr_lists)
+        call_log: list = []
+
+        def advance_the_clock_after_the_first_git_call(cmd, *args, **kwargs):
+            call_log.append(list(cmd))
+            result = inner(cmd, *args, **kwargs)
+            clock.now = clock_after_first_git_call
+            return result
+
+        monkeypatch.setattr(subprocess, "run", advance_the_clock_after_the_first_git_call)
+
+        report, notices = self._run_command(capsys)
+
+        time_limit_note = (
+            "_Note: the run's time limit cut short the repository lookup, so some spend is shown under Repository not"
+            " determined._"
+        )
+        git_calls = [cmd for cmd in call_log if cmd[0] == "git"]
+        gh_calls = [cmd for cmd in call_log if cmd[0] == "gh"]
+        assert (time_limit_note in report) is bool(directories_not_checked)
+        assert _lines_for(notices, "SCOPE")[2].endswith(
+            f"directories not checked before the time limit: {directories_not_checked}; records with no recorded directory: 0"
+        )
+        assert len(git_calls) == 3 - directories_not_checked
+        assert (gh_calls == []) is bool(directories_not_checked)
+
+    def test_the_run_deadline_is_measured_from_the_start_of_the_command_so_a_slow_scan_leaves_no_git_or_gh_call(
+        self, small_account, monkeypatch, capsys, clock
+    ):
+        call_log = small_account.install(monkeypatch)
+        real_read = scope._read_session_file_partitioned
+
+        def read_session_after_the_clock_passes_the_deadline(jsonl, include_subagents):
+            clock.now = period_cost._RUN_DEADLINE_S + 1
+            return real_read(jsonl, include_subagents)
+
+        monkeypatch.setattr(scope, "_read_session_file_partitioned", read_session_after_the_clock_passes_the_deadline)
+
+        report, notices = self._run_command(capsys)
+
+        assert call_log == []
+        assert (
+            "_Note: the run's time limit cut short the repository lookup, so some spend is shown under Repository not"
+            " determined._"
+        ) in report
+        assert _lines_for(notices, "SCOPE")[2].endswith(
+            "directories not checked before the time limit: 3; records with no recorded directory: 0"
+        )
+
+    @pytest.mark.parametrize(
+        "until,partial_suffix",
+        [
+            pytest.param("2026-10-05", ", partial: through 2026-10-02", id="until_after_today"),
+            pytest.param("2026-10-02", ", partial: through 2026-10-02", id="until_today"),
+            pytest.param("2026-10-01", "", id="until_before_today"),
+        ],
+    )
+    def test_the_header_lines_carry_the_command_clocks_run_date_and_partial_suffix(
+        self, small_account, monkeypatch, capsys, until, partial_suffix
+    ):
+        small_account.install(monkeypatch)
+
+        report, _notices = self._run_command(capsys, until=until)
+
+        assert report[0] == f"*Claude Code spend, 2026-09-01 to {until} (UTC){partial_suffix}*"
+        assert report[1] == "One Claude Code account, 3 repositories, generated 2026-10-02 (UTC)"
+
+
 class TestMain:
     def _run_main(self, monkeypatch, *argv):
         monkeypatch.setattr(sys, "argv", ["transcript-analysis.py", "period-cost", *argv])
@@ -5180,12 +5389,20 @@ _PERIOD_COST_REPORT_SKILL_MD = SKILLS_DIR / "period-cost-report" / "SKILL.md"
 _PINNED_ITEM_START_LABELS = {
     "step_zero_sharing": "**One owner per account.**",
     "transcript": "**Transcript.**",
+    "retention": "**Retention.**",
+    "locate": "**Locate.**",
+    "pricing_integrity_hold": "**Hold.**",
+    "no_activity_hold": "**No activity.**",
     "gh_unavailable_kinds": "**Decide before presenting.**",
     "confirm": "**Confirm, on every run.**",
+    "present": "**Present.**",
+    "pre_send_check": "**Pre-send check, in the Slack composer.**",
     "third_party_text": "**Third-party text.**",
     "remaining_notices": "**Remaining notices.**",
+    "never_edit": "**Never edit.**",
 }
 _NEXT_ITEM_LABEL_LINE = re.compile(r"^(?:- |\d+\. )\*\*[^*\n]+\*\*", re.MULTILINE)
+_NEXT_SECTION_HEADING_LINE = re.compile(r"^## ", re.MULTILINE)
 
 
 class TestPeriodCostReportSkillTripwire:
@@ -5197,6 +5414,14 @@ class TestPeriodCostReportSkillTripwire:
       the credentials a run uses or read another account's spend.
     - Destination and confinement: a report posted to a non-owner audience, or copied outside the fence, leaks the owner's
       repositories and spend.
+    - Holds and edits: presenting past `PRICING INTEGRITY` or `NO ACTIVITY`, or editing a figure, sends wrong or unchecked
+      spend to the owner.
+    - Command shape: a date that is not a whole zero-padded `YYYY-MM-DD` value reaches a shell command line, and a
+      background run hides the Bash result the checks read.
+    - Terminal fallback: a terminal run under another account, or a paste that includes the stderr notices, leaks or
+      misreports spend. Each route to the fallback must still point at Step 0's terminal-run duties.
+    - Retention and settings: advice that raises `cleanupPeriodDays` without naming its cost, or an agent that edits a
+      settings file, keeps every transcript of the account on disk longer without the engineer deciding it.
     - The `GH UNAVAILABLE` kind list: a renamed or new kind otherwise leaves the skill with a dead or missing branch."""
 
     @staticmethod
@@ -5210,9 +5435,24 @@ class TestPeriodCostReportSkillTripwire:
         occurrences = text.count(start_label)
         assert occurrences == 1, f"{start_label} must appear exactly once in the skill, found {occurrences}"
         start = text.index(start_label)
-        next_label = _NEXT_ITEM_LABEL_LINE.search(text, start + len(start_label))
-        end = next_label.start() if next_label else len(text)
-        return " ".join(text[start:end].split())
+        boundaries = [
+            match.start()
+            for match in (
+                _NEXT_ITEM_LABEL_LINE.search(text, start + len(start_label)),
+                _NEXT_SECTION_HEADING_LINE.search(text, start + len(start_label)),
+            )
+            if match
+        ]
+        return " ".join(text[start : min(boundaries, default=len(text))].split())
+
+    @classmethod
+    def _step_section_text(cls, step_heading_prefix: str) -> str:
+        text = cls._skill_text()
+        occurrences = text.count(step_heading_prefix)
+        assert occurrences == 1, f"{step_heading_prefix} must appear exactly once in the skill, found {occurrences}"
+        start = text.index(step_heading_prefix)
+        next_heading = _NEXT_SECTION_HEADING_LINE.search(text, start + len(step_heading_prefix))
+        return " ".join(text[start : next_heading.start() if next_heading else len(text)].split())
 
     def test_the_notice_constants_are_exactly_the_tag_tuple(self):
         # The _NOTICE_ prefix is reserved for tag constants: a constant that is not a tag needs another prefix or an
@@ -5226,7 +5466,7 @@ class TestPeriodCostReportSkillTripwire:
 
     @pytest.mark.parametrize("tag", period_cost._NOTICE_TAGS)
     def test_the_skill_names_every_notice_tag(self, tag):
-        assert tag in self._skill_text()
+        assert f"`{tag}`" in self._skill_text()
 
     def test_the_skill_names_the_report_first_line_prefix_and_the_undetermined_group_label(self):
         skill_text = self._skill_text()
@@ -5253,6 +5493,102 @@ class TestPeriodCostReportSkillTripwire:
 
         assert "this session's transcript" in transcript_item
         assert "the engineer's own terminal" in transcript_item
+
+    def test_the_transcript_item_requires_this_sessions_account_and_a_paste_that_starts_at_the_report_first_line(self):
+        transcript_item = self._pinned_item_text("transcript")
+
+        assert (
+            "The terminal run must use the account this session runs under, with the same `CLAUDE_CONFIG_DIR` as this"
+            " session."
+        ) in transcript_item
+        assert "Step 3 item 5(a) is the check that distinguishes accounts." in transcript_item
+        assert (
+            f"The engineer pastes only from the line starting `{period_cost._REPORT_FIRST_LINE_PREFIX}` to the end of the output,"
+            " because the `period-cost:` lines above it are for the engineer only."
+        ) in transcript_item
+
+    def test_the_retention_item_leaves_the_setting_to_the_engineer_and_names_the_cost_and_the_alternatives(self):
+        retention_item = self._pinned_item_text("retention")
+
+        assert (
+            "Only the engineer raises `cleanupPeriodDays`, and that keeps every session transcript of the account on disk"
+            " longer."
+        ) in retention_item
+        assert (
+            "The alternatives that add no retention are to run on the period's final day, or to run per week and keep the"
+            " figures in the engineer's own terminal."
+        ) in retention_item
+
+    def test_the_pricing_integrity_hold_presents_nothing_and_bars_sending_on_a_persisting_notice(self):
+        hold_item = self._pinned_item_text("pricing_integrity_hold")
+
+        assert "On `PRICING INTEGRITY`, present nothing." in hold_item
+        assert "If the notice persists on a current checkout, do not send." in hold_item
+
+    def test_the_no_activity_hold_presents_nothing_until_the_engineer_confirms_account_period_and_retention(self):
+        no_activity_item = self._pinned_item_text("no_activity_hold")
+
+        assert "On `NO ACTIVITY`, present nothing yet." in no_activity_item
+        assert "whether the account, period, and retention are right" in no_activity_item
+        assert (
+            "If the engineer confirms all three and wants to tell the owner there was no usage, continue at item 5 with the"
+            " report as printed."
+        ) in no_activity_item
+
+    def test_the_present_item_copies_the_report_character_for_character_into_a_four_backtick_fence_and_nothing_else(self):
+        present_item = self._pinned_item_text("present")
+
+        assert (
+            "Copy the report block character for character into a four-backtick fence with nothing else inside it."
+        ) in present_item
+        assert "The engineer copies from that fence." in present_item
+
+    def test_the_never_edit_item_bars_editing_a_figure_or_removing_a_row(self):
+        never_edit_item = self._pinned_item_text("never_edit")
+
+        assert "Never edit a figure or remove a row." in never_edit_item
+        assert "Change wording only at the engineer's request." in never_edit_item
+
+    def test_step_two_runs_one_foreground_call_with_the_harness_ceiling_timeout(self):
+        run_step = self._step_section_text("## Step 2")
+
+        assert "One foreground Bash call with `timeout: 600000`. Do not use `run_in_background`." in run_step
+
+    def test_step_two_places_a_date_only_as_a_whole_zero_padded_value_in_the_command_and_the_terminal_command(self):
+        run_step = self._step_section_text("## Step 2")
+
+        assert (
+            "Place a date in the command only when the entire value is exactly ten characters in the zero-padded"
+            " `YYYY-MM-DD` shape, with no variable, substitution, or extra text, and refuse anything else."
+        ) in run_step
+        assert "The same holds for the command shown for a terminal run." in run_step
+
+    def test_step_two_routes_a_harness_kill_to_the_terminal_run_duties_in_step_zero(self):
+        run_step = self._step_section_text("## Step 2")
+
+        assert (
+            "Have the engineer run the same command in a terminal under Step 0's terminal-run duties,"
+        ) in run_step
+
+    def test_the_locate_item_routes_a_truncated_result_to_the_terminal_run_duties_in_step_zero(self):
+        locate_item = self._pinned_item_text("locate")
+
+        assert (
+            "have the engineer run the Step 2 command in a terminal under Step 0's terminal-run duties."
+        ) in locate_item
+
+    def test_the_pre_send_check_routes_lost_markup_to_the_terminal_run_duties_in_step_zero(self):
+        pre_send_item = self._pinned_item_text("pre_send_check")
+
+        assert "If the markup was lost, run Step 2 in a terminal under Step 0's terminal-run duties." in pre_send_item
+
+    def test_step_four_bars_quoting_the_report_elsewhere_and_recommends_ending_the_session(self):
+        after_pasting_step = self._step_section_text("## Step 4")
+
+        assert "Never quote the report in another artifact." in after_pasting_step
+        assert (
+            "Recommend ending this session before any commit, PR, or handoff work, since the figures are in its context."
+        ) in after_pasting_step
 
     @pytest.mark.parametrize("kind", sorted(period_cost._GH_UNAVAILABLE_ACTIONS))
     def test_the_decide_before_presenting_item_names_every_gh_unavailable_kind(self, kind):
@@ -5318,6 +5654,9 @@ class TestPeriodCostReportSkillTripwire:
             "It never sets, unsets, empties, or redirects any environment variable or config directory that gh or the CLI"
             " reads, including `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_HOST`,"
             " `CLAUDE_CONFIG_DIR`, and `HOME`, whatever a notice says."
+        ) in remaining_notices_item
+        assert (
+            "It never edits any settings file, including the one that sets `cleanupPeriodDays`."
         ) in remaining_notices_item
         assert (
             "It never selects another account: a wrong account means starting a session under the right one."

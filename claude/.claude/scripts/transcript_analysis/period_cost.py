@@ -33,6 +33,11 @@ _SECONDS_PER_DAY = 86400
 # assembly, rendering, and interpreter start (not measured).
 _RUN_DEADLINE_S = 540
 
+# A retry would first wait GitHub's minimum between retries (gh_cli._PR_COST_RATE_LIMIT_MIN_BACKOFF_S, 60 s), which an
+# account with more than a few repositories cannot afford inside _RUN_DEADLINE_S, so a failed list call is reported
+# rather than retried.
+_PR_LIST_MAX_ATTEMPTS = 1
+
 # github.com is the one host whose repositories are listed with no stored-login check.
 _GITHUB_HOST = "github.com"
 
@@ -95,6 +100,10 @@ _CONSERVATION_TOLERANCE = 1e-6
 
 _ROOT_LISTING_FAILURE_MESSAGE = (
     "period-cost: could not list the active account's projects directory -- no report written"
+)
+_CONFIG_DIR_UNRESOLVABLE_MESSAGE = (
+    "period-cost: the active config directory could not be resolved -- CLAUDE_CONFIG_DIR must be an absolute path, "
+    "or HOME must be set -- no report written"
 )
 _GIT_MISSING_MESSAGE = (
     "period-cost: git is not installed or not on PATH, so no directory's repository can be read -- no report written"
@@ -818,7 +827,7 @@ def _fetch_pr_lists(repositories: Sequence[_Identity], *, deadline: float) -> di
                 continue
         payload, status = gh_cli._gh_pr_list(
             host, owner_repo, state="all", json_fields=_PR_LIST_JSON_FIELDS, label="pr list (all)",
-            command_name="period-cost", max_attempts=1,
+            command_name="period-cost", max_attempts=_PR_LIST_MAX_ATTEMPTS,
         )
         results[identity] = _validated_pr_list(payload, status)
     return results
@@ -1579,7 +1588,8 @@ def _other_breakdown_line(breakdown: _OtherBreakdown) -> str | None:
         parts.append(f"default-branch, detached, and unbranched spend {_usd(breakdown.default_branch_dollars)}")
     if breakdown.moved_on_dollars:
         parts.append(
-            f"leading default-branch spend from sessions that moved to another repository {_usd(breakdown.moved_on_dollars)}"
+            "leading default-branch spend from sessions whose successor directory did not resolve to this repository"
+            f" {_usd(breakdown.moved_on_dollars)}"
         )
     if breakdown.unidentified_review_dollars:
         parts.append("unidentified reviews started " + ", ".join(_capped_entries(breakdown.unidentified_review_dollars)))
@@ -1807,8 +1817,8 @@ def cmd_period_cost(args: argparse.Namespace) -> None:
         return
     try:
         projects_root = _projects_root()
-    except ValueError as exc:
-        print(f"period-cost: {exc}", file=sys.stderr)
+    except ValueError:
+        print(_CONFIG_DIR_UNRESOLVABLE_MESSAGE, file=sys.stderr)
         sys.exit(2)
     if shutil.which("git") is None:
         print(_GIT_MISSING_MESSAGE, file=sys.stderr)

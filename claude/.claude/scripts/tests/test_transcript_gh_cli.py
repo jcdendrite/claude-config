@@ -1612,6 +1612,7 @@ class TestIsPlainOwnerRepo:
         pytest.param("." * _PATHOLOGICAL_LENGTH + "/" + "." * _PATHOLOGICAL_LENGTH, id="long_segments_without_a_letter_or_digit"),
         pytest.param("/".join(["a"] * _PATHOLOGICAL_LENGTH), id="many_segments"),
     ])
+    @pytest.mark.timing
     def test_rejects_a_very_long_failing_input_within_a_generous_bound(self, owner_repo):
         started = time.perf_counter()
 
@@ -1772,6 +1773,7 @@ class TestVettedOriginIdentityFromUrl:
         pytest.param("https://" + "a-" * (_PATHOLOGICAL_LENGTH // 2) + "/o/r", id="long_host_ending_in_a_hyphen"),
         pytest.param("https://" + "a." * (_PATHOLOGICAL_LENGTH // 2) + "-/o/r", id="long_dotted_host_with_a_bad_label"),
     ])
+    @pytest.mark.timing
     def test_rejects_a_very_long_failing_input_within_a_generous_bound(self, url):
         started = time.perf_counter()
 

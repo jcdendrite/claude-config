@@ -261,12 +261,11 @@ def _gh_call_with_backoff(
     _PR_COST_RATE_LIMIT_MAX_ELAPSED_S total elapsed -- a budget local to this
     one call (attempt/elapsed/backoff are all function-local state), not
     shared across the run: a --record sweep over many PRs can spend up to
-    that budget on each one in the worst case. A `max_attempts` below 1 raises
-    ValueError. `command_name` prefixes every
-    message this function prints. An auth-shaped or
+    that budget on each one in the worst case. An auth-shaped or
     GH_HOST-mismatch-shaped failure is never retried: gh auth status already
     ran as a preflight, and a local shell-config mismatch doesn't self-resolve
-    by waiting either way.
+    by waiting either way. A `max_attempts` below 1 raises ValueError.
+    `command_name` prefixes every message this function prints.
 
     Returns (proc, "") on success. On exhaustion, returns (None, status)
     with status one of _GH_CALL_DEGRADED_AUTH, _GH_CALL_DEGRADED_HOST_MISMATCH,
