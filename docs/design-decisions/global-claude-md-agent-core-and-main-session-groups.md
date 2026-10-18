@@ -161,7 +161,7 @@ Procedure:
 
 - Confer with the repo owner before choosing the approach.
 - Revert the whole squash commit, never individual paths, so this record and the "Partially superseded" line do not describe a contract that no longer exists.
-- A hand-restored tree committed through `git commit` grows CLAUDE.md, and the length ratchet denies it.
+- A hand-restored tree committed through `git commit` grows CLAUDE.md, and the length ratchet denies it only once the committed file passes the 30,720-byte limit.
 - Plain `git revert <sha>` is not intercepted by the length gate or the code-review gate, both of which match only the `commit` subcommand.
 - `git revert -n` followed by `git commit` passes the length gate but needs a `/code-review` marker on the reverse diff.
 - Expect a `CHANGELOG.md` conflict.
