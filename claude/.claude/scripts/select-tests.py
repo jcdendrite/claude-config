@@ -254,6 +254,7 @@ PLAN_REVIEW_SKILL_MD = "claude-skills/skills/plan-review/SKILL.md"
 RESPOND_PR_SKILL_MD = "claude-skills/skills/respond-pr/SKILL.md"
 ERROR_MODE_ANALYSIS_SKILL_MD = "claude-skills/skills/error-mode-analysis/SKILL.md"
 READY_FOR_REVIEW_SKILL_MD = "claude-skills/skills/ready-for-review/SKILL.md"
+SUBAGENT_DELEGATION_SKILL_MD = "claude-skills/skills/subagent-delegation/SKILL.md"
 AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD = "claude-skills/skills/ai-instruction-and-memory-files/SKILL.md"
 SKILL_REVIEW_SKILL_MD = "plugins/skill-management/skills/skill-review/SKILL.md"
 
@@ -271,6 +272,7 @@ SKILL_FILES_READ_BY_HOOK_TESTS: frozenset[str] = frozenset({
     RESPOND_PR_SKILL_MD,
     ERROR_MODE_ANALYSIS_SKILL_MD,
     READY_FOR_REVIEW_SKILL_MD,
+    SUBAGENT_DELEGATION_SKILL_MD,
     AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD,
     SKILL_REVIEW_SKILL_MD,
 })

@@ -438,6 +438,15 @@
             "statusMessage": "Checking credential-file read gate..."
           }
         ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-review-orchestrator-routing.sh"
+          }
+        ]
       }
     ],
     "PostToolUse": [
