@@ -31,6 +31,7 @@ from ._subagent_helpers import _subagents_args
 from .conftest import (
     _agent_use,
     _asst,
+    _attr_ts,
     _audit_routing_args,
     _bash_use,
     _compact_boundary_rec,
@@ -1110,16 +1111,6 @@ class TestRepoTrackedAgentTypeNames:
         and its failure message unreadable, so the name is hardcoded; the
         unit tests above already carry the "real derivation works" fact."""
         assert "code-writer" in _mod._repo_tracked_agent_type_names()
-
-
-# ---------------------------------------------------------------------------
-# branch-attribution fixture timestamps
-# ---------------------------------------------------------------------------
-
-def _attr_ts(minute: int) -> str:
-    """Strictly increasing timestamps for branch-attribution fixtures: one minute apart
-    within one hour of 2026-05-12 (ISO 2026-W20)."""
-    return f"2026-05-12T12:{minute:02d}:00.000Z"
 
 
 # ---------------------------------------------------------------------------

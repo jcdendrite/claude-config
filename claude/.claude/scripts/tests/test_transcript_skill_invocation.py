@@ -11,6 +11,7 @@ from transcript_analysis import scope, skill_invocation
 from ._skill_helpers import _skill_inv_args
 from .conftest import (
     _asst,
+    _attr_ts,
     _bash_use,
     _skill_use,
     _table_cols,
@@ -18,12 +19,6 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_jsonl,
 )
-
-
-def _attr_ts(minute: int) -> str:
-    """Strictly increasing timestamps for branch-attribution fixtures: one minute apart
-    within one hour of 2026-05-12 (ISO 2026-W20)."""
-    return f"2026-05-12T12:{minute:02d}:00.000Z"
 
 
 class TestSkillInvocation:
@@ -354,8 +349,7 @@ class TestSkillInvocationScoping:
         assert "handoff" not in out, "off-branch slash invocation must be excluded"
 
     def test_unfiltered_run_still_counts_records_without_gitbranch(self, fake_projects, capsys):
-        """A record with no gitBranch is counted when no --branches filter is given —
-        guards the default-output regression noted in the plan."""
+        """A record with no gitBranch is counted when no --branches filter is given."""
         rec = {
             "type": "assistant",
             "message": {"model": "claude-sonnet-4-6", "content": [_skill_use("nb", "code-review")]},

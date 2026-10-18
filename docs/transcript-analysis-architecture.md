@@ -514,7 +514,7 @@ on. `tests/conftest.py` carries the shared fixtures that reach across the shim/p
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
 `cost_ledger_file`, `cost_ledger_enabled`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`,
 `_compact_boundary_rec`, `_cost_ledger_args`, `_cost_ledger_row`, `_two_declared_roots`,
-`_exit_plan_mode`, `_priced_opus`, `_priced_sidechain_asst`, `_read_use`, `_skill_use_rec`, `_thinking_block`); see its own
+`_attr_ts`, `_exit_plan_mode`, `_priced_opus`, `_priced_sidechain_asst`, `_read_use`, `_skill_use_rec`, `_thinking_block`); see its own
 docstrings for why `fake_projects` patches four `config_dir` bindings: `scope.config_dir`, plus
 `cost_ledger.config_dir`, `ledger_common.config_dir`, and
 `pr_cost_ledger.config_dir` (each module's own by-name binding, mirroring `scope.py`'s pattern). `author_outcome.py`'s own tests

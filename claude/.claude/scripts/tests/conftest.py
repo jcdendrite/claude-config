@@ -1356,6 +1356,12 @@ def _skill_use_rec(skill: str, ts: str, branch: str = "main", tool_id: str = "s1
     return _asst("claude-sonnet-4-6", branch=branch, ts=ts, content=[_skill_use(tool_id, skill)])
 
 
+def _attr_ts(minute: int) -> str:
+    """Strictly increasing timestamps for branch-attribution fixtures: one minute apart
+    within one hour of 2026-05-12 (ISO 2026-W20)."""
+    return f"2026-05-12T12:{minute:02d}:00.000Z"
+
+
 def _read_use(tool_id: str, file_path: str) -> dict:
     """Build a Read tool_use block with the given file_path."""
     return {"type": "tool_use", "id": tool_id, "name": "Read", "input": {"file_path": file_path}}
