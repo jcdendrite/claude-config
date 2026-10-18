@@ -294,30 +294,23 @@ def _scan_subagent_final_answer_text(path: Path) -> str | None:
     assistant record at all (not the same as an assistant record whose last
     turn carried no text, which returns "").
 
-    Reads in binary mode and decodes per line, like corpus._parse_jsonl_records,
-    so one line that is not valid UTF-8 is skipped rather than aborting the scan."""
+    Walks msmr._iter_assistant_records, so a malformed or non-dict line is
+    skipped rather than aborting the scan."""
     last_text: str | None = None
     seen_assistant = False
     try:
-        with open(path, "rb") as fh:
-            for raw in fh:
-                try:
-                    rec = json.loads(raw.decode("utf-8"))
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-                if rec.get("type") != "assistant":
-                    continue
-                seen_assistant = True
-                content = (rec.get("message") or {}).get("content")
-                if isinstance(content, str):
-                    last_text = content
-                elif isinstance(content, list):
-                    last_text = "".join(
-                        block.get("text", "") for block in content
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    )
-                else:
-                    last_text = ""
+        for rec in msmr._iter_assistant_records(path):
+            seen_assistant = True
+            content = rec["message"].get("content")
+            if isinstance(content, str):
+                last_text = content
+            elif isinstance(content, list):
+                last_text = "".join(
+                    block.get("text", "") for block in content
+                    if isinstance(block, dict) and block.get("type") == "text"
+                )
+            else:
+                last_text = ""
     except OSError:
         return None
     return last_text if seen_assistant else None
@@ -682,10 +675,10 @@ def build_run_command(
     dispatch: str, prompt: str, *, session_id: str, budget_cap_usd: float, repo_dir: Path,
 ) -> list[str]:
     """Mirrors msmr.build_run_command's flag shape for the fixed
-    opus-parent/default-permission-mode cell measure_subagent_model_resolution.py's
-    runs 8 and 9 already validated symmetrically for both --agents model
-    values, with this case's own dispatch prompt in place of that module's
-    fixed marker-file task, and msmr's own override payload for the
+    opus-parent/default-permission-mode cell that runs 8 and 9 already
+    validated symmetrically for both --agents model values. Uses this
+    case's own dispatch prompt in place of that module's fixed
+    marker-file task, reusing msmr's own override payload for the
     --agents pin.
 
     Unlike that module's fixed marker-file task (which writes its own

@@ -185,6 +185,19 @@ class TestParseSubagentDispatches:
 
         assert result == ()
 
+    def test_meta_json_non_dict_top_level_skipped(self, tmp_path: Path) -> None:
+        """A *.meta.json file that parses as JSON but whose top-level value
+        isn't a dict (e.g. a bare `null`) is skipped like malformed JSON,
+        not raised on the first .get() call against it."""
+        session_jsonl = _session_jsonl_path(tmp_path)
+        subagent_dir = session_jsonl.parent / session_jsonl.stem / msmr.SUBAGENT_SUBDIR
+        subagent_dir.mkdir(parents=True)
+        (subagent_dir / "agent-1.meta.json").write_bytes(b"null")
+
+        result = msmr.parse_subagent_dispatches(session_jsonl, requested_agent_declared_tools=None)
+
+        assert result == ()
+
     def test_meta_json_missing_tool_use_id_skipped(self, tmp_path: Path) -> None:
         session_jsonl = _session_jsonl_path(tmp_path)
         subagent_dir = session_jsonl.parent / session_jsonl.stem / msmr.SUBAGENT_SUBDIR
@@ -270,6 +283,46 @@ class TestParseSubagentDispatches:
 
         assert model_ids == frozenset({"claude-sonnet-5", "claude-haiku-4-5-20251001"})
         assert tools == frozenset({"Read", "Grep"})
+
+    def test_skips_a_syntactically_valid_non_dict_top_level_line_without_raising(
+        self, tmp_path: Path
+    ) -> None:
+        """A line that parses as JSON but whose top-level value isn't a dict
+        (e.g. a bare `null`) is skipped rather than crashing on the first
+        .get() call `_iter_assistant_records` makes against it."""
+        session_jsonl = _session_jsonl_path(tmp_path)
+        subagent_dir = session_jsonl.parent / session_jsonl.stem / msmr.SUBAGENT_SUBDIR
+        subagent_dir.mkdir(parents=True)
+        path = subagent_dir / "agent-1.jsonl"
+        lines = [
+            b"null",
+            json.dumps(_assistant_record("claude-sonnet-5", ["Read"])).encode("utf-8"),
+        ]
+        path.write_bytes(b"\n".join(lines) + b"\n")
+
+        model_ids, tools = msmr._scan_subagent_jsonl(path)
+
+        assert model_ids == frozenset({"claude-sonnet-5"})
+        assert tools == frozenset({"Read"})
+
+    def test_non_dict_message_field_yields_no_fields_without_raising(self, tmp_path: Path) -> None:
+        """A record whose "message" field is a truthy non-dict value (e.g. a
+        plain string) is normalized to {} rather than crashing the first
+        .get() chained off it."""
+        session_jsonl = _session_jsonl_path(tmp_path)
+        subagent_dir = session_jsonl.parent / session_jsonl.stem / msmr.SUBAGENT_SUBDIR
+        subagent_dir.mkdir(parents=True)
+        path = subagent_dir / "agent-1.jsonl"
+        lines = [
+            json.dumps({"type": "assistant", "message": "not a dict"}).encode("utf-8"),
+            json.dumps(_assistant_record("claude-sonnet-5", ["Read"])).encode("utf-8"),
+        ]
+        path.write_bytes(b"\n".join(lines) + b"\n")
+
+        model_ids, tools = msmr._scan_subagent_jsonl(path)
+
+        assert model_ids == frozenset({"claude-sonnet-5"})
+        assert tools == frozenset({"Read"})
 
 
 class TestWaitForSubagentSidecar:

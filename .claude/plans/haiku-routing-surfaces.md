@@ -45,8 +45,8 @@ The window is 60 days because `Explore`'s repo-owned Sonnet pin landed
 post-pin. No figure wider than this repository is used here.
 
 **Every live model-selection surface is Sonnet or Opus.** All fourteen agents
-under `claude/.claude/agents/` pin `sonnet` or `opus`; no skill, rule, hook, or
-script routes any work to Haiku; `settings.json`'s session default is
+under `claude/.claude/agents/` pin `sonnet` or `opus`. No skill, rule, hook, or
+script routes any work to Haiku. `settings.json`'s session default is
 `sonnet`. The only historical Haiku agent, check-runner, was retired for
 inventing structured data from free-form text
 (`docs/case-studies/check-runner.md`), and `docs/cost-levers-considered.md:68`

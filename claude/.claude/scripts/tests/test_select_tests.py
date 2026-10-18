@@ -796,10 +796,12 @@ class TestSelectPytestTargets:
 
     def test_review_bench_scripts_dependencies_equal_transitive_first_party_imports(self):
         """Ground-truths _REVIEW_BENCH_SCRIPTS_DEPENDENCIES against the
-        transitive first-party import closure of every review_bench source,
-        rather than a second hand-written list -- a fixed expected list would
-        tolerate the same added-import-not-added-to-the-frozenset drift this
-        row exists to catch."""
+        transitive first-party import closure walked from a fixed set of
+        seed files, rather than a second hand-written list -- a fixed
+        expected list would tolerate the same added-import-not-added-to-the-
+        frozenset drift this row exists to catch. The seed list itself is
+        not derived from the repo: a new review_bench entry point or sibling
+        eval script needs its own addition to `pending` below."""
         evals_dir = _REPO_ROOT / "evals"
         scripts_dir = _REPO_ROOT / _mod.SCRIPTS_DIR
 
@@ -830,6 +832,7 @@ class TestSelectPytestTargets:
             *(evals_dir / "review_bench").glob("*.py"),
             evals_dir / "run_review_bench.py",
             evals_dir / "measure_subagent_model_resolution.py",
+            evals_dir / "measure_explore_recall.py",
         ]
         reached: set[Path] = set()
         while pending:

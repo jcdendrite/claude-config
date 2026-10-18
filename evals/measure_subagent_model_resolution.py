@@ -45,6 +45,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -333,13 +334,19 @@ def agent_frontmatter_tools(agent_file_text: str) -> frozenset[str] | None:
     return frozenset(t.strip() for t in match.group(1).split(",") if t.strip())
 
 
+def _read_staff_backend_engineer_agent_text() -> str | None:
+    try:
+        return STAFF_BACKEND_ENGINEER_AGENT_FILE.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def declared_model_pin_for_dispatch(dispatch: str) -> str | None:
     override = _EXPLORE_OVERRIDE_BY_DISPATCH.get(dispatch)
     if override is not None:
         return override[EXPLORE_HAIKU_OVERRIDE_AGENT_NAME]["model"]
-    try:
-        text = STAFF_BACKEND_ENGINEER_AGENT_FILE.read_text(encoding="utf-8")
-    except OSError:
+    text = _read_staff_backend_engineer_agent_text()
+    if text is None:
         return None
     return agent_frontmatter_model(text)
 
@@ -347,9 +354,8 @@ def declared_model_pin_for_dispatch(dispatch: str) -> str | None:
 def declared_tools_for_dispatch(dispatch: str) -> frozenset[str] | None:
     if dispatch in _EXPLORE_OVERRIDE_BY_DISPATCH:
         return EXPLORE_HAIKU_OVERRIDE_TOOLS
-    try:
-        text = STAFF_BACKEND_ENGINEER_AGENT_FILE.read_text(encoding="utf-8")
-    except OSError:
+    text = _read_staff_backend_engineer_agent_text()
+    if text is None:
         return None
     return agent_frontmatter_tools(text)
 
@@ -457,6 +463,34 @@ class RunResult:
     total_cost_usd: float | None = None
 
 
+def _iter_assistant_records(path: Path) -> Iterator[dict]:
+    """Yield each assistant-type record from one subagent transcript, line by line.
+
+    Reads in binary mode and decodes per line, like corpus._parse_jsonl_records.
+    Unlike that function, a line that is not valid UTF-8, fails to parse as
+    JSON, or decodes to a non-dict top-level value is skipped here rather than
+    kept as a record that would crash a caller's own .get() on it. A yielded
+    record's own "message" field is normalized to {} when present but not a
+    dict, so callers can chain .get() off it without their own guard.
+
+    Does not catch OSError from the open() call — that is each caller's own
+    to catch, since callers differ on what to return on open-failure.
+    """
+    with open(path, "rb") as fh:
+        for raw in fh:
+            try:
+                rec = json.loads(raw.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(rec, dict):
+                continue
+            if rec.get("type") != "assistant":
+                continue
+            if not isinstance(rec.get("message"), dict):
+                rec["message"] = {}
+            yield rec
+
+
 def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
     """Return (distinct real model IDs, distinct observed tool_use names)
     from one subagent's own transcript.
@@ -467,29 +501,22 @@ def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
     discriminator. Returns two empty frozensets on any read error, matching
     that function's "dangling" convention: absence of data, not a crash.
 
-    Reads in binary mode and decodes per line, like corpus._parse_jsonl_records,
-    so one line that is not valid UTF-8 is skipped rather than aborting the scan.
+    Walks _iter_assistant_records, so a malformed or non-dict line is
+    skipped rather than aborting the scan.
     """
     model_ids: set[str] = set()
     tools: set[str] = set()
     try:
-        with open(path, "rb") as fh:
-            for raw in fh:
-                try:
-                    rec = json.loads(raw.decode("utf-8"))
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-                if rec.get("type") != "assistant":
-                    continue
-                msg = rec.get("message") or {}
-                model = msg.get("model")
-                if model and model != SYNTHETIC_MODEL_ID:
-                    model_ids.add(model)
-                for block in msg.get("content") or []:
-                    if isinstance(block, dict) and block.get("type") == "tool_use":
-                        name = block.get("name")
-                        if isinstance(name, str) and name:
-                            tools.add(name)
+        for rec in _iter_assistant_records(path):
+            msg = rec["message"]
+            model = msg.get("model")
+            if model and model != SYNTHETIC_MODEL_ID:
+                model_ids.add(model)
+            for block in msg.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    name = block.get("name")
+                    if isinstance(name, str) and name:
+                        tools.add(name)
     except OSError:
         return frozenset(), frozenset()
     return frozenset(model_ids), frozenset(tools)
@@ -522,6 +549,8 @@ def parse_subagent_dispatches(
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(meta, dict):
             continue
         tool_use_id = meta.get("toolUseId")
         if not isinstance(tool_use_id, str) or not tool_use_id:

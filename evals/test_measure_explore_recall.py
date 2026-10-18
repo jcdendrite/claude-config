@@ -431,6 +431,26 @@ class TestScanSubagentFinalAnswerText:
 
         assert m._scan_subagent_final_answer_text(path) == "second"
 
+    def test_skips_a_syntactically_valid_non_dict_top_level_line_without_raising(self, tmp_path: Path) -> None:
+        """A line that parses as JSON but whose top-level value isn't a dict
+        (e.g. a bare `null`) is skipped, not raised, by the shared
+        _iter_assistant_records guard this function also depends on."""
+        path = tmp_path / "agent.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [b"null", json.dumps(_text_record("second")).encode("utf-8")]
+        path.write_bytes(b"\n".join(lines) + b"\n")
+
+        assert m._scan_subagent_final_answer_text(path) == "second"
+
+    def test_non_dict_message_field_yields_no_fields_without_raising(self, tmp_path: Path) -> None:
+        """A record whose "message" field is a truthy non-dict value is
+        normalized to {} by _iter_assistant_records, so content is treated
+        as absent rather than raising on the chained .get()."""
+        path = tmp_path / "agent.jsonl"
+        _write_jsonl(path, [{"type": "assistant", "message": "not a dict"}])
+
+        assert m._scan_subagent_final_answer_text(path) == ""
+
 
 class TestLastFencedJsonBlock:
     def test_no_block_returns_none(self) -> None:
@@ -1956,10 +1976,18 @@ class TestMain:
             (subagent_dir / "agent-1.meta.json").write_text(
                 json.dumps({"toolUseId": "toolu_1", "agentType": "Explore"})
             )
+            # Haiku's real model ID carries this dated shape.
+            # Sonnet's real ID carries no date suffix.
+            # requested_model holds the "haiku"/"sonnet" alias
+            # (msmr.EXPLORE_HAIKU_OVERRIDE_MODEL / EXPLORE_SONNET_OVERRIDE_MODEL),
+            # not the resolved model ID itself.
+            observed_model = (
+                "claude-sonnet-5" if requested_model == "sonnet" else f"claude-{requested_model}-4-5-20251001"
+            )
             answer_record = {
                 "type": "assistant",
                 "message": {
-                    "model": f"claude-{requested_model}-4-5-20251001",
+                    "model": observed_model,
                     "content": [{"type": "text", "text": '```json\n["path/to/file_0_0.py"]\n```'}],
                 },
             }
