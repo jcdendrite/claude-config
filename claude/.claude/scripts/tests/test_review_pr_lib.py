@@ -13,12 +13,14 @@ tests here that reach a gh call.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -367,7 +369,11 @@ class TestBaseIsDefaultBranchToken:
 
 
 class TestSkillNamesTheStackDocument:
-    """SKILL.md names keys, choices, and an exit status the scripts define, so a rename in one place must reach the other."""
+    """SKILL.md names keys, choices, and an exit status the scripts define, so a rename in one place must reach the other.
+
+    The identifier tests defend that coupling. The tests that match a SKILL.md phrase are wording tripwires: they
+    prove the sentence is still there, not that the agent obeys it, and they fail on a reword that keeps the meaning.
+    """
 
     @staticmethod
     def _skill_text() -> str:
@@ -395,8 +401,9 @@ class TestSkillNamesTheStackDocument:
         [
             ("byPrAuthor", lambda: _entry_with_reviews([pr_list_review("bob", "APPROVED")])["reviews"][0]),
             ("reviewsNotShown", lambda: _entry_with_reviews([pr_list_review("bob", "APPROVED")])),
+            ("reviewed", lambda: _entry_with_reviews([pr_list_review("bob", "APPROVED")])),
         ],
-        ids=["review-key", "ancestor-entry-key"],
+        ids=["review-key", "ancestor-entry-key", "ancestor-reviewed-key"],
     )
     def test_a_nested_key_the_skill_names_is_one_the_verdict_emits(self, named_key, emitted_object):
         assert f"`{named_key}`" in self._skill_text()
@@ -404,8 +411,7 @@ class TestSkillNamesTheStackDocument:
 
     def test_the_skill_names_the_exit_status_a_blocked_stack_gets_in_step_twos_exit_arm(self):
         stack_unreviewed_status = _review_pr_lib_integer("REVIEW_PR_EXIT_STACK_UNREVIEWED")
-        exit_arm_line = self._skill_line_starting("Read its exit status:")
-        assert f"exit {stack_unreviewed_status} " in exit_arm_line
+        exit_arm_line = self._skill_line_starting(f"- Exit {stack_unreviewed_status}:")
         assert "start again at step 1" in exit_arm_line
 
     def test_the_standing_override_names_basestack_strings_and_stderr_as_data(self):
@@ -1625,6 +1631,93 @@ class TestStackLookupVerdictDisplay:
         assert "feat/a" not in entry_text
 
 
+_GH_REVIEWS_LIMIT = _review_pr_lib_integer("REVIEW_PR_STACK_GH_REVIEWS_LIMIT")
+_GH_PR_LIST_SAMPLE_PATH = Path(__file__).parent / "fixtures" / "gh-pr-list-reviews-sample.json"
+
+# Keys gh prints that the double leaves out. The lookup reads none of them, which
+# test_the_gh_keys_the_double_leaves_out_do_not_change_the_verdict pins.
+_GH_REVIEW_KEYS_NOT_MODELED = {"id", "includesCreatedEdit", "reactionGroups", "commit"}
+_GH_HUMAN_AUTHOR_KEYS_NOT_MODELED = {"id", "name"}
+_HUMAN_SAMPLE = "human-author-beside-a-fork-pr-with-the-same-branch-name"
+_BOT_SAMPLE = "bot-author-reviewed-by-the-same-bot"
+
+
+def _gh_pr_list_sample(name: str) -> list[dict]:
+    """A `gh pr list --json` reply shaped from gh 2.101.0 output, with every identifier replaced by a synthetic one by hand.
+
+    Re-capture it on a gh upgrade, as REFERENCES.md's review-items paragraph says.
+    """
+    return json.loads(_GH_PR_LIST_SAMPLE_PATH.read_text())[name]
+
+
+def _without_unmodeled_gh_keys(sample: list[dict]) -> list[dict]:
+    stripped = json.loads(json.dumps(sample))
+    for item in stripped:
+        if not item["author"]["is_bot"]:
+            for key in _GH_HUMAN_AUTHOR_KEYS_NOT_MODELED:
+                del item["author"][key]
+        for review in item["reviews"]:
+            for key in _GH_REVIEW_KEYS_NOT_MODELED:
+                del review[key]
+    return stripped
+
+
+class TestStackLookupVerdictGhSample:
+    """A committed, sanitized `gh pr list --json` reply keeps the verdict and the test double tied to gh's real shape."""
+
+    def test_the_verdict_reads_the_human_sample_as_an_ancestor_with_a_standing_change_request(self):
+        status, output = _verdict(_gh_pr_list_sample(_HUMAN_SAMPLE), "feature/sample")
+
+        assert status == 0, output
+        number, reviewed, base_ref, entry = _split_ancestor_verdict(output)
+        assert (number, reviewed, base_ref) == (101, True, "main")
+        assert entry["changesRequested"] is True
+        assert entry["selfReviewOnly"] is False
+        assert [(review["author"], review["state"]) for review in entry["reviews"]] == [
+            ('"bob"', "COMMENTED"), ('"carol"', "CHANGES_REQUESTED"),
+        ]
+
+    def test_the_verdict_reads_the_bot_sample_as_reviewed_only_by_its_own_author(self):
+        status, output = _verdict(_gh_pr_list_sample(_BOT_SAMPLE), "feature/sample")
+
+        assert status == 0, output
+        entry = _split_ancestor_verdict(output)[3]
+        assert entry["author"] == '"app/example-bot"'
+        assert entry["selfReviewOnly"] is True
+        assert [review["byPrAuthor"] for review in entry["reviews"]] == [True]
+
+    @pytest.mark.parametrize("sample_name", [_HUMAN_SAMPLE, _BOT_SAMPLE])
+    def test_the_gh_keys_the_double_leaves_out_do_not_change_the_verdict(self, sample_name):
+        sample = _gh_pr_list_sample(sample_name)
+
+        assert _verdict(_without_unmodeled_gh_keys(sample), "feature/sample") == _verdict(sample, "feature/sample")
+
+    @pytest.mark.parametrize("sample_name", [_HUMAN_SAMPLE, _BOT_SAMPLE])
+    def test_the_double_builds_items_with_the_sample_items_key_set(self, sample_name):
+        built_item = pr_list_item(1, "feature/sample", "main")
+
+        for sample_item in _gh_pr_list_sample(sample_name):
+            assert set(built_item) == set(sample_item)
+
+    def test_the_double_builds_reviews_with_the_sample_review_key_set_less_the_keys_it_leaves_out(self):
+        sample_review = _gh_pr_list_sample(_HUMAN_SAMPLE)[0]["reviews"][0]
+
+        built_review = pr_list_review("bob")
+
+        assert set(built_review) == set(sample_review) - _GH_REVIEW_KEYS_NOT_MODELED
+        assert set(built_review["author"]) == set(sample_review["author"])
+
+    def test_the_double_builds_authors_with_the_sample_author_key_sets(self):
+        human_author = _gh_pr_list_sample(_HUMAN_SAMPLE)[0]["author"]
+        bot_author = _gh_pr_list_sample(_BOT_SAMPLE)[0]["author"]
+
+        built_human_author = pr_list_item(1, "feature/sample", "main")["author"]
+        built_bot_author = pr_list_item(1, "feature/sample", "main", author_login="app/x", author_is_bot=True)["author"]
+
+        assert set(built_human_author) == set(human_author) - _GH_HUMAN_AUTHOR_KEYS_NOT_MODELED
+        assert set(built_bot_author) == set(bot_author)
+
+
 def _document_entry(
     number: int,
     *,
@@ -1657,6 +1750,9 @@ def _document(entries: list[dict], root_branch: str = "main", default_branch: st
 
 
 class TestStackDocumentShape:
+    def test_the_hand_built_ancestor_entry_has_the_key_set_the_verdict_prints(self):
+        assert set(_document_entry(11)) == _STACK_ENTRY_KEYS
+
     def test_default_base_gives_the_unstacked_document(self):
         assert _document([]) == {
             "stacked": False,
@@ -1913,18 +2009,21 @@ def _run_walk(
 
 
 def _linear_stack(
-    depth: int, *, final_base: str = "main", reviewed: bool = True, first_number: int = 101
+    depth: int, *, final_base: str = "main", reviewed: bool | Sequence[bool] = True, first_number: int = 101
 ) -> tuple[dict, str]:
     """Replies for `depth` ancestor PRs chained head-to-base, and the first branch to look up.
 
     PR `first_number + i` has head `feat/level-<i + 1>`; each one's base is the next level's head, and the last one's
     base is `final_base`.
+    `reviewed` is one flag for every PR, or one flag per PR in that order, the PR nearest the target first.
     """
+    reviewed_per_level = [reviewed] * depth if isinstance(reviewed, bool) else list(reviewed)
+    assert len(reviewed_per_level) == depth
     replies = {}
     for index in range(depth):
         head = f"feat/level-{index + 1}"
         base = f"feat/level-{index + 2}" if index + 1 < depth else final_base
-        reviews = [pr_list_review("reviewer", "APPROVED")] if reviewed else []
+        reviews = [pr_list_review("reviewer", "APPROVED")] if reviewed_per_level[index] else []
         replies[head] = [pr_list_item(first_number + index, head, base, reviews=reviews)]
     return replies, "feat/level-1"
 
@@ -2046,6 +2145,87 @@ class TestWalkStackLookups:
         assert result.status == 1
         assert result.stdout == ""
         assert "stack document" in result.stderr
+
+
+def _reviewed_pattern_id(reviewed_pattern: tuple[bool, ...]) -> str:
+    return "".join("R" if reviewed else "U" for reviewed in reviewed_pattern)
+
+
+class TestWalkStackGateMatrix:
+    @pytest.mark.parametrize(
+        "reviewed_pattern",
+        list(itertools.product([True, False], repeat=3)),
+        ids=_reviewed_pattern_id,
+    )
+    def test_both_modes_name_the_unreviewed_ancestor_nearest_the_root_or_clear(self, tmp_path, reviewed_pattern):
+        first_number = 101
+        replies, first_branch = _linear_stack(3, reviewed=reviewed_pattern, first_number=first_number)
+        # The walk goes from the target toward the root, so the last PR in walk order is the one nearest the root.
+        unreviewed_numbers = [first_number + level for level, reviewed in enumerate(reviewed_pattern) if not reviewed]
+        expected = str(unreviewed_numbers[-1]) if unreviewed_numbers else "clear"
+
+        lowest = _run_walk(tmp_path / "lowest", replies, base_ref=first_branch)
+        document = _run_walk(tmp_path / "document", replies, base_ref=first_branch, mode="document")
+
+        assert (lowest.status, document.status) == (0, 0), (lowest.stderr, document.stderr)
+        assert lowest.stdout == expected
+        document_lowest = json.loads(document.stdout)["lowestUnreviewed"]
+        assert ("clear" if document_lowest is None else str(document_lowest)) == expected
+
+
+class TestWalkStackConcernsFromGhReplies:
+    """Replies built as gh prints them reach the document's concerns and advice through the verdict and the walk."""
+
+    @staticmethod
+    def _document_for(tmp_path: Path, replies: dict, first_branch: str) -> dict:
+        result = _run_walk(tmp_path, replies, base_ref=first_branch, mode="document")
+        assert result.status == 0, result.stderr
+        return json.loads(result.stdout)
+
+    @pytest.mark.parametrize(
+        ("expected_concern_code", "reviews"),
+        [
+            ("changes-requested", [pr_list_review("bob", "CHANGES_REQUESTED")]),
+            ("self-review-only", [pr_list_review("alice", "COMMENTED")]),
+            (
+                "review-list-full",
+                [pr_list_review(f"reviewer-{index}") for index in range(_GH_REVIEWS_LIMIT)],
+            ),
+        ],
+        ids=["changes-requested", "self-review-only", "review-list-full"],
+    )
+    def test_a_reviewed_ancestor_with_a_concern_raises_it_and_recommends_stop(
+        self, tmp_path, expected_concern_code, reviews
+    ):
+        replies = {"feat/level-1": [pr_list_item(101, "feat/level-1", "main", author_login="alice", reviews=reviews)]}
+
+        document = self._document_for(tmp_path, replies, "feat/level-1")
+
+        assert [concern["code"] for concern in document["concerns"]] == [expected_concern_code]
+        assert document["choices"] == ["proceed", "stop"]
+        assert document["recommendedChoice"] == "stop"
+
+    @pytest.mark.parametrize(
+        ("lower_reviews", "expected_recommendation"),
+        [
+            ([pr_list_review("bob", "CHANGES_REQUESTED")], "stop"),
+            ([pr_list_review("bob", "APPROVED")], "review-lowest"),
+        ],
+        ids=["concern-below-the-lowest-unreviewed", "no-concern-below-the-lowest-unreviewed"],
+    )
+    def test_a_concern_on_a_reviewed_ancestor_below_the_lowest_unreviewed_changes_the_recommendation(
+        self, tmp_path, lower_reviews, expected_recommendation
+    ):
+        replies = {
+            "feat/upper": [pr_list_item(102, "feat/upper", "feat/lower")],
+            "feat/lower": [pr_list_item(101, "feat/lower", "main", reviews=lower_reviews)],
+        }
+
+        document = self._document_for(tmp_path, replies, "feat/upper")
+
+        assert document["lowestUnreviewed"] == 102
+        assert document["choices"] == ["review-lowest", "stop"]
+        assert document["recommendedChoice"] == expected_recommendation
 
 
 class TestWalkStackLookupCap:

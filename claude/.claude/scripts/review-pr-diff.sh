@@ -204,7 +204,7 @@ if ! review_pr_base_is_default_branch "$BASE_REF_NAME" "$BASE_DEFAULT_BRANCH"; t
     exit 2
   fi
   if [[ "$LOWEST_UNREVIEWED_ANCESTOR" =~ ^[1-9][0-9]*$ ]]; then
-    echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER is stacked on PR $OWNER_REPO#$LOWEST_UNREVIEWED_ANCESTOR, which has no submitted review. PR $OWNER_REPO#$LOWEST_UNREVIEWED_ANCESTOR clears once a review in any state is submitted on it on GitHub; a review kept local does not count. review-pr-checkout.sh refuses PR $OWNER_REPO#$PR_NUMBER too. Abort before any file listing." >&2
+    echo "review-pr-diff.sh: PR $OWNER_REPO#$PR_NUMBER is stacked on PR $OWNER_REPO#$LOWEST_UNREVIEWED_ANCESTOR, which has no submitted review. PR $OWNER_REPO#$LOWEST_UNREVIEWED_ANCESTOR clears once a review is submitted on it on GitHub; a draft (pending, unsubmitted) review or one kept local does not count. review-pr-checkout.sh refuses PR $OWNER_REPO#$PR_NUMBER too. Abort before any file listing." >&2
     exit "$REVIEW_PR_EXIT_STACK_UNREVIEWED"
   fi
   if [[ "$LOWEST_UNREVIEWED_ANCESTOR" != "clear" ]]; then

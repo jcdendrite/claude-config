@@ -176,12 +176,15 @@ STACK_LOWER_PR_NUMBER = 41
 STACK_UPPER_PR_NUMBER = 43
 
 
-def stack_replies(stacked_branch: str, lower_branch: str, *, lower_reviewed: bool) -> dict:
-    """`gh pr list` replies for a two-level stack: the upper PR (reviewed) has head `stacked_branch` and base `lower_branch`,
-    and the lower PR has head `lower_branch` and base main, with a review only when `lower_reviewed`."""
+def stack_replies(stacked_branch: str, lower_branch: str, *, lower_reviewed: bool, upper_reviewed: bool = True) -> dict:
+    """`gh pr list` replies for a two-level stack: the upper PR has head `stacked_branch` and base `lower_branch`,
+    and the lower PR has head `lower_branch` and base main.
+    Each PR has a review only when its `*_reviewed` flag is true."""
     reviews = [pr_list_review("reviewer")]
     return {
-        stacked_branch: [pr_list_item(STACK_UPPER_PR_NUMBER, stacked_branch, lower_branch, reviews=reviews)],
+        stacked_branch: [
+            pr_list_item(STACK_UPPER_PR_NUMBER, stacked_branch, lower_branch, reviews=reviews if upper_reviewed else [])
+        ],
         lower_branch: [pr_list_item(STACK_LOWER_PR_NUMBER, lower_branch, "main", reviews=reviews if lower_reviewed else [])],
     }
 

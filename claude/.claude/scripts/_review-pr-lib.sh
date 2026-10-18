@@ -114,8 +114,7 @@ REVIEW_PR_JQ_ASCII_JSON_STRING_DEFS='
     def truncated_ascii_json_string($limit): (if length > $limit then .[:$limit] + "...[truncated]" else . end) | ascii_json_string;
 '
 
-# No protocol or vendor limit backs the value. One lookup costs at most 15 s (the 10 s gh cap plus one 5 s jq cap), so 8 lookups cost 120 s.
-# review-pr-checkout.sh's usage text states 495 s and 555 s for a stacked PR, 120 s of each being this walk, and review-pr-diff.sh's states 305 s and 320 s. All are under the Bash tool's 600 s maximum (claude-skills/skills/review-pr/REFERENCES.md).
+# No protocol or vendor limit backs the value. It keeps checkout's stacked worst case under the Bash tool's 600 s maximum (claude-skills/skills/review-pr/REFERENCES.md "Caps").
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_STACK_MAX_LOOKUPS=8
 
@@ -135,6 +134,7 @@ REVIEW_PR_STACK_GH_REVIEWS_LIMIT=100
 # Display bounds for the stack document. No protocol or vendor limit backs either value.
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_STACK_TEXT_ECHO_LIMIT=80
+# The first distinct reviews in the order gh returns them are kept, and the rest are only counted.
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_STACK_REVIEW_DISPLAY_LIMIT=10
 

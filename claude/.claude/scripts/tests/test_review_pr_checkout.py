@@ -30,6 +30,7 @@ from helpers import (
 
 from ._review_pr_stack_helpers import (
     STACK_LOWER_PR_NUMBER,
+    STACK_UPPER_PR_NUMBER,
     copy_script_with_stubbed_walk,
     pr_list_head_values,
     pr_list_item,
@@ -3862,11 +3863,33 @@ class TestStackedBaseGate:
         (refusal_line,) = result.stderr.splitlines()
         assert refusal_line.startswith("review-pr-checkout.sh: ")
         assert f"PR {OWNER_REPO}#{STACK_LOWER_PR_NUMBER}, which has no submitted review" in refusal_line
-        assert "once a review in any state is submitted on it on GitHub" in refusal_line
-        assert "a review kept local does not count" in refusal_line
+        # Wording tripwires: the next two lines pin refusal prose, not behavior.
+        assert "clears once a review is submitted on it on GitHub" in refusal_line
+        assert "a draft (pending, unsubmitted) review or one kept local does not count" in refusal_line
         assert f"review-pr-diff.sh refuses PR {PR_IDENTITY} too" in refusal_line
         assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH]
         assert provenance.read_bytes() == provenance_before
+        _assert_refused_before_the_file_listing(result, repo, isolated_home, call_log)
+
+    def test_an_unreviewed_immediate_base_exits_4_naming_it_though_the_ancestor_below_it_is_reviewed(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["pr_file.txt"],
+            pr_list_replies=stack_replies(
+                _STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH, lower_reviewed=True, upper_reviewed=False
+            ),
+            **_STACKED_BASE_NAMES,
+        )
+
+        assert result.returncode == 4, result.stderr
+        (refusal_line,) = result.stderr.splitlines()
+        assert f"PR {OWNER_REPO}#{STACK_UPPER_PR_NUMBER}, which has no submitted review" in refusal_line
+        assert _walked_branches(call_log) == [_STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH]
         _assert_refused_before_the_file_listing(result, repo, isolated_home, call_log)
 
     def test_a_pr_into_the_default_branch_makes_no_lookup_whatever_a_reply_keyed_by_the_default_branch_holds(

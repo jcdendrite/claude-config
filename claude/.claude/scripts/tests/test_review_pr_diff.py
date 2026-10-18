@@ -24,6 +24,7 @@ from helpers import SCRIPTS_DIR, write_review_pr_provenance
 
 from ._review_pr_stack_helpers import (
     STACK_LOWER_PR_NUMBER,
+    STACK_UPPER_PR_NUMBER,
     copy_script_with_stubbed_walk,
     pr_list_calls,
     pr_list_head_values,
@@ -1561,11 +1562,32 @@ class TestStackedBaseGate:
 
         assert result.returncode == 4, result.stderr
         assert f"PR {OWNER_REPO}#{STACK_LOWER_PR_NUMBER}, which has no submitted review" in result.stderr
-        assert "a review kept local does not count" in result.stderr
+        # Wording tripwires: the next two lines pin refusal prose, not behavior.
+        assert "clears once a review is submitted on it on GitHub" in result.stderr
+        assert "a draft (pending, unsubmitted) review or one kept local does not count" in result.stderr
         assert "review-pr-checkout.sh refuses" in result.stderr
         assert len(pr_list_calls(_read_calls(call_log))) == 2
         assert provenance.read_bytes() == provenance_before
         _assert_refused_before_any_listing_or_diff_fetch(result, isolated_home, call_log, provenance_pre_seeded=True)
+
+    def test_an_unreviewed_immediate_base_exits_4_naming_it_though_the_ancestor_below_it_is_reviewed(
+        self, isolated_home, repo_with_pr_ref, tmp_path
+    ):
+        _install_audit_script(isolated_home)
+        repo, pr_sha = repo_with_pr_ref
+
+        result, call_log = _run(
+            repo, isolated_home, [PR_IDENTITY], tmp_path,
+            head_ref_oid=pr_sha, files=["a.py"], base_ref_name=_STACKED_BASE_BRANCH,
+            pr_list_replies=stack_replies(
+                _STACKED_BASE_BRANCH, _LOWER_BASE_BRANCH, lower_reviewed=True, upper_reviewed=False
+            ),
+        )
+
+        assert result.returncode == 4, result.stderr
+        assert f"PR {OWNER_REPO}#{STACK_UPPER_PR_NUMBER}, which has no submitted review" in result.stderr
+        assert len(pr_list_calls(_read_calls(call_log))) == 2
+        _assert_refused_before_any_listing_or_diff_fetch(result, isolated_home, call_log, provenance_pre_seeded=False)
 
     def test_a_pr_into_the_default_branch_makes_no_lookup_whatever_a_reply_keyed_by_the_default_branch_holds(
         self, isolated_home, repo_with_pr_ref, tmp_path

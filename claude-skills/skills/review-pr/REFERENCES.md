@@ -116,6 +116,15 @@ submitted review. The lib's header and tests own the exact contract.
 `authorAssociation`, `state`, and `submittedAt`, observed under gh 2.101.0.
 `gh pr list --json reviews` embeds `reviews(first: 100)`, read from the same
 binary and not run, so the list is a prefix once it holds 100 entries.
+`reviewListFull` mirrors that page size, so re-verify it on every `gh`
+upgrade: if `gh` changes the size, a truncated list reads as complete and the
+`review-list-full` concern never raises. The gate is unaffected, since it needs
+only one submitted review. Also re-capture
+`claude/.claude/scripts/tests/fixtures/gh-pr-list-reviews-sample.json`, shaped
+from gh 2.101.0 output: a changed `author` or `submittedAt` shape otherwise
+leaves the suite green against a stale fixture. The fixture holds no `PENDING`
+review and no deleted-account (null `author`) review. Only the test double
+models those shapes, so they are unverified against real `gh`.
 
 - **The gate is "any submitted review".** A review in any state except
   `PENDING`, in any letter case, clears it: `APPROVED`, `CHANGES_REQUESTED`,
@@ -127,6 +136,11 @@ binary and not run, so the list is a prefix once it holds 100 entries.
   one exists. If that assumption is false, the gate can over-refuse, reading a
   page of `PENDING` drafts as "no review". That costs availability, never gate
   integrity, because a wrong reading never clears an unreviewed ancestor.
+- **A long review list is cut for display, not for advice.** Each ancestor's
+  `reviews` keeps the first 10 distinct (author, association, state,
+  `byPrAuthor`) entries in the order `gh` returns them, which is unverified and
+  expected to be oldest first, and `reviewsNotShown` counts the rest. The
+  advice flags are computed over every review in the list.
 - **`existingReviews`, `latestReviews`, and `reviewDecision` are not read.**
   `existingReviews` drops empty-body reviews. Whether `reviewDecision` is empty
   when a repository requires no reviews is unverified, and so is whether
