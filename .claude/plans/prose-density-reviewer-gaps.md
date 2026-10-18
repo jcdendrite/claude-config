@@ -2,11 +2,19 @@
 
 ## Context
 
-Goal: close the gap that lets dense, hard-to-follow prose reach human PR review despite `comment-discipline-reviewer` and `tighten-prose` already existing, by first establishing whether the gap is checklist scope (holistic density is not a check) or trigger scope (the reviewer is not dispatched) and then fixing the one that is real rather than adding a third mechanism.
+Goal: close the gap that lets dense, hard-to-follow prose reach human PR review despite `comment-discipline-reviewer` and `tighten-prose` already existing, by first establishing which gap is real: checklist scope (holistic density is not a check) or trigger scope (the reviewer is not dispatched). Fix only the one that is real, rather than adding a third mechanism.
 
-Ask: cited to GH-1006 — "investigate both candidate gaps (checklist scope vs. trigger scope) before picking a fix, rather than adding a third overlapping mechanism." Step 4 selections — checklist gap: "Add a readability angle (Recommended)"; trigger gap: "Widen row scope only (Recommended)"; #919 citation-placement evidence: "Yes, leave to #1005 (Recommended)"; validation: "I actually think a regression fixture would be a good idea, but have the architect run an adversarial review against it"; fixture home versus the scratchpad rule: "Commit the fixture (Recommended)"; scope beyond the Ask at plan review: "M4: wrong-altitude example", "M5: row right-column rewrite", "M8: replay the real complaint sites", "I think all of those but can you have the architect do an adversarial review"; after that review: "Drop M4 (architect's recommendation)".
+Ask: cited to GH-1006 — "investigate both candidate gaps (checklist scope vs. trigger scope) before picking a fix, rather than adding a third overlapping mechanism." Step 4 selections:
 
-Why now: in one week (2026-09-06 to 2026-09-13) the human reviewer filed four independent "too dense / can't follow" complaints across PRs #972, #963, #928, and #919. `review-trace` showed `comment-discipline-reviewer` fired repeatedly on #972 and #963 yet the complaint recurred, and recorded zero reviewer spawns on #928. Firing on #919 is unconfirmed (no recoverable transcript). Intended outcome: a single targeted change to whichever mechanism is actually failing, with evidence from the four complaint sites that the change would have caught them.
+- Checklist gap: "Add a readability angle (Recommended)"
+- Trigger gap: "Widen row scope only (Recommended)"
+- #919 citation-placement evidence: "Yes, leave to #1005 (Recommended)"
+- Validation: "I actually think a regression fixture would be a good idea, but have the architect run an adversarial review against it"
+- Fixture home versus the scratchpad rule: "Commit the fixture (Recommended)"
+- Scope beyond the Ask at plan review: "M4: wrong-altitude example", "M5: row right-column rewrite", "M8: replay the real complaint sites", "I think all of those but can you have the architect do an adversarial review"
+- After that review: "Drop M4 (architect's recommendation)"
+
+Why now: in one week (2026-09-06 to 2026-09-13) the human reviewer filed four independent "too dense / can't follow" complaints across PRs #972, #963, #928, and #919. `review-trace` showed `comment-discipline-reviewer` fired repeatedly on #972 and #963, yet the complaint recurred there. It recorded zero reviewer spawns on #928. Firing on #919 is unconfirmed (no recoverable transcript). Intended outcome: a single targeted change to whichever mechanism is actually failing, with evidence from the four complaint sites that the change would have caught them.
 
 ## Approach
 

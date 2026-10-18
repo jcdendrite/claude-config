@@ -3,11 +3,7 @@
 *2026-10-15.*
 
 Every existing `comment-discipline-reviewer` angle judges a sentence or a
-site, never how a paragraph's sentences are arranged. The old body never
-proposed the reorder this angle's second shape names, an instruction placed
-after its own rationale. On the real complaint sites it proposed sentence
-splits, not the lists or reorders the owner actually asked for. The human
-reviewer kept filing "too dense / can't follow" complaints anyway. `Paragraph readability`,
+site, never how a paragraph's sentences are arranged. `Paragraph readability`,
 a new angle in `claude/.claude/agents/comment-discipline-reviewer.md` § "Core review angles", closes that gap. The angle body states its own
 predicate, fix, and carve-outs directly. This entry doesn't restate them.
 
@@ -71,9 +67,9 @@ the repo. That reasoning fits a fixture whose only job is probing a leak
 or an evasion. `paragraph-readability.json`'s `must_flag` and `must_pass`
 hold no such content — a neutral synthetic topic whose only defect is
 paragraph arrangement. The scratchpad rule's stated reason does not apply
-to it, so this decision commits the fixture instead. Rows 19–32 of
-`.claude/plans/prose-density-reviewer-gaps.md` designed it to be exactly
-that regression guard.
+to it, so this decision commits the fixture instead. The plan's
+assumption ledger in `.claude/plans/prose-density-reviewer-gaps.md`
+designed it to be exactly that regression guard.
 
 ## Revisiting the angle count
 
@@ -95,12 +91,14 @@ decision is what first gives the reviewer a §Prose rule to enforce.
 The angle shipped with three measured caveats still open rather than
 resolved before merge. `claude/.claude/hooks/tests/fixtures/paragraph-readability.json`'s
 `note` field holds the measured rates, the date, and the model. This
-section states what those rates left unmet.
+section states what those rates left unmet, comparing the pre-angle
+reviewer (`comment-discipline-reviewer` without Paragraph readability)
+against the reviewer with this angle added.
 
 Three items were not achieved:
 
-- The old-body fixture cell missed its bar. The fixture's `note` field
-  holds the measured rate.
+- The pre-angle reviewer's fixture cell missed its bar. The fixture's
+  `note` field holds the measured rate.
 - One gated complaint site is a known residual. A dense paragraph of
   mixed rules that already leads with its claim draws sentence splits,
   not a lead plus a list. Its rules are mixed in kind. They also sit
@@ -110,8 +108,8 @@ Three items were not achieved:
   Alternatives list already declines a density mechanism, for the same
   reason.
 - One gated complaint site gives no evidence for the new angle. Both the
-  old and the new reviewer body caught it in every run, so the site
-  doesn't separate them.
+  pre-angle reviewer and the reviewer with this angle added caught it in
+  every run, so the site doesn't separate them.
 
 ## Sources
 

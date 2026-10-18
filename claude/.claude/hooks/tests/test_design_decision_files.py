@@ -781,11 +781,16 @@ def _angle_block_text(agent_text: str, angle_name: str) -> str | None:
     if not section_match:
         return None
     section_text = section_match.group(1)
-    header_matches = [
-        match
-        for match in _CORE_REVIEW_ANGLE_HEADER_RE.finditer(section_text)
-        if match.start() == 0 or section_text[: match.start()].endswith("\n\n")
-    ]
+    # _CORE_REVIEW_ANGLES_SECTION_RE consumes only one of the two newlines
+    # after the '## Core review angles' heading, so a header with no prose
+    # paragraph in front of it leaves a single leading newline in
+    # section_text. That lone "\n" must count as a valid start alongside ""
+    # (match.start() == 0) and a real "\n\n".
+    header_matches = []
+    for match in _CORE_REVIEW_ANGLE_HEADER_RE.finditer(section_text):
+        preceding = section_text[: match.start()]
+        if preceding in ("", "\n") or preceding.endswith("\n\n"):
+            header_matches.append(match)
     for index, header_match in enumerate(header_matches):
         if header_match.group(1) != angle_name:
             continue
@@ -828,6 +833,15 @@ def _paragraph_readability_fixture_violations(
         ]
 
     block = _angle_block_text(agent_text, angle_name)
+    if block is None:
+        # angle_name can match the loose, blank-line-agnostic header scan
+        # above while failing _angle_block_text()'s stricter one.
+        # That happens when angle_name names a decoy bold-dash line.
+        return [
+            f"paragraph-readability.json: 'angle' {angle_name!r} matches a "
+            "bold-dash line that isn't preceded by a blank line, so it "
+            "isn't a genuine angle header."
+        ]
     expected_hash = hashlib.sha256(" ".join(block.split()).encode("utf-8")).hexdigest()
     actual_hash = fixture.get("angle_text_sha256", "")
     if actual_hash != expected_hash:
@@ -1835,6 +1849,71 @@ class TestFaultInjection:
         ).hexdigest()
         violations = _paragraph_readability_fixture_violations(fixture, agent_text)
         assert violations == []
+
+    def test_paragraph_readability_fixture_resolves_angle_as_sections_first_header(
+        self,
+    ) -> None:
+        """The queried angle is the section's literal first line, with no
+        prose paragraph before it. _CORE_REVIEW_ANGLES_SECTION_RE consumes
+        only one of the two newlines after the '## Core review angles'
+        heading, so section_text still opens with a single leading newline
+        rather than "". That leading newline must count as a valid header
+        boundary too, or _angle_block_text wrongly treats the section's own
+        first header as an unbounded decoy."""
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Paragraph readability** — a paragraph whose arrangement hides the instruction.\n\n"
+            "**Prose at the wrong altitude** — content placed where its reader doesn't match.\n\n"
+            "## How to work\n"
+        )
+        violations = _paragraph_readability_fixture_violations(
+            self._VALID_PARAGRAPH_READABILITY_FIXTURE, agent_text
+        )
+        assert violations == []
+
+    def test_paragraph_readability_fixture_resolves_angle_with_no_newline_before_header(
+        self,
+    ) -> None:
+        """The '## Core review angles' heading is followed by a single
+        newline, not two, so section_text opens directly with the header's
+        leading '**' and match.start() is 0 for it -- no leading newline at
+        all. That empty-string boundary must count as valid alongside a
+        single leading newline and a real blank-line gap, or
+        _angle_block_text wrongly treats the section's own first header as an
+        unbounded decoy."""
+        agent_text = (
+            "## Core review angles\n"
+            "**Paragraph readability** — a paragraph whose arrangement hides the instruction.\n\n"
+            "**Prose at the wrong altitude** — content placed where its reader doesn't match.\n\n"
+            "## How to work\n"
+        )
+        violations = _paragraph_readability_fixture_violations(
+            self._VALID_PARAGRAPH_READABILITY_FIXTURE, agent_text
+        )
+        assert violations == []
+
+    def test_paragraph_readability_fixture_rejects_angle_matching_only_decoy_header(
+        self,
+    ) -> None:
+        """The fixture's 'angle' names the same decoy bold-dash line
+        test_paragraph_readability_fixture_accepts_block_through_nested_bold_dash_line
+        builds -- header-shaped per the loose header scan but not preceded
+        by a blank line, so _angle_block_text returns None for it. The
+        function must report a clean violation instead of raising when it
+        tries to hash that None block."""
+        agent_text = (
+            "## Core review angles\n\n"
+            "**Comment verbosity** — a comment stating too much.\n\n"
+            "**Paragraph readability** — a paragraph whose arrangement hides the instruction.\n"
+            "**Note** — a bullet missing its leading '- ', so it reads like a header.\n\n"
+            "**Prose at the wrong altitude** — content placed where its reader doesn't match.\n\n"
+            "## How to work\n"
+        )
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["angle"] = "Note"
+        violations = _paragraph_readability_fixture_violations(fixture, agent_text)
+        assert len(violations) == 1
+        assert "isn't a genuine angle header" in violations[0]
 
     def test_paragraph_readability_fixture_detects_dropped_literal(self) -> None:
         """must_pass drops the digit run must_flag carries -- a vacuous
