@@ -706,10 +706,10 @@ produced a refusal is still worth keeping runnable.
 - `docs/auto-mode.md:173-176` — correct the resolution order to the current
   vendor order (G1) and cite v2.1.251. Lines `:199` ("resolution step 2 …
   competes with step 4") and `:207-208` ("sits at resolution step 1 and
-  overrides *every* subagent's model") cite the old step numbers; rewrite
+  overrides *every* subagent's model") cite the old step numbers. Rewrite
   both to name the mechanism ("the per-dispatch param", "the env var, which
-  now ranks below frontmatter") instead of a step number, so the file does
-  not contradict itself after the list changes.
+  now ranks below frontmatter") instead of a step number. This keeps the
+  file from contradicting itself after the list changes.
 - `CHANGELOG.md` — entry. Under the refuse branch it records the eval's
   arrival, the measured verdict in one line, and only the two Step 6
   residuals that attach to the eval itself: recall drift (A3) and public-repo

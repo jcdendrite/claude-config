@@ -260,10 +260,15 @@ def _answer_contract_unit(stratum: str) -> str:
 
 
 def build_dispatch_prompt(case: RecallCase, repo_dir: Path) -> str:
-    """The case's own question plus where to search (repo_dir) plus the
-    structured-answer contract, plus msmr.DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX's
-    "dispatch by name only, no model param" clause so the headless parent
-    can't restore Sonnet via an explicit per-dispatch model param.
+    """Assembles the dispatch prompt from four parts:
+
+    - The case's own question.
+    - Where to search (repo_dir).
+    - The structured-answer contract.
+    - msmr.DISPATCH_PROMPT_EXPLORE_HAIKU_SUFFIX's "dispatch by name only, no
+      model param" clause, so the headless parent can't restore Sonnet via
+      an explicit per-dispatch model param.
+
     The headless parent itself launches in an empty temp project dir, so
     Explore has nothing to search unless told where the real checkout is."""
     location = (
@@ -306,8 +311,9 @@ def _scan_subagent_final_answer_text(path: Path) -> str | None:
                 last_text = content
             elif isinstance(content, list):
                 last_text = "".join(
-                    block.get("text", "") for block in content
+                    text for block in content
                     if isinstance(block, dict) and block.get("type") == "text"
+                    and isinstance(text := block.get("text"), str)
                 )
             else:
                 last_text = ""
@@ -720,6 +726,11 @@ class SampleAttempt:
     # when no subagent transcript was read at all (e.g. no dispatch observed).
     final_answer_text: str | None = None
     parsed_items: tuple[str, ...] | None = None
+    # The --keep-artifacts directory this attempt's artifacts actually
+    # landed in (_copy_sample_artifacts's own dest.name), not the launch
+    # counter _build_launcher used to name it. None when --keep-artifacts
+    # wasn't given.
+    artifact_dir: str | None = None
 
 
 _KEPT_ANSWER_TEXT_CHAR_LIMIT = 2000
@@ -777,12 +788,13 @@ def validate_keep_artifacts_dir(keep_artifacts_dir: Path, *, start_dir: Path | N
 
 def _copy_sample_artifacts(
     session_jsonl: Path, keep_artifacts_dir: Path, *, case_id: str, arm: str, sample_index: int,
-) -> None:
+) -> str:
     """Copies one sample's parent session .jsonl and its subagents/
     directory into keep_artifacts_dir/<case>-<arm>-<sample>/ before
     execute_one_sample_attempt's own `finally` block deletes both -- the
     only way to inspect a live sample's real transcript shape after the
-    run finishes."""
+    run finishes. Returns the created directory's own name so the caller
+    can record exactly where an attempt's artifacts landed."""
     dest = keep_artifacts_dir / f"{case_id}-{arm}-{sample_index}"
     dest.mkdir(parents=True, exist_ok=True)
     if session_jsonl.is_file():
@@ -790,6 +802,7 @@ def _copy_sample_artifacts(
     subagent_dir = msmr.subagent_dir_for_session(session_jsonl)
     if subagent_dir.is_dir():
         shutil.copytree(subagent_dir, dest / "subagents", dirs_exist_ok=True)
+    return dest.name
 
 
 def execute_one_sample_attempt(
@@ -831,14 +844,15 @@ def execute_one_sample_attempt(
             session_jsonl, requested_agent_declared_tools=msmr.EXPLORE_HAIKU_OVERRIDE_TOOLS,
         )
         if not dispatches:
+            artifact_dir = None
             if keep_artifacts_dir is not None:
-                _copy_sample_artifacts(
+                artifact_dir = _copy_sample_artifacts(
                     session_jsonl, keep_artifacts_dir, case_id=case.id, arm=arm, sample_index=sample_index,
                 )
             return SampleAttempt(
                 observed_model_family=None, observed_model_ids=frozenset(), cost_usd=cost_usd,
                 cost_source=cost_source, timed_out=timed_out, sidecar_poll_timed_out=sidecar_poll_timed_out,
-                score=score_sample(None, key=case.key, format_failure=True),
+                score=score_sample(None, key=case.key, format_failure=True), artifact_dir=artifact_dir,
             )
         # dispatches[0] and jsonl_paths[0] are the same dispatch: both globs
         # are sorted, and a dispatch's meta.json and its paired .jsonl share
@@ -854,8 +868,9 @@ def execute_one_sample_attempt(
             read_final_answer(jsonl_paths[0], repo_dir=repo_dir, stratum=case.stratum)
             if jsonl_paths else AnswerExtraction(None, True, None)
         )
+        artifact_dir = None
         if keep_artifacts_dir is not None:
-            _copy_sample_artifacts(
+            artifact_dir = _copy_sample_artifacts(
                 session_jsonl, keep_artifacts_dir, case_id=case.id, arm=arm, sample_index=sample_index,
             )
         score = score_sample(
@@ -870,7 +885,7 @@ def execute_one_sample_attempt(
             observed_model_family=dispatch.observed_model_family, observed_model_ids=dispatch.observed_model_ids,
             cost_usd=cost_usd, cost_source=cost_source, timed_out=timed_out,
             sidecar_poll_timed_out=sidecar_poll_timed_out, score=score,
-            final_answer_text=final_answer_text, parsed_items=extraction.items,
+            final_answer_text=final_answer_text, parsed_items=extraction.items, artifact_dir=artifact_dir,
         )
     finally:
         shutil.rmtree(tmp_project, ignore_errors=True)
@@ -1188,6 +1203,7 @@ def sample_outcome_to_dict(outcome: SampleOutcome) -> dict:
                 "sidecar_poll_timed_out": a.sidecar_poll_timed_out,
                 "cost_usd": a.cost_usd,
                 "cost_source": a.cost_source,
+                "artifact_dir": a.artifact_dir,
             }
             for a in attempts
         ],
@@ -1291,12 +1307,17 @@ def _build_launcher(
     *, repo_dir: Path, keep_artifacts_dir: Path | None,
 ) -> Callable[..., SampleAttempt]:
     """Binds repo_dir and keep_artifacts_dir for execute_one_sample_attempt
-    and assigns each (case, arm) pair its own 0-based sample_index for
-    artifact naming, while keeping the returned callable's own signature
-    -- (case, arm, *, budget_cap_usd, timeout_s) -- identical to every
-    fake launcher the test suite passes to run_batch/run_one_logical_sample,
-    so this wrapper is the only place that needs to know about the
-    sample_index/keep_artifacts_dir kwargs at all."""
+    and assigns each (case, arm) pair its own 0-based counter for artifact
+    naming. That counter is a per-(case, arm) launch count that includes
+    retries, not the logical sample_index the report records. An
+    arm-mismatch retry in run_one_logical_sample advances the counter
+    without advancing the logical sample. SampleAttempt.artifact_dir, not
+    this counter, is the reliable way to find a given attempt's artifacts.
+    The returned callable's own signature -- (case, arm, *, budget_cap_usd,
+    timeout_s) -- stays identical to every fake launcher the test suite
+    passes to run_batch/run_one_logical_sample, so this wrapper is the only
+    place that needs to know about the sample_index/keep_artifacts_dir
+    kwargs at all."""
     sample_counts: dict[tuple[str, str], int] = defaultdict(int)
 
     def launcher(case: RecallCase, arm: str, *, budget_cap_usd: float, timeout_s: int) -> SampleAttempt:

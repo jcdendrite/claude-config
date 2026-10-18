@@ -324,6 +324,50 @@ class TestParseSubagentDispatches:
         assert model_ids == frozenset({"claude-sonnet-5"})
         assert tools == frozenset({"Read"})
 
+    def test_non_string_model_field_skipped_without_raising(self, tmp_path: Path) -> None:
+        """A record whose "message.model" field is a truthy non-string value
+        (e.g. a list) is skipped rather than crashing the set .add() call or
+        a later model_family() call's .lower()."""
+        session_jsonl = _session_jsonl_path(tmp_path)
+        subagent_dir = session_jsonl.parent / session_jsonl.stem / msmr.SUBAGENT_SUBDIR
+        subagent_dir.mkdir(parents=True)
+        path = subagent_dir / "agent-1.jsonl"
+        lines = [
+            json.dumps({"type": "assistant", "message": {"model": ["claude-sonnet-5"]}}).encode("utf-8"),
+            json.dumps(_assistant_record("claude-sonnet-5", ["Read"])).encode("utf-8"),
+        ]
+        path.write_bytes(b"\n".join(lines) + b"\n")
+
+        model_ids, tools = msmr._scan_subagent_jsonl(path)
+
+        assert model_ids == frozenset({"claude-sonnet-5"})
+        assert tools == frozenset({"Read"})
+
+    def test_non_list_content_field_skipped_without_raising(self, tmp_path: Path) -> None:
+        """A record whose "message.content" field is a truthy non-iterable value
+        (e.g. an int) is skipped rather than crashing the tool_use scan."""
+        session_jsonl = _session_jsonl_path(tmp_path)
+        subagent_dir = session_jsonl.parent / session_jsonl.stem / msmr.SUBAGENT_SUBDIR
+        subagent_dir.mkdir(parents=True)
+        path = subagent_dir / "agent-1.jsonl"
+        lines = [
+            json.dumps({
+                "type": "assistant",
+                "message": {"model": "claude-sonnet-5", "content": 1},
+            }).encode("utf-8"),
+        ]
+        path.write_bytes(b"\n".join(lines) + b"\n")
+
+        model_ids, tools = msmr._scan_subagent_jsonl(path)
+
+        assert model_ids == frozenset({"claude-sonnet-5"})
+        assert tools == frozenset()
+
+    def test_missing_file_returns_two_empty_frozensets_without_raising(self, tmp_path: Path) -> None:
+        path = tmp_path / "does-not-exist.jsonl"
+
+        assert msmr._scan_subagent_jsonl(path) == (frozenset(), frozenset())
+
 
 class TestWaitForSubagentSidecar:
     """The subagent sidecar can materialize on disk slightly after the parent

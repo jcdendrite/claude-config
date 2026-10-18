@@ -510,13 +510,15 @@ def _scan_subagent_jsonl(path: Path) -> tuple[frozenset[str], frozenset[str]]:
         for rec in _iter_assistant_records(path):
             msg = rec["message"]
             model = msg.get("model")
-            if model and model != SYNTHETIC_MODEL_ID:
+            if isinstance(model, str) and model and model != SYNTHETIC_MODEL_ID:
                 model_ids.add(model)
-            for block in msg.get("content") or []:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    name = block.get("name")
-                    if isinstance(name, str) and name:
-                        tools.add(name)
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        name = block.get("name")
+                        if isinstance(name, str) and name:
+                            tools.add(name)
     except OSError:
         return frozenset(), frozenset()
     return frozenset(model_ids), frozenset(tools)

@@ -451,6 +451,24 @@ class TestScanSubagentFinalAnswerText:
 
         assert m._scan_subagent_final_answer_text(path) == ""
 
+    def test_non_string_text_field_skipped_without_raising(self, tmp_path: Path) -> None:
+        """A text block whose own "text" field is a truthy non-string value
+        (e.g. a list) is skipped rather than crashing the "".join(...) call."""
+        path = tmp_path / "agent.jsonl"
+        _write_jsonl(path, [
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": ["not", "a", "string"]},
+                {"type": "text", "text": "ok"},
+            ]}},
+        ])
+
+        assert m._scan_subagent_final_answer_text(path) == "ok"
+
+    def test_missing_file_returns_none_without_raising(self, tmp_path: Path) -> None:
+        path = tmp_path / "does-not-exist.jsonl"
+
+        assert m._scan_subagent_final_answer_text(path) is None
+
 
 class TestLastFencedJsonBlock:
     def test_no_block_returns_none(self) -> None:
@@ -1092,6 +1110,24 @@ class TestEvaluateGate:
         )
         assert verdict == m.GateVerdict.FAIL
 
+    def test_passes_when_the_point_estimate_is_exactly_the_floor(self) -> None:
+        """Pins the boundary as inclusive -- a >/>= mutation on the
+        point-estimate check would flip this to FAIL unnoticed."""
+        verdict = m.evaluate_gate(
+            stratum_recall_gaps={"A": 0.0, "B": 0.0}, min_per_case_recall_gap=0.0,
+            haiku_precision_point_estimate=m.GATE_PRECISION_POINT_MIN, haiku_precision_wilson_lower_bound=0.95,
+        )
+        assert verdict == m.GateVerdict.PASS
+
+    def test_passes_when_the_lower_bound_is_exactly_the_floor(self) -> None:
+        """Pins the boundary as inclusive -- a >/>= mutation on the
+        Wilson-lower-bound check would flip this to UNCALLABLE unnoticed."""
+        verdict = m.evaluate_gate(
+            stratum_recall_gaps={"A": 0.0, "B": 0.0}, min_per_case_recall_gap=0.0,
+            haiku_precision_point_estimate=0.99, haiku_precision_wilson_lower_bound=m.GATE_PRECISION_LOWER_BOUND_MIN,
+        )
+        assert verdict == m.GateVerdict.PASS
+
     def test_per_case_cliff_check_runs_before_the_wilson_lower_bound_check(self) -> None:
         """Term ordering: when term 2's cliff guard and term 3's Wilson
         lower bound would independently disagree (FAIL vs UNCALLABLE), term
@@ -1329,6 +1365,99 @@ class TestExecuteOneSampleAttempt:
         assert dest.is_dir()
         assert list(dest.glob("*.jsonl")), "the parent session .jsonl must be copied before cleanup removes it"
         assert (dest / "subagents" / "agent-1.jsonl").is_file()
+
+    def test_keep_artifacts_dir_records_the_created_directory_name_as_artifact_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """attempt.artifact_dir must name the directory _copy_sample_artifacts
+        actually created for this one execute_one_sample_attempt call --
+        direct wiring from the keep_artifacts_dir/sample_index arguments
+        through to the returned attempt. See
+        test_mismatch_then_match_retries_each_get_their_own_artifact_dir
+        below for the arm-mismatch-retry scenario this attribute exists for,
+        where _build_launcher's own launch counter drifts from the logical
+        sample index."""
+        case = m.RecallCase(id="c1", stratum=m.STRATUM_A, question="Where is X?", key=frozenset({"a.py"}))
+
+        def fake_run_claude(cmd: list[str], cwd: Path, timeout_s: int) -> tuple[list[bytes], bool]:
+            session_id = cmd[cmd.index("--session-id") + 1]
+            session_store_dir = msmr.run_skill_evals.compute_session_store_dir(cwd)
+            subagent_dir = session_store_dir / session_id / msmr.SUBAGENT_SUBDIR
+            subagent_dir.mkdir(parents=True)
+            _write_jsonl(session_store_dir / f"{session_id}.jsonl", [_tool_use_record("Task")])
+            (subagent_dir / "agent-1.meta.json").write_text(
+                json.dumps({"toolUseId": "toolu_1", "agentType": "Explore"})
+            )
+            _write_jsonl(subagent_dir / "agent-1.jsonl", [_text_record('```json\n["a.py"]\n```')])
+            lines = [
+                json.dumps(
+                    {"event": {"type": "content_block_start", "content_block": {"type": "tool_use", "name": "Task"}}}
+                ).encode()
+            ]
+            return lines, False
+
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", fake_run_claude)
+        keep_artifacts_dir = tmp_path / "kept"
+
+        attempt = m.execute_one_sample_attempt(
+            case, msmr.DISPATCH_EXPLORE_HAIKU, budget_cap_usd=11.5, timeout_s=90, repo_dir=Path("/repo"),
+            keep_artifacts_dir=keep_artifacts_dir, sample_index=3,
+        )
+
+        assert attempt.artifact_dir == "c1-explore-haiku-3"
+        assert (keep_artifacts_dir / attempt.artifact_dir).is_dir()
+
+    def test_mismatch_then_match_retries_each_get_their_own_artifact_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_build_launcher's per-(case, arm) launch counter advances on
+        every retry, not just every logical sample, so the mismatched first
+        attempt and the matching retry must land in two distinct
+        artifact_dir directories rather than colliding on one name --
+        exactly the counter-drift SampleAttempt.artifact_dir exists to
+        survive."""
+        case = m.RecallCase(id="c1", stratum=m.STRATUM_A, question="Where is X?", key=frozenset({"a.py"}))
+        calls = {"count": 0}
+
+        def fake_run_claude(cmd: list[str], cwd: Path, timeout_s: int) -> tuple[list[bytes], bool]:
+            calls["count"] += 1
+            observed_model = "claude-sonnet-5" if calls["count"] == 1 else "claude-haiku-4-5-20251001"
+            session_id = cmd[cmd.index("--session-id") + 1]
+            session_store_dir = msmr.run_skill_evals.compute_session_store_dir(cwd)
+            subagent_dir = session_store_dir / session_id / msmr.SUBAGENT_SUBDIR
+            subagent_dir.mkdir(parents=True)
+            _write_jsonl(session_store_dir / f"{session_id}.jsonl", [_tool_use_record("Task")])
+            (subagent_dir / "agent-1.meta.json").write_text(
+                json.dumps({"toolUseId": "toolu_1", "agentType": "Explore"})
+            )
+            _write_jsonl(subagent_dir / "agent-1.jsonl", [
+                {"type": "assistant", "message": {
+                    "model": observed_model,
+                    "content": [{"type": "text", "text": '```json\n["a.py"]\n```'}],
+                }},
+            ])
+            lines = [
+                json.dumps(
+                    {"event": {"type": "content_block_start", "content_block": {"type": "tool_use", "name": "Task"}}}
+                ).encode()
+            ]
+            return lines, False
+
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", fake_run_claude)
+        launcher = m._build_launcher(repo_dir=Path("/repo"), keep_artifacts_dir=tmp_path)
+
+        outcome, _cost = m.run_one_logical_sample(
+            case, msmr.DISPATCH_EXPLORE_HAIKU, 0, budget_cap_usd=11.5, timeout_s=90, launcher=launcher,
+        )
+
+        assert outcome.discarded is False
+        assert len(outcome.attempts) == 2
+        first_dir, second_dir = outcome.attempts[0].artifact_dir, outcome.attempts[1].artifact_dir
+        assert first_dir is not None
+        assert second_dir is not None
+        assert first_dir != second_dir
+        assert (tmp_path / first_dir).is_dir()
+        assert (tmp_path / second_dir).is_dir()
 
     def test_no_dispatch_observed_is_a_format_failure_not_a_crash(self, monkeypatch: pytest.MonkeyPatch) -> None:
         case = m.RecallCase(id="c1", stratum=m.STRATUM_A, question="q", key=frozenset({"a.py"}))
@@ -2016,6 +2145,73 @@ class TestMain:
         # n>=35 floor at zero false positives, so this stub always lands UNCALLABLE.
         assert report["verdict"] == m.GateVerdict.UNCALLABLE.value
         assert exit_code == 1
+        # sample_outcome_to_dict always emits the key, null rather than
+        # absent, when no --keep-artifacts dir was given.
+        attempts = [a for s in report["samples"] for a in s["attempts"]]
+        assert attempts, "expected at least one sample attempt"
+        for attempt in attempts:
+            assert attempt["artifact_dir"] is None
+
+    def test_keep_artifacts_dir_round_trips_through_the_json_report(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The --keep-artifacts resolution path the sibling test above
+        leaves uncovered: each sample's artifact_dir must survive
+        serialization into the --json report and name a real directory
+        _copy_sample_artifacts created."""
+        fixture_data = _valid_fixture_data()
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "path/to/file_0_0.py", "x = 1\n")
+        pinned_commit = _commit(repo, "initial")
+        fixture_data["pinned_commit"] = pinned_commit
+        fixture_path = tmp_path / "fixture.json"
+        fixture_path.write_text(json.dumps(fixture_data))
+        json_path = tmp_path / "report.json"
+        keep_artifacts_dir = tmp_path / "kept"
+
+        def fake_run_claude(cmd: list[str], cwd: Path, timeout_s: int) -> tuple[list[bytes], bool]:
+            requested_model = json.loads(cmd[cmd.index("--agents") + 1])["Explore"]["model"]
+            session_id = cmd[cmd.index("--session-id") + 1]
+            session_store_dir = msmr.run_skill_evals.compute_session_store_dir(cwd)
+            subagent_dir = session_store_dir / session_id / msmr.SUBAGENT_SUBDIR
+            subagent_dir.mkdir(parents=True)
+            _write_jsonl(session_store_dir / f"{session_id}.jsonl", [_tool_use_record("Task")])
+            (subagent_dir / "agent-1.meta.json").write_text(
+                json.dumps({"toolUseId": "toolu_1", "agentType": "Explore"})
+            )
+            observed_model = (
+                "claude-sonnet-5" if requested_model == "sonnet" else f"claude-{requested_model}-4-5-20251001"
+            )
+            answer_record = {
+                "type": "assistant",
+                "message": {
+                    "model": observed_model,
+                    "content": [{"type": "text", "text": '```json\n["path/to/file_0_0.py"]\n```'}],
+                },
+            }
+            _write_jsonl(subagent_dir / "agent-1.jsonl", [answer_record])
+            lines = [
+                json.dumps(
+                    {"event": {"type": "content_block_start", "content_block": {"type": "tool_use", "name": "Task"}}}
+                ).encode()
+            ]
+            return lines, False
+
+        monkeypatch.setattr(msmr, "_run_claude_to_completion", fake_run_claude)
+        monkeypatch.setattr(sys, "argv", [
+            "measure_explore_recall.py", "--fixtures", str(fixture_path), "--repo-dir", str(repo),
+            "--cases", "a0", "--k", "1", "--max-k-raises", "0", "--json", str(json_path),
+            "--keep-artifacts", str(keep_artifacts_dir),
+        ])
+
+        m.main()
+
+        report = json.loads(json_path.read_text())
+        artifact_dirs = [a["artifact_dir"] for s in report["samples"] for a in s["attempts"]]
+        assert artifact_dirs, "expected at least one sample attempt"
+        for name in artifact_dirs:
+            assert name is not None
+            assert (keep_artifacts_dir / name).is_dir()
 
     def test_cases_flag_restricts_a_dry_run_to_the_named_cases(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
