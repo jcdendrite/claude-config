@@ -89,6 +89,7 @@ def _gh_shim_source(
     call_log: Path,
     pr_view_head_ref_oid: str | None = None,
     pr_review_exit_status: int = 0,
+    pr_view_exit_status: int = 0,
     marker_path: Path | None = None,
     swap_body_path: Path | None = None,
     swap_body_content: str | None = None,
@@ -125,10 +126,13 @@ def _gh_shim_source(
     when unset).
 
     `pr_review_exit_status`, when nonzero, is the exit status of a `gh pr
-    review` invocation specifically (every other invocation, including `pr
-    view`, still exits 0) -- the shim's own always-0 default otherwise never
-    exercises the script's post-failure branch. 124 and 143 model
-    timeout(1) killing a `gh` that outlived its cap.
+    review` invocation specifically -- the shim's own always-0 default
+    otherwise never exercises the script's post-failure branch. 124 and 143
+    model timeout(1) killing a `gh` that outlived its cap.
+
+    `pr_view_exit_status`, when nonzero, is the exit status of a `gh pr view`
+    invocation, after it prints its output (if any). Every other invocation
+    exits 0 unless a status option above says otherwise.
 
     A `gh pr review` call records the body bytes it was handed, read from
     stdin for `-F -` (as real gh does) or from the named file otherwise, and
@@ -163,6 +167,7 @@ def _gh_shim_source(
         CALL_LOG = {str(call_log)!r}
         PR_VIEW_FIELDS = {pr_view_fields!r}
         PR_REVIEW_EXIT_STATUS = {pr_review_exit_status!r}
+        PR_VIEW_EXIT_STATUS = {pr_view_exit_status!r}
         API_USER_STDOUT = {api_user_stdout!r}
         API_USER_EXIT_STATUS = {api_user_exit_status!r}
         API_USER_STDERR = {api_user_stderr!r}
@@ -216,6 +221,7 @@ def _gh_shim_source(
             if PR_VIEW_FIELDS is not None:
                 requested_fields = args[args.index("--json") + 1].split(",") if "--json" in args else []
                 print(json.dumps({{name: value for name, value in PR_VIEW_FIELDS.items() if name in requested_fields}}))
+            sys.exit(PR_VIEW_EXIT_STATUS)
         if args[:2] == ["pr", "review"]:
             sys.exit(PR_REVIEW_EXIT_STATUS)
         sys.exit(0)
@@ -535,14 +541,17 @@ class TestPrIdentityCrossCheck:
         )
 
     @pytest.mark.parametrize("verb", ["comment", "request-changes"])
-    def test_pr_view_failure_fails_closed(self, isolated_home, git_repo, tmp_path, verb):
+    @pytest.mark.parametrize("pr_view_exit_status", [0, 1], ids=["no-output-exit-0", "exit-1"])
+    def test_pr_view_failure_fails_closed(self, isolated_home, git_repo, tmp_path, verb, pr_view_exit_status):
         """`gh pr view` itself fails or returns no output -- treated the
         same as a mismatch, not as a pass-through. For request-changes the
         author is unreadable too, and the head refusal still comes first."""
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
         _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash)
-        result, call_log = _run(git_repo, isolated_home, [verb, PR_IDENTITY], tmp_path)
+        result, call_log = _run(
+            git_repo, isolated_home, [verb, PR_IDENTITY], tmp_path, pr_view_exit_status=pr_view_exit_status
+        )
         assert result.returncode == 2
         assert "headRefOid" in result.stderr
         assert _OWN_PR_REFUSAL_PHRASE not in result.stderr
@@ -647,16 +656,15 @@ class TestRequestChangesAuthorshipCheck:
         assert _pr_review_records(call_log) == []
         assert marker.exists()
 
-    @pytest.mark.parametrize("api_user_exit_status", [1, 22], ids=["generic-failure", "http-error"])
     def test_request_changes_refuses_when_the_lookup_exits_non_zero_even_with_a_usable_login_on_stdout(
-        self, isolated_home, git_repo, tmp_path, api_user_exit_status
+        self, isolated_home, git_repo, tmp_path
     ):
         # GH-1236: gh prints an HTTP error body on stdout with a non-zero exit, and that body must not be read as a verdict.
         _, marker_head, marker = self._arm_marker(isolated_home, git_repo)
         result, call_log = _run(
             git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
             pr_view_head_ref_oid=marker_head, pr_author_login=_DISTINCT_AUTHOR_LOGIN,
-            operator_login=_DISTINCT_OPERATOR_LOGIN, api_user_exit_status=api_user_exit_status,
+            operator_login=_DISTINCT_OPERATOR_LOGIN, api_user_exit_status=1,
             api_user_stdout_on_failure=True,
         )
         assert result.returncode == 2
@@ -729,8 +737,7 @@ class TestRequestChangesAuthorshipCheck:
         )
         assert result.returncode == 0, result.stderr
         calls = _read_calls(call_log)
-        assert [call for call in calls if call[:2] == ["api", "user"]] == []
-        assert len([call for call in calls if call[:2] == ["pr", "view"]]) == 1
+        assert [call[:2] for call in calls] == [["pr", "view"], ["pr", "review"]]
         (record,) = _pr_review_records(call_log)
         assert "--comment" in record["args"]
 
@@ -947,7 +954,8 @@ class TestCompletionMarkerSelfConsuming:
         )
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root can remove a marker from a read-only directory")
-    def test_marker_that_cannot_be_removed_refuses_before_any_post(self, isolated_home, git_repo, tmp_path):
+    @pytest.mark.parametrize("verdict", ["comment", "request-changes"])
+    def test_marker_that_cannot_be_removed_refuses_before_any_post(self, isolated_home, git_repo, tmp_path, verdict):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
         marker_head = head_sha(git_repo)
@@ -956,7 +964,7 @@ class TestCompletionMarkerSelfConsuming:
         marker.parent.chmod(0o500)
         try:
             result, call_log = _run(
-                git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
+                git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
             )
             assert marker.exists()
         finally:
@@ -965,8 +973,9 @@ class TestCompletionMarkerSelfConsuming:
         assert "could not consume the completion marker" in result.stderr
         assert _read_pr_review_calls(call_log) == []
 
+    @pytest.mark.parametrize("verdict", ["comment", "request-changes"])
     def test_marker_consumed_by_a_racing_invocation_refuses_before_any_post(
-        self, isolated_home, git_repo, tmp_path
+        self, isolated_home, git_repo, tmp_path, verdict
     ):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
@@ -975,7 +984,7 @@ class TestCompletionMarkerSelfConsuming:
         marker = review_pr_completion_marker_path(isolated_home, git_repo, SID)
 
         result, call_log = _run(
-            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
+            git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path,
             pr_view_head_ref_oid=marker_head, remove_marker_path=marker,
         )
         assert result.returncode != 0
@@ -984,8 +993,9 @@ class TestCompletionMarkerSelfConsuming:
             "only the invocation that removes the marker may post; one that finds it already gone must not"
         )
 
+    @pytest.mark.parametrize("verdict", ["comment", "request-changes"])
     def test_second_invocation_fails_closed_after_the_first_succeeds(
-        self, isolated_home, git_repo, tmp_path
+        self, isolated_home, git_repo, tmp_path, verdict
     ):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
@@ -994,7 +1004,7 @@ class TestCompletionMarkerSelfConsuming:
         marker = review_pr_completion_marker_path(isolated_home, git_repo, SID)
 
         first, call_log = _run(
-            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
+            git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
         )
         assert first.returncode == 0, first.stderr
         assert len(_read_pr_review_calls(call_log)) == 1
@@ -1003,7 +1013,7 @@ class TestCompletionMarkerSelfConsuming:
         )
 
         second, call_log = _run(
-            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
+            git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
         )
         assert second.returncode != 0
         assert "completion marker" in second.stderr
@@ -1055,8 +1065,9 @@ class TestPostFailureConsumesTheMarker:
         assert "marker.sh write review-pr" not in result.stderr
         assert "Ask the human to check" in result.stderr
 
+    @pytest.mark.parametrize("verdict", ["comment", "request-changes"])
     def test_retry_after_a_failed_post_fails_closed_without_a_second_gh_pr_review(
-        self, isolated_home, git_repo, tmp_path
+        self, isolated_home, git_repo, tmp_path, verdict
     ):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
@@ -1064,12 +1075,12 @@ class TestPostFailureConsumesTheMarker:
         _write_marker(isolated_home, git_repo, marker_head, body_hash)
 
         first, call_log = _run(
-            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
+            git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path,
             pr_view_head_ref_oid=marker_head, pr_review_exit_status=124,
         )
         assert first.returncode != 0
         second, call_log = _run(
-            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
+            git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path,
             pr_view_head_ref_oid=marker_head,
         )
         assert second.returncode != 0

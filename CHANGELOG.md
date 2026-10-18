@@ -12,7 +12,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - **`selfAuthored`:** `review-pr-acquire.sh` reports it, from a `gh api user` call on the ambient token. It is `null` when the lookup fails or the PR's author cannot be read, and acquire carries on.
   - **Own PR:** step 8 routes to `comment`.
   - **Blocking count:** a body holding blocking findings carries a line counting them after the prefix, on every PR, so the signal survives a `comment` post.
-  - **Post refusal:** `review-pr-post.sh` refuses `request-changes` before it consumes the marker when the operator authored the PR or when it cannot tell (a token that cannot read `GET /user` can no longer post `request-changes` at all, and a transient `/user` failure refuses only that attempt). The marker stays armed, so the same body can post as `comment` after the human confirms it.
+  - **Post refusal:** `review-pr-post.sh` refuses `request-changes` before it consumes the marker when the operator authored the PR or when it cannot tell. A token that cannot read `GET /user` can no longer post `request-changes` at all. A transient `/user` failure refuses only that attempt. The marker stays armed, so the same body can post as `comment` after the human confirms it.
 - **`/handoff` keeps its marker activation as the first step, run as its own Bash call, and now creates the handoffs directory just before drafting.**
   - The two one-line recipes no longer sit next to each other. `enforce-marker-script-shape.sh` denies the activation chained to a non-`marker.sh` command.
   - A run that the warrant check stops no longer creates the directory.

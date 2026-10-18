@@ -69,11 +69,12 @@ name, a truncation caveat, or the execution-surface match list still holds.
   version-fragile across `gh` releases. The script prefers aborting on any
   non-zero exit over branching on a parsed failure cause.
 - **The script's worst-case wall time exceeds the Bash tool's default
-  timeout.** Its seven capped `gh` calls sum to 150 seconds: the two
-  `gh pr view` calls and the REST call at 10 seconds each, and the four
-  paginated calls (files, commits, reviews, inline comments) at 30 seconds
-  each. The tool's default timeout is 120000 ms and its documented maximum is
-  600000 ms, so SKILL.md Step 1 sets `timeout: 600000` for it.
+  timeout.** Its eight capped `gh` calls sum to 160 seconds: the two
+  `gh pr view` calls, the REST call, and the `gh api user` call at 10 seconds
+  each, and the four paginated calls (files, commits, reviews, inline
+  comments) at 30 seconds each. The tool's default timeout is 120000 ms and
+  its documented maximum is 600000 ms, so SKILL.md Step 1 sets
+  `timeout: 600000` for it.
   The usage text of `review-pr-checkout.sh` and `review-pr-diff.sh` each state a
   "Worst-case wall time" that exceeds the default, so Step 1 sets the same
   timeout for them.
@@ -563,14 +564,15 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
     completion marker needs. Until `finish` runs, only SKILL.md's instruction
     stops a re-arm; no mechanism does. Recovery is a hand-post of the approved
     body or a fresh `/review-pr`.
-  - Both `request-changes` refusals, own-PR and could-not-tell (which also
-    covers an unreadable PR author), run before the marker is consumed, so it
-    stays armed, and both carry the phrase "Nothing was posted and the
-    completion marker was not consumed" that SKILL.md keys on. SKILL.md Step 8
-    owns the recovery for each. SKILL.md's blocking-count line goes in every
-    body that holds blocking findings, whoever authored the PR. `selfAuthored`
-    is advisory, and any body can end up posted as `comment`, including after
-    either refusal, with no edit when the verb changes.
+  - Both `request-changes` refusals, own-PR and could-not-tell, run before
+    the marker is consumed, so it stays armed. The could-not-tell refusal
+    also covers an unreadable PR author. Both refusals carry the phrase
+    "Nothing was posted and the completion marker was not consumed", which
+    SKILL.md keys on. SKILL.md Step 8 owns the recovery for each.
+  - `selfAuthored` is advisory, so any body can end up posted as `comment`,
+    including after either refusal. Changing the verb never edits the body,
+    which is why SKILL.md Step 7's blocking-count line does not depend on who
+    authored the PR.
   - `review-pr-post.sh` never emits `--approve`: its two `gh pr review` calls
     carry the literal `--comment` and `--request-changes`. This is the only
     unbypassable property of the gate.
