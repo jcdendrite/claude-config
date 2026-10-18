@@ -34,8 +34,9 @@ markers = [
 # extending it, so all nine defaults are restated here alongside the repo's own entries —
 # dropping any of them (".*" especially) would silently re-expose hidden
 # directories to collection. See claude/.claude/tests/test_pytest_collection_config.py.
-# evals/fixtures holds a sample project whose test imports a module on no configured pythonpath.
 norecursedirs = [
   "*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}",
-  "worktrees", "evals/fixtures",
+  "worktrees",
+  # evals/fixtures holds a sample project whose test imports a module on no configured pythonpath.
+  "evals/fixtures",
 ]

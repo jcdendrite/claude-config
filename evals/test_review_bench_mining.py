@@ -993,6 +993,20 @@ class TestMineSzz:
         _assert_git_printed_a_zero_offset(printed_by_git)
         assert candidate.fix_date == "2026-01-04T00:00:00+00:00"
 
+    def test_a_fix_commit_authored_at_a_non_zero_offset_keeps_that_offset_in_fix_date(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "app.py", "def f():\n    pass\n")
+        _commit(repo, "seed")
+        _write(repo, "app.py", "def f():\n    return bad_value\n")
+        _commit(repo, "add f")
+        _write(repo, "app.py", "def f():\n    return good_value\n")
+        fix_sha = _commit_at(repo, "fix wrong return value", "2026-01-04T00:00:00-0500")
+        _set_origin_main(repo, fix_sha)
+
+        (candidate,) = mine_szz.mine(repo, base_ref="origin/main")
+
+        assert candidate.fix_date == "2026-01-04T00:00:00-05:00"
+
     def test_blank_comment_and_markdown_lines_are_ignored(self, tmp_path):
         """Only the code-line removal in util.py is mined; the blank and comment
         lines removed from app.py and the line removed from README.md are not."""
@@ -2036,7 +2050,10 @@ class TestMineReviewRoundsAgainstRealGit:
 
     _WORKTREE = "/work/repo/.claude/worktrees/GH-1114/my-slug"
 
-    def _build(self, tmp_path, monkeypatch, *, relative_path: str, cited_relative_path: str | None = None) -> dict:
+    def _build(
+        self, tmp_path, monkeypatch, *, relative_path: str, cited_relative_path: str | None = None,
+        first_fix_author_date: str = "2026-01-04T12:00:00+0000",
+    ) -> dict:
         cited_relative_path = cited_relative_path or relative_path
         repo = _init_repo(tmp_path / "repo")
         _write(repo, relative_path, "line0\n")
@@ -2049,7 +2066,7 @@ class TestMineReviewRoundsAgainstRealGit:
         # Rounds 1 and 2 (Jan 2, Jan 3) read the file; round 3 (Jan 4) cites
         # it. Both commits below post-date round 3.
         _write(repo, relative_path, "line0\ngood_value\n")
-        first_fix_sha = _commit_at(repo, "respond to round three", "2026-01-04T12:00:00+0000")
+        first_fix_sha = _commit_at(repo, "respond to round three", first_fix_author_date)
         _write(repo, relative_path, "line0\nbetter_value\n")
         _commit_at(repo, "rework the value again", "2026-01-05T12:00:00+0000")
 
@@ -2091,6 +2108,16 @@ class TestMineReviewRoundsAgainstRealGit:
 
         _assert_git_printed_a_zero_offset(printed_by_git)
         assert candidate.fix_date == "2026-01-04T12:00:00+00:00"
+
+    def test_a_fix_commit_authored_at_a_non_zero_offset_keeps_that_offset_in_fix_date(self, tmp_path, monkeypatch):
+        built = self._build(
+            tmp_path, monkeypatch, relative_path="pkg/app.py", first_fix_author_date="2026-01-04T12:00:00-0500",
+        )
+
+        (candidate,) = mine_review_rounds.mine(built["repo"], roots=built["roots"])
+
+        assert candidate.fix_commit == built["first_fix_sha"]
+        assert candidate.fix_date == "2026-01-04T12:00:00-05:00"
 
     @pytest.mark.parametrize(
         ("relative_path", "expected_lens", "expected_markdown"),
@@ -2304,10 +2331,11 @@ def _closed_pull(number: int, branch: str, *, merged: bool = True) -> dict:
 
 def _pr_comment_repo(
     tmp_path: Path, path: str = "app.py", *, bad_line: str = "bad_value",
+    fix_author_date: str = "2026-01-04T00:00:00+0000",
 ) -> tuple[Path, str, str, str]:
     """Returns (repo, main_sha, introducing_sha, fix_sha) for local branch `feat`, which introduces
-    `bad_line` as line 2 of `path` on 2026-01-02 and fixes it on 2026-01-04. `origin` names a github.com
-    URL that no fetch can reach."""
+    `bad_line` as line 2 of `path` on 2026-01-02 and fixes it at `fix_author_date`. `origin` names a
+    github.com URL that no fetch can reach."""
     repo = _init_repo(tmp_path / "repo")
     _git(repo, "remote", "add", "origin", _ORIGIN_URL)
     _write(repo, path, "line0\n")
@@ -2317,7 +2345,7 @@ def _pr_comment_repo(
     _write(repo, path, f"line0\n{bad_line}\n")
     introducing_sha = _commit_at(repo, "introduce bad value", "2026-01-02T00:00:00+0000")
     _write(repo, path, "line0\ngood_value\n")
-    fix_sha = _commit_at(repo, "fix wrong value", "2026-01-04T00:00:00+0000")
+    fix_sha = _commit_at(repo, "fix wrong value", fix_author_date)
     return repo, main_sha, introducing_sha, fix_sha
 
 
@@ -2454,6 +2482,15 @@ class TestMinePrComments:
 
         _assert_git_printed_a_zero_offset(printed_by_git)
         assert candidate.fix_date == "2026-01-04T00:00:00+00:00"
+
+    def test_a_fix_commit_authored_at_a_non_zero_offset_keeps_that_offset_in_fix_date(self, tmp_path):
+        repo, _main_sha, introducing_sha, fix_sha = _pr_comment_repo(tmp_path, fix_author_date="2026-01-04T00:00:00-0500")
+        thread = [_pr_review_comment(introducing_sha), _pr_thread_reply(_fixed_reply_body(fix_sha))]
+
+        (candidate,), _fake_gh = _mine_pr_comments(repo, thread)
+
+        assert candidate.fix_commit == fix_sha
+        assert candidate.fix_date == "2026-01-04T00:00:00-05:00"
 
     def test_owner_comment_with_a_fixed_reply_yields_a_candidate_with_blamed_and_replied_commits(self, tmp_path):
         repo, main_sha, introducing_sha, fix_sha = _pr_comment_repo(tmp_path)

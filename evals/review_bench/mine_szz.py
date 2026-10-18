@@ -273,7 +273,8 @@ def _build_candidate(
         return None
     if not parent:
         return None
-    # Git cannot print an empty or unparseable date for a real commit, so one is unhandled and aborts the sweep (ValueError).
+    # Git always prints a parseable date for a real commit.
+    # A bad value raises ValueError, which _GIT_CALL_ERRORS does not catch, so it aborts the sweep.
     fix_date = canonical_fix_date(author_date)
     pr_match = _PR_SUFFIX_RE.search(subject)
     return Candidate(

@@ -25,8 +25,15 @@ Add `evals/` as a fourth collection root to both CI pytest passes and to the Lin
   - A parametrized unit test of the helper next to `test_bad_fix_date_is_rejected` (:240). Cases: `Z` becomes `+00:00`; `+00:00` is unchanged; `-05:00` is unchanged, which pins "no UTC conversion"; garbage raises `ValueError`.
   - In `TestMineSzz.test_removed_line_blames_to_its_introducer` (:912-928), commit the fix with `_commit_at(repo, ..., "2026-01-04T00:00:00+0000")` and assert `candidate.fix_date == "2026-01-04T00:00:00+00:00"`. This closes the one producer with no `fix_date` assertion.
   - The expected values at :2040 and :2369 stay as they are.
-  - Helper test additions: garbage and empty input both raise `ValueError` with `match="fix_date"` (so the helper's message names the field, as `test_bad_fix_date_is_rejected` at :241 does for `Candidate`), and `canonical_fix_date(canonical_fix_date(x)) == canonical_fix_date(x)`. The helper raises its own `ValueError("fix_date ... is not a valid ISO 8601 ...")` rather than leaking `fromisoformat`'s raw message.
-  - Git-version-independent producer pin: for each of the three producers, stub the `%aI` git call to print a `...Z` date (the seam is `_fail_git_calls` at :3300-3314) and assert the stored `fix_date` ends in `+00:00`. The four real-git tests go red only on git 2.45 or later, so without this pin a producer could drop its `canonical_fix_date` call and stay green on older git.
+  - Helper test additions:
+    - Garbage and empty input both raise `ValueError` with `match="fix_date"`.
+    - The match makes the helper's message name the field, as `test_bad_fix_date_is_rejected` at :241 does for `Candidate`.
+    - `canonical_fix_date(canonical_fix_date(x)) == canonical_fix_date(x)`.
+    - The helper raises its own `ValueError("fix_date ... is not a valid ISO 8601 ...")` rather than leaking `fromisoformat`'s raw message.
+  - Git-version-independent producer pin:
+    - For each of the three producers, stub the `%aI` git call to print a `...Z` date and assert the stored `fix_date` ends in `+00:00`. The seam is `_fail_git_calls` at :3300-3314.
+    - The four real-git tests go red only on git 2.45 or later.
+    - Without this pin, a producer could drop its `canonical_fix_date` call and stay green on older git.
   - Empty-output pin: with the stubbed git exiting 0 and printing nothing, both `_commit_date` helpers return `None`.
   - Normalization runs after `.strip()`: a trailing newline makes `fromisoformat` raise, and the real-git tests fail loudly if the order is wrong.
   - Red-first record: run the new `mine_szz` assertion and the producer pins on local git 2.56 before the helper lands and record that they fail, then record green after. A1 alone only demands green.
@@ -52,7 +59,13 @@ Add `evals/` as a fourth collection root to both CI pytest passes and to the Lin
   - Make `FULL_SUITE_TARGETS` (:403) `("claude/.claude/", "claude-skills/", "plugins/", "evals/")`.
   - Make the comment at :399-400 cite `tests.yml`'s pytest steps without restating the command.
   - Delete `_targets_outside_full_suite` (:817-823), its two call sites (:861, :865), and the docstring paragraph about it (:834-837).
-- Wall-clock-bound evals tests get the `timing` marker so they run in the serial pass (`pyproject.toml`'s marker definition covers tests that "assert a wall-clock bound"): `evals/test_review_bench_adjudicate.py` (`TestAnswerFormatMatchingIsLinearTime`, :804-815), `evals/test_measure_subagent_model_resolution.py` (:465-478, :513-528) and `evals/test_review_bench_runner.py` (:789-818). The implementer also greps the other evals test files for `perf_counter`, `elapsed`, `time.sleep` and subprocess timeouts, and marks any further test that asserts a wall-clock bound; each addition is listed in the PR body.
+- Wall-clock-bound evals tests get the `timing` marker so they run in the serial pass.
+  - `pyproject.toml`'s marker definition covers tests that "assert a wall-clock bound".
+  - `evals/test_review_bench_adjudicate.py`: `TestAnswerFormatMatchingIsLinearTime`, :804-815.
+  - `evals/test_measure_subagent_model_resolution.py`: :465-478 and :513-528.
+  - `evals/test_review_bench_runner.py`: :789-818.
+  - The implementer also greps the other evals test files for `perf_counter`, `elapsed`, `time.sleep` and subprocess timeouts, and marks any further test that asserts a wall-clock bound.
+  - Each addition is listed in the PR body.
 - `install-dev.sh:113-114`: the printed "Run tests" and "Run lint" commands carry the same four roots as the root `CLAUDE.md` Commands block. `install.sh:954,970`: the printed `pytest` hints carry those roots too, and the block's heading `Optional (contributors): run the hook test suite` stays unchanged because `test_install_sh_contributor_intent_prompt.py:92-117` pins it.
 - `claude/.claude/scripts/tests/test_select_tests.py`:
   - Replace the two tests at :976-996 (and fold in the :998 claude-path variant) with one test parametrized over both fail-open trigger kinds, `pyproject.toml` and `.gitignore`: an evals path beside the trigger selects exactly `FULL_SUITE_TARGETS`. The parametrization keeps both return sites (`select-tests.py:861` global trigger, :865 unmatched path) covered, so a regression in either alone fails.
@@ -60,7 +73,13 @@ Add `evals/` as a fourth collection root to both CI pytest passes and to the Lin
   - Fix the docstrings at :1259-1263 and :1628-1639.
   - Add two tests to `TestRuleTablePathFidelity` (:2036):
     - (a) Every `DOMAIN_RULES`/`CROSS_DOMAIN_EXCEPTIONS` target sits under a `FULL_SUITE_TARGETS` root.
-    - (b) `FULL_SUITE_TARGETS` equals the positional roots of each `tests.yml` pytest step and of the Lint step. Locate steps by parsed YAML step name, as `test_ci_watch_workflow_parity.py:_if_values_by_name` does, with the same missing-step assertion, and assert exactly two steps whose `run` starts with `pytest`. The roots are the `shlex` tokens between `pytest` (or `ruff check`) and the first `-`-prefixed token, compared as sets of `rstrip("/")` roots, and both pytest passes must carry identical roots. The `WORKTREES_DIR_NAME`↔`norecursedirs` pin at :2048-2058 is the precedent.
+    - (b) `FULL_SUITE_TARGETS` equals the positional roots of each `tests.yml` pytest step and of the Lint step.
+      - Locate steps by parsed YAML step name, as `test_ci_watch_workflow_parity.py:_if_values_by_name` does, with the same missing-step assertion.
+      - Assert exactly two steps whose `run` starts with `pytest`.
+      - The roots are the `shlex` tokens between `pytest` (or `ruff check`) and the first `-`-prefixed token.
+      - Compare the roots as sets of `rstrip("/")` roots.
+      - Both pytest passes must carry identical roots.
+      - The `WORKTREES_DIR_NAME`↔`norecursedirs` pin at :2048-2058 is the precedent.
     - Factor the root-extraction and the target-under-root predicate into small functions so a unit test can feed synthetic input: one case drops `evals/` from one `run` line and expects (b) to fail, one adds an out-of-root target and expects (a) to fail. These are drift pins and pass on the pre-change tree, so the synthetic cases are what show they are not vacuous.
 - Docs:
   - Root `CLAUDE.md:13-14`: append ` plugins/ evals/` to both commands and drop "(hooks + skills)". Realign the comment column inside those lines only, so no lines are added (200-line cap).
@@ -110,7 +129,12 @@ Rows:
 2. [engineer-verified: "Yeah that all is part of 1163"] #1163's D1, I4, C17, C26, and I2 are in scope.
 3. [engineer-verified: "Normalize in code (Recommended)"] The fix lands in production code, not in test expectations. The architect's adversarial review of this choice returned Modify (shared helper plus helper unit test), which Phase A carries.
 4. [unverified] The canonical spelling is `+00:00` and test expectations stay unchanged. This comes from the session's option description, not the engineer's words. Supporting evidence: every hand-written `fix_date` literal in `test_review_bench_mining.py` uses `+00:00` (:201, :215, :252, :355, :1709, :2040, :2369, :3877) [verified: grep].
-5. [verified: session traceback at `test_review_bench_mining.py:2040`] Local git 2.56.0 prints a zero offset as `Z`, and the producers return git's text unchanged. The architect cites git's `RelNotes/2.45.0` for the change from `+00:00` to `Z` [unverified: relayed from the architect's read of the installed git docs]. Whether the runner's git prints `Z` or `+00:00` is [unverified], and stops mattering once the producers normalize.
+5. Local git prints a zero offset as `Z`, and the producers return git's text unchanged.
+    - [verified: session traceback at `test_review_bench_mining.py:2040`] Local git 2.56.0 prints a zero offset as `Z`.
+    - [verified: session traceback at `test_review_bench_mining.py:2040`] The producers return git's text unchanged.
+    - The architect cites git's `RelNotes/2.45.0` for the change from `+00:00` to `Z` [unverified: relayed from the architect's read of the installed git docs].
+    - Whether the runner's git prints `Z` or `+00:00` is [unverified].
+    - That question stops mattering once the producers normalize.
 6. [verified: grep for `%aI`] Exactly three producers store `%aI` text as `fix_date`: `mine_review_rounds.py:379-387`, `mine_pr_comments.py:496-498`, `mine_szz.py:266`. The fourth site, `mine_review_rounds.py:354`, only feeds `corpus._parse_ts`, which accepts both spellings.
 7. [verified: `mine_szz.py:15`, `mine_review_rounds.py:35`, `mine_pr_comments.py:28`] All three miners already import shared candidate-field helpers (`guess_lens`, `is_markdown_path`) from `review_bench.defects`, which also owns `_validate_fix_date`.
 8. [verified: `defects.py:64-68`, `test_review_bench_cli.py:3507`] `fix_date` accepts date-only values (`"2024-02-02"`). Normalizing inside `Candidate`/`ConfirmedDefect` construction would rewrite them to `…T00:00:00`.
@@ -119,7 +143,12 @@ Rows:
 11. [verified: `mine_szz.py:53`] `ValueError` is not in `_GIT_CALL_ERRORS`, so the helper's `ValueError` propagates exactly as the existing validator's does.
 12. [engineer-verified: "Guarded evals/ root (Recommended)"] A guarded `evals/` root is the collection scope, in place of D1's recorded single explicit file. D1 (`.claude/plans/discovery-audit-remediation-plan.md:1205-1229`) forbade a bare root because of the fixtures collection error and named `norecursedirs` or `--ignore` as the guard. This plan applies that guard.
 13. [verified: `tests.yml:74-98`] `SKIP_REGEX` is a deny-list, so an `evals/`-only diff already sets `changed=true`. No gate change is needed.
-14. [verified: grep for `mark.timing|pytestmark` in `evals/`] No evals test carries the `timing` marker today. Three evals tests assert wall-clock bounds (`test_review_bench_adjudicate.py:805,814`, `test_measure_subagent_model_resolution.py:514-518`, `test_review_bench_runner.py:795-816`) [verified: both reviewers' reads], so they get the marker (row 32). `test_pytest_collection_config.py:191-236` hard-codes `claude/.claude/` at :207 and does not check the roots, so the parity test in Phase B is the only pin on four-root identity.
+14. The `timing` marker is absent from evals, and the roots have no other pin.
+    - [verified: grep for `mark.timing|pytestmark` in `evals/`] No evals test carries the `timing` marker today.
+    - [verified: both reviewers' reads] Three evals tests assert wall-clock bounds: `test_review_bench_adjudicate.py:805,814`, `test_measure_subagent_model_resolution.py:514-518` and `test_review_bench_runner.py:795-816`.
+    - Those three tests get the marker (row 32).
+    - `test_pytest_collection_config.py:191-236` hard-codes `claude/.claude/` at :207 and does not check the roots.
+    - So the parity test in Phase B is the only pin on four-root identity.
 15. [verified: glob] Multi-root collection hits neither conftest eviction nor an import-file mismatch.
     - `evals/conftest.py` resolves to bare `conftest`.
     - The other three tracked conftests are packaged: `hooks/tests`, `scripts/tests`, and `plugins/lovable-cloud/tests/__init__.py`.
@@ -135,7 +164,12 @@ Rows:
     - So no `settings.json` edit and no `/review-permissions` run are needed.
     - The comment at `pyproject.toml:19-21` claiming "an exact-match permission grant in two settings.json files" is stale.
 21. [engineer-verified: "Keep id, rename step names (Recommended)"] `id: detect` stays and only the step names and echo are renamed. The id is looked up by id (`helpers.py:1923-1933`), pinned literally (`test_ci_watch_workflow_parity.py:32`), and cited in a dated record [verified]. Only the names at `tests.yml:46`, `:117` and the echo at `:119` carry "hook" framing.
-22. [verified: grep for `"claude"` in `evals/test_*.py`] `claude` appears as an argv only in an argv-construction assertion (`test_review_bench_runner.py:308`) and in stubbed `claude --version` probes (`:1639`, `:1691`; `test_measure_subagent_model_resolution.py:866`). No test skips on `shutil.which("claude")`. [unverified] No test reaches a real spawn indirectly through production code; Verification step B5 checks this.
+22. No evals test is known to spawn a real `claude`.
+    - [verified: grep for `"claude"` in `evals/test_*.py`] `claude` appears as an argv in an argv-construction assertion (`test_review_bench_runner.py:308`).
+    - [verified: same grep] `claude` also appears in stubbed `claude --version` probes (`:1639`, `:1691`; `test_measure_subagent_model_resolution.py:866`).
+    - [verified: same grep] No test skips on `shutil.which("claude")`.
+    - [unverified] No test reaches a real spawn indirectly through production code.
+    - Verification step B5 checks that last point.
 23. [unverified: prior-session report] `ruff check evals/` is clean today.
 24. [unverified] `requirements-dev.txt` covers every evals test import. The local venv may carry extra packages, so the pushed CI run is the check.
 25. [unverified] The job stays inside `timeout-minutes: 20` with roughly 2175 more tests, many of which run real git. The cited figure for the two pytest passes is 12m45s (`tests.yml:26-33`).
@@ -147,7 +181,11 @@ Rows:
 31. [engineer-verified: "README :101 pointer"] The README :101 pointer edit stays in scope.
 32. [engineer-verified: "Mark them timing (Recommended)"] The wall-clock-bound evals tests get the `timing` marker, which adds three test files to Critical files.
 33. [engineer-verified: "Include them"] `install-dev.sh:113-114` and `install.sh:954,970` are updated in this PR. `install-dev.sh` matches `SHELL_REGEX`, so Verification adds a shellcheck run; `test_install_sh_contributor_intent_prompt.py:92-117` pins only the hint block's heading, not the command lines [verified: grep].
-34. [verified: pytest 8.4.2 `_pytest/pathlib.py:446-452`, `_pytest/main.py:427-428`, relayed from the SDET reviewer's read] A `norecursedirs` pattern containing `/` matches the full path, so `evals/fixtures` prunes that directory. This resolves row 17's unverified status for pytest. `pyproject.toml` has no `[tool.ruff] exclude`, so `ruff check evals/` lints the `.py` files under `evals/fixtures/` [unverified: the reviewer read, not run]. If B1 flags fixture files, the fix is a ruff `exclude` for `evals/fixtures` in `pyproject.toml` (already in Critical files), not editing fixtures.
+34. Pytest prunes `evals/fixtures`, and ruff may still lint it.
+    - [verified: pytest 8.4.2 `_pytest/pathlib.py:446-452`, `_pytest/main.py:427-428`, relayed from the SDET reviewer's read] A `norecursedirs` pattern containing `/` matches the full path, so `evals/fixtures` prunes that directory.
+    - That resolves row 17's unverified status for pytest.
+    - `pyproject.toml` has no `[tool.ruff] exclude`, so `ruff check evals/` lints the `.py` files under `evals/fixtures/` [unverified: the reviewer read, not run].
+    - If B1 flags fixture files, the fix is a ruff `exclude` for `evals/fixtures` in `pyproject.toml` (already in Critical files), not editing fixtures.
 
 ## Critical files
 
@@ -187,14 +225,21 @@ Reuse: `datetime.fromisoformat`/`isoformat` (standard library). The existing `Te
 - B2: `.venv/bin/pytest evals/ --collect-only -q` exits 0 and lists no node under `evals/fixtures/` (row 17).
 - B3: `.venv/bin/python3 claude/.claude/scripts/select-tests.py`. `pyproject.toml` and `select-tests.py` are global triggers, so it runs the full suite, now including `evals/` (CLAUDE.md case 1).
 - B4: `.venv/bin/ruff check claude/.claude/ claude-skills/ plugins/ evals/` is clean.
-- B5 (fail-closed spawn detector): put a stub `claude` that appends its argv to a log file and exits 127 first on `PATH`, in an empty temporary directory outside the repo, and run `.venv/bin/pytest evals/ -q` once with that `PATH`, `HOME` set to an empty temporary directory, `CLAUDE_CONFIG_DIR` unset and `TZ=UTC` (the runner's shape). Expect the log to stay empty (row 22); a non-empty log is a real spawn and stops the work. Absence of `claude` from `PATH` would pass whether or not a spawn was attempted, so it is not the check. The local wall time does not transfer to a 4-vCPU runner, so it is not evidence for row 25.
+- B5 (fail-closed spawn detector):
+  - Put a stub `claude` first on `PATH`, in an empty temporary directory outside the repo. The stub appends its argv to a log file and exits 127.
+  - Run `.venv/bin/pytest evals/ -q` once with that `PATH`, `HOME` set to an empty temporary directory, `CLAUDE_CONFIG_DIR` unset and `TZ=UTC` (the runner's shape).
+  - Expect the log to stay empty (row 22). A non-empty log is a real spawn and stops the work.
+  - Absence of `claude` from `PATH` would pass whether or not a spawn was attempted, so it is not the check.
+  - The local wall time does not transfer to a 4-vCPU runner, so it is not evidence for row 25.
 - B6: push, then check the `tests` job log:
   - The parallel pass shows `evals/test_measure_subagent_model_resolution.py` and `evals/test_review_bench_mining.py` node ids passing (D1's explicit check).
   - The timing pass finishes without a collection error.
   - The Lint step's command includes `evals/`.
   - The job is green.
-  - Report the job and per-step durations against the B0 baseline and the 20-minute cap in the PR body, and refresh the `tests.yml:26-33` rationale comment in the same PR if the duration changed materially.
-  - If an evals failure appears only on CI (the runner's git differs, or a dependency is missing), or the job times out, stop and report to the engineer instead of fixing it ad hoc.
+  - Report the job and per-step durations against the B0 baseline and the 20-minute cap in the PR body.
+  - Refresh the `tests.yml:26-33` rationale comment in the same PR if the duration changed materially.
+  - If an evals failure appears only on CI (the runner's git differs, or a dependency is missing), stop and report to the engineer instead of fixing it ad hoc.
+  - If the job times out, stop and report to the engineer instead of fixing it ad hoc.
 - B7: `scripts/list-shell-files.sh | xargs -0 ../../../.venv/bin/shellcheck` is clean, because `install-dev.sh` and `install.sh` change (rows 27, 33), then `.venv/bin/pytest claude/.claude/hooks/tests/test_install_sh_contributor_intent_prompt.py -n 0` passes.
 
 ## Out of scope

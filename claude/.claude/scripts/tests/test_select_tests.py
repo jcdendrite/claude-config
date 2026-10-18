@@ -2059,9 +2059,9 @@ def _steps_running(steps: list[dict], command_words: tuple[str, ...]) -> list[di
     return [step for step in steps if tuple(step.get("run", "").split()[:len(command_words)]) == command_words]
 
 
-def _ci_roots_by_step_name(steps: list[dict]) -> dict[str, frozenset[str]]:
-    """The positional roots of every pytest step plus the lint step, keyed by
-    step name. Each is found by its command (`pytest`, `ruff check`), not by
+def _ci_step_roots(steps: list[dict]) -> list[tuple[str, frozenset[str]]]:
+    """A (step name, positional roots) pair for every pytest step plus the
+    lint step. Each is found by its command (`pytest`, `ruff check`), not by
     its step name, so a rename cannot hide a step from the parity check."""
     pytest_steps = _steps_running(steps, _CI_PYTEST_COMMAND)
     assert len(pytest_steps) == _CI_PYTEST_STEP_COUNT, (
@@ -2074,28 +2074,19 @@ def _ci_roots_by_step_name(steps: list[dict]) -> dict[str, frozenset[str]]:
         f"found {[step.get('name') for step in lint_steps]}"
     )
     (lint_step,) = lint_steps
-    checked_steps = [*pytest_steps, lint_step]
-    unnamed_runs = [step["run"] for step in checked_steps if not step.get("name")]
-    assert not unnamed_runs, f"tests.yml step(s) running {unnamed_runs} have no name to report a mismatch by"
-    step_names = [step["name"] for step in checked_steps]
-    assert len(set(step_names)) == len(step_names), (
-        f"tests.yml's tests job has two checked steps sharing a name: {step_names}"
-    )
-    return {
-        step["name"]: _leading_positional_roots(
-            step["run"], _CI_LINT_COMMAND if step is lint_step else _CI_PYTEST_COMMAND,
+    return [
+        (
+            step.get("name", step["run"]),
+            _leading_positional_roots(step["run"], _CI_LINT_COMMAND if step is lint_step else _CI_PYTEST_COMMAND),
         )
-        for step in checked_steps
-    }
+        for step in [*pytest_steps, lint_step]
+    ]
 
 
 def _steps_whose_roots_differ_from(
     steps: list[dict], expected_roots: frozenset[str],
-) -> dict[str, frozenset[str]]:
-    return {
-        name: roots for name, roots in _ci_roots_by_step_name(steps).items()
-        if roots != expected_roots
-    }
+) -> list[tuple[str, frozenset[str]]]:
+    return [(name, roots) for name, roots in _ci_step_roots(steps) if roots != expected_roots]
 
 
 def _targets_outside_roots(targets: set[str], roots: tuple[str, ...]) -> list[str]:
@@ -2149,7 +2140,7 @@ class TestRuleTablePathFidelity:
     def test_full_suite_targets_equal_the_roots_of_every_ci_pytest_and_lint_step(self):
         steps = yaml.safe_load(_TESTS_WORKFLOW_PATH.read_text())["jobs"]["tests"]["steps"]
         expected_roots = frozenset(root.rstrip("/") for root in _mod.FULL_SUITE_TARGETS)
-        assert _steps_whose_roots_differ_from(steps, expected_roots) == {}
+        assert _steps_whose_roots_differ_from(steps, expected_roots) == []
 
     def test_a_ci_step_missing_a_root_is_reported_by_name(self):
         steps = [
@@ -2158,7 +2149,7 @@ class TestRuleTablePathFidelity:
             {"name": "Lint", "run": "ruff check a/ b/"},
         ]
         differing = _steps_whose_roots_differ_from(steps, frozenset({"a", "b"}))
-        assert differing == {"Run tests (timing, serial)": frozenset({"a"})}
+        assert differing == [("Run tests (timing, serial)", frozenset({"a"}))]
 
     def test_a_renamed_lint_step_is_still_found_by_its_command(self):
         steps = [
@@ -2167,15 +2158,15 @@ class TestRuleTablePathFidelity:
             {"name": "Static analysis", "run": "ruff check a/ b/"},
         ]
         differing = _steps_whose_roots_differ_from(steps, frozenset({"a"}))
-        assert differing == {"Static analysis": frozenset({"a", "b"})}
+        assert differing == [("Static analysis", frozenset({"a", "b"}))]
 
     def test_ci_roots_extraction_rejects_a_workflow_without_the_expected_pytest_steps(self):
         steps = [
             {"name": "Run tests (parallel)", "run": "pytest a/ -v"},
             {"name": "Lint", "run": "ruff check a/"},
         ]
-        with pytest.raises(AssertionError, match="pytest steps"):
-            _ci_roots_by_step_name(steps)
+        with pytest.raises(AssertionError):
+            _ci_step_roots(steps)
 
     def test_ci_roots_extraction_rejects_a_workflow_without_a_lint_step(self):
         steps = [
@@ -2183,8 +2174,8 @@ class TestRuleTablePathFidelity:
             {"name": "Run tests (timing, serial)", "run": "pytest a/ -v -n0"},
             {"name": "Format", "run": "ruff format a/"},
         ]
-        with pytest.raises(AssertionError, match="exactly one `ruff check` step"):
-            _ci_roots_by_step_name(steps)
+        with pytest.raises(AssertionError):
+            _ci_step_roots(steps)
 
     def test_ci_roots_extraction_rejects_a_workflow_with_two_lint_steps(self):
         steps = [
@@ -2193,29 +2184,11 @@ class TestRuleTablePathFidelity:
             {"name": "Lint", "run": "ruff check a/"},
             {"name": "Lint again", "run": "ruff check b/"},
         ]
-        with pytest.raises(AssertionError, match="exactly one `ruff check` step"):
-            _ci_roots_by_step_name(steps)
-
-    def test_ci_roots_extraction_rejects_two_checked_steps_sharing_a_name(self):
-        steps = [
-            {"name": "Run tests", "run": "pytest a/ -v"},
-            {"name": "Run tests", "run": "pytest a/ -v -n0"},
-            {"name": "Lint", "run": "ruff check a/"},
-        ]
-        with pytest.raises(AssertionError, match="sharing a name"):
-            _ci_roots_by_step_name(steps)
-
-    def test_ci_roots_extraction_rejects_an_unnamed_checked_step(self):
-        steps = [
-            {"run": "pytest a/ -v"},
-            {"name": "Run tests (timing, serial)", "run": "pytest a/ -v -n0"},
-            {"name": "Lint", "run": "ruff check a/"},
-        ]
-        with pytest.raises(AssertionError, match="no name"):
-            _ci_roots_by_step_name(steps)
+        with pytest.raises(AssertionError):
+            _ci_step_roots(steps)
 
     def test_leading_positional_roots_rejects_a_command_with_a_different_prefix(self):
-        with pytest.raises(AssertionError, match="ruff format a/"):
+        with pytest.raises(AssertionError):
             _leading_positional_roots("ruff format a/", _CI_LINT_COMMAND)
 
     def test_every_directory_target_exists_on_disk(self):

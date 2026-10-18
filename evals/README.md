@@ -34,7 +34,7 @@ This rationale applies equally to `measure_subagent_model_resolution.py` (see
 subprocess launch, same never-CI posture.
 
 The harness scripts never run in CI. The `evals/test_*.py` unit tests do,
-because they stub every `claude` subprocess.
+because the tests of code that shells out to `claude` or `gh` substitute those calls.
 
 ## Usage
 
