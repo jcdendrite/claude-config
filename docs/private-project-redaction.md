@@ -11,8 +11,8 @@ enforcement. For the high-level three-tier overview, see the
 
 The hook runs in claude-config and its forks, and in any other repo that
 commits `.claude/private-projects-optin`; see
-[Opting in another repository](#opting-in-another-repository). It is silent
-everywhere else.
+[Opting in another repository](#opting-in-another-repository). Its content
+scans are silent everywhere else.
 
 Each gated operation's scan target reaches beyond the content a reviewer
 would think to check. For `git commit`, the target is the staged diff's
@@ -517,7 +517,8 @@ treatment.
 
 ## Opting in another repository
 
-A repo whose origin URL does not contain `claude-config` is silent by default.
+In a repo whose origin URL does not contain `claude-config`, the content scans
+are silent by default.
 Committing `.claude/private-projects-optin` at the repo's toplevel runs the
 whole hook there: all three scans, with no per-scan switch.
 
@@ -543,8 +544,7 @@ tracker IDs or carry hex digests, unless you accept rewording them. The tracker
 scan also denies ordinary technical terms shaped like uppercase letters, a
 hyphen, and digits, such as cipher, encoding, and time-zone names, when their
 prefix is not on the hook's allowlist. Those false positives go to the human,
-who extends the allowlist upstream in claude-config. The tracker scan also
-denies a tracker-shaped branch name or path argument in a gated command.
+who extends the allowlist upstream in claude-config.
 
 **Coverage.** The gate catches a cooperative agent's honest mistakes. It is not
 a confidentiality control. The marker is a per-machine control, not a
