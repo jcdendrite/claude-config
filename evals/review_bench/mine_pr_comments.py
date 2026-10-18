@@ -30,6 +30,7 @@ from review_bench.defects import (
     STORED_DESCRIPTION_ALLOWED,
     Candidate,
     assert_unique_ids,
+    canonical_fix_date,
     escape_for_terminal,
     first_disallowed_character,
     guess_lens,
@@ -495,7 +496,8 @@ def _parent_commit(repo_dir: Path, commit: str) -> str | None:
 
 def _commit_date(repo_dir: Path, commit: str) -> str | None:
     result = _run_git_status(repo_dir, ["log", "-1", "--format=%aI", commit], answers=frozenset({0}))
-    return result.stdout.decode("utf-8", errors="replace").strip() or None
+    author_date = result.stdout.decode("utf-8", errors="replace").strip()
+    return canonical_fix_date(author_date) if author_date else None
 
 
 def _pr_branch_commits(repo_dir: Path, branch: mine_review_rounds._BranchGit) -> frozenset[str] | None:

@@ -932,7 +932,7 @@ _print_default_contributor_hint() {
   echo ""
   echo "Done. Optional (contributors): run the hook test suite:"
   echo "  ./install-dev.sh   # creates .venv from requirements-dev.txt"
-  echo "  .venv/bin/pytest claude/.claude/"
+  echo "  .venv/bin/pytest claude/.claude/ claude-skills/ plugins/ evals/"
 }
 
 # Caller must check `[ -t 0 ]` before invoking this — it has no TTY guard of
@@ -948,7 +948,7 @@ _prompt_contributor_intent() {
       echo "(see docs/private-project-redaction.md \"Opt-in: enable the blocklist\"),"
       echo "then:"
       echo "  ./install-dev.sh   # creates .venv from requirements-dev.txt"
-      echo "  .venv/bin/pytest claude/.claude/"
+      echo "  .venv/bin/pytest claude/.claude/ claude-skills/ plugins/ evals/"
       ;;
     *) _print_default_contributor_hint ;;
   esac
