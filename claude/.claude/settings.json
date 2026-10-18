@@ -109,6 +109,7 @@
     "loop": "name-only",
     "simplify": "name-only",
     "review-pr": "name-only",
+    "period-cost-report": "name-only",
     "claude-api": "off",
     "fewer-permission-prompts": "off",
     "init": "off",

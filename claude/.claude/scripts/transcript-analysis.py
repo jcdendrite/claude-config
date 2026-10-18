@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """transcript-analysis.py — Claude Code transcript analysis toolkit.
-pr-link is the only subcommand that touches the network (via gh).
-Every subcommand is read-only except an explicit write flag: judgment-pair
---out, pr-cost --record, and pr-cost-export --out each write a file.
+Every subcommand is a local read except the few that call gh and the few that
+write a file; docs/transcript-analysis.md lists both sets.
 """
 
 import argparse

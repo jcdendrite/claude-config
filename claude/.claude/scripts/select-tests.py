@@ -166,6 +166,11 @@ REVIEW_PR_AUDIT_SCRIPT = "claude-skills/skills/review-pr/audit-execution-surface
 # test_transcript_period_cost.py reads it for the acquire invocation and skill name.
 REVIEW_PR_SKILL_MD = "claude-skills/skills/review-pr/SKILL.md"
 
+# SCRIPTS_TESTS_DIR's test_transcript_period_cost.py reads this exact file by
+# path, to check it names every period-cost notice tag, the report's first-line
+# prefix, and the undetermined group label, and keeps its pinned prose.
+PERIOD_COST_REPORT_SKILL_MD = "claude-skills/skills/period-cost-report/SKILL.md"
+
 # test_doc_counts.py reads the SKILL.md frontmatter of every name-only skill
 # in settings.json. The path is built in a function body, so
 # TestCrossDomainReadCompleteness cannot see it.
@@ -658,8 +663,8 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
 # MARKER_CLEAR_STALE_PY: see its own comment above for citation.
-# REVIEW_PR_AUDIT_SCRIPT and REVIEW_PR_SKILL_MD: see each constant's own
-# comment above for its citation.
+# REVIEW_PR_AUDIT_SCRIPT, REVIEW_PR_SKILL_MD, and PERIOD_COST_REPORT_SKILL_MD:
+# see each constant's own comment above for its citation.
 # DOC_COUNTS_TEST_PATH: see its own comment above for citation.
 # _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py and
 # test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
@@ -783,6 +788,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == MARKER_CLEAR_STALE_PY, (HOOKS_TESTS_DIR,)),
     (lambda p: p == REVIEW_PR_AUDIT_SCRIPT, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == REVIEW_PR_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p == PERIOD_COST_REPORT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (
         lambda p: _is_under(p, AGENTS_DIR),
