@@ -187,8 +187,8 @@ The pilot (line 379), the Cap (`ready-for-review/SKILL.md:86`) and their pins ar
 11. Revision 4's hook is set aside. [engineer-verified: "Uhhhh that's way overengineered. Have Fable or the architect do an adversarial design review of it."] The quote covers the engineer's judgment that the seven-step hook was overengineered, and the request for an adversarial design review.
 12. Fable's minimal design is adopted. [engineer-verified: "yes"] The quote answered the coordinator's recommendation, in the coordinator's words: adopt Fable's minimal design, have plan-architect rewrite to it, remove all per-account measurement claims, run plan-review round 3, then commit.
 13. Only `show`'s output holds the ADDRESS rows. The `render` digest holds live DEFER and SETTLED decisions only. [verified at HEAD: `code-review/SKILL.md:409`; `review-ledger.sh:597-672`; docs/scripts.md:143]
-14. At HEAD, `show` takes no arguments. It prints rows to stdout and its header to stderr; with no ledger it prints a notice on stdout (`:622-625`); and its summary-failure path prints rows with no header and exits 1 (`:664-668`). [verified at HEAD; the line numbers moved in the staged tree]
-15. `render --out`'s checked path, in the staged tree, has four parts. [verified]
+14. Before Dispatch 1, `show` took no arguments. It prints rows to stdout and its header to stderr; with no ledger it prints a notice on stdout (`:622-625`); and its summary-failure path prints rows with no header and exits 1 (`:664-668`). [verified at the commit before Dispatch 1; the cited line numbers are that tree's]
+15. `render --out`'s checked path, at the commit before Dispatch 1 (the cited line numbers are that tree's), has four parts. [verified]
     - The confinement and name checks in `_review_ledger_check_out` (`_review-ledger-lib.sh:793-877`).
     - The stale delete before session resolution (`review-ledger.sh:749-752`).
     - A second delete, then `mkdir -p`, inside `_review_ledger_render` after the ledger resolves (`_review-ledger-lib.sh:949-952`).
@@ -226,7 +226,7 @@ The pilot (line 379), the Cap (`ready-for-review/SKILL.md:86`) and their pins ar
 35. The FILE line is constant for a given path, so a resumed subagent gets no second copy (G2). [unverified]
 36. A hooks-tree test that reads `SKILL.md` trips `TestCrossDomainReadCompleteness`, so the prose pins stay in `test_skills.py`. [verified by round-3 reviewers]
 37. The config file is the canonical home for every toggle (docs/config-file.md:3-14), so a kill switch would be a new config key. [verified] Declining a kill switch for `render --out`'s new refusal rests on the refusal firing only in an already-degraded state (row 44). Dispatches 1 and 2 land in one PR, so the CHANGELOG entry listed under Dispatch 2 covers the refusal.
-38. `enforce-marker-script-shape.sh:891-892` and docs/hooks.md:276 leave `show`, `render` and `clear-stale` ungated, and they cite `--out`'s confinement, which that hook does not itself enforce [verified: read at `:891-892`; ciso-reviewer round 2]. `_review_ledger_check_out` is that control. It refuses a target under the ledger directory (`_review-ledger-lib.sh:868-876`), and after M15 it also refuses one git does not confirm is ignored. [verified]
+38. `enforce-marker-script-shape.sh:891-892` and docs/hooks.md:276 leave `show`, `render` and `clear-stale` ungated, and they cite `--out`'s confinement, which that hook does not itself enforce [verified: read at `:891-892`; ciso-reviewer round 2]. `_review_ledger_check_out` is that control. It refuses a target under the ledger directory (`_review-ledger-lib.sh:868-876` in the commit before Dispatch 1), and after M15 it also refuses one git does not confirm is ignored. [verified]
 39. `git -C ""` leaves the working directory unchanged. [unverified: git(1)] Hence the empty-`.cwd` exit.
 40. The engineer accepted the plan as revised after round 3. [engineer-verified: "Approve (Recommended)"] The tag covers only the plan's approval. The three departures and the CHANGELOG addition that the question listed were described in the coordinator's own words.
 41. The round-2 ignore-state fix is adopted. It puts one check in `_review_ledger_check_out`, removes the hook's own check, and adds `test_enforce_marker_script_shape.py` to Dispatch 1's Critical files. [engineer-verified: "Adopt the fix (Recommended)"] The quote is the label the engineer selected for "How do you want to handle it?". It covers adopting the fix that the round-2 `plan-architect` consult recommended. What the question showed of that fix is [unverified] here.
@@ -262,7 +262,7 @@ The pilot (line 379), the Cap (`ready-for-review/SKILL.md:86`) and their pins ar
 
 ## Critical files
 
-**Dispatch 1** (`code-writer`; runs first, because its `show --out` contract is dispatch 2's input). Its first pass and the `/code-review` round-2 items (rows 41 and 47, marked "(round 2)") are staged. The test lists below state the properties the staged tests cover, not an exhaustive case list.
+**Dispatch 1** (`code-writer`; runs first, because its `show --out` contract is dispatch 2's input). Its first pass and the `/code-review` round-2 items (rows 41 and 47, marked "(round 2)") are committed at HEAD, and a test trim is staged on top. The test lists below state the properties the trimmed tests cover, not an exhaustive case list. The engineer approved the trim ("yes apply the cuts", recorded in the review ledger). The surface is a cooperative-agent tool, so the cuts target honest-mistake shapes. Shared library code gets no tier waiver (CLAUDE.md § Hook threat model), so the cuts rest on redundancy, unreachability and the seam rule, not on an attacker-only framing.
 
 - `claude/.claude/scripts/_review-ledger-lib.sh`:
   - `_review_ledger_check_out`'s fifth argument, the prefix argument of `_review_ledger_remove_out` and `_review_ledger_make_out_dir`, and `_review_ledger_write_out` extracted from `_review_ledger_render_in`.
@@ -276,43 +276,32 @@ The pilot (line 379), the Cap (`ready-for-review/SKILL.md:86`) and their pins ar
     - in both entries, the Approach's by-step failure bullets replace "1 with no file when … a stale `<path>` cannot be deleted", and the entries say that exit codes do not determine file state;
     - a consumer acts on stdout.
 - `claude/.claude/scripts/tests/test_review_ledger_lib.py` (properties, not an exhaustive case list):
-  - the subcommand grammars cross-reject both ways, and an unrecognized or empty subcommand is refused before either grammar is consulted;
-  - the existing refusal fixtures run over both subcommands;
+  - the subcommand grammars cross-reject both ways, and a missing subcommand argument is refused;
+  - the confinement and ignore cases run for one subcommand, and only the message-prefix test and the grammar cases cover both;
   - a `TestCheckOut` autouse fixture calls `ignore_agent_reviews`, so the existing allow cases pin the ignored verdict;
-  - every refusal case below runs for `show` and `render`, and runs git under `isolated_git_config_env`, so ambient ignore sources cannot change a verdict;
-  - ignore refusals (exit 1, the not-git-ignored reason):
-    - with the entry removed, after asserting that `git check-ignore -q` exits 1 for the target;
-    - for a tracked target (force-added while `agent-reviews/` is in `info/exclude`), after the same exit 1 premise (row 45);
-    - with an empty ledger-directory argument and the entry removed, which pins the check's placement before the early return (the `_check_out` test helper allows passing an empty value);
+  - every ignore case runs git under `isolated_git_config_env`, so ambient ignore sources cannot change a verdict;
+  - ignore refusal (exit 1, the not-git-ignored reason): with the entry removed;
   - could-not-confirm refusals:
-    - a real non-repository root gives a real status 128;
-    - a `git` stub on `PATH` exiting a status other than 0, 1 and 128 puts that number in the message and does not say "timed out";
-    - a stub exiting 124, 137 or 143 says "timed out" and "a retry may clear it";
-  - foreign-environment cases, one per scrubbed variable, each asserting its premise through `unwrapped_check_ignore_status` before the call under test:
-    - a `GIT_DIR`, a `GIT_WORK_TREE` (a foreign tree whose `.gitignore` lists `agent-reviews/`) and a `GIT_COMMON_DIR` each naming a foreign repo that ignores `agent-reviews/` still refuse. The bare probe exits 0 under that variable;
-    - a `GIT_INDEX_FILE` naming a nonexistent index, with a tracked target, still refuses. The bare probe exits 1 without the variable and 0 with it;
-    - the `GIT_DIR` and `GIT_WORK_TREE` cases follow the shape of `test_foreign_git_dir_env_does_not_launder_the_check` and `test_foreign_git_work_tree_env_does_not_launder_the_check` in `test_deny_reviewer_tree_mutation.py`.
+    - a real non-repository root gives a real status 128, names it, and does not say "timed out";
+    - a `git` stub on `PATH` exiting 124 says "timed out" and "a retry may clear it";
+  - one foreign-environment case: a `GIT_DIR` naming a foreign repo that ignores `agent-reviews/` still refuses. It asserts its premise through `unwrapped_check_ignore_status` before the call under test, and the bare probe exits 0 under that variable. It follows the shape of `test_foreign_git_dir_env_does_not_launder_the_check` in `test_deny_reviewer_tree_mutation.py`.
 - `claude/.claude/hooks/tests/test_review_ledger_script.py`, covering `show --out` and `render --out`:
   - **Happy path:**
     - rows written equal bare `show`'s stdout, at mode 0600, and stdout reads exactly `changed: <path>`;
-    - realistic rows: a branch-file row carrying control and format characters, a session-file row whose `event_time` precedes the branch rows, and a SETTLED engineer row with `--engineer-quote`. The file equals bare `show` and holds none of the seeded characters. The session row comes first, and the branch rows compare as a set, never in an order that can tie on `event_time`;
-    - on the default branch the file holds the session file's rows, equal to bare `show`, and the header reads `scope=session`;
-    - a target hard-linked to a file outside `agent-reviews/` gives exit 0, the other link keeps its content, and the target holds the new rows;
+    - the rows come from two files, one branch-file row and one session-file row, and the file equals bare `show`;
     - an absent `agent-reviews/` is created.
-  - **Zero rows and no ledger:** each gives exactly `unchanged`, no file, and the stale target gone. A ledger of only undecodable lines does the same. An `unchanged` run leaves an empty `agent-reviews/`.
+  - **Zero rows and no ledger:** each gives exactly `unchanged`, no file, and the stale target gone. A ledger of only undecodable lines does the same.
   - **Exits after the delete,** each with a seeded stale target, empty stdout, and the target gone:
-    - a session-resolution failure or a symlinked ledger file: exit 2;
-    - a failing `jq`, a failing `jq -s` summary, a failing `jq` sort, or a failing `mv`: exit 1. These use `path_with_failing_tool_shim`, scoped by argument pattern where only one call shape fails.
+    - a session-resolution failure: exit 2;
+    - a failing `jq`, a failing `jq -s` summary, or a failing `mv`: exit 1. These use `path_with_failing_tool_shim`, scoped by argument pattern where only one call shape fails.
   - **Exits before the delete:**
     - a stale target that cannot be deleted exits 1 before the session is resolved;
-    - a repo root that is not a repository exits 2 with an existing target left in place;
-    - a path outside the grammar deletes nothing. The refused-path matrix keeps only the params that prove the check runs before the delete: a tracked file outside `agent-reviews/`, a `..` segment, a render-grammar name, and a reviewer findings file. Each param seeds the file it names when that file is under `agent-reviews/`, asserts it is unchanged, and pins a reason fragment. The lib layer covers the subdirectory and directory-itself params.
-  - **Ignore refusals,** each parametrized over `show` and `render`:
-    - with the entry removed (after asserting that `git check-ignore -q` exits 1 for the target): exit 2, empty stdout, the not-git-ignored reason, and a seeded stale target left intact;
-    - with the entry removed and `agent-reviews/` absent, no directory created;
-    - a tracked target exits 2 even with the ignore entry present, and the committed file stays intact. This script-layer case pins the check running before the delete for a tracked target, so the lib case does not assert it.
+    - a path outside the grammar deletes nothing. One case, a reviewer findings file, seeds that file, asserts it unchanged, and pins a reason fragment. The lib layer covers the confinement and name-grammar matrix.
+  - **Ignore refusals:**
+    - with the entry removed, for `show` and `render`: exit 2, empty stdout, the not-git-ignored reason, and a seeded stale target left intact;
+    - a tracked `show` target exits 2 even with the ignore entry present, and the committed file stays intact. This case pins the check running before the delete for a tracked target.
   - **Fixtures:** autouse fixtures in `TestReviewLedgerShowOut` and `TestReviewLedgerRenderOutConfinement` call `ignore_agent_reviews` on `git_repo`, which covers `feature_repo`, `logged_defer` and the direct `git_repo` cases. The test that checks `render --out` reports `changed:` then `unchanged` calls it itself. The shared `git_repo` fixture is unchanged. Tests that exit before reading rows use `feature_repo`, not `seeded_repo`.
-  - **Unchanged:** argument grammar, and bare `show`.
+  - **Unchanged:** bare `show`, and the argument grammar apart from the new `--out` flag. The malformed-argument matrix is four params: `--out` with no value, `--out` with an empty value, `--out` twice, and an unknown flag.
 - (round 2) `claude/.claude/tests/helpers.py`: four shared helpers, which Dispatch 2 reuses and does not rebuild.
   - `ignore_agent_reviews(repo)` writes `agent-reviews/` to the file `git -C <repo> rev-parse --git-path info/exclude` names, resolved against the repo and not the process cwd, and is idempotent. Before returning, it asserts that `git check-ignore -q` exits 0 for a sample path.
   - `isolated_git_config_env(home)` returns `GIT_CONFIG_GLOBAL=os.devnull`, `GIT_CONFIG_NOSYSTEM=1`, and `HOME` and `XDG_CONFIG_HOME` pointed at `home` (precedent: `test_review_pr_checkout.py:87-88`).
@@ -392,14 +381,10 @@ The pilot (line 379), the Cap (`ready-for-review/SKILL.md:86`) and their pins ar
    - whether matching hooks run in parallel.
 
    Stop and re-plan on a mismatch, and revisit row 17 afterward.
-1. **After each dispatch:** `.venv/bin/python3 claude/.claude/scripts/select-tests.py`, `.venv/bin/ruff check` on each changed test file, and `scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck`. Dispatch 1's round-2 pass is already staged, so `code-writer` applies each mutation below by hand to `_review-ledger-lib.sh`, one at a time, before the PR opens. For each mutation it confirms the named test fails, restores the file, and confirms the restore with `git diff -- claude/.claude/scripts/_review-ledger-lib.sh` printing nothing (the working tree equals the staged index), before the next mutation or any staging. The outcomes below are predictions until a run is recorded in the PR body.
+1. **After each dispatch:** `.venv/bin/python3 claude/.claude/scripts/select-tests.py`, `.venv/bin/ruff check` on each changed test file, and `scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck`. Dispatch 1's round-2 pass is committed at HEAD, so `code-writer` applies each mutation below by hand to `_review-ledger-lib.sh`, one at a time, before the PR opens. For each mutation it confirms the named test fails, restores the file, and confirms a plain `git diff -- claude/.claude/scripts/_review-ledger-lib.sh` prints nothing before the next mutation (the file is committed, so a clean restore leaves no diff). The outcomes below are predictions until a run is recorded in the PR body.
    - delete the ignore-check block: the not-ignored lib and script cases fail;
-   - treat a status other than 0 and 1 as success: the real-128, other-status and cap-kill lib cases fail;
-   - drop `GIT_DIR` from the unset: the foreign-`GIT_DIR` lib case fails;
-   - drop `GIT_WORK_TREE` from the unset: the foreign-`GIT_WORK_TREE` lib case fails;
-   - drop `GIT_COMMON_DIR` from the unset: the foreign-`GIT_COMMON_DIR` lib case fails, and only it;
-   - drop `GIT_INDEX_FILE` from the unset: the foreign-`GIT_INDEX_FILE` lib case fails, and only it;
-   - move the block below the ledger-directory early return: the empty-ledger-directory lib case fails.
+   - treat a status other than 0 and 1 as success: the real-128 and cap-kill lib cases fail;
+   - delete the `unset` line: the foreign-`GIT_DIR` lib case fails.
 2. **`/code-review` routing:**
    - the hook, `settings.json` and the `enforce-marker-script-shape.sh` comment to `claude-hook-review`;
    - `plan-architect.md` to `/agent-review`;
@@ -441,9 +426,11 @@ The PR body names `install.sh`, as `require-stow-reminder.sh` requires.
   - between the check and the final `mv`, a same-uid process can swap the target for a symlink to a directory;
   - `_review_ledger_check_out` echoes a raw `--out` before its control-character check.
 - **Test classes declined:**
-  - a reason-string taxonomy beyond the per-param fragments the refused-path matrix pins;
+  - a reason-string taxonomy beyond the fragments the kept cases pin;
   - the scale, hang, overlap and non-ASCII tests;
-  - from round 2: a FIFO target and an absolute `..` spelling, whose paths existing cases already reach.
+  - from round 2: a FIFO target and an absolute `..` spelling, whose paths existing cases already reach;
+  - a foreign `GIT_WORK_TREE`, `GIT_COMMON_DIR` and `GIT_INDEX_FILE` case each. The single foreign-`GIT_DIR` case pins that the `unset` line exists and scrubs `GIT_DIR`. Dropping any one other variable from it goes unpinned by design, because the line mirrors `worktree-ensure.sh:76` (row 50).
+  - the ignore check's placement before the empty-ledger-directory early return in `_review_ledger_check_out`. It goes unpinned by design, because `LEDGER_DIR` is never empty at either call site: `review-ledger.sh:315` sets it from the resolved config directory, and `:648` and `:766` pass it.
 - **The non-foundation consults:** the contradiction route (`code-review/SKILL.md:370`), the heavier-mechanism route (`:346-358`) and `review-pr`'s consult. They receive the line with no new instruction.
 - **A README hook-table row** (row 33), and the wording of `require-architect-consult.sh:124`'s deny message.
 - **Measuring whether history changes verdicts** (row 30).
