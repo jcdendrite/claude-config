@@ -8,7 +8,10 @@ Ask: "Sweep the 26 (Recommended)" — selected label, answering whether this PR 
 
 Why now: PR #1270 retargeted `fake_projects`, `cost_ledger_file`, and `cost_ledger_enabled` to patch package modules directly, so a test file no longer needs the shim for those fixtures. `.claude/plans/decomposition-prep.md` (G2, `:170`; Out of scope, `:372`) gives loader removal to each later phase "as its subject moves". 26 of the 40 shim-loading files read only package-resident names: their subjects have already moved, so no future phase owns their loaders. The other 14 read a shim-only name (`build_parser`, `main`, or a `cmd_*` still defined in the shim) and stay under G2.
 
-Intended outcome: the 26 files import `transcript_analysis.<module>` directly; the guard test pins their `<module>.<name>` reads to real bindings; `docs/transcript-analysis-architecture.md` describes the result.
+Intended outcome:
+- the 26 files import `transcript_analysis.<module>` directly
+- the guard test pins their `<module>.<name>` reads to real bindings
+- `docs/transcript-analysis-architecture.md` describes the result
 
 ## Approach
 

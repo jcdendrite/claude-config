@@ -129,8 +129,8 @@ def _top_level_names(module_path: Path) -> set[str]:
     tree = ast.parse(module_path.read_text())
     names: set[str] = set(IMPLICIT_MODULE_ATTRS) | _lazy_module_attrs(tree)
     # Walks tree.body only, so a name bound inside a module-level if/try block
-    # (e.g. a platform-gated def, or a try/except ImportError fallback) is missed;
-    # that only makes this guard stricter, never laxer, for a module using that shape.
+    # (e.g. a platform-gated def, or a try/except ImportError fallback) is missed.
+    # That only makes this guard stricter, never laxer, for a module using that shape.
     for node in tree.body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             names.add(node.name)
