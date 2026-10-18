@@ -5,16 +5,31 @@ Run as `_move_fidelity.py <subcommand>`, or import the check functions. One usag
   nodes --before FILE --after FILE... --moved NAME... [--rename OLD=NEW...] [--verbatim NAME...]
   remainder --before FILE --after FILE [--removed|--added|--changed NAME...] [--import-added|--import-removed TRIPLE...]
   capture --script FILE --account DIR --out DIR [--runs FILE] [--all-help] [--env NAME=VALUE...] [--unset NAME...]
-  compare-captures DIR_A DIR_B [--mask REGEX...]
+  compare-captures DIR_A DIR_B [--mask REGEX...] [--moved-callable QUALNAME=MODULE...]
   test-ids --before XML... --after XML... [--file-prefix PATH] [--rename OLD=NEW...] [--expect-new ID...]
 
 Each finding prints as one line prefixed with its check name. Exit status is 0 when clean, 1 on any finding,
 2 on bad input. The module imports only the standard library and uses no relative imports.
 
-`nodes --rename` reverses each NEW name to its OLD by a textual match over the node's source, so it also rewrites a NEW name
-that occurs inside a string literal or a comment.
-`capture --all-help` captures rendered help only, so it cannot see an argparse default, type, or dest that the help output
-does not display. `remainder` drops every top-level import statement, with any comment on its lines, before comparing,
+`nodes --rename` reverses a NEW name only where it occurs as code, including inside an f-string replacement field,
+so a NEW name in a string literal, docstring, or comment is compared as written.
+`nodes --rename` needs the f-string tokens Python 3.12's `tokenize` reports, and exits 2 on an interpreter without them.
+`capture --all-help` also writes `<label>.parser` for the top level and each subcommand: one line per argparse action,
+mutually exclusive group, and `set_defaults` entry, with each callable rendered as `<callable MODULE:QUALNAME>`
+and the captured script's own module as `<script>`.
+The `<script>` substitution applies to `<callable ...>` tokens only.
+An `<instance MODULE:TYPE>` token prints the type's own module. For a type the script defines, that is the harness's
+capture-target module name (`_move_fidelity_capture_target`). --moved-callable does not rewrite it.
+The dump covers one level of subcommands and no callable's body.
+A value that is not a callable with `__module__` and `__qualname__`, and whose `repr()` carries a memory address,
+renders as `<instance MODULE:TYPE>`: its type only.
+Its state is not compared, such as the arguments of a `functools.partial` over a function or a validator instance's fields.
+The dump covers a fixed subset of attributes, PARSER_ATTRIBUTES per parser and ACTION_ATTRIBUTES per action.
+Other settings are not compared, such as `fromfile_prefix_chars`, `conflict_handler`, and a version action's version string.
+The dump calls `build_parser()` in the harness process under the ambient environment, not capture's pinned one.
+`compare-captures --moved-callable QUALNAME=MODULE` rewrites `<script>:QUALNAME` to `MODULE:QUALNAME`
+in DIR_A's `.parser` files only, so DIR_A must be the before side.
+`remainder` drops every top-level import statement, with any comment on its lines, before comparing,
 so it checks neither import order nor import-line comments.
 """
 from __future__ import annotations
@@ -50,6 +65,11 @@ PINNED_HASHSEED = "0"
 ABSENT_CONFIG_DIRS_FILE = "absent-config-dirs"
 CAPTURE_TARGET_MODULE_NAME = "_move_fidelity_capture_target"
 MASK_TOKEN = b"<masked>"
+SCRIPT_MODULE_LABEL = "<script>"
+PARSER_DUMP_SUFFIX = ".parser"
+TOP_HELP_LABEL = "help-top"
+PARSER_ATTRIBUTES = ("allow_abbrev", "argument_default", "prefix_chars", "exit_on_error")
+ACTION_ATTRIBUTES = ("option_strings", "dest", "nargs", "const", "default", "type", "choices", "required")
 OUTCOME_TAGS = ("failure", "error", "skipped")
 PASSED_OUTCOME = "passed"
 SNIPPET_LIMIT = 80
@@ -157,15 +177,15 @@ def _load_source(path: Path) -> ParsedSource:
     return ParsedSource(path, source, io.StringIO(source).readlines(), tree, nodes)
 
 
-def _comment_tokens(source: str) -> list[tuple[int, str]]:
+def _tokens(source: str) -> list[tokenize.TokenInfo]:
     try:
-        return [
-            (token.start[0], token.string)
-            for token in tokenize.generate_tokens(io.StringIO(source).readline)
-            if token.type == tokenize.COMMENT
-        ]
+        return list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (tokenize.TokenError, SyntaxError) as error:
         raise BadInput(f"cannot tokenize source: {error}") from error
+
+
+def _comment_tokens(source: str) -> list[tuple[int, str]]:
+    return [(token.start[0], token.string) for token in _tokens(source) if token.type == tokenize.COMMENT]
 
 
 def _emit(findings: list[str], summary: str) -> int:
@@ -186,9 +206,42 @@ def _name_boundary_pattern(names: Iterable[str]) -> re.Pattern[str] | None:
     return re.compile(r"(?<![\w.])(?:" + "|".join(re.escape(name) for name in longest_first) + r")(?!\w)")
 
 
-def _contains_name(text: str, name: str) -> bool:
+def _non_code_spans(source: str) -> list[tuple[int, int]]:
+    """Character spans of the STRING, FSTRING_MIDDLE, and COMMENT tokens; a multi-line token's span covers each of its lines."""
+    line_starts = [0]
+    for line in io.StringIO(source).readlines():
+        line_starts.append(line_starts[-1] + len(line))
+    non_code_types = {tokenize.STRING, tokenize.FSTRING_MIDDLE, tokenize.COMMENT}
+    return [
+        (line_starts[token.start[0] - 1] + token.start[1], line_starts[token.end[0] - 1] + token.end[1])
+        for token in _tokens(source)
+        if token.type in non_code_types
+    ]
+
+
+def _code_name_matches(text: str, pattern: re.Pattern[str]) -> list[re.Match[str]]:
+    """Matches of `pattern` that start outside every string, f-string literal, and comment token of `text`."""
+    spans = _non_code_spans(text)
+    return [match for match in pattern.finditer(text) if not any(start <= match.start() < end for start, end in spans)]
+
+
+def _contains_name_as_code(text: str, name: str) -> bool:
     pattern = _name_boundary_pattern([name])
-    return pattern is not None and pattern.search(text) is not None
+    return pattern is not None and bool(_code_name_matches(text, pattern))
+
+
+def _reverse_renames(text: str, reverse_map: dict[str, str], reverse_pattern: re.Pattern[str] | None) -> str:
+    """Replace each NEW name that occurs as code in `text` with its OLD name."""
+    if reverse_pattern is None:
+        return text
+    pieces = []
+    cursor = 0
+    for match in _code_name_matches(text, reverse_pattern):
+        pieces.append(text[cursor : match.start()])
+        pieces.append(reverse_map[match.group(0)])
+        cursor = match.end()
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 def _first_dump_difference(before_dump: str, after_dump: str) -> str:
@@ -229,6 +282,9 @@ def check_nodes(
     reverse_map = {new: old for old, new in renames}
     if len(reverse_map) != len(renames):
         raise BadInput("two --rename entries share the same NEW name")
+    # The attribute is read at call time so the module still imports, and the other subcommands still run, below Python 3.12.
+    if renames and not hasattr(tokenize, "FSTRING_MIDDLE"):
+        raise BadInput("--rename needs Python 3.12 or later: tokenize reports no f-string tokens")
     reverse_pattern = _name_boundary_pattern(reverse_map)
 
     before = _load_source(before_path)
@@ -257,7 +313,9 @@ def check_nodes(
         findings.extend(_compare_node(name, before_text, after_text, reverse_map, reverse_pattern, name in verbatim))
     # Matching with the reversal's own longest-first pattern leaves a NEW name that occurs only inside a longer NEW name unused.
     used_new_names = {
-        match.group(0) for text in compared_after_texts for match in (reverse_pattern.finditer(text) if reverse_pattern else ())
+        match.group(0)
+        for text in compared_after_texts
+        for match in (_code_name_matches(text, reverse_pattern) if reverse_pattern else ())
     }
     for new_name, old_name in reverse_map.items():
         if new_name not in used_new_names:
@@ -277,10 +335,10 @@ def _compare_node(
     if is_verbatim and before_text != after_text:
         findings.append(f"verbatim: {name}: source lines differ from the original")
     for new_name in reverse_map:
-        if _contains_name(before_text, new_name):
+        if _contains_name_as_code(before_text, new_name):
             findings.append(f"rename-ambiguous: {name}: {new_name} already occurs in the original node")
             return findings
-    reversed_text = reverse_pattern.sub(lambda match: reverse_map[match.group(0)], after_text) if reverse_pattern else after_text
+    reversed_text = _reverse_renames(after_text, reverse_map, reverse_pattern)
     before_dump, before_problem = _node_dump(before_text, "before")
     after_dump, after_problem = _node_dump(reversed_text, "after")
     if before_problem or after_problem:
@@ -467,9 +525,10 @@ def _read_runs(runs_file: Path) -> list[list[str]]:
     return runs
 
 
-def subcommand_names(script: Path) -> list[str]:
-    """Registered subcommand names, in registration order, read from the script's `build_parser()`."""
+def _load_parser(script: Path) -> argparse.ArgumentParser:
+    """Run the script's `build_parser()` in this process, under the ambient environment."""
     original_path = list(sys.path)
+    original_module_names = set(sys.modules)
     sys.path.insert(0, str(script.parent))
     try:
         spec = importlib.util.spec_from_file_location(CAPTURE_TARGET_MODULE_NAME, script)
@@ -477,14 +536,21 @@ def subcommand_names(script: Path) -> list[str]:
             raise BadInput(f"cannot load {script} as a module")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        parser = module.build_parser()
+        return module.build_parser()
     except BadInput:
         raise
     except (Exception, SystemExit) as error:
         raise BadInput(f"cannot read subcommands from {script}: {error!r}") from error
     finally:
         sys.path[:] = original_path
-    names: list[str] = []
+        # A sibling module left cached would be reused by a later call that loads a same-named module of different content.
+        for module_name in set(sys.modules) - original_module_names:
+            del sys.modules[module_name]
+
+
+def _subcommand_parsers(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
+    """Subcommand parsers keyed by their first registered name, in registration order; an alias adds no entry."""
+    parsers: dict[str, argparse.ArgumentParser] = {}
     seen_parsers: set[int] = set()
     # argparse exposes no public accessor for registered subcommands.
     for action in parser._actions:
@@ -493,8 +559,51 @@ def subcommand_names(script: Path) -> list[str]:
         for name, subparser in action.choices.items():
             if id(subparser) not in seen_parsers:
                 seen_parsers.add(id(subparser))
-                names.append(name)
-    return names
+                parsers[name] = subparser
+    return parsers
+
+
+def _render_value(value: object) -> str:
+    """Render a parser-configuration value as text that is stable across processes and carries no memory address."""
+    if value is None or isinstance(value, bool | int | float | str):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_render_value(item) for item in value) + "]"
+    if isinstance(value, tuple):
+        return "(" + ", ".join(_render_value(item) for item in value) + ("," if len(value) == 1 else "") + ")"
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{_render_value(key)}: {_render_value(item)}" for key, item in value.items()) + "}"
+    if isinstance(value, set | frozenset):
+        return type(value).__name__ + "{" + ", ".join(sorted(_render_value(item) for item in value)) + "}"
+    module, qualname = getattr(value, "__module__", None), getattr(value, "__qualname__", None)
+    if callable(value) and isinstance(module, str) and isinstance(qualname, str):
+        return f"<callable {SCRIPT_MODULE_LABEL if module == CAPTURE_TARGET_MODULE_NAME else module}:{qualname}>"
+    rendered = repr(value)
+    if " at 0x" not in rendered:
+        return rendered
+    return f"<instance {type(value).__module__}:{type(value).__qualname__}>"
+
+
+def _action_line(action: argparse.Action) -> str:
+    fields = []
+    for attribute in ACTION_ATTRIBUTES:
+        value = getattr(action, attribute)
+        if attribute == "choices" and isinstance(action, argparse._SubParsersAction):
+            value = list(value)
+        fields.append(f"{attribute}={_render_value(value)}")
+    return f"action {_render_value(type(action))} " + " ".join(fields)
+
+
+def dump_parser(parser: argparse.ArgumentParser) -> str:
+    """Render one parser's configuration as `\\n`-terminated lines: `parser`, then each `action`, `mutex`, and `default`."""
+    # argparse exposes no public accessor for a parser's actions, mutually exclusive groups, or set_defaults entries.
+    lines = ["parser " + " ".join(f"{name}={_render_value(getattr(parser, name))}" for name in PARSER_ATTRIBUTES)]
+    lines.extend(_action_line(action) for action in parser._actions)
+    for group in parser._mutually_exclusive_groups:
+        dests = [action.dest for action in group._group_actions]
+        lines.append(f"mutex required={_render_value(group.required)} dests={_render_value(dests)}")
+    lines.extend(f"default {key}={_render_value(parser._defaults[key])}" for key in sorted(parser._defaults))
+    return "\n".join(lines) + "\n"
 
 
 def capture(
@@ -506,7 +615,10 @@ def capture(
     env_overrides: Sequence[tuple[str, str]] = (),
     unsets: Sequence[str] = (),
 ) -> list[str]:
-    """Run the script once per planned argv and write `<label>.argv/.stdout/.stderr/.exit` under `out`; return the labels."""
+    """Run the script once per planned argv and write `<label>.argv/.stdout/.stderr/.exit` under `out`; return the labels.
+
+    With `all_help`, the help labels also get `<label>.parser`, the dump of that parser's configuration.
+    """
     script, account = script.resolve(), account.resolve()
     if not script.is_file():
         raise BadInput(f"--script {script} is not a file")
@@ -517,12 +629,19 @@ def capture(
     if runs_file is None and not all_help:
         raise BadInput("nothing to capture: pass --runs and/or --all-help")
     planned: list[tuple[str, list[str]]] = []
+    parser_dumps: dict[str, str] = {}
     if all_help:
-        planned.append(("help-top", ["--help"]))
-        for name in subcommand_names(script):
+        top_parser = _load_parser(script)
+        planned.append((TOP_HELP_LABEL, ["--help"]))
+        parser_dumps[TOP_HELP_LABEL] = dump_parser(top_parser)
+        for name, subparser in _subcommand_parsers(top_parser).items():
             if not re.fullmatch(r"[\w.-]+", name):
                 raise BadInput(f"subcommand name {name!r} cannot be a capture label")
-            planned.append((f"help-{name}", [name, "--help"]))
+            label = f"help-{name}"
+            if label == TOP_HELP_LABEL:
+                raise BadInput(f"subcommand name {name!r} collides with the top-level capture label {TOP_HELP_LABEL}")
+            planned.append((label, [name, "--help"]))
+            parser_dumps[label] = dump_parser(subparser)
     if runs_file is not None:
         planned.extend((f"run-{number:02d}", argv) for number, argv in enumerate(_read_runs(runs_file), start=1))
     if not planned:
@@ -540,6 +659,8 @@ def capture(
         (out / f"{label}.stdout").write_bytes(result.stdout)
         (out / f"{label}.stderr").write_bytes(result.stderr)
         (out / f"{label}.exit").write_text(f"{result.returncode}\n")
+        if label in parser_dumps:
+            (out / f"{label}{PARSER_DUMP_SUFFIX}").write_text(parser_dumps[label], encoding="utf-8")
     return [label for label, _ in planned]
 
 
@@ -549,28 +670,56 @@ def _relative_files(directory: Path) -> list[str]:
     return sorted(str(path.relative_to(directory)) for path in directory.rglob("*") if path.is_file())
 
 
-def compare_captures(dir_a: Path, dir_b: Path, masks: Sequence[str] = ()) -> tuple[list[str], int]:
-    """Return (findings, compared-file count) comparing every file byte for byte after masking."""
+def _rewrite_moved_callables(data: bytes, moved_callables: Sequence[tuple[str, str]], rewritten_qualnames: set[str]) -> bytes:
+    """Rewrite each `<callable <script>:QUALNAME>` token to its declared MODULE, recording the QUALNAMEs that matched."""
+    for qualname, module in moved_callables:
+        script_token = f"<callable {SCRIPT_MODULE_LABEL}:{qualname}>".encode()
+        if script_token in data:
+            data = data.replace(script_token, f"<callable {module}:{qualname}>".encode())
+            rewritten_qualnames.add(qualname)
+    return data
+
+
+def compare_captures(
+    dir_a: Path, dir_b: Path, masks: Sequence[str] = (), moved_callables: Sequence[tuple[str, str]] = ()
+) -> tuple[list[str], int]:
+    """Return (findings, compared-file count) comparing every file byte for byte after the moved-callable rewrite and masking.
+
+    The rewrite touches only `dir_a`'s `.parser` files, so `dir_a` must be the before side.
+    """
     try:
         patterns = [re.compile(mask.encode("utf-8")) for mask in masks]
     except re.error as error:
         raise BadInput(f"invalid --mask regex: {error}") from error
+    declared_qualnames: set[str] = set()
+    for qualname, module in moved_callables:
+        if not module:
+            raise BadInput(f"--moved-callable {qualname}= has an empty MODULE")
+        if qualname in declared_qualnames:
+            raise BadInput(f"--moved-callable {qualname} is declared more than once")
+        declared_qualnames.add(qualname)
     files_a, files_b = _relative_files(dir_a), _relative_files(dir_b)
     if not files_a and not files_b:
         raise BadInput(f"neither {dir_a} nor {dir_b} holds any files")
 
-    def masked(directory: Path, name: str) -> bytes:
-        data = (directory / name).read_bytes()
+    def masked(data: bytes) -> bytes:
         for pattern in patterns:
             data = pattern.sub(lambda _match: MASK_TOKEN, data)
         return data
 
+    rewritten_qualnames: set[str] = set()
+    rewritten_parser_files = {
+        name: _rewrite_moved_callables((dir_a / name).read_bytes(), moved_callables, rewritten_qualnames)
+        for name in files_a
+        if name.endswith(PARSER_DUMP_SUFFIX)
+    }
     findings = []
     for name in sorted(set(files_a) ^ set(files_b)):
         findings.append(f"capture-missing: {name} is present only in {dir_a if name in files_a else dir_b}")
     compared = sorted(set(files_a) & set(files_b))
     for name in compared:
-        data_a, data_b = masked(dir_a, name), masked(dir_b, name)
+        data_a = masked(rewritten_parser_files[name] if name in rewritten_parser_files else (dir_a / name).read_bytes())
+        data_b = masked((dir_b / name).read_bytes())
         if data_a == data_b:
             continue
         findings.append(f"capture-bytes: {name} differs")
@@ -583,6 +732,10 @@ def compare_captures(dir_a: Path, dir_b: Path, masks: Sequence[str] = ()) -> tup
             n=1,
         )
         findings.extend(f"  {line}" for line in list(diff)[:DIFF_LINE_LIMIT])
+    for qualname, module in moved_callables:
+        if qualname not in rewritten_qualnames:
+            unused_token = f"{SCRIPT_MODULE_LABEL}:{qualname}"
+            findings.append(f"moved-callable-unused: {qualname}={module}: {unused_token} occurs in no .parser file of {dir_a}")
     return findings, len(compared)
 
 
@@ -704,7 +857,9 @@ def _run_capture(args: argparse.Namespace) -> int:
 
 
 def _run_compare_captures(args: argparse.Namespace) -> int:
-    findings, compared = compare_captures(args.dir_a, args.dir_b, args.mask or [])
+    findings, compared = compare_captures(
+        args.dir_a, args.dir_b, args.mask or [], _parse_key_value_pairs(args.moved_callable or [], "--moved-callable")
+    )
     return _emit(findings, f"compared-files: {compared}")
 
 
@@ -752,7 +907,11 @@ def build_parser() -> argparse.ArgumentParser:
     capture_parser.add_argument("--account", required=True, type=Path, help="existing directory used as CLAUDE_CONFIG_DIR")
     capture_parser.add_argument("--out", required=True, type=Path, help="directory to create; an existing one is refused")
     capture_parser.add_argument("--runs", type=Path, help="one shlex-split argv per line; blank and # lines are skipped")
-    capture_parser.add_argument("--all-help", action="store_true", help="capture --help for the top level and every subcommand")
+    capture_parser.add_argument(
+        "--all-help",
+        action="store_true",
+        help="capture --help, and a dump of a fixed subset of parser attributes, for the top level and every subcommand",
+    )
     _add_list_option(capture_parser, "--env", "NAME=VALUE", "override a pinned or ambient variable")
     _add_list_option(capture_parser, "--unset", "NAME", "remove a variable; applied after --env")
     capture_parser.set_defaults(handler=_run_capture)
@@ -761,6 +920,13 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("dir_a", type=Path)
     compare.add_argument("dir_b", type=Path)
     _add_list_option(compare, "--mask", "REGEX", "replace each match with a fixed token on both sides before comparing")
+    _add_list_option(
+        compare,
+        "--moved-callable",
+        "QUALNAME=MODULE",
+        "rewrite DIR_A's <script>:QUALNAME to MODULE:QUALNAME in .parser files, for <callable ...> tokens only; "
+        "one that rewrites nothing is moved-callable-unused",
+    )
     compare.set_defaults(handler=_run_compare_captures)
 
     test_ids = subcommands.add_parser("test-ids", help="compare per-test outcomes across junit XML runs")

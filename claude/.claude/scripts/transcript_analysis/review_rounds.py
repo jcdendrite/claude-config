@@ -1,8 +1,8 @@
 """The review-round-cost command family: cmd_review_round_cost, every helper
 used only by this command, and REVIEW_SKILLS.
 
-REVIEW_SKILLS is the round-opening skill set. The shim's cmd_judgment_pair
-back-imports REVIEW_SKILLS for its own default.
+REVIEW_SKILLS is the round-opening skill set. judgment_pair.py reads it for
+judgment-pair's --skills default.
 
 This module detects per-branch review-round windows across three invocation
 shapes: the `Skill` tool_use, the `/slash` tag, and an `Agent`/`Task` spawn of
@@ -37,31 +37,29 @@ from typing import NamedTuple
 from _config_dir import declared_roots_file_is_overridden
 from transcript_analysis import corpus, pricing, redaction, render, scope
 
-# The three review-loop skills a round opens on; the shim's cmd_judgment_pair
-# back-imports this name for its own default (the one-directional exception
-# documented in docs/transcript-analysis-architecture.md).
+# The three review-loop skills a round opens on.
 REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
 
 _REVIEW_SKILL_SET: frozenset[str] = frozenset(REVIEW_SKILLS)
 
 
-# Mirrors cmd_skill_invocation's own <command-name> regex
-# (transcript-analysis.py:2371) — re-expressed here since the package may
-# not import back from the shim.
+# Captures only the skill name from a /slash invocation's <command-name> tag, never its <command-args>.
+# skill_invocation.py and review_trace.py read this pattern too.
 _SLASH_COMMAND_RE = re.compile(r"<command-name>/([^<]+)</command-name>")
 
 
 def _round_skill_name(raw: str) -> str:
     """Normalize one Skill/`/slash` invocation name for REVIEW_SKILLS or
     REVIEW_TRACE_SKILLS membership: strip the directory qualifier (as
-    _normalize_skill_name does) and then the plugin:/dir: qualifier too.
+    skill_invocation._normalize_skill_name does) and then the plugin:/dir:
+    qualifier too.
 
-    _normalize_skill_name (transcript-analysis.py:2253-2277) strips the
-    directory qualifier (segment after the last "/"). It keeps a
-    plugin:/dir: prefix for its own display-label use. This function also
-    strips that prefix, by taking the segment after the last ":". That is
-    safe here because both REVIEW_SKILLS and REVIEW_TRACE_SKILLS are
-    closed-set membership tests, not display labels.
+    skill_invocation._normalize_skill_name strips the directory qualifier
+    (segment after the last "/"). It keeps a plugin:/dir: prefix for its own
+    display-label use. This function also strips that prefix, by taking the
+    segment after the last ":". That is safe here because both REVIEW_SKILLS
+    and REVIEW_TRACE_SKILLS are closed-set membership tests, not display
+    labels.
     """
     normalized = raw.rsplit("/", 1)[-1]
     return normalized.rsplit(":", 1)[-1]
@@ -138,9 +136,9 @@ def _round_open_skill(rec: dict) -> str | None:
     therefore opens at most one round.
 
     OUTPUT INVARIANT: only input["skill"] is ever read from a Skill
-    tool_use block, mirroring cmd_skill_invocation's own comment
-    (transcript-analysis.py:2311-2323). input["args"] can carry an absolute
-    local path and must never be extracted or surfaced here. From an
+    tool_use block, mirroring skill_invocation.cmd_skill_invocation's OUTPUT
+    INVARIANT comment. input["args"] can carry an absolute local path and must
+    never be extracted or surfaced here. From an
     Agent/Task tool_use block only input["subagent_type"] is extracted.
     input["prompt"] and input["description"] carry free text and must never be
     extracted or surfaced here.
@@ -179,14 +177,13 @@ def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     """Every (open_idx, window_end, skill) round window in one session's
     (already deduped, main-thread-only) records.
 
-    Re-expresses cmd_judgment_pair's own boundary rule
-    (transcript-analysis.py:2166-2197). window_end is the index of the next
-    fresh user prompt or the next round-open record, whichever comes first
-    (exclusive of window_end itself). The window is inclusive of its own
-    opening record. No cross-path dedup is needed between the invocation
-    shapes. A record opens at most one round by _round_open_skill's per-record
-    order, so a record holding both a `Skill` block and a spawn block is one
-    round. A /slash tag lives on a user record.
+    Re-expresses judgment_pair.cmd_judgment_pair's boundary rule. window_end
+    is the index of the next fresh user prompt or the next round-open record,
+    whichever comes first (exclusive of window_end itself). The window is
+    inclusive of its own opening record. No cross-path dedup is needed between
+    the invocation shapes. A record opens at most one round by
+    _round_open_skill's per-record order, so a record holding both a `Skill`
+    block and a spawn block is one round. A /slash tag lives on a user record.
 
     Public (no leading underscore): author_outcome.py and the review-bench
     miner (evals/review_bench/mine_review_rounds.py, which also calls

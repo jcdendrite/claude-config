@@ -2,11 +2,11 @@
 only by it -- --deny-summary's grouped denial/friction accumulation and
 report, and the per-session event-timeline detector shared by both.
 
-Imports corpus, denials, render, reviewer_yield, and scope by module
-(attribute access, not by name) -- see scope.py's own top-of-file comment
-for why. Calls reviewer_yield._is_reviewer_subagent_type and
-review_rounds._round_skill_name -- the package's first two imports from one
-command-group module into another.
+Imports corpus, denials, render, review_rounds, reviewer_yield, scope, and
+skill_invocation by module (attribute access, not by name) -- see scope.py's
+own top-of-file comment for why. Calls reviewer_yield._is_reviewer_subagent_type,
+review_rounds._round_skill_name, and skill_invocation._normalize_skill_name,
+each owned by another command-group module.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import argparse
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from transcript_analysis import corpus, denials, render, review_rounds, reviewer_yield, scope
+from transcript_analysis import corpus, denials, render, review_rounds, reviewer_yield, scope, skill_invocation
 
 # Skills counted as review invocations in review-trace.
 REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
@@ -31,19 +31,6 @@ _ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE = "MODE=plan-sections"
 # Shared by review-trace's two zero-match termini (default timeline and
 # --deny-summary) so both read identically under the scope header.
 _REVIEW_TRACE_NO_SESSIONS_MSG = "No sessions matched in scope."
-
-
-def _normalize_skill_name(raw: str) -> str:
-    """Strip a directory qualifier from a transcript skill name, keeping any
-    plugin:/dir: prefix as a display label.
-
-    Mirrors transcript-analysis.py's own _normalize_skill_name -- re-expressed
-    here since the package may not import back from the shim. Used only for
-    the emitted "skill" event field; REVIEW_TRACE_SKILLS membership and
-    --skill filtering use review_rounds._round_skill_name's fully-bare strip
-    instead.
-    """
-    return raw.rsplit("/", 1)[-1]
 
 
 def _print_deny_summary(
@@ -321,7 +308,7 @@ def _review_trace_session_events(
                         continue
                     events.append({
                         "kind": "skill",
-                        "skill": _normalize_skill_name(raw_skill_name),
+                        "skill": skill_invocation._normalize_skill_name(raw_skill_name),
                         "ts": rec_ts_str,
                         "line_no": line_no,
                         "branch": evt_branch,
@@ -358,8 +345,7 @@ def _review_trace_session_events(
             # --- Signal 1 continued: skill invocations, /slash shape ---
             # A /slash-invoked skill injects its body directly with no Skill
             # tool_use block, so it never reaches the assistant branch above.
-            # Mirrors cmd_skill_invocation's own user-record branch
-            # (transcript-analysis.py's own cmd_skill_invocation).
+            # Mirrors skill_invocation.cmd_skill_invocation's user-record branch.
             content_raw = (rec.get("message") or {}).get("content", "")
             content_str = content_raw if isinstance(content_raw, str) else render._content_text(content_raw)
             for m in review_rounds._SLASH_COMMAND_RE.finditer(content_str):
@@ -371,7 +357,7 @@ def _review_trace_session_events(
                     continue
                 events.append({
                     "kind": "skill",
-                    "skill": _normalize_skill_name(raw_skill_name),
+                    "skill": skill_invocation._normalize_skill_name(raw_skill_name),
                     "ts": rec_ts_str,
                     "line_no": line_no,
                     "branch": evt_branch,
