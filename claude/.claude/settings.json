@@ -185,6 +185,16 @@
             "command": "~/.claude/hooks/capture-session-id.sh"
           }
         ]
+      },
+      {
+        "matcher": "plan-architect",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/announce-branch-review-history.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "SessionEnd": [

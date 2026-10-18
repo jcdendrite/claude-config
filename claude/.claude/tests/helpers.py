@@ -2265,6 +2265,17 @@ def install_marker_script(isolated_home: Path) -> Path:
     )
 
 
+def install_review_ledger_scripts(home: Path) -> Path:
+    """Symlink the real review-ledger.sh and _review-ledger-lib.sh into `<home>/.claude/scripts/`,
+    and the hooks/_lib.sh chain that review-ledger.sh sources through `../hooks/_lib.sh`, so a hook
+    invoking `$CONFIG_DIR/scripts/review-ledger.sh` runs the real script. A write onto a linked path
+    writes through to the production script. Returns the `review-ledger.sh` link. Idempotent."""
+    symlink_hooks_lib_chain(home / ".claude" / "hooks")
+    scripts_dir = home / ".claude" / "scripts"
+    _symlink_if_absent(scripts_dir / "_review-ledger-lib.sh", SCRIPTS_DIR / "_review-ledger-lib.sh")
+    return _symlink_if_absent(scripts_dir / "review-ledger.sh", SCRIPTS_DIR / "review-ledger.sh")
+
+
 def run_skill_command(command: str, cwd: Path, isolated_home: Path) -> None:
     """Run a SKILL.md-extracted bash command in a sandboxed $HOME."""
     install_marker_script(isolated_home)

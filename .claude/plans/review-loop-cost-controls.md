@@ -76,7 +76,7 @@ This is a sibling-consistency fix for consults that cannot see ADDRESS history t
 
 **Registration.** A new `SubagentStart` matcher group in `claude/.claude/settings.json`: `"matcher": "plan-architect"`, `"timeout": 10`, command `~/.claude/hooks/announce-branch-review-history.sh`. It sits beside the unchanged `capture-session-id.sh` group (line 180).
 
-**Header.** `# hook-class: informational`, the hook's purpose, the matcher and self-filter pairing, and "fail-open: exit 0 on every path". It then points to the `docs/hooks.md` bullet for the known gaps, which are listed only there.
+**Header.** `# hook-class: informational`, the hook's purpose, the matcher and self-filter pairing, and "fail-open: exit 0 on every path". It then points to the `docs/hooks.md` bullet for the known gaps that bullet carries.
 
 **Body, about 20 lines of logic.** Every expansion is unset-safe (`${VAR:-}`), so `set -u` never aborts the hook with a non-zero exit.
 
@@ -112,7 +112,7 @@ exit 0
 
 > **Review-ledger history.** A hook may add a line starting "Review-ledger history" to your context. Before answering whether a branch's foundation is wrong or its review loop is converging:
 >
-> - When the line names a file, Grep it for the sites and findings in question before reading it whole, and look for a finding fixed in one round that recurs in a later one. Its rows are ledger text, which "A caller-named verdict leads" above makes evidence.
+> - When the line names a file, look in it for a finding fixed in one round that recurs in a later one.
 > - When the line says `show` found no rows, that is the lookup's result for this checkout, not proof the branch was never reviewed: the ledger is keyed by branch name, and per-session when HEAD is detached or on the default branch.
 > - In any other case — the line says unavailable, no such line is present, or the named file cannot be read — state that under what you did not verify.
 
@@ -143,7 +143,7 @@ The pilot (line 379), the Cap (`ready-for-review/SKILL.md:86`) and their pins ar
 **Confirming the ignore state** (M15; the lighter primitives checked):
 
 - **The hook keeps its own `check-ignore`.** It guarded only the hook's own call. A hand run, a review-only agent's run, and every `render --out` skipped it (row 41).
-- **Both the script and the hook check.** That keeps two copies of one invariant. The hook's negated-entry test still exercises the script's check end to end.
+- **Both the script and the hook check.** That keeps two copies of one invariant. Dispatch 1's script-level not-ignored refusal test pins the check.
 - **The script appends `agent-reviews/` to `info/exclude` and proceeds.** That turns a read command into a git-dir write. `findings-path-suffix.sh` already owns that append (`:27-35`) and calls it "best-effort, not the enforcement point" (`:5-6`). The reviewer gate also tells a reviewer not to change ignore rules itself (`deny-reviewer-tree-mutation.sh:350`).
 - **A location under the git dir or the ledger directory.** It removes the dependence on ignore state, but it reverses the approved `agent-reviews/` placement (row 10). The ledger directory is the config-directory option row 20 already set aside.
 
@@ -202,9 +202,9 @@ The pilot (line 379), the Cap (`ready-for-review/SKILL.md:86`) and their pins ar
     - Hooks call stowed scripts as `$CONFIG_DIR/scripts/<name>` (`activate-handoff-bypass.sh:94`).
 
     [verified] `settings.json:166` and `:196` carry `"timeout": 10`. [verified by two round-2 reviewers]
-19. The ignore entry. `findings-path-suffix.sh` writes `agent-reviews/` to `info/exclude` (`:28-35`) before each round's digest render (`code-review/SKILL.md:300`). A fresh clone lacks it, and Step 0.1's short-circuit CLEAN append (`code-review/SKILL.md:25-27`) can log rows before any suffix run. In either case `show --out` refuses the target (M15) and the hook reports UNAVAILABLE, which fails safe. [verified] `git check-ignore` matches a not-yet-existing file under a directory-only pattern whose directory is absent [verified: read-only `git check-ignore -v` on directory-only patterns whose directories are absent; ciso-reviewer and platform-engineer round 4]. Two tests pin it: the lib case for a missing `agent-reviews/` and the hook case with it absent.
+19. The ignore entry. `findings-path-suffix.sh` writes `agent-reviews/` to `info/exclude` (`:28-35`) before each round's digest render (`code-review/SKILL.md:300`). A fresh clone lacks it, and Step 0.1's short-circuit CLEAN append (`code-review/SKILL.md:25-27`) can log rows before any suffix run. In either case `show --out` refuses the target (M15) and the hook reports UNAVAILABLE, which fails safe. [verified] `git check-ignore` matches a not-yet-existing file under a directory-only pattern whose directory is absent [verified: read-only `git check-ignore -v` on directory-only patterns whose directories are absent; ciso-reviewer and platform-engineer round 4]. Two layers pin the missing-entry path: Dispatch 1's script refusal test (exit 2, empty stdout) and Dispatch 2's broken-`show` stubs, which map a non-zero exit and unrecognized stdout to UNAVAILABLE. The hook layer has no case with the entry missing.
 20. `plan-architect` has design-time Read reach into `agent-reviews/` through the pilot's findings paths, and into the config directory through the pilot's diff artifact (`code-review/SKILL.md:379`, `:290`; `ready-for-review/SKILL.md:99`). [verified as design precedent] The location stays `agent-reviews/` per row 10.
-21. `deny-data-file-reads.sh` denies a Read of `*.jsonl` when armed. [unverified: reviewers cite `:99-107`] Hence the `.md` name and the cross-gate test.
+21. `deny-data-file-reads.sh` denies a Read of `*.jsonl` when armed. [verified: `deny-data-file-reads.sh:98-99` lists `*.jsonl` in its data-extension case] Hence the `.md` name and the cross-gate test.
 22. Hook conventions [verified]:
     - Every hook needs a `hook-class` header (`test_hook_alignment.py:1573-1605`) and a `docs/hooks.md` bullet (`:183-213`).
     - Hooks self-filter on their input.
@@ -216,7 +216,7 @@ The pilot (line 379), the Cap (`ready-for-review/SKILL.md:86`) and their pins ar
 25. Rows are capped at 4095 bytes, so the file grows by at most about 4 KB per row. [verified per exploration]
 26. In branch scope `show` merges this worktree's session-file rows, and on the default branch or a detached HEAD it reads the session file alone (docs/scripts.md:132). [verified] Hence "for this checkout".
 27. The RFR Cap gets the history through the hook, and its records keep their Outcome column (`ready-for-review/SKILL.md:84`). [verified]
-28. The pilot and Cap pins are unchanged, and the round-cap region is pinned only by its first bullet (`test_skills.py:5787-5801`, `:6115-6173`, `:6219-6234`). [verified] `test_plan_architect_consult_section_carries_phrase` exists. [verified by round-3 reviewers]
+28. The pilot and Cap pins are unchanged, and the round-cap region is pinned only by its first bullet (`test_skills.py:5787-5801`, `:6115-6173`, `:6219-6234`). [verified]
 29. `code-review/SKILL.md` has 496 lines against a 500 cap that counts lines, and the edit lands inside line 311. [verified]
 30. Whether cross-round history changes consult verdicts or shortens loops. [unverified]
 31. The plan adds no dispatch, and the hook does not touch the latch. [verified]
@@ -237,7 +237,7 @@ The pilot (line 379), the Cap (`ready-for-review/SKILL.md:86`) and their pins ar
 46. The `docs/scripts.md` `review-ledger.sh` entry says "This entry records what the usage text does not" (`docs/scripts.md:129`), and `--help` states each subcommand's output and exit codes. [verified]
 47. The round-2 fixes to exit wording, the order comment, the Reset bullet and the tests are dispositions the dispatching session reported as decided. They are not engineer text. [unverified]
 48. The ignore-check fix is confirmed as this plan states it. That covers the shared check, `render --out`'s new refusal, the hook's check removed, and `test_enforce_marker_script_shape.py` added. [engineer-verified: "Confirm as stated (Recommended)"] The quote is the label the engineer selected at `/plan-review` round 4, re-confirming row 41. The option's description was the session's own.
-49. plan-architect's choices beyond the round-2 consult are accepted: the `--help` deferral in the "Show `--out`" bullet, `render`'s `--help` exit wording, the Reset bullet, the foreign-`GIT_DIR` lib test, and the negated-entry premise check. [engineer-verified: "Accept all (Recommended)"] The option's description was the session's own.
+49. plan-architect's choices beyond the round-2 consult are accepted: the `--help` deferral in the "Show `--out`" bullet, `render`'s `--help` exit wording, the Reset bullet, the foreign-`GIT_DIR` lib test, and the negated-entry premise check. [engineer-verified: "Accept all (Recommended)"] The option's description was the session's own. The engineer's later approval of the Dispatch 2 trim ("sure you can cut", recorded in the review ledger) dropped the negated-entry case and its premise check.
 50. Precedent for the scrub list. `worktree-ensure.sh:13` documents and `:76` runs `unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE`, so a repo script already scrubs `GIT_COMMON_DIR` beside the other three. [verified per ciso-reviewer round 4]
 51. The plan-review round-4 dispositions applied to this plan are the dispatching session's, not engineer text. [unverified]
 
@@ -262,7 +262,7 @@ The pilot (line 379), the Cap (`ready-for-review/SKILL.md:86`) and their pins ar
 
 ## Critical files
 
-**Dispatch 1** (`code-writer`; runs first, because its `show --out` contract is dispatch 2's input). Its first pass and the `/code-review` round-2 items (rows 41 and 47, marked "(round 2)") are committed at HEAD, and a test trim is staged on top. The test lists below state the properties the trimmed tests cover, not an exhaustive case list. The engineer approved the trim ("yes apply the cuts", recorded in the review ledger). The surface is a cooperative-agent tool, so the cuts target honest-mistake shapes. Shared library code gets no tier waiver (CLAUDE.md § Hook threat model), so the cuts rest on redundancy, unreachability and the seam rule, not on an attacker-only framing.
+**Dispatch 1** (`code-writer`; runs first, because its `show --out` contract is dispatch 2's input). Its first pass, the `/code-review` round-2 items (rows 41 and 47, marked "(round 2)") and a test trim are committed (HEAD 7dd34571). The test lists below state the properties the trimmed tests cover, not an exhaustive case list. The engineer approved applying the architect consult's cuts ("yes apply the cuts", recorded in the review ledger); the cuts are the consult's. The surface is a cooperative-agent tool, so the cuts target honest-mistake shapes. Shared library code gets no tier waiver (CLAUDE.md § Hook threat model), so the cuts rest on redundancy, unreachability and the seam rule, not on an attacker-only framing.
 
 - `claude/.claude/scripts/_review-ledger-lib.sh`:
   - `_review_ledger_check_out`'s fifth argument, the prefix argument of `_review_ledger_remove_out` and `_review_ledger_make_out_dir`, and `_review_ledger_write_out` extracted from `_review_ledger_render_in`.
@@ -302,7 +302,7 @@ The pilot (line 379), the Cap (`ready-for-review/SKILL.md:86`) and their pins ar
     - a tracked `show` target exits 2 even with the ignore entry present, and the committed file stays intact. This case pins the check running before the delete for a tracked target.
   - **Fixtures:** autouse fixtures in `TestReviewLedgerShowOut` and `TestReviewLedgerRenderOutConfinement` call `ignore_agent_reviews` on `git_repo`, which covers `feature_repo`, `logged_defer` and the direct `git_repo` cases. The test that checks `render --out` reports `changed:` then `unchanged` calls it itself. The shared `git_repo` fixture is unchanged. Tests that exit before reading rows use `feature_repo`, not `seeded_repo`.
   - **Unchanged:** bare `show`, and the argument grammar apart from the new `--out` flag. The malformed-argument matrix is four params: `--out` with no value, `--out` with an empty value, `--out` twice, and an unknown flag.
-- (round 2) `claude/.claude/tests/helpers.py`: four shared helpers, which Dispatch 2 reuses and does not rebuild.
+- (round 2) `claude/.claude/tests/helpers.py`: four shared helpers. Dispatch 2 reuses `ignore_agent_reviews` only, and adds `install_review_ledger_scripts`.
   - `ignore_agent_reviews(repo)` writes `agent-reviews/` to the file `git -C <repo> rev-parse --git-path info/exclude` names, resolved against the repo and not the process cwd, and is idempotent. Before returning, it asserts that `git check-ignore -q` exits 0 for a sample path.
   - `isolated_git_config_env(home)` returns `GIT_CONFIG_GLOBAL=os.devnull`, `GIT_CONFIG_NOSYSTEM=1`, and `HOME` and `XDG_CONFIG_HOME` pointed at `home` (precedent: `test_review_pr_checkout.py:87-88`).
   - `unwrapped_check_ignore_status(repo, relative_path, env)` returns the exit status of a bare `git check-ignore -q`, with none of the script's environment scrubbing. It is the premise check for a refusal that depends on the scrub.
@@ -321,49 +321,38 @@ The pilot (line 379), the Cap (`ready-for-review/SKILL.md:86`) and their pins ar
 
   Verify: `select-tests.py`.
 
-**Dispatch 2** (`code-writer`; after Verification step 0):
+**Dispatch 2** (`code-writer`; after Verification step 0). The test lists below state the properties the trimmed tests cover, not an exhaustive case list. The engineer approved the trim approach ("trim its test plan first per the architect's suggestion"), and their words "sure you can cut" (recorded in the review ledger) approved cutting the negated-entry case only. The other cuts below are the session's, taken from the architect's consult. The hook is `hook-class: informational`, and the tier waivers in CLAUDE.md § Hook threat model cover gate hooks only, so the cuts rest on redundancy, unreachability and the seam rule, not on a tier waiver.
 
 - `claude/.claude/hooks/announce-branch-review-history.sh` (new).
 - `claude/.claude/hooks/tests/test_announce_branch_review_history.py` (new):
-  - **Registration pin:**
-    - the event key;
-    - the matcher equals `plan-architect.md`'s `name`;
-    - the command;
-    - the `timeout`;
-    - the `capture-session-id.sh` group intact;
-    - the envelope's `hookEventName` derived from the registered key.
-  - **Silent cases:** a wrong agent, a wrong event, malformed stdin, a non-git `.cwd`, an empty `.cwd`.
-  - **Fixtures:** every repo fixture calls `ignore_agent_reviews` in `claude/.claude/tests/helpers.py`, which writes the entry to the file `git rev-parse --git-path info/exclude` names, so the linked worktree shares it. The tests reuse `isolated_git_config_env` for git config isolation, `unwrapped_check_ignore_status` for the premise checks (the negated-entry case below included), and `path_with_failing_tool_shim` for a failing tool on `PATH`.
+  - **Registration pin:** one test for the event key, the matcher (equal to `plan-architect.md`'s `name`), the command and the `timeout`. The happy path asserts that the envelope's `hookEventName` equals the registered event key.
+  - **Silent cases:** a wrong agent, malformed stdin, a non-git `.cwd`.
+  - **Fixtures:** every repo fixture calls `ignore_agent_reviews` in `claude/.claude/tests/helpers.py`, which writes the entry to the file `git rev-parse --git-path info/exclude` names, so the linked worktree shares it.
   - **Happy path,** with the real scripts and the process cwd outside the repo:
     - Setup:
       - a feature-branch name that contains a slash and is longer than 20 characters, with a literal expected file name;
-      - one branch-ledger row and one session-file row;
-      - parametrized over a payload `.cwd` at the toplevel, in a nested subdirectory, and in a linked worktree.
+      - one branch-ledger row and the session file the row requires;
+      - the payload `.cwd` is a nested subdirectory of a linked worktree;
+      - `agent-reviews/` is absent, with the ignore entry present (row 19). The hook layer does not assert the file mode, which the script layer pins (row 34).
     - Asserts:
-      - the envelope parses with `json.loads`;
-      - stdout holds exactly one document;
-      - the path equals the derived target under the payload's repo;
-      - its line count equals the seeded rows, which proves the hook selected the ledger from the payload `.cwd`;
-      - a seeded finding marker never appears in `additionalContext`.
-  - **`.cwd` params:** the happy path's `.cwd` params also cover `agent-reviews/` absent, with the ignore entry present. The hook layer does not assert the file mode, which the script layer pins (row 34).
-  - **No rows:** NOROWS, with no file.
-  - **Negated ignore entry:** `info/exclude` holds `agent-reviews/` and then `!agent-reviews/`. The test first asserts that `git check-ignore` reports the target as not ignored, so the fixture proves its own premise. It then expects UNAVAILABLE with no file. This is the end-to-end check of the script's ignore refusal.
-  - **Allowlist deny:** a repo path containing a space, and one containing a quote, each give UNAVAILABLE, with no file and no directory text in stdout.
-  - **Same-builder control:** the allowlist-deny cases, and every UNAVAILABLE case other than the broken-`show` stubs, come from the same builder as the happy path with exactly one input varied. The module keeps a same-builder FILE control at a clean path, so UNAVAILABLE shows which branch fired.
-  - **Broken `show`:** a stub `review-ledger.sh` in the staged `scripts/` directory that exits non-zero, and one that exits 0 but prints unrecognized stdout. Each gives UNAVAILABLE with no file.
-  - **Exact text:**
-    - each of the three states asserts the exact `additionalContext` string, including the FILE line's data-framing clause;
-    - one test asserts that the guard paragraph contains the lead phrase the hook emits.
+      - stdout holds exactly one document, which parses with `json.loads`;
+      - `additionalContext` equals the exact FILE string for the derived target under the payload's repo, data-framing clause included;
+      - the announced path exists as a regular file and holds the seeded finding text, so the FILE string is checked against where `show` wrote and not only against the hook's own `$TOP/$REL`.
+  - **No rows:** NOROWS, with no file. Asserts the exact NOROWS string.
+  - **Allowlist deny:** a repo path containing a space gives UNAVAILABLE, with no file. Asserts the exact UNAVAILABLE string.
+  - **Construction rule:** every UNAVAILABLE case other than the broken-`show` stubs comes from the happy path's builder with exactly one input varied.
+  - **Broken `show`:** a stub `review-ledger.sh` that exits non-zero after printing a well-formed `changed: <path>` line, which pins `|| RESULT=""`, and one that exits 0 but prints unrecognized stdout. Each gives UNAVAILABLE with no file. The stubs live in a separate stub home, not the happy path's: that home's `<home>/.claude/scripts/review-ledger.sh` is a regular file the test writes, never a link, and `install_review_ledger_scripts` is not called for it. Its `hooks/` dir still gets `symlink_hooks_lib_chain`. The test never writes through a link to a production file, and the module asserts the production `review-ledger.sh` is unchanged afterward.
+  - **Guard coupling:** one test asserts that the guard paragraph contains the lead phrase the hook emits.
   - **Read gate:** `deny-data-file-reads.sh`, armed, allows the announced path.
-- `claude/.claude/tests/helpers.py`: the four shared helpers from Dispatch 1, reused and not rebuilt, plus `install_review_ledger_scripts(home)`, which links `review-ledger.sh` and `_review-ledger-lib.sh` into `<home>/.claude/scripts/`.
+- `claude/.claude/tests/helpers.py`: `ignore_agent_reviews` from Dispatch 1, reused and not rebuilt, plus a new `install_review_ledger_scripts(home)` (absent at HEAD), which links `review-ledger.sh` and `_review-ledger-lib.sh` into `<home>/.claude/scripts/` through `_symlink_if_absent` and calls `symlink_hooks_lib_chain(<home>/.claude/hooks)`. The chain call is needed because `review-ledger.sh:8` sources `../hooks/_lib.sh` relative to the script, and `_lib.sh` needs its `_config.sh` and `config-keys.psv` siblings. The symlinks mean a write onto a linked path writes through to the production script.
 - `claude/.claude/settings.json`: the matcher group.
-- `docs/hooks.md`: a `- **`announce-branch-review-history.sh`**` bullet under Utility hooks. It lists the known gaps from Out of scope, one per line. It then gives a three-step diagnosis for an UNAVAILABLE or absent line:
+- `docs/hooks.md`: a `- **`announce-branch-review-history.sh`**` bullet under Utility hooks. It lists the subset of Out of scope's known gaps marked there as carried by the bullet, one per line. It then gives a three-step diagnosis for an UNAVAILABLE or absent line:
   1. Check that the hook is registered and installed.
   2. Check for the ignore entry.
   3. Run `show --out` by hand; its stderr names any refusal.
 - `claude/.claude/agents/plan-architect.md`: the guard.
 - `claude-skills/skills/code-review/SKILL.md`: inside line 311. Net lines: 0.
-- `claude-skills/skills/tests/test_skills.py`: a "**Review-ledger history.**" entry in `test_plan_architect_consult_section_carries_phrase`, and a presence pin for the round-cap sentence's findings-file filter.
+- `claude-skills/skills/tests/test_skills.py`: a presence pin for the round-cap sentence's findings-file filter.
 - `CHANGELOG.md`: an `[Unreleased]` entry, as recent PRs do (rows 40, 41, 44). It names:
   - the new hook;
   - `show --out`;
@@ -408,24 +397,26 @@ The PR body names `install.sh`, as `require-stow-reminder.sh` requires.
   - reducing fan-out width
 - **Latch semantics** stay unchanged (rows 1 and 31).
 - **`claude/.claude/CLAUDE.md`**, the pilot text and the Cap text (rows 7, 27 and 28).
-- **Known gaps traded for a small hook.** These go in the `docs/hooks.md` bullet:
-  - The hook fires on every `plan-architect` dispatch, plan-sections and non-foundation consults included, because the payload carries no prompt.
-  - The `capture-session-id.sh` rewrite can race `show`'s session lookup, which yields UNAVAILABLE with no retry. Follow-up: make `capture-session-id.sh` write atomically.
+- **Known gaps traded for a small hook.** The `docs/hooks.md` bullet carries only the items marked "(bullet)"; the rest are recorded here alone:
+  - (bullet) The hook fires on every `plan-architect` dispatch, plan-sections and non-foundation consults included, because the payload carries no prompt.
+  - (bullet) The `capture-session-id.sh` rewrite can race `show`'s session lookup, which yields UNAVAILABLE with no retry. Follow-up: make `capture-session-id.sh` write atomically.
   - "This checkout" means the per-session ledger on the default branch or a detached HEAD.
   - A concurrent dispatch removes the stale target before writing its own, so a consult can find the named file missing for the length of that run. The guard treats that as unreadable.
-  - A repo path outside the path allowlist (a space, for example) is always UNAVAILABLE.
-  - History is unavailable until `findings-path-suffix.sh` has run once in the clone (a fresh clone, a consumer repo whose first dispatch is a `/plan-it` consult, or CLEAN-only rows), because `show --out` refuses without the ignore entry.
-  - Per-slug files persist past the ledger's sweep and reset until a zero-row run on that slug, slugs can collide across branches, and a killed write can leave `review-history-<slug>.md.XXXXXX` behind.
+  - (bullet) A repo path outside the path allowlist (a space, for example) is always UNAVAILABLE.
+  - (bullet) History is unavailable until `findings-path-suffix.sh` has run once in the clone (a fresh clone, a consumer repo whose first dispatch is a `/plan-it` consult, or CLEAN-only rows), because `show --out` refuses without the ignore entry.
+  - Per-slug files persist past the ledger's sweep and reset until a zero-row run on that slug, and a killed write can leave `review-history-<slug>.md.XXXXXX` behind. (bullet) Slugs can collide across branches.
   - The ignore check covers the target's name. A killed write's `<target>.XXXXXX` temporary is covered only when the ignore entry is directory-form, as `findings-path-suffix.sh` writes it. A file-pattern ignore such as `agent-reviews/*.md` confirms the target and not the temporary.
-  - The hook's own `git rev-parse` calls scrub none of `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and `GIT_INDEX_FILE`. The script's ignore check scrubs all four. `deny-reviewer-tree-mutation.sh:342`, the precedent in row 43, scrubs three and omits `GIT_COMMON_DIR`.
+  - (bullet) The hook's own `git rev-parse` calls scrub none of `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and `GIT_INDEX_FILE`. The script's ignore check scrubs all four.
   - The hook discards stderr, so a refused symlinked ledger file and an ignore refusal both show only as UNAVAILABLE. Bare `show` and `append` still report the first, and a hand run of `show --out` reports the second.
-  - There is no kill switch.
+  - (bullet) There is no kill switch.
   - `./install.sh` must be re-run only where `~/.claude/hooks` is a real directory.
 - **Reclaiming killed-write temporaries.** Docs name them in the Reset bullet instead. A cleanup trap in `_review_ledger_write_out`, a library function, would replace any trap its caller holds. A next-run sweep of `.XXXXXX` names would let `--out` delete names outside its grammar.
 - **Pre-existing `--out` issues that `show --out` newly reaches** (ciso-reviewer round 2, Low). Neither is caused by this change:
   - between the check and the final `mv`, a same-uid process can swap the target for a symlink to a directory;
   - `_review_ledger_check_out` echoes a raw `--out` before its control-character check.
+- **No Dispatch 2 hook mutation pass is added** to Verification step 1. The broken-`show` stub pins the hook's one non-obvious branch (`|| RESULT=""`).
 - **Test classes declined:**
+  - an empty-`.cwd` silent case. It is not exercised: row 39 is verified only once Verification step 0 runs, and the `[ -n "${CWD:-}" ]` guard stays in the code untested by design.
   - a reason-string taxonomy beyond the fragments the kept cases pin;
   - the scale, hang, overlap and non-ASCII tests;
   - from round 2: a FIFO target and an absolute `..` spelling, whose paths existing cases already reach;
