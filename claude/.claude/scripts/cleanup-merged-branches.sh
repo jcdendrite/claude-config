@@ -82,7 +82,8 @@
 #
 # Exit codes:
 #   0  success (including no-op)
-#   1  gh missing or unauthenticated; with --all-projects, also a missing or
+#   1  gh missing or unauthenticated; the bash floor check in `_config.sh`
+#      failed; with --all-projects, also a missing or
 #      unreadable roots config file, or set post-hoc if any repo's cleanup
 #      crashed outright — a handled per-branch failure (worktree remove or
 #      remote delete printed as "manual step needed") does not trip this;
@@ -96,6 +97,8 @@
 
 set -euo pipefail
 
+# shellcheck source=../hooks/_lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_lib.sh"
 # Progress helpers, live-worktree detection (collect_process_cwds /
 # worktree_in_use), and the branch -> worktree path/lock lookup
 # (resolve_worktree_for_branch) are shared with cleanup-idle-open-pr-worktrees.sh.
@@ -105,8 +108,6 @@ set -euo pipefail
 # with ci-watch.sh.
 # shellcheck source=_direnv-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_direnv-lib.sh"
-# shellcheck source=../hooks/_lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_lib.sh"
 
 # ---------------------------------------------------------------------------
 # Argument validation

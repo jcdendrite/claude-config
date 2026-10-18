@@ -61,8 +61,9 @@
 #
 # Exit codes:
 #   0  success (including no-op)
-#   1  gh missing/unauthenticated, no 'origin' remote, or the gh pr list
-#      query failed (non-zero exit, or a zero exit with an unparseable body)
+#   1  gh missing/unauthenticated, no 'origin' remote, the gh pr list
+#      query failed (non-zero exit, or a zero exit with an unparseable body),
+#      or the bash floor check in `_config.sh` failed
 #   2  bad arguments
 
 set -euo pipefail

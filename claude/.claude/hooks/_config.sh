@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# The bash floor check, below this header, is this file's first command, so a below-floor bash stops there before any later construct is parsed.
 # Shared config-key reader/writer for every bash consumer: hooks (sourced
 # transitively via _lib.sh, which sources this file), install.sh (sourced
 # directly by repo-relative path, since install.sh runs before stow exists),

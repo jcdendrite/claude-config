@@ -873,11 +873,14 @@ to hold PII/PHI or live credentials:
   including every gate, the credential redactor and the floor check. That file
   can return any verdict or output for any hook, and it receives every hook's
   input, including tool output before redaction. It runs before the bash floor
-  check and before `onFailure`, and neither can detect it. No gate protects
-  user-writable PATH directories such as `~/.local/bin` or Homebrew's bin
-  directory. Where Homebrew installed the intended `bash`, it sits in that bin
-  directory itself. `install.sh`'s `ensure_local_bin_on_path` can add a shell
-  rc line that prepends `~/.local/bin` to PATH.
+  check and before `onFailure`, and neither can detect it. No gate exists to
+  protect user-writable PATH directories such as `~/.local/bin` or Homebrew's
+  bin directory. `deny-reviewer-tree-mutation.sh`, a tree-mutation guard, also
+  denies its review-only roster some writes there, but only in the shapes its
+  header lists. Its Known gaps name shapes it leaves open, such as `ln`. Where
+  Homebrew installed the intended `bash`, it sits in that bin directory itself.
+  `install.sh`'s `ensure_local_bin_on_path` can add a shell rc line that
+  prepends `~/.local/bin` to PATH.
 
 The airtight control is machine segmentation: developer machines do not
 hold patient data or long-lived credentials. That is policy, not

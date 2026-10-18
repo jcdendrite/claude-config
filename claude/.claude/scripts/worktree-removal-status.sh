@@ -19,7 +19,8 @@
 # Exit codes:
 #   0  scan completed, including the "no linked worktrees" and
 #      "no worktrees matched" cases
-#   1  not inside a git repository, or the worktree scan itself failed
+#   1  not inside a git repository, the worktree scan itself failed, or the
+#      bash floor check in `_config.sh` failed
 #
 # This 0/1 contract assumes a non-bare main worktree; a bare-repository-as-
 # main-worktree layout can make the internal `git rev-parse --show-toplevel`

@@ -1461,8 +1461,9 @@ class TestDenyPrivateProjectRefs:
     ):
         """Alias spellings of /dev/fd/N slip past `_lib_is_pseudo_file_path`, so only the
         regular-file check denies them.
-        A failure here once `_lib_is_pseudo_file_path` learns alias spellings means the header's
-        Known-gaps entry and the expected message must change together."""
+        A failure here once `_lib_is_pseudo_file_path` learns alias spellings means
+        `_lib_is_pseudo_file_path`'s header in _lib.sh, this hook's Known-gaps pointer and the
+        expected message must change together."""
         result = subprocess.run(
             [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
             input=json.dumps(bash_input(f"git commit -F {alias_path}")),

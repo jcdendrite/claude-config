@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # One-time (safe-to-rerun) recovery import of every legacy sentinel file
 # into claude-config.toml, plus an interactive per-file offer to delete
-# each one afterward. Executed by install.sh via subprocess -- never
-# sourced (sourcing would turn on set -u/pipefail for the rest of
-# install.sh, the same reason install.sh gives, in the note above
-# `. _stow_migration_lib.sh`, for not sourcing relocate-claude-config.sh) --
-# and safe to run standalone between full
-# install.sh runs to materialize claude-config.toml on its own, since
-# claude/.claude/** goes live on `git pull` with no install.sh re-run.
+# each one afterward.
+# install.sh runs this file as a subprocess and never sources it.
+# Sourcing would turn on set -u/pipefail for the rest of install.sh, which is
+# the same reason install.sh's note above `. _stow_migration_lib.sh` gives for
+# relocate-claude-config.sh.
+# It is safe to run on its own between install.sh runs to materialize
+# claude-config.toml, because claude/.claude/** goes live on `git pull`.
 #
 # Two phases, always in this order: (1) non-interactive import for all
 # eighteen keys, then schema-default scaffold; (2) an interactive per-file

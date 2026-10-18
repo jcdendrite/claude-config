@@ -1638,6 +1638,17 @@ _lib_is_repo_plan_file() {
 # Takes exactly one argument (`$1`: the path).
 # A hook cannot meaningfully scan their contents: they may resolve differently
 # at hook time than when the guarded command runs, or point into the hook's own stdin.
+#
+# The match is on literal spellings only. Alias spellings such as `//dev/fd/N`
+# or `/dev/./fd/N` are not recognised and reach the caller's regular-file
+# check.
+# That check tests the path in the hook's own process, not the stream the
+# command reads.
+# `//dev/fd/0` and `/dev/./fd/0` as the only path source were tested to deny on
+# bash 5.2, Linux.
+# Nothing beyond that is claimed closed.
+# Unconfirmed residual: a path-source list over roughly 64 KiB passed
+# in a scratch replica of the check site and was not confirmed end to end.
 _lib_is_pseudo_file_path() {
   case "$1" in
     -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;

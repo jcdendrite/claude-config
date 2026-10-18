@@ -95,20 +95,8 @@
 #   party even if the developer named the file after an identifier.
 #
 # Known gaps (documented, not closed):
-#  - The pseudo-file guard matches literal spellings only (`-`, `/dev/stdin`,
-#    `/dev/fd/*`, `/proc/*/fd/*`), then requires a regular readable file.
-#    Alias spellings such as `//dev/fd/N` or `/dev/./fd/N` are not recognised
-#    and reach the regular-file check.
-#    That check tests the path in the hook's own process, not the stream the
-#    command reads.
-#    `//dev/fd/0` and `/dev/./fd/0` as the only message source were tested to
-#    deny on bash 5.2, Linux.
-#    Nothing beyond that is claimed closed.
-#    Waived, unconfirmed residual: a message-source path list over roughly
-#    64 KiB passed in a scratch replica of the check site and was not
-#    confirmed end to end.
-#    Shared with deny-escaped-backticks-in-pr-body.sh and
-#    deny-private-project-refs.sh.
+#  - The pseudo-file guard's alias-spelling gap and its unconfirmed over-64-KiB
+#    path-list residual are in `_lib_is_pseudo_file_path`'s header in _lib.sh.
 #  - The `xargs -n1` fast path's miss is listed in `_lib_command_words`'s
 #    header in _lib.sh.
 #    The fallback tokenizer's residual over-denies and misses are listed in

@@ -33,9 +33,12 @@ REQUIRED_BASH_SHEBANG = "#!/usr/bin/env bash"
 _BASH_SHEBANG_NAME = re.compile(r"\bbash\b")
 
 # `sort` followed on the same line (before any `#`) by a long option, a short
-# flag cluster containing V (`-V`, `-rV`, `-Vr`), or a key spec ending in the
-# V modifier (`-k1,1V`). A flag token ends at whitespace, end of line, or a
-# shell metacharacter, so `$(... | sort -V)` and `sort -V|tail -1` match.
+# flag cluster containing V (`-V`, `-rV`, `-Vr`), or a key spec attached to
+# `-k` and containing V (`-k1,1V`). A flag token ends at whitespace, end of
+# line, or a shell metacharacter, so `$(... | sort -V)` and `sort -V|tail -1`
+# match.
+# A key spec detached from `-k` is not matched: `-k 1,1V`, `--key=1V` and
+# `--key 1,1V`.
 _SORT_VERSION_FLAG = re.compile(
     r"\bsort\b[^#\n]*(?:--version-sort\b"
     r"|\s-[A-Za-z]*V[A-Za-z]*(?=[\s)`|;&\"'<>]|$)"

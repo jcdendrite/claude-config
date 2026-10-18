@@ -10,8 +10,10 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - Every gate registration, in `settings.json` and in each plugin's `hooks.json`, sets `onFailure: "block"`, and every gate ends with `exit 0`.
   - This needs Claude Code 2.1.295 or newer, because older versions may ignore or reject the `onFailure` field (unverified).
   - This release also needs bash 5.2 or newer: see the Removed entry on the bash floor for the migration steps.
-  - One documented allow changes: on a machine with neither `timeout` nor `gtimeout`, a hung `gh pr view` in `require-ready-for-review.sh` now blocks `git push` and `gh pr ready` at the harness timeout (`gh pr create` never reaches that call). A fast `gh pr view` failure, or a missing `gh`, still releases.
-- **`claude-hook-review` 2.5.0 (minor — new checklist requirement) now tells gate authors that a gate registration needs `"onFailure": "block"` (Claude Code 2.1.295 or newer; older versions may ignore or reject the field, unverified) and that the script must end with an unconditional `exit 0` as its last command.** Run `claude plugin update claude-hook-review@claude-config --scope project` from the consuming repository's root directory, then `/reload-plugins` (or restart Claude Code), to refresh it.
+  - One designed fail-open changes: on a machine with neither `timeout` nor `gtimeout`, a hung `gh pr view` in `require-ready-for-review.sh` now blocks `git push` and `gh pr ready` at the harness timeout (`gh pr create` never reaches that call). A fast `gh pr view` failure, or a missing `gh`, still releases.
+  - Further cases where a timed-out hook used to let the call through (`_lib_capped_for`'s header states the vendor rule) now block at the harness timeout too, including a stalled `git` in skill-management's `require-skill-review.sh` on a machine with neither `timeout` nor `gtimeout`, and a SIGTERM-ignoring descendant of a capped `git` in `deny-pii-in-commits.sh`.
+- **`claude-hook-review` 2.5.0 (minor — new checklist requirement) now tells gate authors that a gate registration needs `"onFailure": "block"` (Claude Code 2.1.295 or newer) and that the script must end with an unconditional `exit 0` as its last command.** Run `claude plugin update claude-hook-review@claude-config --scope project` from the consuming repository's root directory, then `/reload-plugins` (or restart Claude Code), to refresh it.
+  - The Claude Code 2.1.295 floor applies because older versions may ignore or reject the field (unverified).
 - **`/handoff` keeps its marker activation as the first step, run as its own Bash call, and now creates the handoffs directory just before drafting.**
   - The two one-line recipes no longer sit next to each other. `enforce-marker-script-shape.sh` denies the activation chained to a non-`marker.sh` command.
   - A run that the warrant check stops no longer creates the directory.
@@ -301,7 +303,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 ### Removed
 
 - **macOS system bash 3.2 is no longer supported: hooks, plugins and scripts now need bash 5.2 or newer first on the PATH Claude Code starts with.**
-  - Stowed hooks and scripts take the floor on `git pull`, and each plugin's gates take it on `claude plugin update`.
+  - Stowed hooks and scripts take the floor on `git pull`, and each plugin's gates take it on `claude plugin install` or `claude plugin update`.
   - Every hook, script and `install.sh` now uses `#!/usr/bin/env bash`, so every hook runs under the first `bash` on the PATH Claude Code starts with. `docs/security-hardening.md` § "Limitations" describes the trust this places in that PATH.
   - Below the floor, every gate denies with "could not source _lib.sh" and the other hooks that source `_lib.sh` stop.
   - The credential redactor exits 1 instead of redacting, and `docs/hooks.md` § "Bash version" describes that exit and what is still unverified about it.
@@ -319,7 +321,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
 
 ### Added
 
-- **`install.sh` warns, without failing, when `claude --version` reports a version older than 2.1.295.** Update Claude Code, restart it, and confirm `/hooks` lists the gates and `/permissions` shows the deny rules. It also warns, without failing, when it cannot read a version from `claude --version`.
+- **`install.sh` warns, without failing, when `claude --version` reports a version older than 2.1.295.** Update Claude Code, restart it, and confirm `/hooks` lists the gates and `/permissions` shows the deny rules. It also warns, without failing, when it cannot read a version from `claude --version`. Either warning prints again just before the final prompt.
 - **The full `cost` report under `--branches` prints one audit line for the leading default-branch turns and dollars credited to the filter.** It never prints under `--summary` or `--share-only`, and it audits only the pre-branch shift, not the subagent one.
 - **`review-orchestrator` agent, which runs one `/code-review` round per dispatch in its own context.** Its instructions have it send every fix to `code-writer` and write the code-review marker only on a round with no fix. No hook enforces either rule, and like a `general-purpose` dispatch it can write or activate any marker that `permissions.allow` pre-approves. Its trigger is explicit-request-only: it fires only when you ask for a `/code-review` through it, and no session is told to use it otherwise. The dispatching session's protocol lives in `subagent-delegation`'s gate/review-loop section. See `docs/design-decisions/review-orchestrator-gate-release-decoupling.md`.
   - **Re-run `./install.sh` after pulling if the active config dir's `agents/` is not a folded directory symlink.** A `git pull` alone does not link a new file into an existing stowed directory, so the agent stays unlinked until you re-stow.

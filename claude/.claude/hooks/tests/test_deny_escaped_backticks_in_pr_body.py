@@ -92,8 +92,9 @@ class TestDenyEscapedBackticksInPrBody:
     def test_body_file_alias_pseudo_file_spelling_denied(self, alias_path):
         """Alias spellings of /dev/fd/N slip past `_lib_is_pseudo_file_path`, so only the
         regular-file check denies them.
-        A failure here once `_lib_is_pseudo_file_path` learns alias spellings means the header's
-        Known-gaps entry and the expected message must change together."""
+        A failure here once `_lib_is_pseudo_file_path` learns alias spellings means
+        `_lib_is_pseudo_file_path`'s header in _lib.sh, this hook's Known-gaps pointer and the
+        expected message must change together."""
         cmd = f"gh pr create --body-file {alias_path}"
         reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd))
         assert reason is not None

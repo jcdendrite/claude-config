@@ -433,17 +433,20 @@ class TestSourcingConfigSh:
 
 
 class TestCallersStopWhenConfigShFails:
-    """Each script sources `_config.sh` as its first step. The copy sits beside a stub
+    """Each script reaches `_config.sh` before any other library. The copy sits beside a stub
     `hooks/_config.sh` that prints a marker and returns 1, and `_worktree-lib.sh` is
-    deliberately not copied, so a source line moved below it fails with different stderr."""
+    deliberately not copied, so a source line moved below it fails with different stderr.
+    A script that reaches `_config.sh` through `hooks/_lib.sh` also gets the real `_lib.sh` copied."""
 
     _MARKER = "stub _config.sh was sourced"
+    _SCRIPTS_SOURCING_LIB_SH_FIRST = frozenset({"cleanup-merged-branches.sh"})
 
     @pytest.mark.parametrize(
         ("script_name", "expected_status"),
         [
             pytest.param("worktree-removal-status.sh", 1, id="worktree-removal-status"),
             pytest.param("cleanup-idle-open-pr-worktrees.sh", 1, id="cleanup-idle-open-pr-worktrees"),
+            pytest.param("cleanup-merged-branches.sh", 1, id="cleanup-merged-branches"),
             pytest.param("config-get.sh", 3, id="config-get"),
         ],
     )
@@ -455,6 +458,8 @@ class TestCallersStopWhenConfigShFails:
         script_copy = scripts_dir / script_name
         shutil.copy2(SCRIPTS_DIR / script_name, script_copy)
         (hooks_dir / "_config.sh").write_text(f"printf '%s' '{self._MARKER}' >&2\nreturn 1\n")
+        if script_name in self._SCRIPTS_SOURCING_LIB_SH_FIRST:
+            shutil.copy2(HOOKS_DIR / "_lib.sh", hooks_dir / "_lib.sh")
 
         result = subprocess.run(
             [_BASH, str(script_copy)],

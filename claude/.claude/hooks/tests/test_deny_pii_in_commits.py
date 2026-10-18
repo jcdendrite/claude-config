@@ -409,8 +409,9 @@ class TestDenyPiiInCommits:
     def test_f_alias_pseudo_file_spelling_denied(self, isolated_home, git_repo, alias_path):
         """Alias spellings of /dev/fd/N slip past `_lib_is_pseudo_file_path`, so only the
         regular-file check denies them.
-        A failure here once `_lib_is_pseudo_file_path` learns alias spellings means the header's
-        Known-gaps entry and the expected message must change together."""
+        A failure here once `_lib_is_pseudo_file_path` learns alias spellings means
+        `_lib_is_pseudo_file_path`'s header in _lib.sh, this hook's Known-gaps pointer and the
+        expected message must change together."""
         _stage(git_repo, "f.txt", "x\nclean\n")
         reason = run_hook_reason(
             DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {alias_path}"), cwd=git_repo
