@@ -11,8 +11,8 @@
 #
 # Fires on every repo (no origin scoping) — a PII commit gate is only
 # useful if it covers the repos that actually hold PII. This is the
-# deliberate opposite of deny-private-project-refs.sh, which runs only in
-# claude-config and in repos that commit .claude/private-projects-optin.
+# deliberate opposite of deny-private-project-refs.sh, whose content scans run
+# only in claude-config and in repos that commit .claude/private-projects-optin.
 #
 # Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition,
 # so it runs for every Bash tool call and filters internally. A narrowing

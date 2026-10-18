@@ -9,7 +9,8 @@ enforcement. For the high-level three-tier overview, see the
 
 ## The three scans
 
-The hook runs in claude-config and its forks, and in any other repo that
+The hook runs in claude-config and its forks (origin URL contains
+`claude-config`), and in any other repo that
 commits `.claude/private-projects-optin`; see
 [Opting in another repository](#opting-in-another-repository). Its content
 scans are silent everywhere else.
@@ -393,10 +394,10 @@ silently skippable.
 # matching):
 cat > "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/private-projects.md" <<'EOF'
 # Project names blocked from commits / PR titles / PR bodies in
-# claude-config, its forks, and repos opted in via
-# .claude/private-projects-optin. Match semantics + what to put in this
-# file: see docs/private-project-redaction.md in the claude-config
-# repo.
+# claude-config and its forks (origin URL contains `claude-config`), and
+# repos opted in via .claude/private-projects-optin. Match semantics +
+# what to put in this file: see docs/private-project-redaction.md in the
+# claude-config repo.
 
 EOF
 
@@ -584,15 +585,16 @@ cat > .claude/private-projects-optin <<'EOF'
 # Not a repo-level check: it screens only Claude Code sessions on machines with claude-config's hooks installed.
 EOF
 
-git add .claude/private-projects-optin
+git add -f .claude/private-projects-optin
 git commit -m "Opt in to the private-project redaction gate"
-git ls-files .claude/private-projects-optin
+git ls-files --error-unmatch .claude/private-projects-optin
 ```
 
-Run the commit as its own command: the gate reads the staged diff before the
-gated command runs, so a chained add-and-commit leaves the marker's comment
-unscanned. `git ls-files` must list the marker. If `.claude/` is gitignored, the marker
-needs `git add -f`, or it never reaches other clones. Presence alone counts. A
+Run each git command as its own call: in a Claude Code session,
+`deny-invisible-commit-content.sh` denies a `git add` chained ahead of
+`git commit`. `-f` stages the marker even where `.claude/` is gitignored. An
+unstaged marker never reaches other clones. `git ls-files --error-unmatch`
+fails unless the marker is tracked. Presence alone counts. A
 regular file or a symlink to one counts; a directory does not.
 
 **Activation.** The gate is armed only while the marker is in the checked-out
@@ -639,7 +641,10 @@ marker.
 Forks of `claude-config` inherit the same hook (the scoping check passes for
 any `claude-config` substring in the origin URL), so a fork whose origin URL
 contains `claude-config` needs no marker. A fork renamed so its URL lacks that
-substring can opt in with the marker.
+substring gets silent content scans. The marker is no substitute, because the
+marker arm also scans `claude/.claude/hooks/tests/`, so a commit adding those
+tests' synthetic tokens (tracker IDs, a private-range IPv4 literal, other
+structural fixtures) denies. Keep `claude-config` in a fork's origin URL.
 A fork user can drop their own `<config-dir>/private-projects.md` and
 contribute back without their project names ever ending up in a PR they open
 against the upstream. `install-dev.sh` requires that file to exist before it
