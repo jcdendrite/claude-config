@@ -43,6 +43,9 @@
 # supplies session_id and transcript_path on stdin to hooks only.
 # It reports the kill-switch as a field rather than honouring it: the switch
 # suppresses notifying, not measuring.
+# It reports already_fired only while the estimate has not fallen below the
+# one the marker recorded, or when the marker is malformed, so a compacted
+# session reads as not yet fired.
 # Refusing is a first-class outcome — every unresolved condition returns
 # status "cannot-resolve" with a reason rather than a guessed number.
 # See docs/handoff-nudge.md for the JSON contract and the reason vocabulary.
@@ -67,6 +70,8 @@
 #     appended transcript slice carries no new usage block, the cached
 #     estimate from the last fire that did find one is reused rather than
 #     re-scanned — accurate as of that fire, not a live count.
+#   - A non-integer fire-path estimate (a fractional token count, or a corrupt
+#     incremental-scan state file) skips that fire with no log line.
 #   - --check's number is advisory: its PID-reuse guard compares whole-second
 #     start times and it does not re-verify the process identity of the entry
 #     it resolves — see docs/handoff-nudge.md.
@@ -163,6 +168,32 @@ resolve_rearm_spacing() {
     *) REARM_SPACING=$HANDOFF_NUDGE_REARM_SPACING ;;
   esac
 }
+
+# Reads the fired marker at $1 and sets FIRED_MARKER_STATE to absent,
+# malformed, or value, plus FIRED_MARKER_AT to the recorded estimate on value.
+# A literal `0` is malformed, since ESTIMATE is always >= THRESHOLD > 0 at fire
+# time, and so is a newline-less value, since `read` exits 1 at EOF.
+# Each caller fails toward the nudge: the fire path fires on a malformed
+# marker, and --check reports it as already fired.
+read_fired_marker() {
+  FIRED_MARKER_STATE=absent
+  FIRED_MARKER_AT=""
+  [ -f "$1" ] || return 0
+  FIRED_MARKER_STATE=malformed
+  { IFS= read -r FIRED_MARKER_AT < "$1"; } 2>/dev/null || FIRED_MARKER_AT=""
+  case "$FIRED_MARKER_AT" in
+    ''|0|*[!0-9]*|0[0-9]*|?????????*) FIRED_MARKER_AT="" ;;
+    *) FIRED_MARKER_STATE=value ;;
+  esac
+}
+
+# Criteria and timing text both nudge messages carry; docs/handoff-nudge.md
+# "Compaction as an alternative to /handoff" restates them beside their
+# vendor quotes, and test_nudge_handoff_near_context_cap.py pins the match.
+COMPACT_CRITERIA="the next step continues the current task without switching to another worktree or repository, it needs files already read or edited in this conversation, and Claude has not been corrected more than twice on the same issue"
+COMPACT_TIMING="Run /compact now rather than after a break: once the prompt cache expires, /compact reprocesses the full history as uncached input, which is when it costs the most."
+COMPACT_TIE_BREAK_SOFT="Recommend /compact only if all three clauses hold; otherwise, or if any is unclear, recommend /handoff."
+COMPACT_TIE_BREAK_HARD="If all three clauses hold, the user can run a bare /compact instead, and a focus line is optional."
 
 # Escalation-block threshold: an absolute token position past which a
 # further re-arm hard-blocks instead of advising, independent of how many
@@ -421,8 +452,14 @@ run_check_mode() {
   [ "$ESTIMATE" -ge "$THRESHOLD" ] 2>/dev/null && over_threshold=true
   local model_recognized=false
   [ "$MODEL_RECOGNIZED" -eq 1 ] && model_recognized=true
+  # An estimate below the marker's value means the context shrank since that
+  # fire (compaction is the one verified cause), so the earlier nudge no longer applies.
   local already_fired=false
-  [ -f "$CONFIG_DIR/.handoff-nudge-fired.d/$session_id" ] && already_fired=true
+  read_fired_marker "$CONFIG_DIR/.handoff-nudge-fired.d/$session_id"
+  case "$FIRED_MARKER_STATE" in
+    malformed) already_fired=true ;;
+    value) [ "$ESTIMATE" -ge "$FIRED_MARKER_AT" ] 2>/dev/null && already_fired=true ;;
+  esac
 
   local out
   # shellcheck disable=SC2016 # single-quoted on purpose: every $-prefixed name below is a jq --arg/--argjson binding, not a shell variable; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but the _lib_capped_for wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
@@ -562,20 +599,21 @@ if [ "$ESTIMATE" -lt "$THRESHOLD" ] 2>/dev/null; then
   exit 0
 fi
 
+# A non-integer estimate cannot be spaced from, and `$(( ))` reads a
+# leading-zero constant as octal; stay silent rather than abort the arithmetic
+# below.
+case "$ESTIMATE" in ''|*[!0-9]*|0[0-9]*) exit 0 ;; esac
+
 # Already fired: suppress until the estimate has advanced REARM_SPACING
 # tokens past the last fire; re-arms rather than staying silent forever.
 resolve_rearm_spacing
+NEXT_FIRE_AT=$(( ESTIMATE + REARM_SPACING ))
 FIRED_MARKER="${MARKER_DIR}/${SESSION_ID}"
-LAST_FIRED_AT=""
-if [ -f "$FIRED_MARKER" ]; then
-  IFS= read -r LAST_FIRED_AT < "$FIRED_MARKER" 2>/dev/null || LAST_FIRED_AT=""
-fi
 # A corrupt or unreadable marker forces a fire rather than suppressing one
-# (fail toward firing, never toward silent suppression). A literal `0`
-# marker is never legitimate — ESTIMATE is always >= THRESHOLD > 0 at fire
-# time — so it must not be read as a real LAST_FIRED_AT, which would
-# suppress future fires under a large HANDOFF_NUDGE_REARM_SPACING override.
-case "$LAST_FIRED_AT" in ''|0|*[!0-9]*|0[0-9]*|?????????*) LAST_FIRED_AT="" ;; esac
+# (fail toward firing, never toward silent suppression): read_fired_marker
+# leaves FIRED_MARKER_AT empty for it, so it is never a real LAST_FIRED_AT.
+read_fired_marker "$FIRED_MARKER"
+LAST_FIRED_AT="$FIRED_MARKER_AT"
 if [ -n "$LAST_FIRED_AT" ] && [ "$ESTIMATE" -lt "$(( LAST_FIRED_AT + REARM_SPACING ))" ] 2>/dev/null; then
   exit 0
 fi
@@ -587,6 +625,13 @@ fi
 # feeds only the log's ignored= field and the hard-block stderr message; it
 # does not gate the hard block.
 resolve_block_at
+
+# A fire at or above BLOCK_AT hard-blocks on PostToolBatch, so the label names
+# what a PostToolBatch fire at that point does with no live /handoff marker.
+NEXT_FIRE_KIND="nudge"
+if [ "$NEXT_FIRE_AT" -ge "$BLOCK_AT" ]; then
+  NEXT_FIRE_KIND="hard block"
+fi
 
 # One-time migration notice for a still-exported HANDOFF_NUDGE_BLOCK_AFTER.
 # Same per-session dedup as DRIFT_MARKER above.
@@ -667,8 +712,8 @@ if [ "$ESTIMATE" -ge "$BLOCK_AT" ] 2>/dev/null && [ -n "$LAST_FIRED_AT" ] \
   printf 'nudged session=%s est=%s model=%s window=%s event=%s ignored=%s skills=%s action=block\n' \
     "$SESSION_ID" "$ESTIMATE" "$MODEL" "$CONTEXT_WINDOW" "$HOOK_EVENT" "$IGNORED_COUNT" "$SKILLS_FIELD" >> "$NUDGE_LOG" 2>/dev/null || true
   printf '%s\n' "$ESTIMATE" > "$FIRED_MARKER" 2>/dev/null || true
-  printf 'Context (%s tokens) is past this session'\''s handoff-nudge hard-block point (HANDOFF_NUDGE_BLOCK_AT=%s), after %s ignored re-arms. Blocking rather than advising: run /handoff now — it captures state in a /tmp file and resumes in a fresh session.\n' \
-    "$ESTIMATE" "$BLOCK_AT" "$IGNORED_COUNT" >&2
+  printf 'Context (%s tokens) is past this session'\''s handoff-nudge hard-block point (HANDOFF_NUDGE_BLOCK_AT=%s), after %s re-arms. Blocking rather than advising: run /handoff now. Only the user can run /compact. The /compact criteria: %s. %s If you choose /compact: %s Next %s at %s tokens.\n' \
+    "$ESTIMATE" "$BLOCK_AT" "$IGNORED_COUNT" "$COMPACT_CRITERIA" "$COMPACT_TIE_BREAK_HARD" "$COMPACT_TIMING" "$NEXT_FIRE_KIND" "$NEXT_FIRE_AT" >&2
   exit 2
 fi
 
@@ -676,11 +721,13 @@ fi
 # actually produced output — jq -n … 2>/dev/null below would otherwise
 # swallow a jq failure while the marker/log writes had already burned the
 # session's one shot. timeout 2 matches the tail | jq -s call above.
-# shellcheck disable=SC2016 # single-quoted on purpose: $hookEventName/$threshold are jq --arg/--argjson bindings, not shell variables; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but the _lib_capped_for wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
-OUTPUT=$(_lib_capped_for 2 jq -n --arg hookEventName "$HOOK_EVENT" --argjson threshold "$THRESHOLD" '{
+# shellcheck disable=SC2016 # single-quoted on purpose: every $-prefixed name below is a jq --arg/--argjson binding, not a shell variable; double-quoting would expand them in the shell before jq sees them. Bare `jq` suppresses this itself, but the _lib_capped_for wrapper that carries the timeout backstop is opaque to shellcheck's jq awareness.
+OUTPUT=$(_lib_capped_for 2 jq -n --arg hookEventName "$HOOK_EVENT" --argjson threshold "$THRESHOLD" \
+  --arg criteria "$COMPACT_CRITERIA" --arg tieBreak "$COMPACT_TIE_BREAK_SOFT" --arg timing "$COMPACT_TIMING" \
+  --argjson nextFireAt "$NEXT_FIRE_AT" --arg nextFireKind "$NEXT_FIRE_KIND" '{
   hookSpecificOutput: {
     hookEventName: $hookEventName,
-    additionalContext: ("Context is past this session'\''s handoff-nudge threshold (" + ($threshold|tostring) + " tokens). If the current task is not close to done, suggest running /handoff to the user — it captures state in a /tmp file and resumes in a fresh session. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish — judge that by what the remaining work costs, not by how many steps are left.")
+    additionalContext: ("Context is past this session'\''s handoff-nudge threshold (" + ($threshold|tostring) + " tokens). If the current task is not close to done, recommend one exit to the user and name the other as the alternative. The /compact criteria: " + $criteria + ". " + $tieBreak + " Only the user can run /compact, so end the recommendation with a ready-to-paste line `/compact <focus>` on one line, where <focus> names the task, the next step, the skill in flight and its current step, the files to re-read first, the open decisions quoted in the words the user used, and the irreversible actions not yet authorized. Pass this on with it, as applying if the user chooses /compact: " + $timing + " Next " + $nextFireKind + " at " + ($nextFireAt|tostring) + " tokens. Per-turn cost rises with carried context, but a fresh session pays a one-time rebuild cost first, so handoff pays off over the next several turns rather than immediately. If the task is nearly complete, ignore this and finish — judge that by what the remaining work costs, not by how many steps are left.")
   }
 }' 2>/dev/null) && [ -n "$OUTPUT" ] && {
   printf 'nudged session=%s est=%s model=%s window=%s event=%s ignored=%s skills=%s\n' \

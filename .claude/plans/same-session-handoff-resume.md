@@ -190,7 +190,7 @@ One line of the body distinguishes `/resume-context` from the code-fenced shell 
 - **The rule.** `--check` reports `already_fired: true` when the marker exists and either of these holds:
   - its value is malformed;
   - the current estimate is at or above the value.
-- **What a lower estimate means.** An estimate below the recorded value means the estimate fell below that fire's. Compaction and context clearing are the known causes (G3, row 35).
+- **What a lower estimate means.** An estimate below the recorded value means the estimate fell below that fire's. Compaction is the verified cause (G3), and no other cause is verified (row 35).
 - **Write behavior.** `--check` still writes nothing, so the fire path, its log, and the lag join are untouched (row 20).
 - **Consumers.** The JSON shape is unchanged. `handoff/SKILL.md:23`, `ready-for-review/SKILL.md:35, :172` and `plan-it/SKILL.md:148` keep their reading rule, and they now read a compacted session as under threshold.
 - **Canonical statement.** This changes the meaning of one field in the contract. `docs/handoff-nudge.md:74` is the canonical statement of that meaning. It will read: "the marker exists and the current estimate has not fallen below the estimate it recorded, or the marker is malformed."
@@ -198,33 +198,35 @@ One line of the body distinguishes `/resume-context` from the code-fenced shell 
 **Nudge messages.** Only the two message strings change, not the fire logic.
 - **Shared text.** Both messages carry D3's criteria phrase and timing sentence verbatim (row 52). Both state that only the user can run `/compact` (G1).
 - **No `/clear` instruction.** Neither message tells the engineer how to resume after `/handoff`, and neither says "then /clear". The announce message after the write gives the resume route, and it differs by worktree (row 51).
-- **Next fire.** Both state the next-nudge point `<ESTIMATE + REARM_SPACING>` (row 19), worded "next nudge at", never "next block". It is computed once from the validated `ESTIMATE` and the resolved `REARM_SPACING`. The soft nudge passes it to `jq -n` as a new `--argjson`. The hard block's `printf` gains one `%s`.
+- **Next fire.** Both state the next fire point `<ESTIMATE + REARM_SPACING>` (row 19) and what fires there: "Next hard block at" when that point is at or above the resolved `BLOCK_AT`, otherwise "Next nudge at". A hard block's own point is always at or above `BLOCK_AT`, so on `PostToolBatch` with no live `/handoff` marker the next fire blocks again (row 19). The point is computed once from the validated `ESTIMATE` and `REARM_SPACING`. The label is computed once, after `resolve_block_at`. The soft nudge passes them to `jq -n` as a new `--argjson` and `--arg`. The hard block's `printf` gains two `%s`.
 - **Soft nudge (`additionalContext`):**
   - The opening `threshold (<N> tokens)` sentence stays.
   - If the current task is not close to done, the agent recommends one exit: `/compact` only if all of the criteria phrase's clauses hold; otherwise, or if any is unclear, `/handoff`. It names the other exit as the alternative.
   - The message always includes a ready-to-paste `/compact <focus>` on one line (row 38). The focus names the task, the next step, the skill in flight and its current step (row 66), files to re-read first, open decisions with the user's quoted words, and irreversible actions not yet authorized.
-  - The agent passes on the timing sentence with it, plus the next-nudge point after a `/compact`.
+  - The agent passes on the timing sentence with it, plus the next fire point after a `/compact`.
   - The stale "captures state in a /tmp file" clause is dropped. The per-turn-cost sentence and the closing "If the task is nearly complete…" sentence stay.
   - No earlier "nearly complete" and no "25%" may appear (row 18).
 - **Hard block (stderr).** It stops the loop before any model call, so no model composes a focus line (row 54). The `/compact` exit therefore names the form the engineer can type unaided:
   - `handoff-nudge hard-block point (HANDOFF_NUDGE_BLOCK_AT=%s)` stays on one unwrapped line.
   - "after %s ignored re-arms" becomes "after %s re-arms", because a compliant compaction still increments the counter.
-  - Then: run `/handoff` now. If all of the criteria phrase's clauses hold, the user can run a bare `/compact` instead, and a focus line is optional (the tie-break's inverse: default `/handoff`). Then a conditional lead-in such as "If you choose /compact:" before the pinned timing sentence, outside the pinned string, so the message has one "now" command. Then the next-nudge point, worded "next nudge at", not "next block", because the next fire is a soft nudge unless it reaches `HANDOFF_NUDGE_BLOCK_AT`.
+  - Then: run `/handoff` now. If all of the criteria phrase's clauses hold, the user can run a bare `/compact` instead, and a focus line is optional (the tie-break's inverse: default `/handoff`). Then a conditional lead-in such as "If you choose /compact:" before the pinned timing sentence, outside the pinned string, so the message has one "now" command. Then the next fire point, worded "next hard block at": the marker now holds an estimate at or above `HANDOFF_NUDGE_BLOCK_AT` and a `/compact` does not reset it, so the next `PostToolBatch` fire blocks again (row 19).
   - It contains none of row 18's excluded phrases.
 - **No cost comparison.** Neither string calls compaction cheaper than a handoff, because nothing measures that (row 25). The timing sentence compares `/compact` only with itself, as the docs do (row 53).
 
-**Docs.** `docs/handoff-nudge.md` changes in six places:
+**Docs.** `docs/handoff-nudge.md` changes in eight places:
 - `:18` describes the recommendation of one exit and points to the new section below.
 - `:22` ("ignored re-arm") gains a clause that a re-arm after a compliant compaction also counts, pointing to the Known-limitations bullet.
 - `:34-38` adds `/compact` as a route out of a hard block, so "Three routes out" at `:34` becomes four. The same lines correct "the estimate only grows" and the stale `/tmp` description of `/handoff`.
 - `:74` gets the new meaning of `already_fired`, and records that it changed with this PR's merge date, so a later audit of `handoff_signal_response.py:254` can split signal counts on that date (row 67).
 - A new section, "Compaction as an alternative to /handoff", gives each criterion beside its literal vendor quote, plus the timing sentence beside its quote (rows 26, 53). Each quote carries its URL and heading, "fetched 2026-10-17" and "re-verify by 2027-01-17". The section states the five-file re-attach limit, and it states that the agent needs no knowledge of the cache lifetime.
 - A new bullet under Known limitations:
-  - After a `/compact`, the push nudge stays silent until the estimate reaches the last fire plus `HANDOFF_NUDGE_REARM_SPACING`. That is about 235000 after a first fire at 155000, and at least 550000 after a hard block at 470000.
+  - After a `/compact`, the push nudge stays silent until the estimate reaches the last fire plus `HANDOFF_NUDGE_REARM_SPACING`. That is about 235000 after a first fire at 155000, and at least 550000 after a hard block at 470000. The fire at the blocked estimate plus spacing is itself a hard block on `PostToolBatch`.
   - The `-ignored` count includes re-arms that follow a compliant compaction.
   - `--check` is unaffected.
   - A skill body over the 5,000-token re-injection cap (row 26) comes back partial after a compaction, while its active markers survive (G3). Of the workflow skills, `code-review`, `plan-review` and `ready-for-review` exceed it by the row 66 estimate. A `/compact` mid-flow in one of them can leave the model without later steps. The focus line names the skill in flight and its current step.
   - The signal-response audits do not count `/compact`. The transcript's `isCompactSummary` records are the source a later audit would use to measure uptake, and whether they tell a user `/compact` from an auto-compaction is unverified (row 62).
+- The existing 200k-window bullet under Known limitations ("The hard block is unreachable on a 200k-window model") replaces "the advisory nudge re-arms indefinitely" with the fire count. At the default spacing a 200k-window session gets at most two advisory fires, at about 80000 and about 160000. The second fire's "Next nudge at" point (at least 240000) is past the window, so that nudge never arrives, whether or not the session compacts.
+- The Log-location table's `nudged` row (`:158`) gains a clause on the `ignored=` count, pointing to the Known-limitations compaction bullet.
 
 `docs/handoff-nudge.md` keeps the phrase `` `HANDOFF_NUDGE_BLOCK_AT` (default N) `` (row 18). `docs/hooks.md:171` and the README's "When to use which" rows defer to the new section instead of restating the criteria.
 
@@ -289,7 +291,7 @@ Resolved: option A, via the engineer's selected label "A: pin, don't delete (Rec
 | 16 | The warrant heading is cited verbatim elsewhere. Load-bearing only for D1 option B | `[verified: plan-it/SKILL.md:148; ready-for-review/SKILL.md:41]` |
 | 17 | A §2 reason, an explicit engineer request, or the session ending already warrants a write. The warrant step's threshold-alone callers are `ready-for-review` Step 1, `plan-it` Step 7 and a model run driven by the hard block. `ready-for-review` argues that a handoff is right (`:36`) and treats a declined write as a halt (`:37`) | `[verified: handoff/SKILL.md:28; ready-for-review/SKILL.md:35-37; plan-it/SKILL.md:148]` |
 | 18 | Each consumer of the nudge text constrains the rewrite (detail below) | `[verified: handoff_signal_response.py:41, :216-229; test_doc_counts.py:309, :388; test_nudge_handoff_near_context_cap.py:1406-1410, :2119, :2132-2148, :2171]`, plus `:2526` and `test_doc_counts.py:608` as reported by this session's platform review |
-| 19 | The fired and ignored state is keyed by session id. A re-arm needs `ESTIMATE >= LAST_FIRED_AT + REARM_SPACING`. After a fire at estimate E, the next fire comes at E + `REARM_SPACING` | `[verified: nudge-handoff-near-context-cap.sh:160-165, :565-581, :669, :688]` |
+| 19 | The fired and ignored state is keyed by session id. A re-arm needs `ESTIMATE >= LAST_FIRED_AT + REARM_SPACING`. After a fire at estimate E, the next fire comes at E + `REARM_SPACING`. A fire at E ≥ `BLOCK_AT` therefore makes the next `PostToolBatch` fire a hard block, compaction or not, unless a live `/handoff` marker keeps it advisory | `[verified: nudge-handoff-near-context-cap.sh as staged by this PR: fired-marker read via read_fired_marker :178 and :615-616, re-arm check :617, hard-block condition :700-701, marker write in the block arm :714; the spacing is resolve_rearm_spacing]` |
 | 20 | A reset of the fire path after compaction would fire below an earlier fire's estimate. The lag join's first-crossing rule would then pick the pre-compaction turn, and `rearm-backtest`'s simulation of bands does not model the reset | `[verified: transcript_analysis/handoff_nudge.py:351-398; rearm_backtest.py:181-241]` |
 | 21 | Every reader of active markers keys on the caller's current session id. The rewrite loop touches only the new id. `clear-stale` evicts a marker whose PID is live once it has been idle 60 minutes | `[verified: _lib.sh:2762; nudge-handoff-near-context-cap.sh:627-643; capture-session-id.sh:106-112; marker-clear-stale.py:237-248]` |
 | 22 | `.*-active.d/` also holds review-pr artifacts and `.planmode-path` sidecars | `[verified: marker-clear-stale.py:29-40, :165-182]` |
@@ -561,7 +563,8 @@ Each dispatch verifies with `.venv/bin/python3 claude/.claude/scripts/select-tes
   - one header line under `--check`.
 - `claude/.claude/hooks/tests/test_nudge_handoff_near_context_cap.py`:
   - **Shared constants.** One module constant each for D3's criteria phrase, timing sentence and tie-break (quoted as a literal, in its soft form and the hard block's inverse form), used by both message tests. Each constant is asserted free of `%`, because the hard block's `printf` format and the soft nudge's `jq` literal must not receive one.
-  - **Accepted properties pinned in both messages** (rows 51, 52; G1): the user-only statement for `/compact`; no `/clear` and no `/resume-context` anywhere in either string, not only the literal "then /clear"; the soft nudge carries the `/compact <focus>` placeholder form and the hard block the bare form; "next nudge at" appears and "next block" does not.
+  - **Accepted properties pinned in both messages** (rows 51, 52; G1): the user-only statement for `/compact`; no `/clear` and no `/resume-context` anywhere in either string, not only the literal "then /clear"; the soft nudge carries the `/compact <focus>` placeholder form and the hard block the bare form.
+  - **Next-fire label** (row 19): the label reads "next hard block at" in the hard block and in a soft nudge whose next point reaches `HANDOFF_NUDGE_BLOCK_AT` (boundary pinned at equality), and "next nudge at" otherwise.
   - **Doc parity.** A check in the style of `test_doc_counts.py:309` compares the D3 strings restated in `docs/handoff-nudge.md` with the live hook output. This is the second pin the D3 text refers to.
   - **`--check` tests:**
     - With marker N and an estimate below N and below threshold, both booleans are false.
