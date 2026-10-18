@@ -718,27 +718,8 @@ if [ -f "$SETTINGS_FILE" ]; then
   echo "=== Installing this repo's own project-scope plugins ==="
   PROJECT_SETTINGS_FILE="$REPO_DIR/.claude/settings.json"
   if [ -f "$PROJECT_SETTINGS_FILE" ]; then
-    # INSTALL_TEST_FIXTURE: project-plugin-match — start
-    # Whether $1 (a "name@marketplace" plugin id) is already installed at
-    # project scope for $REPO_DIR, given $2 as a "$id\t$projectPath" TSV of
-    # existing scope=="project" entries. Canonicalizes each entry's path
-    # the same way ensure_local_bin_on_path's readlink -f fallback does:
-    # check the assignment's own exit status, not `cmd1 || cmd2`-inside-
-    # `$()`, which can concatenate BSD readlink's partial stdout with the
-    # fallback on a dangling target.
-    _project_plugin_already_installed() {
-      local plugin_id="$1" existing_tsv="$2" entry_id entry_path entry_path_real
-      while IFS=$'\t' read -r entry_id entry_path; do
-        [ -z "$entry_id" ] && continue
-        [ "$entry_id" != "$plugin_id" ] && continue
-        if ! entry_path_real="$(readlink -f -- "$entry_path" 2>/dev/null)"; then
-          entry_path_real="$entry_path"
-        fi
-        [ "$entry_path_real" = "$REPO_DIR" ] && return 0
-      done <<< "$existing_tsv"
-      return 1
-    }
-    # INSTALL_TEST_FIXTURE: project-plugin-match — end
+    # shellcheck source=claude/.claude/scripts/_plugin-install-lib.sh
+    . "$REPO_DIR/claude/.claude/scripts/_plugin-install-lib.sh"
 
     # INSTALL_TEST_FIXTURE: project-scope-plugin-install — start
     if ! existing_project_plugins="$(claude plugin list --json 2>/dev/null | jq -r '.[] | select(.scope == "project") | "\(.id)\t\(.projectPath)"')"; then
@@ -754,7 +735,7 @@ if [ -f "$SETTINGS_FILE" ]; then
       if [ "$plugin" = "issue-triage@claude-config" ]; then
         echo "  ! $plugin carries live gh credentials and unrestricted Bash — see its plugin.json description before running /issue-triage"
       fi
-      if _project_plugin_already_installed "$plugin" "$existing_project_plugins"; then
+      if _plugin_installed_at_path "$plugin" "$existing_project_plugins" "$REPO_DIR"; then
         echo "  ✓ $plugin (already installed)"
       else
         echo "  → installing $plugin"

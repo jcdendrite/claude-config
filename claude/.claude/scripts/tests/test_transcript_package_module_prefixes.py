@@ -27,6 +27,9 @@ PRODUCTION_MODULES = (
     "spend_over_threshold.py",
     "plan_boundary.py",
     "handoff_signal_response.py",
+    "judgment_pair.py",
+    "skill_invocation.py",
+    "skill_pair.py",
 )
 TEST_FILES = (
     "test_transcript_cost_ledger.py",

@@ -7,7 +7,6 @@ Every subcommand is read-only except an explicit write flag: judgment-pair
 
 import argparse
 import contextlib
-import fnmatch
 import hashlib  # noqa: F401 -- test_transcript_reviewer_yield.py reads _mod.hashlib as a stdlib passthrough
 import json
 import math
@@ -128,6 +127,13 @@ from transcript_analysis.handoff_signal_response import (
     # subcommand's own set_defaults).
     cmd_handoff_signal_response,
 )
+from transcript_analysis.judgment_pair import (
+    # _add_judgment_pair_subparser is read bare by this file's own build_parser (the
+    # judgment-pair subcommand's registration). cmd_judgment_pair is read only via
+    # _mod.cmd_judgment_pair from test files.
+    _add_judgment_pair_subparser,
+    cmd_judgment_pair,  # noqa: F401
+)
 from transcript_analysis.plan_boundary import (
     # Read bare by this file's own build_parser (the plan-boundary
     # subcommand's own set_defaults).
@@ -198,15 +204,13 @@ from transcript_analysis.render import (
     _fam,
     _fmt_date,
     _fmt_usd,
-    _is_fresh_user_prompt,
+    _is_fresh_user_prompt,  # noqa: F401 -- read only via _mod._is_fresh_user_prompt from test files
     _pct_of,
     _sanitize_table_cell,  # noqa: F401 -- read only via _mod._sanitize_table_cell from test files
     _strip_task_notifications,
 )
 from transcript_analysis.review_rounds import (
-    # REVIEW_SKILLS is read bare by this file's own still-monolithic
-    # cmd_judgment_pair (its own --skills default) -- the one-directional
-    # exception documented in docs/transcript-analysis-architecture.md.
+    # REVIEW_SKILLS is read bare by build_parser's review-round-cost --skill choices.
     REVIEW_SKILLS,
     cmd_review_round_cost,
 )
@@ -237,23 +241,36 @@ from transcript_analysis.scope import (
     _add_project_scope_args,
     _attributed_branch,
     _branch_filter,
-    _iter_glob_scoped_sessions,
-    _iter_scoped_sessions,
+    _iso_date,
+    _iter_scoped_sessions,  # noqa: F401 -- read only via _mod._iter_scoped_sessions from test files
     _parse_absolute_window_args,
     _parse_since_nd_arg,
     _projects_glob,
     _redaction_ordinals,
-    _repo_scoped_project_slugs,
+    _repo_scoped_project_slugs,  # noqa: F401 -- read only via _mod._repo_scoped_project_slugs from test files
     _resolve_cost_roots,
     _resolve_project_scope,
-    _resolved_scope_header,
+    _resolved_scope_header,  # noqa: F401 -- read only via _mod._resolved_scope_header from test files
     _root_index_for_path,
     _scan_root_transcripts,
     _session_branch_context,
-    _single_level_projects_glob,
 )
 from transcript_analysis.scope import print_resolved_scope as _print_resolved_scope
 from transcript_analysis.scope import resolve_scan_roots as _resolve_scan_roots
+from transcript_analysis.skill_invocation import (
+    # _add_skill_invocation_subparser is read bare by this file's own build_parser (the
+    # skill-invocation subcommand's registration). cmd_skill_invocation is read only via
+    # _mod.cmd_skill_invocation from test files.
+    _add_skill_invocation_subparser,
+    cmd_skill_invocation,  # noqa: F401
+)
+from transcript_analysis.skill_pair import (
+    # _add_skill_pair_subparser is read bare by this file's own build_parser (the
+    # skill-pair subcommand's registration). cmd_skill_pair is read only via
+    # _mod.cmd_skill_pair from test files.
+    _add_skill_pair_subparser,
+    cmd_skill_pair,  # noqa: F401
+)
 from transcript_analysis.spend_over_threshold import (
     # Read bare by this file's own build_parser (the spend-over-threshold
     # subcommand's own set_defaults).
@@ -313,15 +330,6 @@ STRUGGLE_PHRASES: list[str] = [
     "that doesn't exist",
     "that doesn't match",
 ]
-
-
-def _iso_date(s: str) -> str:
-    """argparse type: validate a YYYY-MM-DD date string."""
-    try:
-        datetime.strptime(s, "%Y-%m-%d")
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"not a valid YYYY-MM-DD date: {s!r}") from None
-    return s
 
 
 def _longest_fail_streak(failed_flags: list[bool]) -> int:
@@ -886,493 +894,6 @@ def cmd_duration(args: argparse.Namespace) -> None:
             f"{branch:<40} {span_secs / 60:>10.0f} {active_secs / 60:>11.0f} "
             f"{idle_secs / 60:>10.0f} {burst_count:>9} {gap_secs / 60:>7.0f}"
         )
-
-
-def cmd_judgment_pair(args: argparse.Namespace) -> None:
-    """Emit (review-skill output, user response) pairs from sessions containing review invocations.
-
-    For each matching Skill invocation in a session:
-    - REVIEW OUTPUT: the last main-thread assistant turn with non-empty text in the
-      window between the invocation and the next fresh user prompt (or next matching
-      invocation, whichever comes first).
-    - USER RESPONSE: the first fresh user prompt text after that window closes.
-
-    Uses _is_fresh_user_prompt() to skip tool-result turns, isMeta injections,
-    and isCompactSummary injections when locating the user response.
-
-    --branches filters on the invocation record's attributed branch
-    (scope._attributed_branch), not a single session-wide branch — a session
-    whose branch changes between the invocation and the user response is
-    filtered by where the invocation itself happened.
-    """
-    branch_filter = _branch_filter(args)
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "judgment-pair", roots=roots)
-
-    since_ts, until_epoch = _parse_absolute_window_args(args, "judgment-pair")
-
-    skills_arg: str = getattr(args, "skills", None) or ",".join(REVIEW_SKILLS)
-    skill_set: set[str] = {s for s in skills_arg.split(",") if s}
-    truncate_chars: int = getattr(args, "truncate_chars", 1000) or 1000
-    out_path: str | None = getattr(args, "out", None) or None
-
-    output_blocks: list[str] = []
-
-    for jsonl, records in session_iter:
-        proj_label = _derive_proj_label(jsonl)
-        session_id_prefix = jsonl.stem[:8]
-        branch_context = _session_branch_context(records)
-
-        for rec_idx, rec in enumerate(records):
-            line_no = rec_idx + 1  # 1-based line number for output
-
-            # Detect matching skill invocation: main-thread assistant with Skill tool_use
-            # whose input.skill is in the target set.
-            if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
-                continue
-            content_blocks = (rec.get("message") or {}).get("content") or []
-            inv_skill: str | None = None
-            for block in content_blocks:
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                if block.get("name") != "Skill":
-                    continue
-                skill_name = (block.get("input") or {}).get("skill") or ""
-                if skill_name in skill_set:
-                    inv_skill = skill_name
-                    break
-            if inv_skill is None:
-                continue
-
-            invocation_branch = _attributed_branch(rec, branch_context) or ""
-            if branch_filter and invocation_branch not in branch_filter:
-                continue
-
-            inv_ts_str: str | None = rec.get("timestamp")
-            inv_ts_epoch: float | None = _parse_ts(inv_ts_str)
-
-            # Apply date filter to invocation timestamp.
-            if since_ts is not None or until_epoch is not None:
-                if inv_ts_epoch is None:
-                    continue
-                if since_ts is not None and inv_ts_epoch < since_ts:
-                    continue
-                if until_epoch is not None and inv_ts_epoch >= until_epoch:
-                    continue
-
-            # Scan forward to find window_end: the minimum of
-            #   (a) the index of the next fresh user prompt, and
-            #   (b) the index of the next matching skill invocation after this one.
-            # window_end is exclusive (records[rec_idx+1 : window_end]).
-            window_end = len(records)
-            found_boundary = False
-            for scan_idx in range(rec_idx + 1, len(records)):
-                scan_rec = records[scan_idx]
-                # Bound (a): next fresh user prompt closes the window.
-                if _is_fresh_user_prompt(scan_rec):
-                    window_end = scan_idx
-                    found_boundary = True
-                    break
-                # Bound (b): next matching skill invocation closes the window.
-                if scan_rec.get("type") == "assistant" and not bool(scan_rec.get("isSidechain")):
-                    scan_content = (scan_rec.get("message") or {}).get("content") or []
-                    for scan_block in scan_content:
-                        if not isinstance(scan_block, dict) or scan_block.get("type") != "tool_use":
-                            continue
-                        if scan_block.get("name") != "Skill":
-                            continue
-                        scan_skill = (scan_block.get("input") or {}).get("skill") or ""
-                        if scan_skill in skill_set:
-                            window_end = scan_idx
-                            found_boundary = True
-                            break
-                    if found_boundary:
-                        break
-
-            # REVIEW OUTPUT: last main-thread assistant turn with non-empty text in the window.
-            review_text = ""
-            for window_rec in records[rec_idx + 1 : window_end]:
-                if window_rec.get("type") != "assistant" or bool(window_rec.get("isSidechain")):
-                    continue
-                candidate_text = _content_text(
-                    (window_rec.get("message") or {}).get("content", "")
-                ).strip()
-                if candidate_text:
-                    review_text = candidate_text
-
-            # USER RESPONSE: the fresh user prompt at window_end (if it is one).
-            if window_end < len(records) and _is_fresh_user_prompt(records[window_end]):
-                user_response_text = _content_text(
-                    (records[window_end].get("message") or {}).get("content", "")
-                ).strip()
-            else:
-                user_response_text = "(no user response — end of session)"
-
-            # Format the output block.
-            date_label = _fmt_date(inv_ts_epoch) if inv_ts_epoch is not None else "?"
-            if review_text:
-                review_display = review_text[:truncate_chars] + "…" if len(review_text) > truncate_chars else review_text
-            else:
-                review_display = "(no review text found)"
-
-            block = (
-                f"### {proj_label} · {session_id_prefix} · {date_label}\n"
-                f"Skill: {inv_skill}  branch={invocation_branch or '?'}  (line {line_no})\n"
-                f"\n"
-                f"--- REVIEW OUTPUT (truncated to {truncate_chars} chars) ---\n"
-                f"{review_display}\n"
-                f"\n"
-                f"--- USER RESPONSE ---\n"
-                f"{user_response_text}\n"
-                f"---"
-            )
-            output_blocks.append(block)
-
-    if not output_blocks:
-        _print_resolved_scope("judgment-pair", scope_label, roots)
-        print("No judgment pairs found.")
-        return
-
-    output_text = "\n\n".join(output_blocks)
-
-    if out_path:
-        # Nothing goes to stdout in this branch — --out means the caller wants
-        # only the file written. The scope header is still prepended to the
-        # file's content so a saved/curated file stays self-documenting about
-        # its scope even if pasted elsewhere without the terminal output.
-        header = _resolved_scope_header("judgment-pair", scope_label, roots)
-        Path(out_path).write_text(header + "\n" + output_text + "\n")
-    else:
-        _print_resolved_scope("judgment-pair", scope_label, roots)
-        print(output_text)
-
-
-def _normalize_skill_name(raw: str) -> str:
-    """Strip a directory qualifier from a transcript skill name.
-
-    input["skill"] is a display label, not a stable identifier. Claude Code
-    qualifies project-scoped skills by the directory they were found in, so the
-    same skill is recorded under several spellings depending on the invoking
-    session's working directory:
-
-        plan-it
-        claude:plan-it
-        .claude/worktrees/some-branch/claude:plan-it
-        claude/.claude/worktrees/some-branch/nested/claude:plan-it
-
-    Collapsing these spellings stops one skill from splitting across several rows.
-    This is row-hygiene, not the security control: within a repo-scoped read the
-    only path fragment that can appear is *this* repo's own worktree branch (its
-    project dirs are the only ones read), which is public. Cross-project
-    minimization is enforced upstream by _repo_scoped_project_slugs, not here.
-
-    A remaining ``plugin:skill`` or ``dir:skill`` prefix is deliberately kept: it
-    carries no path, and dropping it would need this script to hardcode the stow
-    package name, which varies per installation. Resolving such a prefix to a
-    skill body is the reviewer agent's job, not the extractor's.
-    """
-    return raw.rsplit("/", 1)[-1]
-
-
-def cmd_skill_invocation(args: argparse.Namespace) -> None:
-    """Per-skill invocation-source tally across the full corpus.
-
-    Three invocation buckets are counted per skill:
-    - top-level: Skill tool_use on a main-thread assistant turn with no attributionSkill.
-    - routed: Skill tool_use on a main-thread assistant turn where attributionSkill is
-      non-empty (the call was fired while another skill's body was active).
-    - user-slash: user record whose message content contains a
-      <command-name>/skillname</command-name> tag (the /slash invocation path, which
-      injects the skill body directly without a Skill tool_use).
-
-    Identifies routed-only candidates (zero top-level or slash) and slash-only candidates
-    (zero top-level or routed) for skill-description budget analysis.
-
-    Two consumers ask different questions of this data, so subagent turns are opt-in:
-
-    - Skill-description budget analysis asks whether a skill's *description* draws
-      auto-triggers on the main thread. Sidechain turns are noise there, so they are
-      excluded by default.
-    - Procedural-fidelity review asks which procedures a branch's work committed to.
-      A skill invoked inside a spawned agent binds exactly as much as a main-thread
-      one, so --include-subagents folds those in and adds a thread column keeping the
-      two distinguishable rather than silently merged.
-
-    --branches scopes to named branches, matching each record's attributed branch
-    (scope._attributed_branch): a subagent record counts under the branch its
-    dispatching main thread was on, never its own gitBranch. --projects scopes to
-    project dirs and defaults to every project on the machine, which is rarely what
-    a branch-scoped caller wants (branch names are not unique across repos).
-    """
-    branch_filter = _branch_filter(args)
-    include_subagents = bool(getattr(args, "include_subagents", False))
-
-    # OUTPUT INVARIANT — provenance, not shape. This output is routinely quoted
-    # into public PR descriptions. Its safety rests on WHAT records are read, not
-    # on scrubbing names after the fact: skill names are user-defined strings and
-    # can themselves be private-project identifiers (a plugin namespace with no
-    # path separator at all). So the control is to scope the read to this repo's
-    # own project dirs (_repo_scoped_project_slugs) — the default when --projects
-    # is unset. An explicit --projects is an escape hatch for corpus analysis;
-    # the caller then owns that the output is no longer publish-safe.
-    #
-    # Skill names from --include-subagents can come from a cross-repo subagent,
-    # so treat that output as local-only (docs/transcript-analysis.md, Limits).
-    #
-    # Supporting rules: only input["skill"] is extracted (never input["args"],
-    # which holds absolute paths even for in-scope sessions); and
-    # _normalize_skill_name collapses this repo's own worktree-qualified spellings
-    # for row-hygiene. Neither is the security boundary — scoping is.
-    roots = _resolve_scan_roots(args)
-
-    projects_arg = getattr(args, "projects", None)
-    if projects_arg:
-        if len(roots) > 1:
-            # Same one-level restriction as _resolve_project_scope's own
-            # multi-root branch; see _single_level_projects_glob's docstring
-            # for why.
-            try:
-                projects_arg = _single_level_projects_glob(projects_arg)
-            except argparse.ArgumentTypeError as exc:
-                print(f"skill-invocation: --projects: {exc}", file=sys.stderr)
-                sys.exit(2)
-            session_iter = _iter_glob_scoped_sessions(roots, projects_arg, include_subagents)
-        else:
-            session_iter = iter_sessions(roots[0], projects_arg, include_subagents=include_subagents)
-    else:
-        session_iter = _iter_scoped_sessions(_repo_scoped_project_slugs(), include_subagents, roots=roots)
-
-    # Counters are keyed by (skill, thread). Without --include-subagents every
-    # thread is "main", which keeps the default output shape unchanged.
-    skill_top: dict[tuple[str, str], int] = defaultdict(int)     # -> top-level count
-    skill_routed: dict[tuple[str, str], int] = defaultdict(int)  # -> routed count
-    skill_slash: dict[tuple[str, str], int] = defaultdict(int)   # -> user-slash count
-    routed_pairs: dict[tuple[str, str], int] = defaultdict(int)  # (parent, child) -> count
-
-    for _jsonl, records in session_iter:
-        # Unfiltered runs never read a branch, so the context is built only for a filter.
-        branch_context = _session_branch_context(records) if branch_filter else None
-        for rec in records:
-            sidechain = bool(rec.get("isSidechain"))
-            if sidechain and not include_subagents:
-                continue
-            # Unfiltered runs must still count records that carry no gitBranch,
-            # so the branch test applies only when a filter was requested.
-            if branch_context is not None and (_attributed_branch(rec, branch_context) or "") not in branch_filter:
-                continue
-            thread = "sidechain" if sidechain else "main"
-            rtype = rec.get("type")
-            if rtype == "assistant":
-                for block in ((rec.get("message") or {}).get("content") or []):
-                    if not isinstance(block, dict) or block.get("type") != "tool_use":
-                        continue
-                    if block.get("name") != "Skill":
-                        continue
-                    skill = _normalize_skill_name((block.get("input") or {}).get("skill") or "")
-                    if not skill:
-                        continue
-                    attribution = _normalize_skill_name(rec.get("attributionSkill") or "")
-                    if attribution:
-                        skill_routed[(skill, thread)] += 1
-                        routed_pairs[(attribution, skill)] += 1
-                    else:
-                        skill_top[(skill, thread)] += 1
-            elif rtype == "user":
-                content_raw = (rec.get("message") or {}).get("content", "")
-                content_str = content_raw if isinstance(content_raw, str) else _content_text(content_raw)
-                for m in re.finditer(r"<command-name>/([^<]+)</command-name>", content_str):
-                    skill_slash[(_normalize_skill_name(m.group(1)), thread)] += 1
-
-    keyed = set(skill_top) | set(skill_routed) | set(skill_slash)
-    all_skills: set[str] = {skill for skill, _thread in keyed}
-
-    scope_parts = [
-        "explicit --projects (not repo-scoped)" if projects_arg else "this repo",
-        "main+subagents" if include_subagents else "main thread",
-    ]
-    if branch_filter:
-        scope_parts.append(f"branches: {','.join(sorted(branch_filter))}")
-    # Printed above the zero-match return, not after it: "found nothing" is only
-    # interpretable alongside the corpus that was searched.
-    _print_resolved_scope("skill-invocation", "; ".join(scope_parts), roots)
-
-    if not all_skills:
-        print("No skill invocations found.")
-        return
-
-    def _thread_total(s: str, thread: str) -> int:
-        return skill_top[(s, thread)] + skill_routed[(s, thread)] + skill_slash[(s, thread)]
-
-    # Sort by total descending, then alphabetically for ties.
-    def _skill_total(s: str) -> int:
-        return sum(_thread_total(s, thread) for thread in ("main", "sidechain"))
-
-    sorted_skills = sorted(all_skills, key=lambda s: (-_skill_total(s), s))
-
-    if include_subagents:
-        header = (
-            f"{'skill':<40} {'thread':<10} {'top-level':>10}  "
-            f"{'routed':>6}  {'user-slash':>10}  {'total':>7}"
-        )
-    else:
-        header = f"{'skill':<40} {'top-level':>10}  {'routed':>6}  {'user-slash':>10}  {'total':>7}"
-    print(header)
-    print("-" * len(header))
-
-    for skill in sorted_skills:
-        # The skill label repeats on every row rather than blanking on
-        # continuation rows: consumers grep individual lines out of this table,
-        # and a blanked label makes a grepped line unattributable.
-        threads = ("main", "sidechain") if include_subagents else ("main",)
-        for thread in threads:
-            if include_subagents and not _thread_total(skill, thread):
-                continue
-            top = skill_top[(skill, thread)]
-            routed = skill_routed[(skill, thread)]
-            slash = skill_slash[(skill, thread)]
-            total = top + routed + slash
-            if include_subagents:
-                print(
-                    f"{skill:<40} {thread:<10} {top:>10}  "
-                    f"{routed:>6}  {slash:>10}  {total:>7}"
-                )
-            else:
-                print(f"{skill:<40} {top:>10}  {routed:>6}  {slash:>10}  {total:>7}")
-
-    if routed_pairs:
-        print("\nROUTED PAIRS (parent -> child : count)")
-        for (parent, child), count in sorted(routed_pairs.items(), key=lambda kv: (-kv[1], kv[0])):
-            print(f"  {parent} -> {child} : {count}")
-
-    # Classification summary: load-bearing, routed-only, slash-only. Counts
-    # aggregate across threads — the classification answers a per-skill
-    # question ("is this description load-bearing?"), not a per-thread one.
-    def _agg(counter: dict[tuple[str, str], int], s: str) -> int:
-        return sum(counter[(s, thread)] for thread in ("main", "sidechain"))
-
-    load_bearing = [s for s in sorted_skills if _agg(skill_top, s) > 0 or _agg(skill_slash, s) > 0]
-    routed_only = [
-        s for s in sorted_skills
-        if _agg(skill_top, s) == 0 and _agg(skill_slash, s) == 0 and _agg(skill_routed, s) > 0
-    ]
-    slash_only = [
-        s for s in sorted_skills
-        if _agg(skill_top, s) == 0 and _agg(skill_routed, s) == 0 and _agg(skill_slash, s) > 0
-    ]
-
-    print("\nCLASSIFICATION SUMMARY")
-    print("  Load-bearing (any top-level or slash invocations):")
-    if load_bearing:
-        for s in load_bearing:
-            print(f"    {s} ({_agg(skill_top, s)} top, {_agg(skill_slash, s)} slash)")
-    else:
-        print("    (none)")
-
-    print("  Routed-only candidates (zero top-level and zero slash — name-only eligible):")
-    if routed_only:
-        for s in routed_only:
-            print(f"    {s} (0 top, {_agg(skill_routed, s)} routed, 0 slash)")
-    else:
-        print("    (none)")
-
-    print("  Slash-only candidates (zero top, zero routed — disable-model-invocation eligible):")
-    if slash_only:
-        for s in slash_only:
-            print(f"    {s} (0 top, 0 routed, {_agg(skill_slash, s)} slash)")
-    else:
-        print("    (none)")
-
-
-def cmd_skill_pair(args: argparse.Namespace) -> None:
-    """Pairing rate between two skills, bucketed by ISO week.
-
-    Counts Skill tool_use blocks regardless of tool_result success — sessions
-    where the Skill tool errored (e.g., harnesses without Skill-tool support)
-    still count as leader-sessions. Filter such corpora via --exclude-projects.
-    """
-    leader: str = args.leader
-    follower: str = args.follower
-    exclude_glob: str | None = getattr(args, "exclude_projects", None)
-    branch_filter = _branch_filter(args)
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "skill-pair", include_subagents=True, roots=roots)
-    _print_resolved_scope("skill-pair", scope_label, roots)
-
-    # bin_str -> {leader_sessions, follower_main, follower_sidechain_only}
-    data: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"leader_sessions": 0, "follower_main": 0, "follower_sidechain_only": 0}
-    )
-    corpus_spawns = 0
-    corpus_sidechain_turns = 0
-
-    for jsonl, records in session_iter:
-        # --exclude-projects: skip project dirs whose basename matches the glob
-        if exclude_glob and fnmatch.fnmatchcase(jsonl.parent.name, exclude_glob):
-            continue
-
-        corpus_spawns += _count_subagent_spawns(records)
-
-        has_leader_hit = False
-        leader_first_ts: float | None = None
-        has_main_follower = False
-        has_sidechain_follower = False
-        branch_context = _session_branch_context(records) if branch_filter else None
-
-        for rec in records:
-            if rec.get("type") != "assistant":
-                continue
-            if bool(rec.get("isSidechain")):
-                corpus_sidechain_turns += 1
-            if branch_context is not None and (_attributed_branch(rec, branch_context) or "") not in branch_filter:
-                continue
-            is_sidechain = bool(rec.get("isSidechain"))
-            for block in ((rec.get("message") or {}).get("content") or []):
-                if not isinstance(block, dict) or block.get("type") != "tool_use" or block.get("name") != "Skill":
-                    continue
-                skill = (block.get("input") or {}).get("skill") or ""
-                if skill == leader and not is_sidechain:
-                    if not has_leader_hit:
-                        # Timestamp of first leader hit; skip session if unparseable
-                        leader_first_ts = _parse_ts(rec.get("timestamp"))
-                    has_leader_hit = True
-                elif skill == follower:
-                    if is_sidechain:
-                        has_sidechain_follower = True
-                    else:
-                        has_main_follower = True
-
-        if not has_leader_hit:
-            continue
-        # Skip session entirely if the first leader hit has no parseable timestamp
-        if leader_first_ts is None:
-            continue
-
-        iso = datetime.fromtimestamp(leader_first_ts, tz=UTC).isocalendar()
-        bin_str = f"{iso.year}-W{iso.week:02d}"
-
-        d = data[bin_str]
-        d["leader_sessions"] += 1
-        if has_main_follower:
-            d["follower_main"] += 1
-        elif has_sidechain_follower:
-            # sidechain-only: sidechain follower present AND no main-thread follower
-            d["follower_sidechain_only"] += 1
-
-    _warn_if_subagent_format_drift(corpus_spawns, corpus_sidechain_turns)
-
-    if not data:
-        print("No data found.")
-        return
-
-    print(f"{'Bin':<10} {'Lead':>5} {'Main':>5} {'Side':>5} {'Pair%':>7}")
-    print(f"{'-------':<10} {'----':>5} {'----':>5} {'----':>5} {'-----':>7}")
-    for bin_str in sorted(data):
-        d = data[bin_str]
-        lead = d["leader_sessions"]
-        main = d["follower_main"]
-        side = d["follower_sidechain_only"]
-        pair_pct = 100.0 * main / lead if lead else 0.0
-        print(f"{bin_str:<10} {lead:>5} {main:>5} {side:>5} {pair_pct:>6.1f}%")
 
 
 def _pr_link_gh_failure_kind(exc: Exception) -> str:
@@ -4223,22 +3744,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_project_scope_args(p_pr)
     p_pr.set_defaults(func=cmd_pr_link)
 
-    p_skill_pair = sub.add_parser(
-        "skill-pair",
-        help=(
-            "Pairing rate between two skills, bucketed by ISO week. "
-            "Counts sessions where the leader fired and whether the follower also fired (main vs sidechain-only)."
-        ),
-    )
-    p_skill_pair.add_argument("leader", metavar="LEADER", help="Leading skill name (exact match on input.skill)")
-    p_skill_pair.add_argument("follower", metavar="FOLLOWER", help="Following skill name (exact match on input.skill)")
-    _add_project_scope_args(p_skill_pair)
-    p_skill_pair.add_argument(
-        "--exclude-projects", default=None, metavar="GLOB",
-        help="Skip project dirs whose basename matches this glob.",
-    )
-    p_skill_pair.add_argument("--branches", metavar="B1,B2,...")
-    p_skill_pair.set_defaults(func=cmd_skill_pair)
+    _add_skill_pair_subparser(sub)
 
     p_gate = sub.add_parser(
         "commit-gate",
@@ -4257,34 +3763,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_gate.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
     p_gate.set_defaults(func=cmd_commit_gate)
 
-    p_skill_inv = sub.add_parser(
-        "skill-invocation",
-        help=(
-            "Per-skill invocation-source tally: top-level (description-dependent auto-trigger),"
-            " routed (fired while another skill's body was active), and user /slash commands."
-            " Identifies name-only and disable-model-invocation candidates for budget relief."
-        ),
-    )
-    p_skill_inv_scope = p_skill_inv.add_mutually_exclusive_group()
-    p_skill_inv_scope.add_argument(
-        "--projects", default=None, metavar="GLOB",
-        help="Project-dir glob. Default: this repo's own worktrees only (publish-safe without --include-subagents). "
-             "Passing an explicit glob is an escape hatch — output is then not scoped to this repo.",
-    )
-    p_skill_inv_scope.add_argument(
-        "--this-repo", action="store_true",
-        help=(
-            "Explicit no-op: skill-invocation already defaults to this repo's own "
-            "worktrees. Kept for flag uniformity with every other --projects subcommand."
-        ),
-    )
-    p_skill_inv.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
-    p_skill_inv.add_argument(
-        "--include-subagents", action="store_true",
-        help="Count skill invocations inside spawned subagents too, split by a thread column. "
-             "Output can carry another project's skill names (docs/transcript-analysis.md, Limits).",
-    )
-    p_skill_inv.set_defaults(func=cmd_skill_invocation)
+    _add_skill_invocation_subparser(sub)
 
     p_review_trace = sub.add_parser(
         "review-trace",
@@ -4316,37 +3795,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_review_trace.set_defaults(func=cmd_review_trace)
 
-    p_jp = sub.add_parser(
-        "judgment-pair",
-        help=(
-            "Extract (review-skill output, user response) pairs from sessions"
-            " where a review skill was invoked."
-        ),
-    )
-    _add_project_scope_args(p_jp)
-    p_jp.add_argument("--branches", metavar="B1,B2,...")
-    p_jp.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
-    p_jp.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
-    p_jp.add_argument(
-        "--skills",
-        metavar="SKILL1,SKILL2,...",
-        default=",".join(REVIEW_SKILLS),
-        help=f"Comma-separated skill names to match (default: {','.join(REVIEW_SKILLS)}).",
-    )
-    p_jp.add_argument(
-        "--truncate-chars",
-        type=int,
-        default=1000,
-        metavar="N",
-        help="Maximum characters for the review output block (default: 1000).",
-    )
-    p_jp.add_argument(
-        "--out",
-        metavar="PATH",
-        default=None,
-        help="Write output to this file instead of stdout.",
-    )
-    p_jp.set_defaults(func=cmd_judgment_pair)
+    _add_judgment_pair_subparser(sub)
 
     p_audit = sub.add_parser(
         "audit-routing",
