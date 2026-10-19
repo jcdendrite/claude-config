@@ -392,7 +392,9 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
 
 A `/review-pr` session may stand in the main tree, where `require-worktree-for-file-writes.sh` denies that `Write` in a repo with worktree discipline on.
 
-A denied reviewer is meant to fall back to inline output, but a reviewer can report a write that never happened, and its findings are then lost.
+That gate's denial tells the reviewer to write the file at its worktree path. Each reviewer agent spec, and `deny-reviewer-tree-mutation.sh` when `agent-reviews/` is not ignored, tells a reviewer whose `Write` fails to return its findings inline instead.
+
+A denied reviewer thus receives conflicting directions and might not return its findings inline. One session reported a reviewer claiming a write that never happened, after which the file was missing (reported, not reproduced).
 
 With no `findings_path`, no reviewer writes, and no findings file lands in a review worktree.
 
@@ -400,8 +402,8 @@ The cost is each reviewer's 2K-token inline budget, a larger session context, an
 
 Two other locations fail here:
 
-- A path under `/tmp` passes both write gates, but `review-pr-finish.sh` does not remove it, so a PR's findings outlive the session. A world-readable directory is also open to a symlink planted in advance.
-- A path beside the session's other `<config-dir>/.review-pr-active.d/` files is denied, because `deny-reviewer-tree-mutation.sh` allows a reviewer `Write` only under `/tmp` or an `agent-reviews/` directory.
+- A path under `/tmp` passes both write gates, but `review-pr-finish.sh` does not remove it, so a PR's findings outlive the session. On a platform without symlink protection in sticky directories (Linux provides it as `fs.protected_symlinks`), a world-writable `/tmp` is also open to a symlink planted in advance (a gap `deny-reviewer-tree-mutation.sh` lists as unfixed).
+- A path beside the session's other `<config-dir>/.review-pr-active.d/` files is denied, because `deny-reviewer-tree-mutation.sh` allows a reviewer `Write` only under `/tmp` or an ignored `agent-reviews/` directory.
 
 ## Known gaps and operator choices
 
