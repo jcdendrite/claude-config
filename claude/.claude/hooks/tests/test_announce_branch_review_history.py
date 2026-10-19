@@ -245,7 +245,6 @@ class TestAnnounceBranchReviewHistory:
         stub_script.chmod(stub_script.stat().st_mode | stat.S_IXUSR)
         assert not stub_script.is_symlink()
         main_checkout = init_git_repo_with_commit(tmp_path / stub_name / "checkout", branch="main")
-        ignore_agent_reviews(main_checkout)
 
         result = _run_hook_process(_subagent_start_payload(main_checkout), stub_home, outside_cwd)
 
