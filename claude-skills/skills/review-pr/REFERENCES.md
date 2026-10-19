@@ -7,7 +7,7 @@ name, a truncation caveat, or the execution-surface match list still holds.
 
 ## What `review-pr-acquire.sh` fetches (Step 1)
 
-`gh pr view --json title,body,author,isCrossRepository,baseRefOid,headRefOid,headRepositoryOwner,url,files,changedFiles,commits,reviewDecision,mergeable,mergeStateStatus`, plus a separate `gh pr view --json headRefOid,statusCheckRollup` call, a second REST call, a paginated existing-reviews fetch, and a paginated inline-review-comments fetch — all inside the one script call, not typed out per-run.
+`gh pr view --json title,body,author,isCrossRepository,baseRefOid,headRefOid,headRepositoryOwner,url,files,changedFiles,commits,reviewDecision,mergeable,mergeStateStatus`, plus a separate `gh pr view --json headRefOid,statusCheckRollup` call, a second REST call, a `gh api user` call, a paginated existing-reviews fetch, and a paginated inline-review-comments fetch — all inside the one script call, not typed out per-run.
 
 - **The printed document overwrites `gh pr view`'s `files` and `commits`
   keys with different shapes.** `files` is an array of path strings and
@@ -50,6 +50,14 @@ name, a truncation caveat, or the execution-surface match list still holds.
   checks, `gh pr view --json headRefOid,statusCheckRollup` exits 0 with
   `"statusCheckRollup": []` (observed), so an absent key is treated as
   unavailable.
+- **`selfAuthored` comes from a `gh api user` call on the ambient token.**
+  That token is the account `review-pr-post.sh` posts as, so the lookup never
+  uses `CI_CHECKS_GH_TOKEN`. A failed lookup yields `null` rather than
+  aborting. A PR author that `review_pr_author_login` (`_review-pr-lib.sh`)
+  cannot read also yields `null`. `review_pr_authorship`
+  (`_review-pr-lib.sh`) owns the comparison.
+  `review-pr-post.sh` repeats it for `request-changes` before it consumes the
+  marker, so the document's value is advisory.
 - **`mergeable` and `mergeStateStatus` are frequently `UNKNOWN`.** GitHub
   computes mergeability asynchronously; a first request routinely returns
   `UNKNOWN` with no signal that a retry would resolve it. The skill never
@@ -61,11 +69,12 @@ name, a truncation caveat, or the execution-surface match list still holds.
   version-fragile across `gh` releases. The script prefers aborting on any
   non-zero exit over branching on a parsed failure cause.
 - **The script's worst-case wall time exceeds the Bash tool's default
-  timeout.** Its seven capped `gh` calls sum to 150 seconds: the two
-  `gh pr view` calls and the REST call at 10 seconds each, and the four
-  paginated calls (files, commits, reviews, inline comments) at 30 seconds
-  each. The tool's default timeout is 120000 ms and its documented maximum is
-  600000 ms, so SKILL.md Step 1 sets `timeout: 600000` for it.
+  timeout.** Its eight capped `gh` calls sum to 160 seconds: the two
+  `gh pr view` calls, the REST call, and the `gh api user` call at 10 seconds
+  each, and the four paginated calls (files, commits, reviews, inline
+  comments) at 30 seconds each. The tool's default timeout is 120000 ms and
+  its documented maximum is 600000 ms, so SKILL.md Step 1 sets
+  `timeout: 600000` for it.
   The usage text of `review-pr-checkout.sh` and `review-pr-diff.sh` each state a
   "Worst-case wall time" that exceeds the default, so Step 1 sets the same
   timeout for them.
@@ -440,7 +449,8 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
   - `deny-private-project-refs.sh` does not gate `gh pr review`, and it
     never sees the `gh` call inside `review-pr-post.sh`.
   - Its redaction policy also short-circuits unless the clone's `origin.url`
-    contains `claude-config`, while `/review-pr` runs in any repository.
+    contains `claude-config` or the clone commits
+    `.claude/private-projects-optin`, while `/review-pr` runs in any repository.
   - The control is the Step 8 human approval of the exact body to post.
 - **The ticket read in Step 4 trusts the engineer's confirmation.**
   - The session guesses the ticket from PR-authored text, and the PR author
@@ -555,6 +565,15 @@ Passing the fixed path as a Bash argument would also put it in the command's arg
     completion marker needs. Until `finish` runs, only SKILL.md's instruction
     stops a re-arm; no mechanism does. Recovery is a hand-post of the approved
     body or a fresh `/review-pr`.
+  - Both `request-changes` refusals, own-PR and could-not-tell, run before
+    the marker is consumed, so it stays armed. The could-not-tell refusal
+    also covers an unreadable PR author. Both refusals carry the phrase
+    "Nothing was posted and the completion marker was not consumed", which
+    SKILL.md keys on. SKILL.md Step 8 owns the recovery for each.
+  - `selfAuthored` is advisory, so any body can end up posted as `comment`,
+    including after either refusal. Changing the verb never edits the body,
+    which is why SKILL.md Step 7's blocking-count line does not depend on who
+    authored the PR.
   - `review-pr-post.sh` never emits `--approve`: its two `gh pr review` calls
     carry the literal `--comment` and `--request-changes`. This is the only
     unbypassable property of the gate.

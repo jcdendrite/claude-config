@@ -24,8 +24,9 @@
 # surfaces when extending coverage.
 #
 # Scope:
-# - Fires only when origin URL contains `claude-config` (parallel to
-#   deny-private-project-refs.sh's scoping).
+# - Fires only when origin URL contains `claude-config` (the origin-URL
+#   test deny-private-project-refs.sh also applies, without its
+#   .claude/private-projects-optin marker arm).
 # - Detects any file added under `claude/.claude/` between `main` and
 #   `HEAD` (`git diff --diff-filter=A`), regardless of whether its
 #   immediate parent directory already existed on `main`. Stow links

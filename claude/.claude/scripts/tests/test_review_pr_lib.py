@@ -785,6 +785,140 @@ class TestChecksTokenSource:
         assert (status, output) == (0, "ambient")
 
 
+class TestAuthorLogin:
+    """review_pr_author_login reads `.author.login` from a `gh pr view --json author` response.
+    Only one JSON object with an `.author` object holding a string `.login` is readable.
+    An unreadable author is distinct from an empty-string login, which review_pr_authorship reads as other."""
+
+    @pytest.mark.parametrize(
+        "pr_view_json,expected_login",
+        [
+            ('{"author": {"login": "someone"}}', "someone"),
+            ('{"headRefOid": "abc", "author": {"login": "someone", "id": 7, "is_bot": false}}', "someone"),
+            ('{"author": {"login": ""}}', ""),
+        ],
+        ids=["plain-author", "multi-field-author-object", "empty-string-login"],
+    )
+    def test_a_string_login_on_an_author_object_is_printed(self, pr_view_json, expected_login):
+        assert _call("review_pr_author_login", pr_view_json) == (0, expected_login)
+
+    @pytest.mark.parametrize(
+        "pr_view_json",
+        [
+            "",
+            "not json",
+            '{"author": {"login": "someone"}}{"author": {"login": "someone"}}',
+            '{"headRefOid": "abc"}',
+            '{"author": null}',
+            '{"author": "someone"}',
+            '{"author": [{"login": "someone"}]}',
+            '{"author": 7}',
+            '{"author": {}}',
+            '{"author": {"login": null}}',
+            '{"author": {"login": false}}',
+            '{"author": {"login": 7}}',
+        ],
+        ids=[
+            "empty-input", "not-json", "two-documents", "absent-author-key", "null-author", "string-author",
+            "array-author", "number-author", "empty-author-object", "null-login", "false-login", "number-login",
+        ],
+    )
+    def test_anything_else_is_unreadable_and_prints_nothing(self, pr_view_json):
+        assert _call("review_pr_author_login", pr_view_json) == (1, "")
+
+
+class TestAuthorship:
+    """review_pr_authorship compares a PR author's login with the `.login` of `gh api user`'s response.
+    A USER_JSON that yields no login-shaped login is `unknown` whatever the author is.
+    A failed lookup is therefore never read as `other`."""
+
+    @staticmethod
+    def _user_json(login) -> str:
+        return json.dumps({"login": login})
+
+    @pytest.mark.parametrize(
+        "author_login,operator_login",
+        [("operator", "operator"), ("Operator", "operator"), ("operator", "OPERATOR"), ("a-b_C9", "A-B_c9")],
+        ids=["same", "author-differs-in-case", "operator-differs-in-case", "hyphen-underscore-digit"],
+    )
+    def test_equal_logins_ignoring_case_are_self(self, author_login, operator_login):
+        assert _call("review_pr_authorship", author_login, self._user_json(operator_login)) == (0, "self")
+
+    def test_a_multi_field_pretty_printed_user_response_is_read_for_its_login(self):
+        user_json = json.dumps({"login": "operator", "id": 1, "name": "Operator"}, indent=2)
+        assert _call("review_pr_authorship", "operator", user_json) == (0, "self")
+
+    @pytest.mark.parametrize(
+        "author_login",
+        ["someone", "", "app/some-bot", "operator\n", "oper\nator", "operator ", "operator-2"],
+        ids=[
+            "different-login", "empty-author", "slash-bot-login", "trailing-newline", "embedded-newline",
+            "trailing-space", "operator-as-prefix",
+        ],
+    )
+    def test_any_other_author_is_other(self, author_login):
+        assert _call("review_pr_authorship", author_login, self._user_json("operator")) == (0, "other")
+
+    @pytest.mark.parametrize(
+        "user_json",
+        [
+            "",
+            "not json",
+            "[]",
+            "{}",
+            "null",
+            '"operator"',
+            '[{"login": "operator"}]',
+            '{"login": null}',
+            '{"login": 7}',
+            '{"login": true}',
+            '{"login": {"name": "operator"}}',
+            '{"login": ["operator"]}',
+            '{"login": ""}',
+            '{"login": "bad login"}',
+            '{"login": "operator\\n"}',
+            '{"login": "oper\\nator"}',
+            '{"login": "app/some-bot"}',
+            '{"login": "oper\\u0000ator"}',
+            '{"login": "caf\\u00e9"}',
+            '{"login": "operator"}{"login": "operator"}',
+            '{"login": "oper"}{"login": "ator"}',
+        ],
+        ids=[
+            "empty-input", "not-json", "array", "empty-object", "null", "bare-string", "array-of-object",
+            "login-null", "login-number", "login-boolean", "login-object", "login-array", "login-empty",
+            "login-with-space", "login-trailing-newline", "login-embedded-newline", "login-with-slash",
+            "login-embedded-nul", "login-non-ascii", "two-identical-documents", "two-documents-whose-logins-concatenate",
+        ],
+    )
+    def test_a_user_response_without_a_login_shaped_login_is_unknown(self, user_json):
+        assert _call("review_pr_authorship", "operator", user_json) == (0, "unknown")
+
+    @pytest.mark.parametrize(
+        "author_login", ["", "app/some-bot", "operator\n"], ids=["empty", "slash-bot-login", "trailing-newline"]
+    )
+    def test_an_unknown_user_response_takes_precedence_over_an_odd_author(self, author_login):
+        assert _call("review_pr_authorship", author_login, "{}") == (0, "unknown")
+
+    def test_a_locale_that_widens_bracket_ranges_does_not_widen_the_author_login_class(self):
+        """Under a locale where `[A-Za-z]` accepts the Kelvin sign and a case-insensitive comparison folds it to `k`,
+        an author login holding it still reads as other.
+        The script first asserts, in the same shell, that the range form accepts the probe and that it folds to `k`.
+        A locale that does not widen therefore fails here instead of passing."""
+        premise_failed = 3
+        result = _run_bash(
+            f'[[ "$1" =~ ^[A-Za-z]+$ ]] || exit {premise_failed}\n'
+            f'shopt -s nocasematch\n[[ "$1" == k ]] || exit {premise_failed}\nshopt -u nocasematch\n'
+            'review_pr_authorship "$1" \'{"login": "k"}\'',
+            "\u212a",
+            env_overrides={"LC_ALL": _locale_that_widens_ascii_ranges()},
+        )
+
+        assert result.returncode != premise_failed, "the range form rejects the probe or the locale does not fold it"
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "other"
+
+
 class TestResolveSessionAndPid:
     """_lib_resolve_claude_pid is stubbed after sourcing, so these rows pin the
     helper's own wiring without depending on the test process's ancestry."""
