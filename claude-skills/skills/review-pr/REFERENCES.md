@@ -365,11 +365,14 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   The protected-finding rule binds that fix too. A re-check or consult the
   human asks for after step 8 presents only proposes changes, which keeps
   the refusal fix the session's only change of its own.
-- **Residual.** The record is the session's own transcript, and every edit is
-  session-authored, because `plan-architect` holds no write tool. Nothing
-  mechanical detects a finding missing from the body. `marker.sh`'s body check
-  and `review-pr-post.sh`'s hash check prove only that the posted text equals
-  the marked text. The human's approval of the exact body is the backstop,
+- **Residual.** The record is the session's own transcript, and every edit to the body is
+  session-authored wherever the plan-writer gate runs. `plan-architect`'s consult charter forbids `Edit`, and the
+  plan-writer gate denies its `Edit` to anything but a repository plan file
+  wherever that hook runs. The hook's header lists where it does not run, and
+  there only the consult charter keeps a consult off the body.
+  Nothing mechanical detects a finding missing from the body. `marker.sh`'s
+  body check and `review-pr-post.sh`'s hash check prove only that the posted
+  text equals the marked text. The human's approval of the exact body is the backstop,
   helped by step 8's listing of dropped claims and `AUDIT_FINDING` paths. For
   any `Edit` made after the last consult, the human's reading of the presented
   text is the only content review. `marker.sh`'s attribution check and

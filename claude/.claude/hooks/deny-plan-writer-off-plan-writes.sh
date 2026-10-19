@@ -7,7 +7,7 @@
 # A plan-writer agent reads repository files that can carry content from outside the session, so steered input is in scope.
 # A bypass edits the dispatching session's uncommitted tree.
 # An unparseable payload denies every caller, because the payload is parsed before the agent type is known.
-# For a plan-writer, an empty, relative, or newline-containing path, an empty cwd, a failed git or realpath call, or a missing target denies.
+# For a plan-writer, an empty, relative, or newline-containing path, a path with a `.`, `..`, or empty segment, an empty cwd, a failed git or realpath call, or a missing target denies.
 # Write and MultiEdit always deny for a plan-writer; only Edit can be allowed.
 # Registered without an `if` condition, because `if` cannot read agent identity.
 # This hook filters on tool name and `.agent_type` itself.
@@ -41,11 +41,6 @@
 #   - Wherever this hook does not run, a plan-writer's Edit can write any path
 #     the other Edit|Write|MultiEdit hooks allow, including code that later
 #     runs, such as the hook scripts under ~/.claude/hooks/.
-#   - This hook approves the physically resolved path, while the Edit tool may
-#     normalize `..` lexically.
-#     A symlinked directory followed by `..` can therefore diverge.
-#     Reach is limited to existing plan-file basenames, and the agent cannot
-#     create the symlink.
 #   - Writes by the main session, and by agents outside the plan-writer
 #     registry, are out of scope.
 #
@@ -103,6 +98,13 @@ fi
 # Command substitution strips a trailing newline from the resolved path, so the checks below would test a different name than the tool opens.
 if [[ "$FILE_PATH" == *$'\n'* ]]; then
   emit_deny "$PLAN_WRITER_SCOPE_RULE The target path contains a newline."
+  exit 0
+fi
+
+# The Edit tool may normalize `..` lexically while the checks below resolve symlinks first, so a path that lexical normalization would change, or that ends in a slash, is denied.
+_lib_normalize_path_lexically "$FILE_PATH"
+if [[ "${_LIB_NORMALIZED_PATH%/}" != "$FILE_PATH" ]]; then
+  emit_deny "$PLAN_WRITER_SCOPE_RULE The target path '$FILE_PATH' contains a '.', '..', or empty segment; spell the plan file's path without one."
   exit 0
 fi
 

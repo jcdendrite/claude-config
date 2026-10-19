@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from helpers import (
     HOOKS_DIR,
+    _forced_fallback_path_env,
     edit_input,
     multiedit_input,
     read_input,
@@ -137,15 +138,15 @@ def linked_worktree_with_plan(tmp_path_factory):
     (plans_dir / "link.md").symlink_to(source_file)
 
     # A directory symlink under plans/ whose physical parent holds a file named like
-    # a plan, so lexical `..` handling and physical handling land on different files.
+    # a plan, so `escape-dir/../p.md` reads as the plan lexically and as that file physically.
     escape_target_dir = root / "escape-target"
     escape_target_dir.mkdir()
     (plans_dir / "escape-dir").symlink_to(escape_target_dir, target_is_directory=True)
     physical_parent_file = root / "p.md"
     physical_parent_file.write_text("physical parent\n")
 
-    # A symlink outside plans/ pointing at a directory inside it: the lexical reading of
-    # `<link>/../p.md` is `.claude/p.md`, the physical reading is the plan `plans/p.md`.
+    # A symlink outside plans/ pointing at a directory inside it: `<link>/../p.md` reads as
+    # `.claude/p.md` lexically and as the plan `plans/p.md` physically.
     plans_subdir_link = worktree / ".claude" / "plans-subdir-link"
     plans_subdir_link.symlink_to(plans_dir / "sub", target_is_directory=True)
     lexical_parent_file = worktree / ".claude" / "p.md"
@@ -249,13 +250,6 @@ class TestPlanWriterEditAllowed:
         )
         _assert_silent_exit_zero(_run_gate(payload))
 
-    def test_dotdot_spelling_that_normalizes_into_plans_allowed(self, linked_worktree_with_plan):
-        fixture = linked_worktree_with_plan
-        spelled_path = str(fixture["worktree"] / ".claude" / "plans" / ".." / "plans" / "p.md")
-        assert ".." in spelled_path
-        payload = edit_input(spelled_path, agent_type=PLAN_WRITER, cwd=str(fixture["worktree"]))
-        _assert_silent_exit_zero(_run_gate(payload))
-
     def test_edit_on_nested_worktree_own_plan_allowed(self, linked_worktree_with_plan):
         """The layout this repository mandates: a worktree nested under the main
         tree's .claude/worktrees/, with cwd at its root."""
@@ -265,18 +259,6 @@ class TestPlanWriterEditAllowed:
             agent_type=PLAN_WRITER,
             cwd=str(fixture["nested_worktree"]),
         )
-        _assert_silent_exit_zero(_run_gate(payload))
-
-    def test_symlinked_directory_followed_by_dotdot_allowed_on_physical_path_known_gap(
-        self, linked_worktree_with_plan
-    ):
-        """Pins the header's known gap: the gate approves the physical path, while the
-        Edit tool may normalize `..` lexically to .claude/p.md, which is not a plan."""
-        fixture = linked_worktree_with_plan
-        spelled_path = str(fixture["plans_subdir_link"] / ".." / "p.md")
-        assert fixture["plans_subdir_link"].is_symlink()
-        assert (fixture["worktree"] / ".claude" / "p.md").is_file()
-        payload = edit_input(spelled_path, agent_type=PLAN_WRITER, cwd=str(fixture["worktree"]))
         _assert_silent_exit_zero(_run_gate(payload))
 
 
@@ -295,11 +277,112 @@ class TestPlanWriterDenied:
         )
         _assert_denied(_run_gate(payload))
 
+    # The cases below target a non-plan file, so a deny branch that fell through
+    # instead of exiting would deny a second time and emit a second JSON document,
+    # which `_assert_denied` rejects. A plan target would hide that: the fall-through
+    # would reach the plan check and allow, leaving a single document.
+    @pytest.mark.parametrize("tool_input_builder", [write_input, multiedit_input])
+    def test_write_and_multiedit_to_source_file_emit_one_denial(
+        self, linked_worktree_with_plan, tool_input_builder
+    ):
+        fixture = linked_worktree_with_plan
+        payload = tool_input_builder(
+            str(fixture["source_file"]), agent_type=PLAN_WRITER, cwd=str(fixture["worktree"])
+        )
+        _assert_denied(_run_gate(payload))
+
+    def test_relative_source_path_emits_one_denial(self, linked_worktree_with_plan):
+        """The hook process sits at the worktree root, so the relative path would
+        resolve to the existing source file if the guard did not exit."""
+        fixture = linked_worktree_with_plan
+        payload = edit_input("src/x.py", agent_type=PLAN_WRITER, cwd=str(fixture["worktree"]))
+        _assert_denied(_run_gate(payload, hook_process_cwd=fixture["worktree"]))
+
+    def test_source_path_with_trailing_newline_emits_one_denial(self, linked_worktree_with_plan):
+        fixture = linked_worktree_with_plan
+        payload = edit_input(
+            str(fixture["source_file"]) + "\n",
+            agent_type=PLAN_WRITER,
+            cwd=str(fixture["worktree"]),
+        )
+        assert payload["tool_input"]["file_path"].endswith("\n")
+        _assert_denied(_run_gate(payload))
+
+    def test_source_path_with_dot_segment_emits_one_denial(self, linked_worktree_with_plan):
+        fixture = linked_worktree_with_plan
+        # Path() drops a `.` component, so the segment is spelled in the string.
+        spelled_path = f"{fixture['worktree']}/src/./x.py"
+        assert "/./" in spelled_path
+        payload = edit_input(spelled_path, agent_type=PLAN_WRITER, cwd=str(fixture["worktree"]))
+        _assert_denied(_run_gate(payload))
+
+    def test_source_path_with_empty_cwd_emits_one_denial(self, linked_worktree_with_plan):
+        """An absolute path, so only the empty-.cwd guard can deny first. `git -C ""` is a
+        no-op, so the repository root would come from the hook process's cwd if the guard
+        did not exit."""
+        fixture = linked_worktree_with_plan
+        payload = edit_input(str(fixture["source_file"]), agent_type=PLAN_WRITER, cwd="")
+        _assert_denied(_run_gate(payload, hook_process_cwd=fixture["worktree"]))
+
+    def test_source_path_with_cwd_outside_any_repository_emits_one_denial(
+        self, linked_worktree_with_plan, tmp_path
+    ):
+        fixture = linked_worktree_with_plan
+        outside_repo = tmp_path / "outside-any-repo"
+        outside_repo.mkdir()
+        payload = edit_input(
+            str(fixture["source_file"]), agent_type=PLAN_WRITER, cwd=str(outside_repo)
+        )
+        _assert_denied(_run_gate(payload))
+
+    def test_edit_to_missing_source_file_emits_one_denial(self, linked_worktree_with_plan):
+        fixture = linked_worktree_with_plan
+        missing_source = fixture["worktree"] / "src" / "missing.py"
+        assert not missing_source.exists()
+        payload = edit_input(
+            str(missing_source), agent_type=PLAN_WRITER, cwd=str(fixture["worktree"])
+        )
+        _assert_denied(_run_gate(payload))
+
     def test_edit_to_source_file_denied(self, linked_worktree_with_plan):
         fixture = linked_worktree_with_plan
         payload = edit_input(
             str(fixture["source_file"]), agent_type=PLAN_WRITER, cwd=str(fixture["worktree"])
         )
+        _assert_denied(_run_gate(payload))
+
+    @pytest.mark.parametrize(
+        "spelling_template",
+        [
+            "{worktree}/.claude/plans/../plans/p.md",
+            "{worktree}/.claude/plans/./p.md",
+            "{worktree}/.claude//plans/p.md",
+            "/{worktree}/.claude/plans/p.md",
+            "{worktree}/.claude/plans/p.md/",
+        ],
+        ids=["dotdot-segment", "dot-segment", "empty-segment", "leading-double-slash", "trailing-slash"],
+    )
+    def test_spelling_of_existing_plan_that_normalizes_to_it_denied(
+        self, linked_worktree_with_plan, spelling_template
+    ):
+        """Every spelling resolves to the existing plan, so only the segment guard denies
+        it. The spellings are built as strings because Path drops `.` and extra slashes."""
+        fixture = linked_worktree_with_plan
+        spelled_path = spelling_template.format(worktree=fixture["worktree"])
+        assert spelled_path != str(fixture["plan"])
+        assert fixture["plan"].is_file()
+        payload = edit_input(spelled_path, agent_type=PLAN_WRITER, cwd=str(fixture["worktree"]))
+        _assert_denied(_run_gate(payload))
+
+    def test_symlinked_directory_followed_by_dotdot_denied(self, linked_worktree_with_plan):
+        """`<link>/../p.md` reads as .claude/p.md lexically, which is not a plan, and as
+        the plan plans/p.md physically. The Edit tool may take either reading, so the
+        gate denies the spelling instead of choosing one."""
+        fixture = linked_worktree_with_plan
+        spelled_path = str(fixture["plans_subdir_link"] / ".." / "p.md")
+        assert fixture["plans_subdir_link"].is_symlink()
+        assert (fixture["worktree"] / ".claude" / "p.md").is_file()
+        payload = edit_input(spelled_path, agent_type=PLAN_WRITER, cwd=str(fixture["worktree"]))
         _assert_denied(_run_gate(payload))
 
     def test_edit_to_nonexistent_plan_denied(self, linked_worktree_with_plan):
@@ -366,9 +449,25 @@ class TestPlanWriterDenied:
         )
         _assert_denied(_run_gate(payload))
 
+    def test_dangling_symlink_target_under_realpath_without_m_emits_one_denial(
+        self, linked_worktree_with_plan, tmp_path
+    ):
+        """Without `realpath -m` the fallback walk returns 1 on a dangling link, so the
+        resolution-failure guard denies. If that guard fell through, the missing-file
+        check would deny a second time and emit a second JSON document."""
+        fixture = linked_worktree_with_plan
+        dangling_link = tmp_path / "dangling-link"
+        dangling_link.symlink_to(tmp_path / "missing-target")
+        assert dangling_link.is_symlink() and not dangling_link.exists()
+        payload = edit_input(
+            str(dangling_link), agent_type=PLAN_WRITER, cwd=str(fixture["worktree"])
+        )
+        _assert_denied(_run_gate(payload, env={"PATH": _forced_fallback_path_env(tmp_path)}))
+
     def test_dotdot_spelling_that_normalizes_out_of_plans_denied(self, linked_worktree_with_plan):
-        """`plans/../outside.md` resolves to .claude/outside.md. A plan named outside.md
-        also sits in plans/, so a gate that ignored the `..` would allow it."""
+        """`plans/../outside.md` reads as .claude/outside.md once `..` is applied. A plan
+        named outside.md also sits in plans/, so a gate that dropped the `..` segment
+        would check the plan and allow it."""
         fixture = linked_worktree_with_plan
         spelled_path = str(fixture["worktree"] / ".claude" / "plans" / ".." / "outside.md")
         assert fixture["lexically_inside_plans_file"].is_file()
@@ -394,12 +493,12 @@ class TestPlanWriterDenied:
         )
         _assert_denied(_run_gate(payload))
 
-    def test_symlinked_plans_subdirectory_followed_by_dotdot_resolves_physically_denied(
+    def test_symlinked_plans_subdirectory_followed_by_dotdot_denied(
         self, linked_worktree_with_plan
     ):
-        """`plans/escape-dir/../p.md` resolves to the file beside the link's target,
-        outside the repository. A plan named p.md sits in plans/, so a gate that
-        normalized `..` lexically before resolving symlinks would allow it."""
+        """`plans/escape-dir/../p.md` reads as the plan plans/p.md lexically and as the
+        file beside the link's target, outside the repository, physically. A gate that
+        approved the lexical reading would allow it."""
         fixture = linked_worktree_with_plan
         spelled_path = str(fixture["worktree"] / ".claude" / "plans" / "escape-dir" / ".." / "p.md")
         assert fixture["plan"].is_file()

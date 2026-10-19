@@ -36,7 +36,7 @@ Every plan now ends with the same four headings, in order: `## Approach`, `## Cr
 
 ## Notes
 
-- `plan-it/SKILL.md` Step 5 is the single home of `(pending: plan-architect)` and the four heading literals. `plan-architect.md` cites it, and a `test_skills.py` test pins the literals there.
+- `plan-it/SKILL.md` Step 5 holds `(pending: plan-architect)`, the scaffold bytes, and the four heading literals. `plan-architect.md` cites Step 5 for the placeholder and names only the headings its edit rules need. A `test_skills.py` test pins the literals in Step 5.
 - The hash command is one statement with none of the worktree guard's trigger shapes, and `sha256sum` is an `install.sh` prerequisite. Step 5 holds the command and its stop conditions.
 
 ## Accepted residuals

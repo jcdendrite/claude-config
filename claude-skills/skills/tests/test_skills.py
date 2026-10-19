@@ -5774,8 +5774,7 @@ class TestResumeContextSkill:
         )
 
 
-# Step 5 is the single home of the plan grammar's literals; plan-architect.md
-# cites it rather than restating them.
+# Step 5 holds these literals.
 _PLAN_IT_STEP5_CONTEXT_CHECK_AND_GRAMMAR_LITERALS = (
     "sed -n '1,/^## Approach$/p'",
     "e3b0c442",
@@ -5828,7 +5827,7 @@ class TestPlanItStep5ContextCheckAndGrammarLiterals:
     which are LLM-consumed prose, plus an execution test of Step 5's hash command.
 
     The literal pin covers Step 5's Context-change check and the plan-grammar
-    literals Step 5 is the single home of. The charter pins cover the consult
+    literals Step 5 holds. The charter pins cover the consult
     charter's never-call-`Edit` sentence and the plan-sections charter's
     landed-edits return sentence and line-2 plan-path sentence. A future edit
     that drops one fails here instead of silently loosening the check, the
