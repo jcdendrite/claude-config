@@ -31,8 +31,9 @@ two-sentence case.
 
 The Change-type table's comment/durable-doc-prose row widens to
 instruction files (`CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`). The
-agent's own Scope section exempts them from one angle only, Prose at the
-wrong altitude, because `code-review/SKILL.md` § "Domain: Claude Code config" already assigns placement and altitude for those files to `ai-instruction-and-memory-files`. Running both reviewers on the same file
+agent's Scope section (added by this change) exempts instruction files
+from one angle only, Prose at the wrong altitude; see that section for
+the exemption and its citation. Running both reviewers on the same file
 therefore double-dispatches only that one angle.
 
 ## Re-running the fixture's hash check after a rewording
