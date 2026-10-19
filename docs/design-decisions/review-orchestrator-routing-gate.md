@@ -36,7 +36,7 @@ The deny text still names both diff-file passes, so a pass that loses the word c
 - Confirm that `~/.claude/scripts/config-get.sh review_orchestrator_routing` exits 0, from a shell or session whose `CLAUDE_CONFIG_DIR` is the account being enabled.
 - Start a new session after the pull and after `./install.sh`. A session started earlier may not load the gate's registration.
 - A key flip in either direction should take effect on the next `Skill` call, because a hook run rereads the key and the key memo lives only for one process. That the vendor starts a new process on every call is unverified (see below).
-- Re-run the installer unless the account's `hooks/` and `agents/` directories are folded symlinks. `./install.sh` stows into `$HOME` only, so for a non-personal account re-run the installer that stows the packages `claude/.claude/scripts/stow-packages.sh` lists into that account's config dir. Use `readlink -f` on each path to confirm that the hook (under `~/.claude` and under `<config-dir>`) and `<config-dir>/agents/review-orchestrator.md` each resolve into the checkout. With the key on and the agent unlinked, every routine round stops at the refused dispatch. The exits are re-running the installer, setting the key to `false`, or asking for an inline round.
+- Re-run `./install.sh` unless `~/.claude/hooks` is a folded symlink, because `claude/.claude/settings.json` runs the hook from `~/.claude/hooks/` on every account. Also re-run the installer that stows the packages `claude/.claude/scripts/stow-packages.sh` lists into the account's config dir, unless `<config-dir>/agents` is a folded symlink. On the personal account, whose config dir is `~/.claude`, that installer is `./install.sh`. `./install.sh` stows into `$HOME` only, so a non-personal account needs its own installer. Use `readlink -f` to confirm that `~/.claude/hooks/require-review-orchestrator-routing.sh` and `<config-dir>/agents/review-orchestrator.md` each resolve into the checkout. With the key on and the agent unlinked, every routine round stops at the refused dispatch. The exits are re-running the installer, setting the key to `false`, or asking for an inline round.
 
 **Alternatives set aside.**
 - SessionStart `additionalContext`, the old record's plan: it reaches every main session.
@@ -45,12 +45,12 @@ The deny text still names both diff-file passes, so a pass that loses the word c
 - `UserPromptSubmit`: it sees typed prompts, never the routine `Skill` call.
 - A line in `TRIGGER`, the agent description or CLAUDE.md: static text is unenforced, the body still loads, and it needs the remembering that fails.
 - `permissionDecision: "ask"`: it prompts the engineer every round.
-- Routing a typed `/code-review`: it stays in the main thread by design. The harness expands a typed command without a `Skill` call, so the gate never sees one. A one-off review belongs to `/review-pr`, and a user who types `/code-review` anyway probably wants it in the main thread.
+- Routing a typed `/code-review`: it stays in the main thread by design. The harness expands a typed command without a `Skill` call, so the gate never sees one. `/review-pr` is for reviewing a pull request. A user who types `/code-review` probably wants it in the main thread.
 - An inline fallback for a dispatch the harness refuses (an unlinked or unknown agent, or a session with no `Agent` tool): the protocol's existing stop applies. It is rare, one command recovers it, and it fails visibly. A fallback would need a stop-clause exception, a carve-out for hook denials and rejected dispatches, a cause clause in the deny text, and their pins.
 
 ## Known gaps
 
-- A typed `/code-review` runs in the main thread by design, and `/review-pr` is the one-off review.
+- A typed `/code-review` runs in the main thread by design. `/review-pr` is for reviewing a pull request.
 - A fix re-run after a user-asked inline round or a typed `/code-review` is routed on purpose: it reviews the fix as a routine staged-diff round, which is the round the key exists to route.
 - After a HALT fallback, the rest of that review loop runs inline until a clean round writes the marker. An agent call that lacks `agent_id` is one cause of a HALT, and it costs each new review loop one denied, HALTing dispatch until the key is off.
 - A deny that repeats on the `unrouted` retry means the gate does not read the args as starting with the bare lowercase word `unrouted`, followed by the end of the args or ASCII whitespace. The gate bullet in `docs/hooks.md` gives examples and the recovery.

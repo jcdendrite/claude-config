@@ -34,7 +34,7 @@
 # `plugins/claude-hook-review/skills/claude-hook-review/SKILL.md` §
 # "9. Review checklist":
 #   - A typed /code-review expands without a Skill call, so it runs in the
-#     main thread by design. /review-pr is the one-off review.
+#     main thread by design. /review-pr is for reviewing a pull request.
 #   - A plugin skill whose final name component is `code-review` also routes.
 #   - A /ready-for-review cumulative pass or /review-pr pass that drops its
 #     `unrouted` word is denied like a routine round. Only the deny text's

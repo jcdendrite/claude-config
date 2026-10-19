@@ -198,7 +198,7 @@ class TestBaselineDeny:
             ),
             pytest.param(
                 "/review-pr",
-                "names the one-off review inline case",
+                "names the /review-pr pass inline case",
                 id="inline_case_review_pr",
             ),
             pytest.param(
