@@ -35,6 +35,12 @@ PRODUCTION_MODULES = (
     "judgment_pair.py",
     "skill_invocation.py",
     "skill_pair.py",
+    "buckets.py",
+    "fail_seq.py",
+    "struggle.py",
+    "user_input.py",
+    "duration.py",
+    "friction_count.py",
 )
 TEST_FILES = (
     "test_transcript_cost_ledger.py",

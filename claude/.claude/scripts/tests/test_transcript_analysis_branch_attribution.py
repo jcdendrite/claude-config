@@ -2,16 +2,14 @@
 (_session_branch_context, _attributed_branch, _attribute_carried_branch): the pre-branch step that credits a session's leading
 default-branch records to the first branch it enters, and the timeline step
 that resolves every sidechain record against its dispatching main thread."""
-import importlib.util
 import re
-import sys
 from datetime import date
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
 from helpers import REPO_ROOT
-from transcript_analysis import corpus, cost, pricing, review_rounds, review_trace, scope, subagent_mix
+from transcript_analysis import buckets, corpus, cost, pricing, review_rounds, review_trace, scope, subagent_mix
 
 from .conftest import (
     _agent_use,
@@ -23,13 +21,6 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_dispatch,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# _mod.cmd_buckets below lives in the shim, so this file loads the shim itself.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _iso(minute: int) -> str:
@@ -576,7 +567,7 @@ class TestConsumersAgreeOnWhichRecordsFallUnderTheBranchEntered:
         )
 
     def _buckets_observation(self, corpus_root, capsys) -> _CountObservation:
-        _mod.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": _AGREEMENT_BRANCH})())
+        buckets.cmd_buckets(type("A", (), {"projects": "*", "this_repo": False, "branches": _AGREEMENT_BRANCH})())
         row = _table_cols(capsys.readouterr().out, header_contains="Branch", row_contains=_AGREEMENT_BRANCH, max_labels=8)
         return _CountObservation(self.MAIN_THREAD_TURNS, int(row["Total"]))
 
