@@ -17,6 +17,7 @@ from helpers import (
     edit_input,
     multiedit_input,
     read_input,
+    write_continuity_file,
     write_input,
 )
 
@@ -67,15 +68,13 @@ def _write_fixture(base: Path, rel_path: str) -> Path:
     return path
 
 
-def _write_continuity_file(base: Path, rel_path: str, resume_cwd: str | None) -> Path:
+def _write_continuity_file(
+    base: Path, rel_path: str, resume_cwd: str | None, *, kind: str = "handoff"
+) -> Path:
     """A continuity file whose last section carries a resume command in the
     shape handoff/brief SKILL.md prescribes, with `--cwd` only when
     `resume_cwd` is given."""
-    path = base / rel_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    cwd_flag = f" --cwd {resume_cwd}" if resume_cwd else ""
-    path.write_text(f"## §7 Resume command\n`resume-context{cwd_flag} {path}`\n")
-    return path
+    return write_continuity_file(base / rel_path, resume_cwd, kind=kind)
 
 
 def _both_channels(result: subprocess.CompletedProcess) -> tuple[str, str]:
@@ -380,8 +379,26 @@ class TestAnnounceResumeCommand:
         assert f"its resume command targets `{link}`, not this worktree" in message
         assert f"resume-context --cwd {link} {fixture}" in message
 
+    def test_linked_worktree_cwd_spelled_with_dot_dot_components_gets_the_shell_only_announce(
+        self, isolated_home, linked_worktree
+    ):
+        """Same expected difference as the symlink case: the hook compares the file's raw --cwd,
+        while resume-context-same-session.sh canonicalizes it and loads it
+        (see test_cwd_spelled_with_dot_dot_components_still_loads)."""
+        dotted = f"{linked_worktree.resolve()}/../{linked_worktree.name}"
+        fixture = _write_continuity_file(isolated_home, ".claude/handoffs/example-handoff.md", dotted)
+        result = _run_hook_raw(
+            ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(linked_worktree)), home=isolated_home
+        )
+        assert result.returncode == 0
+        message, context = _both_channels(result)
+        for channel in (message, context):
+            assert "/resume-context example-handoff.md" not in channel
+        assert f"its resume command targets `{dotted}`, not this worktree" in message
+        assert f"resume-context --cwd {dotted} {fixture}" in message
+
     def test_main_checkout_with_no_cwd_advertises_slash_form_in_both_channels(self, isolated_home, git_repo):
-        fixture = _write_continuity_file(isolated_home, ".claude/briefs/example-task.md", None)
+        fixture = _write_continuity_file(isolated_home, ".claude/briefs/example-task.md", None, kind="brief")
         result = _run_hook_raw(ANNOUNCE_HOOK, write_input(str(fixture), cwd=str(git_repo)), home=isolated_home)
         assert result.returncode == 0
         payload = json.loads(result.stdout)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Backs the /resume-context skill: loads a pending /handoff or /brief
-# continuity file into the current session, when it can confirm the file
-# belongs to this session's worktree, instead of launching a new process the
+# continuity file into the current session, when the file matches the worktree
+# named in its own text, instead of launching a new process the
 # way resume-context.sh does.
 #
 # Usage:
@@ -26,37 +26,9 @@
 #   MORE: <n>                     pending files beyond the 5 listed candidates
 #   SKIPPED_UNPRINTABLE: <n>      pending names dropped for failing the allowlist
 #   STOP_REASON: <code>: <sentence>
-# Exit 0 only with LOAD. Every non-zero exit prints at least one STOP_REASON,
-# CANDIDATE or SHELL_COMMAND line.
-#
-# Pending set: regular, non-symlink files matching <config-dir>/handoffs/*-handoff.md
-# and <config-dir>/briefs/*-task.md. The glob skips leading-dot names, which the
-# hooks' case patterns do match.
-#
-# Each pending file is parsed at most once per run (_lib_continuity_file_resume_cwd:
-# one whole-file --cwd search, then the last _LIB_RESUME_CWD_TAIL_BYTES tokenized).
-# With no argument, a linked session parses every pending file (n parses), because
-# the target decides the selection and the order. A not-linked or unknown session
-# parses only the at most CANDIDATE_CAP files it lists. Cache lookups total at most
-# CANDIDATE_CAP * n.
-# A file with a FILE_TARGET of `unknown` gets the shell command in every session state.
-#
-# With no argument, a unique target match (a pending file whose own --cwd equals this
-# session's linked worktree root) younger than 7 days loads. Anything else lists up to
-# 5 candidates, target matches first, each group newest first.
-# An argument matches a pending file only by exact equality with its full path, its
-# file name, <arg>-handoff.md or <arg>-task.md. It is never built into a path.
-#
-# The consume goes through `resume-context.sh --consume-only`, whether or not the
-# consume_durable_continuity kill switch is set, as the shell resume-context does.
-# It sets RESUME_CONTEXT_EXACT_SOURCE so the consumer never falls back to the
-# legacy $HOME/.claude copy of a file that vanished after it was enumerated.
-# LOAD is printed only when the destination is a regular file directly under the
-# temp-dir root, owned by the caller, with mode 0600.
-#
-# Known residual: with no argument, one fresh file whose own text names this
-# worktree loads without a further choice. Its text is model-written and
-# unauthenticated, so a planted file in the shared directory can be selected this way.
+# Exit 0 once the verdict is printed: LOAD, SHELL_COMMAND, CANDIDATE or STOP_REASON.
+# A non-zero exit means the script stopped before finishing its verdict.
+# The pending set, selection, parse cost, consume and residuals are in docs/scripts.md.
 #
 # Env overrides:
 #   RESUME_CONTEXT_CONSUMER  command to run instead of the sibling resume-context.sh.
@@ -71,7 +43,7 @@ SCRIPT_DIR=$(dirname "$0")
 
 CONSUMER="${RESUME_CONTEXT_CONSUMER:-$SCRIPT_DIR/resume-context.sh}"
 CANDIDATE_CAP=5
-FRESH_DAYS_BOUND=6   # `find -mtime +6` is false for a file under 7 days old
+FRESH_DAYS_BOUND=7   # `find -mtime -7` is true for a file under 7 days old
 
 PENDING=""           # newline-joined allowlisted paths
 PENDING_COUNT=0
@@ -85,7 +57,7 @@ OTHER_LIST=""        # newline-joined pending paths that are not target matches
 
 stop() {
   printf 'STOP_REASON: %s: %s\n' "$1" "$2"
-  exit 1
+  exit 0
 }
 
 find_hint() {
@@ -128,8 +100,11 @@ existing_files() {
 }
 
 # sort_newest_first LIST: prints the newline-joined allowlisted paths, newest first.
-# A path that vanishes mid-listing makes `ls` exit non-zero but still list the rest,
-# so the output is kept and re-filtered rather than replaced by the unsorted LIST.
+# `ls` only orders.
+# Its output is re-filtered to files that still exist.
+# The unsorted LIST stands in when none survive.
+# A path that vanishes mid-listing makes `ls` exit non-zero but still list the rest.
+# A QUOTING_STYLE in the environment makes `ls` print quoted names that match no file.
 sort_newest_first() {
   local list previous_ifs="$IFS" sorted
   list=$(existing_files "$1")
@@ -141,24 +116,29 @@ sort_newest_first() {
   IFS="$previous_ifs"
   set +f
   [ "$#" -gt 0 ] || return 0
-  sorted=$(ls -t -- "$@" 2>/dev/null) || true
-  [ -n "$sorted" ] || sorted="$list"
-  existing_files "$sorted"
-}
-
-# age_bucket FILE: `<1d`, `1-7d` or `>7d`, from find's whole-day mtime test.
-age_bucket() {
-  if [ -n "$(find "$1" -maxdepth 0 -mtime +"$FRESH_DAYS_BOUND" 2>/dev/null)" ]; then
-    printf '>7d'
-  elif [ -n "$(find "$1" -maxdepth 0 -mtime +0 2>/dev/null)" ]; then
-    printf '1-7d'
+  sorted=$(existing_files "$(ls -t -- "$@" 2>/dev/null)")
+  if [ -n "$sorted" ]; then
+    printf '%s\n' "$sorted"
   else
-    printf '<1d'
+    existing_files "$list"
   fi
 }
 
+# age_bucket FILE: `<1d`, `1-7d` or `>7d`, from find's whole-day mtime test.
+# Both tests are positive, so a failing `find` reads as the oldest bucket.
+age_bucket() {
+  if [ -n "$(find "$1" -maxdepth 0 -mtime -1 2>/dev/null)" ]; then
+    printf '<1d'
+  elif [ -n "$(find "$1" -maxdepth 0 -mtime -"$FRESH_DAYS_BOUND" 2>/dev/null)" ]; then
+    printf '1-7d'
+  else
+    printf '>7d'
+  fi
+}
+
+# is_fresh FILE: true when FILE is under FRESH_DAYS_BOUND days old. A failing `find` reads as not fresh.
 is_fresh() {
-  [ -z "$(find "$1" -maxdepth 0 -mtime +"$FRESH_DAYS_BOUND" 2>/dev/null)" ]
+  [ -n "$(find "$1" -maxdepth 0 -mtime -"$FRESH_DAYS_BOUND" 2>/dev/null)" ]
 }
 
 # canonical_or_raw PATH: the symlink-resolved path when it still passes the allowlist.
@@ -289,6 +269,8 @@ load_file() {
     stop tmpdir-unprintable "the temp-dir root is not an absolute path of printable characters, so nothing was moved; $shell_hint"
   fi
   # A rewrite of the pending path between the parse and this move loads bytes the verdict never saw.
+  # On a temp root (RESUME_CONTEXT_TMPDIR or TMPDIR) that another uid can write without the sticky bit, that uid can swap the destination before the model's Read.
+  # Every resume-context.sh move has the same residual, and it is accepted.
   dest=$(RESUME_CONTEXT_EXACT_SOURCE=1 "$CONSUMER" --consume-only "$file") || consume_status=$?
   if [ "$consume_status" -eq 0 ] && is_usable_destination "$dest" "$tmpdir_root"; then
     printf 'LOAD: %s\n' "$dest"
@@ -296,7 +278,8 @@ load_file() {
     printf 'AGE: %s\n' "$bucket"
     print_session_target
     print_file_target "$target"
-    _lib_print_recovery_hint "$dest"
+    # A failed stderr write must not turn a printed verdict into a non-zero exit.
+    _lib_print_recovery_hint "$dest" || true
     exit 0
   fi
   if [ -e "$file" ]; then
@@ -318,7 +301,7 @@ act_on_file() {
   print_session_target
   print_file_target "$target"
   printf 'SHELL_COMMAND: %s\n' "$(shell_command "$file" "$target")"
-  exit 1
+  exit 0
 }
 
 # list_candidates: prints up to CANDIDATE_CAP pending files, target matches first.
@@ -346,7 +329,7 @@ list_candidates() {
   if [ "$SKIPPED_UNPRINTABLE" -gt 0 ]; then
     printf 'SKIPPED_UNPRINTABLE: %s\n' "$SKIPPED_UNPRINTABLE"
   fi
-  exit 1
+  exit 0
 }
 
 # resume_without_argument: loads a unique fresh target match, else lists candidates.
@@ -402,7 +385,7 @@ resume_with_argument() {
       resolve_file_target "$file"
       print_candidate "$file" "$FILE_TARGET_RESULT"
     done <<< "$matches"
-    exit 1
+    exit 0
   fi
   resolve_session_state
   act_on_file "${matches%$'\n'}"

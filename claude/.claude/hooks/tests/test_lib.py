@@ -53,6 +53,7 @@ from helpers import (
     scaled_shim_sleep,
     staged_diff_hash,
     staged_diff_hash_at_base,
+    write_continuity_body,
     write_scaled_timeout_shim,
     xargs_is_gnu,
 )
@@ -6156,10 +6157,7 @@ def _continuity_file_resume_cwd(continuity_file: Path) -> tuple[int, str]:
 
 def _write_continuity_file_body(tmp_path: Path, body: str) -> Path:
     """Writes `body` as handoffs/own-handoff.md, substituting {file} with its own path."""
-    continuity_file = tmp_path / "handoffs" / "own-handoff.md"
-    continuity_file.parent.mkdir(parents=True, exist_ok=True)
-    continuity_file.write_text(body.replace("{file}", str(continuity_file)))
-    return continuity_file
+    return write_continuity_body(tmp_path / "handoffs" / "own-handoff.md", body)
 
 
 _UNUSABLE = "unknown"
@@ -6485,6 +6483,9 @@ def _resume_context_verdict(state: str, root: str, file_target: str) -> str:
         ("not-linked", "", _UNUSABLE, "shell"),
         ("unknown", "", _UNUSABLE, "shell"),
         ("unrecognized-state", "/w/a", "/w/a", "shell"),
+        ("linked", "/w/a", "/w/a/nested", "shell"),
+        ("linked", "/w/a", "/w/ab", "shell"),
+        ("linked", "/w/ab", "/w/a", "shell"),
     ],
     ids=[
         "linked-file-targets-this-root",
@@ -6500,6 +6501,9 @@ def _resume_context_verdict(state: str, root: str, file_target: str) -> str:
         "not-linked-file-cwd-unreadable",
         "unknown-file-cwd-unreadable",
         "unrecognized-state",
+        "linked-file-targets-a-directory-inside-this-root",
+        "linked-file-target-extends-this-root-name",
+        "linked-file-target-is-a-prefix-of-this-root-name",
     ],
 )
 def test_resume_context_verdict_matrix(state: str, root: str, file_target: str, expected: str) -> None:

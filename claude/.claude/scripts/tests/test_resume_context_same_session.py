@@ -24,8 +24,10 @@ from helpers import (
     SCRIPTS_DIR,
     SKILLS_DIR,
     _make_git_exiting_with_status,
+    continuity_resume_section,
     init_git_repo_with_commit,
     read_input,
+    write_continuity_body,
     write_input,
 )
 
@@ -89,7 +91,6 @@ _UNREADABLE_CWD_BODIES = {
 
 @dataclass
 class _Outcome:
-    returncode: int
     pairs: list[tuple[str, str]]
     stderr: str
 
@@ -134,14 +135,6 @@ def _new_linked_worktree(repo: Path, worktree: Path) -> Path:
     return worktree
 
 
-def _resume_section(kind: str, path: Path, cwd_flag: str) -> str:
-    """The resume section in the shape handoff/SKILL.md (§7) or brief/SKILL.md (§7.5) prescribes."""
-    command = f"`resume-context{cwd_flag} {path}`\n"
-    if kind == "handoff":
-        return f"## §7 Resume command\n{command}"
-    return f"## §7 Out of scope\nDo not touch resume-context.\n\n## §7.5 Resume command\n{command}"
-
-
 @dataclass(frozen=True)
 class _GitTrees:
     main_checkout: Path
@@ -175,8 +168,10 @@ class _Sandbox:
         self.tmpdir_root = tmp_path / "tmp-root"
         for directory in (self.home, self.config_dir):
             directory.mkdir()
-        # _lib_resume_context_index_dir refuses a group- or world-writable root without the sticky bit, so mode it explicitly rather than inherit the umask.
+        # _lib_resume_context_index_dir refuses a group- or world-writable root without the sticky bit.
+        # So the mode is set explicitly rather than inherited from the umask.
         self.tmpdir_root.mkdir(mode=0o700)
+        assert stat.S_IMODE(self.tmpdir_root.stat().st_mode) == 0o700, "the umask altered the temp root's mode"
         self.main_checkout = trees.main_checkout
         self.worktree_a = trees.worktree_a
         self.worktree_b = trees.worktree_b
@@ -205,13 +200,12 @@ class _Sandbox:
             check=False,
         )
         pairs = _parse_stdout(result.stdout)
-        outcome = _Outcome(result.returncode, pairs, result.stderr)
-        if result.returncode == 0:
-            assert outcome.has("LOAD"), f"exit 0 without LOAD: {pairs}"
-        else:
-            assert any(outcome.has(key) for key in _NON_LOAD_TOKEN_KEYS), (
-                f"non-zero exit {result.returncode} printed no STOP_REASON, CANDIDATE or SHELL_COMMAND: {pairs}"
-            )
+        outcome = _Outcome(pairs, result.stderr)
+        assert result.returncode == 0, f"exit {result.returncode} before a verdict was printed: {pairs}"
+        printed_non_load_token = any(outcome.has(key) for key in _NON_LOAD_TOKEN_KEYS)
+        assert outcome.has("LOAD") != printed_non_load_token, (
+            f"a run prints either LOAD or one of {_NON_LOAD_TOKEN_KEYS}, never both or neither: {pairs}"
+        )
         return outcome
 
     def write_pending(
@@ -228,13 +222,11 @@ class _Sandbox:
     def write_named(
         self, path: Path, resume_cwd: Path | str | None, *, kind: str = "handoff", age_days: float | None = None
     ) -> Path:
-        cwd_flag = f" --cwd {resume_cwd}" if resume_cwd else ""
-        return self.write_body(path, _resume_section(kind, path, cwd_flag), age_days=age_days)
+        return self.write_body(path, continuity_resume_section(kind, path, resume_cwd), age_days=age_days)
 
     def write_body(self, path: Path, body: str, *, age_days: float | None = None) -> Path:
         """Writes `body` with {file} replaced by the file's own path."""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body.replace("{file}", str(path)))
+        write_continuity_body(path, body)
         if age_days is not None:
             _set_age_days(path, age_days)
         return path
@@ -276,7 +268,7 @@ class TestNoArgument:
 
         outcome = sandbox.run(cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 0
+        assert outcome.has("LOAD")
         assert outcome.first("SOURCE") == str(mine)
         assert outcome.first("AGE") == "<1d"
         assert outcome.first("SESSION_TARGET") == str(sandbox.worktree_a.resolve())
@@ -315,7 +307,6 @@ class TestNoArgument:
 
         outcome = sandbox.run(cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 1
         assert not outcome.has("LOAD")
         assert sorted(outcome.candidate_names) == [first.name, second.name]
         sandbox.assert_nothing_moved(first, second)
@@ -325,7 +316,6 @@ class TestNoArgument:
 
         outcome = sandbox.run(cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 1
         assert not outcome.has("LOAD")
         assert outcome.candidate_names == [stale.name]
         assert ">7d" in outcome.first("CANDIDATE")
@@ -344,10 +334,9 @@ class TestNoArgument:
         outcome = sandbox.run(cwd=sandbox.worktree_a)
 
         if loads:
-            assert outcome.returncode == 0
+            assert outcome.has("LOAD")
             assert outcome.first("SOURCE") == str(sole_match)
         else:
-            assert outcome.returncode == 1
             assert not outcome.has("LOAD")
             assert outcome.candidate_names == [sole_match.name]
             sandbox.assert_nothing_moved(sole_match)
@@ -358,7 +347,7 @@ class TestNoArgument:
 
         outcome = sandbox.run(cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 0
+        assert outcome.has("LOAD")
         assert outcome.first("SOURCE") == str(fresh)
         assert stale.exists()
 
@@ -367,7 +356,7 @@ class TestNoArgument:
 
         outcome = sandbox.run(cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 1
+        assert not outcome.has("LOAD")
         assert outcome.first("SESSION_TARGET") == str(sandbox.worktree_a.resolve())
         assert outcome.candidate_names == [elsewhere.name]
         sandbox.assert_nothing_moved(elsewhere)
@@ -378,13 +367,13 @@ class TestNoArgument:
         target_older = sandbox.write_pending("target-older", sandbox.worktree_a, age_days=0.5)
         target_newer = sandbox.write_pending("target-newer", sandbox.worktree_a, age_days=0.1)
         others = [
-            sandbox.write_pending(f"other-{index}", sandbox.worktree_b, age_days=0.2 + index * 0.1)
-            for index in range(5)
+            sandbox.write_pending(f"other-{slug}", sandbox.worktree_b, age_days=0.2 + index * 0.1)
+            for index, slug in enumerate(["e", "d", "c", "b", "a"])
         ]
 
         outcome = sandbox.run(cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 1
+        assert not outcome.has("LOAD")
         assert outcome.candidate_names == [target_newer.name, target_older.name, others[0].name, others[1].name, others[2].name]
         assert outcome.first("MORE") == "2"
 
@@ -393,7 +382,6 @@ class TestNoArgument:
 
         outcome = sandbox.run(cwd=sandbox.main_checkout)
 
-        assert outcome.returncode == 1
         assert not outcome.has("LOAD")
         assert outcome.candidate_names == [only.name]
         assert outcome.first("SESSION_TARGET") == "none"
@@ -406,7 +394,7 @@ class TestNoArgument:
 
         outcome = sandbox.run()
 
-        assert outcome.returncode == 1
+        assert not outcome.has("LOAD")
         assert outcome.stop_code == "nothing-pending"
         assert "find-consumed-continuity-file.sh" in outcome.first("STOP_REASON")
 
@@ -476,7 +464,7 @@ class TestNoArgument:
     def test_the_only_pending_file_vanishing_mid_listing_stops_as_nothing_pending(
         self, sandbox: _Sandbox, tmp_path: Path
     ) -> None:
-        """A non-zero exit must print a STOP_REASON, CANDIDATE or SHELL_COMMAND line."""
+        """A run that loads nothing still prints a STOP_REASON, CANDIDATE or SHELL_COMMAND line and exits 0."""
         vanishing = sandbox.write_pending("only-vanishing", sandbox.worktree_b)
         shim_bin = tmp_path / "vanishing-ls-bin"
         _write_path_shim(
@@ -495,9 +483,33 @@ class TestNoArgument:
         )
 
         assert not vanishing.exists()
-        assert outcome.returncode == 1
+        assert not outcome.has("LOAD")
         assert outcome.stop_code == "nothing-pending"
         assert not outcome.has("CANDIDATE")
+
+    def test_a_quoting_style_in_the_environment_does_not_drop_the_listed_files(self, sandbox: _Sandbox) -> None:
+        """GNU `ls` honors QUOTING_STYLE and prints quoted names, which match no file once re-filtered."""
+        first = sandbox.write_pending("first", sandbox.worktree_b)
+        second = sandbox.write_pending("second", sandbox.worktree_b)
+
+        outcome = sandbox.run(env_extra={"QUOTING_STYLE": "shell-always"})
+
+        assert sorted(outcome.candidate_names) == [first.name, second.name]
+        sandbox.assert_nothing_moved(first, second)
+
+    def test_a_failing_find_reads_a_target_match_as_stale_so_it_is_listed_not_loaded(
+        self, sandbox: _Sandbox, tmp_path: Path
+    ) -> None:
+        match = sandbox.write_pending("match", sandbox.worktree_a)
+        shim_bin = tmp_path / "failing-find-bin"
+        _write_path_shim(shim_bin, "find", "exit 1")
+
+        outcome = sandbox.run(cwd=sandbox.worktree_a, env_extra={"PATH": f"{shim_bin}:{os.environ['PATH']}"})
+
+        assert not outcome.has("LOAD")
+        assert outcome.candidate_names == [match.name]
+        assert ">7d" in outcome.first("CANDIDATE")
+        sandbox.assert_nothing_moved(match)
 
     def test_files_that_vanish_below_the_cap_leave_no_more_line(self, sandbox: _Sandbox, tmp_path: Path) -> None:
         """MORE counts the files left unlisted at the cap, not the pending count seen before the vanish."""
@@ -534,7 +546,7 @@ class TestExplicitArgument:
 
         outcome = sandbox.run(argument, cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 0
+        assert outcome.has("LOAD")
         assert outcome.first("SOURCE") == str(wanted)
         assert not wanted.exists() and decoy.exists()
 
@@ -556,7 +568,7 @@ class TestExplicitArgument:
 
         outcome = sandbox.run("ancient", cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 0
+        assert outcome.has("LOAD")
         assert outcome.first("AGE") == ">7d"
 
     def test_middle_aged_file_reports_the_middle_bucket(self, sandbox: _Sandbox) -> None:
@@ -584,7 +596,7 @@ class TestExplicitArgument:
 
         outcome = sandbox.run("shared", cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 1
+        assert not outcome.has("LOAD")
         assert sorted(outcome.candidate_names) == sorted([handoff.name, brief.name])
         sandbox.assert_nothing_moved(handoff, brief)
 
@@ -614,7 +626,7 @@ class TestExplicitArgument:
 
         outcome = sandbox.run(*arguments, cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 1
+        assert not outcome.has("LOAD")
         assert outcome.stop_code == expected_stop_code
         sandbox.assert_nothing_moved(pending)
 
@@ -645,7 +657,7 @@ class TestExplicitArgument:
 
     def test_naming_the_only_file_again_after_its_load_finds_nothing_pending(self, sandbox: _Sandbox) -> None:
         sandbox.write_pending("once", sandbox.worktree_a)
-        assert sandbox.run("once", cwd=sandbox.worktree_a).returncode == 0
+        assert sandbox.run("once", cwd=sandbox.worktree_a).has("LOAD")
 
         again = sandbox.run("once", cwd=sandbox.worktree_a)
 
@@ -656,7 +668,7 @@ class TestExplicitArgument:
     ) -> None:
         sandbox.write_pending("once", sandbox.worktree_a)
         other = sandbox.write_pending("other", sandbox.worktree_a)
-        assert sandbox.run("once", cwd=sandbox.worktree_a).returncode == 0
+        assert sandbox.run("once", cwd=sandbox.worktree_a).has("LOAD")
         copies_after_load = sandbox.moved_copies()
 
         again = sandbox.run("once", cwd=sandbox.worktree_a)
@@ -683,7 +695,6 @@ class TestVerdictsAndTargets:
 
         outcome = sandbox.run(elsewhere.name, cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 1
         assert not outcome.has("LOAD")
         assert outcome.first("SHELL_COMMAND") == f"resume-context --cwd {sandbox.worktree_b.resolve()} {elsewhere}"
         assert outcome.first("FILE_TARGET") == str(sandbox.worktree_b.resolve())
@@ -694,7 +705,7 @@ class TestVerdictsAndTargets:
 
         outcome = sandbox.run("plain", cwd=sandbox.main_checkout)
 
-        assert outcome.returncode == 0
+        assert outcome.has("LOAD")
         assert outcome.first("FILE_TARGET") == "none"
         assert outcome.first("SESSION_TARGET") == "none"
 
@@ -704,7 +715,7 @@ class TestVerdictsAndTargets:
 
         outcome = sandbox.run("plain-brief", cwd=sandbox.main_checkout)
 
-        assert outcome.returncode == 0
+        assert outcome.has("LOAD")
         assert outcome.first("FILE_TARGET") == "none"
 
     def test_main_checkout_with_a_file_naming_a_cwd_gives_a_shell_command(self, sandbox: _Sandbox) -> None:
@@ -722,7 +733,7 @@ class TestVerdictsAndTargets:
 
         outcome = sandbox.run("no-cwd", cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 1
+        assert not outcome.has("LOAD")
         assert outcome.first("SHELL_COMMAND") == f"resume-context {no_cwd}"
         assert outcome.first("SESSION_TARGET") == str(sandbox.worktree_a.resolve())
         assert outcome.first("FILE_TARGET") == "none"
@@ -738,7 +749,6 @@ class TestVerdictsAndTargets:
 
         outcome = sandbox.run("unreadable", cwd=session_cwd)
 
-        assert outcome.returncode == 1
         assert not outcome.has("LOAD")
         assert outcome.first("FILE_TARGET") == _UNREADABLE_TARGET
         assert outcome.first("SHELL_COMMAND") == f"resume-context {pending}"
@@ -749,7 +759,6 @@ class TestVerdictsAndTargets:
 
         outcome = sandbox.run(cwd=sandbox.main_checkout)
 
-        assert outcome.returncode == 1
         assert not outcome.has("LOAD")
         assert outcome.first("CANDIDATE") == (
             f"{pending.name} | <1d | target unknown | resume-context {pending}"
@@ -778,7 +787,6 @@ class TestVerdictsAndTargets:
 
         outcome = sandbox.run("decorated", cwd=sandbox.main_checkout)
 
-        assert outcome.returncode == 1
         assert not outcome.has("LOAD")
         assert outcome.first("SHELL_COMMAND") == f"resume-context --cwd /work/a {pending}"
         sandbox.assert_nothing_moved(pending)
@@ -818,7 +826,7 @@ class TestVerdictsAndTargets:
 
         outcome = sandbox.run("no-cwd", cwd=plain, env_extra={"GIT_CEILING_DIRECTORIES": str(sandbox.tmp_path)})
 
-        assert outcome.returncode == 0
+        assert outcome.has("LOAD")
         assert outcome.first("SESSION_TARGET") == "none"
 
     def test_subdirectory_of_a_worktree_prints_the_worktree_root(self, sandbox: _Sandbox) -> None:
@@ -826,7 +834,7 @@ class TestVerdictsAndTargets:
 
         outcome = sandbox.run(cwd=sandbox.nested_in_worktree_a)
 
-        assert outcome.returncode == 0
+        assert outcome.has("LOAD")
         assert outcome.first("SESSION_TARGET") == str(sandbox.worktree_a.resolve())
 
     def test_cwd_reached_through_a_symlink_still_loads(self, sandbox: _Sandbox) -> None:
@@ -836,7 +844,16 @@ class TestVerdictsAndTargets:
 
         outcome = sandbox.run("via-link", cwd=sandbox.worktree_a)
 
-        assert outcome.returncode == 0
+        assert outcome.has("LOAD")
+        assert outcome.first("FILE_TARGET") == str(sandbox.worktree_a.resolve())
+
+    def test_cwd_spelled_with_dot_dot_components_still_loads(self, sandbox: _Sandbox) -> None:
+        dotted = f"{sandbox.worktree_a}/../{sandbox.worktree_a.name}"
+        sandbox.write_pending("via-dotted", dotted)
+
+        outcome = sandbox.run("via-dotted", cwd=sandbox.worktree_a)
+
+        assert outcome.has("LOAD")
         assert outcome.first("FILE_TARGET") == str(sandbox.worktree_a.resolve())
 
 
@@ -973,12 +990,15 @@ class TestConsume:
             "nested-subdirectory",
             "symlink",
             "group-and-world-readable",
+            "space-in-basename",
         ],
     )
     def test_exit_0_with_an_unusable_destination_never_loads_and_reports_the_file_state(
         self, sandbox: _Sandbox, stdout_shape: str, moves_file: bool
     ) -> None:
-        """Each destination shape breaks exactly one acceptance rule; the file it names is otherwise valid."""
+        """Each shape changes one property of an otherwise valid destination.
+        `two-lines` also fails the directory rule, and `symlink` also fails the mode rule,
+        because `ls -ld` reports a link as `l...`, so the mode leg covers the `! -L` leg and that leg cannot be isolated."""
         pending = sandbox.write_pending("mine", sandbox.worktree_a)
         real_copy = sandbox.tmpdir_root / "resume-context.realcopy"
         real_copy.write_text("x\n")
@@ -994,6 +1014,9 @@ class TestConsume:
         open_copy = sandbox.tmpdir_root / "resume-context.open"
         open_copy.write_text("x\n")
         open_copy.chmod(0o644)
+        spaced_copy = sandbox.tmpdir_root / "resume-context.has space"
+        spaced_copy.write_text("x\n")
+        spaced_copy.chmod(0o600)
         printed_path = {
             "empty": None,
             "two-lines": f"{real_copy}\n{real_copy}",
@@ -1003,6 +1026,7 @@ class TestConsume:
             "nested-subdirectory": str(nested_copy),
             "symlink": f"{sandbox.tmpdir_root}/resume-context.link",
             "group-and-world-readable": str(open_copy),
+            "space-in-basename": str(spaced_copy),
         }[stdout_shape]
         printed = "" if printed_path is None else f"cat <<'EOF'\n{printed_path}\nEOF"
         move_line = f'mv "$2" "{sandbox.tmp_path}/moved-copy"' if moves_file else ""
@@ -1014,7 +1038,7 @@ class TestConsume:
         assert outcome.stop_code == ("consumed-elsewhere-or-partial" if moves_file else "consume-failed")
         assert pending.exists() is (not moves_file)
 
-    def test_a_valid_stub_destination_loads_proving_the_rejection_shapes_differ_in_one_rule(
+    def test_a_valid_stub_destination_loads_proving_the_rejection_shapes_differ_in_one_property(
         self, sandbox: _Sandbox
     ) -> None:
         """Positive control for the rejection shapes above: an owner-only regular file directly under the root loads.
@@ -1029,7 +1053,6 @@ class TestConsume:
 
         outcome = sandbox.run("mine", cwd=sandbox.worktree_a, env_extra={"RESUME_CONTEXT_CONSUMER": str(stub)})
 
-        assert outcome.returncode == 0
         assert outcome.first("LOAD") == str(good_copy)
         assert not pending.exists()
 
@@ -1059,7 +1082,6 @@ class TestConsume:
             },
         )
 
-        assert outcome.returncode == 0
         assert outcome.first("LOAD") == printed_destination
 
     @pytest.mark.parametrize("exact_source_set", [True, False], ids=["guard-on", "guard-off-control"])
@@ -1139,7 +1161,7 @@ class TestRoundTrip:
     def test_the_shell_command_the_announce_hook_advertises_equals_the_scripts_shell_command(
         self, sandbox: _Sandbox, session: str, file_target: str
     ) -> None:
-        """Parity for a non-symlink target; a symlinked target is spelled canonically by the script only."""
+        """Parity for a canonically spelled target; the script alone canonicalizes a symlinked or dotted one."""
         session_cwd = getattr(sandbox, session)
         pending = sandbox.write_pending("parity", getattr(sandbox, file_target).resolve())
 

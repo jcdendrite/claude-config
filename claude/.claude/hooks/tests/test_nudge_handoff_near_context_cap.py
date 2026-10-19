@@ -2237,7 +2237,7 @@ class TestNudgeHandoffNearContextCap:
 
     @pytest.mark.parametrize("kind", NUDGE_MESSAGE_KINDS)
     def test_message_carries_criteria_timing_and_user_only_statement(self, tmp_path, kind):
-        """Both messages give the agent the D3 criteria and the timing sentence
+        """Both messages give the agent the compaction criteria and the timing sentence
         verbatim, and say only the user can run /compact (the harness has no
         tool binding for it)."""
         text, _ = _fire_nudge_message(tmp_path, kind)
@@ -2340,8 +2340,9 @@ class TestNudgeHandoffNearContextCap:
         ],
     )
     def test_docs_restate_the_compact_text_the_hook_emits(self, tmp_path, text, kind):
-        """docs/handoff-nudge.md quotes the D3 text beside its vendor quotes; a
-        wording edit to the live message must reach the docs in the same change."""
+        """docs/handoff-nudge.md, in "Compaction as an alternative to /handoff", quotes the
+        compaction text beside its vendor quotes; a wording edit to the live message must
+        reach the docs in the same change."""
         emitted, _ = _fire_nudge_message(tmp_path, kind)
         assert text in emitted
         assert text in HANDOFF_NUDGE_DOC.read_text()

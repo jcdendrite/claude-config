@@ -32,9 +32,11 @@
 # --cwd (linked) or has none (outside a linked worktree).
 # A file-sourced --cwd is the file's own text, not a measurement by this hook,
 # and additionalContext labels it so and carries the reason.
+# additionalContext also tells the model to relay the commands and run none of them.
 # When the --cwd is file-sourced, the command equals the one
 # resume-context-same-session.sh prints as SHELL_COMMAND for the same file,
-# except that the script spells a symlinked target by its canonical path.
+# except that the script spells the target by its canonical path (symlinks and
+# `.` and `..` components resolved).
 # A session outside a linked worktree is also what a removed or git-refused
 # worktree looks like (see _lib_linked_worktree_root), so such a session
 # advertises /resume-context for a file that names no --cwd.
@@ -70,8 +72,8 @@
 #
 # Known gaps: a session whose .cwd has drifted out of the worktree where the
 # work lives, writing a file with no usable --cwd, announces a command without
-# that worktree's --cwd, matching the pre-existing behavior of a resume
-# launched from the wrong directory. A config dir or
+# that worktree's --cwd, matching a resume launched from the wrong directory.
+# A config dir or
 # FILE_PATH containing a space produces no announcement at all. A worktree
 # path containing a space instead drops both --cwd and the /resume-context
 # form, falling back to the bare `resume-context $FILE_PATH` form. The
@@ -84,9 +86,9 @@
 # digits, and the allowed punctuation -- still passes the allowlist and is
 # echoed verbatim into additionalContext. This is a known, accepted residual,
 # not a bug.
-# The file's own --cwd is compared raw, with no symlink resolution, so a
-# symlinked spelling of this worktree gets the shell-only announce (its reason
-# names the link) while /resume-context loads it.
+# The file's own --cwd is compared raw, with no canonicalization (symlinks and
+# `.` and `..` components), so a non-canonical spelling of this worktree gets the
+# shell-only announce (its reason names that spelling) while /resume-context loads it.
 #
 # Defense-in-depth: filters tool_name and file_path itself; does not rely
 # solely on the settings.json matcher condition.
