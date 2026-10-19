@@ -4,7 +4,7 @@ module imports cleanly as the first import of a fresh interpreter.
 The static graph check is the only guard for a cycle built from module-binding imports
 (`from transcript_analysis import x`): CPython tolerates those at runtime in any import order.
 The fresh-interpreter check backs it up for name-binding imports (`from transcript_analysis.x
-import NAME`) and for import-order dependence. The shim's own load is covered by
+import NAME`). The shim's own load is covered by
 test_transcript_cli_bootstrap.py. Imports inside function bodies are outside the graph, though a
 function called at import time can still run one.
 """
@@ -105,6 +105,10 @@ def test_import_targets_ignores_function_body_import():
 
 def test_find_cycle_reports_a_two_module_cycle():
     assert _find_cycle({"a": {"b"}, "b": {"a"}}) == ["a", "b", "a"]
+
+
+def test_find_cycle_omits_modules_that_lead_into_the_cycle():
+    assert _find_cycle({"entry": {"a"}, "a": {"b"}, "b": {"a"}}) == ["a", "b", "a"]
 
 
 def test_find_cycle_accepts_a_diamond():
