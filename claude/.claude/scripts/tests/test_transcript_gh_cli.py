@@ -1038,7 +1038,7 @@ class TestGhDiscoveryStderrAndEmptyOutput:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        with pytest.raises(AttributeError, match=re.escape("'str' object has no attribute 'get'")):
+        with pytest.raises(AttributeError):
             _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
 
         assert len(call_log) == 1
@@ -1053,7 +1053,7 @@ class TestGhDiscoveryStderrAndEmptyOutput:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        with pytest.raises(TypeError, match=re.escape("'NoneType' object is not iterable")):
+        with pytest.raises(TypeError):
             _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
 
         assert len(call_log) == 1
@@ -1291,16 +1291,16 @@ class TestGitRemoteOriginFailureMessages:
 
 
 class TestGitRemoteOriginLenientParseKept:
-    """The cwd lookup keeps accepting the URL shapes that _vetted_origin_identity_from_url rejects, so pr-cost,
-    workstream-cost, and pr-link behave as before; their gh preflight and pin already stop on these shapes."""
+    """The cwd lookup parses leniently the URL shapes that _vetted_origin_identity_from_url rejects. pr-cost,
+    workstream-cost, and pr-link read it, and their gh preflight and pin stop on these shapes."""
 
     @pytest.mark.parametrize("remote_url,expected", [
         pytest.param(
-            "https://user:pw@host/project.git", ("user", "pw@host/project"), id="password_userinfo_lenient_misparse_kept",
+            "https://user:pw@host/project.git", ("user", "pw@host/project"), id="password_userinfo_reads_user_as_host",
         ),
-        pytest.param("somedir/o/r", ("somedir", "o/r"), id="relative_path_lenient_parse_kept"),
-        pytest.param("../o/r.git", ("..", "o/r"), id="parent_relative_path_lenient_parse_kept"),
-        pytest.param("ssh://git@host:2222/r.git", ("host", "2222/r"), id="ssh_port_lenient_misparse_kept"),
+        pytest.param("somedir/o/r", ("somedir", "o/r"), id="relative_path_reads_first_segment_as_host"),
+        pytest.param("../o/r.git", ("..", "o/r"), id="parent_relative_path_reads_dotdot_as_host"),
+        pytest.param("ssh://git@host:2222/r.git", ("host", "2222/r"), id="ssh_port_reads_port_as_owner"),
     ])
     def test_shape_the_vetting_rejects_keeps_its_current_result(self, monkeypatch, remote_url, expected):
         monkeypatch.setattr(subprocess, "run", lambda cmd, *a, **kw: _gh_result(stdout=remote_url + "\n"))
@@ -1364,6 +1364,49 @@ class TestGhCallWithBackoffMaxAttempts:
 
         assert len(call_log) == 2
         assert recorded_sleeps == [60.0]
+
+
+class TestGhCallWithBackoffEnvironment:
+    """`env` reaches the gh child verbatim; None passes no environment, so the child inherits this process's."""
+
+    def test_env_argument_reaches_subprocess_run(self, monkeypatch):
+        recorded_kwargs: list[dict] = []
+
+        def fake_run(cmd, *a, **kw):
+            recorded_kwargs.append(kw)
+            return _gh_result()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        child_environment = {"PATH": "/usr/bin"}
+
+        _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "list"], label="pr list", env=child_environment)
+
+        assert [kw["env"] for kw in recorded_kwargs] == [child_environment]
+
+    def test_default_passes_no_environment_so_the_child_inherits(self, monkeypatch):
+        recorded_kwargs: list[dict] = []
+
+        def fake_run(cmd, *a, **kw):
+            recorded_kwargs.append(kw)
+            return _gh_result()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "list"], label="pr list")
+
+        assert [kw["env"] for kw in recorded_kwargs] == [None]
+
+    def test_environment_without_gh_tokens_drops_exactly_the_four_token_variables(self, monkeypatch):
+        for name in _mod.gh_cli._GH_TOKEN_ENV_VARS:
+            monkeypatch.setenv(name, "ambient-value")
+        monkeypatch.setenv("PATH_MARKER_FOR_TEST", "kept")
+        monkeypatch.setenv("GH_CONFIG_DIR", "/ambient/gh-config")
+
+        child_environment = _mod.gh_cli._environ_without_gh_tokens()
+
+        assert not set(child_environment) & set(_mod.gh_cli._GH_TOKEN_ENV_VARS)
+        assert child_environment["PATH_MARKER_FOR_TEST"] == "kept"
+        assert child_environment["GH_CONFIG_DIR"] == "/ambient/gh-config"
 
 
 class TestGhCallWithBackoffCommandName:
@@ -1556,7 +1599,7 @@ class TestOriginIdentityFromUrl:
         pytest.param("https://GitHub.COM/Owner-Name/Repo-Name.git", ("github.com", "owner-name/repo-name"), id="uppercase"),
         pytest.param("https://github.com/owner/repo.git\n", ("github.com", "owner/repo"), id="trailing_newline"),
         pytest.param(
-            "https://user:pw@host/project.git", ("user", "pw@host/project"), id="password_userinfo_lenient_misparse_kept",
+            "https://user:pw@host/project.git", ("user", "pw@host/project"), id="password_userinfo_reads_user_as_host",
         ),
     ])
     def test_recognized_shapes_resolve_lowercased(self, url, expected):

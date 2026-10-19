@@ -789,11 +789,11 @@ def _stored_gh_login_works(host: str) -> bool | None:
     The child's environment drops gh's token variables, so the check sees stored logins only and an ambient token never
     reaches a host that only a recorded `origin` named.
     """
-    env = {name: value for name, value in os.environ.items() if name not in gh_cli._GH_TOKEN_ENV_VARS}
     try:
         proc = subprocess.run(
             ["gh", "auth", "status", "--hostname", host], capture_output=True, text=True,
-            timeout=gh_cli._GH_CALL_TIMEOUT_S, encoding="utf-8", errors="replace", env=env,
+            timeout=gh_cli._GH_CALL_TIMEOUT_S, encoding="utf-8", errors="replace",
+            env=gh_cli._environ_without_gh_tokens(),
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -830,6 +830,7 @@ def _fetch_pr_lists(repositories: Sequence[_Identity], *, deadline: float) -> di
         payload, status = gh_cli._gh_pr_list(
             host, owner_repo, state="all", json_fields=_PR_LIST_JSON_FIELDS, label="pr list (all)",
             command_name="period-cost", max_attempts=_PR_LIST_MAX_ATTEMPTS,
+            env=gh_cli._environ_without_gh_tokens() if host != _GITHUB_HOST else None,
         )
         results[identity] = _validated_pr_list(payload, status)
     return results
@@ -841,8 +842,9 @@ def _fetch_pr_lists(repositories: Sequence[_Identity], *, deadline: float) -> di
 
 
 def _strip_cc_cf(text: str) -> str:
-    # Cc and Cf are the control and format characters that can move, hide, or reorder text, the set mark-terminal.py and
-    # parse-manifest-dependencies.py also delete; str.isprintable would also drop private-use and unassigned characters.
+    # Cc and Cf are the control and format characters that can move, hide, or reorder text.
+    # mark-terminal.py and parse-manifest-dependencies.py delete the same set.
+    # str.isprintable would also drop private-use and unassigned characters.
     return "".join(char for char in text if unicodedata.category(char) not in ("Cc", "Cf"))
 
 
@@ -1526,10 +1528,9 @@ _TIME_BUDGET_ACTION = (
     " the same point, and the marked report is sendable"
 )
 _AUTH_ACTION = (
-    "gh's login for {host} was refused; run gh auth login --hostname {host} in a separate terminal, then re-run; if the"
-    " token variable for this host is set (GH_TOKEN or GITHUB_TOKEN for github.com and *.ghe.com, GH_ENTERPRISE_TOKEN or"
-    " GITHUB_ENTERPRISE_TOKEN for an Enterprise Server host), gh may be sending that token instead, and a new login does"
-    " not change it; replace or refresh the token, or, only after confirming the host's stored login is the intended"
+    "gh's login for {host} was refused; run gh auth login --hostname {host} in a separate terminal, then re-run; for"
+    " github.com, if GH_TOKEN or GITHUB_TOKEN is set, gh may be sending that token instead, and a new login does not"
+    " change it; replace or refresh the token, or, only after confirming the host's stored login is the intended"
     " account, unset the variable in the launching shell, because gh then falls back to that stored login, which may be a"
     " different or broader account"
 )

@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from transcript_analysis import pr_cost_ledger, redaction
 
@@ -24,8 +24,13 @@ _GH_CALL_DEGRADED_HOST_MISMATCH = "degraded_host_mismatch"
 # _gh_pr_list's status when gh succeeded but its stdout was not JSON; distinct from every degraded status above
 # and from pr_cost_ledger's status values, so a caller can tell "gh failed" from "gh answered unparseably".
 _GH_PR_LIST_UNPARSEABLE = "unparseable_json"
-# gh reads these as auth tokens; a child that needs no gh credential gets an environment without them.
+# gh reads these as auth tokens; a child that must not send an ambient gh token gets an environment without them.
 _GH_TOKEN_ENV_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN")
+
+
+def _environ_without_gh_tokens() -> dict[str, str]:
+    """A copy of os.environ without any of _GH_TOKEN_ENV_VARS."""
+    return {name: value for name, value in os.environ.items() if name not in _GH_TOKEN_ENV_VARS}
 
 
 _GH_CALL_TIMEOUT_S = 30.0  # Operational default: gh publishes no single
@@ -253,6 +258,7 @@ def _parse_gh_retry_after_seconds(stderr: str) -> float | None:
 
 def _gh_call_with_backoff(
     argv: Sequence[str], *, label: str, command_name: str = "pr-cost", max_attempts: int | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess | None, str]:
     """Run one gh call, retrying a rate-limit- or network-shaped failure with
     exponential backoff (starting at _PR_COST_RATE_LIMIT_MIN_BACKOFF_S,
@@ -266,7 +272,8 @@ def _gh_call_with_backoff(
     GH_HOST-mismatch-shaped failure is never retried: gh auth status already
     ran as a preflight, and a local shell-config mismatch doesn't self-resolve
     by waiting either way. A `max_attempts` below 1 raises ValueError.
-    `command_name` prefixes every message this function prints.
+    `command_name` prefixes every message this function prints. `env` is the child's environment; None inherits
+    this process's.
 
     Returns (proc, "") on success. On exhaustion, returns (None, status)
     with status one of _GH_CALL_DEGRADED_AUTH, _GH_CALL_DEGRADED_HOST_MISMATCH,
@@ -288,7 +295,7 @@ def _gh_call_with_backoff(
         try:
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=_GH_CALL_TIMEOUT_S,
-                encoding="utf-8", errors="replace",
+                encoding="utf-8", errors="replace", env=env,
             )
         except (subprocess.TimeoutExpired, OSError):
             kind = _GH_ERROR_KIND_NETWORK
@@ -430,17 +437,19 @@ def _gh_host_qualified_repo(corpus_host: str, pinned_repo: str) -> str:
 
 def _gh_pr_list(
     corpus_host: str, repo: str, *, state: str, json_fields: str, label: str,
-    command_name: str = "pr-cost", max_attempts: int | None = None,
+    command_name: str = "pr-cost", max_attempts: int | None = None, env: Mapping[str, str] | None = None,
 ) -> tuple[object | None, str]:
     """One bulk `gh pr list` for `repo` in `state` with an explicit --limit, host-qualified (see
     _gh_host_qualified_repo). Returns (payload, "") on success, (None, <degraded status>) when the shared backoff
     gave up, or (None, _GH_PR_LIST_UNPARSEABLE) when gh's stdout is not JSON. Applies no shape check to the payload
-    and prints nothing itself; the backoff prints its own messages under `command_name`."""
+    and prints nothing itself; the backoff prints its own messages under `command_name`. `env` is forwarded to the call."""
     argv = [
         "gh", "pr", "list", "--repo", _gh_host_qualified_repo(corpus_host, repo), "--state", state,
         "--limit", str(_PR_COST_GH_PR_LIST_LIMIT), "--json", json_fields,
     ]
-    proc, degraded = _gh_call_with_backoff(argv, label=label, command_name=command_name, max_attempts=max_attempts)
+    proc, degraded = _gh_call_with_backoff(
+        argv, label=label, command_name=command_name, max_attempts=max_attempts, env=env,
+    )
     if degraded:
         return None, degraded
     try:

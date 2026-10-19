@@ -117,6 +117,7 @@ def _hermetic(monkeypatch, tmp_path, which, clock):
     monkeypatch.setattr(period_cost, "_utc_today", lambda: _TODAY)
     monkeypatch.setattr(pricing, "_subagent_format_drift_detected", False)
     monkeypatch.setattr(pricing, "_usage_drift_warned", False)
+    monkeypatch.setattr(pricing, "_non_contiguous_merge_notices_logged", set())
     assert min(pricing._MODEL_RATE_EXPIRES.values()) >= _TODAY, "the fixed run date must precede every rate expiry"
     assert str(period_cost._projects_root()).startswith(str(tmp_path))
 
@@ -1542,13 +1543,8 @@ class TestFetchPrLists:
         assert accepted[identity].unavailable_kind == ""
         assert [cmd[:3] for cmd in call_log_with_login] == [["gh", "auth", "status"], ["gh", "pr", "list"]]
 
-    @pytest.mark.parametrize("host", ["github.com", "ghe.example"])
-    def test_the_list_call_inherits_gh_token_variables_while_the_login_check_child_has_none_of_them(
-        self, monkeypatch, host
-    ):
-        # A host other than github.com is listed with whatever token gh prefers for it; docs/transcript-analysis.md
-        # states this, so a change that scrubs or rewrites the list call's environment must fail here.
-        identity = (host, "acme/tools")
+    def test_the_github_list_call_inherits_all_four_gh_token_variables(self, monkeypatch):
+        identity = ("github.com", "acme/tools")
         ambient_tokens = {name: f"ambient-value-for-{name}" for name in gh_cli._GH_TOKEN_ENV_VARS}
         for name, value in ambient_tokens.items():
             monkeypatch.setenv(name, value)
@@ -1556,20 +1552,36 @@ class TestFetchPrLists:
         _install_fake(
             monkeypatch,
             origins_by_dir={},
-            pr_lists_by_repo={f"{host}/acme/tools": []},
+            pr_lists_by_repo={"github.com/acme/tools": []},
             env_log=env_log,
         )
 
         results = period_cost._fetch_pr_lists([identity], deadline=540)
 
         assert results[identity].unavailable_kind == ""
-        list_envs = [env for prefix, env in env_log if prefix == ("gh", "pr", "list")]
-        check_envs = [env for prefix, env in env_log if prefix == ("gh", "auth", "status")]
-        assert len(list_envs) == 1
-        assert {name: list_envs[0].get(name) for name in ambient_tokens} == ambient_tokens
-        assert len(check_envs) == (0 if host == "github.com" else 1)
-        for check_env in check_envs:
-            assert not set(check_env) & set(ambient_tokens)
+        assert [prefix for prefix, _env in env_log] == [("gh", "pr", "list")]
+        assert {name: env_log[0][1].get(name) for name in ambient_tokens} == ambient_tokens
+
+    def test_a_list_call_and_its_login_check_for_a_host_other_than_github_carry_no_gh_token_variable(self, monkeypatch):
+        identity = ("ghe.example", "acme/tools")
+        for name in gh_cli._GH_TOKEN_ENV_VARS:
+            monkeypatch.setenv(name, f"ambient-value-for-{name}")
+        monkeypatch.setenv("GH_CONFIG_DIR", "/ambient/gh-config")
+        env_log: list = []
+        _install_fake(
+            monkeypatch,
+            origins_by_dir={},
+            pr_lists_by_repo={"ghe.example/acme/tools": []},
+            env_log=env_log,
+        )
+
+        results = period_cost._fetch_pr_lists([identity], deadline=540)
+
+        assert results[identity].unavailable_kind == ""
+        assert [prefix for prefix, _env in env_log] == [("gh", "auth", "status"), ("gh", "pr", "list")]
+        for _prefix, child_env in env_log:
+            assert not set(child_env) & set(gh_cli._GH_TOKEN_ENV_VARS)
+            assert child_env["GH_CONFIG_DIR"] == "/ambient/gh-config"
 
     def test_each_host_other_than_github_gets_exactly_one_auth_check_however_many_of_its_repositories_are_listed(
         self, monkeypatch
@@ -1755,7 +1767,7 @@ class TestCappedEntries:
         assert period_cost._capped_entries(dollars_by_name)[-1] == "and 2 more ($3.00)"
 
     def test_ties_are_broken_by_raw_name_so_the_dropped_entry_is_the_last_name(self):
-        dollars_by_name = {f"b{index:02d}": 5.0 for index in range(11)}
+        dollars_by_name = {f"b{index:02d}": 5.0 for index in reversed(range(11))}
 
         entries = period_cost._capped_entries(dollars_by_name)
 
@@ -1769,10 +1781,21 @@ class TestCappedEntries:
 
         assert entries == ["a b ($2.00)", "a b ($1.00)"]
 
-    def test_the_tail_sum_rounds_half_up_to_the_cent(self):
-        dollars_by_name = {f"b{index:02d}": 100.0 for index in range(10)} | {"tail-a": 0.004, "tail-b": 0.001}
+    @pytest.mark.parametrize(
+        "tail_dollars,expected_tail",
+        [
+            # Half-up gives $0.01 where half-even gives $0.00.
+            pytest.param((0.004, 0.001), "and 2 more ($0.01)", id="half_cent_sum_rounds_up_not_to_even"),
+            # The tail sums to 0.015: plain float formatting prints $0.01, and rounding each entry first gives $0.00 + $0.01.
+            pytest.param((0.004, 0.011), "and 2 more ($0.02)", id="sum_rounds_once_not_per_entry_or_by_float_format"),
+        ],
+    )
+    def test_the_tail_is_summed_then_rounded_once_half_up_to_the_cent(self, tail_dollars, expected_tail):
+        dollars_by_name = {f"b{index:02d}": 100.0 for index in range(10)} | {
+            "tail-a": tail_dollars[0], "tail-b": tail_dollars[1],
+        }
 
-        assert period_cost._capped_entries(dollars_by_name)[-1] == "and 2 more ($0.01)"
+        assert period_cost._capped_entries(dollars_by_name)[-1] == expected_tail
 
 
 # ---------------------------------------------------------------------------
@@ -1867,6 +1890,49 @@ def _branch_key(branch: str, own: str = _WIDGETS_DIR, successor: str | None = No
 
 def _review_key(number: int, owner_repo: str = "acme/widgets", directory: str | None = _WIDGETS_DIR):
     return period_cost._ReviewKey(directory, owner_repo, number)
+
+
+class TestFallbackNotices:
+    @pytest.mark.parametrize(
+        "directory_resolution,expected_group_name",
+        [
+            pytest.param(_WIDGETS, "acme/widgets", id="directory_resolves_on_github"),
+            pytest.param(_TOOLS, "ghe.example/acme/tools", id="directory_resolves_on_another_host"),
+            pytest.param(_UNRESOLVED, "Repository not determined", id="directory_unresolved"),
+            pytest.param(_NOT_CHECKED, "Repository not determined", id="directory_not_checked"),
+        ],
+    )
+    def test_an_unidentified_window_notice_names_the_group_its_directory_resolved_to_else_the_undetermined_group(
+        self, directory_resolution, expected_group_name
+    ):
+        window = period_cost._FallbackWindow("2026-09-03", "session end", None, _WIDGETS_DIR, 0.4)
+        totals = _hand_totals(unidentified={(_WIDGETS_DIR, "2026-09-03"): 0.4}, fallback=[window])
+
+        (notice,) = period_cost._fallback_notices(totals, {_WIDGETS_DIR: directory_resolution})
+
+        assert (notice.group_name, notice.row_label) == (expected_group_name, "Other")
+
+    def test_an_identified_window_notice_names_the_host_qualified_group_its_review_row_is_displayed_under(self):
+        review_key = _review_key(30, owner_repo="acme/tools", directory=_TOOLS_DIR)
+        window = period_cost._FallbackWindow("2026-09-03", "session end", review_key, _TOOLS_DIR, 1.0)
+        totals = _hand_totals(review={review_key: 1.0}, fallback=[window])
+
+        (notice,) = period_cost._fallback_notices(totals, {_TOOLS_DIR: _TOOLS})
+
+        assert (notice.group_name, notice.row_label) == ("ghe.example/acme/tools", "Rev #30")
+
+
+class TestStaleModels:
+    def test_stale_models_come_back_in_name_order_whatever_the_input_order(self, monkeypatch):
+        monkeypatch.setattr(
+            pricing,
+            "_MODEL_RATE_EXPIRES",
+            {"claude-sonnet-5": date(2026, 9, 5), "claude-opus-5": date(2026, 9, 18), "claude-sonnet-4-6": _TODAY},
+        )
+
+        stale = period_cost._stale_models(["claude-sonnet-5", "claude-sonnet-4-6", "claude-opus-5"], _TODAY)
+
+        assert stale == [("claude-opus-5", date(2026, 9, 18)), ("claude-sonnet-5", date(2026, 9, 5))]
 
 
 class TestDirectoriesToResolve:
@@ -2049,6 +2115,59 @@ class TestAssembleGroups:
         rows = _row_summary(_assemble(totals, {_WIDGETS_DIR: _WIDGETS}, {}))["acme/widgets"]
 
         assert rows == [("OTHER", None, "Work not linked to a listed PR", "", 0.4, False, True)]
+
+    def test_an_identified_fallback_review_marks_its_own_row_and_leaves_the_repositorys_other_row_unmarked(self):
+        review_key = _review_key(30)
+        fallback = [period_cost._FallbackWindow("2026-09-03", "session end", review_key, _WIDGETS_DIR, 1.0)]
+        totals = _hand_totals(review={review_key: 1.0}, default={_WIDGETS_DIR: 0.5}, fallback=fallback)
+        lists = {_WIDGETS: _pr_list(_listed_pr(30, "reviewed", title="Thirty"))}
+
+        rows = _row_summary(_assemble(totals, {_WIDGETS_DIR: _WIDGETS}, lists))["acme/widgets"]
+
+        assert rows == [
+            ("OTHER", None, "Work not linked to a listed PR", "", 0.5, False, False),
+            ("REVIEW", 30, "Thirty", "open", 1.0, False, True),
+        ]
+
+    def test_a_fallback_fed_review_on_another_host_marks_question_on_its_host_qualified_rev_row(self):
+        review_key = _review_key(30, owner_repo="acme/tools", directory=_TOOLS_DIR)
+        fallback = [period_cost._FallbackWindow("2026-09-03", "session end", review_key, _TOOLS_DIR, 1.0)]
+        totals = _hand_totals(review={review_key: 1.0}, fallback=fallback)
+        lists = {_TOOLS: _pr_list(_listed_pr(30, "reviewed", title="Thirty"))}
+
+        rows = _row_summary(_assemble(totals, {_TOOLS_DIR: _TOOLS}, lists))
+
+        assert rows == {"ghe.example/acme/tools": [("REVIEW", 30, "Thirty", "open", 1.0, False, True)]}
+
+    def test_a_review_on_another_host_with_outside_spend_marks_plus_on_its_host_qualified_rev_row(self):
+        review_key = _review_key(30, owner_repo="acme/tools", directory=_TOOLS_DIR)
+        totals = _hand_totals(review={review_key: 1.0}, outside_review=[review_key])
+        lists = {_TOOLS: _pr_list(_listed_pr(30, "reviewed", title="Thirty"))}
+
+        rows = _row_summary(_assemble(totals, {_TOOLS_DIR: _TOOLS}, lists))
+
+        assert rows == {"ghe.example/acme/tools": [("REVIEW", 30, "Thirty", "open", 1.0, True, False)]}
+
+    def test_two_review_keys_for_one_pull_request_from_different_window_directories_merge_into_one_row(self):
+        totals = _hand_totals(
+            review={_review_key(30, directory=_WIDGETS_DIR): 1.0, _review_key(30, directory=_WIDGETS_WORKTREE): 2.0}
+        )
+        resolution = {_WIDGETS_DIR: _WIDGETS, _WIDGETS_WORKTREE: _WIDGETS}
+        lists = {_WIDGETS: _pr_list(_listed_pr(30, "reviewed", title="Thirty"))}
+
+        rows = _row_summary(_assemble(totals, resolution, lists))
+
+        assert rows == {"acme/widgets": [("REVIEW", 30, "Thirty", "open", 3.0, False, False)]}
+
+    def test_a_review_of_a_cross_repository_pull_request_takes_that_entrys_title_and_state(self):
+        totals = _hand_totals(review={_review_key(30): 1.0})
+        lists = {_WIDGETS: _pr_list(_listed_pr(30, "fork-branch", title="From a fork", state="MERGED", cross_repo=True))}
+
+        assembly = _assemble(totals, {_WIDGETS_DIR: _WIDGETS}, lists)
+
+        (group,) = assembly.groups
+        (row,) = group.rows
+        assert (row.title, row.status, row.title_missing_from_list) == ("From a fork", "merged", False)
 
     def test_an_unavailable_repositorys_candidate_branches_go_to_other_and_its_reviews_lose_their_titles(self):
         totals = _hand_totals(branch={_branch_key("feat-a"): 2.0}, review={_review_key(30): 1.0})
@@ -3065,9 +3184,8 @@ class TestNoticeLines:
                 "ghe.example",
                 (
                     "gh's login for ghe.example was refused; run gh auth login --hostname ghe.example in a separate terminal,"
-                    " then re-run; if the token variable for this host is set (GH_TOKEN or GITHUB_TOKEN for github.com and"
-                    " *.ghe.com, GH_ENTERPRISE_TOKEN or GITHUB_ENTERPRISE_TOKEN for an Enterprise Server host), gh may be"
-                    " sending that token instead, and a new login does not change it; replace or refresh the token, or, only"
+                    " then re-run; for github.com, if GH_TOKEN or GITHUB_TOKEN is set, gh may be sending that token"
+                    " instead, and a new login does not change it; replace or refresh the token, or, only"
                     " after confirming the host's stored login is the intended account, unset the variable in the launching"
                     " shell, because gh then falls back to that stored login, which may be a different or broader account"
                 ),
@@ -3454,6 +3572,18 @@ class TestPeriodStreamTotals:
         assert fallback.review_key == _REVIEW_IDENTITY_KEY
         assert fallback.directory == _DIR_C
         assert fallback.dollars == pytest.approx(2.0)
+
+    def test_a_fallback_closed_window_whose_only_priced_turn_is_out_of_period_records_no_fallback(self):
+        records = [
+            _slash_invocation(1, cwd=_DIR_C),
+            _acquire_record(2, cwd=_DIR_C),
+            _hand_priced(3, 2, cwd=_DIR_C, day=25),
+        ]
+
+        totals = _totals(records, since="2026-09-10", until="2026-09-20")
+
+        assert totals.fallback_windows == []
+        assert totals.outside_review_keys == {_REVIEW_IDENTITY_KEY}
 
     def test_a_finished_window_records_no_fallback(self):
         records = [
@@ -4988,16 +5118,20 @@ class TestNoticesAtReportLevel:
         assert [row[0] for row in _parsed_rows(report)["acme/widgets"]] == ["#1"]
         assert omitted_note in report.splitlines()
 
-    def test_stale_pricing_names_only_in_range_models_past_their_date_and_stdout_gives_the_earliest(
+    def test_stale_pricing_names_only_in_range_models_past_their_date_in_name_order_and_stdout_gives_the_earliest(
         self, projects_dir, monkeypatch
     ):
+        # The earliest in-range due date belongs to the middle of the three in-range stale names, and an out-of-range
+        # stale model is earlier still.
         monkeypatch.setattr(
             pricing,
             "_MODEL_RATE_EXPIRES",
             {
-                "claude-sonnet-5": date(2026, 9, 20),
+                "claude-sonnet-5": date(2026, 9, 5),
+                "claude-opus-5": date(2026, 9, 18),
+                "claude-opus-5-5": date(2026, 9, 2),
                 "claude-haiku-4-5-20251001": date(2026, 12, 1),
-                "claude-opus-5": date(2026, 9, 10),
+                "claude-sonnet-4-6": date(2026, 9, 1),
             },
         )
         _write_session(
@@ -5005,8 +5139,10 @@ class TestNoticesAtReportLevel:
             "models",
             [
                 _hand_priced(1, 1, day=15, cwd=None),
-                _hand_priced(2, 1, day=15, cwd=None, model="claude-haiku-4-5-20251001"),
-                _hand_priced(3, 1, day=25, cwd=None, model="claude-opus-5"),
+                _hand_priced(2, 1, day=15, cwd=None, model="claude-opus-5"),
+                _hand_priced(3, 1, day=15, cwd=None, model="claude-haiku-4-5-20251001"),
+                _hand_priced(4, 1, day=25, cwd=None, model="claude-sonnet-4-6"),
+                _hand_priced(5, 1, day=15, cwd=None, model="claude-opus-5-5"),
             ],
         )
         _install_fake(monkeypatch, origins_by_dir={}, pr_lists_by_repo={})
@@ -5014,10 +5150,11 @@ class TestNoticesAtReportLevel:
         report, notices = _run_report(window=_window("2026-09-10", "2026-09-20"))
 
         assert _lines_for(notices, "STALE PRICING") == [
-            "list rates were due to be rechecked: claude-sonnet-5 (due 2026-09-20); any rate change since is not reflected"
+            "list rates were due to be rechecked: claude-opus-5 (due 2026-09-18), claude-opus-5-5 (due 2026-09-02),"
+            " claude-sonnet-5 (due 2026-09-05); any rate change since is not reflected"
         ]
         assert (
-            "_Note: these figures use list rates that were due to be rechecked on 2026-09-20, so any rate change since then is"
+            "_Note: these figures use list rates that were due to be rechecked on 2026-09-02, so any rate change since then is"
             " not reflected._"
         ) in report.splitlines()
 

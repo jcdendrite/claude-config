@@ -296,13 +296,15 @@ The period-cost command shares four pieces of this module:
 
 - **`_gh_pr_list`** is the one bulk `gh pr list` call. It returns `(payload, status)` and aborts
   nothing: an empty status is success, and `_GH_PR_LIST_UNPARSEABLE` is gh answering with stdout that
-  is not JSON. It takes `max_attempts` (period-cost passes 1, so a failing call never sleeps) and
-  `command_name`, which prefixes every message `_gh_call_with_backoff` prints. The merged and closed
+  is not JSON. It takes `max_attempts` (period-cost passes 1, so a failing call never sleeps),
+  `env`, which it forwards to the call, and `command_name`, which prefixes every message
+  `_gh_call_with_backoff` prints. The merged and closed
   discovery helpers go through it and keep their own abort messages.
 - **`_is_plain_owner_repo`** is the Python copy of the owner/repo grammar in `_lib_parse_pr_identity`
   (`claude/.claude/hooks/_lib.sh`), with parity tests against the bash parser.
-- **`_GH_TOKEN_ENV_VARS`** names the four variables gh reads as tokens. Every child process that needs
-  no gh credential gets an environment without them.
+- **`_environ_without_gh_tokens`** returns a copy of `os.environ` without the four variables gh reads as
+  tokens. A child that must not send an ambient gh token gets that environment. The call sites are in
+  `docs/transcript-analysis.md` § "period-cost".
 - **`_origin_identity_at`** resolves a recorded directory's `origin` where the cwd lookup resolves the
   process's own, so it lives in `gh_cli` beside that lookup. It returns `None` on any failure and prints
   nothing. See docs/transcript-analysis.md, "Repository resolution", for the git call and the vetting.
@@ -504,8 +506,8 @@ calling `cost._compute_pr_cost_branch_totals`, which takes no time window. Impor
 access), matching `cost.py`'s convention; the `cost` import reaches only `_LIST_PRICE_CAVEAT` and
 `_CORPUS_COVERAGE_WARNING_THRESHOLD_SECONDS`. It reads its one root, `scope.config_dir() / "projects"`,
 as `scope.config_dir` by attribute access, per the rule under `scope.py` above, and registers no
-`--config-dir` flag. Its subprocess calls are `gh_cli._origin_identity_at` per recorded directory,
-`gh auth status` per host other than github.com, and `gh_cli._gh_pr_list` per repository.
+`--config-dir` flag. Its subprocess calls are listed in
+`docs/transcript-analysis.md` § "period-cost".
 `cmd_period_cost` is the one name reached bare from the shim, from `build_parser()`.
 
 ## Sibling scripts
