@@ -63,6 +63,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -3397,7 +3398,7 @@ def test_blocks_when_timeout_rejects_dash_k_flag(tmp_path: Path) -> None:
 # ------------------------------------------------------------------ #
 
 # Gate hooks (both stow and plugin) discovered by an independent header regex.
-_GATE_HOOK_COUNT = 31
+_GATE_HOOK_COUNT = 32
 # Gate handlers registered in claude/.claude/settings.json (a gate under two
 # matchers or `if` filters registers once per handler) and across plugins/*/hooks/hooks.json.
 _SETTINGS_GATE_HANDLER_COUNT = 32
