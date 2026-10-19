@@ -53,12 +53,12 @@ angle-header parser.
 
 Assertion 9 checks that the committed regression fixture
 claude/.claude/hooks/tests/fixtures/paragraph-readability.json still names a
-current comment-discipline-reviewer.md angle header, still hashes to that
-angle's current text (so a rewording is caught rather than silently
-drifting from what Phase 2 measured), and still carries every literal and
-carve-out excerpt that keeps its must_flag/must_pass pair non-vacuous. It
-lives here because it reuses assertion 7's angle-header parser and
-angle-block boundaries.
+current comment-discipline-reviewer.md angle header. It checks that the
+fixture's hash still matches that angle's current text, so a rewording is
+caught rather than silently drifting from what Phase 2 measured. It checks
+that the fixture carries every literal and carve-out excerpt that keeps its
+must_flag/must_pass pair non-vacuous. It lives here because it reuses
+assertion 7's angle-header parser and angle-block boundaries.
 
 Why hooks/tests/ instead of tests/ or skills/tests/:
   This module imports helpers.CLAUDE_DIR from the sibling helpers path. It

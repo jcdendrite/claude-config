@@ -8,5 +8,5 @@
     "claim_and_hedge": "Content hashing makes key collisions negligible in practice, though not impossible.",
     "bold_label_and_definition": "- **Dry run** — a mode that validates inputs without writing any cache entry."
   },
-  "note": "Measured 2026-10-16 at K=5, using Sonnet dispatched through a general-purpose wrapper with model: sonnet. Old body on must_flag: 2/5 against the bar of <= 1/5, not met. New body on must_flag: 5/5 against the bar of >= 4/5, met. New body on must_pass: 0/5 against the bar of <= 1/5, met. See docs/design-decisions/paragraph-readability-review-angle.md for the re-run procedure and the full outcome."
+  "note": "Measured 2026-10-16 at K=5, using Sonnet dispatched through a general-purpose wrapper with model: sonnet.\n- Old body on must_flag: 2/5 against the bar of <= 1/5, not met.\n- New body on must_flag: 5/5 against the bar of >= 4/5, met.\n- New body on must_pass: 0/5 against the bar of <= 1/5, met.\nSee docs/design-decisions/paragraph-readability-review-angle.md for the re-run procedure and the full outcome."
 }
