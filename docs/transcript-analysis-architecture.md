@@ -196,15 +196,20 @@ escaped and no limit on its length. Only these prefixes are stable; the rest of 
 After a process has printed the usage-drift warning it prints it no more, but each call's
 `usage_drift_detected` still reports that call's own sessions.
 
-**What the output can disclose.** The fixed text of the four stderr lines names no transcript path,
-session ID, project slug, config directory, or model ID. The requestId in the first three lines, described
-in the stderr contract, is the one transcript-supplied substring on stderr, so treat those lines as carrying
-untrusted text. `str()` of a `SessionPricingError` names only `session_index`. `__cause__`, `__context__`
-and tracebacks are outside this guarantee and may carry a path or transcript content. Record only
-`session_index` and the exception class in output you share. `unpriced_models` is the only result field
-whose strings come from transcript content; its entries are `message.model` values, verbatim. They are
-untrusted transcript text of any length, and a model ID can carry an account-identifying pre-announcement
-name, so do not publish the list, and escape entries before rendering.
+**What the output can disclose.**
+
+- The fixed text of the four stderr lines names no transcript path, session ID, project slug, config
+  directory, or model ID.
+- The requestId in the first three lines, described in the stderr contract, is the one
+  transcript-supplied substring on stderr, so treat those lines as carrying untrusted text.
+- `str()` of a `SessionPricingError` names only `session_index`.
+- `__cause__`, `__context__` and tracebacks are outside this guarantee and may carry a path or
+  transcript content. Record only `session_index` and the exception class in output you share.
+- `unpriced_models` is the only result field whose strings come from transcript content.
+  Its entries are `message.model` values, verbatim.
+  They are untrusted transcript text of any length.
+  A model ID can carry an account-identifying pre-announcement name, so do not publish the list.
+  Also escape entries before rendering.
 
 **Trust in inputs and results.** `session_paths` are not confined to a root, and symlinks are followed.
 `main_file_readable` and the results reveal whether a path is readable. A FIFO blocks the read, and an

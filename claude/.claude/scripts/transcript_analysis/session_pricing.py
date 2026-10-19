@@ -70,7 +70,7 @@ class SessionPricingResult:
     total_unpriced_tokens: the sum of every session's unpriced_tokens_by_day values.
     unpriced_models: sorted model IDs of in-window turns whose model has no rate, except "<synthetic>" at zero
         tokens. An absent, null, or non-string model is "". Before publishing or rendering entries, see the
-        doc section's disclosure paragraph.
+        doc section's "What the output can disclose" list.
     stale_models: sorted model IDs priced in-window, zero-token turns included, whose re-verify-by date is
         before as_of.
     pricing_fetch_date: the date the rate table was read from the vendor's pricing page.
@@ -282,10 +282,12 @@ def price_sessions_by_utc_day(
     start, end: inclusive UTC dates.
     as_of: the date stale_models is judged against.
 
-    Raises ValueError or TypeError for a bad argument before reading anything, and SessionPricingError for
-    the first session that cannot be priced. A session still being written gives a lower bound for its
-    newest turn. Prints nothing itself. Memory grows with the call's unique requestIds plus one fully-read
-    session.
+    Raises ValueError or TypeError for a bad argument, and SessionPricingError for the first session that
+    cannot be priced. The session_pricing.py section of docs/transcript-analysis-architecture.md is the
+    authoritative error and stderr contract.
+
+    A session still being written gives a lower bound for its newest turn. Memory grows with the call's
+    unique requestIds plus one fully-read session.
     """
     for name, value in (("start", start), ("end", end), ("as_of", as_of)):
         _require_plain_date(name, value)

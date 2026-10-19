@@ -74,8 +74,8 @@ def _merged_record(
 
 class TestDedupSessionTurns:
     def test_merges_matching_runs_and_leaves_unmatched_records_alone(self):
-        """A contiguous run and a usage-matching non-contiguous run each collapse to one
-        turn; a non-contiguous pair whose usage differs, a requestId-less assistant record
+        """A contiguous run and a usage-matching non-contiguous run each collapse to one turn.
+        A non-contiguous pair whose usage differs, a requestId-less assistant record
         and a user record stay as they are."""
         user_a = _user_msg("first prompt")
         contiguous_first = _assistant_record(
@@ -151,8 +151,8 @@ class TestDedupSessionCounts:
         assert pricing._dedup_session([truthy_non_bool_sidechain]).sidechain_assistant_turns == 1
 
     def test_sidechain_count_includes_usage_less_turns_and_counts_a_merged_run_once(self):
-        """Counted over deduplicated turns before any usage filter; a sidechain
-        record that is not an assistant record is not a turn."""
+        """Counted over deduplicated turns before any usage filter.
+        A sidechain record that is not an assistant record is not a turn."""
         usage_less_sidechain = _asst(_MODEL, sidechain=True)
         merged_sidechain_first = _assistant_record(
             "req-sidechain", uuid="u-s1", ts="2026-05-19T10:00:00.000Z", text="s1",

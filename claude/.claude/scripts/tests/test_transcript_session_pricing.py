@@ -127,7 +127,7 @@ _RECORD_FIELD_SENTINELS = {
 
 
 def _with_field_sentinels(record):
-    """The record with sentinel values in the identifying fields real transcripts carry; a non-object line is returned as is."""
+    """The record with sentinel values in the identifying fields real transcripts carry. A non-object line is returned as is."""
     return {**record, **_RECORD_FIELD_SENTINELS} if isinstance(record, dict) else record
 
 
@@ -569,6 +569,31 @@ class TestReadability:
         assert result.sessions[0].micro_dollars_by_day == {
             date(2026, 5, 19): _ONE_MILLION_INPUT_TURN_MICRO_DOLLARS + 2
         }
+
+    def test_request_id_in_the_main_file_and_a_subagent_file_is_priced_once(self, tmp_path):
+        main_turn = _priced(_PRICED_MODEL, input=1_000_000, request_id="req-shared-across-files")
+        subagent_turn = copy.deepcopy(main_turn)
+        subagent_turn["isSidechain"] = True
+        session = _write_session(tmp_path, 0, [main_turn])
+        _write_subagent_jsonl(session.parent, session.stem, "agent-1", [subagent_turn])
+
+        result = _price([session])
+
+        assert result.sessions[0].micro_dollars_by_day == {date(2026, 5, 19): _ONE_MILLION_INPUT_TURN_MICRO_DOLLARS}
+
+    def test_contiguous_run_of_one_request_id_inside_a_subagent_file_is_priced_once(self, tmp_path):
+        session = _write_session(tmp_path, 0, [])
+        subagent_run = [
+            _priced(_PRICED_MODEL, input=1_000_000, request_id="req-subagent-run", content=[{"type": "text", "text": text}])
+            for text in ("first block", "second block")
+        ]
+        for record in subagent_run:
+            record["isSidechain"] = True
+        _write_subagent_jsonl(session.parent, session.stem, "agent-1", subagent_run)
+
+        result = _price([session])
+
+        assert result.sessions[0].micro_dollars_by_day == {date(2026, 5, 19): _ONE_MILLION_INPUT_TURN_MICRO_DOLLARS}
 
 
 class TestUndatedTurns:
@@ -1423,7 +1448,7 @@ class TestOutputContract:
         "NOTICE: non-contiguous requestId run rejected -- ",
         "WARNING: subagent spawns detected in main thread",
     )
-    # Whitespace-normalized sentences the doc's disclosure paragraph must keep about unpriced_models entries.
+    # Whitespace-normalized sentences the doc's "What the output can disclose" list must keep about unpriced_models entries.
     _UNPRICED_MODELS_DISCLOSURE_CLAUSES = (
         "untrusted transcript text of any length",
         "account-identifying pre-announcement name",
