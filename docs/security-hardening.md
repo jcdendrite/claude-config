@@ -565,7 +565,7 @@ variables include:
 - `DISABLE_TELEMETRY` — disable usage telemetry.
 - `CLAUDE_CODE_ENABLE_TELEMETRY` — OpenTelemetry export (off unless set).
 - `DISABLE_ERROR_REPORTING` — disable error reporting to Anthropic.
-- `DISABLE_BUG_COMMAND` — disable the `/bug` command.
+- `DISABLE_FEEDBACK_COMMAND` — set to `1` to disable the `/feedback` command. Claude Code's [env-var reference](https://code.claude.com/docs/en/env-vars) says it also disables `/bug` and `/share`, and still accepts the older name `DISABLE_BUG_COMMAND`. The overlay allowlist accepts both names.
 - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` — block non-essential external calls.
 
 Verify exact names against the docs before relying on them — the set

@@ -27,7 +27,7 @@ BASE_OWNED_KEYS_JSON='["permissions", "hooks", "statusLine", "skillOverrides"]'
 # requests, or carry credentials.
 # Declared ahead of the direct-invocation modes below for the same reason as
 # RULE4_DOTTED_PATHS_JSON.
-OVERLAY_ENV_ALLOWED_NAMES_JSON='["ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_ENABLE_TELEMETRY", "DISABLE_BUG_COMMAND", "DISABLE_ERROR_REPORTING", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_TELEMETRY"]'
+OVERLAY_ENV_ALLOWED_NAMES_JSON='["ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CODE_ENABLE_TELEMETRY", "DISABLE_BUG_COMMAND", "DISABLE_FEEDBACK_COMMAND", "DISABLE_ERROR_REPORTING", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_TELEMETRY"]'
 
 # Direct-invocation modes for tests: each prints one constant as JSON and exits
 # before any render logic runs, mirroring guard-settings-session-keys.sh's own
