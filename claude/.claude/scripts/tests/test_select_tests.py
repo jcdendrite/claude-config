@@ -2069,6 +2069,8 @@ _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
      "claude-skills/skills/plan-review/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_skill_review.py",
      "plugins/skill-management/skills/skill-review/SKILL.md"),
+    ("claude/.claude/hooks/tests/test_resume_command_template_contract.py",
+     "claude-skills/skills/brief/SKILL.md"),
     ("claude/.claude/scripts/tests/test_claude_enable_tool.py",
      "claude/.claude/settings.json"),
     ("claude/.claude/scripts/tests/test_findings_path_suffix.py",

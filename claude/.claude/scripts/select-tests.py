@@ -274,6 +274,7 @@ SUBAGENT_DELEGATION_SKILL_MD = "claude-skills/skills/subagent-delegation/SKILL.m
 RESUME_CONTEXT_SKILL_MD = "claude-skills/skills/resume-context/SKILL.md"
 AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD = "claude-skills/skills/ai-instruction-and-memory-files/SKILL.md"
 SKILL_REVIEW_SKILL_MD = "plugins/skill-management/skills/skill-review/SKILL.md"
+BRIEF_SKILL_MD = "claude-skills/skills/brief/SKILL.md"
 
 # Every SKILL.md a HOOKS_TESTS_DIR test reads by exact path rather than by
 # domain membership. TestCrossDomainReadCompleteness
@@ -292,6 +293,7 @@ SKILL_FILES_READ_BY_HOOK_TESTS: frozenset[str] = frozenset({
     SUBAGENT_DELEGATION_SKILL_MD,
     AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD,
     SKILL_REVIEW_SKILL_MD,
+    BRIEF_SKILL_MD,
 })
 
 # test_ci_path_filter.py reads this exact file by path.
