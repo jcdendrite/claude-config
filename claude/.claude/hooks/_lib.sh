@@ -3452,6 +3452,9 @@ _lib_worktree_collision_guard() {
 # Byte-size threshold above which content is too large to scan cheaply. 5 MB, shared between deny-data-file-reads.sh's Read-target cap and redact-credential-values.sh's tool_response cap.
 _LIB_SIZE_THRESHOLD_BYTES=5242880
 
+# Longest plugin id, in bytes, that _lib_validate_plugin_id accepts. Far above any real `<name>@<marketplace>`; it bounds the validator's cost, since bash's `##*@` removal is super-linear in the marketplace half.
+_LIB_PLUGIN_ID_MAX_LENGTH=256
+
 # _lib_validate_plugin_id PLUGIN_ID
 # Validates PLUGIN_ID against the "<name>@<marketplace>" shape a plugin
 # install/enable argv sink accepts, before it ever reaches a command line.
@@ -3462,16 +3465,23 @@ _LIB_SIZE_THRESHOLD_BYTES=5242880
 # real install form, and `npm` would otherwise pass this regex and be
 # blocked only by happening not to appear in the registered-marketplace
 # list.
+# Rejects an id longer than _LIB_PLUGIN_ID_MAX_LENGTH bytes before any pattern
+# match or `##*@` expansion runs.
 # Returns 0 for a valid id, 1 otherwise. Prints nothing.
+# The body is a subshell that sets LC_ALL=C, so the length counts bytes and the
+# bracket ranges match only ASCII (see _lib_passes_path_char_allowlist for why
+# it avoids `local LC_ALL=C`).
 # Shared by bootstrap-project-plugins.sh and reconcile-project-plugins.sh so
 # neither can silently diverge from the other if this regex is ever
 # tightened again.
-_lib_validate_plugin_id() {
-  local plugin_id="$1"
-  [[ "$plugin_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
-  [ "${plugin_id##*@}" = "npm" ] && return 1
-  return 0
-}
+_lib_validate_plugin_id() (
+  LC_ALL=C
+  plugin_id="$1"
+  [ "${#plugin_id}" -le "$_LIB_PLUGIN_ID_MAX_LENGTH" ] || exit 1
+  [[ "$plugin_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || exit 1
+  [ "${plugin_id##*@}" = "npm" ] && exit 1
+  exit 0
+)
 
 # _lib_file_exceeds_size_cap FILE
 # Returns 0 when FILE's byte size is known and exceeds
@@ -3485,6 +3495,9 @@ _lib_file_exceeds_size_cap() {
     || file_size=""
   [ -n "$file_size" ] && [ "$file_size" -gt "$_LIB_SIZE_THRESHOLD_BYTES" ] 2>/dev/null
 }
+
+# Most true-valued `enabledPlugins` ids _lib_missing_plugin_ids processes. Far above any real repo; it bounds the per-id `grep` forks and the validation work that follows.
+_LIB_ENABLED_PLUGIN_IDS_MAX=100
 
 # _lib_missing_plugin_ids SETTINGS_FILE REGISTRY_FILE
 # Prints, one per line, every `true`-valued `enabledPlugins` id in
@@ -3532,11 +3545,12 @@ _lib_file_exceeds_size_cap() {
 # enabledPlugins). A missing REGISTRY_FILE is treated as an empty registry,
 # matching install.sh:732-735's "proceeding as if none are installed", so
 # every enabled id is reported missing.
-# Exit 1: SETTINGS_FILE is a symlink, not a regular file, or exceeds
-# _LIB_SIZE_THRESHOLD_BYTES. Stdout is empty. Both callers treat this
-# identically to a missing SETTINGS_FILE (nothing to install), but it is a
-# status distinguishable from exit 0 so a caller or test can tell "skipped"
-# apart from "genuinely nothing missing".
+# Exit 1: SETTINGS_FILE is a symlink, not a regular file, exceeds
+# _LIB_SIZE_THRESHOLD_BYTES, or holds more than _LIB_ENABLED_PLUGIN_IDS_MAX
+# non-empty true-valued `enabledPlugins` ids. Stdout is empty. Both callers
+# treat this identically to a missing SETTINGS_FILE (nothing to install), but
+# it is a status distinguishable from exit 0 so a caller or test can tell
+# "skipped" apart from "genuinely nothing missing".
 # Exit 2: REGISTRY_FILE exists but is unparseable JSON, or its top-level
 # `version` is not 2 -- fail closed, distinct from a missing REGISTRY_FILE
 # (exit 0, empty registry). Stdout is empty. Takes precedence over exit 3.
@@ -3574,9 +3588,11 @@ _lib_missing_plugin_ids() {
 
   # Here-strings, not `printf | grep -q`: under pipefail a grep that exits
   # early on a match SIGPIPEs the printf and turns a hit into a pipeline failure.
-  local id uninstalled_ids=""
+  local id uninstalled_ids="" enabled_id_count=0
   while IFS= read -r id; do
     [ -z "$id" ] && continue
+    enabled_id_count=$((enabled_id_count + 1))
+    [ "$enabled_id_count" -gt "$_LIB_ENABLED_PLUGIN_IDS_MAX" ] && return 1
     if ! grep -qFx -- "$id" <<<"$registry_ids"; then
       uninstalled_ids+="$id"$'\n'
     fi

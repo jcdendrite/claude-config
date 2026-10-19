@@ -67,17 +67,20 @@ mkdir -p -- "$BOOTSTRAP_DIR" 2>/dev/null || exit 0
 
 AUDIT_LOG="$BOOTSTRAP_DIR/audit.log"
 AUDIT_LOG_LOCK="$BOOTSTRAP_DIR/audit.log.lock"
-# Set by _audit_log the first time it acquires AUDIT_LOG_LOCK, so a run that
-# calls _audit_log many times (once per id) still calls
-# _lib_acquire_append_lock at most once per process, per that primitive's
-# own documented contract.
-_AUDIT_LOCK_ACQUIRED=""
+# _AUDIT_LOCK_ATTEMPTED is set by _audit_log the first time it tries
+# AUDIT_LOG_LOCK, so a run that calls _audit_log many times (once per id)
+# still calls _lib_acquire_append_lock at most once per process, per that
+# primitive's own documented contract. _AUDIT_LOCK_HELD is set only when that
+# attempt succeeded.
+_AUDIT_LOCK_ATTEMPTED=""
+_AUDIT_LOCK_HELD=""
 RECONCILER_LOCK="$BOOTSTRAP_DIR/reconciler.lock"
 MARKER_FILE="$BOOTSTRAP_DIR/.reconciler-start"
 
 # M5's total wall-clock ceiling: 600s (10 minutes), 20x the per-call 30s cap
 # below -- see the plan's M5 mechanism text for the full grounding (repo
 # precedent, not a vendor SLA, since none documents this call's duration).
+# Reaching the ceiling logs one line and ends the run.
 _RECONCILER_WALL_CLOCK_CEILING_SECONDS=600
 # 30s per capped `claude` call: double this repo's existing 15s cap for the
 # closest comparable network-fetching subprocess call (`git fetch` in
@@ -98,67 +101,94 @@ _reconciler_is_denylisted() {
   return 1
 }
 
+# _audit_sanitize VALUE
+# Prints VALUE without C0, DEL, or C1 control characters. Used only for the
+# repo root, which the kernel bounds at PATH_MAX (4096 bytes on Linux), so VALUE
+# is short enough for jq's argv and its gsub. Prints nothing and returns
+# non-zero if jq fails, so an unsanitized value never reaches the log.
+_audit_sanitize() {
+  # shellcheck disable=SC2016 # single-quoted on purpose: $value is a jq binding, not a shell variable.
+  _lib_jq -n -j --arg value "$1" '$value | gsub("\\p{Cc}"; "")' 2>/dev/null
+}
+
+# The sanitized repo root is the same for every audit line in a run, so it is computed once. A failed sanitize leaves it empty; the guard keeps that from tripping set -e.
+_AUDIT_REPO_FIELD=$(_audit_sanitize "$TARGET_REPO_ROOT") || _AUDIT_REPO_FIELD=""
+
+# _audit_id_field PLUGIN_ID_OR_DASH
+# Prints the audit-log text for a plugin id. "-" and an id that passes
+# _lib_validate_plugin_id (at most _LIB_PLUGIN_ID_MAX_LENGTH ASCII bytes from a
+# fixed alphabet, so no control characters) are printed verbatim. Any other value is repo-controlled text and prints as
+# `invalid-id(len=N)`, where N is its length in the shell's substring units
+# (bytes in the C locale, characters otherwise).
+_audit_id_field() {
+  local plugin_id="$1"
+  if [ "$plugin_id" = "-" ] || _lib_validate_plugin_id "$plugin_id"; then
+    printf '%s' "$plugin_id"
+  else
+    printf 'invalid-id(len=%d)' "${#plugin_id}"
+  fi
+}
+
 # _audit_log PLUGIN_ID_OR_DASH DECISION OUTCOME
 # One JSON-lines entry per decision, matching track-permission-prompts.sh's
 # own JSON-lines log convention. PLUGIN_ID_OR_DASH is "-" for a decision
-# that isn't specific to one id (M4's marketplace-listing failure). The repo
-# root and plugin id are both repo-controlled, so both are stripped of
-# control characters and length-capped at 4096 bytes (POSIX PATH_MAX) before
-# formatting -- bounding untrusted-input field length on its own merits,
-# independent of the whole-line dedup match below, which has no length
-# assumption of its own. The plugin id is stripped even though every call
-# site but one (wall_clock_ceiling_reached, reached before
-# _lib_validate_plugin_id ever runs) already passes a validated id, so this
-# stays safe regardless of call-site ordering.
+# that isn't specific to one id (M4's marketplace-listing failure). The plugin
+# id is repo-controlled and reaches here unvalidated from
+# wall_clock_ceiling_reached and m3_invalid_id_skip, so it goes through
+# _audit_id_field; the repo root is the once-computed _AUDIT_REPO_FIELD.
 #
 # Acquires AUDIT_LOG_LOCK directly via _lib_acquire_append_lock, at most
-# once per process (guarded by _AUDIT_LOCK_ACQUIRED), rather than through
+# once per process (guarded by _AUDIT_LOCK_ATTEMPTED), rather than through
 # _lib_append_line_locked -- that primitive's own lock helper is documented
 # to be called at most once per process, and this function is called many
 # times in one reconciler run (once per id). Every exit path returns 0: a
-# failing append degrades to "this one decision goes unlogged", never a
-# set -e abort of the run, so every call site above can stay a bare,
-# unguarded statement.
+# failing sanitize degrades to an empty repo root and a failing append to "this
+# one decision goes unlogged", never a set -e abort of the run, so every call
+# site above can stay a bare, unguarded statement.
 _audit_log() {
   local plugin_id="$1" decision="$2" outcome="$3"
-  local repo_field id_field line
-  repo_field=$(printf '%s' "$TARGET_REPO_ROOT" | tr -d '[:cntrl:]')
-  repo_field="${repo_field:0:4096}"
-  id_field=$(printf '%s' "$plugin_id" | tr -d '[:cntrl:]')
-  id_field="${id_field:0:4096}"
+  local id_field line
+  id_field=$(_audit_id_field "$plugin_id")
   # shellcheck disable=SC2016 # single-quoted on purpose: $timestamp/$pid/$repo_root/$plugin_id/$decision/$outcome are jq --arg bindings, not shell variables; double-quoting would expand them in the shell before jq sees them.
   line=$(_lib_jq -n -c \
     --arg timestamp "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg pid "$$" \
-    --arg repo_root "$repo_field" \
+    --arg repo_root "$_AUDIT_REPO_FIELD" \
     --arg plugin_id "$id_field" \
     --arg decision "$decision" \
     --arg outcome "$outcome" \
     '{timestamp: $timestamp, pid: $pid, repo_root: $repo_root, plugin_id: $plugin_id, decision: $decision, outcome: $outcome}' 2>/dev/null) || return 0
   [ -n "$line" ] || return 0
 
-  if [ -z "$_AUDIT_LOCK_ACQUIRED" ]; then
-    _AUDIT_LOCK_ACQUIRED=1
-    _lib_acquire_append_lock "$AUDIT_LOG_LOCK" || true
+  if [ -z "$_AUDIT_LOCK_ATTEMPTED" ]; then
+    _AUDIT_LOCK_ATTEMPTED=1
+    if _lib_acquire_append_lock "$AUDIT_LOG_LOCK"; then
+      _AUDIT_LOCK_HELD=1
+    fi
   fi
 
   # M9's own size cap: truncate before appending once the log exceeds
   # _LIB_SIZE_THRESHOLD_BYTES (_lib.sh, 5 MB -- the same threshold
   # _lib_missing_plugin_ids already applies to SETTINGS_FILE), rather than
-  # letting a shared, multi-writer, never-swept log grow without bound.
-  local audit_log_size
-  audit_log_size=$(stat -c%s -- "$AUDIT_LOG" 2>/dev/null) \
-    || audit_log_size=$(stat -f%z -- "$AUDIT_LOG" 2>/dev/null) \
-    || audit_log_size=""
-  if [ -n "$audit_log_size" ] && [ "$audit_log_size" -gt "$_LIB_SIZE_THRESHOLD_BYTES" ] 2>/dev/null; then
-    : > "$AUDIT_LOG" 2>/dev/null || true
+  # letting a shared, multi-writer, never-swept log grow without bound. Only
+  # the lock holder truncates: an unlocked truncate could drop a concurrent
+  # holder's lines, so a writer that lost the lock leaves the log to the next
+  # locked writer.
+  if [ -n "$_AUDIT_LOCK_HELD" ]; then
+    local audit_log_size
+    audit_log_size=$(stat -c%s -- "$AUDIT_LOG" 2>/dev/null) \
+      || audit_log_size=$(stat -f%z -- "$AUDIT_LOG" 2>/dev/null) \
+      || audit_log_size=""
+    if [ -n "$audit_log_size" ] && [ "$audit_log_size" -gt "$_LIB_SIZE_THRESHOLD_BYTES" ] 2>/dev/null; then
+      : 2>/dev/null > "$AUDIT_LOG" || true
+    fi
   fi
 
   if [ -f "$AUDIT_LOG" ] && grep -qFx -e "$line" -- "$AUDIT_LOG" 2>/dev/null; then
     touch -- "$AUDIT_LOG" 2>/dev/null || true
     return 0
   fi
-  printf '%s\n' "$line" >> "$AUDIT_LOG" || true
+  printf '%s\n' "$line" 2>/dev/null >> "$AUDIT_LOG" || true
 }
 
 # _reconciler_pid_start_time PID
@@ -264,9 +294,10 @@ _reconciler_process_repo() {
     local marker_epoch now_epoch
     marker_epoch=$(_reconciler_marker_epoch)
     now_epoch=$(date +%s) || now_epoch=""
+    # Once the ceiling is hit it stays hit, so log it once and end the run rather than once per remaining id.
     if [ -z "$marker_epoch" ] || [ -z "$now_epoch" ] || [ $((now_epoch - marker_epoch)) -ge "$_RECONCILER_WALL_CLOCK_CEILING_SECONDS" ]; then
       _audit_log "$id" "wall_clock_ceiling_reached" "skipped"
-      continue
+      break
     fi
 
     # M3, re-validated here (the reconciler's own point of use) independent
@@ -367,7 +398,7 @@ _missing_ids_status=0
 _missing_ids=$(_lib_missing_plugin_ids "$SETTINGS_FILE" "$REGISTRY_FILE") || _missing_ids_status=$?
 case "$_missing_ids_status" in
   0) ;;
-  1) exit 0 ;;  # symlinked/oversized settings file -- same as absent, no log (M1)
+  1) exit 0 ;;  # symlinked/oversized settings file or too many enabled ids -- same as absent, no log (M1)
   2)
     _audit_log "-" "registry_unparseable_or_version_mismatch" "skipped"
     exit 0

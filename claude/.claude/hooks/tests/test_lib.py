@@ -10850,6 +10850,57 @@ class TestLibValidatePluginId:
         result = _run_lib_call("_lib_validate_plugin_id foo", env=dict(os.environ))
         assert result.returncode == 1, repr(result)
 
+    def test_accepts_id_of_exactly_the_max_length_with_a_long_marketplace_half(self) -> None:
+        """The length bound is inclusive, so the longest accepted id is
+        `a@` plus a marketplace half that fills the rest."""
+        max_length = int(_sourced_value("_LIB_PLUGIN_ID_MAX_LENGTH"))
+        plugin_id = "a@" + "b" * (max_length - len("a@"))
+        assert len(plugin_id) == max_length
+
+        result = _run_lib_call(
+            f"_lib_validate_plugin_id {shlex.quote(plugin_id)}", env=dict(os.environ)
+        )
+
+        assert result.returncode == 0, repr(result)
+
+    def test_rejects_id_one_byte_over_the_max_length_with_a_long_marketplace_half(self) -> None:
+        """Guards the cost bound: bash's `##*@` removal is super-linear in the
+        marketplace half, so a valid-shaped id past the bound must be refused
+        before any pattern work."""
+        max_length = int(_sourced_value("_LIB_PLUGIN_ID_MAX_LENGTH"))
+        plugin_id = "a@" + "b" * (max_length - len("a@") + 1)
+        assert len(plugin_id) == max_length + 1
+
+        result = _run_lib_call(
+            f"_lib_validate_plugin_id {shlex.quote(plugin_id)}", env=dict(os.environ)
+        )
+
+        assert result.returncode == 1, repr(result)
+
+    def test_rejects_valid_shaped_id_of_96_kib_marketplace_half_promptly(self) -> None:
+        plugin_id = "a@" + "b" * (96 * 1024)
+
+        started = time.monotonic()
+        result = _run_lib_call(
+            f"_lib_validate_plugin_id {shlex.quote(plugin_id)}", env=dict(os.environ)
+        )
+        elapsed_seconds = time.monotonic() - started
+
+        assert result.returncode == 1, repr(result)
+        assert elapsed_seconds < 5, elapsed_seconds
+
+    def test_rejects_non_ascii_letter_even_under_a_locale_that_widens_bracket_ranges(self) -> None:
+        """The alphabet is ASCII-only only because the check pins LC_ALL=C;
+        under such a locale an unpinned `[A-Za-z]` admits accented letters."""
+        env = {**os.environ, "LC_ALL": _locale_that_widens_ascii_ranges()}
+        accented_plugin_id = "caf\u00e9@bar"
+
+        result = _run_lib_call(
+            f"_lib_validate_plugin_id {shlex.quote(accented_plugin_id)}", env=env
+        )
+
+        assert result.returncode == 1, repr(result)
+
 
 def _missing_plugin_ids(settings_file: Path, registry_file: Path) -> subprocess.CompletedProcess:
     """Runs under `set -o pipefail`, the mode the reconciler runs in."""
@@ -10893,6 +10944,34 @@ class TestLibFileExceedsSizeCap:
 
 
 class TestLibMissingPluginIds:
+    @staticmethod
+    def _settings_enabling_ids(tmp_path: Path, id_count: int) -> Path:
+        settings_file = tmp_path / "settings.json"
+        settings_file.write_text(
+            json.dumps({"enabledPlugins": {f"plugin-{index}@market": True for index in range(id_count)}})
+        )
+        return settings_file
+
+    def test_reports_every_missing_id_when_enabled_count_is_exactly_the_cap(self, tmp_path: Path) -> None:
+        enabled_ids_max = int(_sourced_value("_LIB_ENABLED_PLUGIN_IDS_MAX"))
+        settings_file = self._settings_enabling_ids(tmp_path, enabled_ids_max)
+
+        result = _missing_plugin_ids(settings_file, tmp_path / "no-such-registry.json")
+
+        assert result.returncode == 0, repr(result)
+        assert len(result.stdout.split()) == enabled_ids_max
+
+    def test_refuses_with_status_1_and_empty_stdout_one_id_past_the_cap(self, tmp_path: Path) -> None:
+        """Guards the per-id `grep` fork count and downstream validation work
+        against a settings file that enables an unbounded number of ids."""
+        enabled_ids_max = int(_sourced_value("_LIB_ENABLED_PLUGIN_IDS_MAX"))
+        settings_file = self._settings_enabling_ids(tmp_path, enabled_ids_max + 1)
+
+        result = _missing_plugin_ids(settings_file, tmp_path / "no-such-registry.json")
+
+        assert result.returncode == 1, repr(result)
+        assert result.stdout == ""
+
     def test_reports_every_true_valued_id_when_registry_is_absent(self, tmp_path: Path) -> None:
         """Matches install.sh:732-735's own "proceeding as if none are
         installed" -- a missing registry is treated as an empty one."""

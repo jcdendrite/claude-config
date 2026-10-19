@@ -4,7 +4,8 @@ Analog: test_register_marketplace.py. Runs the whole script against a
 `claude` PATH shim and real scratch git repos, synchronously -- the
 detached-child launch (`</dev/null >/dev/null 2>&1 &`) is
 bootstrap-project-plugins.sh's own invocation contract, exercised by that
-hook's own tests (not yet written; Phase 2). `_lib_missing_plugin_ids` and
+hook's own tests (claude/.claude/hooks/tests/test_bootstrap_project_plugins.py).
+`_lib_missing_plugin_ids` and
 `_lib_validate_plugin_id`, the two shared `_lib.sh` helpers this script
 calls, have their own direct unit tests in
 claude/.claude/hooks/tests/test_lib.py, independent of this file.
@@ -15,13 +16,20 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import textwrap
 import time
+import unicodedata
 from pathlib import Path
 
 import pytest
+from helpers import CLAUDE_DIR
 
-from .conftest import _dead_pid
+# claude/.claude/ itself, so `hooks.tests...` below resolves, as in test_review_ledger_lib.py.
+sys.path.insert(0, str(CLAUDE_DIR))
+from hooks.tests.test_config_lib import _locale_that_widens_ascii_ranges  # noqa: E402
+
+from .conftest import _dead_pid  # noqa: E402
 from .test_update_claude_config_plugins import _make_claude_shim
 
 _RECONCILE_SH = Path(__file__).resolve().parent.parent / "reconcile-project-plugins.sh"
@@ -403,7 +411,7 @@ class TestPluginIdRevalidation:
         installed_ids = [entry["plugin"] for entry in _install_log_entries(install_log)]
         assert installed_ids == ["foo@bar"]
         audit_entries = {line["plugin_id"]: line["decision"] for line in _audit_lines(config_dir)}
-        assert audit_entries["-bad@bar"] == "m3_invalid_id_skip"
+        assert audit_entries[f"invalid-id(len={len('-bad@bar')})"] == "m3_invalid_id_skip"
         assert audit_entries["foo@bar"] == "install_succeeded"
 
 
@@ -981,6 +989,249 @@ class TestWallClockCeiling:
         decisions = [line["decision"] for line in _audit_lines(config_dir)]
         assert decisions == ["wall_clock_ceiling_reached"]
 
+    def test_ceiling_reached_logs_one_line_and_ends_the_run_however_many_ids_remain(
+        self, tmp_path: Path
+    ) -> None:
+        """The ceiling stays hit once hit, so a run logs it once and stops
+        iterating instead of paying a log append per remaining id."""
+        repo = tmp_path / "repo"
+        _init_repo(repo, enabled_plugins={"foo@bar": True, "baz@bar": True, "qux@bar": True})
+        config_dir = tmp_path / "cfg"
+        marker_file = config_dir / "plugin-bootstrap" / ".reconciler-start"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        install_log = tmp_path / "install.log"
+        _make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=[{"name": "bar", "source": "directory"}],
+            install_log=install_log,
+            backdate_marker=marker_file,
+            backdate_marker_seconds_ago=700,
+        )
+
+        result = _run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        assert _install_log_entries(install_log) == []
+        decisions = [line["decision"] for line in _audit_lines(config_dir)]
+        assert decisions == ["wall_clock_ceiling_reached"]
+
+
+# ---------------------------------------------------------------------------
+# Audit-log fields: repo-controlled plugin ids reach the log unvalidated on
+# m3_invalid_id_skip and wall_clock_ceiling_reached, so only an id that passes
+# _lib_validate_plugin_id is logged as written.
+# ---------------------------------------------------------------------------
+
+# U+009B is the C1 control-sequence introducer; GNU `tr -d '[:cntrl:]'` leaves
+# it in a UTF-8 locale. ESC is C0. U+00E9 is multibyte.
+_C1_CSI = "\u009b"
+_C0_ESC = "\x1b"
+_MULTIBYTE_LETTER = "\u00e9"
+# The whole run must finish well under _lib_jq's 5 s cap. One jq sanitize pass
+# over a 16,000-character control-dense value takes seconds, so a flood of such
+# ids would take far longer than this.
+_HOSTILE_ID_RUN_MAX_SECONDS = 3.0
+_CONTROL_DENSE_FLOOD_SIZE = 6
+
+# Each case is the set of enabledPlugins keys; distinct lengths keep the logged markers distinct.
+_HOSTILE_ID_SETS = {
+    "c1-esc-del-multibyte": [f"-bad{_C1_CSI}{_C0_ESC}[31m{_MULTIBYTE_LETTER}\x7f@bar"],
+    "200-kib-key": ["-" + "a" * (200 * 1024) + "@bar"],
+    "20000-control-character-flood": [
+        "foo" + "\x01" * (20000 + offset) + "@bar" for offset in range(_CONTROL_DENSE_FLOOD_SIZE)
+    ],
+    "20000-c1-character-flood": [
+        "foo" + _C1_CSI * (20000 + offset) + "@bar" for offset in range(_CONTROL_DENSE_FLOOD_SIZE)
+    ],
+}
+
+
+def _assert_no_control_characters(field: str) -> None:
+    offending = [hex(ord(char)) for char in field if unicodedata.category(char) == "Cc"]
+    assert offending == [], f"control characters survived in {field!r}: {offending}"
+
+
+class TestAuditLogFields:
+    @pytest.mark.parametrize("hostile_ids", list(_HOSTILE_ID_SETS.values()), ids=list(_HOSTILE_ID_SETS))
+    def test_invalid_id_is_logged_as_a_length_marker_and_the_run_continues_fast(
+        self, tmp_path: Path, hostile_ids: list[str]
+    ) -> None:
+        """An invalid id is repo-controlled text, so the log carries only its length.
+        The run exits 0, processes the id after it, and stays far under the jq cap."""
+        repo = tmp_path / "repo"
+        _init_repo(repo, enabled_plugins={**dict.fromkeys(hostile_ids, True), "foo@bar": True})
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _make_reconciler_claude_shim(
+            bin_dir, marketplace_entries=[{"name": "someone-else", "source": "directory"}]
+        )
+
+        started = time.monotonic()
+        result = _run_reconciler(
+            repo, config_dir=config_dir, bin_dir=bin_dir, extra_env={"LC_ALL": "C"}
+        )
+        elapsed = time.monotonic() - started
+
+        assert result.returncode == 0, repr(result)
+        assert elapsed < _HOSTILE_ID_RUN_MAX_SECONDS, f"run took {elapsed:.1f}s"
+        raw_log = (config_dir / "plugin-bootstrap" / "audit.log").read_text(encoding="utf-8")
+        for line in raw_log.splitlines():
+            _assert_no_control_characters(line)
+        decision_by_plugin_id = {
+            entry["plugin_id"]: entry["decision"] for entry in _audit_lines(config_dir)
+        }
+        assert decision_by_plugin_id == {
+            **{
+                f"invalid-id(len={len(hostile_id.encode('utf-8'))})": "m3_invalid_id_skip"
+                for hostile_id in hostile_ids
+            },
+            "foo@bar": "m4_marketplace_not_registered",
+        }
+
+    def test_wall_clock_ceiling_line_with_hostile_id_logs_the_length_marker(self, tmp_path: Path) -> None:
+        """wall_clock_ceiling_reached fires before id validation, so the
+        unvalidated id reaches the log on that path too."""
+        hostile_id = f"foo{_C1_CSI}{_C0_ESC}{_MULTIBYTE_LETTER}@bar"
+        repo = tmp_path / "repo"
+        _init_repo(repo, enabled_plugins={hostile_id: True})
+        config_dir = tmp_path / "cfg"
+        marker_file = config_dir / "plugin-bootstrap" / ".reconciler-start"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=[{"name": "bar", "source": "directory"}],
+            backdate_marker=marker_file,
+            backdate_marker_seconds_ago=700,
+        )
+
+        result = _run_reconciler(
+            repo, config_dir=config_dir, bin_dir=bin_dir, extra_env={"LC_ALL": "C"}
+        )
+
+        assert result.returncode == 0, repr(result)
+        [entry] = _audit_lines(config_dir)
+        assert entry["decision"] == "wall_clock_ceiling_reached"
+        assert entry["plugin_id"] == f"invalid-id(len={len(hostile_id.encode('utf-8'))})"
+
+    def test_non_ascii_letter_id_is_invalid_even_under_a_locale_that_widens_bracket_ranges(
+        self, tmp_path: Path
+    ) -> None:
+        """The id alphabet is ASCII-only only because the validator pins
+        LC_ALL=C; under a widening locale an unpinned `[A-Za-z]` admits the
+        accented letter and the id would be logged as written. N counts
+        characters here because the ambient locale is UTF-8."""
+        accented_id = f"caf{_MULTIBYTE_LETTER}@bar"
+        repo = tmp_path / "repo"
+        _init_repo(repo, enabled_plugins={accented_id: True})
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _make_reconciler_claude_shim(
+            bin_dir, marketplace_entries=[{"name": "bar", "source": "directory"}]
+        )
+
+        result = _run_reconciler(
+            repo, config_dir=config_dir, bin_dir=bin_dir,
+            extra_env={"LC_ALL": _locale_that_widens_ascii_ranges()},
+        )
+
+        assert result.returncode == 0, repr(result)
+        [entry] = _audit_lines(config_dir)
+        assert entry["decision"] == "m3_invalid_id_skip"
+        assert entry["plugin_id"] == f"invalid-id(len={len(accented_id)})"
+
+    def test_valid_shaped_id_over_the_max_length_is_invalid_and_the_run_stays_fast(
+        self, tmp_path: Path
+    ) -> None:
+        """A 96 KiB marketplace half is valid-shaped but past the length bound,
+        so it is refused before the super-linear `##*@` removal runs."""
+        long_id = "a@" + "b" * (96 * 1024)
+        repo = tmp_path / "repo"
+        _init_repo(repo, enabled_plugins={long_id: True, "foo@bar": True})
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        install_log = tmp_path / "install.log"
+        _make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=[{"name": "bar", "source": "directory"}],
+            install_log=install_log,
+        )
+
+        started = time.monotonic()
+        result = _run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+        elapsed = time.monotonic() - started
+
+        assert result.returncode == 0, repr(result)
+        assert elapsed < _HOSTILE_ID_RUN_MAX_SECONDS, f"run took {elapsed:.1f}s"
+        assert [entry["plugin"] for entry in _install_log_entries(install_log)] == ["foo@bar"]
+        decision_by_plugin_id = {
+            entry["plugin_id"]: entry["decision"] for entry in _audit_lines(config_dir)
+        }
+        assert decision_by_plugin_id == {
+            f"invalid-id(len={len(long_id)})": "m3_invalid_id_skip",
+            "foo@bar": "install_succeeded",
+        }
+
+    def test_valid_id_is_logged_verbatim(self, tmp_path: Path) -> None:
+        valid_id = "Foo.Bar_1-x@my-market.place_2"
+        repo = tmp_path / "repo"
+        _init_repo(repo, enabled_plugins={valid_id: True})
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _make_reconciler_claude_shim(
+            bin_dir, marketplace_entries=[{"name": "someone-else", "source": "directory"}]
+        )
+
+        result = _run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        [entry] = _audit_lines(config_dir)
+        assert entry["plugin_id"] == valid_id
+        assert entry["decision"] == "m4_marketplace_not_registered"
+
+    def test_repo_root_control_characters_are_stripped_from_the_audit_line(self, tmp_path: Path) -> None:
+        """The repo root is a directory name the repo's owner controls: C0 (ESC,
+        newline) and C1 (U+009B) must not reach the shared log, and the entry
+        must stay on one line."""
+        repo = tmp_path / f"repo{_C0_ESC}[31m{_C1_CSI}\nend"
+        _init_repo(repo, enabled_plugins={"foo@bar": True})
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _make_reconciler_claude_shim(
+            bin_dir, marketplace_entries=[{"name": "someone-else", "source": "directory"}]
+        )
+
+        result = _run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        raw_log = (config_dir / "plugin-bootstrap" / "audit.log").read_text(encoding="utf-8")
+        [entry] = [json.loads(line) for line in raw_log.splitlines()]
+        assert entry["decision"] == "m4_marketplace_not_registered"
+        assert entry["repo_root"] == str(repo.parent / "repo[31mend")
+        assert raw_log.count("\n") == 1
+
+    def test_multibyte_repo_root_is_logged_intact(self, tmp_path: Path) -> None:
+        repo = tmp_path / f"r{_MULTIBYTE_LETTER}po-\u65e5\u672c\u8a9e"
+        _init_repo(repo, enabled_plugins={"foo@bar": True})
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _make_reconciler_claude_shim(
+            bin_dir, marketplace_entries=[{"name": "someone-else", "source": "directory"}]
+        )
+
+        result = _run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        [entry] = _audit_lines(config_dir)
+        assert entry["repo_root"] == str(repo)
+
 
 # ---------------------------------------------------------------------------
 # M9: the shared, locked audit-log append survives two concurrent writers.
@@ -1128,3 +1379,58 @@ class TestAuditLogSizeCap:
         lines = _audit_lines(config_dir)
         assert len(lines) == 1
         assert lines[0]["decision"] == "m4_marketplace_not_registered"
+
+    def test_audit_log_past_size_cap_is_not_truncated_when_another_writer_holds_the_lock(self, tmp_path: Path) -> None:
+        """Only the lock holder truncates: a live holder makes the bounded retries
+        run out, and the reconciler then appends without truncating."""
+        repo = tmp_path / "repo"
+        _init_repo(repo, enabled_plugins={"foo@bar": True})
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _make_reconciler_claude_shim(
+            bin_dir, marketplace_entries=[{"name": "someone-else", "source": "directory"}]
+        )
+        audit_log = config_dir / "plugin-bootstrap" / "audit.log"
+        audit_log.parent.mkdir(parents=True)
+        oversized_line = "x" * (5 * 1024 * 1024 + 1)
+        audit_log.write_text(oversized_line + "\n")
+        lock_file = audit_log.parent / "audit.log.lock"
+        lock_file.write_text(f"{os.getpid()}\n")
+
+        result = _run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        logged_lines = audit_log.read_text().splitlines()
+        assert logged_lines[0] == oversized_line
+        assert json.loads(logged_lines[-1])["decision"] == "m4_marketplace_not_registered"
+        assert lock_file.read_text().strip() == str(os.getpid()), "the reconciler must not release a lock it does not hold"
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root writes a read-only file")
+    def test_failed_truncation_and_append_on_a_read_only_oversized_audit_log_keeps_the_run_clean(
+        self, tmp_path: Path
+    ) -> None:
+        """A failing truncate or append must not abort the run (it would strand the
+        reconciler lock) or leak the shell's redirection error to stderr."""
+        repo = tmp_path / "repo"
+        _init_repo(repo, enabled_plugins={"foo@bar": True})
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _make_reconciler_claude_shim(
+            bin_dir, marketplace_entries=[{"name": "someone-else", "source": "directory"}]
+        )
+        audit_log = config_dir / "plugin-bootstrap" / "audit.log"
+        audit_log.parent.mkdir(parents=True)
+        oversized_content = "x" * (5 * 1024 * 1024 + 1) + "\n"
+        audit_log.write_text(oversized_content)
+        audit_log.chmod(0o444)
+        try:
+            result = _run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+        finally:
+            audit_log.chmod(0o644)
+
+        assert result.returncode == 0, repr(result)
+        assert result.stderr == ""
+        assert audit_log.read_text() == oversized_content
+        assert not (audit_log.parent / "reconciler.lock").exists(), "the run must reach its lock release"

@@ -1,6 +1,6 @@
 # config-keys.psv schema provenance
 
-For every one of the 19 keys in `config-keys.psv`, this table traces the
+For every one of the 20 keys in `config-keys.psv`, this table traces the
 actual current call site(s), derives the `resolution`,
 `legacy-probe-on-resolution-failure`, and `legacy-import-locations` column
 values from that code, and records the current fail-direction on a
@@ -165,7 +165,7 @@ Column legend:
   unresolvable config dir leaves nothing to restate, so it no-ops rather
   than guessing).
 
-## Remaining fourteen keys
+## Remaining fifteen keys
 
 ### `permission_prompt_tracking`
 
@@ -433,3 +433,22 @@ Column legend:
 - Fail direction: only exit 0 from `_config_enabled` routes. Any other
   exit, including an unresolvable config dir, an unreadable schema or a
   missing row, allows the call, which leaves the round inline.
+### `plugin_bootstrap`
+
+- Call site: `bootstrap-project-plugins.sh`, a single `_config_enabled
+  plugin_bootstrap || exit 0` ahead of any repo read, then `CONFIG_DIR=$(_lib_config_dir)
+  || exit 0` for the trust-record, registry, and audit-log paths.
+- Resolution: **config-dir**. `_config_enabled` reads only the resolved
+  config dir — no `$HOME` union arm.
+- Legacy-probe-on-resolution-failure: **false**. No raw-path probe exists;
+  `_config_enabled`'s exit 2 (unresolvable config dir) takes the hook's own
+  `|| exit 0`.
+- Legacy-import-locations: **config-dir**. This key has no legacy
+  predecessor at all, so there is no legacy file for
+  `migrate-legacy-config.sh` to import from either location.
+- Fail direction on resolution failure: `exit 0` — the hook installs
+  nothing rather than guess.
+- Fail direction on schema-read failure: **disabled**. An unreadable
+  `config-keys.psv` or an absent `plugin_bootstrap` row exits the hook (the
+  `_config_enabled` statuses 3 and 4). A malformed or wrong-type value in
+  `claude-config.toml` falls back to the schema default `true`.
