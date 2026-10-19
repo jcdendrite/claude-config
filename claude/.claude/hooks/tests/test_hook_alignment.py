@@ -542,7 +542,7 @@ def test_plan_writer_gate_wired_on_edit_write_multiedit() -> None:
     only some of the three leaves the rest unscoped for the plan-writer
     agent, whose only write tool is Edit.
     """
-    matchers = _pretooluse_matcher_groups_for(_MAIN_HOOKS_DIR / "deny-plan-writer-off-plan-writes.sh")
+    matchers = pretooluse_matcher_groups_for(_MAIN_HOOKS_DIR / "deny-plan-writer-off-plan-writes.sh")
     assert _matchers_spanning_edit_write_multiedit(matchers), (
         f"deny-plan-writer-off-plan-writes.sh: no PreToolUse matcher spanning "
         f"Edit|Write|MultiEdit in settings.json (found {matchers!r}) -- Edit is "
