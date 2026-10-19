@@ -3962,8 +3962,7 @@ _lib_review_only_agents() {
 # crash.
 # An unset or empty array expanded via "${arr[@]}" under `set -u` flattens to
 # zero ITEMs on the supported bash floor, so the call site does not abort.
-# Shared by the membership scans below, each over its own derived
-# array.
+# Shared by the membership scans below, each over its own array.
 _lib_list_contains() {
   local value="$1"
   shift
