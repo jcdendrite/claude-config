@@ -173,8 +173,10 @@ class _Sandbox:
         self.handoffs = self.config_dir / "handoffs"
         self.briefs = self.config_dir / "briefs"
         self.tmpdir_root = tmp_path / "tmp-root"
-        for directory in (self.home, self.config_dir, self.tmpdir_root):
+        for directory in (self.home, self.config_dir):
             directory.mkdir()
+        # _lib_resume_context_index_dir refuses a group- or world-writable root without the sticky bit, so mode it explicitly rather than inherit the umask.
+        self.tmpdir_root.mkdir(mode=0o700)
         self.main_checkout = trees.main_checkout
         self.worktree_a = trees.worktree_a
         self.worktree_b = trees.worktree_b
