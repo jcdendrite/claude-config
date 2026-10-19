@@ -72,12 +72,7 @@ if [ -z "$SKILL_NAME" ]; then
   exit 0
 fi
 
-# Match the final component after the last ':' or '/' -- two qualified
-# forms exist: directory-qualified (.claude/worktrees/<branch>/claude:name)
-# when the stow source sits under a `.claude` ancestor directory, and
-# plugin-qualified (plugin:name) for plugin skills.
-LABEL="${SKILL_NAME##*:}"
-LABEL="${LABEL##*/}"
+LABEL=$(_lib_skill_basename "$SKILL_NAME")
 [ "$LABEL" = "handoff" ] || exit 0
 
 # _lib_capped_for (claude/.claude/hooks/_lib.sh) escalates to SIGKILL 2s

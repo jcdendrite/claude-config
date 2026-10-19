@@ -990,6 +990,74 @@ def skill_input(
     return payload
 
 
+def build_isolated_hook(
+    tmp_path: Path,
+    hook: Path,
+    *,
+    schema_text: str | None = None,
+    extra_links: tuple[Path, ...] = (),
+) -> Path:
+    """Symlink `hook` plus its _lib.sh/_config.sh dependencies, and each of
+    `extra_links` under its own file name, into a directory whose
+    config-keys.psv holds `schema_text`, or is absent when None. An absent
+    schema makes `_config_schema_field` see an unreadable schema, so
+    `_config_enabled` returns exit 3. Returns the isolated hook's own path."""
+    isolated = tmp_path / "isolated-hooks"
+    isolated.mkdir()
+    (isolated / hook.name).symlink_to(hook)
+    (isolated / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
+    (isolated / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+    if schema_text is not None:
+        (isolated / "config-keys.psv").write_text(schema_text)
+    for extra_link in extra_links:
+        (isolated / extra_link.name).symlink_to(extra_link)
+    return isolated / hook.name
+
+
+def pretooluse_wired_entries(hook: Path) -> list[tuple[str, dict]]:
+    """Every PreToolUse hook-entry dict wired to `hook`, paired with its
+    group's `matcher` string. Entries match by exact equality on the
+    command's last shell word -- not a substring/endswith match, which would
+    also match a hook name appearing as a non-final CLI argument to an
+    unrelated script. Tokenized with shlex, which parses shell quoting, so
+    the match stays correct regardless of a plugin author's quoting style --
+    a bare whitespace split has no notion of quoting at all, so pairing it
+    with an `expected_invocation` written to match today's quoting
+    convention is a coincidence of current data, not a guarantee.
+    """
+    if hook.parent == HOOKS_DIR:
+        config_path = CLAUDE_DIR / "settings.json"
+        expected_invocation = f"~/.claude/hooks/{hook.name}"
+    else:
+        config_path = hook.parent / "hooks.json"
+        expected_invocation = f"${{CLAUDE_PLUGIN_ROOT}}/hooks/{hook.name}"
+
+    assert config_path.is_file(), (
+        f"{hook.name}: expected registration config {config_path} does not "
+        f"exist"
+    )
+    config = json.loads(config_path.read_text())
+    wired: list[tuple[str, dict]] = []
+    for group in config.get("hooks", {}).get("PreToolUse", []):
+        if not isinstance(group, dict):
+            continue
+        for entry in group.get("hooks", []):
+            if not isinstance(entry, dict):
+                continue
+            command = entry.get("command", "")
+            tokens = shlex.split(command)
+            if tokens and tokens[-1] == expected_invocation:
+                wired.append((group.get("matcher", ""), entry))
+    return wired
+
+
+def pretooluse_matcher_groups_for(hook: Path) -> list[str]:
+    """The `matcher` string of every PreToolUse entry wired to `hook` -- one
+    item per wired entry, so a group wiring the hook twice lists its matcher
+    twice."""
+    return [matcher for matcher, _entry in pretooluse_wired_entries(hook)]
+
+
 # activate-handoff-bypass.sh wraps its marker.sh call in a 2s `_lib_capped_for`
 # cap that can be exceeded under parallel-test-worker contention -- see that
 # hook's own header comment. Retrying is safe because `marker.sh activate` is

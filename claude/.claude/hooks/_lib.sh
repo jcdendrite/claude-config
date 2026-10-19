@@ -561,6 +561,35 @@ _lib_parse_tool_input_or_deny() {
   esac
 }
 
+# _lib_skill_basename SKILL_NAME
+# Prints a Skill call's final name component, taken after the last ':' and
+# then after the last '/'. Two qualified forms exist: directory-qualified
+# (.claude/worktrees/<branch>/claude:name) and plugin-qualified (plugin:name).
+# A caller captures it with $(...); a name ending in ':' or '/' prints empty.
+_lib_skill_basename() {
+  local skill_name="${1:-}"
+  skill_name="${skill_name##*:}"
+  printf '%s\n' "${skill_name##*/}"
+}
+
+# _lib_args_lead_word_is ARGS WORD
+# Returns 0 when a Skill call's args, with leading whitespace stripped, are
+# exactly the word or the word followed by whitespace; returns 1 otherwise.
+# The match is case-sensitive while the caller's `nocasematch` is off, and it
+# does not strip quotes or backticks.
+# local LC_ALL=C confines [[:space:]] to ASCII whitespace, so U+3000 does not
+# count as a separator in a UTF-8 locale.
+_lib_args_lead_word_is() {
+  local LC_ALL=C
+  local args="${1:-}" word="${2:-}"
+  [ -n "$word" ] || return 1
+  args="${args#"${args%%[![:space:]]*}"}"
+  case "$args" in
+    "$word" | "$word"[[:space:]]*) return 0 ;;
+  esac
+  return 1
+}
+
 # Raw repo-root resolution, shared so every caller resolving a given tree
 # lands on the identical REPO_ROOT string. marker.sh's _resolve_repo_root
 # layers _refuse_main_tree_under_enforcement on top of this; that check is

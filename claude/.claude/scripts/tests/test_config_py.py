@@ -23,6 +23,7 @@ from _config import config_enabled, config_value, schema  # noqa: E402
 _CONFIG_GET_SH = SCRIPTS_DIR / "config-get.sh"
 _CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
 _CONFIG_SH = HOOKS_DIR / "_config.sh"
+_OPT_IN_PILOT_KEYS = ["architect_fix_plan_pilot", "review_orchestrator_routing"]
 
 
 def _count_config_keys_psv_rows() -> int:
@@ -85,22 +86,26 @@ class TestSchema:
         assert no_legacy_polarity_defaults == {
             "test_selection_tracking": "false",
             "architect_fix_plan_pilot": "false",
+            "review_orchestrator_routing": "false",
         }
 
-    def test_architect_fix_plan_pilot_resolves_per_account(self):
+    @pytest.mark.parametrize("key", _OPT_IN_PILOT_KEYS)
+    def test_opt_in_pilot_key_resolves_per_account(self, key):
         """A widening to config-dir-or-home would make a home-level file enable
-        the pilot for every account."""
-        assert schema()["architect_fix_plan_pilot"].resolution == "config-dir"
+        the key for every account."""
+        assert schema()[key].resolution == "config-dir"
 
-    def test_architect_fix_plan_pilot_is_bool_typed(self):
+    @pytest.mark.parametrize("key", _OPT_IN_PILOT_KEYS)
+    def test_opt_in_pilot_key_is_bool_typed(self, key):
         """config-get.sh's exit-0 gate compares against the literal "false",
         which holds for a bool only."""
-        assert schema()["architect_fix_plan_pilot"].type == "bool"
+        assert schema()[key].type == "bool"
 
-    def test_architect_fix_plan_pilot_has_no_prompt_description(self):
-        """A non-empty prompt_description would offer the pilot in install.sh's
+    @pytest.mark.parametrize("key", _OPT_IN_PILOT_KEYS)
+    def test_opt_in_pilot_key_has_no_prompt_description(self, key):
+        """A non-empty prompt_description would offer the key in install.sh's
         opt-in prompt to every consumer."""
-        assert schema()["architect_fix_plan_pilot"].prompt_description == ""
+        assert schema()[key].prompt_description == ""
 
     def test_legacy_filename_is_empty_iff_legacy_polarity_is_empty(self):
         """A row's legacy-filename is empty if and only if its legacy-polarity

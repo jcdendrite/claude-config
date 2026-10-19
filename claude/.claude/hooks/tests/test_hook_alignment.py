@@ -63,7 +63,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -78,6 +77,8 @@ from helpers import (
     bash_input,
     build_path_without,
     init_git_repo_with_commit,
+    pretooluse_matcher_groups_for,
+    pretooluse_wired_entries,
     run_hook,
     scaled_shim_sleep,
     write_input,
@@ -240,40 +241,9 @@ _TREE_SETTINGS_PATHS = _tree_settings_paths()
 
 
 def _pretooluse_entries_for(hook: Path) -> list[dict]:
-    """Every PreToolUse hook-entry dict wired to `hook`, matched by exact
-    equality on the command's last shell word — not a substring/endswith
-    match, which would also match a hook name appearing as a non-final CLI
-    argument to an unrelated script. Tokenized with shlex, which parses
-    shell quoting, so the match stays correct regardless of a plugin
-    author's quoting style — a bare whitespace split has no notion of
-    quoting at all, so pairing it with an `expected_invocation` written to
-    match today's quoting convention is a coincidence of current data, not
-    a guarantee.
-    """
-    if hook.parent == _MAIN_HOOKS_DIR:
-        config_path = _SETTINGS_PATH
-        expected_invocation = f"~/.claude/hooks/{hook.name}"
-    else:
-        config_path = hook.parent / "hooks.json"
-        expected_invocation = f"${{CLAUDE_PLUGIN_ROOT}}/hooks/{hook.name}"
-
-    assert config_path.is_file(), (
-        f"{hook.name}: expected registration config {config_path} does not "
-        f"exist"
-    )
-    config = json.loads(config_path.read_text())
-    matched: list[dict] = []
-    for group in config.get("hooks", {}).get("PreToolUse", []):
-        if not isinstance(group, dict):
-            continue
-        for entry in group.get("hooks", []):
-            if not isinstance(entry, dict):
-                continue
-            command = entry.get("command", "")
-            tokens = shlex.split(command)
-            if tokens and tokens[-1] == expected_invocation:
-                matched.append(entry)
-    return matched
+    """Every PreToolUse hook-entry dict wired to `hook` -- see
+    `pretooluse_wired_entries` for the matching rules."""
+    return [entry for _matcher, entry in pretooluse_wired_entries(hook)]
 
 
 def _pretooluse_command_for(hook: Path) -> list[str]:
@@ -516,31 +486,6 @@ def test_gate_hook_registered_in_pretooluse_matcher(hook: Path) -> None:
     )
 
 
-def _pretooluse_matcher_groups_for(hook: Path) -> list[str]:
-    """The `matcher` string of every PreToolUse group containing an entry
-    wired to `hook` -- one entry per matcher group, using the same
-    exact-last-shell-word match _pretooluse_entries_for uses."""
-    if hook.parent == _MAIN_HOOKS_DIR:
-        config_path = _SETTINGS_PATH
-        expected_invocation = f"~/.claude/hooks/{hook.name}"
-    else:
-        config_path = hook.parent / "hooks.json"
-        expected_invocation = f"${{CLAUDE_PLUGIN_ROOT}}/hooks/{hook.name}"
-    config = json.loads(config_path.read_text())
-    matchers: list[str] = []
-    for group in config.get("hooks", {}).get("PreToolUse", []):
-        if not isinstance(group, dict):
-            continue
-        for entry in group.get("hooks", []):
-            if not isinstance(entry, dict):
-                continue
-            command = entry.get("command", "")
-            tokens = shlex.split(command)
-            if tokens and tokens[-1] == expected_invocation:
-                matchers.append(group.get("matcher", ""))
-    return matchers
-
-
 # enforce-marker-script-shape.sh declares, in its own header comment, that
 # closing its bypass class requires being wired on both the Bash and an
 # Edit|Write|MultiEdit PreToolUse matcher -- gating only the shell leaves a
@@ -566,7 +511,7 @@ def test_write_gate_hook_wired_on_both_bash_and_edit_write_multiedit(hook_name: 
     surface exists.
     """
     hook = _MAIN_HOOKS_DIR / hook_name
-    matchers = _pretooluse_matcher_groups_for(hook)
+    matchers = pretooluse_matcher_groups_for(hook)
     assert "Bash" in matchers, f"{hook_name}: not wired on a bare 'Bash' PreToolUse matcher"
     assert _matchers_spanning_edit_write_multiedit(matchers), (
         f"{hook_name}: no PreToolUse matcher spanning Edit|Write|MultiEdit "
@@ -583,7 +528,7 @@ def test_ask_review_permissions_wired_on_edit_write_multiedit() -> None:
     `test_settings_file_edit_ask_rule_stays_declared_in_stow_source_settings`)
     are independent layers. Only the hook is known to cover MultiEdit.
     """
-    matchers = _pretooluse_matcher_groups_for(_MAIN_HOOKS_DIR / "ask-review-permissions.sh")
+    matchers = pretooluse_matcher_groups_for(_MAIN_HOOKS_DIR / "ask-review-permissions.sh")
     assert _matchers_spanning_edit_write_multiedit(matchers), (
         f"ask-review-permissions.sh: no PreToolUse matcher spanning "
         f"Edit|Write|MultiEdit in settings.json (found {matchers!r})"
