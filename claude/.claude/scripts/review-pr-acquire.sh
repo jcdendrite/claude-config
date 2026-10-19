@@ -361,8 +361,7 @@ fi
 # variables, and double-quoting would trigger shell expansion inside the jq
 # filter instead of leaving the bindings to jq itself.
 # --slurpfile wraps each file's one JSON value in an array, hence `[0]`.
-# The completeness flags and baseStack lead the document, ahead of the gh pr view
-# payload, so a head preview of stdout keeps them.
+# The completeness flags and baseStack lead the document, ahead of the gh pr view payload.
 if ! CONTEXT_JSON=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -c \
   --arg prIdentity "$PR_IDENTITY" \
   --arg authorAssociation "$AUTHOR_ASSOCIATION" \

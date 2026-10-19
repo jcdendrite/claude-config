@@ -1324,6 +1324,23 @@ class TestStackLookupVerdictReviewedGate:
         assert entry["reviewsNotShown"] == 1
 
 
+class TestStackLookupVerdictForkReviewsNeverClearAnAncestor:
+    @pytest.mark.parametrize("fork_first", [True, False], ids=["fork-first", "fork-last"])
+    def test_a_reviewed_fork_pr_beside_an_unreviewed_same_repository_pr_leaves_the_ancestor_unreviewed(self, fork_first):
+        fork_item = _stack_item(11, is_cross_repository=True, reviews=[pr_list_review("bob", "APPROVED")])
+        same_repository_item = _stack_item(12)
+        items = [fork_item, same_repository_item] if fork_first else [same_repository_item, fork_item]
+
+        status, output = _verdict(items)
+
+        assert status == 0, output
+        number, reviewed, _, entry = _split_ancestor_verdict(output)
+        assert (number, reviewed) == (12, False)
+        assert entry["reviewed"] is False
+        assert entry["reviews"] == []
+        assert entry["reviewsNotShown"] == 0
+
+
 class TestStackLookupVerdictChangesRequested:
     @staticmethod
     def _changes_requested(reviews: list[dict]) -> bool:
@@ -1465,6 +1482,13 @@ class TestStackLookupVerdictSelfReview:
         entry = _entry_with_reviews([pr_list_review("lookalike", "COMMENTED")], author_login="app/lookalike")
 
         assert [review["byPrAuthor"] for review in entry["reviews"]] == [False]
+
+    def test_a_review_author_differing_only_in_case_from_the_pr_author_is_not_a_self_review(self):
+        # The verdict compares GitHub logins exactly, as superseded does; review_pr_authorship alone ignores case.
+        entry = _entry_with_reviews([pr_list_review("Alice", "APPROVED")], author_login="alice")
+
+        assert [review["byPrAuthor"] for review in entry["reviews"]] == [False]
+        assert entry["selfReviewOnly"] is False
 
 
 class TestStackLookupVerdictReviewListFull:
@@ -1940,10 +1964,10 @@ class _WalkResult(NamedTuple):
     shim_path: Path
 
 
-def _assert_one_script_prefixed_line(stderr: str) -> None:
-    """`stderr` is exactly one `_WALK_SCRIPT_NAME: ...` line, so a branch name's newline cannot forge a second one."""
+def _assert_one_line_opening_with(stderr: str, expected_prefix: str) -> None:
+    """`stderr` is exactly one line that opens with `expected_prefix`, so a branch name's newline cannot forge a second one."""
     assert stderr.count("\n") == 1 and stderr.endswith("\n"), stderr
-    assert stderr.startswith(f"{_WALK_SCRIPT_NAME}: "), stderr
+    assert stderr.startswith(expected_prefix), stderr
 
 
 def _run_walk(
@@ -1958,6 +1982,7 @@ def _run_walk(
     prelude: str = "",
     extra_env: dict[str, str] | None = None,
     scaled_timeout: bool = False,
+    fails_argument_validation: bool = False,
 ) -> _WalkResult:
     """Run review_pr_walk_stack in `tmp_path` against a PATH-shimmed gh that answers `gh pr list` from `replies`.
 
@@ -1965,7 +1990,10 @@ def _run_walk(
     HOME and GH_CONFIG_DIR point inside `tmp_path`, so no real gh configuration is read.
     Returns the walk's status, its stdout and stderr, the logged gh calls, and where `gh` resolved.
     The walk's stdin is closed, so a stubbed command that drains stdin ends at once whatever the runner's capture mode.
-    A status of 1 must come with exactly one `_WALK_SCRIPT_NAME: ` stderr line, whichever failure caused it.
+    A status of 1 must come with exactly one stderr line, whichever failure caused it.
+    That line opens with `_WALK_SCRIPT_NAME: PR <owner/repo>#<number>: `.
+    It opens with `_WALK_SCRIPT_NAME: ` alone when `fails_argument_validation` says the walk rejected its arguments first.
+    The number is the one the walk prints, so `int(pr_number)` drops any leading zeros.
     """
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -1998,7 +2026,12 @@ def _run_walk(
     assert result.returncode == 0, result.stderr
     status_line, resolved_gh, stdout = result.stdout.split("\n", 2)
     if int(status_line) == 1:
-        _assert_one_script_prefixed_line(result.stderr)
+        failure_prefix = (
+            f"{_WALK_SCRIPT_NAME}: "
+            if fails_argument_validation
+            else f"{_WALK_SCRIPT_NAME}: PR {owner_repo}#{int(pr_number)}: "
+        )
+        _assert_one_line_opening_with(result.stderr, failure_prefix)
     return _WalkResult(int(status_line), stdout, result.stderr, logged_gh_calls(call_log), resolved_gh, shim_path)
 
 
@@ -2021,6 +2054,9 @@ def _linear_stack(
         replies[head] = [pr_list_item(first_number + index, head, base, reviews=reviews)]
     return replies, "feat/level-1"
 
+
+# The `_run_walk` defaults walk PR 5 of `_OWNER_REPO`, which names the PR in every failure line after argument validation.
+_WALK_TARGET_FAILURE_PREFIX = f"{_WALK_SCRIPT_NAME}: PR {_OWNER_REPO}#5: "
 
 _WALK_JSON_FIELDS = {"number", "title", "author", "headRefName", "baseRefName", "isCrossRepository", "reviews"}
 
@@ -2047,7 +2083,7 @@ class TestWalkStackPreconditions:
         ],
     )
     def test_a_bad_argument_fails_with_its_exact_stderr_line_and_no_gh_call(self, tmp_path, overrides, expected_message):
-        result = _run_walk(tmp_path, {}, **overrides)
+        result = _run_walk(tmp_path, {}, fails_argument_validation=True, **overrides)
 
         assert result.resolved_gh == str(result.shim_path)
         assert result.status == 1
@@ -2166,6 +2202,18 @@ class TestWalkStackGateMatrix:
         document_lowest = json.loads(document.stdout)["lowestUnreviewed"]
         assert ("clear" if document_lowest is None else str(document_lowest)) == expected
 
+    def test_a_reviewed_fork_pr_beside_an_unreviewed_same_repository_pr_does_not_clear_the_gate(self, tmp_path):
+        replies, first_branch = _linear_stack(2, reviewed=[True, False])
+        replies["feat/level-2"] = [
+            pr_list_item(900, "feat/level-2", "main", is_cross_repository=True, reviews=[pr_list_review("mallory", "APPROVED")]),
+            *replies["feat/level-2"],
+        ]
+
+        result = _run_walk(tmp_path, replies, base_ref=first_branch)
+
+        assert result.status == 0, result.stderr
+        assert result.stdout == "102"
+
 
 class TestWalkStackConcernsFromGhReplies:
     """Replies built as gh prints them reach the document's concerns and advice through the verdict and the walk."""
@@ -2243,7 +2291,7 @@ class TestWalkStackLookupCap:
         assert result.stdout == ""
         assert len(result.calls) == max_lookups
         deepest_pr = 101 + max_lookups - 1
-        assert f"deeper than the {max_lookups} lookups" in result.stderr
+        assert f"used all {max_lookups} of its lookups without confirming where the stack ends" in result.stderr
         assert f"PR #{deepest_pr}" in result.stderr
         assert "only once the stack is shorter" in result.stderr
         assert result.stderr.endswith(_shell_constant("REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE") + "\n")
@@ -2321,6 +2369,15 @@ class TestWalkStackCycles:
         assert result.status == 1
         assert "cycle through PR numbers 7, 21. " in result.stderr
         assert len(result.calls) == 2
+
+    def test_a_target_number_with_leading_zeros_is_named_without_them_in_the_failure_line(self, tmp_path):
+        # The walk's line prints the normalized number on purpose, so it can differ from the caller's own spelling of it.
+        replies = {"feat/a": [pr_list_item(21, "feat/a", "feat/a")]}
+
+        result = _run_walk(tmp_path, replies, base_ref="feat/a", pr_number="007")
+
+        assert result.status == 1
+        assert result.stderr.startswith(f"{_WALK_SCRIPT_NAME}: PR {_OWNER_REPO}#7: ")
 
 
 class TestWalkStackRootWithoutOpenPr:
@@ -2464,7 +2521,9 @@ class TestWalkStackUnreadableVerdictLines:
         assert result.status == 1
         assert result.stdout == ""
         assert len(result.calls) == 1
-        assert result.stderr.splitlines() == [f"{_WALK_SCRIPT_NAME}: an ancestor PR's base branch name is empty"]
+        assert result.stderr.splitlines() == [
+            f"{_WALK_TARGET_FAILURE_PREFIX}an ancestor PR's base branch name is empty"
+        ]
 
 
 # Fails every jq call: the verdict's and the branch echo's escape.

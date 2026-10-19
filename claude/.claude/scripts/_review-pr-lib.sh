@@ -523,10 +523,15 @@ review_pr_stack_document() {
     "$REVIEW_PR_JQ_ASCII_JSON_STRING_DEFS$_REVIEW_PR_STACK_DOCUMENT_JQ_PROGRAM" 2>/dev/null || return 1
 }
 
-# _review_pr_stack_walk_failure SCRIPT_NAME MESSAGE
-# Prints one `SCRIPT_NAME: MESSAGE` line on stderr and always returns 1, so `_review_pr_stack_walk_failure ... || return 1` ends the walk.
+# _review_pr_stack_walk_failure SCRIPT_NAME TARGET MESSAGE
+# Prints one `SCRIPT_NAME: PR TARGET: MESSAGE` line on stderr, or `SCRIPT_NAME: MESSAGE` when TARGET is empty, and always returns 1, so `_review_pr_stack_walk_failure ... || return 1` ends the walk.
+# TARGET is the `<owner>/<repo>#<number>` of the PR being walked, passed only once the walk has validated it.
 _review_pr_stack_walk_failure() {
-  printf '%s: %s\n' "$1" "$2" >&2
+  if [[ -n "$2" ]]; then
+    printf '%s: PR %s: %s\n' "$1" "$2" "$3" >&2
+  else
+    printf '%s: %s\n' "$1" "$3" >&2
+  fi
   return 1
 }
 
@@ -536,11 +541,11 @@ _review_pr_stack_branch_echo() {
   review_pr_ascii_json_string "$1" "$REVIEW_PR_STACK_TEXT_ECHO_LIMIT"
 }
 
-# _review_pr_stack_walk_unreadable_reply SCRIPT_NAME BRANCH
-# Prints the stderr line for a lookup reply of BRANCH that the walk could not read, and always returns 1.
+# _review_pr_stack_walk_unreadable_reply SCRIPT_NAME TARGET BRANCH
+# Prints the stderr line (see _review_pr_stack_walk_failure for TARGET) for a lookup reply of BRANCH that the walk could not read, and always returns 1.
 # The line carries neither failure note, because a reply that is not a well-formed list is persistent when PR data caused it and transient when a jq cap kill did, and the walk cannot tell the two apart.
 _review_pr_stack_walk_unreadable_reply() {
-  _review_pr_stack_walk_failure "$1" "the stack walk could not read the reply to its lookup of open PRs with head branch $(_review_pr_stack_branch_echo "$2")."
+  _review_pr_stack_walk_failure "$1" "$2" "the stack walk could not read the reply to its lookup of open PRs with head branch $(_review_pr_stack_branch_echo "$3")."
 }
 
 # review_pr_walk_stack SCRIPT_NAME OWNER_REPO PR_NUMBER BASE_REF DEFAULT_BRANCH MODE
@@ -555,27 +560,28 @@ _review_pr_stack_walk_unreadable_reply() {
 # Every command whose failure ends the walk carries an explicit `|| return 1`, because callers run this inside `$(...)`, where errexit does not stop it.
 review_pr_walk_stack() {
   local script_name="${1-}" owner_repo="${2-}" pr_number="${3-}" base_ref="${4-}" default_branch="${5-}" mode="${6-}"
-  local branch seen_pr_numbers lookups=0 ancestor_lines="" lowest_unreviewed="" deepest_pr=""
+  local target="" branch seen_pr_numbers lookups=0 ancestor_lines="" lowest_unreviewed="" deepest_pr=""
   local lookup_stdout lookup_status verdict verdict_rest candidate_numbers
   local ancestor_number ancestor_reviewed next_branch ancestor_entry cycle_numbers document
 
   case "$mode" in
     document|lowest-unreviewed) ;;
     *)
-      _review_pr_stack_walk_failure "$script_name" "the stack walk was given an unknown mode $(review_pr_ascii_json_string "$mode")" || return 1 ;;
+      _review_pr_stack_walk_failure "$script_name" "" "the stack walk was given an unknown mode $(review_pr_ascii_json_string "$mode")" || return 1 ;;
   esac
   if [[ -z "$base_ref" || -z "$default_branch" ]]; then
-    _review_pr_stack_walk_failure "$script_name" "the stack walk needs the PR's base branch and the repository's default branch, and one is empty" || return 1
+    _review_pr_stack_walk_failure "$script_name" "" "the stack walk needs the PR's base branch and the repository's default branch, and one is empty" || return 1
   fi
   if ! _lib_parse_pr_identity "$owner_repo#$pr_number" >/dev/null; then
-    _review_pr_stack_walk_failure "$script_name" "the stack walk was given a repository or PR number it cannot use" || return 1
+    _review_pr_stack_walk_failure "$script_name" "" "the stack walk was given a repository or PR number it cannot use" || return 1
   fi
   # Leading zeros removed, so the cycle check compares the number the way gh prints it.
   pr_number=${pr_number#"${pr_number%%[!0]*}"}
   if [[ -z "$pr_number" ]]; then
-    _review_pr_stack_walk_failure "$script_name" "the stack walk was given PR number zero" || return 1
+    _review_pr_stack_walk_failure "$script_name" "" "the stack walk was given PR number zero" || return 1
   fi
 
+  target="$owner_repo#$pr_number"
   branch="$base_ref"
   seen_pr_numbers=" $pr_number "
   while :; do
@@ -584,17 +590,17 @@ review_pr_walk_stack() {
     fi
     # `gh pr list --head=` with an empty value returns every open PR, so an empty name must never reach it.
     if [[ -z "$branch" ]]; then
-      _review_pr_stack_walk_failure "$script_name" "an ancestor PR's base branch name is empty" || return 1
+      _review_pr_stack_walk_failure "$script_name" "$target" "an ancestor PR's base branch name is empty" || return 1
     fi
     if (( lookups >= REVIEW_PR_STACK_MAX_LOOKUPS )); then
-      _review_pr_stack_walk_failure "$script_name" "the stack is deeper than the $REVIEW_PR_STACK_MAX_LOOKUPS lookups the walk makes, and the deepest PR it reached is PR #$deepest_pr, whose base is branch $(_review_pr_stack_branch_echo "$branch"). This PR becomes reviewable through the skill only once the stack is shorter, for example after lower PRs merge. Reviewing PR #$deepest_pr directly by number does not by itself change that. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1
+      _review_pr_stack_walk_failure "$script_name" "$target" "the walk used all $REVIEW_PR_STACK_MAX_LOOKUPS of its lookups without confirming where the stack ends, and the deepest PR it reached is PR #$deepest_pr, whose base is branch $(_review_pr_stack_branch_echo "$branch"). This PR becomes reviewable through the skill only once the stack is shorter, for example after lower PRs merge. Reviewing PR #$deepest_pr directly by number does not by itself change that. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1
     fi
     lookups=$((lookups + 1))
 
     lookup_status=0
     lookup_stdout=$(_lib_gh "$REVIEW_PR_STACK_LOOKUP_TIMEOUT_SECONDS" pr list -R "$owner_repo" "--head=$branch" --state open --limit "$REVIEW_PR_STACK_LOOKUP_LIMIT" --json "$_REVIEW_PR_STACK_LOOKUP_JSON_FIELDS" 2>/dev/null) || lookup_status=$?
     if (( lookup_status != 0 )); then
-      _review_pr_stack_walk_failure "$script_name" "the stack walk's lookup of open PRs with head branch $(_review_pr_stack_branch_echo "$branch") $(review_pr_gh_status_description "$lookup_status"). $REVIEW_PR_STACK_GH_FAILURE_NOTE" || return 1
+      _review_pr_stack_walk_failure "$script_name" "$target" "the stack walk's lookup of open PRs with head branch $(_review_pr_stack_branch_echo "$branch") $(review_pr_gh_status_description "$lookup_status"). $REVIEW_PR_STACK_GH_FAILURE_NOTE" || return 1
     fi
 
     verdict=$(review_pr_stack_lookup_verdict "$lookup_stdout" "$branch") || verdict=""
@@ -602,13 +608,13 @@ review_pr_walk_stack() {
       none)
         break ;;
       truncated)
-        _review_pr_stack_walk_failure "$script_name" "$REVIEW_PR_STACK_LOOKUP_LIMIT or more open PRs have head branch $(_review_pr_stack_branch_echo "$branch"), so the walk cannot tell which one is this PR's ancestor. No route through this skill exists while that many open PRs share the branch name. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1 ;;
+        _review_pr_stack_walk_failure "$script_name" "$target" "$REVIEW_PR_STACK_LOOKUP_LIMIT or more open PRs have head branch $(_review_pr_stack_branch_echo "$branch"), so the walk cannot tell which one is this PR's ancestor. No route through this skill exists while that many open PRs share the branch name. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1 ;;
       ambiguous$'\t'*)
         candidate_numbers=${verdict#ambiguous$'\t'}
         if [[ ! "$candidate_numbers" =~ ^[0-9]+(,[0-9]+)+$ ]]; then
-          _review_pr_stack_walk_unreadable_reply "$script_name" "$branch" || return 1
+          _review_pr_stack_walk_unreadable_reply "$script_name" "$target" "$branch" || return 1
         fi
-        _review_pr_stack_walk_failure "$script_name" "more than one open PR has head branch $(_review_pr_stack_branch_echo "$branch"): PR numbers ${candidate_numbers//,/, }. This PR stays unreviewable through the skill until all but one of them are closed or retargeted. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1 ;;
+        _review_pr_stack_walk_failure "$script_name" "$target" "more than one open PR has head branch $(_review_pr_stack_branch_echo "$branch"): PR numbers ${candidate_numbers//,/, }. This PR stays unreviewable through the skill until all but one of them are closed or retargeted. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1 ;;
       ancestor$'\t'*)
         verdict_rest=${verdict#ancestor$'\t'}
         ancestor_number=${verdict_rest%%$'\t'*}
@@ -618,10 +624,10 @@ review_pr_walk_stack() {
         next_branch=${verdict_rest%%$'\t'*}
         ancestor_entry=${verdict_rest#*$'\t'}
         if [[ ! "$ancestor_number" =~ ^[1-9][0-9]*$ ]] || [[ "$ancestor_reviewed" != "true" && "$ancestor_reviewed" != "false" ]] || [[ "$ancestor_entry" != "{"* ]]; then
-          _review_pr_stack_walk_unreadable_reply "$script_name" "$branch" || return 1
+          _review_pr_stack_walk_unreadable_reply "$script_name" "$target" "$branch" || return 1
         fi ;;
       *)
-        _review_pr_stack_walk_unreadable_reply "$script_name" "$branch" || return 1 ;;
+        _review_pr_stack_walk_unreadable_reply "$script_name" "$target" "$branch" || return 1 ;;
     esac
 
     case "$seen_pr_numbers" in
@@ -629,7 +635,7 @@ review_pr_walk_stack() {
         # The cycle is the chain from the first sighting of this number onward.
         cycle_numbers="$ancestor_number ${seen_pr_numbers#*" $ancestor_number "}"
         cycle_numbers=${cycle_numbers% }
-        _review_pr_stack_walk_failure "$script_name" "the base branches form a cycle through PR numbers ${cycle_numbers// /, }. One of those PRs must be retargeted. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1 ;;
+        _review_pr_stack_walk_failure "$script_name" "$target" "the base branches form a cycle through PR numbers ${cycle_numbers// /, }. One of those PRs must be retargeted. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1 ;;
     esac
     seen_pr_numbers="$seen_pr_numbers$ancestor_number "
     deepest_pr="$ancestor_number"
@@ -647,7 +653,7 @@ review_pr_walk_stack() {
   fi
   document=$(review_pr_stack_document "$ancestor_lines" "$branch" "$default_branch") || document=""
   if [[ "$document" != "{"* ]]; then
-    _review_pr_stack_walk_failure "$script_name" "the stack walk could not assemble the stack document" || return 1
+    _review_pr_stack_walk_failure "$script_name" "$target" "the stack walk could not assemble the stack document" || return 1
   fi
   printf '%s' "$document"
 }

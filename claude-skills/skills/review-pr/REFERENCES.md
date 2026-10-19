@@ -99,6 +99,9 @@ submitted review. The lib's header and tests own the exact contract.
   (gh 2.101.0). The same version's `PullRequestList` query binds the value as
   the GraphQL variable `$headBranch`, read from the binary's embedded query
   text and not run. The `--head=<branch>` form keeps the name in one argv token.
+- **`--head` matches case-exactly.** Checked live against a public repository:
+  the exact-case head returned the PR and the case-flipped head returned `[]`,
+  so a fork PR whose head differs only in case never reaches the verdict.
 - **A fork PR whose branch has the same name comes back too.** The verdict keeps
   only `isCrossRepository == false` items. On a popular public repository a full
   page of fork PRs can occur, so a full page reads as undecided (`truncated`)
@@ -112,19 +115,25 @@ submitted review. The lib's header and tests own the exact contract.
 - **`gh` exits 4 when a command needs authentication.** Every caller maps a walk
   failure to a literal `exit 2`, so only the gate's own `exit 4` produces 4.
 
-**Review items.** Each `reviews` item carries `author.login`,
-`authorAssociation`, `state`, and `submittedAt`, observed under gh 2.101.0.
-`gh pr list --json reviews` embeds `reviews(first: 100)`, read from the same
-binary and not run, so the list is a prefix once it holds 100 entries.
-`reviewListFull` mirrors that page size, so re-verify it on every `gh`
-upgrade: if `gh` changes the size, a truncated list reads as complete and the
-`review-list-full` concern never raises. The gate is unaffected, since it needs
-only one submitted review. Also re-capture
-`claude/.claude/scripts/tests/fixtures/gh-pr-list-reviews-sample.json`, shaped
-from gh 2.101.0 output: a changed `author` or `submittedAt` shape otherwise
-leaves the suite green against a stale fixture. The fixture holds no `PENDING`
-review and no deleted-account (null `author`) review. Only the test double
-models those shapes, so they are unverified against real `gh`.
+**Review items.**
+
+- **Fields:** each `reviews` item carries `author.login`, `authorAssociation`,
+  `state`, and `submittedAt`, observed under gh 2.101.0.
+- **Page size:** `gh pr list --json reviews` embeds `reviews(first: 100)`, read
+  from the same binary and not run, so the list is a prefix once it holds 100
+  entries.
+- **Re-verify on every `gh` upgrade:** `reviewListFull` mirrors that page size.
+  If `gh` changes the size, a truncated list reads as complete and the
+  `review-list-full` concern never raises.
+- **The gate is unaffected by a truncated list,** since it needs only one
+  submitted review.
+- **Re-capture the fixture on every `gh` upgrade:**
+  `claude/.claude/scripts/tests/fixtures/gh-pr-list-reviews-sample.json` is
+  shaped from gh 2.101.0 output, and a changed `author` or `submittedAt` shape
+  otherwise leaves the suite green against a stale fixture.
+- **The fixture is incomplete:** it holds no `PENDING` review and no
+  deleted-account (null `author`) review. Only the test double models those
+  shapes, so they are unverified against real `gh`.
 
 - **The gate is "any submitted review".** A review in any state except
   `PENDING`, in any letter case, clears it: `APPROVED`, `CHANGES_REQUESTED`,
@@ -181,6 +190,12 @@ reading, computed by the script.
     the lowest PR is still the next step.
   - With every ancestor reviewed, any concern on any ancestor, or on the root,
     recommends `stop`, and no concern recommends `proceed`.
+- **Non-ASCII text reaches the engineer as `\uXXXX` escapes by design.** Ancestor
+  titles and logins print as ASCII-only JSON strings, so a CJK or accented title
+  shows as escapes. The PR number stays readable beside it.
+- **In self-authored mode, the operator's own comment review on their own
+  ancestor raises `self-review-only`,** so the script recommends `stop`. This is
+  a known limit, deferred to a follow-up. `proceed` stays offered.
 - **Stale reviews draw no concern.** A review left at an older commit still
   counts, and so does an ancestor whose only reviews are `DISMISSED`.
 

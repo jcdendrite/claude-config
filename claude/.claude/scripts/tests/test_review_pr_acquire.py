@@ -1526,6 +1526,27 @@ class TestBaseStack:
         assert len(lookups) == 1
         assert lookups[0][lookups[0].index("-R") + 1] == OWNER_REPO
 
+    @pytest.mark.parametrize(
+        ("run_options", "expected_self_authored"),
+        [({"operator_login": "SOMEONE"}, True), ({"api_user_exit_status": 1}, None)],
+        ids=["operator-is-the-author", "user-lookup-failed"],
+    )
+    def test_a_stacked_base_keeps_the_base_stack_intact_beside_the_self_authored_verdict(
+        self, isolated_home, tmp_path, run_options, expected_self_authored
+    ):
+        replies = {_STACKED_BASE_BRANCH: [pr_list_item(_UNREVIEWED_STACKED_PR_NUMBER, _STACKED_BASE_BRANCH, "main")]}
+
+        result, _ = _run(
+            isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40,
+            base_ref_name=_STACKED_BASE_BRANCH, pr_list_replies=replies, **run_options,
+        )
+
+        assert result.returncode == 0, result.stderr
+        document = json.loads(result.stdout)
+        assert document["selfAuthored"] is expected_self_authored
+        assert document["baseStack"]["stacked"] is True
+        assert document["baseStack"]["lowestUnreviewed"] == _UNREVIEWED_STACKED_PR_NUMBER
+
     def test_a_base_stacks_decision_keys_come_first_so_a_head_preview_keeps_them(self, isolated_home, tmp_path):
         result, _ = _run(isolated_home, [PR_IDENTITY], tmp_path, head_ref_oid="a" * 40)
 
