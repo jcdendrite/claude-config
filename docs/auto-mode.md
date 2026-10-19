@@ -207,7 +207,7 @@ What a render does with each key:
   and each top-level key, `permissions` entry, and `env` key it dropped.
   It also names each overlay `env` key and each other overlay key it applied
   or changed, and the `permissions.defaultMode` value when the overlay sets
-  one.
+  one. The line names its config directory when that directory is not `~/.claude`.
 - Top-level keys and `env` keys are named by key only, never by value. A
   dropped `permissions` entry prints its rule text, which lets you recover a
   dropped rule.
