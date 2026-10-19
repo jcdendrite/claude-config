@@ -349,11 +349,12 @@ def test_production_modules_reference_only_real_sibling_attributes():
 
 
 def test_test_files_reference_only_real_module_attributes():
-    """Every `<module>.<name>` read in a TEST_FILES file -- direct through an unaliased package import,
-    or through a shim copy's `_mod.<module>.<name>` -- names a binding the target module actually has --
-    catches a stale rename or typo that a passing-but-wrong monkeypatch/assert would otherwise hide
-    silently, since a typo'd attribute on a real module raises AttributeError at collection or call time,
-    never merely fails an assertion."""
+    """Every `<module>.<name>` read in a TEST_FILES file names a binding the target module
+    actually has, whether read directly through an unaliased package import or through a
+    shim copy's `_mod.<module>.<name>`. This catches a stale rename or typo that a
+    passing-but-wrong monkeypatch/assert would otherwise hide silently. A typo'd attribute
+    on a real module raises AttributeError at collection or call time, not merely a failed
+    assertion."""
     package_names = _package_module_names()
     for filename in TEST_FILES:
         tree = ast.parse((TESTS_DIR / filename).read_text())

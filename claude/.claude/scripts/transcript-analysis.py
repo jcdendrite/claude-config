@@ -27,7 +27,7 @@ from pathlib import Path, PurePosixPath
 # helper, or patching module-owned state). corpus and scope are the two modules this
 # file's own code reads bare, as corpus.split_command_segments and scope.PROJECTS_DIR.
 # A module dropped from this list (e.g. audit_routing, denials, gh_cli) has no `_mod`
-# reader left; reintroducing a shim-loading test file for it without restoring its
+# reader left. Reintroducing a shim-loading test file for it without restoring its
 # binding here breaks that file's collection.
 from transcript_analysis import (  # noqa: F401
     cache_rebuild,
