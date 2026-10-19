@@ -847,6 +847,22 @@ class TestVerdictsAndTargets:
         assert outcome.has("LOAD")
         assert outcome.first("FILE_TARGET") == str(sandbox.worktree_a.resolve())
 
+    def test_cwd_symlink_resolving_to_an_unprintable_path_stops_without_printing_the_real_path(
+        self, sandbox: _Sandbox
+    ) -> None:
+        unprintable = sandbox.tmp_path / "real dir with space"
+        unprintable.mkdir()
+        link = sandbox.tmp_path / "unprintable-link"
+        link.symlink_to(unprintable)
+        pending = sandbox.write_pending("via-unprintable-link", link)
+
+        outcome = sandbox.run("via-unprintable-link", cwd=sandbox.worktree_a)
+
+        assert not outcome.has("LOAD")
+        assert outcome.first("FILE_TARGET") == str(link)
+        assert str(unprintable) not in "".join(value for _, value in outcome.pairs)
+        sandbox.assert_nothing_moved(pending)
+
     def test_cwd_spelled_with_dot_dot_components_still_loads(self, sandbox: _Sandbox) -> None:
         dotted = f"{sandbox.worktree_a}/../{sandbox.worktree_a.name}"
         sandbox.write_pending("via-dotted", dotted)

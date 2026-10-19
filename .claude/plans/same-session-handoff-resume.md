@@ -124,10 +124,9 @@ One line of the body distinguishes `/resume-context` from the code-fenced shell 
   - Any other result is a failure. If `<file>` still exists, the script prints `STOP_REASON: consume-failed`, with the shell command to run for that file, and the file stays pending. Otherwise it prints `STOP_REASON: consumed-elsewhere-or-partial`, naming `find-consumed-continuity-file.sh <slug>` (rows 41, 42). It never prints `LOAD:` after a failure and never tries another candidate. The consumer's stderr passes through, so a lost race can print one of its own messages (`source file not found`, `failed to set permissions` or `failed to move`) beside `consumed-elsewhere-or-partial`.
 - **Age buckets.** The buckets are `<1d`, `1-7d` and `>7d`, computed with `find <file> -maxdepth 0 -mtime -1` and `-mtime -7` on the pending path. Both tests are positive, so a failing `find` reads as `>7d`. The script uses neither `stat` nor `date -r`.
 - **BSD userland** `[unverified]`: no BSD userland was available, and CI runs only on `ubuntu-24.04`, so nothing here exercises it. The script follows these rules:
-  - No arrays, `mapfile`, or associative arrays. Collections are positional parameters or newline-separated allowlisted paths, each with an emptiness guard (precedent: `nudge-handoff-near-context-cap.sh:372-381`).
   - Newest-first ordering uses `ls -t --` over allowlisted paths, for ordering only. Its output is re-filtered to files that still exist, and the unsorted list stands in when none survive. That fallback loses newest-first order, trading order for completeness: with more than five pending files, the newest can then sit behind `MORE:`.
   - No `\s`.
-  - The constructs it still relies on, and most at risk on those platforms, are the runtime `LC_ALL=C` assignment before `${#tail_text}` (byte-count semantics), `set -- $tail_text ""` newline splitting under `set -f`, the `ls -ld` mode text with a trailing ACL marker, `find -maxdepth 0 -mtime` and `tail -c N < file`.
+  - The constructs it still relies on, and most at risk on those platforms, are the `ls -ld` mode text with a trailing ACL marker, `find -maxdepth 0 -mtime` and `tail -c N < file`.
   - The script never prints file content, and every path it prints passes the allowlist.
 
 **Helpers in `claude/.claude/hooks/_lib.sh`**, beside the existing resume-context helpers (row 12).
