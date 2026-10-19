@@ -762,17 +762,20 @@ _BOLD_LABEL_CARVE_OUT_RE = re.compile(r"^- \*\*[^*]+\*\* — ")
 # A closed fixture-authoring convention, not a natural-language
 # classifier -- an excerpt shape these regexes don't list fails loudly,
 # as a flagged violation, instead of passing silently:
-# - Case-sensitivity follows comment-discipline-reviewer.md's violation
-#   shape (lines 97-100: "Because X, do Y", the instruction after its own
-#   rationale) versus its carve-out (lines 122-125: instruction-or-claim-
-#   first, "do X because Y"). A capitalized sentence-initial
-#   "Because"/"Though" matches the violation shape, never the carve-out,
-#   so only a lowercase, instruction-first excerpt can pass.
+# - Case-sensitivity follows comment-discipline-reviewer.md's Paragraph
+#   readability rationale-before-instruction shape ("Because X, do Y",
+#   the instruction after its own rationale) versus that angle's
+#   instruction-or-claim-first carve-out ("do X because Y"). A
+#   capitalized sentence-initial "Because"/"Though" matches the
+#   violation shape, never the carve-out, so only a lowercase,
+#   instruction-first excerpt can pass.
 # - "because" matches anywhere on a bare word boundary, including
 #   mid-sentence with no comma -- the carve-out's own "do X because Y".
 # - "so"/"though"/"but" must instead follow a comma, since each is also a
-#   bare intensifier or exception sense elsewhere in a sentence (e.g. "so
-#   elegant", "as though", "nothing but the best").
+#   bare intensifier or exception sense elsewhere in a sentence:
+#     - "so" -- "so elegant"
+#     - "though" -- "as though"
+#     - "but" -- "nothing but the best"
 # - Whether an excerpt genuinely demonstrates its named shape beyond
 #   matching this regex is left to the fixture author and reviewer, not
 #   this regex.
@@ -2146,9 +2149,9 @@ class TestFaultInjection:
     ) -> None:
         """A cause_and_effect excerpt opening with the capitalized
         sentence-initial marker ("Because X, Y.") is rejected -- that is
-        the rationale-before-instruction violation shape
-        comment-discipline-reviewer.md lines 97-100 name, not the
-        instruction-or-claim-first carve-out at lines 122-123."""
+        comment-discipline-reviewer.md's Paragraph readability
+        rationale-before-instruction shape, not that angle's
+        instruction-or-claim-first carve-out."""
         fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
         fixture["must_pass_carve_outs"] = dict(fixture["must_pass_carve_outs"])
         sentence_initial_excerpt = "Because two writers can otherwise corrupt it, a write must hold the lock."
@@ -2165,9 +2168,9 @@ class TestFaultInjection:
     ) -> None:
         """A claim_and_hedge excerpt opening with the capitalized
         sentence-initial marker ("Though X, Y.") is rejected -- the same
-        rationale-before-instruction violation shape as the
-        cause_and_effect carve-out above (comment-discipline-reviewer.md
-        lines 97-100 and 122-123), for the hedge shape instead."""
+        rationale-before-instruction shape and instruction-or-claim-first
+        carve-out as the cause_and_effect case above, for the hedge shape
+        instead."""
         fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
         fixture["must_pass_carve_outs"] = dict(fixture["must_pass_carve_outs"])
         sentence_initial_excerpt = "Though an emergency can trigger it early, the sweep runs nightly."
@@ -2249,3 +2252,21 @@ class TestFaultInjection:
         )
         assert len(violations) == 1
         assert "carries no hedge marker" in violations[0]
+
+    def test_paragraph_readability_fixture_detects_cause_and_effect_carve_out_absent_and_vacuous(
+        self,
+    ) -> None:
+        """A cause_and_effect excerpt that is both absent from must_pass and
+        carries no causal marker trips both checks in the same pass -- the
+        carve_outs loop's containment check and marker check aren't mutually
+        exclusive."""
+        fixture = dict(self._VALID_PARAGRAPH_READABILITY_FIXTURE)
+        fixture["must_pass_carve_outs"] = dict(fixture["must_pass_carve_outs"])
+        absent_and_vacuous_excerpt = "Dogs and cats living together."
+        fixture["must_pass_carve_outs"]["cause_and_effect"] = absent_and_vacuous_excerpt
+        violations = _paragraph_readability_fixture_violations(
+            fixture, self._PARAGRAPH_READABILITY_AGENT_TEXT
+        )
+        assert len(violations) == 2
+        assert "does not occur verbatim in 'must_pass'" in violations[0]
+        assert "carries no causal marker" in violations[1]

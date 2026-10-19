@@ -14,20 +14,17 @@ sentence. Citing those three, and not the full section, keeps the charter
 matched to what the angle actually judges. "Active voice, plain verbs, no
 noun stacks" stays `tighten-prose`'s rewrite territory, not this reviewer's.
 
-Multi-fact comment structure's "tightly coupled pair" carve-out is bounded
-rather than narrowed, to the pair alone. A sentence carrying a third fact,
-or a further dash, colon, or parenthetical aside beyond the one pair, is
-judged multi-fact instead. The bound keeps the carve-out inside
-`CLAUDE.md`'s "Split multi-fact comments" bullet, which names "a cause and
-its effect, or a claim and its hedge" as the sharable pair and nothing
-wider.
+Multi-fact comment structure's tightly-coupled-pair carve-out (see that
+angle's "Not a violation" list) is bounded rather than narrowed, to the
+pair alone. The bound keeps the carve-out inside `CLAUDE.md`'s "Split
+multi-fact comments" bullet, which names "a cause and its effect, or a
+claim and its hedge" as the sharable pair and nothing wider.
 
-The threshold for Paragraph readability's first shape — three or more
-parallel rules, conditions, or exceptions stacked as consecutive sentences
-— starts at three. The tightly coupled pair Multi-fact comment structure
-exempts is two, so the paragraph shape has to start one past it. A
-threshold of two would make the two angles overlap on an ordinary
-two-sentence case.
+Paragraph readability's first shape (see that angle's body) starts its
+parallel-rule threshold at three. The tightly coupled pair Multi-fact
+comment structure exempts is two, so the paragraph shape has to start one
+past it. A threshold of two would make the two angles overlap on an
+ordinary two-sentence case.
 
 The Change-type table's comment/durable-doc-prose row widens to
 instruction files (`CLAUDE.md`, `AGENTS.md`, `.claude/rules/*.md`). The
@@ -55,8 +52,8 @@ any edit to the angle's wording:
 3. Write the measured rates, date, and model into the fixture's `note`
    field.
 
-An editor can still update the hash without re-running the measurement —
-the same honor system `.claude/rules/skill-and-agent-self-review.md`
+An editor can still update the hash without re-running the measurement.
+That gap is the same honor system `.claude/rules/skill-and-agent-self-review.md`
 already relies on for every fixture, now with a trigger attached to it.
 
 ## Committing the fixture despite the scratchpad rule
