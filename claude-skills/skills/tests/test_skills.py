@@ -7882,28 +7882,40 @@ _REVIEW_PR_STEP_7_HEADING = "## Step 7 — Synthesize and record completion"
 
 
 @pytest.mark.parametrize(
-    "phrase, heading",
+    "phrase, heading, consequence",
     [
         pytest.param(
             "report findings, change nothing, write no completion marker, edit no PR body",
             None,
+            "a control that review-pr keeps itself rather than deferring to Agent Core.",
             id="standing-override-report-only",
         ),
         pytest.param(
             "apply a correction only after verifying it",
             _REVIEW_PR_STEP_7_HEADING,
+            "a control that review-pr keeps itself rather than deferring to Agent Core.",
             id="verify-before-apply-correction",
+        ),
+        pytest.param(
+            "Pass no `findings_path` to any reviewer that `/code-review` or "
+            "`/plan-review` spawns",
+            None,
+            "the guard against a reviewer spawned from the main tree being given "
+            "a `findings_path`, having its findings-file `Write` denied by the "
+            "worktree gate, and losing its findings when its inline fallback "
+            "fails (REFERENCES.md § 'Why spawned reviewers return findings inline').",
+            id="no-findings-path",
         ),
     ],
 )
 def test_review_pr_skill_carries_retained_control(
-    phrase: str, heading: str | None
+    phrase: str, heading: str | None, consequence: str
 ) -> None:
     """Wiring-presence tripwire: review-pr/SKILL.md carries the report-only
-    standing override and the verify-before-apply rule. The override sits above
-    the first `##` heading, so it is checked file-wide; the verify rule is
-    checked in step 7's consult section. Claims presence only, not that the
-    agent obeys it."""
+    standing override, the no-`findings_path` rule, and the verify-before-apply
+    rule. The override and the no-`findings_path` rule sit above the file's `##`
+    headings, so they are checked file-wide; the verify rule is checked in step
+    7's consult section. Claims presence only, not that the agent obeys it."""
     skill_path = _skill_file("review-pr")
     if heading is None:
         searched_text = " ".join(skill_path.read_text().split())
@@ -7912,6 +7924,5 @@ def test_review_pr_skill_carries_retained_control(
         searched_text = _heading_section_text(skill_path, heading)
         searched_where = f"review-pr/SKILL.md's {heading!r} section"
     assert phrase in searched_text, (
-        f"{searched_where} no longer carries {phrase!r}, a control that "
-        "review-pr keeps itself rather than deferring to Agent Core."
+        f"{searched_where} no longer carries {phrase!r}, {consequence}"
     )

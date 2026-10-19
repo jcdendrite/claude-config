@@ -386,6 +386,23 @@ A spawned review-only subagent carries no Write tool for this path, so requiring
 
 Passing the fixed path as a Bash argument would also put it in the command's argv, which appears in shell history and the process table. The findings-body path comes from `review-pr-findings-path.sh`, not from a value the model transcribes, so nothing needs independent verification against `$CONFIG_DIR`/`$SESSION_ID`.
 
+## Why spawned reviewers return findings inline
+
+`/code-review` and `/plan-review` give each reviewer a relative `findings_path` under `agent-reviews/`, which resolves in the tree the session stands in.
+
+A `/review-pr` session may stand in the main tree, where `require-worktree-for-file-writes.sh` denies that `Write` in a repo with worktree discipline on.
+
+A denied reviewer is meant to fall back to inline output, but a reviewer can report a write that never happened, and its findings are then lost.
+
+With no `findings_path`, no reviewer writes, and no findings file lands in a review worktree.
+
+The cost is each reviewer's 2K-token inline budget, a larger session context, and no by-path citation of a findings file in the step-7 consult. It applies to every `/review-pr` session, including one where the file write would have succeeded.
+
+Two other locations fail here:
+
+- A path under `/tmp` passes both write gates, but `review-pr-finish.sh` does not remove it, so a PR's findings outlive the session. A world-readable directory is also open to a symlink planted in advance.
+- A path beside the session's other `<config-dir>/.review-pr-active.d/` files is denied, because `deny-reviewer-tree-mutation.sh` allows a reviewer `Write` only under `/tmp` or an `agent-reviews/` directory.
+
 ## Known gaps and operator choices
 
 - **The stop-message escaper was run on jq 1.7 only.** On another jq version a
