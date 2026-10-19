@@ -866,6 +866,21 @@ to hold PII/PHI or live credentials:
   attacker able to substitute `basename`/`dirname` on PATH can substitute
   `timeout` too. The defense here has to come from PATH and filesystem
   integrity outside this repo's hooks.
+- Every hook's shebang resolves `bash` through `env` on PATH, so a PATH-resolved
+  `bash` is trusted too. One executable `bash` file placed in the directory
+  holding the intended `bash`, or in any directory ahead of it on the PATH
+  Claude Code starts with, replaces the interpreter for every hook at once,
+  including every gate, the credential redactor and the floor check. That file
+  can return any verdict or output for any hook, and it receives every hook's
+  input, including tool output before redaction. It runs before the bash floor
+  check and before `onFailure`, and neither can detect it. No gate exists to
+  protect user-writable PATH directories such as `~/.local/bin` or Homebrew's
+  bin directory. `deny-reviewer-tree-mutation.sh`, a tree-mutation guard, also
+  denies its review-only roster some writes there, but only in the shapes its
+  header lists. Its Known gaps name shapes it leaves open, such as `ln`. Where
+  Homebrew installed the intended `bash`, it sits in that bin directory itself.
+  `install.sh`'s `ensure_local_bin_on_path` can add a shell rc line that
+  prepends `~/.local/bin` to PATH.
 
 The airtight control is machine segmentation: developer machines do not
 hold patient data or long-lived credentials. That is policy, not

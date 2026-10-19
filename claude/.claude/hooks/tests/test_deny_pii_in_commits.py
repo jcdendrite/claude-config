@@ -401,6 +401,24 @@ class TestDenyPiiInCommits:
         assert reason is not None
         assert "pseudo-file path" in reason
 
+    @pytest.mark.parametrize(
+        "alias_path",
+        ["//dev/fd/0", "/dev/./fd/0"],
+        ids=["double-slash-dev-fd", "dot-segment-dev-fd"],
+    )
+    def test_f_alias_pseudo_file_spelling_denied(self, isolated_home, git_repo, alias_path):
+        """Alias spellings of /dev/fd/N slip past `_lib_is_pseudo_file_path`, so only the
+        regular-file check denies them.
+        A failure here once `_lib_is_pseudo_file_path` learns alias spellings means
+        `_lib_is_pseudo_file_path`'s header in _lib.sh, this hook's Known-gaps pointer and the
+        expected message must change together."""
+        _stage(git_repo, "f.txt", "x\nclean\n")
+        reason = run_hook_reason(
+            DENY_PII_IN_COMMITS_HOOK, bash_input(f"git commit -F {alias_path}"), cwd=git_repo
+        )
+        assert reason is not None
+        assert "not a readable regular file" in reason
+
     def test_unarmed_f_unreadable_file_still_denied(self, isolated_home, git_repo):
         """Same hoist as above, for the unreadable-message-source-file
         fail-closed check specifically (distinct code path from the

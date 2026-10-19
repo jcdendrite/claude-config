@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # PostToolUse consumer: removes the one-shot migration token after a successful
 # Write to a supabase/migrations/<14digits>_*.sql path. PostToolUse fires only

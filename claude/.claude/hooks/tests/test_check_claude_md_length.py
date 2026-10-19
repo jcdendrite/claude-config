@@ -17,6 +17,7 @@ from helpers import (
     build_conflicted_rebase,
     build_path_without,
     edit_input,
+    link_bash_into,
     push_conflicting_edit_to_origin,
     resolve_conflicted_rebase,
     run_hook,
@@ -113,6 +114,7 @@ def stub_bin_without_timeout(tmp_path: Path) -> Path:
         if not real_path:
             pytest.skip(f"{tool} not found in PATH")
         (stub_bin / tool).symlink_to(real_path)
+    link_bash_into(stub_bin)
     return stub_bin
 
 

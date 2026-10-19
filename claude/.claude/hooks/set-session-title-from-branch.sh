@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # SessionStart hook: set the terminal tab title (hookSpecificOutput.sessionTitle)
 # to `<repo>/<branch>` from git state, so a feature-branch or handoff-resumed

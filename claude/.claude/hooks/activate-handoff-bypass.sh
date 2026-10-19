@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 set -uo pipefail
 # PostToolUse: when the handoff skill loads, activate its active-bypass

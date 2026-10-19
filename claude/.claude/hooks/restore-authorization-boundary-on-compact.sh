@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # SessionStart (compact only): restates the irreversible-action boundary the
 # harness compact summary's "Optional Next Step" section doesn't distinguish

@@ -471,7 +471,7 @@ def _run_config_get(args: list[str], env: dict) -> subprocess.CompletedProcess:
         [str(_CONFIG_GET_SH), *args],
         capture_output=True,
         text=True,
-        env=env,
+        env={"PATH": os.environ["PATH"], **env},
     )
 
 
@@ -527,7 +527,7 @@ class TestConfigGetShExitCodes:
             [str(isolated_root / "scripts" / "config-get.sh"), "worktree_required"],
             capture_output=True,
             text=True,
-            env={"HOME": str(home)},
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
         )
         assert result.returncode == 3
         assert "schema file not found or unreadable" in result.stderr

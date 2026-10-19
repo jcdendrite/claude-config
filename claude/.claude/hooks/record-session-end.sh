@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 set -uo pipefail
 # SessionEnd hook: records that this Claude Code process shut down

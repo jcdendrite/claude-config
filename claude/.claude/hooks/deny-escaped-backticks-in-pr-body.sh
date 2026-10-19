@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # Gate: reject `gh pr create` and `gh pr edit` commands whose body
@@ -39,11 +39,8 @@
 #   echoes none of the command, because an unsplittable value is unbounded.
 #
 # Known gaps (documented, not closed):
-# - The pseudo-file guard matches literal spellings only (`-`, `/dev/stdin`,
-#   `/dev/fd/*`, `/proc/*/fd/*`). Alias spellings such as `//dev/fd/N` or
-#   `/dev/./fd/N` are not recognised and can evade the scan: under /bin/bash
-#   3.2 the `-f` test passes for them inside the reading loop. Accepted debt
-#   shared with deny-pii-in-commits.sh and deny-private-project-refs.sh.
+# - The pseudo-file guard's alias-spelling gap and its unconfirmed over-64-KiB
+#   path-list residual are in `_lib_is_pseudo_file_path`'s header in _lib.sh.
 # - The `xargs -n1` fast path's miss is listed in `_lib_command_words`'s header
 #   in _lib.sh.
 #   The fallback tokenizer's residual over-denies and misses are listed in

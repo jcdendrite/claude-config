@@ -71,6 +71,9 @@ from pathlib import Path
 
 import pytest
 from helpers import (
+    _HEADER_SCAN_LINE_COUNT,
+    _hook_class,
+    _is_gate_hook,
     assert_cap_engaged,
     bash_input,
     build_path_without,
@@ -126,22 +129,6 @@ def _all_hook_files(*, include_lib: bool = False) -> list[Path]:
             if sh.name not in excluded:
                 hooks.append(sh)
     return hooks
-
-
-# Shared with the tier-threat-model finder below: both header comments live
-# within a file's first several lines, tolerating blank lines before either.
-_HEADER_SCAN_LINE_COUNT = 6
-
-
-def _hook_class(hook: Path) -> str | None:
-    """Return the hook-class value from line 2, or None if absent."""
-    lines = hook.read_text().splitlines()
-    # Line 2 is index 1. Search first 5 lines to tolerate blank shebang lines.
-    for line in lines[1:_HEADER_SCAN_LINE_COUNT]:
-        m = re.match(r"#\s*hook-class:\s*(\S+)", line)
-        if m:
-            return m.group(1)
-    return None
 
 
 # ------------------------------------------------------------------ #
@@ -3027,6 +3014,81 @@ def test_swept_gate_hooks_exhaustive() -> None:
     )
 
 
+# Each chain is a gate plus the files its bootstrap sources. `plugin_dir` is None for a stow gate,
+# whose chain is the gate, `_lib.sh` and `_config.sh`; a plugin gate is copied with its whole plugin
+# `hooks/` and `lib/` trees, and `CLAUDE_PLUGIN_ROOT` names the copy.
+_PLUGINS_DIR = _REPO_ROOT / "plugins"
+_BELOW_FLOOR_PLUGIN_GATES = [h for h in GATE_HOOKS if h.parent.parent.parent == _PLUGINS_DIR]
+_BELOW_FLOOR_CHAINS = [
+    pytest.param(_MAIN_HOOKS_DIR / "deny-credential-file-reads.sh", None, id="deny-credential-file-reads"),
+    *[pytest.param(gate, gate.parent.parent, id=gate.name) for gate in _BELOW_FLOOR_PLUGIN_GATES],
+]
+
+
+def test_below_floor_chains_cover_every_plugin_with_a_floor_copy() -> None:
+    """The chains are derived from the plugin gates, so a plugin that gains a
+    `_lib.sh` floor copy but no gate chain (or the reverse) fails here by name."""
+    plugins_with_floor_copy = {p.parent.parent.name for p in _PLUGINS_DIR.glob("*/hooks/_lib.sh")}
+    plugins_with_gate_chain = {gate.parent.parent.name for gate in _BELOW_FLOOR_PLUGIN_GATES}
+    assert plugins_with_gate_chain == plugins_with_floor_copy
+    assert len(plugins_with_gate_chain) == 4
+
+
+def _deny_text(result: subprocess.CompletedProcess) -> str:
+    """The deny reason: the envelope's reason on exit 0, stderr on exit 2."""
+    if result.returncode == 0:
+        return json.loads(result.stdout.strip())["hookSpecificOutput"]["permissionDecisionReason"]
+    return result.stderr
+
+
+@pytest.mark.parametrize(("hook", "plugin_dir"), _BELOW_FLOOR_CHAINS)
+def test_below_floor_bash_denied(hook: Path, plugin_dir: Path | None, tmp_path: Path) -> None:
+    """Raising the floor past the running bash makes the floor check return 1, which each
+    gate's `_lib.sh` bootstrap turns into a deny. The control run first proves the same
+    chain sources cleanly with the floor intact, so the deny cannot come from a copy defect."""
+    if plugin_dir is None:
+        hooks_copy = tmp_path / "hooks"
+        hooks_copy.mkdir()
+        for source in (hook, hook.parent / "_lib.sh", hook.parent / "_config.sh"):
+            shutil.copy2(source, hooks_copy / source.name)
+        floor_file = hooks_copy / "_config.sh"
+        plugin_root_env: dict[str, str] = {}
+    else:
+        plugin_root = tmp_path / plugin_dir.name
+        shutil.copytree(plugin_dir / "hooks", plugin_root / "hooks")
+        if (plugin_dir / "lib").is_dir():
+            shutil.copytree(plugin_dir / "lib", plugin_root / "lib")
+        hooks_copy = plugin_root / "hooks"
+        floor_file = hooks_copy / "_lib.sh"
+        plugin_root_env = {"CLAUDE_PLUGIN_ROOT": str(plugin_root)}
+    hook_copy = hooks_copy / hook.name
+    payload = json.dumps(bash_input("echo hello"))
+
+    control = _run_hook_raw(hook_copy, payload, cwd=tmp_path, env=plugin_root_env or None)
+    assert "could not source _lib.sh" not in control.stdout + control.stderr, (
+        f"{hook.name} [control]: the chain failed to source with the floor intact: "
+        f"stdout={control.stdout!r} stderr={control.stderr!r}"
+    )
+    assert control.returncode in (0, 2), f"{hook.name} [control]: exit {control.returncode}"
+
+    floor_text = floor_file.read_text()
+    raised_text, replaced = re.subn(r"^_BASH_FLOOR_MAJOR=\d+$", "_BASH_FLOOR_MAJOR=99", floor_text, flags=re.MULTILINE)
+    assert replaced == 1, f"{floor_file.name}: expected exactly one _BASH_FLOOR_MAJOR assignment"
+    floor_file.write_text(raised_text)
+
+    raised = _run_hook_raw(hook_copy, payload, cwd=tmp_path, env=plugin_root_env or None)
+    assert raised.returncode in (0, 2), f"{hook.name} [raised-floor]: exit {raised.returncode}"
+    _assert_blocks(raised, hook.name, "raised-floor", "could not source _lib.sh")
+
+    if plugin_dir is not None:
+        major = re.search(r"^_BASH_FLOOR_MAJOR=(\d+)$", (plugin_dir / "hooks" / "_lib.sh").read_text(), re.MULTILINE)
+        minor = re.search(r"^_BASH_FLOOR_MINOR=(\d+)$", (plugin_dir / "hooks" / "_lib.sh").read_text(), re.MULTILINE)
+        assert major and minor
+        deny_text = _deny_text(raised)
+        for key_phrase in ("separate terminal", "brew install bash", f"{major.group(1)}.{minor.group(1)}"):
+            assert key_phrase in deny_text, f"{hook.name}: deny text missing {key_phrase!r}: {deny_text!r}"
+
+
 @pytest.mark.parametrize("hook", _SWEPT_GATE_HOOKS, ids=[h.name for h in _SWEPT_GATE_HOOKS])
 def test_slash_free_dollar_zero_fails_closed(hook: Path) -> None:
     """`executable=` is invalid here: the kernel rewrites `argv[0]` before
@@ -3383,3 +3445,271 @@ def test_blocks_when_timeout_rejects_dash_k_flag(tmp_path: Path) -> None:
     assert " ! " not in result.stderr, repr(result.stderr)
     assert "shell escape" not in result.stderr, repr(result.stderr)
     assert 'docs/hooks.md "Gate deadlock recovery"' in result.stderr, repr(result.stderr)
+
+
+# ------------------------------------------------------------------ #
+# Gate failure handling: onFailure registration and final `exit 0`    #
+# ------------------------------------------------------------------ #
+
+# Gate hooks (both stow and plugin) discovered by an independent header regex.
+_GATE_HOOK_COUNT = 31
+# Gate handlers registered in claude/.claude/settings.json (a gate under two
+# matchers or `if` filters registers once per handler) and across plugins/*/hooks/hooks.json.
+_SETTINGS_GATE_HANDLER_COUNT = 32
+_PLUGIN_GATE_HANDLER_COUNT = 4
+
+_ON_FAILURE_BLOCK = "block"
+
+# A hook command is optional `NAME="value"` environment assignments, then the
+# script: `~/.claude/hooks/<x>.sh` (stow) or `"${CLAUDE_PLUGIN_ROOT}"/hooks/<x>.sh` (plugin).
+_HOOK_SCRIPT_TOKEN_RE = re.compile(r"^(?:~/\.claude|\$\{CLAUDE_PLUGIN_ROOT\})/hooks/([\w.-]+\.sh)$")
+_ENV_ASSIGNMENT_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
+
+
+def _hook_command_script_name(command: str) -> str | None:
+    """The script name a hook command runs, or None when it does not resolve.
+
+    Tokenized with shlex, as `_pretooluse_entries_for` does, so quoting style
+    does not matter. Leading `NAME=value` tokens are environment assignments.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    while tokens and _ENV_ASSIGNMENT_TOKEN_RE.match(tokens[0]):
+        tokens.pop(0)
+    if len(tokens) != 1:
+        return None
+    resolved = _HOOK_SCRIPT_TOKEN_RE.match(tokens[0])
+    return resolved.group(1) if resolved else None
+
+_GATE_HEADER_RE = re.compile(r"^#\s*hook-class:\s*gate\b", re.MULTILINE)
+
+
+def _last_code_line(text: str) -> str | None:
+    """Return the last line that is neither blank nor a comment, or None."""
+    code_lines = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    return code_lines[-1] if code_lines else None
+
+
+def _gate_registration_problems(
+    config: dict,
+    known_scripts: frozenset[str],
+    gate_scripts: frozenset[str],
+) -> tuple[list[str], int]:
+    """Check each handler under `config["hooks"]` against the gate registration rules.
+
+    Returns (problems, number of gate handlers). Only the `hooks` object is
+    walked, so a command elsewhere in the file (for example `statusLine`) is
+    ignored. Every command must resolve to a script in `known_scripts`. A
+    handler carries `"onFailure": "block"` exactly when its script is in
+    `gate_scripts`, and every gate handler sits under PreToolUse and is not async.
+    """
+    problems: list[str] = []
+    gate_handler_count = 0
+    for event, matcher_groups in config.get("hooks", {}).items():
+        for matcher_group in matcher_groups:
+            matcher = matcher_group.get("matcher")
+            for handler in matcher_group.get("hooks", []):
+                command = handler.get("command", "")
+                where = f"{event}[{matcher}] {command!r}"
+                script_name = _hook_command_script_name(command)
+                if script_name is None or script_name not in known_scripts:
+                    problems.append(f"{where}: command does not resolve to a hook script")
+                    continue
+                is_gate = script_name in gate_scripts
+                on_failure = handler.get("onFailure")
+                if is_gate:
+                    gate_handler_count += 1
+                    if on_failure != _ON_FAILURE_BLOCK:
+                        problems.append(f'{where}: gate handler lacks "onFailure": "block"')
+                    if event != "PreToolUse":
+                        problems.append(f"{where}: gate handler sits under {event}, not PreToolUse")
+                    if handler.get("async"):
+                        problems.append(f"{where}: gate handler is async")
+                elif on_failure is not None:
+                    problems.append(f"{where}: non-gate handler carries onFailure {on_failure!r}")
+    return problems, gate_handler_count
+
+
+def _gate_handler(script: str, **extra: object) -> dict:
+    return {"type": "command", "command": f"~/.claude/hooks/{script}", "onFailure": _ON_FAILURE_BLOCK, **extra}
+
+
+def _plain_handler(script: str, **extra: object) -> dict:
+    return {"type": "command", "command": f"~/.claude/hooks/{script}", **extra}
+
+
+_STATUS_LINE_COMMAND = "bash ~/.claude/statusline-command.sh"
+
+_CONTROL_KNOWN_SCRIPTS = frozenset({"gate-a.sh", "gate-b.sh", "note.sh"})
+_CONTROL_GATE_SCRIPTS = frozenset({"gate-a.sh", "gate-b.sh"})
+
+_REGISTRATION_CONTROL_TABLE = [
+    pytest.param(
+        {
+            "hooks": {
+                "PreToolUse": [{"matcher": "Bash", "hooks": [_gate_handler("gate-a.sh")]}],
+                "Stop": [{"hooks": [_plain_handler("note.sh")]}],
+            }
+        },
+        None,
+        id="clean-gate-and-non-gate",
+    ),
+    pytest.param(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [_gate_handler("gate-a.sh")]},
+                    {"matcher": "Edit", "hooks": [_plain_handler("gate-a.sh")]},
+                ]
+            }
+        },
+        'lacks "onFailure": "block"',
+        id="double-matcher-gate-with-the-field-on-one-handler-only",
+    ),
+    pytest.param(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [_gate_handler("gate-a.sh") | {"onFailure": "continue"}]},
+                ]
+            }
+        },
+        'lacks "onFailure": "block"',
+        id="gate-with-a-wrong-valued-on-failure",
+    ),
+    pytest.param(
+        {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [_gate_handler("gate-a.sh", **{"async": True})]}]}},
+        "is async",
+        id="async-gate",
+    ),
+    pytest.param(
+        {"hooks": {"Stop": [{"hooks": [_gate_handler("gate-b.sh")]}]}},
+        "not PreToolUse",
+        id="gate-under-stop",
+    ),
+    pytest.param(
+        {"hooks": {"PostToolUse": [{"matcher": "Bash", "hooks": [_plain_handler("note.sh", onFailure=_ON_FAILURE_BLOCK)]}]}},
+        "non-gate handler carries onFailure",
+        id="non-gate-carrying-the-field",
+    ),
+    pytest.param(
+        {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": _STATUS_LINE_COMMAND}]}]}},
+        "does not resolve",
+        id="unresolvable-command-inside-hooks",
+    ),
+    pytest.param(
+        {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [_gate_handler("missing.sh")]}]}},
+        "does not resolve",
+        id="command-naming-a-script-that-does-not-exist",
+    ),
+    pytest.param(
+        {
+            "statusLine": {"type": "command", "command": _STATUS_LINE_COMMAND},
+            "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [_gate_handler("gate-a.sh")]}]},
+        },
+        None,
+        id="status-line-shaped-command-outside-hooks-is-ignored",
+    ),
+    pytest.param(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": 'CLAUDE_PLUGIN_DATA="${CLAUDE_PLUGIN_DATA}" "${CLAUDE_PLUGIN_ROOT}"/hooks/gate-b.sh',
+                                "onFailure": _ON_FAILURE_BLOCK,
+                            }
+                        ],
+                    }
+                ]
+            }
+        },
+        None,
+        id="plugin-command-with-environment-assignment-prefix",
+    ),
+]
+
+
+@pytest.mark.parametrize(("config", "expected_problem"), _REGISTRATION_CONTROL_TABLE)
+def test_gate_registration_problems_control_table(config: dict, expected_problem: str | None) -> None:
+    problems, _ = _gate_registration_problems(config, _CONTROL_KNOWN_SCRIPTS, _CONTROL_GATE_SCRIPTS)
+    if expected_problem is None:
+        assert problems == []
+    else:
+        assert len(problems) == 1 and expected_problem in problems[0], problems
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_last_line"),
+    [
+        pytest.param("#!/usr/bin/env bash\nemit_deny x\nexit 0\n", "exit 0", id="ends-with-exit-0"),
+        pytest.param("#!/usr/bin/env bash\nexit 0\n\n# trailing note\n\n", "exit 0", id="trailing-blank-and-comment-skipped"),
+        pytest.param("#!/usr/bin/env bash\nif x; then\n  exit 0\nfi\n", "fi", id="exit-inside-a-trailing-block"),
+        pytest.param("#!/usr/bin/env bash\nemit_deny x\n", "emit_deny x", id="runs-off-the-end"),
+        pytest.param("# only a comment\n", None, id="comment-only-file"),
+    ],
+)
+def test_last_code_line(text: str, expected_last_line: str | None) -> None:
+    assert _last_code_line(text) == expected_last_line
+
+
+def test_gate_hook_discovery_finds_every_gate() -> None:
+    """An independent header regex over each hook's full text finds the same gates as `_hook_class`.
+
+    Pins the gate count, so a header edit that drops a hook out of GATE_HOOKS
+    fails here instead of silently removing it from the per-gate checks.
+    """
+    found_by_regex = [hook for hook in ALL_HOOKS if _GATE_HEADER_RE.search(hook.read_text())]
+    assert len(found_by_regex) == _GATE_HOOK_COUNT, (
+        f"expected {_GATE_HOOK_COUNT} hooks declaring `# hook-class: gate`, found {len(found_by_regex)}"
+    )
+    not_gate_by_parser = [hook.name for hook in found_by_regex if _hook_class(hook) != "gate"]
+    assert not_gate_by_parser == [], f"_hook_class missed: {not_gate_by_parser}"
+    assert sorted(found_by_regex) == sorted(GATE_HOOKS)
+    outside_guard = [hook.name for hook in found_by_regex if not _is_gate_hook(hook)]
+    assert outside_guard == [], f"the shell-exec guard's gate predicate misses: {outside_guard}"
+
+
+@pytest.mark.parametrize("hook", GATE_HOOKS, ids=[h.name for h in GATE_HOOKS])
+def test_gate_ends_with_column_zero_exit_0(hook: Path) -> None:
+    """A gate that runs off its end would exit with its last command's status.
+
+    `onFailure: "block"` blocks any gate exit other than 0 or 2, so each gate
+    ends with an explicit `exit 0` at column 0, outside any trailing block.
+    """
+    last_code_line = _last_code_line(hook.read_text())
+    assert last_code_line == "exit 0", f"{hook.name}: last code line is {last_code_line!r}, expected a column-0 `exit 0`"
+
+
+def _hook_config_files() -> list[tuple[Path, frozenset[str]]]:
+    """(config file, script names its commands may resolve to) for settings.json and each plugin hooks.json."""
+    configs = [(_SETTINGS_PATH, frozenset(p.name for p in _MAIN_HOOKS_DIR.glob("*.sh")))]
+    for hooks_dir in _PLUGIN_HOOKS_DIRS:
+        configs.append((hooks_dir / "hooks.json", frozenset(p.name for p in hooks_dir.glob("*.sh"))))
+    return configs
+
+
+def test_gate_handlers_register_with_on_failure_block() -> None:
+    """Exactly the gate handlers carry `"onFailure": "block"`, checked handler by handler."""
+    gate_scripts = frozenset(hook.name for hook in GATE_HOOKS)
+    settings_gate_handlers = 0
+    plugin_gate_handlers = 0
+    for config_path, known_scripts in _hook_config_files():
+        config = json.loads(config_path.read_text())
+        problems, gate_handler_count = _gate_registration_problems(config, known_scripts, gate_scripts)
+        assert problems == [], f"{config_path.relative_to(_REPO_ROOT)}: {problems}"
+        if config_path == _SETTINGS_PATH:
+            settings_gate_handlers += gate_handler_count
+        else:
+            plugin_gate_handlers += gate_handler_count
+    assert settings_gate_handlers == _SETTINGS_GATE_HANDLER_COUNT, (
+        f"settings.json registers {settings_gate_handlers} gate handlers, expected {_SETTINGS_GATE_HANDLER_COUNT}"
+    )
+    assert plugin_gate_handlers == _PLUGIN_GATE_HANDLER_COUNT, (
+        f"plugin hooks.json files register {plugin_gate_handlers} gate handlers, expected {_PLUGIN_GATE_HANDLER_COUNT}"
+    )

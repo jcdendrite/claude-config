@@ -1,7 +1,7 @@
 {
   "name": "skill-management",
-  "description": "Authoring guardrails for SKILL.md files: a commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing) plus a behavioral-equivalence audit via /skill-review. Install at project scope in repos that author SKILL.md files.",
-  "version": "4.1.0",
+  "description": "Authoring guardrails for SKILL.md files: a commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing) plus a behavioral-equivalence audit via /skill-review. Install at project scope in repos that author SKILL.md files. Needs bash 5.2 or newer first on the PATH Claude Code starts with (macOS: brew install bash) and Claude Code 2.1.295 or newer.",
+  "version": "5.0.0",
   "author": {
     "name": "Cordova Strategy"
   },

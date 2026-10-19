@@ -7,7 +7,8 @@ set -uo pipefail
 # Exit 0 = enabled.
 # Exit 1 = disabled.
 # Exit 2 = unknown key, including a reserved/disallowed subcommand (see below).
-# Exit 3 = environment failure: config dir unresolvable, config-keys.psv
+# Exit 3 = environment failure: _config.sh fails to source (including its
+# bash floor check), config dir unresolvable, config-keys.psv
 # itself missing/unreadable, or KEY's own row present but truncated after
 # an earlier column (a partial stow-relink or interrupted `git pull`, in
 # every case).
@@ -36,7 +37,7 @@ set -uo pipefail
 # definition of config-key resolution — this script adds no logic of its
 # own beyond argument validation and the exit-code mapping above.
 # shellcheck source=../hooks/_config.sh
-. "$(dirname "$0")/../hooks/_config.sh"
+. "$(dirname "$0")/../hooks/_config.sh" || exit 3
 
 if [ "$#" -ne 1 ]; then
   echo "config-get.sh: usage: config-get.sh <key> — exactly one argument (no writing verb; see docs/config-file.md)" >&2

@@ -374,9 +374,8 @@ ROOT_SETTINGS_JSON = ".claude/settings.json"
 
 # test_statusline_command.py (CLAUDE_TESTS_DIR) reads this file by path.
 # test_shellcheck.py (HOOKS_TESTS_DIR) also lints it as part of its
-# tracked-shell-script sweep. test_no_bash4_constructs.py and
-# test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR) pick
-# it up via their own recursive *.sh globs.
+# tracked-shell-script sweep. test_default_branch_resolution_is_shared.py
+# (SCRIPTS_TESTS_DIR) picks it up via its own recursive *.sh glob.
 STATUSLINE_COMMAND_SH = "claude/.claude/statusline-command.sh"
 
 # Directory names directly under claude/.claude/ that DOMAIN_RULES or
@@ -490,7 +489,7 @@ def _is_scripts_dir_shell_script_change(path: str) -> bool:
     return _is_under(path, SCRIPTS_DIR) and (path.endswith(".sh") or "." not in Path(path).name)
 
 
-# test_no_bash4_constructs.py's rglob("*.sh") is suffix-only.
+# test_default_branch_resolution_is_shared.py's rglob("*.sh") is suffix-only.
 # Unlike test_shellcheck.py's shebang-based discovery, it never matches an
 # extensionless script, so this predicate omits the extensionless branch
 # _is_scripts_dir_shell_script_change has.
@@ -659,10 +658,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # REVIEW_PR_AUDIT_SCRIPT and REVIEW_PR_SKILL_MD: see each constant's own
 # comment above for its citation.
 # DOC_COUNTS_TEST_PATH: see its own comment above for citation.
-# _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py and
-# test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
-# recursively glob claude/.claude/ for *.sh files, picking up
-# claude/.claude/hooks/ in addition to their own SCRIPTS_DIR.
+# _is_hooks_dir_shell_script_change: test_default_branch_resolution_is_shared.py
+# (SCRIPTS_TESTS_DIR) recursively globs claude/.claude/ for *.sh files,
+# picking up claude/.claude/hooks/ in addition to its own SCRIPTS_DIR.
 # test_transcript_handoff_nudge.py (SCRIPTS_TESTS_DIR) also fires
 # nudge-handoff-near-context-cap.sh, which sources _lib.sh and _config.sh.
 # That read is a class attribute, so TestCrossDomainReadCompleteness can't

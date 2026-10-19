@@ -20,9 +20,9 @@ runs in flight under one session id are not told apart, so the first finish
 removes both. Each git or rm call in the sweep is capped
 (_LIB_REVIEW_PR_WORKTREE_OP_TIMEOUT_SECONDS in _lib.sh). Zero arguments,
 matching every other zero-argument review-pr script's exact-match
-settings.json entry. Exits 0 on every run that gets past the argument check,
-whether or not anything was in flight; a failed removal is reported on stderr
-and a re-run retries it.
+settings.json entry. Exits 0 on every run that gets past the argument check
+and the bash floor check in `_config.sh`, whether or not anything was in
+flight; a failed removal is reported on stderr and a re-run retries it.
 It does not check the caller's working directory, so a review worktree the
 caller is standing in is removed too: run it from the main tree or from a
 worktree that is not a review worktree.
@@ -82,7 +82,8 @@ SESSION_ID=$("$(dirname "$0")/marker.sh" resolve-session-id) || {
 
 # Best-effort: a failure here must not abort the artifact removal below. An
 # `|| true` on each rm keeps a failing removal (rm prints its own error) from
-# tripping `set -e`, since every run past the argument check exits 0.
+# tripping `set -e`, since every run past the argument check and the bash floor
+# check in `_config.sh` exits 0.
 if REPO_HASH=$(_lib_review_pr_marker_repo_hash); then
   rm -f -- "$CONFIG_DIR/review-pr-markers/$REPO_HASH.$SESSION_ID" || true
 else

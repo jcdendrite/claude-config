@@ -12,6 +12,7 @@ from helpers import (
     HOOKS_DIR,
     bash_input,
     edit_input,
+    link_bash_into,
     run_hook,
     run_hook_context,
     run_hook_payload,
@@ -709,6 +710,7 @@ class TestRequireWorktreeForGitWrites:
             if not real_path:
                 pytest.skip(f"{tool} not found in PATH")
             (stub_bin / tool).symlink_to(real_path)
+        link_bash_into(stub_bin)
         reason = run_hook_reason(
             WORKTREE_HOOK,
             bash_input("git commit -m foo"),
@@ -1384,6 +1386,7 @@ exec "{real_git}" "$@"
             if not real_path:
                 pytest.skip(f"{tool} not found in PATH")
             (stub_bin / tool).symlink_to(real_path)
+        link_bash_into(stub_bin)
 
         reason = run_hook_reason(
             WORKTREE_HOOK,
@@ -1423,6 +1426,7 @@ exec "{real_git}" "$@"
             if not real_path:
                 pytest.skip(f"{tool} not found in PATH")
             (stub_bin / tool).symlink_to(real_path)
+        link_bash_into(stub_bin)
 
         assert (
             run_hook(
@@ -1456,6 +1460,7 @@ exec "{real_git}" "$@"
             if not real_path:
                 pytest.skip(f"{tool} not found in PATH")
             (stub_bin / tool).symlink_to(real_path)
+        link_bash_into(stub_bin)
 
         reason = run_hook_reason(
             WORKTREE_HOOK,

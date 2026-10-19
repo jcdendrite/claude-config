@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # PostToolUse Bash hook: after `marker.sh write plan-review` records a marker,
 # shows the absolute path of each plan it covers in the engineer's terminal.
@@ -90,7 +90,7 @@ case "$COMMAND" in
   *$'\n'*) exit 0 ;;
 esac
 
-# Unquoted in [[ =~ ]] on purpose: a quoted pattern is a literal match on bash 3.2.
+# Unquoted in [[ =~ ]] on purpose: a quoted pattern is a literal match.
 MARKER_PATH_RE='^[[:blank:]]*(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]'
 WRITE_PLAN_REVIEW_RE='marker\.sh[[:space:]]+write[[:space:]]+plan-review([[:space:]]|&|$)'
 [[ $COMMAND =~ $MARKER_PATH_RE ]] || exit 0
@@ -114,7 +114,6 @@ PREFIXED_LINE_COUNT=0
 PATH_WITHHELD=false
 PATHS_JOINED=""
 # Here-string, not a pipe, so the loop runs in the current shell and keeps its state.
-# String concatenation, not an array: an empty "${arr[@]}" aborts under `set -u` on bash 3.2.
 while IFS= read -r OUTPUT_LINE; do
   case "$OUTPUT_LINE" in
     "$_LIB_PLAN_REVIEW_COVERED_PATH_PREFIX"*) ;;

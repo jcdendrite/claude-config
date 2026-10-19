@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # UserPromptSubmit hook: report when a prompt names an installed skill
 # (`/<name>`) outside the position the harness auto-expands.

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: turn-gate
 # Stop hook: force forward progress past a commit/push/PR permission-question
 # stall (GH-526), in repos where the engineer has opted in to autonomous
@@ -137,10 +137,8 @@ PREVIOUSLY_FIRED_PROMPT_ID=$(cat "$STATE_FILE" 2>/dev/null)
 
 # 8. Fire predicate, final sentence only. Split on ". " / "? " / "! "
 # followed by a capital or end-of-string, take the last segment — a quoted
-# example mid-message does not reach this slice. No length floor (unlike a
-# tail-byte-count slice, which returns empty under ~600 chars on bash 3.2 —
-# see docs/commit-stall-block.md for the empirically-confirmed defect this
-# replaced).
+# example mid-message does not reach this slice. No length floor, unlike a
+# tail-byte-count slice.
 last_sentence="${LAST_ASSISTANT_MESSAGE##*[.?!] }"
 
 VERB_RE='(want me to|would you like me to|let me know if|shall I|should I|do you want me to)'
@@ -148,10 +146,9 @@ OBJECT_RE='(commit|push|open (a|the) PR|create a PR)'
 FIRE_RE="${VERB_RE}[^.?!]*${OBJECT_RE}"
 EXCLUDE_RE='(merge|--force|force-push|reset --hard|close the PR|delete the branch|failing|failed|error|blocked|anyway)'
 
-# Both regexes MUST stay unquoted in [[ =~ ]] — a quoted pattern falls back
-# to literal string comparison on bash 3.2.57 and never matches (verified
-# directly on this machine). Case folding via shopt, saved/restored, not
-# grep -i, to stay fork-free.
+# Both regexes MUST stay unquoted in [[ =~ ]] — a quoted pattern is a literal
+# string comparison and never matches. Case folding via shopt,
+# saved/restored, not grep -i, to stay fork-free.
 _SAVED_NOCASEMATCH=$(shopt -p nocasematch)
 shopt -s nocasematch
 FIRE_MATCHED=false

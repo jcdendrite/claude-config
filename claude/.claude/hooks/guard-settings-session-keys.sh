@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # PreToolUse hook: block git commit when claude/.claude/settings.json has
@@ -163,3 +163,5 @@ if [ -z "$CHANGED_KEYS" ]; then
 fi
 
 emit_deny "settings.json has machine-local or session-scoped keys changed — commit these only if intentional. The staged settings.json differs from ${DEFAULT_BRANCH:-the default branch} on: ${CHANGED_KEYS}. These keys hold one machine's own state, and several are written by Claude Code rather than by hand (model and effortLevel from /config, skipAutoPermissionPrompt when it records the permission-prompt preference), so committing them ships your local state as the shipped config for every user. Unstage the file (git restore --staged claude/.claude/settings.json) to allow the commit, or proceed only if this is a deliberate update."
+
+exit 0
