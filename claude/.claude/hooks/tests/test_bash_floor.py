@@ -379,7 +379,9 @@ class TestFloorMessageCitationsResolve:
     """The floor messages and floor docs are the only on-ramp while every gate denies,
     so a renamed heading they cite must fail here. The README Requirements and
     docs/hooks.md Gate deadlock recovery citations are also asserted against rendered
-    output in test_install_sh_bash_floor.py. The "Bash version" citation appears only in
+    output in test_install_sh_bash_floor.py. The README Requirements citation is also
+    asserted against the redactor's rendered message in test_redact_credential_values.py.
+    The "Bash version" citation appears only in
     static docs and comments, so for it this test checks only that the heading exists."""
 
     @pytest.mark.parametrize(

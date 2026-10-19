@@ -14,7 +14,7 @@ INPUT=$(cat) || exit 0
 
 if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
   # Exit 1, not 0, so a non-zero status marks that redaction is off.
-  printf "could not source _lib.sh: credential redaction is OFF for this result. Either bash on the PATH Claude Code started with is below the floor in claude-config's README.md \"Requirements\", or a stale stow link needs ./install.sh.\n" >&2
+  printf "could not source _lib.sh: credential redaction is OFF for this result. Either bash on the PATH Claude Code started with is below the floor in claude-config's README.md § \"Requirements\", or a stale stow link needs ./install.sh.\n" >&2
   exit 1
 fi
 

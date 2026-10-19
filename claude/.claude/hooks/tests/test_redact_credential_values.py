@@ -29,6 +29,8 @@ import subprocess
 import pytest
 from helpers import HOOKS_DIR, NO_UPDATED_OUTPUT, run_hook_updated_output
 
+from .test_bash_floor import README_REQUIREMENTS
+
 REDACT_CREDENTIAL_VALUES_HOOK = HOOKS_DIR / "redact-credential-values.sh"
 
 GHP_TOKEN = "ghp_abcdefghijklmnopqrstuvwx1234"
@@ -394,6 +396,7 @@ class TestRedactCredentialValues:
         first_stderr_line = result.stderr.splitlines()[0]
         assert first_stderr_line.startswith("could not source _lib.sh")
         assert "credential redaction is OFF" in first_stderr_line
+        assert README_REQUIREMENTS.text in first_stderr_line
         # The hook must not echo the unredacted result it failed to scrub.
         assert GHP_TOKEN not in result.stdout + result.stderr
 

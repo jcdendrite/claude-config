@@ -432,12 +432,12 @@ class TestSessionWideWorktreeSweep:
 
 
 class TestInteriorFailureStillReachesExitZero:
-    """The usage banner promises exit 0 on every run past the argument check,
-    whether or not anything was in flight -- pinned here against each
-    interior failure after the session is known that `set -e` would otherwise
-    propagate: an uncomputable marker key, an unresolvable main tree root, a
-    failing `git worktree list`, and a failing `rm -f` on the marker or an
-    artifact. The first three are guarded by their own `if ...; then ...
+    """The usage banner promises exit 0 on every run past the argument check
+    and the bash floor check in `_config.sh`, whether or not anything was in
+    flight -- pinned here against each interior failure after the session is
+    known that `set -e` would otherwise propagate: an uncomputable marker key,
+    an unresolvable main tree root, a failing `git worktree list`, and a
+    failing `rm -f` on the marker or an artifact. The first three are guarded by their own `if ...; then ...
     else ...`, the last by `|| true`."""
 
     def test_repo_hash_computation_failure_skips_only_the_marker_cleanup(self, isolated_home, tmp_path):
