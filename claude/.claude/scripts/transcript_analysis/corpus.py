@@ -213,7 +213,10 @@ def iter_sessions(
 
 
 def _parse_iso_datetime(ts_str: str | None) -> datetime | None:
-    """Parse an ISO-8601 string (Z is UTC); None if missing, empty, or unparseable; AttributeError on a truthy non-string."""
+    """Parse an ISO-8601 string (Z is UTC).
+
+    Return None if missing, empty, or unparseable. Raise AttributeError on a truthy non-string.
+    """
     if not ts_str:
         return None
     try:

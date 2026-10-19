@@ -556,6 +556,20 @@ class TestReadability:
 
         assert result.sessions[0].micro_dollars_by_day == {date(2026, 5, 19): _ONE_MILLION_INPUT_TURN_MICRO_DOLLARS}
 
+    def test_unreadable_subagent_path_is_skipped_and_a_later_readable_subagent_file_still_counts(self, tmp_path):
+        session = _write_session(tmp_path, 0, [_turn("2026-05-19T10:00:00.000Z")])
+        unreadable_subagent = session.parent / session.stem / corpus.SUBAGENT_SUBDIR / "agent-x.jsonl"
+        unreadable_subagent.mkdir(parents=True)
+        # "agent-y" sorts after "agent-x", so a scan that stopped at the first unreadable entry would miss it.
+        _write_subagent_jsonl(session.parent, session.stem, "agent-y", [_sidechain_turn()])
+
+        result = _price([session])
+
+        assert result.sessions[0].main_file_readable is True
+        assert result.sessions[0].micro_dollars_by_day == {
+            date(2026, 5, 19): _ONE_MILLION_INPUT_TURN_MICRO_DOLLARS + 2
+        }
+
 
 class TestUndatedTurns:
     def test_priced_turn_without_a_timestamp_counts_once_and_enters_no_day(self, tmp_path):
@@ -1109,6 +1123,33 @@ class TestErrors:
 
         assert raised.value.session_index == 1
         assert isinstance(raised.value.__cause__, RuntimeError)
+
+    def test_line_that_json_loads_aborts_on_beside_a_priced_turn_raises_with_its_index(self, tmp_path):
+        valid = _write_session(tmp_path, 0, [_turn("2026-05-19T10:00:00.000Z")])
+        deeply_nested = _write_session(tmp_path, 1, [_turn("2026-05-19T10:00:00.000Z")])
+        with deeply_nested.open("a") as handle:
+            handle.write("[" * 200_000 + "\n")
+
+        with pytest.raises(SessionPricingError) as raised:
+            _price([valid, deeply_nested])
+
+        assert raised.value.session_index == 1
+
+    @pytest.mark.parametrize(
+        "token_count",
+        [
+            pytest.param(10**400, id="overflows-in-the-division"),
+            pytest.param(10**314, id="overflows-only-in-the-product"),
+        ],
+    )
+    def test_token_count_that_overflows_float_pricing_raises_with_its_index(self, tmp_path, token_count):
+        valid = _write_session(tmp_path, 0, [_turn("2026-05-19T10:00:00.000Z")])
+        overflowing = _write_session(tmp_path, 1, [_turn("2026-05-19T10:00:00.000Z", input=token_count)])
+
+        with pytest.raises(SessionPricingError) as raised:
+            _price([valid, overflowing])
+
+        assert raised.value.session_index == 1
 
     def test_malformed_usage_on_a_turn_outside_the_window_still_raises(self, tmp_path):
         session = _write_session(tmp_path, 0, [_with_usage(_turn("2026-07-19T10:00:00.000Z"), {"input_tokens": None})])

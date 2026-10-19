@@ -46,8 +46,8 @@ class SessionSpend:
     micro_dollars_by_day: priced spend per day in integer micro-dollars. Each class amount enters as the exact
         decimal of its repr, and each day's exact sum rounds half-up. Days that round to zero are absent, and
         keys ascend.
-    unpriced_tokens_by_day: tokens per day on turns whose model has no rate; days with zero tokens are absent;
-        keys ascend.
+    unpriced_tokens_by_day: tokens per day on turns whose model has no rate. Days with zero tokens are absent.
+        Keys ascend.
     undated_turn_count: turns with nonzero priced spend or unpriced tokens whose timestamp is missing,
         unparseable, has no UTC offset, or falls outside the representable UTC date range. They enter no
         day map and no run-level model list. A truthy non-string timestamp on an assistant turn with a
@@ -69,7 +69,7 @@ class SessionPricingResult:
     total_micro_dollars: the sum of every session's micro_dollars_by_day values.
     total_unpriced_tokens: the sum of every session's unpriced_tokens_by_day values.
     unpriced_models: sorted model IDs of in-window turns whose model has no rate, except "<synthetic>" at zero
-        tokens; an absent, null, or non-string model is "". Before publishing or rendering entries, see the
+        tokens. An absent, null, or non-string model is "". Before publishing or rendering entries, see the
         doc section's disclosure paragraph.
     stale_models: sorted model IDs priced in-window, zero-token turns included, whose re-verify-by date is
         before as_of.
