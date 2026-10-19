@@ -70,7 +70,8 @@ Line 2 of the prompt is the plan file's absolute path. `Read` that file
 before editing it.
 
 - If the path is not an existing file directly under the repository's
-  `.claude/plans/`, make no `Edit` and return your sections instead.
+  `.claude/plans/`, make no `Edit`. Return your sections, as the paragraph
+  after this list describes.
 - Your region runs from the `## Approach` heading to the end of the file.
   Never edit above that heading. The four headings are always present and are
   the region's only heading lines, in order, ending the file.
@@ -79,18 +80,19 @@ before editing it.
   placeholder, as `plan-it/SKILL.md` Step 5 defines it. Make one `Edit` that
   replaces the whole scaffold region, from `## Approach` to the end of the
   file, with the four sections in full.
-- A revision uses targeted `Edit`s inside the region. Add any heading after
-  `## Approach` that an older plan lacks. The added heading carries content or
+- A revision uses targeted `Edit`s inside the region. Add any of the four
+  headings the file lacks. The added heading carries content or
   its `None` form (`None observed.` for `## Out of scope`), never nothing.
 - If an `Edit` fails, re-`Read` the file and retry once. If that also fails,
-  stop editing. Return one line giving the reason, then your region in full,
-  from `## Approach` through the end of `## Out of scope`, with nothing
-  after it.
+  stop editing. Return your sections, as the paragraph after this list
+  describes.
 - When your edits land, your return carries no `## ` heading lines — only
   any open decision. The dispatching session reads the file itself.
 
-When you return your sections instead of editing, the dispatching session
-splices that return verbatim into the plan file.
+When you return your sections instead of editing, give one line stating the
+reason, then your region in full, from `## Approach` through the end of
+`## Out of scope`, with nothing after it. The dispatching session splices
+that return verbatim into the plan file.
 
 ## MODE=consult
 

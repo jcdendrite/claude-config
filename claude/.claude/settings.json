@@ -401,6 +401,7 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-plan-writer-off-plan-writes.sh",
+            "onFailure": "block",
             "statusMessage": "Checking plan-writer scope..."
           },
           {

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: confines a plan-writer agent's file writes (see _lib.sh's
@@ -41,11 +41,15 @@
 #   - A payload without `.agent_type` reads as a non-plan-writer and passes.
 #     enforce-marker-script-shape.sh's header records the same dependency on
 #     the harness's identity fields.
-#   - This hook does not run where its file is not linked into the config
-#     directory.
+#   - Where this hook's file is not linked into the config directory, its
+#     registration blocks every Edit, Write and MultiEdit call, for every
+#     caller, on Claude Code 2.1.295 or later.
+#   - On a Claude Code older than 2.1.295, an unlinked hook file does not run,
+#     and whether the harness then lets the call proceed is unverified.
 #   - A session that loaded its hook registrations before this hook was
 #     added may not run it.
-#   - Wherever this hook does not run, a plan-writer's Edit can write any path
+#   - Wherever the hook does not run and the call proceeds, which is either
+#     of the two cases above, a plan-writer's Edit can write any path
 #     the other Edit|Write|MultiEdit hooks allow, including code that later
 #     runs, such as the hook scripts under ~/.claude/hooks/.
 #   - Writes by the main session, and by agents outside the plan-writer

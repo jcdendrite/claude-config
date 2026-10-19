@@ -2149,8 +2149,8 @@ def test_tier_table_keys_match_gate_hooks_exhaustive() -> None:
 def test_gate_header_tier_matches_table_row(hook: Path) -> None:
     """Each gate's own header value agrees with its docs/hooks.md table row
     -- a single parametrized case per gate reading the one comparator
-    result computed once above (_TIER_TABLE_DIFF), not 32 independent
-    comparator invocations, which would each run on a singleton list and
+    result computed once above (_TIER_TABLE_DIFF), not one independent
+    comparator invocation per gate, which would each run on a singleton list and
     lose the duplicate-/unexpected-detection the shared comparator exists
     to provide."""
     key = _tier_hook_key(hook)
@@ -3422,10 +3422,10 @@ def test_blocks_when_timeout_rejects_dash_k_flag(tmp_path: Path) -> None:
 # ------------------------------------------------------------------ #
 
 # Gate hooks (both stow and plugin) discovered by an independent header regex.
-_GATE_HOOK_COUNT = 32
+_GATE_HOOK_COUNT = 33
 # Gate handlers registered in claude/.claude/settings.json (a gate under two
 # matchers or `if` filters registers once per handler) and across plugins/*/hooks/hooks.json.
-_SETTINGS_GATE_HANDLER_COUNT = 33
+_SETTINGS_GATE_HANDLER_COUNT = 34
 _PLUGIN_GATE_HANDLER_COUNT = 4
 
 _ON_FAILURE_BLOCK = "block"

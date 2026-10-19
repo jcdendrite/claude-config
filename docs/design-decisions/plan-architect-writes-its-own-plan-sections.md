@@ -16,7 +16,7 @@ A whole-file `Write` reproduces the plan's Context, `Ask:` line included, so a s
 
 ## Why a dedicated gate
 
-An arm inside `deny-reviewer-tree-mutation.sh` would save one hook process per call, but it would put a second invariant into a gate named for review-only agents. An arm in any already-linked, already-registered hook would also close the two windows listed under Accepted residuals. Per a CLI check on 2026-05-14 that this decision did not re-run, agent-frontmatter `hooks:` do not fire for dispatched subagents. A path specifier in `tools:` is not documented for subagents, and a `permissions.deny` `Edit(...)` rule cannot key on agent identity. A new gate in the `Edit|Write|MultiEdit` group, keyed on `.agent_type`, is the lightest mechanism that confines one agent.
+An arm inside `deny-reviewer-tree-mutation.sh` would save one hook process per call, but it would put a second invariant into a gate named for review-only agents. An arm in any already-linked, already-registered hook would also close the windows listed under Accepted residuals. Per a CLI check on 2026-05-14 that this decision did not re-run, agent-frontmatter `hooks:` do not fire for dispatched subagents. A path specifier in `tools:` is not documented for subagents, and a `permissions.deny` `Edit(...)` rule cannot key on agent identity. A new gate in the `Edit|Write|MultiEdit` group, keyed on `.agent_type`, is the lightest mechanism that confines one agent.
 
 ## Why one agent
 
@@ -47,7 +47,8 @@ Every plan now ends with the same four headings, in order: `## Approach`, `## Cr
   - The Context hash covers only plan-sections dispatches.
   - A `/review-pr` consult reads untrusted PR content under the same charter-only limit on `Edit`. Which repository's plan files it can reach depends on the session's working directory at that step, which is unverified. An `Edit` to an untracked plan there raises no signal.
 - **A plan path on prompt line 1 classifies as a consult.** A session that puts the plan path there instead of on line 2 makes the dispatch classify as a consult, which writes the per-branch consult latch.
-- **Two windows in which the gate does not run.** The gate's header lists both under Known gaps, with what a plan-writer's `Edit` can reach in them. The repo expects a hook error on each call where the gate file is not linked but has not verified it, so the grant may run ungated with no visible error.
+- **Windows in which the gate does not run.** The gate's header lists them under Known gaps, with what a plan-writer's `Edit` can reach in each.
+- **A dedicated gate file can lock out every caller.** On Claude Code 2.1.295 or later, a gate file that `./install.sh` has not linked blocks every `Edit`, `Write` and `MultiEdit` call, because its registration sets `onFailure: "block"`. `docs/hooks.md` § "Gate deadlock recovery" gives the fix.
 - **A plan-mode dispatch falls back to returned sections.** Plan mode's default plan path sits outside the repository's `.claude/plans/`, so the charter has the agent return its sections instead of editing. The gate denies any `Edit` it attempts there, and such a deny counts under `plan-writer-scope`.
 - **One more hook process per `Edit`/`Write`/`MultiEdit` call in every session.** For any caller other than a plan-writer the hook bootstraps and exits early. It runs in parallel with the group's other hooks, so it adds CPU time rather than wall-clock time. `.claude/plans/hook-bootstrap-cost.md` records the measurement this rests on.
 - **The live `.agent_type` wiring rests on vendor documentation** (`agent-review/REFERENCES.md`) and on the sibling gate's production use.
