@@ -1015,9 +1015,10 @@ class TestEditWithoutBashAgentsAreWriteScopeConfined:
 
 
 class TestPlanWriterAgentsHoldOnlyPlanEditingTools:
-    """deny-plan-writer-off-plan-writes.sh gates Edit only. A registry member
-    holding Bash, Write, MultiEdit, or Task would reach writes the gate does
-    not see, so the registry would claim a confinement it does not provide."""
+    """deny-plan-writer-off-plan-writes.sh denies a registry member's Write and
+    MultiEdit outright and never sees Bash or Task. The permitted set therefore
+    excludes dead grants and unseen writes, so the registry claims no
+    confinement it does not provide."""
 
     PERMITTED_PLAN_WRITER_TOOLS = {"Read", "Grep", "Glob", "Edit"}
 
@@ -1032,7 +1033,7 @@ class TestPlanWriterAgentsHoldOnlyPlanEditingTools:
             assert not extra_tools, (
                 f"{agent_name} is in _LIB_PLAN_WRITER_AGENTS (_lib.sh) but declares "
                 f"{sorted(extra_tools)}, which deny-plan-writer-off-plan-writes.sh "
-                "does not confine. Drop the tools or remove the agent from the registry."
+                "either denies outright or never sees. Drop the tools or remove the agent from the registry."
             )
 
 

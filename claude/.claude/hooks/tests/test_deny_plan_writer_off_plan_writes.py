@@ -261,6 +261,18 @@ class TestPlanWriterEditAllowed:
         )
         _assert_silent_exit_zero(_run_gate(payload))
 
+    def test_edit_on_plan_allowed_under_forced_realpath_fallback(
+        self, linked_worktree_with_plan, tmp_path
+    ):
+        """Without `realpath -m`, an existing plan file at the worktree root is still allowed."""
+        fixture = linked_worktree_with_plan
+        payload = edit_input(
+            str(fixture["plan"]), agent_type=PLAN_WRITER, cwd=str(fixture["worktree"])
+        )
+        _assert_silent_exit_zero(
+            _run_gate(payload, env={"PATH": _forced_fallback_path_env(tmp_path)})
+        )
+
 
 class TestPlanWriterDenied:
     def test_write_to_plan_denied(self, linked_worktree_with_plan):

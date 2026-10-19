@@ -60,7 +60,7 @@ Do not add a CLAUDE.md path or read instruction — `plan-architect` loads it au
 
 **Scaffold.** At first authoring the file holds only the title and Context and has no `## Approach` heading line. Append one blank line and then exactly these bytes: `## Approach\n\n(pending: plan-architect)\n\n## Critical files\n\n## Verification\n\n## Out of scope\n`. The placeholder is the first non-blank line under `## Approach`, and it reads exactly `(pending: plan-architect)`.
 
-**Plans without the four headings.** A file with more than the title and Context but no `## Approach` heading line cannot pass the Check below, and neither can one whose region from `## Approach` on carries a heading line other than the four. Treat either as a failed Check before any dispatch and ask the engineer through `AskUserQuestion`. Do not scaffold, dispatch, or restructure it.
+**Plans without the four headings.** A file with more than the title and Context but no `## Approach` heading line cannot pass the Check below, and neither can one whose region from `## Approach` on carries a heading line other than the four. When the file has either shape before this run's first dispatch, treat it as a failed Check and ask the engineer through `AskUserQuestion`. Do not scaffold, dispatch, or restructure it.
 
 **Context hash.** Run `sed -n '1,/^## Approach$/p' "<plan path>" | sha256sum` immediately before each dispatch, after the scaffold and any Context edit of your own. Run it again on every return, failed and truncated returns included, before any splice or re-dispatch, and again after any splice. Stop and report to the engineer when any of these holds:
 
@@ -79,7 +79,7 @@ If the returned design names an open decision it left to the user, ask it via `A
 
 Re-dispatch, rather than repairing inline, on any of these:
 - A return carrying some but not all four headings.
-- A file that fails the Check, a plan without the four headings excepted.
+- A file that fails the Check after a dispatch.
 - A dispatch that ends without a normal return (a context-limit failure, an error return, or no completion), as follows:
   - At first authoring, re-dispatch only when the Check then fails.
   - On a revision, re-dispatch whatever the Check reports, because a revision that died partway can pass it.

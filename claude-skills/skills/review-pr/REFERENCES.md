@@ -366,10 +366,10 @@ SKILL.md Step 5 reads base content with `git show '<baseRefOid>:<path>'` and
   human asks for after step 8 presents only proposes changes, which keeps
   the refusal fix the session's only change of its own.
 - **Residual.** The record is the session's own transcript, and every edit to the body is
-  session-authored wherever the plan-writer gate runs. `plan-architect`'s consult charter forbids `Edit`, and the
-  plan-writer gate denies its `Edit` to anything but a repository plan file
-  wherever that hook runs. The hook's header lists where it does not run, and
-  there only the consult charter keeps a consult off the body.
+  session-authored. `plan-architect`'s consult charter forbids `Edit`.
+  `enforce-marker-script-shape.sh` denies `plan-architect`'s `Edit` to the body on every install,
+  because the body sits under `.review-pr-active.d/` and the plan-writer registry
+  puts `plan-architect` on that gate's no-gate-release roster.
   Nothing mechanical detects a finding missing from the body. `marker.sh`'s
   body check and `review-pr-post.sh`'s hash check prove only that the posted
   text equals the marked text. The human's approval of the exact body is the backstop,

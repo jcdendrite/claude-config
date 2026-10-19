@@ -7,7 +7,14 @@
 # A plan-writer agent reads repository files that can carry content from outside the session, so steered input is in scope.
 # A bypass edits the dispatching session's uncommitted tree.
 # An unparseable payload denies every caller, because the payload is parsed before the agent type is known.
-# For a plan-writer, an empty, relative, or newline-containing path, a path with a `.`, `..`, or empty segment, an empty cwd, a failed git or realpath call, or a missing target denies.
+# For a plan-writer, any of these denies:
+#   - an empty or relative path
+#   - a path containing a newline
+#   - a path with a `.`, `..`, or empty segment
+#   - an empty cwd
+#   - a failed git or realpath call
+#   - a missing target
+#   - a target that is not a plan file directly under .claude/plans/
 # Write and MultiEdit always deny for a plan-writer; only Edit can be allowed.
 # Registered without an `if` condition, because `if` cannot read agent identity.
 # This hook filters on tool name and `.agent_type` itself.
