@@ -17,11 +17,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, REPO_ROOT, SKILLS_DIR
+from helpers import HOOKS_DIR, SKILLS_DIR, build_isolated_hook, pretooluse_matcher_groups_for
 
 HOOK = HOOKS_DIR / "require-review-orchestrator-routing.sh"
 SUBAGENT_DELEGATION_SKILL = SKILLS_DIR / "subagent-delegation" / "SKILL.md"
-_SETTINGS_PATH = REPO_ROOT / "claude" / ".claude" / "settings.json"
 _SCHEMA_PSV = HOOKS_DIR / "config-keys.psv"
 
 KEY_NAME = "review_orchestrator_routing"
@@ -45,7 +44,7 @@ def _payload(
     """A PreToolUse payload for a Skill call. Defaults give the baseline-deny
     shape (skill `code-review`, no args, no `agent_id`); pass `_OMIT` to leave
     a field out and `None` to send JSON null. Field names and types follow the
-    payload shape listed under "Observed before the change shipped" in
+    payload shape listed under "Unverified until observed" in
     docs/design-decisions/review-orchestrator-routing-gate.md."""
     tool_input: dict = {}
     tool_input["skill"] = "code-review" if skill is _OMIT else skill
@@ -266,8 +265,15 @@ class TestBaselineDeny:
     def test_agent_type_without_agent_id_reads_as_main_session_and_denies(self, tmp_path, agent_type):
         _assert_denies(_run_gate(tmp_path, _payload(agent_type=agent_type)))
 
-    def test_empty_agent_id_reads_as_main_session_and_denies(self, tmp_path):
-        _assert_denies(_run_gate(tmp_path, _payload(agent_id="")))
+    @pytest.mark.parametrize(
+        "agent_id",
+        [
+            pytest.param("", id="empty_string"),
+            pytest.param(None, id="json_null"),
+        ],
+    )
+    def test_empty_agent_id_reads_as_main_session_and_denies(self, tmp_path, agent_id):
+        _assert_denies(_run_gate(tmp_path, _payload(agent_id=agent_id)))
 
 
 def _cited_heading(reason: str) -> str:
@@ -320,10 +326,11 @@ class TestAllow:
         [
             pytest.param("code-review-proj", id="suffix_extended"),
             pytest.param("pre-code-review", id="prefix_extended"),
-            # The match is case-sensitive: the gate compares the name the
-            # payload carries, and whether the harness resolves skill names
-            # case-insensitively is unverified.
+            # The match is exact in both case and whitespace: the gate compares
+            # the name the payload carries, and whether the harness resolves
+            # skill names case-insensitively or trims whitespace is unverified.
             pytest.param("Code-Review", id="different_case"),
+            pytest.param(" code-review", id="leading_space"),
             pytest.param("plugin:", id="empty_name_after_plugin_prefix"),
             pytest.param(None, id="null_skill"),
         ],
@@ -347,20 +354,6 @@ class TestAllow:
 # --- failed key reads ---------------------------------------------------------
 
 
-def _isolated_hooks_dir(tmp_path: Path, *, schema_text: str | None) -> Path:
-    """Symlink the gate plus its _lib.sh/_config.sh dependencies into a
-    directory whose schema is `schema_text`, or absent when None. Returns the
-    isolated gate's path."""
-    isolated = tmp_path / "isolated-hooks"
-    isolated.mkdir()
-    (isolated / HOOK.name).symlink_to(HOOK)
-    (isolated / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
-    (isolated / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
-    if schema_text is not None:
-        (isolated / "config-keys.psv").write_text(schema_text)
-    return isolated / HOOK.name
-
-
 class TestFailedKeyReadAllows:
     """Each case is a one-factor change from the baseline-deny payload with the
     key line seeded true, so only the failed key read lets the call through."""
@@ -373,7 +366,7 @@ class TestFailedKeyReadAllows:
         _assert_allows(result)
 
     def test_unreadable_schema_exit_3_allows(self, tmp_path):
-        isolated_hook = _isolated_hooks_dir(tmp_path, schema_text=None)
+        isolated_hook = build_isolated_hook(tmp_path, HOOK)
 
         _assert_allows(_run_gate(tmp_path, _payload(), hook=isolated_hook))
 
@@ -381,7 +374,7 @@ class TestFailedKeyReadAllows:
         schema_lines = _SCHEMA_PSV.read_text().splitlines(keepends=True)
         schema_without_row = "".join(line for line in schema_lines if not line.startswith(f"{KEY_NAME}|"))
         assert schema_without_row != "".join(schema_lines)
-        isolated_hook = _isolated_hooks_dir(tmp_path, schema_text=schema_without_row)
+        isolated_hook = build_isolated_hook(tmp_path, HOOK, schema_text=schema_without_row)
 
         _assert_allows(_run_gate(tmp_path, _payload(), hook=isolated_hook))
 
@@ -442,26 +435,7 @@ class TestKeyOffCost:
 # --- registration -------------------------------------------------------------
 
 
-def _pretooluse_matcher_groups_for(hook: Path) -> list[str]:
-    """The `matcher` string of every PreToolUse group containing an entry
-    wired to `hook`, using the exact-last-shell-word match
-    test_hook_alignment.py uses."""
-    expected_invocation = f"~/.claude/hooks/{hook.name}"
-    config = json.loads(_SETTINGS_PATH.read_text())
-    matchers: list[str] = []
-    for group in config.get("hooks", {}).get("PreToolUse", []):
-        if not isinstance(group, dict):
-            continue
-        for entry in group.get("hooks", []):
-            if not isinstance(entry, dict):
-                continue
-            tokens = shlex.split(entry.get("command", ""))
-            if tokens and tokens[-1] == expected_invocation:
-                matchers.append(group.get("matcher", ""))
-    return matchers
-
-
 def test_gate_is_wired_on_the_skill_matcher_only() -> None:
     """A settings.json entry on a wider matcher would run the gate on tools it
     never filters for; a missing entry leaves the key with no effect."""
-    assert _pretooluse_matcher_groups_for(HOOK) == ["Skill"]
+    assert pretooluse_matcher_groups_for(HOOK) == ["Skill"]

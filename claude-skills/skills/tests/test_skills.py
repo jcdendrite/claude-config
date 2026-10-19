@@ -7593,7 +7593,8 @@ def test_review_orchestrator_protocol_marker_check_is_the_whole_allowlisted_comm
             id="request-sentence-names-the-routing-gate",
         ),
         pytest.param(
-            'at once, invoking the skill with args "unrouted", and run the rest of '
+            'at once, invoking the skill with args "unrouted" without the quotation '
+            "marks, and run the rest of "
             "this review loop the same way until a clean round writes the marker",
             "the HALT fallback must pass the escape word the routing gate lets "
             "through, and must carry it through the rest of that loop, or a "

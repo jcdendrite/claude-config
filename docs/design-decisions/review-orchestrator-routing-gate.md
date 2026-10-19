@@ -29,14 +29,14 @@ The deny text still names both diff-file passes, so a pass that loses the word c
 
 **This is not a hook the old record rejects.** [review-orchestrator-gate-release-decoupling.md](review-orchestrator-gate-release-decoupling.md) rejects a dispatch-target allowlist on the agent's `Agent` calls, because it would deny the `plan-architect` dispatch that `/code-review` makes. It also rejects an identity-keyed deny on `marker.sh write`. This gate acts on the main session's `Skill` calls, allows every call that carries an `agent_id`, and constrains nothing the agent can call, read or write.
 
-**The key counts as the engineer's standing request.** `claude/.claude/CLAUDE.md` § "Shipping" already has a session read a machine-level key as the engineer's standing request, and the old record's "Staged rollout" names the key as the rollout mechanism. So the agent description and its `TRIGGER` stay as they are. The `subagent-delegation` sentence keeps its pinned phrase `only when the user explicitly asks`, and the parenthetical names the gate whose denial is that request.
+**The key counts as the engineer's standing request.** `claude/.claude/CLAUDE.md` § "Shipping" already has a session read one machine-level key, `autonomous_shipping`, as the engineer's standing request to ship, and the old record's "Staged rollout" names the key as the rollout mechanism. So the agent description and its `TRIGGER` stay as they are. The `subagent-delegation` sentence keeps its pinned phrase `only when the user explicitly asks`, and the parenthetical names the gate whose denial is that request.
 
 **Enabling it.**
 - Set the exact bare line `review_orchestrator_routing = true` in each account's `<config-dir>/claude-config.toml`. Change the scaffolded `false` row if one exists, or place the new line after it, because the last row for a key wins.
 - Confirm that `~/.claude/scripts/config-get.sh review_orchestrator_routing` exits 0, from a shell or session whose `CLAUDE_CONFIG_DIR` is the account being enabled.
 - Start a new session after the pull and after `./install.sh`. A session started earlier may not load the gate's registration.
 - A key flip in either direction should take effect on the next `Skill` call, because a hook run rereads the key and the key memo lives only for one process. That the vendor starts a new process on every call is unverified (see below).
-- Re-run the installer unless the account's `hooks/` and `agents/` directories are folded symlinks. `./install.sh` stows into `$HOME` only, so for a non-personal account re-run the installer that stows the packages `claude/.claude/scripts/stow-packages.sh` lists into that account's config dir. Use `readlink -f` on each path to confirm that the hook (under `~/.claude` and under `<config-dir>`) and `<config-dir>/agents/review-orchestrator.md` each resolve into the checkout.
+- Re-run the installer unless the account's `hooks/` and `agents/` directories are folded symlinks. `./install.sh` stows into `$HOME` only, so for a non-personal account re-run the installer that stows the packages `claude/.claude/scripts/stow-packages.sh` lists into that account's config dir. Use `readlink -f` on each path to confirm that the hook (under `~/.claude` and under `<config-dir>`) and `<config-dir>/agents/review-orchestrator.md` each resolve into the checkout. With the key on and the agent unlinked, every routine round stops at the refused dispatch. The exits are re-running the installer, setting the key to `false`, or asking for an inline round.
 
 **Alternatives set aside.**
 - SessionStart `additionalContext`, the old record's plan: it reaches every main session.
@@ -46,7 +46,7 @@ The deny text still names both diff-file passes, so a pass that loses the word c
 - A line in `TRIGGER`, the agent description or CLAUDE.md: static text is unenforced, the body still loads, and it needs the remembering that fails.
 - `permissionDecision: "ask"`: it prompts the engineer every round.
 - Routing a typed `/code-review`: it stays in the main thread by design. The harness expands a typed command without a `Skill` call, so the gate never sees one. A one-off review belongs to `/review-pr`, and a user who types `/code-review` anyway probably wants it in the main thread.
-- An inline fallback for a dispatch the harness refuses (an unlinked or unknown agent, or a session with no `Agent` tool): the protocol's existing stop applies. It is rare, one command recovers it, and it fails visibly. A fallback would need a stop-clause exception, a carve-out for hook denials and rejected dispatches, a cause clause in the deny text, and their pins. The exits are re-running the installer, setting the key to `false`, or asking for an inline round.
+- An inline fallback for a dispatch the harness refuses (an unlinked or unknown agent, or a session with no `Agent` tool): the protocol's existing stop applies. It is rare, one command recovers it, and it fails visibly. A fallback would need a stop-clause exception, a carve-out for hook denials and rejected dispatches, a cause clause in the deny text, and their pins.
 
 ## Known gaps
 
@@ -57,8 +57,8 @@ The deny text still names both diff-file passes, so a pass that loses the word c
 - A main session run as `claude --agent review-orchestrator` carries `agent_type` alone, so the gate denies it with text that points at itself. Recovery is args `unrouted` or the key set to `false`.
 - A plugin skill whose final name component is `code-review` is routed too, the same name collision `activate-handoff-bypass.sh` accepts.
 - A routed round follows the protocol's "Stage the review target" step, so on a key-on account a review of unstaged work stages it first. A round with no git diff behind it is routed, as an explicitly requested round is today.
-- `/ready-for-review` step 4 should not halt on a gate-denied block, because the reviewer's spawn check is branch-wide and covers completed passes only. If a reviewer misapplies it, step 4's stated escape, stating the deviation with a rationale, clears it. A follow-up issue tracks the consumers that cannot tell a gate-denied `Skill(code-review)` block from a real invocation.
-- Each loop the gate routes adds one `code-review` round-open with no ledger block, because a denied `Skill` call still leaves its `tool_use` block in the transcript and round detection ignores the result. Until the follow-up lands, check round numbering with `review-ledger.sh show`. On a key-on account the round-number-mismatch counter in `author-outcome` overcounts.
+- `/ready-for-review` step 4 should not halt on a gate-denied block, because the reviewer's spawn check is branch-wide and covers completed passes only. If a reviewer misapplies it, step 4's stated escape, stating the deviation with a rationale, clears it. GH-1131 tracks the consumers that cannot tell a gate-denied `Skill(code-review)` block from a real invocation.
+- Each loop the gate routes adds one `code-review` round-open with no ledger block, because a denied `Skill` call still leaves its `tool_use` block in the transcript and round detection ignores the result. Until GH-1131 is fixed, check round numbering with `review-ledger.sh show`. On a key-on account the round-number-mismatch counter in `author-outcome` overcounts.
 - Every routine round on a key-on account runs through the agent before the dogfood has observed the old record's four unverified claims and round numbering across consecutive dispatches. A failure there surfaces as a `HALT:` entry or a protocol stop.
 - With the key on, the old record's accepted residuals (prompt injection, the agent's `Bash` and `Agent` reach, the marker gaps) apply to every routine round, not only explicit requests. The old record's dogfood still requires one round with a fix and a `git commit` that passes on the agent's own marker, which exercises the no-fix marker condition and the commit gate. No criterion inspects each marker write.
 - `migrate-legacy-config.sh` writes an explicit `false` row for a key with no legacy file. Flipping the default after the dogfood therefore needs a row migration (`docs/config-file.md` § "Migration"), and that migration cannot tell a scaffolded `false` from a deliberate one, so it must be a consented rewrite or a new key.
@@ -94,7 +94,7 @@ A plain revert of this change's PR must keep the config-key surfaces too, for th
 
 ## Unverified until observed
 
-Observed before the change shipped, on the gate's payload shape:
+Observed on the gate's payload shape when this record was written:
 - A `PreToolUse` `Skill` payload carries the call's args as the string `tool_input.args`, and the key is absent when no args are given.
 - The `review-orchestrator` agent's own `Skill` call reaches a hook with a non-empty `agent_id`, and the main session's call carries none.
 - A denied `Skill` call produces only an error tool result and no skill-body record, and still leaves its `tool_use` block in the transcript.
@@ -102,7 +102,7 @@ Observed before the change shipped, on the gate's payload shape:
 - No match was found for an earlier `Skill(code-review)` call that led its args with `unrouted`, in the searched local transcripts only.
 - A hook entry naming a missing script is reported by the harness as a non-blocking error, and an allowed `Skill` call still ran beside it. What a non-folded account sees on a pulled-but-not-reinstalled checkout was not observed, so the CHANGELOG note hedges it.
 
-Still unverified, to be settled after merge:
+Unverified when this record was written:
 - Whether the harness resolves skill names case-insensitively, or trims whitespace before resolving them. The gate compares `tool_input.skill` exactly and case-sensitively, so a name that misses routes nothing, with no signal.
 - Whether a session that follows each edited step passes `unrouted` in its args.
 - Whether every session follows the `code-review` clause and hands the reviewer the path rather than the word.

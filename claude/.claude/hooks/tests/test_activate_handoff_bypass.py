@@ -85,9 +85,9 @@ class TestActivateHandoffBypass:
     @pytest.mark.timing
     def test_directory_qualified_skill_name_activates(self, isolated_home):
         """A repo whose stow source sits under a `.claude` ancestor
-        directory renders directory-qualified (e.g.
-        `.claude/worktrees/<branch>/claude:skill`), per
-        activate-handoff-bypass.sh's own label-normalization comment."""
+        directory renders the skill name directory-qualified. An example is
+        `.claude/worktrees/<branch>/claude:skill`, the form
+        `_lib_skill_basename`'s comment in _lib.sh names."""
         sid = "session-dir-qualified"
         install_marker_script(isolated_home)
         _seed_session(isolated_home, sid)

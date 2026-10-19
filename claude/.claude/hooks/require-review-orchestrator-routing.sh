@@ -36,6 +36,10 @@
 #   - A typed /code-review expands without a Skill call, so it runs in the
 #     main thread by design. /review-pr is the one-off review.
 #   - A plugin skill whose final name component is `code-review` also routes.
+#   - A /ready-for-review cumulative pass or /review-pr pass that drops its
+#     `unrouted` word is denied like a routine round. Only the deny text's
+#     inline exception keeps that pass out of the agent, which reviews the
+#     staged diff instead.
 #   - A fork or nested session whose payload lacks agent_id reads as main
 #     (the hooks-reference note in enforce-marker-script-shape.sh).
 #   - If the harness stops sending tool_input.args as a string, every call

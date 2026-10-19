@@ -41,6 +41,7 @@ from helpers import (
     SKILLS_DIR,
     TRAVERSAL_SESSION_ID,
     assert_cap_engaged,
+    build_isolated_hook,
     build_path_without,
     extract_skill_command,
     install_marker_script,
@@ -271,22 +272,6 @@ def _base_payload(
         "transcript_path": str(transcript_path),
         "hook_event_name": hook_event_name,
     }
-
-
-def _isolated_hooks_dir(tmp_path: Path) -> Path:
-    """Symlink the nudge hook plus its _lib.sh/_config.sh dependencies into
-    a directory with no config-keys.psv sibling, so _config_schema_field sees
-    an absent (unreadable) schema and _config_enabled handoff_nudge returns
-    exit 3 at both of the hook's own case-statement call sites. Mirrors
-    test_advance_past_commit_stall.py's
-    test_unreadable_config_keys_psv_does_not_fire technique. Returns the
-    isolated hook's own path."""
-    isolated = tmp_path / "isolated-hooks"
-    isolated.mkdir()
-    (isolated / NUDGE_HOOK.name).symlink_to(NUDGE_HOOK)
-    (isolated / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
-    (isolated / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
-    return isolated / NUDGE_HOOK.name
 
 
 def _interleaved_median_seconds(
@@ -1663,7 +1648,7 @@ class TestNudgeHandoffNearContextCap:
         unresolvable kill switch here is treated as absent, not as denied.
         A schema-unreadable hook that stayed silent here would be
         indistinguishable from a correctly-suppressed one without this test."""
-        isolated_hook = _isolated_hooks_dir(tmp_path)
+        isolated_hook = build_isolated_hook(tmp_path, NUDGE_HOOK)
         transcript = tmp_path / "t.jsonl"
         _write_transcript(transcript, [_record_totalling(ABOVE_LARGE)])
         env = {**os.environ, "HOME": str(tmp_path)}
@@ -2828,7 +2813,7 @@ class TestCheckMode:
         needs its own independent coverage, not a shared test that would
         leave one site's regression undetected. --check must still report a
         normal estimate, not refuse, when config-keys.psv is unreadable."""
-        isolated_hook = _isolated_hooks_dir(tmp_path)
+        isolated_hook = build_isolated_hook(tmp_path, NUDGE_HOOK)
         self._seeded(tmp_path, total=ABOVE_LARGE)
         result = subprocess.run(
             [str(isolated_hook), "--check"],
