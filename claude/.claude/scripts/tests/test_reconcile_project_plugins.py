@@ -408,6 +408,57 @@ class TestPluginIdRevalidation:
 
 
 # ---------------------------------------------------------------------------
+# Local opt-out: a repo's settings.local.json can veto an id; an unreadable one
+# vetoes the whole repo.
+# ---------------------------------------------------------------------------
+
+class TestLocalOptOut:
+    def test_local_false_id_is_not_installed_but_sibling_id_is(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo, enabled_plugins={"foo@bar": True, "baz@bar": True})
+        (repo / ".claude" / "settings.local.json").write_text(
+            json.dumps({"enabledPlugins": {"foo@bar": False}})
+        )
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        install_log = tmp_path / "install.log"
+        _make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=[{"name": "bar", "source": "directory"}],
+            install_log=install_log,
+        )
+
+        result = _run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        assert [entry["plugin"] for entry in _install_log_entries(install_log)] == ["baz@bar"]
+        audit_entries = {line["plugin_id"]: line["decision"] for line in _audit_lines(config_dir)}
+        assert audit_entries == {"baz@bar": "install_succeeded"}
+
+    def test_unreadable_local_settings_installs_nothing_and_logs_the_skip(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo, enabled_plugins={"foo@bar": True, "baz@bar": True})
+        (repo / ".claude" / "settings.local.json").write_text("{not valid json")
+        config_dir = tmp_path / "cfg"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        install_log = tmp_path / "install.log"
+        _make_reconciler_claude_shim(
+            bin_dir,
+            marketplace_entries=[{"name": "bar", "source": "directory"}],
+            install_log=install_log,
+        )
+
+        result = _run_reconciler(repo, config_dir=config_dir, bin_dir=bin_dir)
+
+        assert result.returncode == 0, repr(result)
+        decisions = [line["decision"] for line in _audit_lines(config_dir)]
+        assert decisions == ["m10_local_optout_unreadable"]
+        assert _install_log_entries(install_log) == []
+
+
+# ---------------------------------------------------------------------------
 # M4: marketplace precondition, source-type allowlist, credential denylist.
 # ---------------------------------------------------------------------------
 
@@ -510,17 +561,26 @@ class TestMarketplacePrecondition:
 
     @pytest.mark.parametrize(
         "source_value",
-        ["git", "url", "unrecognized-value", "", None],
-        ids=["git", "url", "unrecognized", "empty-string", "missing-field"],
+        ["url", "unrecognized-value", "", None, "git-subdir", "Git", "github-enterprise", "directory "],
+        ids=[
+            "url",
+            "unrecognized",
+            "empty-string",
+            "missing-field",
+            "git-subdir",
+            "capitalized-git",
+            "github-enterprise",
+            "directory-trailing-space",
+        ],
     )
-    def test_skip_when_source_type_is_not_github_or_directory(
+    def test_skip_when_source_type_is_not_allowlisted(
         self, tmp_path: Path, source_value: str | None
     ) -> None:
-        """M4's allowlist: proceed only for `github`/`directory`; every other
+        """M4's allowlist: proceed only for `github`/`directory`/`git`; every other
         value -- including an unrecognized one, an empty string, or the
         field missing outright -- takes the same fail-closed path, so a
         wrong or absent field name can never silently admit every
-        marketplace the way a `git`-keyed denylist would."""
+        marketplace the way a denylist would."""
         repo = tmp_path / "repo"
         _init_repo(repo, enabled_plugins={"foo@bar": True})
         config_dir = tmp_path / "cfg"
@@ -539,7 +599,7 @@ class TestMarketplacePrecondition:
         assert decisions == ["m4_source_type_not_allowed"]
         assert _install_log_entries(install_log) == []
 
-    @pytest.mark.parametrize("source_value", ["github", "directory"])
+    @pytest.mark.parametrize("source_value", ["github", "directory", "git"])
     def test_proceeds_when_source_type_is_allowed(self, tmp_path: Path, source_value: str) -> None:
         repo = tmp_path / "repo"
         _init_repo(repo, enabled_plugins={"foo@bar": True})

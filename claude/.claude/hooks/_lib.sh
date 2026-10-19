@@ -3473,11 +3473,43 @@ _lib_validate_plugin_id() {
   return 0
 }
 
+# _lib_file_exceeds_size_cap FILE
+# Returns 0 when FILE's byte size is known and exceeds
+# _LIB_SIZE_THRESHOLD_BYTES, 1 otherwise (including when the size cannot be
+# determined). Prints nothing.
+_lib_file_exceeds_size_cap() {
+  local file_path="$1" file_size
+  file_size=$(stat -c%s -- "$file_path" 2>/dev/null) \
+    || file_size=$(stat -f%z -- "$file_path" 2>/dev/null) \
+    || file_size=$(wc -c < "$file_path" 2>/dev/null | tr -d '[:space:]') \
+    || file_size=""
+  [ -n "$file_size" ] && [ "$file_size" -gt "$_LIB_SIZE_THRESHOLD_BYTES" ] 2>/dev/null
+}
+
 # _lib_missing_plugin_ids SETTINGS_FILE REGISTRY_FILE
 # Prints, one per line, every `true`-valued `enabledPlugins` id in
-# SETTINGS_FILE that is absent from REGISTRY_FILE's `.plugins` object.
+# SETTINGS_FILE that is absent from REGISTRY_FILE's `.plugins` object and
+# not opted out in the `settings.local.json` beside SETTINGS_FILE.
 # Presence is name-keyed only -- an id counts as installed regardless of
 # which `projectPath` its registry entry(ies) carry.
+#
+# An id whose `enabledPlugins` value in that sibling `settings.local.json` is
+# exactly `false` is a per-repo local opt-out and is never reported. Any other
+# value for the id and an id absent from the local file leave the id eligible.
+# The local file is read only once an id is known to be missing from
+# REGISTRY_FILE, so a repo whose enabled ids are all installed never touches it.
+#
+# Local-file shape policy:
+# - Absent file, empty or whitespace-only file, top-level JSON `null`, an
+#   object with no `enabledPlugins`, and `enabledPlugins: null` mean no
+#   opt-outs.
+# - A symlink, a non-regular file, a file over _LIB_SIZE_THRESHOLD_BYTES, a
+#   file that is not valid JSON or that jq cannot open, and any valid JSON
+#   that is not an object (or
+#   `null`) at the top level, or whose `enabledPlugins` is neither absent,
+#   `null`, nor an object, are unreadable. Unreadable returns exit 3, because
+#   the file may hold an opt-out this function cannot see and reporting the id
+#   would override the user's explicit choice.
 #
 # Before any jq invocation, SETTINGS_FILE is checked against the same
 # symlink-and-size-cap guard this repo already applies to untrusted file
@@ -3507,7 +3539,10 @@ _lib_validate_plugin_id() {
 # apart from "genuinely nothing missing".
 # Exit 2: REGISTRY_FILE exists but is unparseable JSON, or its top-level
 # `version` is not 2 -- fail closed, distinct from a missing REGISTRY_FILE
-# (exit 0, empty registry). Stdout is empty.
+# (exit 0, empty registry). Stdout is empty. Takes precedence over exit 3.
+# Exit 3: at least one id is missing from the registry and the sibling
+# `settings.local.json` is unreadable per the shape policy above, so an
+# opt-out in it cannot be ruled out. Stdout is empty. Callers fail closed.
 _lib_missing_plugin_ids() {
   local settings_file="$1" registry_file="$2"
 
@@ -3517,15 +3552,8 @@ _lib_missing_plugin_ids() {
   if [ -e "$settings_file" ] && [ ! -f "$settings_file" ]; then
     return 1
   fi
-  if [ -f "$settings_file" ]; then
-    local settings_size
-    settings_size=$(stat -c%s -- "$settings_file" 2>/dev/null) \
-      || settings_size=$(stat -f%z -- "$settings_file" 2>/dev/null) \
-      || settings_size=$(wc -c < "$settings_file" 2>/dev/null | tr -d '[:space:]') \
-      || settings_size=""
-    if [ -n "$settings_size" ] && [ "$settings_size" -gt "$_LIB_SIZE_THRESHOLD_BYTES" ] 2>/dev/null; then
-      return 1
-    fi
+  if [ -f "$settings_file" ] && _lib_file_exceeds_size_cap "$settings_file"; then
+    return 1
   fi
 
   local enabled_ids=""
@@ -3544,13 +3572,43 @@ _lib_missing_plugin_ids() {
     registry_ids=$(_lib_jq -r '.plugins // {} | keys[]' -- "$registry_file" 2>/dev/null) || return 2
   fi
 
-  local id
+  # Here-strings, not `printf | grep -q`: under pipefail a grep that exits
+  # early on a match SIGPIPEs the printf and turns a hit into a pipeline failure.
+  local id uninstalled_ids=""
   while IFS= read -r id; do
     [ -z "$id" ] && continue
-    if ! printf '%s\n' "$registry_ids" | grep -qFx -- "$id"; then
-      printf '%s\n' "$id"
+    if ! grep -qFx -- "$id" <<<"$registry_ids"; then
+      uninstalled_ids+="$id"$'\n'
     fi
   done <<< "$enabled_ids"
+  [ -z "$uninstalled_ids" ] && return 0
+
+  local local_settings_file
+  local_settings_file="$(dirname -- "$settings_file")/settings.local.json"
+  local locally_disabled_ids=""
+  if [ -e "$local_settings_file" ] || [ -L "$local_settings_file" ]; then
+    if [ -L "$local_settings_file" ] || [ ! -f "$local_settings_file" ] \
+      || _lib_file_exceeds_size_cap "$local_settings_file"; then
+      return 3
+    fi
+    # `// {}` is avoided: it would also swallow an `enabledPlugins` of `false`.
+    locally_disabled_ids=$(_lib_jq -r '
+      if type == "null" then empty
+      elif type != "object" then error("settings.local.json is not an object")
+      else .enabledPlugins
+        | if type == "null" then empty
+          elif type != "object" then error("enabledPlugins is not an object")
+          else to_entries[] | select(.value == false) | .key
+          end
+      end' -- "$local_settings_file" 2>/dev/null) || return 3
+  fi
+
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    if ! grep -qFx -- "$id" <<<"$locally_disabled_ids"; then
+      printf '%s\n' "$id"
+    fi
+  done <<< "$uninstalled_ids"
 }
 
 # _lib_config_lines FILE

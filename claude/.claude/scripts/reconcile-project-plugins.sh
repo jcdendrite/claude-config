@@ -15,14 +15,16 @@
 #
 # Mechanisms implemented here (see .claude/plans/project-plugin-registry-
 # bootstrap.md for the full design): M4 (marketplace-registered-and-source-
-# type precondition, restricted to github/directory sources, plus a
+# type precondition, restricted to github/directory/git sources, plus a
 # credential-bearing-plugin denylist), M5 (detached/capped/fd-isolated
 # invocation contract and a total per-run wall-clock ceiling), M6 (the
 # `-s local` scope ladder, gated on a runtime check-ignore-plus-not-already-
 # tracked guard), M7 (never passes -y/--yes/--accept-command), M8 (a
 # PID-plus-process-start-time lock, keyed on the config dir, that survives a
 # recycled-PID wraparound), M9 (a hash-keyed failure stamp plus a shared,
-# append-locked audit log).
+# append-locked audit log), M10 (a `false` in the repo's sibling
+# settings.local.json drops that id; an unreadable local file installs
+# nothing).
 #
 # Known accepted gap (M9): a transient install failure suppresses retry for
 # that plugin id until the repo's settings file changes (which changes the
@@ -289,16 +291,17 @@ _reconciler_process_repo() {
 
     # Confirmed live against this account's own registered marketplaces
     # (2026-09-28, CLI 2.1.283): `claude plugin marketplace list --json`
-    # reports the source type as a plain top-level `.source` string (e.g.
-    # "directory", "github") on each entry. A repo's own settings.json
-    # `extraKnownMarketplaces` uses a different, nested shape
-    # (`.value.source.source`) for the same concept -- don't conflate the
-    # two when reading this filter.
+    # reports the source type as a plain top-level `.source` string on each
+    # entry; that attestation covers the field shape only, not which source
+    # types exist. A repo's own settings.json `extraKnownMarketplaces` uses a
+    # different, nested shape (`.value.source.source`) for the same concept --
+    # don't conflate the two when reading this filter.
     local source_type
     # shellcheck disable=SC2016 # single-quoted on purpose: $name is a jq --arg binding, not a shell variable; double-quoting would expand it in the shell before jq sees it.
     source_type=$(printf '%s' "$marketplace_json" | _lib_jq -r --arg name "$marketplace_name" '[.[] | select(.name == $name) | .source][0] // empty' 2>/dev/null) || source_type=""
+    # Allowlist, not denylist: an unknown or future source type, or a missing field, is skipped.
     case "$source_type" in
-      github|directory) ;;
+      github|directory|git) ;;
       *)
         _audit_log "$id" "m4_source_type_not_allowed" "skipped"
         continue
@@ -358,7 +361,8 @@ _reconciler_process_repo() {
 
 # M1/M2-equivalent: independently re-derive the missing-id set rather than
 # trusting an argv-passed list (M5). The registry-corruption exit status (2)
-# is handled the same way the hook's own M2 rule would.
+# is handled the same way the hook's own M2 rule would, and the unreadable-
+# local-opt-out status (3) fails closed the same way.
 _missing_ids_status=0
 _missing_ids=$(_lib_missing_plugin_ids "$SETTINGS_FILE" "$REGISTRY_FILE") || _missing_ids_status=$?
 case "$_missing_ids_status" in
@@ -366,6 +370,11 @@ case "$_missing_ids_status" in
   1) exit 0 ;;  # symlinked/oversized settings file -- same as absent, no log (M1)
   2)
     _audit_log "-" "registry_unparseable_or_version_mismatch" "skipped"
+    exit 0
+    ;;
+  3)
+    # An unreadable settings.local.json may hold an opt-out we cannot see, so nothing installs.
+    _audit_log "-" "m10_local_optout_unreadable" "skipped"
     exit 0
     ;;
   *) exit 0 ;;
