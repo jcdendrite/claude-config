@@ -104,6 +104,13 @@
 #     `black --check`, `ruff format --check`) is denied by the unconditional
 #     rule above — a false deny on a genuinely read-only invocation, not a
 #     missed mutation (see Grounding).
+#   - These read-only shapes deny as raw writes, an accepted false deny:
+#       - A `>` that starts a word inside quoted text or a heredoc body
+#         (`git log --grep 'a > b'`).
+#         docs/design-decisions/command-text-gates-accept-quoted-text-over-deny.md
+#         records why.
+#       - A redirect to `>&2`, `/dev/stderr`, or `/dev/stdout`, because the
+#         raw-write check exempts only `/dev/null` and `/tmp/*` targets.
 #   - Does not resolve a fragment's effective cwd (unlike
 #     require-worktree-for-git-writes.sh's -C/cd threading): a reviewer
 #     never has a legitimate git-write or in-place-format target anywhere,
@@ -126,7 +133,7 @@
 #     caught: the Bash arm strips quote characters from $COMMAND before
 #     splitting into fragments, so the word scan sees the bare token. A
 #     command name reached only through a nested shell boundary this scan
-#     never executes (`bash -c "git checkout"`) is still undecidable — same
+#     never executes (`bash -c "sed -i s/a/b/ x"`) is still undecidable — same
 #     indirection class as the alias/wrapper gap above.
 #   - macOS `/tmp` is a symlink to `/private/tmp`. If a future harness build
 #     resolves `file_path` to its real path before invoking this hook, a
@@ -421,7 +428,8 @@ case "$TOOL_NAME" in
           emit_deny "'git $subcmd' is not a read-only git subcommand for a review-only agent (subcommands that can write git state with a flag — branch, tag, worktree, remote, fetch, fsck, reflog, symbolic-ref — are excluded, so a reviewer gets only subcommands that never write), and review-only agents never write git state anywhere (worktree or main tree). $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
-        continue
+        # An allowed git fragment falls through to the in-place-edit and
+        # raw-write checks below.
       fi
 
       # Closed in-place-edit family. Each tool word is matched the same way

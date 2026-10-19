@@ -332,6 +332,14 @@ class TestBashGitWrites:
     def test_reviewer_git_checkout_denied(self):
         assert run_hook(HOOK, bash_input("git checkout -- x", agent_type="staff-platform-engineer")) == "deny"
 
+    def test_reviewer_nested_shell_git_write_denied(self):
+        # Quote stripping exposes the git word inside `bash -c`.
+        reason = run_hook_reason(
+            HOOK, bash_input('bash -c "git checkout -- x"', agent_type="staff-sdet")
+        )
+        assert reason is not None
+        assert "'git checkout' is not a read-only git subcommand" in reason
+
     def test_reviewer_git_diff_allowed(self):
         assert run_hook(HOOK, bash_input("git diff", agent_type="staff-platform-engineer")) == "allow"
 
@@ -418,6 +426,20 @@ class TestBashGitModeDependentWrites:
 
 
 class TestBashInPlaceEditFamily:
+    @pytest.mark.parametrize(
+        ("command", "reason_substring"),
+        [
+            ("sed -i 's/git log/x/' src/x", "rewrites the file in place"),
+            ("black tools/git status.py", "'black' reformats files"),
+        ],
+        ids=["sed-dash-i", "formatter"],
+    )
+    def test_reviewer_in_place_edit_mentioning_git_subcommand_denied(self, command, reason_substring):
+        # A word ending in `/git` routes the fragment to the git arm, which must not end its checks.
+        reason = run_hook_reason(HOOK, bash_input(command, agent_type="staff-sdet"))
+        assert reason is not None
+        assert reason_substring in reason
+
     def test_reviewer_sed_dash_i_denied(self):
         assert run_hook(HOOK, bash_input("sed -i src/x.ts", agent_type="staff-sdet")) == "deny"
 
@@ -663,6 +685,69 @@ class TestRawWriteTargetGap:
         # Common diagnostic-noise destination, not a tracked-file write —
         # must not false-deny an ordinary `... > /dev/null` invocation.
         assert run_hook(HOOK, bash_input("git status > /dev/null", agent_type="staff-sdet")) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git show HEAD:f > src/tracked.py",
+            "git log >> src/tracked.py",
+            "git log >src/tracked.py",
+            "git log >>src/tracked.py",
+            'bash -c "git show HEAD:f > src/tracked.py"',
+        ],
+        ids=["spaced", "append", "attached", "attached-append", "nested-shell"],
+    )
+    def test_reviewer_git_redirect_to_tracked_path_denied(self, command):
+        reason = run_hook_reason(HOOK, bash_input(command, agent_type="staff-sdet"))
+        assert reason is not None
+        assert "writes to 'src/tracked.py', which is outside /tmp." in reason
+
+    def test_reviewer_git_redirect_to_tmp_allowed(self):
+        assert run_hook(HOOK, bash_input("git show HEAD:f > /tmp/scratch/f", agent_type="staff-sdet")) == "allow"
+
+    @pytest.mark.parametrize(
+        "command",
+        ["git log -n 5 2>&1", "git diff 2>/dev/null"],
+        ids=["stderr-to-stdout", "stderr-to-dev-null"],
+    )
+    def test_reviewer_git_redirect_of_stderr_allowed(self, command):
+        # Passes with or without the git-fragment fall-through; guards a future fix of the fd-numbered-redirect gap.
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
+    @pytest.mark.parametrize(
+        ("command", "target"),
+        [
+            ("git diff >&2", "&2"),
+            ("git log > /dev/stderr", "/dev/stderr"),
+            ("git log > /dev/stdout", "/dev/stdout"),
+        ],
+        ids=["fd-duplication", "dev-stderr", "dev-stdout"],
+    )
+    def test_reviewer_git_redirect_to_standard_stream_over_denied(self, command, target):
+        """An accepted false deny named in the hook header's Known gaps, because
+        only `/dev/null` and `/tmp/*` targets are exempt."""
+        reason = run_hook_reason(HOOK, bash_input(command, agent_type="staff-sdet"))
+        assert reason is not None
+        assert f"writes to '{target}', which is outside /tmp." in reason
+
+    @pytest.mark.parametrize(
+        ("command", "target"),
+        [
+            ("git log --grep 'a > b'", "b"),
+            ('git grep -n "x >= 5" src', "="),
+            ("grep 'a > b' src/x", "b"),
+            ("cat > /tmp/scratch/check.sh <<'EOF'\nif true\nthen git diff > x\nfi\nEOF", "x"),
+        ],
+        ids=["git-fragment", "git-comparison-operator", "non-git-fragment", "heredoc-body"],
+    )
+    def test_reviewer_quoted_redirect_character_over_denied(self, command, target):
+        """A `>` that starts a word inside quoted text or a heredoc body reads as a
+        redirect. The false deny is accepted, and
+        `docs/design-decisions/command-text-gates-accept-quoted-text-over-deny.md`
+        records why."""
+        reason = run_hook_reason(HOOK, bash_input(command, agent_type="staff-sdet"))
+        assert reason is not None
+        assert f"writes to '{target}', which is outside /tmp." in reason
 
     def test_reviewer_redirect_traversal_out_of_tmp_denied(self):
         assert (
