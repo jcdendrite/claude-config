@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # SessionStart hook (matcher startup only): measures the total byte size of
 # every auto-memory store on the machine (topic files included, which sessions

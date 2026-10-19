@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # UserPromptSubmit hook: report when the session is working from the main
 # working tree of a repo that requires worktrees, while a linked worktree

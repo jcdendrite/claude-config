@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: deny Claude's Bash tool whenever the raw command text contains a credential-path token (SSH private key basename, .netrc/_netrc, .git-credentials, a cloud credential-store path, a non-template .env variant, credentials.json). Always on, no arming file, no bypass valve — closes the Bash-based read gap that deny-env-reads.sh and deny-data-file-reads.sh leave open by only gating the Read tool.

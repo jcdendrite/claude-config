@@ -10,19 +10,22 @@ drives the right verdict.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 
 import pytest
 from helpers import HOOKS_DIR, build_path_without
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
+BASH = shutil.which("bash")
+assert BASH is not None, "bash is not on PATH"
 
 
 def _mask_shell_quotes(
     text: str, env: dict[str, str] | None = None, expect_success: bool = True
 ) -> subprocess.CompletedProcess:
     result = subprocess.run(
-        ["/bin/bash", "-c", f'. "{LIB_SH}"; _lib_mask_shell_quotes "$1"', "_", text],
+        [BASH, "-c", f'. "{LIB_SH}"; _lib_mask_shell_quotes "$1"', "_", text],
         capture_output=True,
         text=True,
         check=False,

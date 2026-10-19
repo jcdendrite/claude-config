@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Mutates $HOME (stow symlinks) and this repo's tracked settings (marketplace
 # registration) -- never `source`/`.` this file; to exercise one block in
 # isolation, extract it via its INSTALL_TEST_FIXTURE markers instead (see
@@ -6,6 +6,30 @@
 set -e
 
 echo "=== claude-config Setup ==="
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them with `$0` set to a tmp repo's install.sh. Keep
+# both markers on their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: bash-floor-check — start
+# pwd -P (not pwd) canonicalizes away any symlink in the invocation path, so
+# REPO_DIR matches the canonicalized form the marketplace-registration check
+# below compares against — otherwise a symlink-adjacent invocation of this
+# script could make REPO_DIR byte-differ from the marketplace's recorded
+# .path even though they name the same directory, thrashing (remove+re-add)
+# the registration on every run.
+REPO_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+cd "$REPO_DIR"
+# Sourced from its own known repo-relative path, not ~/.claude/hooks/...,
+# which doesn't exist yet at this point in a fresh install (this repo isn't
+# stowed yet). _config.sh opens with the bash floor check, so a below-floor
+# bash prints its platform-specific fix and ends this run here, before any
+# mutation. _lib_config_dir is the single bash definition of config-dir
+# resolution, shared with every hook via _lib.sh.
+# This line and everything above it must parse and run on bash 3.2.
+# shellcheck source=claude/.claude/hooks/_config.sh
+. "$REPO_DIR/claude/.claude/hooks/_config.sh" || exit 1
+echo "bash floor check passed for install.sh's own bash $BASH_VERSION ($BASH) only; its child scripts and Claude Code's hooks resolve bash from PATH (docs/hooks.md § \"Gate deadlock recovery\")."
+# INSTALL_TEST_FIXTURE: bash-floor-check — end
 
 # INSTALL_TEST_FIXTURE: presence-check — start
 missing=()
@@ -18,6 +42,35 @@ if [ ${#missing[@]} -gt 0 ]; then
   exit 1
 fi
 # INSTALL_TEST_FIXTURE: presence-check — end
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them with a stubbed `claude` on PATH. Keep both
+# markers on their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: claude-code-version-check — start
+# Claude Code 2.1.295 is the first version that honors `"onFailure": "block"` on gate registrations.
+# Non-fatal: this script does not run on `git pull`, so it cannot guard the pull itself.
+# Compared field by field, because a lexical comparison ranks 2.1.1000 below 2.1.295.
+CLAUDE_CODE_MINIMUM_VERSION="2.1.295"
+claude_code_version_warning=""
+claude_version_output=$(claude --version 2>/dev/null) || claude_version_output=""
+if [[ "$claude_version_output" =~ ([0-9]{1,9})\.([0-9]{1,9})\.([0-9]{1,9}) ]]; then
+  claude_version_fields=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+  IFS=. read -r -a claude_minimum_fields <<< "$CLAUDE_CODE_MINIMUM_VERSION"
+  for field_index in 0 1 2; do
+    if (( 10#${claude_version_fields[field_index]} > 10#${claude_minimum_fields[field_index]} )); then
+      break
+    fi
+    if (( 10#${claude_version_fields[field_index]} < 10#${claude_minimum_fields[field_index]} )); then
+      claude_code_version_warning="[install] warning: claude ${claude_version_fields[0]}.${claude_version_fields[1]}.${claude_version_fields[2]} is older than $CLAUDE_CODE_MINIMUM_VERSION, which gate registrations need for \"onFailure\": \"block\". Update Claude Code, restart it, and confirm /hooks lists the gates and /permissions shows the deny rules."
+      printf '%s\n' "$claude_code_version_warning" >&2
+      break
+    fi
+  done
+else
+  claude_code_version_warning="[install] warning: could not read a version from \`claude --version\`; confirm it is $CLAUDE_CODE_MINIMUM_VERSION or newer."
+  printf '%s\n' "$claude_code_version_warning" >&2
+fi
+# INSTALL_TEST_FIXTURE: claude-code-version-check — end
 
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under a stubbed `python3` on PATH. Keep both
@@ -35,14 +88,6 @@ if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 
 fi
 # INSTALL_TEST_FIXTURE: python-floor-check — end
 
-# pwd -P (not pwd) canonicalizes away any symlink in the invocation path, so
-# REPO_DIR matches the canonicalized form the marketplace-registration check
-# below compares against — otherwise a symlink-adjacent invocation of this
-# script could make REPO_DIR byte-differ from the marketplace's recorded
-# .path even though they name the same directory, thrashing (remove+re-add)
-# the registration on every run.
-REPO_DIR="$(cd "$(dirname "$0")" && pwd -P)"
-cd "$REPO_DIR"
 mkdir -p "$HOME/.local/bin"
 # Both target directories are created before stow runs so stow links their
 # contents entry by entry. Without this, stow tree-folds a target that does
@@ -97,8 +142,7 @@ _claude_session_is_active_now() {
 # Sourced from its own known repo-relative path, not ~/.claude/scripts/...,
 # which doesn't exist yet at this point in a fresh install (migration runs
 # before stow does). Not relocate-claude-config.sh itself — sourcing that
-# would turn on set -u/pipefail for the rest of install.sh, fatal on an
-# empty array under macOS system bash 3.2.
+# would turn on set -u/pipefail for the rest of install.sh.
 # shellcheck source=claude/.claude/scripts/_stow_migration_lib.sh
 . "$REPO_DIR/claude/.claude/scripts/_stow_migration_lib.sh"
 
@@ -424,13 +468,6 @@ if [ -f "$HOME/.claude.json" ]; then
 fi
 # INSTALL_TEST_FIXTURE: continuity-hardening — end
 
-# Sourced from its own known repo-relative path, not ~/.claude/hooks/...,
-# which doesn't exist yet at this point in a fresh install (this repo isn't
-# stowed yet). _lib_config_dir is the single bash definition of config-dir
-# resolution, shared with every hook via _lib.sh.
-# shellcheck source=claude/.claude/hooks/_config.sh
-. "$REPO_DIR/claude/.claude/hooks/_config.sh"
-
 # The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
 # markers below and runs them under an isolated $HOME. Keep both markers on
 # their own line, wrapping the whole block.
@@ -550,8 +587,7 @@ configure_machine_level_opt_ins() {
 # row moved to config-keys.psv: a committed file is the git-native idiom
 # for a repo-level toggle, and moving these into the per-machine state file
 # would break exactly the property they exist for. Flat, pipe-delimited
-# rows rather than an associative array: the system bash on macOS (and this
-# machine's default) is 3.2, which has no `declare -A`. Schema (no
+# rows. Schema (no
 # surrounding whitespace around any `|` -- IFS='|' read -r would otherwise
 # bake leading/trailing spaces into every field): path-template|human-name|
 # docs-anchor. Every row defaults to `disabled` (presence-enables); no
@@ -609,7 +645,7 @@ _config_key_source() {
 
 # Schema-driven, replacing the old scope=machine-promptable/machine/account
 # reporters: every key's effective value now resolves through
-# _config_value, so one function reports all eighteen. For a
+# _config_value, so one function reports all nineteen. For a
 # config-dir-or-home key (worktree_required, autonomous_shipping), also
 # prints $HOME/.claude's own value/source alongside the resolved config
 # dir's when the two differ -- the union means either can be the reason a
@@ -692,8 +728,8 @@ report_sentinel_inventory() {
 
 # INSTALL_TEST_FIXTURE: legacy-config-migration — start
 # Executed, not sourced: sourcing would turn on set -u/pipefail for the
-# rest of this script, fatal on an empty array under macOS system bash 3.2
-# (the same reason given above for not sourcing _stow_migration_lib.sh).
+# rest of this script (the same reason given above for not sourcing
+# _stow_migration_lib.sh).
 # Runs before the interactive opt-in prompts below so a freshly-imported
 # legacy value is what those prompts (and the reporter) see. A failed
 # migration does not abort the rest of install.sh -- matching the shape at
@@ -984,5 +1020,15 @@ if ! python3 -c "import ensurepip" >/dev/null 2>&1; then
   echo "NOTE: this python3 lacks ensurepip, so 'python3 -m venv' produces a venv with no pip."
   echo "      On Debian/Ubuntu, install it first: sudo apt install python3.12-venv"
 fi
+
+# The hook test suite extracts the lines between the two INSTALL_TEST_FIXTURE
+# markers below and runs them with the warning variable set or unset. Keep both
+# markers on their own line, wrapping the whole block.
+# INSTALL_TEST_FIXTURE: claude-code-version-reprint — start
+# Repeats the Claude Code version warning, which the output above has scrolled away.
+if [[ -n "${claude_code_version_warning:-}" ]]; then
+  printf '%s\n' "$claude_code_version_warning" >&2
+fi
+# INSTALL_TEST_FIXTURE: claude-code-version-reprint — end
 
 prompt_contributor_intent

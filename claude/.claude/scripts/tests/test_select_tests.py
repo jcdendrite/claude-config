@@ -434,8 +434,9 @@ class TestSelectPytestTargets:
         }
 
     def test_hooks_dir_shell_script_change_also_selects_scripts_tests(self):
-        """test_no_bash4_constructs.py (SCRIPTS_TESTS_DIR) recursively globs
-        claude/.claude/ for *.sh files, picking up claude/.claude/hooks/.
+        """test_default_branch_resolution_is_shared.py (SCRIPTS_TESTS_DIR)
+        recursively globs claude/.claude/ for *.sh files, picking up
+        claude/.claude/hooks/.
         Without this cross-domain exception, that check goes unrun on a
         hooks-dir shell script change."""
         result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.sh"])
@@ -1397,9 +1398,9 @@ class TestSelectPytestTargets:
     def test_statusline_command_sh_change_selects_hooks_scripts_and_claude_tests(self):
         """test_statusline_command.py (CLAUDE_TESTS_DIR) reads this exact
         file by path. test_shellcheck.py (HOOKS_TESTS_DIR) lints every
-        tracked shell script, and test_no_bash4_constructs.py /
-        test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
-        recursively glob claude/.claude/ for *.sh files."""
+        tracked shell script, and
+        test_default_branch_resolution_is_shared.py (SCRIPTS_TESTS_DIR)
+        recursively globs claude/.claude/ for *.sh files."""
         result = _mod.select_pytest_targets([_mod.STATUSLINE_COMMAND_SH])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -1997,6 +1998,8 @@ _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
      "claude-skills/skills/error-mode-analysis/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_respond_pr.py",
      "claude-skills/skills/respond-pr/SKILL.md"),
+    ("claude/.claude/hooks/tests/test_require_review_orchestrator_routing.py",
+     "claude-skills/skills/subagent-delegation/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_routing_read.py",
      "claude-skills/skills/plan-review/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_skill_review.py",

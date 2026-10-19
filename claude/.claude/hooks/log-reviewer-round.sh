@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # PostToolUse: recorder half of the round-3-triggered architect-consult
 # gate (require-architect-consult.sh) -- see

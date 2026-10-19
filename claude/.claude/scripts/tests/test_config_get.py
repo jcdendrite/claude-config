@@ -11,7 +11,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from helpers import HOOKS_DIR, SCRIPTS_DIR
+from helpers import HOOKS_DIR, SCRIPTS_DIR, link_bash_into
 
 _CONFIG_GET_SH = SCRIPTS_DIR / "config-get.sh"
 _CONFIG_SH = HOOKS_DIR / "_config.sh"
@@ -29,12 +29,20 @@ def _isolated_scripts_dir(tmp_path: Path, schema_content: str) -> Path:
     return scripts_dir
 
 
+def _path_with_caller_bash_first(tmp_path: Path) -> str:
+    """A PATH whose `bash` is the caller's, ahead of the system directories that supply the other tools."""
+    bash_dir = tmp_path / "bash-first"
+    bash_dir.mkdir(exist_ok=True)
+    link_bash_into(bash_dir)
+    return f"{bash_dir}:/usr/bin:/bin"
+
+
 def _run(
     scripts_dir: Path, key: str, tmp_path: Path, claude_config_dir: Path | None = None
 ) -> subprocess.CompletedProcess:
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
-    env = {"HOME": str(home), "PATH": "/usr/bin:/bin"}
+    env = {"HOME": str(home), "PATH": _path_with_caller_bash_first(tmp_path)}
     if claude_config_dir is not None:
         env["CLAUDE_CONFIG_DIR"] = str(claude_config_dir)
     return subprocess.run(
@@ -116,7 +124,7 @@ class TestArchitectFixPlanPilotGate:
             ["bash", "-c", f'set -uo pipefail; . "{_CONFIG_SH}"; _config_scaffold "" "{config_dir}"'],
             capture_output=True,
             text=True,
-            env={"HOME": str(tmp_path / "home"), "PATH": "/usr/bin:/bin"},
+            env={"HOME": str(tmp_path / "home"), "PATH": _path_with_caller_bash_first(tmp_path)},
             check=False,
         )
         assert scaffold.returncode == 0, scaffold.stderr

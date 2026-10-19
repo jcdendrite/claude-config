@@ -177,7 +177,7 @@ def _rm_shim_that_fails_on_recursive_delete(tmp_path: Path) -> Path:
 class TestUsageErrors:
     def test_any_argument_exits_two_with_usage(self, isolated_home, tmp_path):
         _seed_session(isolated_home, SID)
-        env = {"HOME": str(isolated_home)}
+        env = {"HOME": str(isolated_home), "PATH": os.environ["PATH"]}
         result = subprocess.run(
             ["bash", str(SCRIPT), "unexpected"], cwd=tmp_path, env=env, capture_output=True, text=True,
             timeout=60,
@@ -432,12 +432,12 @@ class TestSessionWideWorktreeSweep:
 
 
 class TestInteriorFailureStillReachesExitZero:
-    """The usage banner promises exit 0 on every run past the argument check,
-    whether or not anything was in flight -- pinned here against each
-    interior failure after the session is known that `set -e` would otherwise
-    propagate: an uncomputable marker key, an unresolvable main tree root, a
-    failing `git worktree list`, and a failing `rm -f` on the marker or an
-    artifact. The first three are guarded by their own `if ...; then ...
+    """The usage banner promises exit 0 on every run past the argument check
+    and the bash floor check in `_config.sh`, whether or not anything was in
+    flight -- pinned here against each interior failure after the session is
+    known that `set -e` would otherwise propagate: an uncomputable marker key,
+    an unresolvable main tree root, a failing `git worktree list`, and a
+    failing `rm -f` on the marker or an artifact. The first three are guarded by their own `if ...; then ...
     else ...`, the last by `|| true`."""
 
     def test_repo_hash_computation_failure_skips_only_the_marker_cleanup(self, isolated_home, tmp_path):
@@ -528,7 +528,7 @@ class TestInteriorFailureBeforeSessionIsKnownStillExitsZero:
 
     def test_config_dir_resolution_failure_exits_zero(self, tmp_path):
         result = subprocess.run(
-            ["bash", str(SCRIPT)], cwd=tmp_path, env={"HOME": ""}, capture_output=True, text=True,
+            ["bash", str(SCRIPT)], cwd=tmp_path, env={"HOME": "", "PATH": os.environ["PATH"]}, capture_output=True, text=True,
             timeout=60,
         )
         assert result.returncode == 0, result.stderr

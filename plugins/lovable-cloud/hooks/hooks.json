@@ -5,6 +5,7 @@
       "hooks": [{
         "type": "command",
         "command": "CLAUDE_PLUGIN_DATA=\"${CLAUDE_PLUGIN_DATA}\" CLAUDE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" \"${CLAUDE_PLUGIN_ROOT}\"/hooks/validate-migration-filename.sh",
+        "onFailure": "block",
         "statusMessage": "Checking migration filename..."
       }]
     }],

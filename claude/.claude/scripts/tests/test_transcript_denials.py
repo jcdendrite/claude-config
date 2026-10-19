@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, bash_input, build_path_without, run_hook_reason
+from helpers import HOOKS_DIR, bash_input, build_path_without, run_hook_reason, skill_input
 
 _SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
 # "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
@@ -316,6 +316,7 @@ _BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
     ("require-architect-consult.sh", "architect-consult"),
     ("deny-invisible-commit-content.sh", "invisible-commit-content"),
     ("deny-no-op-dispatch.sh", "no-op-dispatch"),
+    ("require-review-orchestrator-routing.sh", "review-orchestrator routing"),
 )
 
 
@@ -504,6 +505,23 @@ class TestDenialHookLabelEnumerationRealHooks:
         )
         assert message is not None
         assert _mod.denials._denial_hook_label("", message) == "skill length"
+
+    def test_routing_gate_deny_produces_enumerated_label(self, tmp_path):
+        """require-review-orchestrator-routing.sh's real behavioral deny, run
+        against a key-on config dir, attributes to its own label rather than
+        falling to 'unmatched'."""
+        config_dir = tmp_path / "config-dir"
+        config_dir.mkdir()
+        (config_dir / "claude-config.toml").write_text("review_orchestrator_routing = true\n")
+        message = run_hook_reason(
+            HOOKS_DIR / "require-review-orchestrator-routing.sh",
+            skill_input("code-review"),
+            home=tmp_path,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+        assert message is not None
+        assert _mod.denials._denial_hook_label("", message) == "review-orchestrator routing"
+        assert _mod.denials._denial_cause_kind(message) == "behavioral"
 
 
 # ---------------------------------------------------------------------------

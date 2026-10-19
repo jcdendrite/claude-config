@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: batch-gate
 # PostToolBatch and Stop hook: injects a context-window nudge when the
 # estimated token count crosses the lesser of 40% of the model's context

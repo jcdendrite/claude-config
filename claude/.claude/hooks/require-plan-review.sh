@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # PreToolUse hook: block Write/Edit/ExitPlanMode when an uncommitted or modified
@@ -312,8 +312,6 @@ if WORKTREE_LIST=$(_lib_capped git -C "$REPO_ROOT" worktree list --porcelain 2>/
     [ "$SIBLING_ROOT" != "$REPO_ROOT" ] || continue
     SIBLING_PREFIXES+=("$(_marker_lib_repo_hash "$SIBLING_ROOT").")
   done <<< "$WORKTREE_LIST"
-  # The count guard is load-bearing under `set -u`: expanding an empty array
-  # is an unbound-variable error on bash before 4.4 (stock macOS ships 3.2).
   if [ "${#SIBLING_PREFIXES[@]}" -gt 0 ] \
     && _lib_marker_value_present "$PLAN_REVIEW_MARKERS_DIR" "$CURRENT_HASH" "${SIBLING_PREFIXES[@]}"; then
     exit 0
@@ -344,3 +342,5 @@ else
 
 The model judges which case applies from conversation context. Plans live wherever you put them — typically .claude/plans/, but also /tmp/<slug>.md, handoff docs, or external design doc URLs. The hook does not try to detect plan-change correlation.${UNDETERMINED_BASE_NOTE}"
 fi
+
+exit 0

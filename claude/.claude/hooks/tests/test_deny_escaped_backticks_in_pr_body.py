@@ -84,6 +84,22 @@ class TestDenyEscapedBackticksInPrBody:
         assert reason is not None
         assert "pseudo-file path" in reason
 
+    @pytest.mark.parametrize(
+        "alias_path",
+        ["//dev/fd/0", "/dev/./fd/0"],
+        ids=["double-slash-dev-fd", "dot-segment-dev-fd"],
+    )
+    def test_body_file_alias_pseudo_file_spelling_denied(self, alias_path):
+        """Alias spellings of /dev/fd/N slip past `_lib_is_pseudo_file_path`, so only the
+        regular-file check denies them.
+        A failure here once `_lib_is_pseudo_file_path` learns alias spellings means
+        `_lib_is_pseudo_file_path`'s header in _lib.sh, this hook's Known-gaps pointer and the
+        expected message must change together."""
+        cmd = f"gh pr create --body-file {alias_path}"
+        reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd))
+        assert reason is not None
+        assert "not a regular file" in reason
+
     def test_missing_body_file_is_denied_fail_closed(self):
         cmd = "gh pr create --body-file /nonexistent/path.md"
         assert run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd)) == "deny"

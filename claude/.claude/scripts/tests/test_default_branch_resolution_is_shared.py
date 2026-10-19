@@ -7,7 +7,7 @@ _lib_default_branch_or_guess) rather than re-reading the ref itself.
 
 Scope: all *.sh files under claude/.claude/ that are NOT under a tests/
 path segment (test fixtures run only under the CI interpreter and are
-never stowed) -- mirrors test_no_bash4_constructs.py's scope rationale.
+never stowed), so the scan covers only shipped shell.
 
 Limitations: this test scans file text and skips full-comment lines, so a
 doc-comment naming the literal in prose does not trip it. Suppress a

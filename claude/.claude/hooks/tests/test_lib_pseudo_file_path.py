@@ -9,17 +9,20 @@ still applies the guard.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 
 import pytest
 from helpers import HOOKS_DIR
 
 LIB_SH = HOOKS_DIR / "_lib.sh"
+BASH = shutil.which("bash")
+assert BASH is not None, "bash is not on PATH"
 
 
 def _is_pseudo_file_path(path: str) -> int:
     return subprocess.run(
-        ["/bin/bash", "-c", f'. "{LIB_SH}"; _lib_is_pseudo_file_path "$1"', "_", path],
+        [BASH, "-c", f'. "{LIB_SH}"; _lib_is_pseudo_file_path "$1"', "_", path],
         capture_output=True,
         text=True,
         check=False,

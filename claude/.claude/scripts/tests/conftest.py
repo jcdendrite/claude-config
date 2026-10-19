@@ -28,7 +28,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo
+from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo, install_shell_exec_guard
 from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
@@ -1460,6 +1460,14 @@ def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects):
     monkeypatch.setattr(cost_ledger, "config_dir", lambda: cfg_dir)
     monkeypatch.setattr(ledger_common, "config_dir", lambda: cfg_dir)
     return cfg_dir
+
+
+@pytest.fixture(autouse=True)
+def _guard_shell_exec(monkeypatch):
+    """Fail a test that execs a shell file in a way that can pass without the file running.
+    The wrapper lives in helpers.install_shell_exec_guard; each test tree defines its own
+    fixture because importing one into a conftest trips ruff F401."""
+    install_shell_exec_guard(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

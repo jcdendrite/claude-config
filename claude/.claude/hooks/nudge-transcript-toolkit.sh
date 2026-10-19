@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # PostToolUse Write|Edit|MultiEdit hook: when the content just written to a
 # .py/.sh file looks like a hand-rolled transcript-corpus glob

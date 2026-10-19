@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # PostToolUse AskUserQuestion hook: emits a static additionalContext line
 # separating the engineer's selected label and typed text from the model's

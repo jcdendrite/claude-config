@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Shared helper library sourced by require-*.sh hooks and scripts/marker.sh.
 # Keep this file the single source of truth for any recipe that must produce
 # byte-identical output on both the read side (hooks) and the write side
@@ -8,7 +8,8 @@
 # (which define emit_deny before sourcing), this also fails closed rather
 # than open on the one reachable divergent `$0` shape: a bare filename.
 # Other hook classes intentionally stay fail-open on a missing _lib.sh
-# regardless of this substitution.
+# regardless of this substitution, except redact-credential-values.sh, which
+# exits 1 with a stderr line.
 
 # _config.sh defines _lib_config_dir (config-dir resolution) and the
 # _config_*/config-key primitives every hook needs — sourced here, via
@@ -34,7 +35,7 @@ fi
 # time.
 # Security implication: on a machine with neither binary, a stalled or
 # replaced jq binary can hold a gate hook open until the harness's own hook
-# timeout, which does not block the tool call — see _lib_capped_for's header.
+# timeout. See _lib_capped_for's header for whether that blocks the call, including the effect of `onFailure`.
 _lib_jq() {
   _lib_capped_for 5 jq "$@"
 }
@@ -90,6 +91,8 @@ _lib_capped() {
 #    or `mcp_tool` hook doesn't block the tool call. The call continues
 #    through the normal permission flow, so don't count on a stalled hook to
 #    act as a gate."
+#    Gate registrations set `onFailure: "block"`, so on Claude Code 2.1.295 or
+#    later a timed-out gate blocks the call instead.
 #
 # Spelling:
 #  - The short `-k 2` spelling is load-bearing: BusyBox's timeout rejects
@@ -258,7 +261,7 @@ _lib_realpath_m() {
 
 # _lib_normalize_path_lexically PATH
 # Sets _LIB_NORMALIZED_PATH (global) to PATH with empty and `.` segments dropped and each `..` popping the segment before it. Touches no filesystem and runs no exec'd command, so a symlink in PATH is not resolved.
-# Verified on bash 5.2 and with BASH_COMPAT=32, not on a real bash 3.2 binary.
+# Verified on bash 5.2.
 # `realpath -s -m` is not used because it costs the subprocess that callers bound with a realpath budget.
 # Always returns 0. An empty PATH yields an empty result, not `.`.
 # An absolute PATH collapses any run of leading slashes to one, as Linux does, and a `..` at the root is dropped. A relative PATH keeps a leading `..` run, and one that pops to nothing yields `.`.
@@ -317,8 +320,8 @@ _lib_normalize_path_lexically() {
 
 # Succeeds only when $1 is non-empty and every byte is in [A-Za-z0-9._/@+-].
 # Matched in bash rather than grep, because BSD grep's -z still anchors ^/$ at each embedded newline.
-# The body is a subshell that sets LC_ALL=C, since bash without `globasciiranges` (bash < 5, including macOS /bin/bash 3.2) orders bracket ranges by locale collation elsewhere.
-# `local LC_ALL=C` is not used because its restore of the caller's locale was not verified on bash 4.x.
+# LC_ALL=C keeps the bracket ranges in byte order even when a caller has turned `globasciiranges` off.
+# The body is a subshell, so its LC_ALL=C does not leak into the caller.
 _lib_passes_path_char_allowlist() (
   LC_ALL=C
   case "${1-}" in
@@ -528,9 +531,8 @@ _lib_parse_tool_input_or_deny() {
   fi
   # -d '' (NUL delimiter, absent from the input) is required rather than the
   # default newline delimiter, because COMMAND may legitimately contain
-  # embedded newlines. mapfile/readarray, the bash-4 alternative, is
-  # forbidden in this repo (test_no_bash4_constructs.py) because the target
-  # includes bash 3.2. `read -r -d ''` returns non-zero at EOF without ever
+  # embedded newlines.
+  # `read -r -d ''` returns non-zero at EOF without ever
   # finding that delimiter, on every invocation including this one's own
   # success path, hence the trailing `|| true`.
   # The extra 0x1f appended to the herestring, plus the trailing
@@ -557,6 +559,35 @@ _lib_parse_tool_input_or_deny() {
   case "$TOOL_NAME" in
     *$'\n'*) emit_deny "$deny_msg"; exit 0 ;;
   esac
+}
+
+# _lib_skill_basename SKILL_NAME
+# Prints a Skill call's final name component, taken after the last ':' and
+# then after the last '/'. Two qualified forms exist: directory-qualified
+# (.claude/worktrees/<branch>/claude:name) and plugin-qualified (plugin:name).
+# A caller captures it with $(...); a name ending in ':' or '/' prints empty.
+_lib_skill_basename() {
+  local skill_name="${1:-}"
+  skill_name="${skill_name##*:}"
+  printf '%s\n' "${skill_name##*/}"
+}
+
+# _lib_args_lead_word_is ARGS WORD
+# Returns 0 when a Skill call's args, with leading whitespace stripped, are
+# exactly the word or the word followed by whitespace; returns 1 otherwise.
+# The match is case-sensitive while the caller's `nocasematch` is off, and it
+# does not strip quotes or backticks.
+# local LC_ALL=C confines [[:space:]] to ASCII whitespace, so U+3000 does not
+# count as a separator in a UTF-8 locale.
+_lib_args_lead_word_is() {
+  local LC_ALL=C
+  local args="${1:-}" word="${2:-}"
+  [ -n "$word" ] || return 1
+  args="${args#"${args%%[![:space:]]*}"}"
+  case "$args" in
+    "$word" | "$word"[[:space:]]*) return 0 ;;
+  esac
+  return 1
 }
 
 # Raw repo-root resolution, shared so every caller resolving a given tree
@@ -1637,6 +1668,17 @@ _lib_is_repo_plan_file() {
 # Takes exactly one argument (`$1`: the path).
 # A hook cannot meaningfully scan their contents: they may resolve differently
 # at hook time than when the guarded command runs, or point into the hook's own stdin.
+#
+# The match is on literal spellings only. Alias spellings such as `//dev/fd/N`
+# or `/dev/./fd/N` are not recognised and reach the caller's regular-file
+# check.
+# That check tests the path in the hook's own process, not the stream the
+# command reads.
+# `//dev/fd/0` and `/dev/./fd/0` as the only path source were tested to deny on
+# bash 5.2, Linux.
+# Nothing beyond that is claimed closed.
+# Unconfirmed residual: a path-source list over roughly 64 KiB passed
+# in a scratch replica of the check site and was not confirmed end to end.
 _lib_is_pseudo_file_path() {
   case "$1" in
     -|/dev/stdin|/dev/fd/*|/proc/*/fd/*) return 0 ;;
@@ -2301,7 +2343,6 @@ _lib_tool_argv_from_subcmd() {
 # the literal string "--". WORDS-side: _lib_tool_argv_from_subcmd strips
 # every "-*"-shaped word, including a bare "--", before it reaches
 # got_subcmd. PREFIX-side: want_subcmd is always a hardcoded literal.
-# No local -n/declare -n: this repo targets macOS system bash 3.2.
 _lib_words_start_with() {
   local -a words=()
   while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
@@ -3919,13 +3960,8 @@ _lib_review_only_agents() {
 # glob metacharacter (e.g. "code*") matches only that literal string.
 # Zero ITEMs (a flattened empty array) is a clean no-match, not a `set -u`
 # crash.
-# That guarantee covers only this helper's own zero-ITEMs case: an unset
-# array expanded via "${arr[@]}" under `set -u` would abort at the call
-# site, before _lib_list_contains is even entered, and this helper cannot
-# protect against that. Currently latent, not live -- all three call sites'
-# arrays below are module-level constants defined by construction, never a
-# conditionally-set variable, even though their gate-script callers do run
-# under `set -u`.
+# An unset or empty array expanded via "${arr[@]}" under `set -u` flattens to
+# zero ITEMs on the supported bash floor, so the call site does not abort.
 # Shared by the three membership scans below, each over its own derived
 # array.
 _lib_list_contains() {

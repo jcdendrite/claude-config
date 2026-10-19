@@ -19,8 +19,12 @@ import time
 from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
+
+if TYPE_CHECKING:
+    import pytest
 
 CLAUDE_DIR = Path(__file__).resolve().parent.parent
 REPO_ROOT = CLAUDE_DIR.parent.parent
@@ -192,6 +196,256 @@ def _build_subprocess_env(
     if extra_env is not None:
         env.update(extra_env)
     return env
+
+
+# Both header comments (`# hook-class:` and `# tier-threat-model:`) live within a
+# hook file's first several lines, tolerating blank lines before either.
+_HEADER_SCAN_LINE_COUNT = 6
+
+
+def _hook_class(hook: Path) -> str | None:
+    """Return the hook-class value from line 2, or None if absent."""
+    lines = hook.read_text(errors="replace").splitlines()
+    # Line 2 is index 1. Search first 5 lines to tolerate blank shebang lines.
+    for line in lines[1:_HEADER_SCAN_LINE_COUNT]:
+        m = re.match(r"[#]\s*hook-class:\s*(\S+)", line)
+        if m:
+            return m.group(1)
+    return None
+
+
+# -- Shell-exec guard ---------------------------------------------------------
+#
+# A shipped shell file whose shebang is `#!/usr/bin/env bash` resolves bash
+# through the child's PATH. A test that execs one under a PATH holding no bash
+# gets exit 126/127 from `env`, which the `run_hook*` runners map to "allow",
+# so the test passes without the script ever running. The guard turns that
+# silent pass into a failure.
+#
+# It also holds every `hook-class: gate` hook to the harness's failure rule: a
+# gate that exits other than 0 or 2, or prints an invalid PreToolUse envelope,
+# is blocked by `onFailure: "block"` in production even when it printed JSON
+# that allows the action.
+
+_ENV_BASH_SHEBANG = b"#!/usr/bin/env bash"
+
+# POSIX: 126 is "found but not executable", 127 is "not found". `env` uses both
+# when it cannot exec its program.
+_EXEC_FAILURE_EXIT_CODES = frozenset({126, 127})
+
+# A gate's exits that the harness accepts: 0 (decision on stdout, or none) and 2 (block, reason on stderr).
+_GATE_ALLOWED_EXIT_CODES = frozenset({0, 2})
+
+# Bounds the first-line read so a binary target with no newline is not read whole.
+_SHEBANG_READ_BYTE_LIMIT = 256
+
+# `env`'s own error about its program. A shebang runs `env` by absolute path, and GNU `env` prints that path
+# as its prefix: "/usr/bin/env: ‘bash’: No such file or directory", with ASCII quotes under the C locale.
+# BSD `env` prints its basename and no quotes: "env: bash: No such file or directory".
+# busybox `env` prints its basename and a "can't execute" phrase: "env: can't execute 'bash': No such file or directory".
+# Only the prefix, that optional phrase and the program name are matched, because the quote characters and the
+# text after the second colon vary by implementation and locale.
+_ENV_BASH_NOT_FOUND_RE = re.compile(r"(?:\S*/)?env: (?:can't execute )?[^\w:]*bash[^\w:]*:")
+
+
+class ShellExecGuardError(AssertionError):
+    """A test exec'd a shell file in a way that can pass without the file running."""
+
+
+def link_bash_into(bin_dir: Path) -> Path:
+    """Symlink the caller's `bash` into `bin_dir` so a PATH naming only that
+    directory still resolves `#!/usr/bin/env bash`. Returns the link.
+
+    Idempotent: a no-op when `bin_dir/bash` already resolves to the same file,
+    and an AssertionError when it resolves to a different one. Composes with
+    `build_path_without` mirrors, which already carry a `bash` link.
+    """
+    real_bash = shutil.which("bash")
+    assert real_bash is not None, "bash is not on PATH; the shell files under test need it"
+    link = bin_dir / "bash"
+    if link.is_symlink() or link.exists():
+        assert link.resolve() == Path(real_bash).resolve(), (
+            f"{link} resolves to {link.resolve()}, not the caller's bash {real_bash}"
+        )
+        return link
+    link.symlink_to(real_bash)
+    assert link.resolve() == Path(real_bash).resolve(), f"{link} does not resolve to {real_bash}"
+    return link
+
+
+def _shell_exec_argv_strings(argv) -> list[str]:
+    """`argv` as `str` elements. Accepts `str`, `bytes` and `Path` elements, or a single such value."""
+    if isinstance(argv, str | bytes | os.PathLike):
+        argv = [argv]
+    return [os.fsdecode(os.fspath(element)) for element in argv]
+
+
+def _shell_exec_target(argv_strings: list[str], cwd) -> Path | None:
+    """The file a shell exec runs: argv[0] when it names a file, else None.
+
+    Only argv[0] is a target, because the kernel reads a shebang only from the
+    file it execs. `bash script.sh` never reads the script's shebang, so
+    argv[1] is not a target. A bare argv[0] (no separator) is looked up on PATH
+    rather than in `cwd`, so it names no file here.
+    """
+    if not argv_strings or os.sep not in argv_strings[0]:
+        return None
+    target = Path(argv_strings[0])
+    if not target.is_absolute():
+        base = Path(os.fsdecode(os.fspath(cwd))) if cwd is not None else Path.cwd()
+        target = base / target
+    return target if target.is_file() else None
+
+
+def _has_env_bash_shebang(target: Path) -> bool:
+    try:
+        with target.open("rb") as handle:
+            first_line = handle.readline(_SHEBANG_READ_BYTE_LIMIT)
+    except OSError:
+        return False
+    return first_line.rstrip(b"\r\n") == _ENV_BASH_SHEBANG
+
+
+def _is_gate_hook(target: Path) -> bool:
+    """True when `target` is a script whose header declares `# hook-class: gate`.
+
+    The gate-exit and gate-output checks apply only to a gate that is argv[0]. A gate run as
+    `bash <gate>` or under `shell=True` is not inspected by them.
+    """
+    try:
+        with target.open("rb") as handle:
+            if handle.read(2) != b"#!":
+                return False
+        return _hook_class(target) == "gate"
+    except OSError:
+        return False
+
+
+def _gate_output_problem(stdout) -> str | None:
+    """Why a gate's stdout is not a valid PreToolUse reply, or None when it is.
+
+    Plain-text stdout is not a problem: the CLI does not count it as a failure.
+    The `permissionDecision` value is not checked, because the CLI validates
+    its own enum and a copy here would go stale.
+    """
+    if stdout is None:
+        return None
+    text = stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else stdout
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        envelope = json.loads(stripped)
+    except json.JSONDecodeError as parse_error:
+        return f"stdout starts with `{{` but is not valid JSON ({parse_error})"
+    hook_specific_output = envelope.get("hookSpecificOutput")
+    if isinstance(hook_specific_output, dict) and "hookEventName" in hook_specific_output:
+        event_name = hook_specific_output["hookEventName"]
+        if event_name != "PreToolUse":
+            return f"hookSpecificOutput.hookEventName is {event_name!r}, not 'PreToolUse'"
+    return None
+
+
+def _env_passed_without_path(env) -> bool:
+    if env is None:
+        return False
+    return "PATH" not in {os.fsdecode(key) for key in env}
+
+
+def _stderr_is_env_missing_bash(stderr) -> bool:
+    """True when stderr's first line is `env`'s own error about `bash`, or stderr was not captured."""
+    if stderr is None:
+        return True
+    text = os.fsdecode(stderr)
+    first_line = (text.splitlines() or [""])[0]
+    return _ENV_BASH_NOT_FOUND_RE.match(first_line) is not None
+
+
+def check_shell_exec(argv, env, cwd, completed) -> None:
+    """Raise ShellExecGuardError when a finished exec could have passed without its shell file running.
+
+    `argv`, `env` and `cwd` are the call's own arguments. `completed` is the
+    `CompletedProcess` (or the `CalledProcessError` a `check=True` call raised).
+    Raises ShellExecGuardError for a detected hazard. An unexpected internal error propagates; none is caught.
+    """
+    argv_strings = _shell_exec_argv_strings(argv)
+    if not argv_strings:
+        return
+    target = _shell_exec_target(argv_strings, cwd)
+    target_uses_env_bash = target is not None and _has_env_bash_shebang(target)
+    runs_bare_bash = argv_strings[0] == "bash"
+
+    # No PATH: the child falls back to the platform default search path,
+    # which on macOS holds the system bash 3.2, so the test passes on Linux only.
+    if _env_passed_without_path(env) and (target_uses_env_bash or runs_bare_bash):
+        raise ShellExecGuardError(
+            f"{argv_strings!r} runs with an env that has no PATH key, so bash resolves through the "
+            "default search path. Add a PATH to the env."
+        )
+
+    # Never ran: `env` could not find bash on the child's PATH.
+    # Uncaptured stderr (STDOUT, DEVNULL or inherited) cannot be told apart from `env`'s error, so it raises with its own message.
+    if (
+        target_uses_env_bash
+        and completed.returncode in _EXEC_FAILURE_EXIT_CODES
+        and _stderr_is_env_missing_bash(completed.stderr)
+    ):
+        if completed.stderr is None:
+            exec_failure_codes = "/".join(str(code) for code in sorted(_EXEC_FAILURE_EXIT_CODES))
+            raise ShellExecGuardError(
+                f"{target} starts with {_ENV_BASH_SHEBANG.decode()} and exited {completed.returncode}, but stderr "
+                "was not captured, so the guard cannot tell `env`'s error about a missing bash from the "
+                f"script's own exit {exec_failure_codes}. Capture stderr for this call (capture_output=True or stderr=PIPE)."
+            )
+        raise ShellExecGuardError(
+            f"{target} starts with {_ENV_BASH_SHEBANG.decode()} but `env` found no bash on the PATH it ran "
+            f"under (exit {completed.returncode}), so the script never ran. "
+            "Call helpers.link_bash_into on the curated PATH directory."
+        )
+
+    # Gate hooks: the harness blocks a gate that exits other than 0 or 2, or prints an invalid envelope.
+    # Exit 2 carries its reason on stderr and the harness ignores stdout, so the gate-output check applies to exit 0 only.
+    # The never-ran check runs first, so a gate that never ran reports the missing bash, not a generic gate exit.
+    if target is not None and _is_gate_hook(target):
+        if completed.returncode not in _GATE_ALLOWED_EXIT_CODES:
+            raise ShellExecGuardError(
+                f"{target} is a `hook-class: gate` hook and exited {completed.returncode}. "
+                "The harness counts any exit other than 0 or 2 as a hook failure, "
+                'and `onFailure: "block"` then blocks the call even if the gate printed JSON that allows it.'
+            )
+        if completed.returncode == 0:
+            output_problem = _gate_output_problem(completed.stdout)
+            if output_problem is not None:
+                raise ShellExecGuardError(
+                    f"{target} is a `hook-class: gate` hook and exited 0, but {output_problem}. "
+                    'The harness rejects an invalid PreToolUse reply, and `onFailure: "block"` then blocks the call.'
+                )
+
+
+def install_shell_exec_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Wrap `subprocess.run` for the test so each finished call goes through `check_shell_exec`.
+
+    A `shell=True` call is not inspected: its argv is one command string with no
+    argv[0] to inspect, so the guard cannot tell which file the shell execs.
+    `Popen`, `call` and `check_call` bypass the guard: it wraps `subprocess.run` only.
+    """
+    real_run = subprocess.run
+
+    @functools.wraps(real_run)
+    def guarded_run(*args, **kwargs):
+        argv = args[0] if args else kwargs.get("args")
+        inspect = not kwargs.get("shell")
+        try:
+            completed = real_run(*args, **kwargs)
+        except subprocess.CalledProcessError as failed:
+            if inspect:
+                check_shell_exec(argv, kwargs.get("env"), kwargs.get("cwd"), failed)
+            raise
+        if inspect:
+            check_shell_exec(argv, kwargs.get("env"), kwargs.get("cwd"), completed)
+        return completed
+
+    monkeypatch.setattr(subprocess, "run", guarded_run)
 
 
 def run_hook(
@@ -734,6 +988,74 @@ def skill_input(
     if agent_type is not None:
         payload["agent_type"] = agent_type
     return payload
+
+
+def build_isolated_hook(
+    tmp_path: Path,
+    hook: Path,
+    *,
+    schema_text: str | None = None,
+    extra_links: tuple[Path, ...] = (),
+) -> Path:
+    """Symlink `hook` plus its _lib.sh/_config.sh dependencies, and each of
+    `extra_links` under its own file name, into a directory whose
+    config-keys.psv holds `schema_text`, or is absent when None. An absent
+    schema makes `_config_schema_field` see an unreadable schema, so
+    `_config_enabled` returns exit 3. Returns the isolated hook's own path."""
+    isolated = tmp_path / "isolated-hooks"
+    isolated.mkdir()
+    (isolated / hook.name).symlink_to(hook)
+    (isolated / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
+    (isolated / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
+    if schema_text is not None:
+        (isolated / "config-keys.psv").write_text(schema_text)
+    for extra_link in extra_links:
+        (isolated / extra_link.name).symlink_to(extra_link)
+    return isolated / hook.name
+
+
+def pretooluse_wired_entries(hook: Path) -> list[tuple[str, dict]]:
+    """Every PreToolUse hook-entry dict wired to `hook`, paired with its
+    group's `matcher` string. Entries match by exact equality on the
+    command's last shell word -- not a substring/endswith match, which would
+    also match a hook name appearing as a non-final CLI argument to an
+    unrelated script. Tokenized with shlex, which parses shell quoting, so
+    the match stays correct regardless of a plugin author's quoting style --
+    a bare whitespace split has no notion of quoting at all, so pairing it
+    with an `expected_invocation` written to match today's quoting
+    convention is a coincidence of current data, not a guarantee.
+    """
+    if hook.parent == HOOKS_DIR:
+        config_path = CLAUDE_DIR / "settings.json"
+        expected_invocation = f"~/.claude/hooks/{hook.name}"
+    else:
+        config_path = hook.parent / "hooks.json"
+        expected_invocation = f"${{CLAUDE_PLUGIN_ROOT}}/hooks/{hook.name}"
+
+    assert config_path.is_file(), (
+        f"{hook.name}: expected registration config {config_path} does not "
+        f"exist"
+    )
+    config = json.loads(config_path.read_text())
+    wired: list[tuple[str, dict]] = []
+    for group in config.get("hooks", {}).get("PreToolUse", []):
+        if not isinstance(group, dict):
+            continue
+        for entry in group.get("hooks", []):
+            if not isinstance(entry, dict):
+                continue
+            command = entry.get("command", "")
+            tokens = shlex.split(command)
+            if tokens and tokens[-1] == expected_invocation:
+                wired.append((group.get("matcher", ""), entry))
+    return wired
+
+
+def pretooluse_matcher_groups_for(hook: Path) -> list[str]:
+    """The `matcher` string of every PreToolUse entry wired to `hook` -- one
+    item per wired entry, so a group wiring the hook twice lists its matcher
+    twice."""
+    return [matcher for matcher, _entry in pretooluse_wired_entries(hook)]
 
 
 # activate-handoff-bypass.sh wraps its marker.sh call in a 2s `_lib_capped_for`
@@ -2134,6 +2456,7 @@ def _forced_fallback_path_env(tmp_path: Path) -> str:
     shim = shim_dir / "realpath"
     shim.write_text(_FORCED_FALLBACK_REALPATH_SHIM)
     shim.chmod(0o755)
+    link_bash_into(shim_dir)
     return f"{shim_dir}:/usr/bin:/bin"
 
 

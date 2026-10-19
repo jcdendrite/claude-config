@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Write or remove review markers for Claude Code workflow skills.
 # Called from SKILL.md HOOK_TEST_FIXTURE fenced blocks.
 # Usage: marker.sh <write|activate|deactivate|clear-stale> [<skill>|--dry-run]
@@ -37,9 +37,8 @@ SKILL_REVIEW_PATHSPECS=('claude-skills/skills/**/SKILL.md' 'plugins/*/skills/**/
 # `write)` case's *) rejection message all read this array.
 WRITE_SKILLS=(code-review skill-review plan-review ready-for-review cumulative-review review-pr verification)
 
-# Parallel indexed arrays (bash 3.2 has no associative arrays) holding each
-# skill's own active-bypass directory name. review-pr has no
-# activate/deactivate arm, so it has no directory entry here.
+# Parallel indexed arrays holding each skill's own active-bypass directory name.
+# review-pr has no activate/deactivate arm, so it has no directory entry here.
 ACTIVE_BYPASS_SKILLS=(plan-review ready-for-review respond-pr memory-skill handoff)
 ACTIVE_BYPASS_DIRS=(.plan-review-active.d .ready-for-review-active.d .respond-pr-active.d .memory-skill-active.d .handoff-active.d)
 
@@ -588,8 +587,6 @@ case "$SUBCOMMAND" in
         # the sibling file's own bytes and not any hash computed earlier — so
         # a plan revision mid-review is still caught.
         PLANMODE_SIBLING="$CONFIG_DIR/.plan-review-active.d/$SESSION_ID.planmode-path"
-        # Newline-delimited string, not an array: an empty "${arr[@]}" aborts
-        # under `set -u` on bash 3.2, after the marker is already written.
         COVERED_PLAN_PATHS=""
         if PLANMODE_TARGET=$(_lib_capped cat "$PLANMODE_SIBLING" 2>/dev/null); then
           PLAN_HASH=$(_lib_capped sha256sum -- "$PLANMODE_TARGET" 2>/dev/null | awk '{print $1}')

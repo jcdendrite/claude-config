@@ -29,6 +29,7 @@ from helpers import (
     build_path_without,
     edit_input,
     extract_skill_command,
+    link_bash_into,
     push_conflicting_edit_to_origin,
     resolve_conflicted_rebase,
     revert_subtraction_base,
@@ -1055,6 +1056,7 @@ class TestRequireSkillReview:
             if not cmd_path:
                 pytest.skip(f"{cmd} not found in PATH")
             (bin_dir / cmd).symlink_to(cmd_path)
+        link_bash_into(bin_dir)
 
         skill_file = git_repo / "claude-skills" / "skills" / "skill-review" / "SKILL.md"
         skill_file.parent.mkdir(parents=True, exist_ok=True)
@@ -2560,6 +2562,7 @@ class TestCorpusBudgetWarning:
             if not cmd_path:
                 pytest.skip(f"{cmd} not found in PATH")
             (bin_dir / cmd).symlink_to(cmd_path)
+        link_bash_into(bin_dir)
 
         _stage_oversized_corpus(git_repo)
         write_skill_review_marker(isolated_home, git_repo)
@@ -3202,6 +3205,7 @@ class TestSkillReviewGateNoCapBinaryAndHashFailure:
             if not cmd_path:
                 pytest.skip(f"{cmd} not found in PATH")
             (bin_dir / cmd).symlink_to(cmd_path)
+        link_bash_into(bin_dir)
 
         assert (
             run_hook(
@@ -5343,9 +5347,10 @@ _DOCUMENTED_HOOK_WORST_CASE_SECONDS = (
 )
 
 
-# Claude Code's default timeout for command hooks (hooks reference, Timeouts
-# section), which applies when hooks.json sets none. The design-decision
-# doc's "Latency" section states this value and the 64-file bound.
+# Claude Code's default timeout for command hooks (hooks reference, "Common
+# fields" table, `timeout` row; fetched 2026-10-17), which applies when
+# hooks.json sets none. The design-decision doc's "Latency" section states this
+# value and the 64-file bound.
 _DEFAULT_COMMAND_HOOK_TIMEOUT_SECONDS = 600
 _DOCUMENTED_MAX_STAGED_SKILL_FILES = 64
 _SECONDS_PER_STAGED_SKILL_FILE = 7  # capped `git show`: 5s cap + 2s kill grace
@@ -5353,11 +5358,11 @@ _SECONDS_PER_STAGED_SKILL_FILE = 7  # capped `git show`: 5s cap + 2s kill grace
 
 def test_hooks_json_pretooluse_timeout_covers_the_documented_worst_case():
     """Config-drift tripwire, not a behavioral test: it reads hooks.json and
-    the documented sizing, never running the hook. A timed-out PreToolUse
-    command hook does not block the call, so a slow but correct deny would
-    become an allow. hooks.json sets no `timeout`, so the 600s default
-    applies, and the documented worst case at the documented file bound must
-    stay under it. Adding a `timeout` fails this test until the design
+    the documented sizing, never running the hook. On Claude Code 2.1.295 or
+    later a timed-out gate blocks the call, so a slow run that would have
+    correctly allowed becomes a deny. hooks.json sets no `timeout`, so the 600s
+    default applies, and the documented worst case at the documented file bound
+    must stay under it. Adding a `timeout` fails this test until the design
     doc's "Latency" section and this test are updated together."""
     hooks_config = json.loads((_PLUGINS_DIR / "skill-management" / "hooks" / "hooks.json").read_text())
     gate_entries = [

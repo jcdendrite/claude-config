@@ -35,6 +35,7 @@ from helpers import (
     TRAVERSAL_SESSION_ID,
     assert_cap_engaged,
     assert_cap_not_engaged,
+    link_bash_into,
     scaled_shim_sleep,
     scaled_under_cap_sleep,
     write_scaled_timeout_shim,
@@ -158,11 +159,13 @@ def _fake_bin_dir(tmp_path: Path, name: str) -> Path:
 
 def _restricted_path_without_python3(fake_bin: Path) -> str:
     """Build a PATH containing only a symlinked-tool directory that has every
-    binary the hook needs except python3, so `command -v python3` fails."""
+    binary the hook needs except python3, so `command -v python3` fails. `bash`
+    is linked in for the hook's `env bash` shebang."""
     for tool in ("cat", "jq", "mkdir", "find", "touch", "timeout"):
         real = Path("/usr/bin") / tool
         if real.exists():
             (fake_bin / tool).symlink_to(real)
+    link_bash_into(fake_bin)
     return str(fake_bin)
 
 
@@ -171,8 +174,8 @@ def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
     (`cat`/`jq` via _lib.sh's JSON parsing, `dirname` as a harmless
     superset entry this hook's own bootstrap does not call,
     `mkdir`/`find` for the checkpoint dir, `python3` for
-    transcript-analysis.py, `touch` for the enabled-marker fixture),
-    omitting both timeout(1) and gtimeout(1). Mirrors
+    transcript-analysis.py, `touch` for the enabled-marker fixture, `bash` for
+    the hook's shebang), omitting both timeout(1) and gtimeout(1). Mirrors
     _restricted_path_without_python3's stub-of-symlinks shape; skips (does
     not silently under-symlink) when a needed real binary is itself absent
     from the test machine."""
@@ -181,6 +184,7 @@ def _path_without_timeout_or_gtimeout(fake_bin: Path) -> str:
         if not real:
             pytest.skip(f"{tool} not found in PATH")
         (fake_bin / tool).symlink_to(real)
+    link_bash_into(fake_bin)
     return str(fake_bin)
 
 

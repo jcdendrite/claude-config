@@ -7,6 +7,7 @@
           {
             "type": "command",
             "command": "CLAUDE_PLUGIN_DATA=\"${CLAUDE_PLUGIN_DATA}\" \"${CLAUDE_PLUGIN_ROOT}\"/hooks/require-skill-review.sh",
+            "onFailure": "block",
             "statusMessage": "Checking skill-review gate..."
           }
         ]

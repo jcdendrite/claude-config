@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: batch-gate
 # PostToolBatch hook: nudges when a subagent dispatch's own turn count
 # crosses a measured outlier threshold. See docs/design-decisions.md §61 for

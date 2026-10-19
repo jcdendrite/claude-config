@@ -35,7 +35,7 @@ def _real_prompt_description(key: str) -> str:
 
 
 def _config_sh_prelude() -> str:
-    """install.sh:421's own `. "$REPO_DIR/claude/.claude/hooks/_config.sh"`
+    """install.sh's bash-floor-check block's own `. "$REPO_DIR/claude/.claude/hooks/_config.sh"`
     line, sourced the real (not extracted) file at its absolute test-time
     path -- _prompt_sentinel_opt_in now reads/writes through
     _config_value/_config_set, both defined only in _config.sh."""

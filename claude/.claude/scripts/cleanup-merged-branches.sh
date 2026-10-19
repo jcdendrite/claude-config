@@ -82,7 +82,8 @@
 #
 # Exit codes:
 #   0  success (including no-op)
-#   1  gh missing or unauthenticated; with --all-projects, also a missing or
+#   1  gh missing or unauthenticated; the bash floor check in `_config.sh`
+#      failed; with --all-projects, also a missing or
 #      unreadable roots config file, or set post-hoc if any repo's cleanup
 #      crashed outright — a handled per-branch failure (worktree remove or
 #      remote delete printed as "manual step needed") does not trip this;
@@ -96,6 +97,8 @@
 
 set -euo pipefail
 
+# shellcheck source=../hooks/_lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_lib.sh"
 # Progress helpers, live-worktree detection (collect_process_cwds /
 # worktree_in_use), and the branch -> worktree path/lock lookup
 # (resolve_worktree_for_branch) are shared with cleanup-idle-open-pr-worktrees.sh.
@@ -105,8 +108,6 @@ set -euo pipefail
 # with ci-watch.sh.
 # shellcheck source=_direnv-lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/_direnv-lib.sh"
-# shellcheck source=../hooks/_lib.sh
-. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_lib.sh"
 
 # ---------------------------------------------------------------------------
 # Argument validation
@@ -216,12 +217,9 @@ read_configured_roots() {
 # same repo contribute it only once.
 declare -a DISCOVERED_REPOS=()
 discover_repo_roots() {
-  # Linear membership scan, not an associative array: `declare -A` is a
-  # bash-4+ construct that fails outright on macOS's frozen system bash 3.2
-  # (test_no_bash4_constructs.py guards against it repo-wide). Fine at the
-  # scale a machine's own repo count reaches.
+  # Linear membership scan; fine at the scale a machine's own repo count reaches.
   local root git_dir repo_root already_seen _existing_repo
-  for root in "${CONFIGURED_ROOTS[@]+"${CONFIGURED_ROOTS[@]}"}"; do
+  for root in "${CONFIGURED_ROOTS[@]}"; do
     if [ ! -d "$root" ]; then
       echo "WARNING: configured root is not a directory, skipping: ${root}" >&2
       continue
@@ -229,7 +227,7 @@ discover_repo_roots() {
     while IFS= read -r -d '' git_dir; do
       repo_root=$(cd "$(dirname "$git_dir")" && pwd -P)
       already_seen=0
-      for _existing_repo in "${DISCOVERED_REPOS[@]+"${DISCOVERED_REPOS[@]}"}"; do
+      for _existing_repo in "${DISCOVERED_REPOS[@]}"; do
         if [ "$_existing_repo" = "$repo_root" ]; then
           already_seen=1
           break
@@ -613,8 +611,7 @@ else:
 # per branch. Distinct-PR-number reasons (open PR, stale name) differ per
 # branch and so stay one line each, unaffected by the grouping.
 print_skip_reason_lines() {
-  # Linear scan against parallel arrays, not an associative array — see the
-  # bash-3.2 note on discover_repo_roots above.
+  # Linear scan against parallel arrays; fine for the handful of distinct skip reasons.
   local -a _reason_messages=()
   local -a _reason_branch_lists=()
   local -a _reason_counts=()
@@ -1017,7 +1014,7 @@ fi
 # End-of-run summary
 # ---------------------------------------------------------------------------
 
-for BRANCH in "${SKIPPED_LIVE_LOCK[@]+"${SKIPPED_LIVE_LOCK[@]}"}"; do
+for BRANCH in "${SKIPPED_LIVE_LOCK[@]}"; do
   echo "Skipped (live agent lock): ${BRANCH}"
 done
 

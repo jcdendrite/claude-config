@@ -3027,7 +3027,7 @@ class TestEnvrcCannotOverrideDryRun:
     """An .envrc exporting DRY_RUN=0 must not convert `--dry-run` into a
     real deletion run — readonly DRY_RUN aborts the eval under set -e
     instead. Asserted behaviorally: bash's `readonly variable` diagnostic
-    text and line number differ between bash 3.2 (macOS) and 5.x (CI)."""
+    text and line number vary by bash version."""
 
     def test_envrc_dry_run_override_is_rejected(self, tmp_path, fake_gh):
         local, bare = _make_repo_with_remote(tmp_path)

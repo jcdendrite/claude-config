@@ -2351,6 +2351,33 @@ class TestDenyPrivateProjectRefs:
         reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
         assert "pseudo-file" in reason.lower()
 
+    @pytest.mark.parametrize(
+        "alias_path",
+        ["//dev/fd/0", "/dev/./fd/0"],
+        ids=["double-slash-dev-fd", "dot-segment-dev-fd"],
+    )
+    def test_git_commit_F_alias_pseudo_file_spelling_denied(
+        self, claude_config_repo, alias_path
+    ):
+        """Alias spellings of /dev/fd/N slip past `_lib_is_pseudo_file_path`, so only the
+        regular-file check denies them.
+        A failure here once `_lib_is_pseudo_file_path` learns alias spellings means
+        `_lib_is_pseudo_file_path`'s header in _lib.sh, this hook's Known-gaps pointer and the
+        expected message must change together."""
+        result = subprocess.run(
+            [str(DENY_PRIVATE_PROJECT_REFS_HOOK)],
+            input=json.dumps(bash_input(f"git commit -F {alias_path}")),
+            capture_output=True,
+            text=True,
+            cwd=claude_config_repo,
+            check=False,
+        )
+        assert result.stdout.strip(), f"expected deny on alias spelling {alias_path}"
+        payload = json.loads(result.stdout)
+        assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = payload["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "not a regular file" in reason
+
     def test_git_commit_F_unreadable_path_fails_closed(self, claude_config_repo, tmp_path):
         """Nonexistent -F path: hook denies with a recognizable reason.
         Unscanned content is exactly the leak vector this hook guards

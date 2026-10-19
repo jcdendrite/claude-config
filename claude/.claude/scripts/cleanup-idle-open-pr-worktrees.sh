@@ -61,11 +61,15 @@
 #
 # Exit codes:
 #   0  success (including no-op)
-#   1  gh missing/unauthenticated, no 'origin' remote, or the gh pr list
-#      query failed (non-zero exit, or a zero exit with an unparseable body)
+#   1  gh missing/unauthenticated, no 'origin' remote, the gh pr list
+#      query failed (non-zero exit, or a zero exit with an unparseable body),
+#      or the bash floor check in `_config.sh` failed
 #   2  bad arguments
 
 set -euo pipefail
+
+# shellcheck source=../hooks/_config.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_config.sh"
 
 # progress / clear_progress, collect_process_cwds / worktree_in_use, and
 # resolve_worktree_for_branch are shared with cleanup-merged-branches.sh.
@@ -329,13 +333,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
         "${CANDIDATE_UPDATED_AT[$_c_i]}" "${CANDIDATE_PATHS[$_c_i]}"
     done
   fi
-  for BRANCH in "${SKIPPED_DRAFT_BRANCHES[@]+"${SKIPPED_DRAFT_BRANCHES[@]}"}"; do
+  for BRANCH in "${SKIPPED_DRAFT_BRANCHES[@]}"; do
     echo "Skipped (draft): ${BRANCH}"
   done
-  for BRANCH in "${SKIPPED_ACTIVE_BRANCHES[@]+"${SKIPPED_ACTIVE_BRANCHES[@]}"}"; do
+  for BRANCH in "${SKIPPED_ACTIVE_BRANCHES[@]}"; do
     echo "Skipped (still active): ${BRANCH}"
   done
-  for BRANCH in "${SKIPPED_IN_USE_BRANCHES[@]+"${SKIPPED_IN_USE_BRANCHES[@]}"}"; do
+  for BRANCH in "${SKIPPED_IN_USE_BRANCHES[@]}"; do
     echo "Skipped (worktree in use, or its idle state could not be verified): ${BRANCH}"
   done
   print_summary "would-remove" "${#CANDIDATE_BRANCHES[@]}"
@@ -370,15 +374,15 @@ if [ "${#CANDIDATE_BRANCHES[@]}" -gt 0 ]; then
   done
 fi
 
-for BRANCH in "${SKIPPED_DRAFT_BRANCHES[@]+"${SKIPPED_DRAFT_BRANCHES[@]}"}"; do
+for BRANCH in "${SKIPPED_DRAFT_BRANCHES[@]}"; do
   echo "Skipped (draft): ${BRANCH}"
 done
 
-for BRANCH in "${SKIPPED_ACTIVE_BRANCHES[@]+"${SKIPPED_ACTIVE_BRANCHES[@]}"}"; do
+for BRANCH in "${SKIPPED_ACTIVE_BRANCHES[@]}"; do
   echo "Skipped (still active): ${BRANCH}"
 done
 
-for BRANCH in "${SKIPPED_IN_USE_BRANCHES[@]+"${SKIPPED_IN_USE_BRANCHES[@]}"}"; do
+for BRANCH in "${SKIPPED_IN_USE_BRANCHES[@]}"; do
   echo "Skipped (worktree in use, or its idle state could not be verified): ${BRANCH}"
 done
 

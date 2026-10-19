@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # PostToolUse Edit|Write|MultiEdit hook: announces the resume-context
 # command for a just-written /handoff or /brief continuity file

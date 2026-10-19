@@ -61,7 +61,11 @@ from .conftest import (
     _add_worktree_under_worktrees_dir,
     _worktree_lock_reason,
 )
-from .test_config_lib import _isolated_hooks_dir_missing_key_row, _locale_that_widens_ascii_ranges
+from .test_config_lib import (
+    _installed_utf8_locale_names,
+    _isolated_hooks_dir_missing_key_row,
+    _locale_that_widens_ascii_ranges,
+)
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
@@ -1605,6 +1609,195 @@ def test_parse_pr_identity_accepts_dot_and_hyphen_alongside_alnum(tmp_path: Path
     result = _parse_pr_identity("my-org/my.repo#5")
     assert result.returncode == 0, result.stderr
     assert result.stdout == "my-org/my.repo\n5\n"
+
+
+# --- _lib_skill_basename ----------------------------------------------------
+#
+# Hooks that match a Skill call by name call this helper, so none carries its
+# own copy of the qualified-name split.
+
+
+@pytest.mark.parametrize(
+    ("skill_name", "expected_basename"),
+    [
+        pytest.param("code-review", "code-review", id="bare_name"),
+        pytest.param("plugin-x:code-review", "code-review", id="plugin_qualified"),
+        pytest.param(
+            ".claude/worktrees/some-branch/claude:code-review",
+            "code-review",
+            id="directory_qualified",
+        ),
+        pytest.param("/code-review", "code-review", id="leading_slash"),
+        pytest.param("plugin:", "", id="trailing_colon_empty_name"),
+        pytest.param("code-review/", "", id="trailing_slash_empty_name"),
+        pytest.param("plugin:dir/", "", id="plugin_qualified_trailing_slash_empty_name"),
+        pytest.param("", "", id="empty_string"),
+    ],
+)
+def test_skill_basename_prints_final_name_component(skill_name: str, expected_basename: str) -> None:
+    argv = [
+        "bash", "-c", f'. {_LIB_SH}; _lib_skill_basename "$@"', "bash", skill_name,
+    ]
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected_basename + "\n"
+
+
+def test_skill_basename_with_no_argument_prints_empty_line() -> None:
+    argv = ["bash", "-c", f". {_LIB_SH}; _lib_skill_basename"]
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "\n"
+
+
+def test_skill_basename_with_no_argument_under_set_u_prints_empty_line() -> None:
+    """`${1:-}` keeps the helper callable with $1 unset under a caller's `set -u`."""
+    argv = ["bash", "-c", f". {_LIB_SH}; set -u; _lib_skill_basename"]
+    # LC_ALL=C keeps bash's error text in English so the stderr assertion is meaningful.
+    env = {**os.environ, "LC_ALL": "C"}
+    result = subprocess.run(argv, capture_output=True, text=True, check=False, env=env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "\n"
+    assert "unbound variable" not in result.stderr
+
+
+# --- _lib_args_lead_word_is -------------------------------------------------
+#
+# The review-orchestrator routing gate calls this helper to read the
+# `unrouted` lead word of a Skill call's args.
+
+
+def _args_lead_word_is(args: str, word: str, *, env_overrides: dict | None = None) -> int:
+    """Return the exit code of `_lib_args_lead_word_is args word`."""
+    argv = ["bash", "-c", f'. {_LIB_SH}; _lib_args_lead_word_is "$@"', "bash", args, word]
+    env = {**os.environ, **(env_overrides or {})}
+    return subprocess.run(argv, capture_output=True, text=True, check=False, env=env).returncode
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param("unrouted", id="word_alone"),
+        pytest.param("unrouted /abs/x.diff", id="word_then_space"),
+        pytest.param("unrouted\t/abs/x.diff", id="word_then_tab"),
+        pytest.param("unrouted\n/abs/x.diff", id="word_then_newline"),
+        pytest.param("unrouted\r/abs/x.diff", id="word_then_carriage_return"),
+        pytest.param("unrouted ", id="word_then_trailing_space"),
+        pytest.param("  unrouted", id="leading_spaces"),
+        pytest.param("\tunrouted", id="leading_tab"),
+        pytest.param("\nunrouted", id="leading_newline"),
+        pytest.param("\r\n unrouted /abs/x.diff", id="leading_mixed_whitespace"),
+    ],
+)
+def test_args_lead_word_is_matches_the_word_alone_or_before_whitespace(args: str) -> None:
+    assert _args_lead_word_is(args, "unrouted") == 0
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param("unroutedly", id="word_boundary_extension"),
+        pytest.param("unrouted:", id="colon_boundary"),
+        pytest.param("unrouted,", id="comma_boundary"),
+        pytest.param("Unrouted", id="capitalized"),
+        pytest.param("UNROUTED /abs/x.diff", id="uppercase"),
+        pytest.param("please run unrouted", id="prose_before_word"),
+        pytest.param("please run unrouted /abs/x.diff", id="prose_before_word_and_path"),
+        pytest.param('"unrouted"', id="double_quoted"),
+        pytest.param("'unrouted'", id="single_quoted"),
+        pytest.param("`unrouted`", id="backtick_wrapped"),
+        pytest.param("", id="empty_args"),
+        pytest.param("   ", id="only_spaces"),
+        pytest.param("\t\n\r", id="only_other_whitespace"),
+    ],
+)
+def test_args_lead_word_is_rejects_everything_but_the_exact_lead_word(args: str) -> None:
+    assert _args_lead_word_is(args, "unrouted") == 1
+
+
+def test_args_lead_word_is_rejects_an_empty_word() -> None:
+    assert _args_lead_word_is("", "") == 1
+
+
+def _locale_where_ideographic_space_is_space() -> str:
+    """An installed UTF-8 locale under which an unpinned `[[:space:]]` matches
+    U+3000, the exposure `local LC_ALL=C` removes. `C.UTF-8` is not guaranteed
+    to match, so a test that hardcodes it cannot tell the pinned helper from an
+    unpinned one. Fails on CI and skips locally when no installed locale
+    matches, so a runner that has one cannot lose the discrimination unnoticed."""
+    for name in _installed_utf8_locale_names():
+        probe = subprocess.run(
+            ["bash", "-c", '[[ "$1" == [[:space:]] ]]', "bash", "\u3000"],
+            env={**os.environ, "LC_ALL": name}, capture_output=True, check=False,
+        )
+        if probe.returncode == 0:
+            return name
+    message = "no installed locale makes [[:space:]] match U+3000"
+    if os.environ.get("CI"):
+        pytest.fail(f"{message}; CI must provide one")
+    pytest.skip(message)
+
+
+@pytest.mark.parametrize(
+    "separator",
+    [
+        # Discriminates only on a libc that counts U+00A0 as space; glibc does not.
+        pytest.param("\u00a0", id="no_break_space"),
+        pytest.param("\u2003", id="em_space"),
+        pytest.param("\u3000", id="ideographic_space"),
+    ],
+)
+@pytest.mark.parametrize(
+    "build_args",
+    [
+        pytest.param(lambda separator: f"{separator}unrouted", id="before_word"),
+        pytest.param(lambda separator: f"unrouted{separator}/abs/x.diff", id="after_word"),
+    ],
+)
+def test_args_lead_word_is_ignores_non_ascii_whitespace_in_a_utf8_locale(separator: str, build_args) -> None:
+    locale = _locale_where_ideographic_space_is_space()
+    args = build_args(separator)
+    assert _args_lead_word_is(args, "unrouted", env_overrides={"LC_ALL": locale}) == 1
+
+
+def test_args_lead_word_is_leaves_the_caller_locale_unchanged() -> None:
+    """The helper's LC_ALL=C is function-local, so it must not leak into the
+    caller's own shell."""
+    locale = _locale_where_ideographic_space_is_space()
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; export LC_ALL={locale}; '
+            '_lib_args_lead_word_is x unrouted; printf %s "$LC_ALL"; [[ "$1" == [[:space:]] ]]',
+            "bash",
+            "\u3000",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.stdout == locale
+    assert result.returncode == 0, "U+3000 no longer matches [[:space:]] in the caller after the helper ran"
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param("_lib_args_lead_word_is", id="no_arguments"),
+        pytest.param('_lib_args_lead_word_is "unrouted"', id="args_but_no_word"),
+    ],
+)
+def test_args_lead_word_is_with_missing_arguments_under_set_u_returns_one(call: str) -> None:
+    """`${n:-}` keeps the helper callable with positionals unset under a
+    caller's `set -u`, returning 1 rather than aborting on an unbound variable."""
+    argv = ["bash", "-c", f'. {_LIB_SH}; set -u; {call}; echo "status=$?"']
+    # LC_ALL=C keeps bash's error text in English so the stderr assertion is meaningful.
+    env = {**os.environ, "LC_ALL": "C"}
+    result = subprocess.run(argv, capture_output=True, text=True, check=False, env=env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "status=1"
+    assert "unbound variable" not in result.stderr
 
 
 # --- _lib_gh -----------------------------------------------------------
@@ -5076,27 +5269,6 @@ class TestLibNormalizePathLexically:
         subprocess timeout is only a hang guard, not a scaling bound."""
         path = "/" + "/".join(["a"] * 50000) + "/../../b"
         assert _normalize_lexically(path) == "/" + "/".join(["a"] * 49998) + "/b"
-
-    def test_matches_the_oracle_under_bash_compat_32(self) -> None:
-        """The normalizer's header claims it was checked with BASH_COMPAT=32.
-        One process normalizes every oracle input at that compatibility level,
-        which emulates bash 3.2's documented differences and is not a real 3.2
-        binary."""
-        paths = [param.values[0] for param in _LEXICAL_NORMALIZATION_INPUTS]
-        script = (
-            f". {_LIB_SH}; for path in \"$@\"; do "
-            '_lib_normalize_path_lexically "$path"; printf "%s\\0" "$_LIB_NORMALIZED_PATH"; done'
-        )
-        result = subprocess.run(
-            ["bash", "-c", script, "bash", *paths],
-            env={**os.environ, "BASH_COMPAT": "32"},
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.split("\0")[:-1] == [_lexical_normalization_oracle(path) for path in paths]
 
     def test_a_glob_segment_stays_literal(self, tmp_path: Path) -> None:
         (tmp_path / "matching-file").write_text("")
