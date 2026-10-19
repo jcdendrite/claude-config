@@ -3401,7 +3401,7 @@ def test_blocks_when_timeout_rejects_dash_k_flag(tmp_path: Path) -> None:
 _GATE_HOOK_COUNT = 32
 # Gate handlers registered in claude/.claude/settings.json (a gate under two
 # matchers or `if` filters registers once per handler) and across plugins/*/hooks/hooks.json.
-_SETTINGS_GATE_HANDLER_COUNT = 32
+_SETTINGS_GATE_HANDLER_COUNT = 33
 _PLUGIN_GATE_HANDLER_COUNT = 4
 
 _ON_FAILURE_BLOCK = "block"
