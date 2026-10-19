@@ -6094,9 +6094,9 @@ class TestPeriodCostReportSkillTripwire:
         decide_item = self._pinned_item_text("gh_unavailable_kinds")
 
         assert (
-            "Only the engineer acts on it: the `gh auth login --hostname <host>` in a separate terminal, replacing or"
-            " refreshing a token variable, and unsetting it only after confirming the host's stored login is the intended"
-            " account."
+            "Only the engineer acts on it: the `gh auth login --hostname <host>` in a separate terminal and, only when the"
+            " failing host is github.com, replacing or refreshing a token variable, and unsetting it only after confirming"
+            " github.com's stored login is the intended account."
         ) in decide_item
         assert (
             "the engineer unsets `GH_HOST` in a terminal and runs the Step 2 command there, or continues. The agent does not."
