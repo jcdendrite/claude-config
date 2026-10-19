@@ -524,7 +524,7 @@ scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck          #
 ShellCheck takes no flags on the command line — they live in the repo-root
 `.shellcheckrc`, so CI, the command above, and any editor integration agree.
 
-The `.venv` lives only in the main checkout's root, and linked worktrees never inherit it. `scripts/venv-run.sh <tool> [args...]` finds that `.venv` through git and runs `<tool>` from its `bin/` directory, so the `scripts/venv-run.sh` commands above work unchanged at any depth. Run them from the root of the main checkout or of a linked worktree, since they are cwd-relative. `./install-dev.sh` is the exception: run it from the main checkout's root.
+The `.venv` lives only in the main checkout's root, and linked worktrees never inherit it. `scripts/venv-run.sh <tool> [args...]` finds that `.venv` through git and runs `<tool>` from its `bin/` directory, so the `scripts/venv-run.sh` commands above work unchanged at any depth. Run them from the root of the main checkout or of a linked worktree, since they are cwd-relative.
 
 `./install-dev.sh` also offers to install `pyright-lsp@claude-plugins-official` at local scope, giving Claude Code sessions in this checkout Python diagnostics and navigation. Local scope records the plugin only in this checkout's gitignored `.claude/settings.local.json`. The install runs only when `claude-plugins-official` is already registered and you answer `y` at the prompt. If the marketplace is not registered, the script prints the `claude plugin marketplace add anthropics/claude-plugins-official` command instead. That registration applies to every project on your profile. A non-interactive run prints the `claude plugin install` command to run from this checkout instead of prompting. A local-scope install made from the main checkout root is active in Claude Code sessions anchored in a linked worktree under `.claude/worktrees/` too. See [`docs/design-decisions/pyright-lsp-installed-per-contributor.md`](./docs/design-decisions/pyright-lsp-installed-per-contributor.md) for why the plugin reaches contributors only, and only from an interactive terminal. The `pyright-langserver` binary needs to be on the PATH of the shell that launches Claude Code, and `./install-dev.sh` checks for it but does not install it:
 
@@ -541,7 +541,7 @@ Test trees under `claude/.claude/` that carry their own `conftest.py` are Python
 
 - Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment.
   - Checks ahead of xdist's own core-count detection.
-  - Applies to both the bare `pytest` command and `select-tests.py`.
+  - Applies to both a direct `scripts/venv-run.sh pytest` run and `select-tests.py`.
   - Wins over `select-tests.py`'s own sizing, which defers whenever the variable is already set.
 - Or pass `-n <N>` on the command line for a single run. It wins over both. `select-tests.py` forwards it through to pytest.
 - When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value.

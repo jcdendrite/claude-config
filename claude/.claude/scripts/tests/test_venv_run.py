@@ -13,9 +13,9 @@ Fixture defaults, applied by `_make_fixture`:
 - `<main>/.venv/bin/python3` is a symlink to a stub that prints `$0`, its
   working directory and each argument, one per line.
 
-Isolation: `_clean_env` removes the four repository-selection variables
+Isolation: conftest's `_clean_env` removes the four repository-selection variables
 (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`) and the DIRENV
-and gh-credential variables. Every git call in this file goes through `_git`,
+and gh-credential variables. Every git call in this file goes through conftest's `_git`,
 which applies it.
 """
 from __future__ import annotations
@@ -31,11 +31,9 @@ from typing import NamedTuple
 
 import pytest
 
-from .conftest import _base_test_env
+from .conftest import _clean_env, _git
 
 _SCRIPT = Path(__file__).resolve().parents[4] / "scripts" / "venv-run.sh"
-
-_INHERITED_GIT_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
 
 _WORKTREE_BRANCH = "T-1/topic-slug"
 
@@ -67,17 +65,6 @@ class _StubReport(NamedTuple):
     invoked_as: Path
     working_directory: Path
     arguments: list[str]
-
-
-def _clean_env(**overrides: str) -> dict[str, str]:
-    """The base test env without inherited repository-selection variables, plus any overrides."""
-    env = {key: value for key, value in _base_test_env().items() if key not in _INHERITED_GIT_VARIABLES}
-    env.update(overrides)
-    return env
-
-
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=repo, env=_clean_env(), capture_output=True, check=True)
 
 
 def _write_executable(path: Path, source: str) -> None:
