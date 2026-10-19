@@ -396,13 +396,13 @@ That gate's denial tells the reviewer to write the file at its worktree path. Ea
 
 A denied reviewer thus receives conflicting directions and might not return its findings inline. One session reported a reviewer claiming a write that never happened, after which the file was missing (reported, not reproduced).
 
-With no `findings_path`, no reviewer writes, and no findings file lands in a review worktree.
+With no `findings_path`, no reviewer writes a findings file, in the main tree or in a review worktree.
 
-The cost is each reviewer's 2K-token inline budget, a larger session context, and no by-path citation of a findings file in the step-7 consult. It applies to every `/review-pr` session, including one where the file write would have succeeded.
+The cost is each reviewer's 2K-token inline budget (a reviewer over budget leaves out lower-severity findings and says so), a larger session context, and no by-path citation of a findings file in the step-7 consult. It applies to every `/review-pr` session, including one where the file write would have succeeded.
 
 Two other locations fail here:
 
-- A path under `/tmp` passes both write gates, but `review-pr-finish.sh` does not remove it, so a PR's findings outlive the session. On a platform without symlink protection in sticky directories (Linux provides it as `fs.protected_symlinks`), a world-writable `/tmp` is also open to a symlink planted in advance (a gap `deny-reviewer-tree-mutation.sh` lists as unfixed).
+- A path under `/tmp` passes both write gates, but `review-pr-finish.sh` does not remove it, so a PR's findings outlive the session.
 - A path beside the session's other `<config-dir>/.review-pr-active.d/` files is denied, because `deny-reviewer-tree-mutation.sh` allows a reviewer `Write` only under `/tmp` or an ignored `agent-reviews/` directory.
 
 ## Known gaps and operator choices
