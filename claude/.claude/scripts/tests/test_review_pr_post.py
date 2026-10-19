@@ -3,7 +3,7 @@
 The `gh` CLI is replaced by a PATH shim that records every invocation it
 receives (one JSON object per line) so tests can assert on call history --
 not just the script's exit code -- for the fail-closed paths' most
-important property: `gh` is never even invoked.
+important property: no `gh pr review` call.
 """
 from __future__ import annotations
 
@@ -79,30 +79,60 @@ def _write_marker(home: Path, repo: Path, head_ref_oid: str, body_hash: str, pr_
     write_review_pr_completion_marker(home, repo, pr_identity, head_ref_oid, body_hash, SID)
 
 
+# `pr_author_field` value that leaves the `author` key out of the `gh pr view` JSON, as a gh that did not return the field would.
+_NO_AUTHOR_KEY = object()
+# `pr_author_field` default: an `author` object holding `pr_author_login`.
+_AUTHOR_FROM_LOGIN = object()
+
+
 def _gh_shim_source(
     call_log: Path,
     pr_view_head_ref_oid: str | None = None,
     pr_review_exit_status: int = 0,
+    pr_view_exit_status: int = 0,
     marker_path: Path | None = None,
     swap_body_path: Path | None = None,
     swap_body_content: str | None = None,
     swap_body_symlink_target: Path | None = None,
     remove_marker_path: Path | None = None,
+    pr_author_login: str = "someone",
+    pr_author_field: object = _AUTHOR_FROM_LOGIN,
+    operator_login: str = "operator",
+    api_user_exit_status: int = 0,
+    api_user_body: str | None = None,
+    api_user_stderr: str = "",
+    api_user_stdout_on_failure: bool = False,
 ) -> str:
     """gh shim recording every invocation.
 
-    `pr_view_head_ref_oid`, when given, is printed as the `gh pr view
-    ... --json headRefOid --jq .headRefOid` call's stdout -- the script's
-    PR-identity cross-check reads this to compare against the completion
-    marker's recorded HEAD. Left unset, the shim prints nothing for that
-    call, matching a `gh` failure or a PR whose current headRefOid the
-    script cannot determine.
+    `pr_view_head_ref_oid`, when given, is printed in the `gh pr view
+    ... --json` call's JSON object -- the script's PR-identity cross-check
+    reads it to compare against the completion marker's recorded HEAD. The
+    object carries only the fields the call names in `--json`, as real gh
+    does: `headRefOid`, and `author` as an object holding `pr_author_login`.
+    `pr_author_field` replaces the `author` value verbatim (or, as
+    `_NO_AUTHOR_KEY`, leaves the key out).
+    Left unset, the shim prints nothing for that call, matching a `gh`
+    failure or a PR whose current headRefOid the script cannot determine.
+
+    A `gh api user` call prints `{"login": operator_login}`, or `api_user_body`
+    verbatim when that is given. A non-zero `api_user_exit_status` makes it
+    print `api_user_stderr` on stderr and exit with that status instead, 124
+    modeling timeout(1) killing a `gh` that outlived its cap.
+    `api_user_stdout_on_failure` makes a non-zero exit print the stdout
+    first, as gh does with an HTTP error body.
+
+    Each logged call records the `GH_TOKEN` and `GH_HOST` it ran with (null
+    when unset).
 
     `pr_review_exit_status`, when nonzero, is the exit status of a `gh pr
-    review` invocation specifically (every other invocation, including `pr
-    view`, still exits 0) -- the shim's own always-0 default otherwise never
-    exercises the script's post-failure branch. 124 and 143 model
-    timeout(1) killing a `gh` that outlived its cap.
+    review` invocation specifically -- the shim's own always-0 default
+    otherwise never exercises the script's post-failure branch. 124 and 143
+    model timeout(1) killing a `gh` that outlived its cap.
+
+    `pr_view_exit_status`, when nonzero, is the exit status of a `gh pr view`
+    invocation, after it prints its output (if any). Every other invocation
+    exits 0 unless a status option above says otherwise.
 
     A `gh pr review` call records the body bytes it was handed, read from
     stdin for `-F -` (as real gh does) or from the named file otherwise, and
@@ -116,7 +146,14 @@ def _gh_shim_source(
     `remove_marker_path` names a completion marker the shim deletes during
     the `gh pr view` call, modeling a second invocation consuming the marker
     in the window between this script's read of it and its own removal."""
-    pr_view_stdout = "" if pr_view_head_ref_oid is None else pr_view_head_ref_oid
+    pr_view_fields = None
+    if pr_view_head_ref_oid is not None:
+        pr_view_fields = {"headRefOid": pr_view_head_ref_oid}
+        if pr_author_field is _AUTHOR_FROM_LOGIN:
+            pr_view_fields["author"] = {"login": pr_author_login}
+        elif pr_author_field is not _NO_AUTHOR_KEY:
+            pr_view_fields["author"] = pr_author_field
+    api_user_stdout = json.dumps({"login": operator_login}) if api_user_body is None else api_user_body
     marker_path_text = None if marker_path is None else str(marker_path)
     remove_marker_path_text = None if remove_marker_path is None else str(remove_marker_path)
     swap_body_path_text = None if swap_body_path is None else str(swap_body_path)
@@ -128,8 +165,13 @@ def _gh_shim_source(
         import sys
 
         CALL_LOG = {str(call_log)!r}
-        PR_VIEW_STDOUT = {pr_view_stdout!r}
+        PR_VIEW_FIELDS = {pr_view_fields!r}
         PR_REVIEW_EXIT_STATUS = {pr_review_exit_status!r}
+        PR_VIEW_EXIT_STATUS = {pr_view_exit_status!r}
+        API_USER_STDOUT = {api_user_stdout!r}
+        API_USER_EXIT_STATUS = {api_user_exit_status!r}
+        API_USER_STDERR = {api_user_stderr!r}
+        API_USER_STDOUT_ON_FAILURE = {api_user_stdout_on_failure!r}
         MARKER_PATH = {marker_path_text!r}
         REMOVE_MARKER_PATH = {remove_marker_path_text!r}
         SWAP_BODY_PATH = {swap_body_path_text!r}
@@ -138,6 +180,8 @@ def _gh_shim_source(
         args = sys.argv[1:]
         record = {{
             "args": args,
+            "gh_token": os.environ.get("GH_TOKEN"),
+            "gh_host": os.environ.get("GH_HOST"),
         }}
         if args[:2] == ["pr", "review"]:
             record["marker_exists_at_post"] = None if MARKER_PATH is None else os.path.exists(MARKER_PATH)
@@ -156,6 +200,14 @@ def _gh_shim_source(
                 record["posted_bytes_hex"] = None if posted_bytes is None else posted_bytes.hex()
         with open(CALL_LOG, "a") as f:
             f.write(json.dumps(record) + chr(10))
+        if args[:2] == ["api", "user"]:
+            if API_USER_EXIT_STATUS:
+                if API_USER_STDOUT_ON_FAILURE:
+                    print(API_USER_STDOUT)
+                print(API_USER_STDERR, file=sys.stderr)
+                sys.exit(API_USER_EXIT_STATUS)
+            print(API_USER_STDOUT)
+            sys.exit(0)
         if args[:2] == ["pr", "view"]:
             if REMOVE_MARKER_PATH is not None:
                 os.unlink(REMOVE_MARKER_PATH)
@@ -166,8 +218,10 @@ def _gh_shim_source(
                 else:
                     with open(SWAP_BODY_PATH, "w") as f:
                         f.write(SWAP_BODY_CONTENT)
-            if PR_VIEW_STDOUT:
-                print(PR_VIEW_STDOUT)
+            if PR_VIEW_FIELDS is not None:
+                requested_fields = args[args.index("--json") + 1].split(",") if "--json" in args else []
+                print(json.dumps({{name: value for name, value in PR_VIEW_FIELDS.items() if name in requested_fields}}))
+            sys.exit(PR_VIEW_EXIT_STATUS)
         if args[:2] == ["pr", "review"]:
             sys.exit(PR_REVIEW_EXIT_STATUS)
         sys.exit(0)
@@ -217,8 +271,8 @@ def _pr_review_records(call_log: Path) -> list[dict]:
 
 def _read_pr_review_calls(call_log: Path) -> list[list[str]]:
     """Calls whose args start with the `pr review` verb -- filters out the
-    PR-identity cross-check's own `gh pr view` call, which every test that
-    reaches the posting calls also triggers."""
+    PR-identity cross-check's own `gh pr view` call and the `gh api user`
+    lookup that only request-changes makes."""
     return [args for args in _read_calls(call_log) if args[:2] == ["pr", "review"]]
 
 
@@ -249,6 +303,15 @@ class TestApproveIsNotReachable:
         invocation."""
         code = _strip_comment_lines(SCRIPT.read_text())
         assert code.count('_lib_gh "$GH_PR_REVIEW_TIMEOUT_SECONDS" pr review "$PR_NUMBER"') == 2
+
+
+class TestWiringTripwires:
+    """Source-level checks that a call still routes through its cap; they do not pin the cap's value."""
+
+    def test_the_api_user_lookup_carries_the_view_timeout_cap(self):
+        # GH-1236: an uncapped `gh api user` lets a stalled lookup hang the post path before the marker is consumed.
+        code = _strip_comment_lines(SCRIPT.read_text())
+        assert code.count('_lib_gh "$GH_PR_VIEW_TIMEOUT_SECONDS" api user') == 1
 
 
 class TestUsageErrors:
@@ -439,7 +502,21 @@ class TestPrIdentityCrossCheck:
     the marker's body-hash check ran against. This class pins the
     `gh pr view` re-fetch that closes that gap."""
 
-    def test_pr_view_head_mismatch_fails_closed(self, isolated_home, git_repo, tmp_path):
+    @pytest.mark.parametrize(
+        ("verb", "authorship_shim_options"),
+        [
+            pytest.param("comment", {}, id="comment"),
+            # The PR is the operator's own, so the head check winning shows it runs before the own-PR refusal.
+            pytest.param(
+                "request-changes",
+                {"pr_author_login": "operator", "operator_login": "operator"},
+                id="request-changes-on-own-pr",
+            ),
+        ],
+    )
+    def test_pr_view_head_mismatch_fails_closed(
+        self, isolated_home, git_repo, tmp_path, verb, authorship_shim_options
+    ):
         """The PR's own current headRefOid disagrees with the completion
         marker's recorded HEAD -- PR_NUMBER/OWNER_REPO does not name the
         reviewed PR. Must abort before ever calling `gh pr review`."""
@@ -449,28 +526,267 @@ class TestPrIdentityCrossCheck:
         result, call_log = _run(
             git_repo,
             isolated_home,
-            ["comment", PR_IDENTITY],
+            [verb, PR_IDENTITY],
             tmp_path,
             pr_view_head_ref_oid="f" * 40,
+            **authorship_shim_options,
         )
-        assert result.returncode != 0
+        assert result.returncode == 2
         assert "headRefOid" in result.stderr
+        assert _OWN_PR_REFUSAL_PHRASE not in result.stderr
+        assert _COULD_NOT_TELL_PHRASE not in result.stderr
         assert _read_pr_review_calls(call_log) == []
         assert review_pr_completion_marker_path(isolated_home, git_repo, SID).exists(), (
             "a refusal before the claim leaves the marker armed"
         )
 
-    def test_pr_view_failure_fails_closed(self, isolated_home, git_repo, tmp_path):
+    @pytest.mark.parametrize("verb", ["comment", "request-changes"])
+    @pytest.mark.parametrize("pr_view_exit_status", [0, 1], ids=["no-output-exit-0", "exit-1"])
+    def test_pr_view_failure_fails_closed(self, isolated_home, git_repo, tmp_path, verb, pr_view_exit_status):
         """`gh pr view` itself fails or returns no output -- treated the
-        same as a mismatch, not as a pass-through."""
+        same as a mismatch, not as a pass-through. For request-changes the
+        author is unreadable too, and the head refusal still comes first."""
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
         _write_marker(isolated_home, git_repo, head_sha(git_repo), body_hash)
-        result, call_log = _run(git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path)
-        assert result.returncode != 0
+        result, call_log = _run(
+            git_repo, isolated_home, [verb, PR_IDENTITY], tmp_path, pr_view_exit_status=pr_view_exit_status
+        )
+        assert result.returncode == 2
         assert "headRefOid" in result.stderr
+        assert _OWN_PR_REFUSAL_PHRASE not in result.stderr
+        assert _COULD_NOT_TELL_PHRASE not in result.stderr
         assert _read_pr_review_calls(call_log) == []
         assert review_pr_completion_marker_path(isolated_home, git_repo, SID).exists()
+
+
+# A secret-shaped payload gh might echo on a failed call.
+_GH_ERROR_PAYLOAD = "Resource not accessible leaked-token=ghp_" + "AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIII"
+# Phrases of the two authorship refusals, which tell a definitive refusal from a post whose outcome is unknown.
+_OWN_PR_REFUSAL_PHRASE = "was authored by the account gh posts as"
+_FRESH_CONFIRMATION_PHRASE = (
+    "The same body can be posted with the comment verb only after the human confirms that exact body for comment"
+)
+_RERUN_IS_SAFE_PHRASE = "re-running the same verb after the human re-confirms is safe"
+_COULD_NOT_TELL_PHRASE = "could not tell if the account gh posts as authored"
+# SKILL.md tells a session to recognise either refusal by this phrase.
+_NOT_CONSUMED_PHRASE = "Nothing was posted and the completion marker was not consumed"
+# Logins no refusal text may contain, chosen so no word of the fixed message text can contain one.
+_DISTINCT_OPERATOR_LOGIN = "op-q7x2k"
+_DISTINCT_AUTHOR_LOGIN = "au-m4z9p"
+
+
+def _assert_refusal_text_is_definitive(stderr: str) -> None:
+    """SKILL.md keys its never-re-post rule on "unknown" and "whether the review posted".
+    The post path never names the forbidden flag, no gh error text reaches stderr, and neither account's login does."""
+    for forbidden_text in ("approve", "unknown", "whether the review posted", _DISTINCT_OPERATOR_LOGIN, _DISTINCT_AUTHOR_LOGIN):
+        assert forbidden_text not in stderr.lower()
+    assert _GH_ERROR_PAYLOAD not in stderr
+
+
+class TestRequestChangesAuthorshipCheck:
+    """GH-1236: a request-changes post on the operator's own PR, or one whose
+    authorship cannot be established, refuses before the marker is consumed,
+    so the same body can still post as a comment."""
+
+    def _arm_marker(self, isolated_home, git_repo):
+        _seed_session(isolated_home, SID)
+        body_file, body_hash = _write_findings_body(isolated_home)
+        marker_head = head_sha(git_repo)
+        _write_marker(isolated_home, git_repo, marker_head, body_hash)
+        return body_file, marker_head, review_pr_completion_marker_path(isolated_home, git_repo, SID)
+
+    def test_request_changes_on_the_operators_own_pr_refuses_and_leaves_the_marker_armed(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        # GH-1236: an own-PR request-changes refuses before the marker is consumed, so the same body can still post as comment.
+        _, marker_head, marker = self._arm_marker(isolated_home, git_repo)
+        result, call_log = _run(
+            git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, pr_author_login=_DISTINCT_OPERATOR_LOGIN.upper(),
+            operator_login=_DISTINCT_OPERATOR_LOGIN,
+        )
+        assert result.returncode == 2
+        assert _OWN_PR_REFUSAL_PHRASE in result.stderr
+        assert _FRESH_CONFIRMATION_PHRASE in result.stderr
+        assert _NOT_CONSUMED_PHRASE in result.stderr
+        assert "Abort without posting" not in result.stderr
+        assert _COULD_NOT_TELL_PHRASE not in result.stderr
+        assert _RERUN_IS_SAFE_PHRASE not in result.stderr
+        _assert_refusal_text_is_definitive(result.stderr)
+        assert _pr_review_records(call_log) == []
+        assert marker.exists()
+
+    @pytest.mark.parametrize(
+        "lookup_options",
+        [
+            {"api_user_exit_status": 1},
+            {"api_user_exit_status": 124},
+            {"api_user_body": "{}"},
+            {"api_user_body": "[]"},
+            {"api_user_body": '"operator"'},
+            {"api_user_body": "not json"},
+            {"api_user_body": '{"login": "bad login"}'},
+        ],
+        ids=["lookup-failed", "lookup-cap-kill-124", "empty-object", "array", "bare-string", "not-json", "login-with-space"],
+    )
+    def test_request_changes_refuses_when_authorship_cannot_be_established(
+        self, isolated_home, git_repo, tmp_path, lookup_options
+    ):
+        # GH-1236: an empty author reads as someone else's PR, so an unreadable account must refuse, not post.
+        _, marker_head, marker = self._arm_marker(isolated_home, git_repo)
+        result, call_log = _run(
+            git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, pr_author_login=_DISTINCT_AUTHOR_LOGIN,
+            operator_login=_DISTINCT_OPERATOR_LOGIN, api_user_stderr=_GH_ERROR_PAYLOAD, **lookup_options,
+        )
+        assert result.returncode == 2
+        self._assert_could_not_tell_refusal(result, call_log, marker)
+
+    @staticmethod
+    def _assert_could_not_tell_refusal(result, call_log, marker) -> None:
+        """The refusal names the comment recovery, never posts, and leaves the marker armed."""
+        assert _COULD_NOT_TELL_PHRASE in result.stderr
+        assert _NOT_CONSUMED_PHRASE in result.stderr
+        assert _FRESH_CONFIRMATION_PHRASE in result.stderr
+        assert _RERUN_IS_SAFE_PHRASE in result.stderr
+        assert "Abort without posting" not in result.stderr
+        assert _OWN_PR_REFUSAL_PHRASE not in result.stderr
+        _assert_refusal_text_is_definitive(result.stderr)
+        assert _pr_review_records(call_log) == []
+        assert marker.exists()
+
+    def test_request_changes_refuses_when_the_lookup_exits_non_zero_even_with_a_usable_login_on_stdout(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        # GH-1236: gh prints an HTTP error body on stdout with a non-zero exit, and that body must not be read as a verdict.
+        _, marker_head, marker = self._arm_marker(isolated_home, git_repo)
+        result, call_log = _run(
+            git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, pr_author_login=_DISTINCT_AUTHOR_LOGIN,
+            operator_login=_DISTINCT_OPERATOR_LOGIN, api_user_exit_status=1,
+            api_user_stdout_on_failure=True,
+        )
+        assert result.returncode == 2
+        self._assert_could_not_tell_refusal(result, call_log, marker)
+
+    def test_request_changes_refuses_when_the_pr_author_cannot_be_read(self, isolated_home, git_repo, tmp_path):
+        # GH-1236: an unreadable author must not read as someone else's PR, or an own-PR request-changes would post.
+        # review_pr_author_login's own tests own the shape matrix; one shape proves the script calls it.
+        _, marker_head, marker = self._arm_marker(isolated_home, git_repo)
+        result, call_log = _run(
+            git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, operator_login=_DISTINCT_OPERATOR_LOGIN, pr_author_field=_NO_AUTHOR_KEY,
+        )
+        assert result.returncode == 2
+        self._assert_could_not_tell_refusal(result, call_log, marker)
+
+    def test_comment_posts_when_the_pr_author_cannot_be_read(self, isolated_home, git_repo, tmp_path):
+        # GH-1236: the author is read for request-changes only; comment must not gain a failure mode.
+        _, marker_head, _ = self._arm_marker(isolated_home, git_repo)
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, pr_author_field=_NO_AUTHOR_KEY,
+        )
+        assert result.returncode == 0, result.stderr
+        assert len(_pr_review_records(call_log)) == 1
+
+    @pytest.mark.parametrize(
+        "refusal_options,recovery_verb,recovery_options",
+        [
+            ({"pr_author_login": "operator", "operator_login": "operator"}, "comment",
+             {"pr_author_login": "operator", "operator_login": "operator"}),
+            ({"api_user_exit_status": 1}, "comment", {"api_user_exit_status": 1}),
+            ({"api_user_exit_status": 1}, "request-changes", {"pr_author_login": "someone", "operator_login": "operator"}),
+        ],
+        ids=["own-pr-then-comment", "lookup-failure-then-comment", "lookup-failure-then-request-changes-on-someone-elses-pr"],
+    )
+    def test_the_same_body_posts_once_after_a_request_changes_refusal(
+        self, isolated_home, git_repo, tmp_path, refusal_options, recovery_verb, recovery_options
+    ):
+        # GH-1236: the recovery the refusal message offers must work in the same session.
+        body_file, marker_head, marker = self._arm_marker(isolated_home, git_repo)
+        refused, refused_call_log = _run(
+            git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, **refusal_options,
+        )
+        assert refused.returncode == 2
+        assert _pr_review_records(refused_call_log) == []
+        assert marker.exists()
+        assert _NOT_CONSUMED_PHRASE in refused.stderr
+
+        posted, call_log = _run(
+            git_repo, isolated_home, [recovery_verb, PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, **recovery_options,
+        )
+        assert posted.returncode == 0, posted.stderr
+        (record,) = _pr_review_records(call_log)
+        assert f"--{recovery_verb}" in record["args"]
+        assert bytes.fromhex(record["posted_bytes_hex"]) == body_file.read_bytes()
+        assert not marker.exists()
+
+    def test_comment_on_the_operators_own_pr_makes_no_user_lookup_and_ignores_a_failing_one(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        # GH-1236: only request-changes needs the account lookup; comment must not gain a failure mode.
+        _, marker_head, _ = self._arm_marker(isolated_home, git_repo)
+        result, call_log = _run(
+            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, pr_author_login="operator", operator_login="operator",
+            api_user_exit_status=1,
+        )
+        assert result.returncode == 0, result.stderr
+        calls = _read_calls(call_log)
+        assert [call[:2] for call in calls] == [["pr", "view"], ["pr", "review"]]
+        (record,) = _pr_review_records(call_log)
+        assert "--comment" in record["args"]
+
+    def test_request_changes_on_someone_elses_pr_looks_up_the_account_then_the_pr_then_posts(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        _, marker_head, _ = self._arm_marker(isolated_home, git_repo)
+        result, call_log = _run(
+            git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, pr_author_login="someone", operator_login="operator",
+        )
+        assert result.returncode == 0, result.stderr
+        calls = _read_calls(call_log)
+        # GH-1236: no gh call may sit between the head check and the unlink, so the exact call sequence is the invariant.
+        assert [call[:2] for call in calls] == [["api", "user"], ["pr", "view"], ["pr", "review"]]
+        assert calls[0] == ["api", "user"], "the lookup carries no method, field or input flag"
+        pr_view_args = calls[1]
+        assert set(pr_view_args[pr_view_args.index("--json") + 1].split(",")) == {"headRefOid", "author"}
+        assert not {"--jq", "-X", "-f", "--input"} & set(pr_view_args)
+        assert "--request-changes" in calls[2]
+
+    def test_the_account_lookup_and_the_post_run_on_the_same_credentials(self, isolated_home, git_repo, tmp_path):
+        # GH-1236: the identity compared must be the identity that posts, so no call may override the ambient credentials.
+        ambient_token = "ambient-token-value"
+        ambient_host = "ghe.example.test"
+        _, marker_head, _ = self._arm_marker(isolated_home, git_repo)
+        result, call_log = _run(
+            git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
+            extra_env={
+                "GH_TOKEN": ambient_token, "GH_HOST": ambient_host, "CI_CHECKS_GH_TOKEN": "checks-override-token-value",
+            },
+            pr_view_head_ref_oid=marker_head,
+        )
+        assert result.returncode == 0, result.stderr
+        records = _read_records(call_log)
+        assert [record["args"][:2] for record in records] == [["api", "user"], ["pr", "view"], ["pr", "review"]]
+        assert {(record["gh_token"], record["gh_host"]) for record in records} == {(ambient_token, ambient_host)}
+
+    def test_request_changes_with_an_empty_author_login_on_a_successful_fetch_posts(
+        self, isolated_home, git_repo, tmp_path
+    ):
+        # GH-1236: an author object with an empty login is not the operator's own PR, and the operator's lookup succeeded.
+        _, marker_head, _ = self._arm_marker(isolated_home, git_repo)
+        result, call_log = _run(
+            git_repo, isolated_home, ["request-changes", PR_IDENTITY], tmp_path,
+            pr_view_head_ref_oid=marker_head, pr_author_login="",
+        )
+        assert result.returncode == 0, result.stderr
+        assert len(_pr_review_records(call_log)) == 1
 
 
 class TestHappyPath:
@@ -638,7 +954,8 @@ class TestCompletionMarkerSelfConsuming:
         )
 
     @pytest.mark.skipif(os.geteuid() == 0, reason="root can remove a marker from a read-only directory")
-    def test_marker_that_cannot_be_removed_refuses_before_any_post(self, isolated_home, git_repo, tmp_path):
+    @pytest.mark.parametrize("verdict", ["comment", "request-changes"])
+    def test_marker_that_cannot_be_removed_refuses_before_any_post(self, isolated_home, git_repo, tmp_path, verdict):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
         marker_head = head_sha(git_repo)
@@ -647,7 +964,7 @@ class TestCompletionMarkerSelfConsuming:
         marker.parent.chmod(0o500)
         try:
             result, call_log = _run(
-                git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
+                git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
             )
             assert marker.exists()
         finally:
@@ -656,8 +973,9 @@ class TestCompletionMarkerSelfConsuming:
         assert "could not consume the completion marker" in result.stderr
         assert _read_pr_review_calls(call_log) == []
 
+    @pytest.mark.parametrize("verdict", ["comment", "request-changes"])
     def test_marker_consumed_by_a_racing_invocation_refuses_before_any_post(
-        self, isolated_home, git_repo, tmp_path
+        self, isolated_home, git_repo, tmp_path, verdict
     ):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
@@ -666,7 +984,7 @@ class TestCompletionMarkerSelfConsuming:
         marker = review_pr_completion_marker_path(isolated_home, git_repo, SID)
 
         result, call_log = _run(
-            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
+            git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path,
             pr_view_head_ref_oid=marker_head, remove_marker_path=marker,
         )
         assert result.returncode != 0
@@ -675,8 +993,9 @@ class TestCompletionMarkerSelfConsuming:
             "only the invocation that removes the marker may post; one that finds it already gone must not"
         )
 
+    @pytest.mark.parametrize("verdict", ["comment", "request-changes"])
     def test_second_invocation_fails_closed_after_the_first_succeeds(
-        self, isolated_home, git_repo, tmp_path
+        self, isolated_home, git_repo, tmp_path, verdict
     ):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
@@ -685,7 +1004,7 @@ class TestCompletionMarkerSelfConsuming:
         marker = review_pr_completion_marker_path(isolated_home, git_repo, SID)
 
         first, call_log = _run(
-            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
+            git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
         )
         assert first.returncode == 0, first.stderr
         assert len(_read_pr_review_calls(call_log)) == 1
@@ -694,7 +1013,7 @@ class TestCompletionMarkerSelfConsuming:
         )
 
         second, call_log = _run(
-            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
+            git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path, pr_view_head_ref_oid=marker_head
         )
         assert second.returncode != 0
         assert "completion marker" in second.stderr
@@ -746,8 +1065,9 @@ class TestPostFailureConsumesTheMarker:
         assert "marker.sh write review-pr" not in result.stderr
         assert "Ask the human to check" in result.stderr
 
+    @pytest.mark.parametrize("verdict", ["comment", "request-changes"])
     def test_retry_after_a_failed_post_fails_closed_without_a_second_gh_pr_review(
-        self, isolated_home, git_repo, tmp_path
+        self, isolated_home, git_repo, tmp_path, verdict
     ):
         _seed_session(isolated_home, SID)
         _, body_hash = _write_findings_body(isolated_home)
@@ -755,12 +1075,12 @@ class TestPostFailureConsumesTheMarker:
         _write_marker(isolated_home, git_repo, marker_head, body_hash)
 
         first, call_log = _run(
-            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
+            git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path,
             pr_view_head_ref_oid=marker_head, pr_review_exit_status=124,
         )
         assert first.returncode != 0
         second, call_log = _run(
-            git_repo, isolated_home, ["comment", PR_IDENTITY], tmp_path,
+            git_repo, isolated_home, [verdict, PR_IDENTITY], tmp_path,
             pr_view_head_ref_oid=marker_head,
         )
         assert second.returncode != 0
@@ -956,6 +1276,12 @@ class TestAllowEntryMatcher:
     )
     def test_does_not_match_an_unrelated_or_exact_zero_argument_entry(self, allow_entry):
         assert not _allow_entry_matches_script_invocation(allow_entry, "review-pr-post.sh")
+
+
+class TestSkillMdKeysOnTheRefusalPhrase:
+    def test_skill_md_names_the_phrase_both_request_changes_refusals_carry(self):
+        # SKILL.md Step 8 tells a session to recognise either refusal by this phrase, so the two must not drift apart.
+        assert _NOT_CONSUMED_PHRASE in SKILL_MD_PATH.read_text()
 
 
 class TestSettingsAllowlistKeepsReviewPrFetchAndPostBehindThePrompt:
