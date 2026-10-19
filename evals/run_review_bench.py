@@ -203,6 +203,9 @@ _SOURCES_CHECKING_LINES_EXIST = frozenset({"pr-comment"})
 # The order `confirm` presents sources in. `review-round` comes first because its
 # transcripts age out, so an early `q` must never starve it. A source not listed sorts last.
 _CONFIRM_SOURCE_ORDER = ("review-round", "pr-comment", "szz")
+# Inside `--local-dir`, named so the `*_candidates.json` shortlist glob never matches it.
+_CONFIRM_DECLINED_IDS_FILENAME = "confirm_declined_ids.json"
+_CONFIRM_MAX_INVALID_LENS_ENTRIES = 3
 # Sources whose evidence records whether the head is among the PR's own commits.
 _SOURCES_LABELING_HEAD_BRANCH = frozenset({"pr-comment"})
 _HEAD_OUTSIDE_PR_BRANCH_LABEL = " (head is outside the PR branch)"
@@ -217,6 +220,9 @@ _CONFIRM_HEADER = (
 _DECISION_PROMOTE = "y"
 _DECISION_SKIP = "n"
 _DECISION_QUIT = "q"
+# Neither is a lens name: lens names hold no space.
+_LENS_END_OF_INPUT = "end of input"
+_LENS_GAVE_UP = "gave up"
 
 
 def _short_sha(sha: str) -> str:
@@ -235,6 +241,17 @@ def _stdin_is_terminal() -> bool:
         return False
 
 
+def _print_git_failure_rejection(escaped_candidate_id: str, unreadable: str, exc: Exception) -> None:
+    # One candidate's commits being unreachable (rewritten history,
+    # a stale .local/ shortlist) must not abort every other
+    # candidate's confirmation in the same run.
+    print(
+        f"confirm: rejected {escaped_candidate_id} -- could not {unreadable} "
+        f"({_escape_control_characters(str(exc))})",
+        file=sys.stderr,
+    )
+
+
 def _defect_passing_confirm_checks(candidate, excerpts_by_id: dict[str, str]):
     """The ConfirmedDefect `candidate` would promote to, or None after printing
     why it is rejected. Every printed field passes through
@@ -248,14 +265,7 @@ def _defect_passing_confirm_checks(candidate, excerpts_by_id: dict[str, str]):
             evidence=candidate.evidence,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        # One candidate's commits being unreachable (rewritten history,
-        # a stale .local/ shortlist) must not abort every other
-        # candidate's confirmation in the same run.
-        print(
-            f"confirm: rejected {escaped_id} -- could not read its public git text "
-            f"({_escape_control_characters(str(exc))})",
-            file=sys.stderr,
-        )
+        _print_git_failure_rejection(escaped_id, "read its public git text", exc)
         return None
 
     violation = defects.check_description_provenance(candidate.description, public_texts, excerpts_by_id)
@@ -271,7 +281,7 @@ def _defect_passing_confirm_checks(candidate, excerpts_by_id: dict[str, str]):
         return None
 
     try:
-        return defects.ConfirmedDefect(
+        defect = defects.ConfirmedDefect(
             id=candidate.id, source=candidate.source, lens=candidate.lens,
             base_commit=candidate.base_commit, head_commit=candidate.head_commit,
             fix_commit=candidate.fix_commit, fix_date=candidate.fix_date,
@@ -281,6 +291,22 @@ def _defect_passing_confirm_checks(candidate, excerpts_by_id: dict[str, str]):
     except ValueError as exc:
         print(f"confirm: rejected {escaped_id} -- {_escape_control_characters(str(exc))}", file=sys.stderr)
         return None
+
+    # Runs after the schema check, so the path is a validated string. The head commit's
+    # public text was read above, so a failed lookup here means the path is absent.
+    try:
+        path_is_present = defects.path_exists_at_commit(REPO_ROOT, defect.head_commit, defect.path)
+    except subprocess.TimeoutExpired as exc:
+        _print_git_failure_rejection(escaped_id, "check whether its path exists at its introducing commit", exc)
+        return None
+    if not path_is_present:
+        print(
+            f"confirm: rejected {escaped_id} -- {_escape_control_characters(defect.path)} "
+            "does not exist at its introducing commit",
+            file=sys.stderr,
+        )
+        return None
+    return defect
 
 
 def _indented_escaped_lines(text: str, indent: str) -> list[str]:
@@ -425,6 +451,46 @@ def _defect_with_typed_description(candidate, typed_description: str, excerpts_b
     )
 
 
+def _read_lens_choice(current_lens: str) -> str:
+    """The lens to apply after a `y`: `current_lens` for an empty line, else the
+    typed lens once `defects._validate_lens` accepts it. An invalid entry prints
+    the allowed lenses and asks again. It returns `_LENS_GAVE_UP` after
+    `_CONFIRM_MAX_INVALID_LENS_ENTRIES` invalid entries, and `_LENS_END_OF_INPUT`
+    at end of input."""
+    from review_bench import defects
+
+    for _ in range(_CONFIRM_MAX_INVALID_LENS_ENTRIES):
+        print(f"lens [{_escape_control_characters(current_lens)}]: ", end="", file=sys.stderr, flush=True)
+        line = sys.stdin.readline()
+        if line == "":
+            return _LENS_END_OF_INPUT
+        typed_lens = line.strip()
+        if not typed_lens:
+            return current_lens
+        try:
+            defects._validate_lens(typed_lens)
+        except ValueError as exc:
+            print(f"confirm: {_escape_control_characters(str(exc))}", file=sys.stderr)
+            continue
+        return typed_lens
+    return _LENS_GAVE_UP
+
+
+def _load_declined_ids(declined_ids_path: Path) -> set[str]:
+    """The candidate IDs a past `confirm` run recorded as declined, empty when
+    the file is absent. Raises ValueError when the file is not a JSON list of
+    strings."""
+    if not declined_ids_path.exists():
+        return set()
+    try:
+        recorded = json.loads(declined_ids_path.read_text())
+    except (OSError, ValueError) as exc:  # JSONDecodeError and UnicodeDecodeError are ValueErrors
+        raise ValueError(f"could not be read as JSON ({exc})") from exc
+    if not isinstance(recorded, list) or not all(isinstance(candidate_id, str) for candidate_id in recorded):
+        raise ValueError("is not a JSON list of candidate IDs")
+    return set(recorded)
+
+
 def _confirm_source_rank(candidate) -> int:
     if candidate.source in _CONFIRM_SOURCE_ORDER:
         return _CONFIRM_SOURCE_ORDER.index(candidate.source)
@@ -484,13 +550,39 @@ def cmd_confirm(args: argparse.Namespace) -> int:
         )
         return 2 if passing else 0
 
+    declined_ids_path = local_dir / _CONFIRM_DECLINED_IDS_FILENAME
+    try:
+        previously_declined_ids = _load_declined_ids(declined_ids_path)
+    except ValueError as exc:
+        print(
+            f"confirm: {_escape_control_characters(str(declined_ids_path))} "
+            f"{_escape_control_characters(str(exc))} -- fix or delete it and rerun; nothing prompted",
+            file=sys.stderr,
+        )
+        return 2
+
+    # The sources, and the declined IDs, narrow only what is prompted. Every candidate above
+    # still loaded, passed the checks, and fed `excerpts_by_id`.
+    from_selected_sources = [(c, d) for c, d in passing if not args.source or c.source in args.source]
+    to_prompt = [
+        (c, d) for c, d in from_selected_sources
+        if args.include_declined or c.id not in previously_declined_ids
+    ]
     approved: list[defects.ConfirmedDefect] = []
     accepted_ids: set[str] = set()
     declined_ids: set[str] = set()
     skipped = 0
-    print(_CONFIRM_HEADER.format(count=len(passing)), file=sys.stderr)
+    print(_CONFIRM_HEADER.format(count=len(to_prompt)), file=sys.stderr)
+    if args.source:
+        print(f"confirm: prompting only for source(s) {', '.join(sorted(set(args.source)))}", file=sys.stderr)
+    if len(to_prompt) < len(from_selected_sources):
+        print(
+            f"confirm: {len(from_selected_sources) - len(to_prompt)} candidate(s) skipped as previously declined "
+            "-- pass --include-declined to be asked about them again",
+            file=sys.stderr,
+        )
     try:
-        for candidate, defect in passing:
+        for candidate, defect in to_prompt:
             try:
                 subjects = defects.commit_subjects(
                     REPO_ROOT, (candidate.head_commit, candidate.fix_commit, candidate.base_commit),
@@ -534,11 +626,40 @@ def cmd_confirm(args: argparse.Namespace) -> int:
                     rejected += 1
                     rejected_ids.add(candidate.id)
                     continue
-            approved.append(defect)
+            chosen_lens = _read_lens_choice(defect.lens)
+            if chosen_lens == _LENS_END_OF_INPUT:
+                break
+            if chosen_lens == _LENS_GAVE_UP:
+                print(
+                    f"confirm: skipped {_escape_control_characters(candidate.id)} -- "
+                    f"no valid lens after {_CONFIRM_MAX_INVALID_LENS_ENTRIES} entries",
+                    file=sys.stderr,
+                )
+                declined_ids.add(candidate.id)
+                skipped += 1
+                continue
+            approved.append(replace(defect, lens=chosen_lens))
             accepted_ids.add(candidate.id)
     except KeyboardInterrupt as exc:
         print("confirm: interrupted -- nothing written or pinned", file=sys.stderr)
         return 128 + getattr(exc, "signum", signal.SIGINT)
+
+    # Only a normal end of the prompt loop records answers, so Ctrl-C above leaves the file as it was.
+    # A failed write must not cost the engineer the approvals below.
+    # Confirm assumes one run per `--local-dir` at a time, so a concurrent run's declines can be overwritten
+    # and those candidates are asked again.
+    # A crash that truncates the file makes the next run exit 2 at load.
+    if declined_ids:
+        try:
+            defects.atomic_write_text(
+                declined_ids_path, json.dumps(sorted(previously_declined_ids | declined_ids), indent=2) + "\n",
+            )
+        except OSError as exc:
+            print(
+                f"confirm: could not record the declined IDs in {_escape_control_characters(str(declined_ids_path))} "
+                f"({_escape_control_characters(str(exc))})",
+                file=sys.stderr,
+            )
 
     # Pinned after the prompt loop and only for approved candidates, so a
     # skipped or interrupted candidate leaves no ref. Pinning precedes the
@@ -1566,6 +1687,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_confirm.add_argument("--local-dir", default=str(DEFAULT_LOCAL_DIR), help="Where the miners' shortlists live.")
     p_confirm.add_argument("--defects-path", default=str(DEFAULT_DEFECTS_PATH), help="The committed defect-set file.")
+    p_confirm.add_argument(
+        "--source", action="append", choices=_CONFIRM_SOURCE_ORDER,
+        help="Prompt only for candidates of this source (repeatable); default: every source. Every candidate "
+        "is still checked, and every excerpt still feeds the provenance check.",
+    )
+    p_confirm.add_argument(
+        "--include-declined", action="store_true",
+        help=f"Prompt again for candidates a past run recorded as declined in {_CONFIRM_DECLINED_IDS_FILENAME}.",
+    )
     p_confirm.set_defaults(func=cmd_confirm)
 
     p_snapshot = sub.add_parser(

@@ -347,8 +347,8 @@ def guess_lens(path: str) -> str:
 
     Heuristic only, based on the changed path's shape -- real routing is
     judgment over code-review/SKILL.md's Item-ownership table, which this
-    function does not read. The engineer confirms or overrides this value
-    for every candidate before it can be promoted.
+    function does not read. `confirm` shows this value, and the engineer
+    confirms or changes it at the lens prompt after a `y`.
     """
     name = Path(path).name
     if path.endswith(".sh") or "/hooks/" in path:
@@ -501,6 +501,21 @@ def commit_subjects(repo_dir: Path, commits: Sequence[str], *, run=subprocess.ru
             sha, _separator, subject = entry.partition(" ")
             subjects.append((sha, subject))
     return subjects
+
+
+def path_exists_at_commit(repo_dir: Path, commit: str, path: str, *, run=subprocess.run) -> bool:
+    """Whether `path` exists in `commit`'s tree, from `git cat-file -e`.
+    The caller must pass a commit it has already resolved, because `cat-file -e`
+    fails the same way for a missing commit as for a missing path. A timeout or
+    an OS-level failure raises rather than reading as absent."""
+    try:
+        run(
+            ["git", "cat-file", "-e", f"{commit}:{path}"], cwd=repo_dir, capture_output=True,
+            timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
+        )
+    except subprocess.CalledProcessError:
+        return False
+    return True
 
 
 def public_git_text(repo_dir: Path, introducing_commit: str, fix_commit: str, *, run=subprocess.run) -> str:

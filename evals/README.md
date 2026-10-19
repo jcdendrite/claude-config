@@ -529,9 +529,9 @@ content into a committed file or another private-project-adjacent surface.
 candidate that is not yet in `defects.json`, ordered by source (`review-round`,
 then `pr-comment`, then `szz`) and then by the miner's own order, so an early
 `q` never starves the source whose transcripts age out. It suppresses no
-candidate. For each one it checks the schema and, when the candidate has a
-description, the description-provenance check against every `.local/`
-excerpt. It then prompts `[y/N/q]`. The prompt shows:
+candidate. For each one it checks the schema, that its path exists at its introducing
+commit, and, when the candidate has a description, the description-provenance
+check against every `.local/` excerpt. It then prompts `[y/N/q]`. The prompt shows:
 
 - the candidate's ID, source, short SHAs, `fix_date`, path, and commit
   subjects;
@@ -558,6 +558,17 @@ prompts for a one-line description, which runs through the same provenance
 check. An empty line, a rejected character, or a provenance rejection accepts
 nothing for that candidate, and the loop continues.
 
+After `y` and any description, `confirm` prompts `lens [<current lens>]:`. An
+empty line keeps the candidate's lens. A typed lens must be one that
+`_validate_lens` in `review_bench/defects.py` accepts. An invalid entry prints
+the allowed lenses and asks again, and the third invalid entry skips the
+candidate. End of input at this prompt stops the loop like `q`.
+
+`--source` restricts the prompts to the named sources and repeats to name
+several: `review-round`, `pr-comment`, `szz`. Every shortlist still loads and
+every candidate still runs the checks, so the provenance check still sees every
+excerpt.
+
 The description policy:
 
 - A description may not hold a character that `is_terminal_unsafe_character`
@@ -577,8 +588,18 @@ The description policy:
 
 `y` promotes the candidate. Any other answer, `Y` and `yes` included, skips
 it, and it stays in `.local/`. `q` or end of input stops the loop and writes
-the candidates accepted so far. Ctrl-C during the prompts writes and pins
-nothing. After the last prompt, `confirm` pins each accepted candidate's fix
+the candidates accepted so far. Ctrl-C during the prompts writes, pins, and
+records nothing.
+
+When the prompts end, `confirm` appends the IDs it skipped to
+`.local/confirm_declined_ids.json`, a mode-0600 JSON list that the `.local/`
+ignore rule covers. A skipped ID is one answered with anything but `y` or `q`,
+or answered `y` and then given an empty description or three invalid lenses.
+Later runs do not prompt for those IDs and print how many they left out. `--include-declined` prompts for
+them again. A file that is not a JSON list of strings makes `confirm` exit 2
+before any prompt.
+
+After the last prompt, `confirm` pins each accepted candidate's fix
 commit under `refs/review-bench/`, then appends the candidates to
 `defects.json`, each with `file_is_markdown` and the candidate's own path (the
 head path for a `pr-comment`). An interrupt in that pin-and-write phase can
