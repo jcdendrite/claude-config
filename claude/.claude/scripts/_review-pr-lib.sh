@@ -123,7 +123,8 @@ REVIEW_PR_STACK_MAX_LOOKUPS=8
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_STACK_LOOKUP_LIMIT=100
 
-# A chosen default, not measured against a full reply of 100 PRs with their reviews. It matches the 10 s GH_PR_VIEW_TIMEOUT_SECONDS that review-pr-acquire.sh, review-pr-checkout.sh, review-pr-diff.sh and review-pr-post.sh give each single-request gh read.
+# GitHub's API documentation states that a request taking more than 10 seconds to process is terminated (docs.github.com, "Rate limits and query limits for the GraphQL API", "Timeouts"). The client cap also covers gh startup, auth and the transfer of up to 100 PRs with their reviews, and it was not measured against a full reply.
+# It matches the 10 s GH_PR_VIEW_TIMEOUT_SECONDS that review-pr-acquire.sh, review-pr-checkout.sh, review-pr-diff.sh and review-pr-post.sh give each single-request gh read.
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_STACK_LOOKUP_TIMEOUT_SECONDS=10
 
@@ -184,6 +185,7 @@ _REVIEW_PR_STACK_LOOKUP_VERDICT_JQ_PROGRAM='
     def ancestor_line:
       . as $pr
       | ($pr.author | login_of) as $pr_login
+      # A gh reply without author.is_bot reads as a non-bot, so the own review of a bot-authored ancestor is not flagged self-review-only. Only the advice is affected, not the gate.
       | (if ($pr.author | type) == "object" and $pr.author.is_bot == true and $pr_login != null
          then $pr_login | ltrimstr("app/")
          else $pr_login end) as $comparable_pr_login

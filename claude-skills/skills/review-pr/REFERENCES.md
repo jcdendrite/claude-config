@@ -190,10 +190,9 @@ reading, computed by the script.
   `--limit` makes `gh` paginate, which would break the single-request cap.
 - **Eight lookups.** No vendor limit backs the value. One lookup costs at most
   15 seconds (the 10 second `gh` cap and one 5 second `jq` cap), so eight cost
-  120 seconds. Checkout's worst failure path for a stacked PR is 555 seconds:
-  435 without the walk, plus the walk's 120. That leaves 45 seconds under the
-  Bash tool's 600-second maximum, before the items checkout's usage text
-  excludes. Diff's worst case is 320.
+  120 seconds. Each script's usage text states its resulting worst case in its
+  "Worst-case wall time" paragraph: `review-pr-checkout.sh` and
+  `review-pr-diff.sh`.
 - **Outsiders can cause the `truncated` and timeout stops on a public
   repository.** Fork PRs that reuse a branch name fill the lookup page, and a
   large reply can run into the `gh` or `jq` cap. Both fail closed.
