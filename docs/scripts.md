@@ -325,12 +325,19 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   - The file's mode depends on render history. An unchanged render leaves the existing mode alone. A changed render writes the mode-600 file `mktemp` creates.
   - A refusal or failure before the write leaves the previous `settings.json` in place, so an overlay defect holds back base changes until it is fixed.
   - A jq that cannot run (status 126 or 127) is reported as such, not as invalid JSON.
-  - `install.sh` runs it for `~/.claude` only. Render any other profile by hand, and again after each pull that changes `settings.base.json`.
-  - That profile's directory must already hold `settings.base.json`, which `install.sh` never places there (it stows only into `$HOME`), or the command exits with "settings.base.json not found".
+  - `install.sh` renders `~/.claude` only. A new shell renders `~/.claude` regardless, and renders a non-default inherited profile only when it holds a `settings.base.json`.
+  - A profile's `settings.base.json` comes from whatever stows claude-config into it, an out-of-repo mechanism that consumes `stow-packages.sh`'s rows. `install.sh` stows only into `$HOME`.
+  - Whatever stows claude-config into another profile should run the command below for it after each stow, and after each pull that changes `settings.base.json`. With no such tool, run it by hand at those times.
+  - A profile with no `settings.base.json` makes the command exit with a "settings.base.json not found" message that points at the stow.
+  - A provisioning tool must stop on a non-zero render exit before it registers or launches, because `register-marketplace.sh` exits 0 on a missing `settings.json` (see its entry below).
 
   ```bash
-  CLAUDE_CONFIG_DIR=~/.claude-work ~/.claude/scripts/render-settings.sh   # render a non-default profile
+  CLAUDE_CONFIG_DIR=<absolute dir> ~/.claude/scripts/render-settings.sh   # render a non-default profile
   ```
+
+  A profile whose `settings.json` is a dangling symlink at its first render silently loses every key base does not ship. CHANGELOG's "Migration, other profiles" bullet gives the steps. Render a profile before registering it, because `register-marketplace.sh` does nothing until the profile has a `settings.json`.
+
+  A profile runs without that floor when its `settings.json` is missing, dangling, or lacks base's `permissions.deny` and `hooks`. A stale regular file keeps the floor it was rendered with. [`docs/security-hardening.md`](security-hardening.md#limitations)'s Limitations section states the fail-closed requirement for whatever stows a profile.
 
   A session that writes through a dangling `~/.claude/settings.json` symlink recreates `claude/.claude/settings.json` in the checkout as a gitignored stray file. Git does not block a pull over it and may replace it silently, and `install.sh` leaves it in place. The render reads it while `~/.claude/settings.json` still symlinks to it, then replaces the symlink. Copy any value you still want out of the stray file, then delete it.
 

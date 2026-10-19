@@ -13,7 +13,7 @@ Why now: #744 renames the tracked `settings.json` to `settings.base.json` and re
 `render-settings.sh` keeps #744's behavior: base, overlay and target all come from the profile's own directory. A profile is rendered by whatever stows claude-config into it, which places `settings.base.json` in the profile along with the rest of the package. This PR does not change where base is read from.
 
 What changes:
-- **M2.** The "settings.base.json not found" refusal names the remedy: stow claude-config into that profile first.
+- **M2.** The "settings.base.json not found" refusal names the remedy: run whatever stows claude-config into that profile first.
 - **M6.** The disclosure line names its target when that target is not `~/.claude`.
 - **M7.** `DISABLE_FEEDBACK_COMMAND` joins the overlay `env` allowlist, in its own commit.
 - **M8.** Docs and CHANGELOG state who renders a profile, when to re-run it, the first-render migration, and the fail-closed requirement for the stowing tool.
@@ -72,8 +72,8 @@ Stacking: this PR targets `settings-base-render`, #744's branch. The engineer se
 ### Mechanisms
 
 **M2: the not-found refusal names the remedy.** `anchors: root, row10, row11`
-- At render-settings.sh:94 the message keeps its `<base_file> not found -- cannot render settings.json without it` prefix and appends: `; stow claude-config into <config_dir> first (a profile gets settings.base.json from the stow, not from this script; docs/scripts.md's stow-packages.sh entry lists the packages and targets)`.
-- That entry is the supported no-tool route: run stow for each package `stow-packages.sh` prints, with `<config_dir>` as the target.
+- At render-settings.sh:94 the message keeps its `<base_file> not found -- cannot render settings.json without it` prefix and appends: `; run whatever stows claude-config into <config_dir> first (a profile gets settings.base.json from the stow, not from this script; docs/scripts.md's stow-packages.sh entry lists the packages)`.
+- No in-repo command stows into a non-`$HOME` profile: `stow-packages.sh`'s targets are `$HOME`-relative, so the docs describe the stow as an out-of-repo mechanism that consumes its rows and invent no command.
 - Emitters: a hand run, a provisioning tool, `install.sh` (`~/.claude` only) and `ensure-settings-render.sh` (gate keeps default-profile behavior). For the default profile `install.sh`'s and ensure's own `./install.sh` hint stays the remedy, and M2's text is not the primary message there.
 - Other failing exits (overlay refusals, jq failures) keep their text. `render-settings.sh:119` says an existing `settings.json` keeps its rules, which is untrue for a never-rendered profile. Aligning those messages is a follow-up (Out of scope).
 - No other behavior changes. The exit status stays 1 and nothing is written.
@@ -141,7 +141,7 @@ Three `code-writer` dispatches, run in sequence, each one commit (row 21). Every
     - A materialized profile keeps its old floor as a regular file until its first render.
     - A profile that was not materialized dangles until its first render. Claude Code's silence is confirmed for `claude doctor` and `claude auto-mode reset`, and interactive startup is untested, so it may run with no deny rules or hooks.
     - A profile's first render, when not materialized, drops every key base does not ship, including `enabledPlugins` and `extraKnownMarketplaces`, and names nothing it dropped.
-    - Re-stow each profile so it holds `settings.base.json` (stow each package `stow-packages.sh` prints, with the profile as target), then run `CLAUDE_CONFIG_DIR=<absolute dir> ~/.claude/scripts/render-settings.sh` for it.
+    - Re-stow each profile so it holds `settings.base.json` (have whatever stows claude-config into it re-stow it), then run `CLAUDE_CONFIG_DIR=<absolute dir> ~/.claude/scripts/render-settings.sh` for it.
     - Run `CLAUDE_CONFIG_DIR=<dir> register-marketplace` after the first render. For a profile that was not materialized, that registers only the claude-config marketplace, so re-enable its other plugins yourself.
 - `docs/security-hardening.md`, the Limitations bullet about non-default profiles (near :644-656), rewritten:
   - **Who renders a profile.** Stowing claude-config into a profile places `settings.base.json` there. A non-default profile is rendered only by a command run for it (a provisioning tool's or a hand render) or by a new shell that inherits it while it holds a `settings.base.json`.
@@ -158,7 +158,7 @@ Reuse, don't reimplement: the `-ef` comparison at ensure-settings-render.sh:26; 
 1. After each dispatch, run `select-tests.py`, shellcheck and ruff as above. Every commit leaves the suite green.
 2. The tests show these behaviors, one case each, in `test_render_settings.py`:
    - **M7:** the allowlist equality test and the per-name acceptance cases include the new name.
-   - **M2, main use case.** A profile directory with no `settings.base.json` exits 1, stderr contains `settings.base.json not found` and `stow claude-config into {config_dir} first`, and no `settings.json` is created.
+   - **M2, main use case.** A profile directory with no `settings.base.json` exits 1, stderr contains `settings.base.json not found` and `whatever stows claude-config into {config_dir} first`, and no `settings.json` is created.
    - **M2, nothing disturbed.** The same refusal leaves an existing regular `settings.json` byte-identical, and leaves a dangling `settings.json` symlink dangling.
    - **M6, non-default target.** With `HOME` set to a tmp home and `CLAUDE_CONFIG_DIR` elsewhere, the line is `this render changed settings.json in <config_dir> -- `.
    - **M6, default target.** `<tmp home>/.claude` prints `render-settings.sh: this render changed settings.json -- ` with no `in`. Seed a disclosure and assert the full prefix. Add a case that spells the target with a trailing slash or through a symlink to `<tmp home>/.claude`, so replacing `-ef` with string equality fails.
