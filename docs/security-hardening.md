@@ -787,8 +787,7 @@ to hold PII/PHI or live credentials:
   - `deny-reviewer-tree-mutation.sh` also scans a copy with every
     backslash-newline pair deleted, so it catches a gated word, write flag, or
     write target split across a continuation, such as `ru\` then `ff`,
-    `sed \` then `-i`, or `ruff check \` then `--fix`. The hook header's
-    Known gaps records that this is unverified on bash 3.2.
+    `sed \` then `-i`, or `ruff check \` then `--fix`.
 - `deny-private-project-refs.sh`'s `SCAN_TARGET_BOTH` scans the raw+stripped
   union of `$SCAN_TARGET` across all three of its scan tiers (tracker-ID,
   structural, blocklist):

@@ -326,7 +326,7 @@ All notable changes to `claude-config` are documented here. Format follows [Keep
   - **Migration:** a branch cut before this change lacks `scripts/venv-run.sh` (and the select-tests allow rule) until it is rebased, so the new commands fail with exit 127 there. The old forms keep working there as described above. Where neither works (depth 4 or deeper with no worktree-local `.venv`), run the main checkout's `scripts/venv-run.sh <tool> ...` by absolute path from the worktree until you rebase. It anchors on its own location and runs in your current directory. Stale allow rules in your own `settings.local.json` stay valid.
 - **`deny-reviewer-tree-mutation.sh` now denies ruff's `--add-noqa` and any gated write split across a backslash-newline continuation, in every stow consumer's review-only agent sessions.** Live on `git pull` with no re-install. No migration is needed.
   - `ruff check --add-noqa` now denies, bare or behind `scripts/venv-run.sh`, since it writes `# noqa` comments into files in place.
-  - A gated command word, write flag, or write target split across a backslash-newline continuation now denies, such as `ru\` then `ff`, `sed \` then `-i`, or `ruff check \` then `--fix`. The hook header's Known gaps records that this is unverified on bash 3.2.
+  - A gated command word, write flag, or write target split across a backslash-newline continuation now denies, such as `ru\` then `ff`, `sed \` then `-i`, or `ruff check \` then `--fix`.
 - **A change under repo-root `scripts/` now selects the hooks and scripts tests in `select-tests.py` instead of falling open to the full suite.**
 
 ### Removed
