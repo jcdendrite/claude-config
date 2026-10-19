@@ -1,12 +1,12 @@
 ---
 name: review-pr
-description: "Review a PR you did not author: audit for passive-execution risk before checkout, run /plan-review (only if a plan is linked) and /code-review, both under a no-fix/no-marker override, then post only on explicit approval."
+description: "Review a PR, yours or someone else's: audit for passive-execution risk before checkout, run /plan-review (only if a plan is linked) and /code-review, both under a no-fix/no-marker override, then post only on explicit approval."
 argument-hint: "[PR number or URL]"
 ---
 
-Review a pull request someone else authored: acquire it, audit it for passive-execution risk, check it out (or fetch only its diff, for a restricted PR), delegate the line-level review to `/code-review`, run checks only with confirmation, and post findings only on explicit human approval. This is the reviewer-side mirror of `/respond-pr`.
+Review a pull request, whether authored by someone else or by the operator (the account `gh` runs as): acquire it, audit it for passive-execution risk, check it out (or fetch only its diff, for a restricted PR), delegate the line-level review to `/code-review`, run checks only with confirmation, and post findings only on explicit human approval. This is the reviewer-side mirror of `/respond-pr`. **Self-authored mode** applies when step 1's document carries `selfAuthored: true` (advisory; the post script re-checks). It changes only step 8's post route; every other step runs as written, with the same reviewers and depth.
 
-**Standing override.** It covers every skill invoked from steps 3 and 5 and every skill those invoke in turn. **This is code you do not own — report findings, change nothing, write no completion marker, edit no PR body.**
+**Standing override.** It covers every skill invoked from steps 3 and 5 and every skill those invoke in turn. **This is code you do not own, in self-authored mode too: report findings, change nothing, write no completion marker, edit no PR body.**
 
 ## Step 1 — Acquire PR context
 
@@ -28,7 +28,7 @@ The document carries:
 
 - `gh pr view`'s metadata fields.
 - `statusCheckRollup` (CI status), with a `statusCheckRollupAvailable` flag.
-- `prIdentity` and `authorAssociation`.
+- `prIdentity`, `authorAssociation`, and `selfAuthored` (`true` when the operator authored the PR, `false` when not, `null` when that could not be read, in which case `request-changes` may be refused at post).
 - `files` (an array of path strings) and `commits` (an array of commit SHA strings), each with a `filesComplete` or `commitsComplete` flag.
 - `existingReviews` and `existingInlineComments`.
 
@@ -36,7 +36,7 @@ A flag is `false` when that list's length does not match the PR's own total. Say
 
 `statusCheckRollupAvailable: false` means CI status is unknown, and `statusCheckRollup` is then `null`. Say so in the findings, and never read it as passing or as "no checks" (which is an empty list with the flag `true`).
 
-Re-running this step resets provenance to mode `acquired`, so re-run step 2 before the step 7 marker write. Record `headRefOid` from the printed document, because every later step pins to it. Treat `mergeable`/`mergeStateStatus` as frequently `UNKNOWN`, and never branch a stop decision on either. Any other `gh` failure aborts the whole call rather than proceeding on partial data.
+Re-running this step resets provenance to mode `acquired`, so re-run step 2 before the step 7 marker write. Record `headRefOid` from the printed document, because every later step pins to it. Treat `mergeable`/`mergeStateStatus` as frequently `UNKNOWN`, and never branch a stop decision on either. Any `gh` failure other than the check-status fetch and the `selfAuthored` lookup aborts the whole call rather than proceeding on partial data.
 
 ## Step 2 — Checkout or diff-only
 
@@ -128,13 +128,13 @@ Get this session's fixed findings-body path, then declare it via the **Write too
 ```
 ~/.claude/scripts/review-pr-findings-path.sh
 ```
-Write the body there — this exact path, never a file of your own choosing (never pass it as a Bash argument either). Start the body with `**[Claude Code]**`; end it with `🤖 Generated with [Claude Code](https://claude.com/claude-code)` as the final line. Together they disclose that an agent conducted the review, not merely drafted it. **In `diff-only` mode**, also include the line `Reviewed from the PR diff only — no checkout, no checks run.` somewhere in the body. Write the body to these rules:
+Write the body there — this exact path, never a file of your own choosing (never pass it as a Bash argument either). Start the body with `**[Claude Code]**` and end it with `🤖 Generated with [Claude Code](https://claude.com/claude-code)` as the final line. Together they disclose that an agent conducted the review, not merely drafted it. Follow the prefix with one line stating how many blocking findings the body holds, whoever authored the PR, so a `comment` post, which requests no changes, still shows the count. Omit the line when there are none. When a change alters that number, update, insert, or remove the line as part of that change, so the update is allowed whenever that change is allowed. **In `diff-only` mode**, also include the line `Reviewed from the PR diff only — no checkout, no checks run.` somewhere in the body. Write the body to these rules:
 
 - Observation first, then the requested change.
 - State what the code does, without judging the author.
 - Use the PR's own term for each concept.
 - Omit failure modes a reader of the code already sees.
-- Use no review-process words: step numbers, agent names, "consult", "unverified".
+- Use no review-process words: step numbers, agent names, "consult", "unverified", "self-authored".
 - The prefix, the trailer, the diff-only disclosure line, and the coverage statements step 1 calls for are exempt from that rule.
 
 After writing the body, `Read` it, then consult `plan-architect` (`MODE=consult`):
@@ -153,11 +153,11 @@ After the last consult and every change to the body, from any tree of the repo (
 ```
 The write mechanically re-checks the prefix, the trailer, the mode-conditional disclosure, and a credential scan before it writes the completion marker. A non-zero exit names what failed on stderr, so fix the body under step 7's consult rule and re-run.
 
-**Do not write this if:** unresolved blockers remain from your own reading of the findings, or the state just synthesized is not the state currently reviewed (`headRefOid` moved). Skipping it here just means step 8's post stays gated — say so explicitly.
+**Do not write this if:** step 7's item 3 left a claim open that this session could still settle from the diff file, base objects, or worktree, or the state just synthesized is not the state currently reviewed (`headRefOid` moved). A blocking finding is the review's result and never withholds the marker. Skipping it here just means step 8's post stays gated — say so explicitly.
 
 ## Step 8 — Deliver
 
-`Read` the findings-body file after its last change and present that text verbatim and in full, naming its path so the human can open the file directly, with an explicit recommendation: any blocking finding → `request-changes`; findings with no blockers → `comment`; needs-discussion → `comment`. **Never attempt to construct an `--approve` invocation** — and none is needed: `review-pr-post.sh` takes only `comment`/`request-changes`, so `--approve` is not a reachable code path. An approval counts toward branch-protection required-approval state under the operator's identity, a materially different act from commenting, and stays the human's own click. Show these beside the body, never inside it:
+`Read` the findings-body file after its last change and present that text verbatim and in full, naming its path so the human can open the file directly, with an explicit recommendation: when `selfAuthored` is `true`, `comment` whatever the findings, telling the human it is their own PR and `/review-pr` posts it as a comment review only; otherwise any blocking finding → `request-changes` (adding, when `selfAuthored` is `null`, that the post script may refuse it), and anything else → `comment`. **Never attempt to construct an `--approve` invocation** — and none is needed: `review-pr-post.sh` takes only `comment`/`request-changes`, so `--approve` is not a reachable code path. An approval counts toward branch-protection required-approval state under the operator's identity, a materially different act from commenting, and stays the human's own click. Show these beside the body, never inside it:
 
 - A summary of each consult's corrections and of the session's own proposals. It names every finding added, removed, upgraded, or downgraded, with its reason. It also names every correction or proposed change not applied, with the reason it was not applied, such as a disagreement or a failed verification.
 - Every finding or claim a step 7 pass dropped, downgraded, or moved, with its evidence source.
@@ -183,7 +183,7 @@ The post script re-verifies four things before posting:
 - The reviewed `headRefOid` against the PR's current remote value.
 - The findings-body hash.
 
-It consumes the completion marker before the post call, success or failure, so a retry cannot double-post.
+For `request-changes`, the post script also refuses, leaving the marker in place, when the operator authored the PR or when it cannot tell. That refusal says "Nothing was posted and the completion marker was not consumed", so it is definitive, unlike the unknown outcome below. Tell the human. After the own-PR refusal, post with `comment` only after they confirm that exact body for `comment`, and do not re-run `request-changes`. After the could-not-tell refusal, re-run the same verb once after they re-confirm, or post with `comment` only after they confirm that exact body for `comment`. The script consumes the completion marker before the post call, success or failure, so a retry cannot double-post.
 
 If it reports that whether the review posted is unknown, this session must not post that body again. Tell the human. They check the PR on GitHub and, if the review is absent, either post the body shown above by hand or start a fresh `/review-pr`. Do not re-run the marker write or the post after that message.
 

@@ -24,12 +24,19 @@
 # does.
 #
 # Scope and limits:
+# - Runs its content scans only in claude-config (origin URL contains
+#   `claude-config`) or in a repo with `.claude/private-projects-optin` at its
+#   toplevel. Those scans are silent in every other repo.
+# - Its fail-closed infrastructure denies (a failed `_lib.sh` source,
+#   unparseable tool input, a failed command-text quote-strip, fragment split, or
+#   commit-conclusion check) run before the
+#   scope test, so they apply in every repo.
 # - Catches the mechanical category (tracker IDs shaped like [A-Z]{2,}-\d+).
-# - Catches a second mechanical category when the user opts in via
+# - Catches a second mechanical category when the user creates
 #   ~/.claude/private-projects.md: a literal, case-insensitive
-#   substring scan against entries in that user-local file. See the
+#   whole-word scan against entries in that user-local file. See the
 #   "Deliberate scope" section below for the full design.
-# - Catches six structural shapes, always on (not gated by
+# - Catches six structural shapes, wherever its content scans run (not gated by
 #   private-projects.md): an IPv4 literal, an SSH config-directory or
 #   id_<algorithm> key path reference, a /Users/ or /home/ home-rooted
 #   filesystem path, a 32+ hex-char or UUID-shaped identifier, an
@@ -161,6 +168,63 @@
 # - A possessive issue reference still denies when the quote-strip joins a
 #   name character onto its `s`, such as an escape like `\n` or a hyphen
 #   or underscore continuation.
+# - In a repo armed only by `.claude/private-projects-optin`, the gate is
+#   armed only while that file is present at that exact path in the current
+#   worktree's checked-out tree at hook time.
+# - Each of these leaves a marker-armed repo ungated:
+#     - a branch, detached HEAD, bisect step, or rebase stop at a commit
+#       that predates the marker
+#     - a sparse checkout that omits `.claude/`
+#     - a clone the marker never reached because `.claude/` is gitignored
+#     - an uncommitted marker removed by `git stash -u` or `git clean`
+#     - a miscased marker name on a case-sensitive filesystem
+# - A filesystem error on the marker's `-f` test reads as an absent marker,
+#   which fails open.
+# - The staged diff is read without a size cap, so a diff large enough to
+#   outrun the harness hook timeout commits unscanned.
+# - A file git classifies as binary, including one a `.gitattributes` rule
+#   marks `-diff` or `binary`, renders without added lines, so its content is
+#   never scanned.
+# - The staged-diff scan reads with `--no-textconv`, so a binary file that a
+#   textconv driver maps to text is unscanned.
+# - The `^\+\+\+` file-header filter also drops an added content line that
+#   begins with `++`, so a token on such a line is unscanned.
+# - A commit whose staged diff is empty (`--amend -m`, `--allow-empty -m`, or
+#   nothing staged) leaves its message unscanned.
+# - In claude-config the staged diff also reads as empty when only files under
+#   `claude/.claude/hooks/tests/` are staged, because that path is excluded.
+# - An added line that contains a byte invalid in the active locale may be
+#   dropped by grep, depending on the grep implementation and locale.
+# - GNU grep 3.11 drops an added line that contains a byte invalid in the
+#   active locale, as `deny-pii-in-commits.sh` records.
+# - BSD grep drops an added line whose first content byte is invalid, and this
+#   is unverified on other BSD greps.
+# - `deny-pii-in-commits.sh` shares this hook's added-line extraction.
+# - On macOS, BSD sed aborts the quote-strip on scanned text holding a byte
+#   invalid in the active UTF-8 locale, such as a staged added line whose
+#   invalid byte is not its first content byte.
+# - The hook then fails closed with a "could not quote-strip the scanned
+#   content" deny that lists a missing, killed, or errored tool as the cause.
+# - On that deny, re-encode the file, or stop and ask the human.
+# - GNU grep 3.11 drops such a staged line before the quote-strip, so on Linux
+#   that line goes unscanned instead of denied.
+# - Closing this belongs in an `LC_ALL=C` change to the grep extraction and the
+#   quote-strip, in this hook and `deny-pii-in-commits.sh`.
+# - The hook never scans the path of a staged file, because the added-line
+#   filter drops path headers.
+# - The hook never reads the current branch name, which `git push` and a
+#   `gh pr create` without `--head` publish.
+# - Surfaces this hook never scans (such as `gh pr comment` and writing files)
+#   are listed in
+#   `docs/private-project-redaction.md` § "Opting in another repository".
+# - The blocklist deny echoes an entry, with up to three matched lines, whenever
+#   the entry whole-word matches the gated content, so any repo that commits
+#   the marker can make a session surface entries.
+# - The gated content includes the staged diff and any referenced body,
+#   message, --input or @file source that the session may never have read.
+# - A referenced file that holds the list itself can therefore echo every entry.
+# - A match found only in the quote-stripped copy of the command echoes the
+#   joined form.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
@@ -189,9 +253,9 @@
 # and quotes the offending line(s) from the scanned content (capped at
 # 3 lines per entry, each truncated to 200 chars). The matched token is
 # the user's own private-project name, already in the staged content
-# and in ~/.claude/private-projects.md; naming it in the deny
-# discloses it to no new party while letting the agent remove it in
-# one pass rather than bisecting the diff manually.
+# and in ~/.claude/private-projects.md; naming it lets the agent remove it in
+# one pass rather than bisecting the diff manually. The disclosure the echo
+# creates is described in the Known gaps bullets on the blocklist echo.
 #
 # Allowlist extension: append to OSS_ALLOWLIST below if a legitimate
 # open-source prefix is blocked. Do NOT add private-project-specific
@@ -288,9 +352,9 @@ fi
 # can leave `create)` from a paren group).
 #
 # Known gaps, specific to this function (distinct from the file-header
-# Known gaps list above). This list is the canonical home for this hook's
-# gaps; docs/private-project-redaction.md defers to it rather than
-# restating it.
+# Known gaps list above). This list is the canonical home for this
+# function's gaps; docs/private-project-redaction.md defers to it rather
+# than restating it.
 # - A gh flag with no value placeholder, registered at `gh`/`gh pr`/`gh
 #   issue` scope, has its following word consumed by
 #   _lib_tool_argv_from_subcmd, dropping a real surface word. See
@@ -407,15 +471,20 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
-# Scope: this redaction gate exists to protect the claude-config repo,
-# where accidental references to private projects would leak publicly.
-# Other repos legitimately reference their own tracker IDs. Short-circuit
-# unless origin.url looks like claude-config. `git config --get` returns
-# empty (not an error exit) when the remote is missing, so the substring
-# check safely handles the no-remote case too.
+# Scope: claude-config (an origin URL containing `claude-config`, forks included) plus any repo with .claude/private-projects-optin at its toplevel.
+# Repos with neither legitimately reference their own tracker IDs, so the gate stays silent there.
+# `git config --get` prints nothing for a missing remote, so a no-remote repo falls through to the marker test.
+# The marker is read from the working tree, not a committed ref, because it can only add restriction.
+# See `docs/private-project-redaction.md` § "Opting in another repository"
+OPTIN_DENY_NOTE=""
+TRACKER_REMEDY_LEAD="If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite"
+STAGED_DIFF_PATHSPEC=':(top,exclude)claude/.claude/hooks/tests/**'
 REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null)
 if [[ "$REMOTE_URL" != *claude-config* ]]; then
-  exit 0
+  [[ -f "$REPO_ROOT/.claude/private-projects-optin" ]] || exit 0
+  OPTIN_DENY_NOTE=" This repo opted in to this gate via .claude/private-projects-optin, so content that matches here (its own tracker IDs, structural shapes, and names on the user's private-projects.md blocklist) denies by design. Reword the content; if it cannot be reworded, stop and ask the human. Do not delete or edit the marker, retarget the command with git -C, edit the user's private-projects.md blocklist, or add this repo's own tracker prefix to OSS_ALLOWLIST in deny-private-project-refs.sh, which ships in the public claude-config repo."
+  TRACKER_REMEDY_LEAD="Rewrite"
+  STAGED_DIFF_PATHSPEC=':(top)'
 fi
 
 # Allowlist: prefixes that are NEVER private-project tracker IDs.
@@ -536,7 +605,19 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
   # hook under test.
   # The `:(top,exclude)` pathspec magic is relative to the repo root so
   # this works regardless of the caller's cwd within the repo.
-  STAGED_DIFF=$(git diff --cached -- ':(top,exclude)claude/.claude/hooks/tests/**' 2>/dev/null)
+  # `:(top)` alone matches every path, which is what a marker-armed repo scans.
+  # Repo or user diff config (color, external diff, textconv, diff.relative) can change the output at exit 0 so the `^\+` filter below drops added lines.
+  # `-c diff.relative=false` outranks that config and keeps the diff repo-wide from a subdirectory cwd.
+  # `-U0` drops context lines, which the `^\+` filter below discards anyway.
+  # An inherited pathspec variable such as GIT_LITERAL_PATHSPECS reads `:(top)` as a literal name and empties the diff at exit 0.
+  # The unset runs inside the command substitution's subshell, so the parent environment is unchanged.
+  STAGED_DIFF=$(unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
+    git -c diff.relative=false diff --cached -U0 --no-color --no-ext-diff --no-textconv -- "$STAGED_DIFF_PATHSPEC" 2>/dev/null)
+  STAGED_DIFF_STATUS=$?
+  if [ "$STAGED_DIFF_STATUS" -ne 0 ]; then
+    emit_deny "Commit — git diff --cached failed (exit ${STAGED_DIFF_STATUS}), so the redaction gate cannot read the staged diff. The hook hides git's own error, so run \`git diff --cached >/dev/null\` to see only git's error (exit status 128 or higher means git was killed or hit a fatal error). Fail-closed because unscanned content is exactly the leak vector this hook guards against. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+    exit 0
+  fi
   if [ -n "$STAGED_DIFF" ]; then
     # Scan ONLY added lines in the diff, not removed ones. Without this,
     # a commit that *removes* a tracker ID (legitimate cleanup) would be
@@ -778,7 +859,7 @@ HITS=$(printf '%s' "$SCAN_TARGET_BOTH" \
 if [ -n "$HITS" ]; then
   # Report the first few offenders to keep the message short.
   HIT_LIST=$(printf '%s' "$HITS" | head -5 | tr '\n' ' ' | sed 's/ $//')
-  emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite the commit message / staged content / PR body / issue body / gh api body without the tracker ID before retrying.$(chain_split_hint_if_chained "$COMMAND")"
+  emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. ${TRACKER_REMEDY_LEAD} the commit message / staged content / PR body / issue body / gh api body without the tracker ID before retrying.${OPTIN_DENY_NOTE}$(chain_split_hint_if_chained "$COMMAND")"
   exit 0
 fi
 
@@ -841,7 +922,7 @@ if [ "$structural_fastpath_rc" -eq 0 ]; then
     detector_rc=0
     grep -Eq -- "$detector_pattern" <<< "$SCAN_TARGET_BOTH" || detector_rc=$?
     if [ "$detector_rc" -eq 0 ]; then
-      emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
+      emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.${OPTIN_DENY_NOTE}$(chain_split_hint_if_chained "$COMMAND")"
       exit 0
     elif [ "$detector_rc" -ge 2 ]; then
       emit_deny "the '${detector_label}' detector failed to scan the gated content (grep exit ${detector_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
@@ -896,7 +977,7 @@ if [ -r "$PRIVATE_PROJECTS_FILE" ]; then
   if [ -n "$blocklist_report" ]; then
     emit_deny "staged/committed content matches entries from your ~/.claude/private-projects.md blocklist. Remove these references before retrying:${blocklist_report}
 
-See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
+See repo CLAUDE.md section 'Redact private-project-identifying content'.${OPTIN_DENY_NOTE}$(chain_split_hint_if_chained "$COMMAND")"
     exit 0
   fi
 fi

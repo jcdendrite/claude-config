@@ -21,6 +21,8 @@ Fetches everything /review-pr's later steps need in one call:
   --paginate when gh pr view's own capped fields disagree with the PR's real
   totals.
 - Existing review bodies and existing inline review comments.
+- `selfAuthored`, from a gh api user call: true or false, or null when the
+  account gh runs as or the PR's author could not be read.
 
 Prints one JSON document on stdout and writes the identical document to
 $CONFIG_DIR/.review-pr-active.d/$SESSION_ID.context.json, a backstop against
@@ -54,10 +56,10 @@ review-pr-checkout.sh and review-pr-diff.sh each rewrite it (mode
 marker.sh write review-pr accepts only those two modes, so an acquire-only
 session can never write a completion marker.
 
-Any other gh failure aborts with no partial document written. gh's own
-stderr/error text is never echoed verbatim, since an API error payload can
-echo request parameters: only this script's own fixed messages reach
-stdout/stderr.
+Any gh failure other than the check-status fetch and the `selfAuthored`
+lookup aborts with no partial document written. gh's own stderr/error text
+is never echoed verbatim, since an API error payload can echo request
+parameters: only this script's own fixed messages reach stdout/stderr.
 EOF
 }
 
@@ -194,6 +196,18 @@ if ! REST_CHANGED_FILES_TOTAL=$(review_pr_rest_changed_files "$PR_REST_JSON"); t
   exit 2
 fi
 
+# The ambient token is the account review-pr-post.sh posts as, so this lookup never uses CI_CHECKS_GH_TOKEN.
+# A failed lookup or an unreadable PR author yields null rather than aborting, because review-pr-post.sh re-derives authorship before it posts.
+# The author is readable by review_pr_author_login's rule, the same one review-pr-post.sh applies.
+SELF_AUTHORED=null
+if PR_AUTHOR_LOGIN=$(review_pr_author_login "$PR_VIEW_JSON") \
+  && OPERATOR_USER_JSON=$(_lib_gh "$GH_PR_REST_TIMEOUT_SECONDS" api user 2>/dev/null); then
+  case "$(review_pr_authorship "$PR_AUTHOR_LOGIN" "$OPERATOR_USER_JSON")" in
+    self) SELF_AUTHORED=true ;;
+    other) SELF_AUTHORED=false ;;
+  esac
+fi
+
 # files/changedFiles: `gh pr view --json files` silently caps at 100
 # entries with no --paginate equivalent, and files is exactly what step 2's
 # passive-execution audit reads -- a file at position 101 would be
@@ -322,6 +336,7 @@ fi
 if ! CONTEXT_JSON=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -c \
   --arg prIdentity "$PR_IDENTITY" \
   --arg authorAssociation "$AUTHOR_ASSOCIATION" \
+  --argjson selfAuthored "$SELF_AUTHORED" \
   --argjson filesComplete "$FILES_COMPLETE" \
   --argjson commitsComplete "$COMMITS_COMPLETE" \
   --argjson statusCheckRollupAvailable "$STATUS_CHECK_ROLLUP_AVAILABLE" \
@@ -334,6 +349,7 @@ if ! CONTEXT_JSON=$(printf '%s' "$PR_VIEW_JSON" | _lib_jq -c \
      statusCheckRollup: $statusCheckRollup[0],
      prIdentity: $prIdentity,
      authorAssociation: $authorAssociation,
+     selfAuthored: $selfAuthored,
      files: $files[0],
      commits: $commits[0],
      existingReviews: $existingReviews[0],
