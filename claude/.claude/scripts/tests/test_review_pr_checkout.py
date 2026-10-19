@@ -3241,6 +3241,7 @@ class TestBaseBranchRetargetDuringReads:
             head_ref_oid=pr_sha, files=["pr_file.txt"], base_ref_name=_UNUSUAL_BASE_BRANCH,
         )
         assert result.returncode == 0, result.stderr
+        assert _walked_branches(call_log) == [_UNUSUAL_BASE_BRANCH]
 
     @pytest.mark.parametrize(
         "pr_view_base_ref_name",

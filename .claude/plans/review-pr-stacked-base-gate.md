@@ -78,8 +78,17 @@ An empty default branch would let no branch end the walk as trusted, so the firs
 - Every caller maps a walk failure to a literal `exit 2`, so no `gh` status ever becomes the script's exit status. `gh` uses exit 4 for authentication (row 36).
 - Branch names are echoed only through `review_pr_ascii_json_string`.
 - PR numbers are echoed only after a digits check.
-- A `gh` failure is described only by `review_pr_gh_status_description`, and `gh`'s own stderr is never echoed. Its line ends with the fixed text of `REVIEW_PR_STACK_GH_FAILURE_NOTE`: one re-run may help a transient failure, a token that cannot read pull request reviews fails the same way every time (row 49), and `review-pr-diff.sh` runs the same walk.
-- Four causes are properties of the repository, not of the call (row 47). Their lines end with the fixed text of `REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE`: re-running will not help, and neither will `review-pr-diff.sh`, which runs the same walk. Each line states what clears it (row 48).
+- A `gh` failure is described only by `review_pr_gh_status_description`.
+  - `gh`'s own stderr is never echoed.
+  - The line ends with the fixed text of `REVIEW_PR_STACK_GH_FAILURE_NOTE`.
+  - The note says one re-run may help a transient failure.
+  - The note says a token that cannot read pull request reviews fails the same way every time (row 49).
+  - The note says `review-pr-diff.sh` runs the same walk.
+- Four causes are properties of the repository, not of the call (row 47).
+  - Their lines end with the fixed text of `REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE`.
+  - The note says re-running will not help.
+  - The note says `review-pr-diff.sh`, which runs the same walk, will not help either.
+  - Each line states what clears it (row 48).
   - **Lookup cap:** names the deepest PR reached. It says this PR becomes reviewable through the skill only once the stack is shorter, for example after lower PRs merge. Reviewing the named PR directly by number does not by itself change that.
   - **Ambiguous:** names the branch and the candidate PR numbers. It says this PR stays unreviewable through the skill until all but one of them are closed or retargeted.
   - **Cycle:** names the PRs in the cycle, and says one must be retargeted.
@@ -112,12 +121,12 @@ An empty default branch would let no branch end the walk as trusted, so the firs
 - **`reviewListFull`** is true when the raw `reviews` array holds `REVIEW_PR_STACK_GH_REVIEWS_LIMIT` (100) items, so the advice may have read only a prefix (row 38).
 - **`lowestUnreviewed`** is the first unreviewed ancestor in merge order, or `null`.
 - **`concerns`** holds fixed `{code, message}` objects, in this order. The script writes the message text, and it interpolates only digits-checked PR numbers, never a title, login, or branch name:
-  - `root-without-open-pr`, when `rootIsDefaultBranch` is false. The message says the root branch may never have been reviewed. To review it, ask the root branch's owner to open a PR from it into the default branch (a draft is enough), then review that PR. If the reviewer opens it, the reviewer becomes its author, and their own review reads as `self-review-only`. From then on, that PR blocks every PR stacked on the branch until it has a review. If the branch has already merged, retarget this PR instead (row 41).
+  - `root-without-open-pr`, when `rootIsDefaultBranch` is false. The message says the root branch may never have been reviewed. To review it, ask the root branch's owner to open a PR from it into the default branch (a draft is enough), then review that PR. If the reviewer opens it, the reviewer becomes its author, and their own review reads as `self-review-only`. From then on, that PR blocks every PR stacked on the branch until it has a review. If the branch has already merged, retarget the PR that targets it (row 41).
   - `changes-requested`, naming each ancestor whose `changesRequested` is true. It says to proceed only once those changes are addressed and reviewed again.
   - `self-review-only`, naming each ancestor whose `selfReviewOnly` is true. It says to review that PR directly by number, then return to this one.
   - `review-list-full`, naming each ancestor whose `reviewListFull` is true. It says only that PR's first 100 reviews were read, so check its latest reviews on GitHub before proceeding.
 - **`choices` and `recommendedChoice`:**
-  - With `lowestUnreviewed` set, the choices are `["review-lowest", "stop"]`. `stop` is recommended when the root has no open PR, or when an ancestor before `lowestUnreviewed` in merge order has `changesRequested`, `selfReviewOnly`, or `reviewListFull` true (row 58). Otherwise `review-lowest` is recommended. A concern on an ancestor between the lowest unreviewed PR and the target is shown but does not change the recommendation. Reviewing the lowest PR is still the next step, and that concern is evaluated again when this PR is re-run.
+  - With `lowestUnreviewed` set, the choices are `["review-lowest", "stop"]`. `stop` is recommended when the root has no open PR, or when an ancestor before `lowestUnreviewed` in merge order has `changesRequested`, `selfReviewOnly`, or `reviewListFull` true (row 58). `review-lowest` always restarts on `lowestUnreviewed`, whose own question recommends `stop` on that concern. Otherwise `review-lowest` is recommended. A concern on an ancestor between the lowest unreviewed PR and the target is shown but does not change the recommendation. Reviewing the lowest PR is still the next step, and that concern is evaluated again when this PR is re-run.
   - Otherwise the choices are `["proceed", "stop"]`. `stop` is recommended when `concerns` is non-empty, and `proceed` otherwise.
 - **`stacked`** is false only when the target's own base is the default branch. That document has `ancestors: []`, `concerns: []`, `choices: []`, and `recommendedChoice: null`.
 
@@ -132,7 +141,7 @@ An empty default branch would let no branch end the walk as trusted, so the firs
 - **`reviews` is enough for the gate.** It returns at most the first 100 reviews (row 38). That is enough for the gate, because the viewer sees at most one PENDING review per PR (G4). A page of 100 therefore always holds a submitted review when one exists. The advice reads the same page, so an ancestor whose page is full raises `review-list-full` instead of reading as complete.
 
 **Base branch with no open PR.**
-- **Root with no open PR.** When the walk ends at a non-default branch that no open same-repo PR uses as its head, the scripts treat that root as clear (row 17). A shim reply of `[]` therefore keeps the existing stacked-base fixtures valid (row 26). The document's `root-without-open-pr` concern makes the question recommend stop, in both the blocked and the clear state, and name the two routes (rows 40, 41, 58).
+- **Root with no open PR.** When the walk ends at a non-default branch that no open same-repo PR uses as its head, the scripts treat that root as clear (row 17). A shim reply of `[]` therefore keeps the existing stacked-base fixtures valid (row 26). The document's `root-without-open-pr` concern makes the question recommend stop, in both the blocked and the clear state. The same concern names the two routes (rows 40, 41, 58).
 - **What that root covers:** a long-lived branch that has no PR yet (row 39), and a branch whose PR merged or was closed.
 - **Open promotion PR.** A long-lived branch that heads an open promotion PR into the default branch is an ancestor like any other (rows 42, 43). This works in both directions, and REFERENCES.md states both:
   - While the promotion PR has no submitted review, every PR into the branch exits 4.
@@ -175,13 +184,17 @@ An empty default branch would let no branch end the walk as trusted, so the firs
   - Exit 4 follows `review-pr-checkout.sh:13-17`, which gives a positive verdict its own code.
   - An undecided walk exits 2.
   - The new code must not be 3, because SKILL.md:58 routes 3 to the diff-only path.
-- **Marker and post.** Neither needs a re-check. A refused Step 2 writes no provenance, and `marker.sh write review-pr` accepts only `checkout` or `diff-only` provenance (row 20). A provenance that an earlier Step 2 in this session wrote does survive a refusal. Both the exit-4 route and step 8's exit path run `review-pr-finish.sh`, which removes it.
+- **Marker and post.** Neither needs a re-check.
+  - A refused Step 2 writes no provenance.
+  - `marker.sh write review-pr` accepts only `checkout` or `diff-only` provenance (row 20).
+  - A provenance that an earlier Step 2 in this session wrote does survive a refusal.
+  - Both the exit-4 route and step 8's exit path run `review-pr-finish.sh`, which removes it.
 - **What the gate is.** It is a check at Step 2 time, and a process guard against a missed review, not an adversarial control. REFERENCES.md says both.
 
 **Budget.** One lookup costs 15 s of caps, so eight lookups cost 120 s (row 34).
 - **Checkout.** The walk runs before every later step, and a walk failure ends the run. The worst path is therefore the walk succeeding (120 s), then the existing stacked worst failure path (435 s). That totals 555 s, which is 45 s under the Bash tool's 600 s maximum (G2).
 - **Diff.** 195 s, plus 5 s for the REST `.base.ref` read, plus 120 s, totals 320 s.
-- **Acquire.** The walk costs at most 125 s in `document` mode. REFERENCES.md's count of `gh` calls goes from seven calls and 150 s to up to fifteen calls and 230 s.
+- **Acquire.** The walk costs at most 125 s in `document` mode. REFERENCES.md's count of `gh` calls goes from eight calls and 160 s to up to sixteen calls and 240 s, plus up to 45 s of `jq` caps.
 - **SIGKILL grace.** A cap kill fails the walk and ends the run, so the walk adds at most one 2-second grace. The usage texts already leave grace out of their figures (row 35).
 - **Default-base runs.** Checkout and diff make no extra call. Acquire adds one `jq` call (5 s) to build the unstacked document.
 - **Usage texts.** Each "Worst-case wall time" paragraph is recomputed from the final code. Checkout's paragraph also states the 45 s headroom that remains before the items the paragraph already excludes.
@@ -228,7 +241,7 @@ An empty default branch would let no branch end the walk as trusted, so the firs
 **Givens:**
 
 - **G1.** GitHub's native stacked PRs (public preview) are created explicitly via `gh stack`, the UI, or the Stacks REST API, and only those PRs carry a `stack` object. A manually chained PR, where one PR's base is another's head branch, carries none. In a native stack "each subsequent pull request targets the branch of the pull request below it", and the bottom one targets trunk, so the base→head walk covers both kinds. Vendor-imposed. `[verified: docs.github.com/en/pull-requests/get-started/about-stacked-prs; docs.github.com/en/pull-requests/reference/stacked-pull-requests-rest-and-graphql-apis ("When a pull request belongs to a stack, its REST resource includes a `stack` object")]` Covering both kinds: `[engineer-verified: "the branch walk must cover both native and manually chained stacks"]`
-- **G2.** The Bash tool's documented maximum timeout is 600000 ms, and SKILL.md Step 1 already sets it for each script, so each script's caps must sum under 600 s. Vendor-imposed. `[verified: claude-skills/skills/review-pr/REFERENCES.md:63-71; claude-skills/skills/review-pr/SKILL.md:25]`
+- **G2.** The Bash tool's documented maximum timeout is 600000 ms, and SKILL.md Step 1 already sets it for each script, so each script's caps must sum under 600 s. Vendor-imposed. `[verified: claude-skills/skills/review-pr/REFERENCES.md, the acquire wall-time bullet; claude-skills/skills/review-pr/SKILL.md, the Step 1 sentence that sets `timeout: 600000`]`
 - **G4.** GitHub defines a PENDING review as an unsubmitted draft visible only to its author, and one user holds at most one pending review per pull request. Vendor-defined. `[unverified]`
 
 **Mechanisms:**
@@ -291,7 +304,7 @@ An empty default branch would let no branch end the walk as trusted, so the firs
 | 38 | `gh pr list --json reviews` returns at most the first 100 reviews. Under G4 that is enough for the gate. The advice reads the same page, so a full page raises `review-list-full`. `anchors: row30` | `[verified: staff-backend-engineer search of the gh 2.101.0 binary for the embedded query text "reviews(first: 100) {"]` |
 | 39 | A PR into a long-lived non-default branch with no PR beneath it still prompts. `anchors: row11` | `[engineer-verified: "See how we should prompt anyway in this case?"]` |
 | 40 | At a root with no open PR, the question recommends stop. `anchors: row17` | `[engineer-verified: "Recommend stop (Recommended)"]` |
-| 41 | The adopted description of row 40 is a consult's proposal, not the engineer's words. The question still offers proceed. The stop text names the routes: open a (draft) PR for the root and review it, or retarget this PR if the root already merged. The scripts stay unchanged, and the root stays clear for the script gate (row 17). `anchors: row40` | `[unverified]` |
+| 41 | The adopted description of row 40 is a consult's proposal, not the engineer's words. In the clear state the question still offers proceed. The stop text names the routes: open a (draft) PR for the root and review it, or retarget the PR that targets the root if it already merged. The retarget text is fixed and names no PR number, so a reader on a deeper stack picks the PR by position (the first ancestor listed, or this PR when there are none). The gate logic stays unchanged, and the root stays clear for the script gate (row 17). `anchors: row40` | `[unverified]` |
 | 42 | No protected-branch terminator. This replaces the engineer's earlier pick of "Stop at protected branches (Recommended)", which the session reopened. `anchors: row13` | `[engineer-verified: "Drop the terminator (Recommended)"]` |
 | 43 | The adopted description of row 42 is a consult's proposal: only the default branch is a trusted root; one submitted review on an open promotion PR clears PRs into its head branch while it stays open; REFERENCES.md documents this; no extra API call. `anchors: row42` | `[unverified]` |
 | 44 | The hard gate stays, and the advice gets stricter. `anchors: row8` | `[engineer-verified: "Keep gate, stricter advice (Recommended)"]` |
@@ -309,7 +322,7 @@ An empty default branch would let no branch end the walk as trusted, so the firs
 | 56 | The adopted description of row 55 is the session's proposal. The advice still flags self-reviews, comparing logins in one shape, and still flags CHANGES_REQUESTED. The question lists every reviewer's login, so the engineer judges bots. No extra API call is made. This plan's reading: the list shows up to `REVIEW_PR_STACK_REVIEW_DISPLAY_LIMIT` entries per ancestor and counts the rest in `reviewsNotShown`. `anchors: row55` | `[unverified]` |
 | 57 | The engineer runs row 49's credential probe. `anchors: row49` | `[engineer-verified: "I'll run the probe"]` |
 | 58 | In a blocked stack, `stop` is recommended when a concern applies to the root or to an ancestor below the lowest unreviewed PR. Otherwise `review-lowest` is recommended. The choice set does not change (row 14). The session proposed it for consistency with rows 40 and 44, and the engineer confirmed it. This plan adds `review-list-full` to the session's list of concerns. `anchors: row44` | `[engineer-verified: "Yes, stop when concern below (Recommended)"]` |
-| 59 | No existing `gh` GraphQL call in the review-pr scripts reads review objects: acquire's `gh pr view` field list holds none, and acquire reads reviews over REST. REFERENCES.md records a nested GraphQL field, `statusCheckRollup`, failing under a fine-grained PAT. `anchors: row49` | `[verified: review-pr-acquire.sh:266; REFERENCES.md:10, 43-46]` |
+| 59 | No existing `gh` GraphQL call in the review-pr scripts reads review objects: acquire's `gh pr view` field list holds none, and acquire reads reviews over REST. REFERENCES.md records a nested GraphQL field, `statusCheckRollup`, failing under a fine-grained PAT. `anchors: row49` | `[verified: review-pr-acquire.sh, the PR_VIEW_FIELDS assignment; REFERENCES.md:10, 43-46]` |
 | 60 | gh binds `--head` as a GraphQL variable: gh 2.101.0's `PullRequestList` query embeds `headRefName: $headBranch`. `anchors: row6` | `[verified: ciso-reviewer read-only string search of the gh 2.101.0 binary]` |
 | 61 | `submittedAt` values are fixed-format UTC ISO-8601 strings, so their string order is time order. `anchors: row45` | `[verified: session probe, gh pr list --state all --limit 30 --json reviews; four sampled submittedAt values all had the form YYYY-MM-DDTHH:MM:SSZ]` |
 
@@ -449,7 +462,7 @@ Three sequential `code-writer` dispatches. Each one's output is the next one's i
   - Read the two base names, exiting 2 with the field named when either is absent or empty.
   - Run the walk in `document` mode, before any file write. Exit 2 on a walk failure or on stdout that does not begin with `{`.
   - Stage `base-stack.json`, and place `baseStack` fourth in key order.
-  - In the usage text, add a `baseStack` bullet. Extend the "Any other gh failure aborts" sentence (lines 57-60) with the walk failure and the absent base fields. The budget stays in REFERENCES.md:63-71, its existing home.
+  - In the usage text, add a `baseStack` bullet. Extend the "Any other gh failure aborts" sentence (lines 57-60) with the walk failure and the absent base fields. The budget stays in REFERENCES.md's acquire wall-time bullet, its existing home.
 - `claude/.claude/scripts/review-pr-checkout.sh`.
   - Add the gate after line 262, with `|| exit 2` on the walk, `clear` continuing, a PR number exiting 4 at top level, and any other stdout exiting 2.
   - In the usage text, add the gate to the step list in code order. Recompute the "Worst-case wall time" paragraph: the stack walk adds 120 s, for 495 s and 555 s, and the paragraph states the 45 s headroom. Add exit 4 to the "Exit status" paragraph.
@@ -522,7 +535,7 @@ Three sequential `code-writer` dispatches. Each one's output is the next one's i
     - that on a public repository, fork PRs reusing a branch name can cause the truncated and timeout stops
     - the token classes Verification step 1 covered, and the fail-closed result for a class that cannot read `reviews` (rows 49, 57)
   - Add the `gh pr list` lookup to line 10's fetch list.
-  - In lines 63-71, seven calls and 150 s become up to fifteen calls and 230 s.
+  - In the acquire wall-time bullet, eight calls and 160 s become up to sixteen calls and 240 s, plus up to 45 s of `jq` caps.
 - `docs/scripts.md`.
   - **Acquire entry (line 171):** the `baseStack` field and the new abort causes.
   - **Checkout entry (line 173):** exit 4.
@@ -589,7 +602,8 @@ No end-to-end run against a stack this session creates is planned, because creat
 - **Superseded: a length cap on branch names echoed in stderr.** The implementation caps every echoed branch name at `REVIEW_PR_STACK_TEXT_ECHO_LIMIT` (80 characters), escaped, alongside the document's title and root-branch caps.
 - **A per-suite test that the generated shim compiles and answers.** The double's import runs at the top of every shim, so a broken double fails every case in the suite at once.
 - **`pr list` rows in `test_assert_gh_calls_are_read_only.py`.** The guard's code does not change, and the suites exercise its per-suite `allowed_pr_subcommands` mechanism (row 25).
-- **A wall-time paragraph in acquire's usage text.** REFERENCES.md:63-71 is the home for acquire's budget, and it is updated there.
+- **Naming the PR, the destination branch and the actor in the retarget route.** The fixed text "retarget the PR that targets it" leaves a deep-stack reader to infer which PR, onto which branch, and by whom. A message that interpolates the nearest-root ancestor's number and says "ask its author to retarget it onto the branch it merged into" is a copy follow-up with its own test.
+- **A wall-time paragraph in acquire's usage text.** REFERENCES.md's acquire wall-time bullet is the home for acquire's budget, and it is updated there.
 - **Running the suites under bash 3.2 in CI, or widening `test_no_bash4_constructs.py`'s pattern list.** CI runs only on Ubuntu, and the pattern file sits outside this plan's files. `${x,,}`, `local -n`, and empty-array expansion under `set -u` rest on Verification step 3's macOS runs.
 - **A test tying usage-text wall times to the call-count test.** No usage-text wall time in this repo is test-pinned today.
 - **The `/review-pr` summaries in `docs/skills.md:14` and `docs/skills.md:76`.** They remain accurate.

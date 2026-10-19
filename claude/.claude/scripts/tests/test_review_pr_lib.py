@@ -1088,7 +1088,7 @@ _ROOT_WITHOUT_OPEN_PR_MESSAGE = (
     "of the root branch to open a PR from it into the default branch (a draft is enough), then review that PR. "
     "If you open it yourself, you become its author and your own review reads as self-review-only, and from then "
     "on that PR blocks every PR stacked on the branch until it has a review. If the branch has already merged, "
-    "retarget this PR instead."
+    "retarget the PR that targets it."
 )
 
 
@@ -1402,6 +1402,14 @@ class TestStackLookupVerdictChangesRequested:
 
         assert self._changes_requested(reviews) is True
 
+    def test_two_reviews_with_an_empty_login_are_never_grouped_so_the_change_request_stays_open(self):
+        reviews = [
+            pr_list_review("", "CHANGES_REQUESTED", submitted_at=_EARLIER),
+            pr_list_review("", "APPROVED", submitted_at=_LATER),
+        ]
+
+        assert self._changes_requested(reviews) is True
+
     def test_a_lone_dismissed_change_request_is_not_open(self):
         assert self._changes_requested([pr_list_review("bob", "DISMISSED", submitted_at=_EARLIER)]) is False
 
@@ -1459,6 +1467,26 @@ class TestStackLookupVerdictSelfReview:
         entry = _entry_with_reviews([pr_list_review(None, "COMMENTED")], author_login="alice")
 
         assert [review["byPrAuthor"] for review in entry["reviews"]] == [False]
+
+    def test_a_review_author_with_an_empty_login_is_not_by_a_pr_author_with_an_empty_login(self):
+        entry = _entry_with_reviews([pr_list_review("", "COMMENTED")], author_login="")
+
+        assert entry["author"] is None
+        assert [review["byPrAuthor"] for review in entry["reviews"]] == [False]
+        assert entry["selfReviewOnly"] is False
+
+    def test_a_sole_submitted_review_with_no_author_counts_as_a_review_and_raises_no_concern(self):
+        status, output = _verdict([_stack_item(reviews=[pr_list_review(None, "COMMENTED")])])
+        _, reviewed, _, entry = _split_ancestor_verdict(output)
+
+        document = _document([entry])
+
+        assert status == 0
+        assert reviewed is True
+        assert entry["reviewed"] is True
+        assert entry["selfReviewOnly"] is False
+        assert document["concerns"] == []
+        assert document["recommendedChoice"] == "proceed"
 
     def test_a_pr_with_no_author_has_no_review_by_its_author(self):
         entry = _entry_with_reviews([pr_list_review("alice", "COMMENTED")], author_login=None)
@@ -1535,6 +1563,30 @@ class TestStackLookupVerdictDisplay:
 
         assert self._title_of(hostile_title) == r'"say \"hi\" \\ back\tTAB\nNL \u202e rlo \u200b zw"'
 
+    def test_raw_utf_8_text_gives_the_same_entry_as_its_ascii_escaped_form(self):
+        limit = _review_pr_lib_integer("REVIEW_PR_STACK_TEXT_ECHO_LIMIT")
+        astral_character = "\U0001f600"
+        hostile_login = "mal\u202e\u2028\"x\u65e5\u672c"
+        non_ascii_head = "feat/\u65e5\u672c"
+        non_ascii_base = "base/caf\u00e9\U0001f600"
+        item = _stack_item(
+            head=non_ascii_head,
+            base=non_ascii_base,
+            title="a" * (limit - 1) + astral_character + "tail",
+            author_login=hostile_login,
+            reviews=[pr_list_review(hostile_login, "COMMENTED")],
+        )
+
+        escaped_status, escaped_output = _verdict(json.dumps([item]), non_ascii_head)
+        raw_status, raw_output = _verdict(json.dumps([item], ensure_ascii=False), non_ascii_head)
+
+        assert (escaped_status, raw_status) == (0, 0)
+        assert raw_output == escaped_output
+        assert _split_ancestor_verdict(raw_output)[2] == non_ascii_base
+        assert _split_ancestor_verdict(raw_output)[3]["title"] == (
+            '"' + "a" * (limit - 1) + r"\ud83d\ude00" + '...[truncated]"'
+        )
+
     def test_hostile_pr_and_review_author_logins_print_as_ascii_json_strings(self):
         hostile_login = "mal\u202e\u2028\"x"
         item = _stack_item(author_login=hostile_login, reviews=[pr_list_review(hostile_login, "COMMENTED")])
@@ -1577,6 +1629,15 @@ class TestStackLookupVerdictDisplay:
         shown = _entry_with_reviews([review])["reviews"][0]
 
         assert (shown["association"], shown["state"]) == (expected_association, expected_state)
+
+    @pytest.mark.parametrize(
+        "association",
+        ["COLLABORATOR", "CONTRIBUTOR", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "MANNEQUIN", "MEMBER", "NONE", "OWNER"],
+    )
+    def test_every_value_of_githubs_comment_author_association_enum_is_shown_as_itself(self, association):
+        review = pr_list_review("bob", "COMMENTED", association=association)
+
+        assert _entry_with_reviews([review])["reviews"][0]["association"] == association
 
     def test_a_non_string_association_is_shown_as_null(self):
         review = pr_list_review("bob", "COMMENTED")
@@ -1810,6 +1871,12 @@ class TestStackDocumentShape:
         assert [concern["code"] for concern in document["concerns"]] == ["root-without-open-pr"]
         assert document["choices"] == ["proceed", "stop"]
         assert document["recommendedChoice"] == "stop"
+        assert document["concerns"][0]["message"] == _ROOT_WITHOUT_OPEN_PR_MESSAGE
+
+    def test_the_root_without_open_pr_message_is_identical_with_ancestors_present(self):
+        document = _document([_document_entry(11), _document_entry(12)], root_branch="release/long-lived")
+
+        assert [concern["message"] for concern in document["concerns"]] == [_ROOT_WITHOUT_OPEN_PR_MESSAGE]
 
     def test_lowest_unreviewed_is_the_one_nearest_the_root_when_two_are_not_adjacent(self):
         entries = [

@@ -120,6 +120,7 @@ REVIEW_PR_STACK_MAX_LOOKUPS=8
 
 # The most items one lookup reads; a full page reads as undecided, since a same-repository PR past it would go unseen.
 # 100 is GitHub's GraphQL page maximum, and a larger `gh pr list --limit` makes gh paginate, which would break the single-request cap below.
+# The rate-limit point cost of one lookup is unmeasured and presumed fine at operator scale; re-evaluate it if REVIEW_PR_STACK_MAX_LOOKUPS is raised.
 # shellcheck disable=SC2034 # read by the scripts that source this file; export would leak it into every child process
 REVIEW_PR_STACK_LOOKUP_LIMIT=100
 
@@ -238,7 +239,7 @@ _REVIEW_PR_STACK_DOCUMENT_JQ_PROGRAM='
     | [
         (if $root_is_default then empty else {
           code: "root-without-open-pr",
-          message: "The root branch has no open pull request, so it may never have been reviewed. To review it, ask the owner of the root branch to open a PR from it into the default branch (a draft is enough), then review that PR. If you open it yourself, you become its author and your own review reads as self-review-only, and from then on that PR blocks every PR stacked on the branch until it has a review. If the branch has already merged, retarget this PR instead."
+          message: "The root branch has no open pull request, so it may never have been reviewed. To review it, ask the owner of the root branch to open a PR from it into the default branch (a draft is enough), then review that PR. If you open it yourself, you become its author and your own review reads as self-review-only, and from then on that PR blocks every PR stacked on the branch until it has a review. If the branch has already merged, retarget the PR that targets it."
         } end),
         ($ancestors | map(select(.changesRequested)) | if length == 0 then empty else {
           code: "changes-requested",

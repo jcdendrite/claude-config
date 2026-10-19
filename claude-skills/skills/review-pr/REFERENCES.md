@@ -184,8 +184,10 @@ reading, computed by the script.
   review's login and association, and the engineer judges them.
 - **The recommendation depends on whether the stack is blocked.**
   - With an unreviewed ancestor, the script recommends `stop` when the root has
-    no open PR or an ancestor below the lowest unreviewed PR has a concern, and
-    `review-lowest` otherwise. A concern on an ancestor between that PR and the
+    no open PR or an ancestor nearer the root than the lowest unreviewed PR has a
+    concern, and `review-lowest` otherwise. `review-lowest` always restarts on
+    the lowest unreviewed PR, whose own question recommends `stop` on that
+    concern. A concern on an ancestor between that PR and the
     target is shown but does not change the recommendation, because reviewing
     the lowest PR is still the next step.
   - With every ancestor reviewed, any concern on any ancestor, or on the root,
@@ -194,8 +196,10 @@ reading, computed by the script.
   titles and logins print as ASCII-only JSON strings, so a CJK or accented title
   shows as escapes. The PR number stays readable beside it.
 - **In self-authored mode, the operator's own comment review on their own
-  ancestor raises `self-review-only`,** so the script recommends `stop`. This is
-  a known limit, deferred to a follow-up. `proceed` stays offered.
+  ancestor raises `self-review-only`,** so the script recommends `stop`. The
+  script compares logins only, so a review the operator posted through this
+  skill's self-authored route counts as the author's own. Re-reviewing that PR
+  cannot clear the concern. `proceed` stays offered.
 - **Stale reviews draw no concern.** A review left at an older commit still
   counts, and so does an ancestor whose only reviews are `DISMISSED`.
 
@@ -211,6 +215,12 @@ reading, computed by the script.
 - **Outsiders can cause the `truncated` and timeout stops on a public
   repository.** Fork PRs that reuse a branch name fill the lookup page, and a
   large reply can run into the `gh` or `jq` cap. Both fail closed.
+- **A fork-PR author chooses the base branch that starts the walk.** These
+  stops are therefore reachable by that author: `ambiguous`, a cycle, the depth
+  cap, and exit 4 for an unreviewed same-repository PR. The refusal comes
+  before the file listing, so on the diff-only path no execution-surface audit
+  ran. A refused fork PR carries no audit result, so the refusal is not
+  evidence about its file list.
 
 **Stack shapes.**
 
@@ -224,8 +234,11 @@ reading, computed by the script.
   using it would cost another call per level.
 - **A root with no open PR clears the gate but recommends `stop`.** The
   `root-without-open-pr` concern names the two routes: have the root branch's
-  owner open a (draft) PR from it, then review that PR, or retarget this PR if
-  the branch already merged.
+  owner open a (draft) PR from it, then review that PR, or retarget the PR that
+  targets the root branch if the branch already merged. `baseStack.ancestors`
+  is ordered root-nearest first, so the first ancestor listed is the PR that
+  targets the root branch, and the target itself is that PR when there are no
+  ancestors.
 - **A long-lived branch heading an open promotion PR is an ancestor like any
   other.** While that PR has no submitted review, every PR into the branch exits
   4. One submitted review on it clears every PR into the branch for as long as
