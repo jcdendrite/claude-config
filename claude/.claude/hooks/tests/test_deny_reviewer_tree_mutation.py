@@ -462,14 +462,23 @@ class TestBashInPlaceEditFamily:
         assert run_hook(HOOK, bash_input("ruff check --fix src/x.py", agent_type="staff-backend-engineer")) == "deny"
 
     def test_reviewer_ruff_check_without_fix_allowed(self):
-        # ruff check is read-only linting — stays allowed; only ruff format
-        # and any --fix* form deny.
+        # Plain `ruff check` is read-only linting and stays allowed.
         assert run_hook(HOOK, bash_input("ruff check src/x.py", agent_type="staff-backend-engineer")) == "allow"
 
     def test_reviewer_ruff_check_fix_only_denied(self):
-        # --fix-only writes to disk exactly like --fix; the --fix token-prefix
-        # match catches it (it did not under the old literal --fix check).
+        # --fix-only writes to disk exactly like --fix.
         assert run_hook(HOOK, bash_input("ruff check --fix-only src/x.py", agent_type="staff-backend-engineer")) == "deny"
+
+    @pytest.mark.parametrize(
+        "add_noqa_flag",
+        ["--add-noqa", "--add-noqa=legacy", '--add-noqa="legacy code"'],
+    )
+    def test_reviewer_ruff_check_add_noqa_denied(self, add_noqa_flag):
+        # --add-noqa inserts `# noqa` comments into the linted files in place.
+        # The `=REASON` cases use newer ruff syntax that the repo's pinned
+        # ruff rejects, and the gate must still deny them.
+        command = f"ruff check {add_noqa_flag} src/x.py"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-backend-engineer")) == "deny"
 
     def test_reviewer_ruff_bare_fix_denied(self):
         # Bare `ruff --fix` (no explicit check subcommand) writes; gating on
@@ -503,12 +512,10 @@ class TestBashInPlaceEditFamily:
     def test_reviewer_quoted_argument_without_dash_i_allowed(self):
         # GH-783: confirms COMMAND_UNQUOTED doesn't affect fragment splitting
         # for a benign quoted argument with no token-boundary interaction.
-        # Not an over-strip false-positive guard: _lib_strip_shell_quotes
-        # only deletes quote/backslash characters, so it can't merge, split,
-        # or relocate a token boundary, and this hook's -i gate is an
-        # exact-token-prefix match -- there is no constructible near-boundary
-        # input for this hook that a broken over-strip implementation could
-        # flip from allow to deny.
+        # Not an over-strip false-positive guard.
+        # The quote strip ignores shell word grouping, so a quoted or escaped space can expose a -i token.
+        # For example, `sed s/a/b/ "my -i file.txt"` denies, and that over-deny fails closed.
+        # Backslash-newline continuations are covered by TestBackslashNewlineContinuation.
         assert run_hook(HOOK, bash_input('sed s/a/b/ "x.txt"', agent_type="staff-sdet")) == "allow"
 
     def test_command_unquoted_sed_absent_from_path_denied(self, tmp_path):
@@ -879,6 +886,10 @@ class TestCommandWordResolution:
             "echo x | scripts/venv-run.sh ruff format x.py",
             # A mutating flag on a tool the wrapper otherwise allows.
             "scripts/venv-run.sh ruff check --fix x.py",
+            # --add-noqa writes `# noqa` comments in place, so the wrapper does not hide it.
+            "scripts/venv-run.sh ruff check --add-noqa x.py",
+            # The bare wrapper spelling, with no directory prefix.
+            "venv-run.sh ruff format x.py",
             # The wrapper-name match is case-insensitive, like _lib_fragment_invokes_tool.
             "scripts/VENV-RUN.SH ruff format x.py",
             # Deny twin of the documented shellcheck pipeline allow case below.
@@ -1046,6 +1057,46 @@ class TestChainOperators:
 
     def test_reviewer_empty_bash_command_allowed(self):
         assert run_hook(HOOK, bash_input("", agent_type="staff-sdet")) == "allow"
+
+
+class TestBackslashNewlineContinuation:
+    """A tool word, write flag, or write target split across a backslash-newline continuation is still caught."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ruff check \\\n  --add-noqa src/x.py",
+            "ruff check \\\n  --fix src/x.py",
+            "sed \\\n-i s/a/b/ src/x.py",
+            "eslint \\\n--fix src/x.js",
+            "scripts/venv-run.sh ruff check \\\n  --fix x.py",
+            # The join deletes each pair instead of replacing it with a space, so a tool word split mid-word still matches.
+            "ru\\\nff check --fix x.py",
+            # Every continuation in the command is joined, not only the first.
+            "ruff check \\\n  --select E \\\n  --fix x.py",
+        ],
+    )
+    def test_reviewer_write_flag_after_backslash_newline_denied(self, command):
+        # A tool word or write flag split across a continuation still runs as
+        # one command, because the shell deletes the backslash-newline pair.
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-backend-engineer")) == "deny"
+
+    def test_reviewer_read_only_ruff_after_backslash_newline_allowed(self):
+        command = "ruff check \\\n  src/x.py"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-backend-engineer")) == "allow"
+
+    def test_reviewer_escaped_backslash_line_end_does_not_hide_next_line_denied(self):
+        # The quote strip turns the escaped `\\` at the line end into a lone `\`.
+        # Joining alone would fuse `x` onto `ruff`, so only the unjoined copy
+        # still sees the `ruff check --fix` line.
+        command = "echo x\\\\\nruff check --fix x.py"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-backend-engineer")) == "deny"
+
+    def test_reviewer_write_target_traversal_after_backslash_newline_denied(self):
+        # The unjoined first line's target `/tmp/\` passes the /tmp exemption,
+        # so only the joined copy exposes the traversal.
+        command = "echo x > /tmp/\\\n../etc/passwd"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "deny"
 
 
 class TestAgentTypeMatchSemantics:

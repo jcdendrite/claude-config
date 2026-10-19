@@ -776,9 +776,13 @@ to hold PII/PHI or live credentials:
     tokenizer — pre-stripping there would misread a multi-word `-m`
     message as a bare pathspec and widen the scan to `git diff HEAD` on
     an ordinary commit.
-  - None of the five closes a multi-character ANSI-C escape or a
-    backslash-newline line continuation in a gated word — same boundary,
-    same reasoning, inherited rather than re-derived.
+  - None of the five closes a multi-character ANSI-C escape in a gated word.
+    All but `deny-reviewer-tree-mutation.sh` also leave a backslash-newline
+    line continuation open — same boundary, same reasoning, inherited rather
+    than re-derived.
+  - `deny-reviewer-tree-mutation.sh` also scans a copy with every
+    backslash-newline pair deleted, so it closes a continuation in a gated
+    word, such as `ruff check \` then `--fix`.
 - `deny-private-project-refs.sh`'s `SCAN_TARGET_BOTH` scans the raw+stripped
   union of `$SCAN_TARGET` across all three of its scan tiers (tracker-ID,
   structural, blocklist):

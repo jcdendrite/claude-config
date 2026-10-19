@@ -50,12 +50,13 @@
 #     constantly, so only the `-i` form denies.
 #   - eslint: writes only with `--fix`; without it, only reports — a reviewer
 #     legitimately lints, so only `--fix` denies.
-#   - ruff: `ruff format` denies unconditionally (any invocation, like the
-#     pure-formatter tier above). Otherwise ruff denies whenever a --fix /
-#     --fix-only token is present (both write to disk), independent of a
-#     literal `check` subcommand token — so `ruff check --fix`, `ruff check
-#     --fix-only`, and bare `ruff --fix` are all caught; `ruff check` alone
-#     stays allowed as read-only linting.
+#   - ruff: `ruff format` denies on any invocation, like the pure-formatter
+#     tier above.
+#     Any invocation carrying --fix, --fix-only or --add-noqa denies, since
+#     each writes to disk.
+#     --add-noqa also denies in its `--add-noqa=REASON` form.
+#     The flag alone decides, so bare `ruff --fix` denies with no `check` word.
+#     `ruff check` alone stays allowed as read-only linting.
 #
 # worktree-ensure.sh is denied by command word.
 # require-worktree-for-git-writes.sh's main-tree deny message advertises it.
@@ -68,6 +69,9 @@
 #     interpreter write such as `python3 -c`, a tool's own output flag) is
 #     not inspected.
 #     GH-1103 tracks the structural fix for this closed enumeration.
+#   - Plain `ruff check` writes to disk when the target repo's ruff config
+#     sets `fix = true`, or when the command passes `--config fix=true`.
+#     This gap is accepted permanently.
 #   - GH-751 is only partly closed: _fragment_raw_write_targets below
 #     catches a `cp`/`mv`/`tee`/`>`/`>>` write target only when it is the
 #     fragment's sole or first command; a target behind a bare `&`
@@ -145,6 +149,10 @@
 #     command name reached only through a nested shell boundary this scan
 #     never executes (`bash -c "git checkout"`) is still undecidable — same
 #     indirection class as the alias/wrapper gap above.
+#   - A gated word, write flag, or write target split across a
+#     backslash-newline continuation is caught, because the Bash arm also
+#     scans a copy of the stripped text with every backslash-newline pair
+#     deleted.
 #   - macOS `/tmp` is a symlink to `/private/tmp`. If a future harness build
 #     resolves `file_path` to its real path before invoking this hook, a
 #     legitimate reviewer write under `/tmp/...` would miss the literal
@@ -203,11 +211,12 @@ _lib_is_review_only_agent "$AGENT_TYPE" || exit 0
 
 SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. Treat a hook denial as final. Use Read, Grep, or Glob for a read the hook misjudges. Do not retry any other denied action through a script, another command form, or another tool. Confirm a claim by reading and tracing the code before running anything. Scratch work belongs only in a fresh directory you created under /tmp, holding only files you create there. Spell a /tmp path out literally, because this hook matches write targets as written. Never overwrite or replace an existing path, even one you created; write a new file under a new name instead. A write through a symlink or hard link changes the linked file, wherever it lives, so a /tmp path can still change a file outside /tmp. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
 
-# Local to this hook, not _lib.sh: this -i-prefix matcher is the only
+# Local to this hook, not _lib.sh: this prefix matcher is the only
 # in-place-edit-family word matcher without a second caller elsewhere.
 
 # True iff $1 contains a whitespace-delimited token STARTING with $2 — for
-# flags whose value is attached with no separator (sed/perl's -i[SUFFIX]).
+# flags whose value is attached with no separator (sed/perl's -i[SUFFIX],
+# ruff's --add-noqa=REASON).
 _fragment_has_token_prefix() {
   local fragment="$1" prefix="$2"
   [[ "$fragment" =~ (^|[[:space:]])${prefix} ]]
@@ -460,7 +469,21 @@ case "$TOOL_NAME" in
       exit 0
     fi
 
-    FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
+    # The shell deletes a backslash-newline pair, so the joined copy is what
+    # runs, and a write flag continued onto the next line belongs to its tool.
+    # The unjoined copy stays because the quote strip turns an escaped `\\` at
+    # a line end into a lone `\`, which joining would wrongly fuse with the
+    # next line.
+    # The fragment loop only denies, so scanning both copies can only add
+    # denials.
+    BACKSLASH_NEWLINE=$'\\\n'
+    COMMAND_UNQUOTED_JOINED=${COMMAND_UNQUOTED//"$BACKSLASH_NEWLINE"/}
+    FRAGMENT_SCAN_TEXT="$COMMAND_UNQUOTED"
+    if [ "$COMMAND_UNQUOTED_JOINED" != "$COMMAND_UNQUOTED" ]; then
+      FRAGMENT_SCAN_TEXT="$COMMAND_UNQUOTED"$'\n'"$COMMAND_UNQUOTED_JOINED"
+    fi
+
+    FRAGMENTS=$(_lib_split_fragments "$FRAGMENT_SCAN_TEXT")
     FRAGMENTS_SPLIT_EXIT=$?
     if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
       emit_deny "could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
@@ -525,18 +548,19 @@ case "$TOOL_NAME" in
       # without --fix, `sed`/`perl` without -i) are ordinary review actions a
       # reviewer legitimately runs, so only the mutating flag/subcommand denies.
       if _lib_fragment_invokes_tool "$fragment" ruff; then
-        # Deny `ruff format` (any invocation) and any ruff invocation carrying
-        # a --fix or --fix-only token (both write to disk). Matched as exact
-        # tokens, NOT a --fix* prefix, so the read-only `--fixable` selector
-        # (`ruff check --fixable RULE`, which filters fixable rules without
-        # writing) is not false-denied — that would contradict keeping linter
-        # reads available. Gated on the flag, NOT on a literal `check` token,
-        # so `ruff check --fix-only` and bare `ruff --fix` (implicit-check
-        # form) are both caught; `ruff check` alone stays allowed.
+        # Deny `ruff format` and any invocation carrying a write flag.
+        # --fix and --fix-only rewrite files, and --add-noqa inserts `# noqa`
+        # comments.
+        # --fix and --fix-only match as exact tokens, so `--fixable` stays
+        # allowed.
+        # --add-noqa matches as a token prefix, so `--add-noqa=REASON` denies
+        # too.
+        # No `check` token is required, so bare `ruff --fix` denies.
         if _lib_fragment_has_token "$fragment" format \
           || _lib_fragment_has_token "$fragment" --fix \
-          || _lib_fragment_has_token "$fragment" --fix-only; then
-          emit_deny "'ruff format' / 'ruff --fix' rewrites files in place. $SANCTIONED_ALTERNATIVE"
+          || _lib_fragment_has_token "$fragment" --fix-only \
+          || _fragment_has_token_prefix "$fragment" --add-noqa; then
+          emit_deny "'ruff format' / 'ruff --fix' / 'ruff --add-noqa' rewrites files in place. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
       fi
