@@ -153,6 +153,13 @@
 #     backslash-newline continuation is caught, because the Bash arm also
 #     scans a copy of the stripped text with every backslash-newline pair
 #     deleted.
+#   - The quoted-pattern join `${var//"$BACKSLASH_NEWLINE"/}` is unverified on
+#     bash 3.2, macOS's /bin/bash, and no test exercises that version.
+#     If 3.2 ignores the quoting, the join deletes every newline and keeps each
+#     backslash, so a split across a continuation can go unmatched.
+#     The same failure fuses the lines of any multi-line command, so a
+#     read-only pair such as `git status` then `git diff` would deny.
+#     The unjoined copy is still scanned, so the join never removes a denial.
 #   - macOS `/tmp` is a symlink to `/private/tmp`. If a future harness build
 #     resolves `file_path` to its real path before invoking this hook, a
 #     legitimate reviewer write under `/tmp/...` would miss the literal
@@ -478,12 +485,12 @@ case "$TOOL_NAME" in
     # denials.
     BACKSLASH_NEWLINE=$'\\\n'
     COMMAND_UNQUOTED_JOINED=${COMMAND_UNQUOTED//"$BACKSLASH_NEWLINE"/}
-    FRAGMENT_SCAN_TEXT="$COMMAND_UNQUOTED"
+    FRAGMENT_SCAN_UNQUOTED="$COMMAND_UNQUOTED"
     if [ "$COMMAND_UNQUOTED_JOINED" != "$COMMAND_UNQUOTED" ]; then
-      FRAGMENT_SCAN_TEXT="$COMMAND_UNQUOTED"$'\n'"$COMMAND_UNQUOTED_JOINED"
+      FRAGMENT_SCAN_UNQUOTED="$COMMAND_UNQUOTED"$'\n'"$COMMAND_UNQUOTED_JOINED"
     fi
 
-    FRAGMENTS=$(_lib_split_fragments "$FRAGMENT_SCAN_TEXT")
+    FRAGMENTS=$(_lib_split_fragments "$FRAGMENT_SCAN_UNQUOTED")
     FRAGMENTS_SPLIT_EXIT=$?
     if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
       emit_deny "could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."

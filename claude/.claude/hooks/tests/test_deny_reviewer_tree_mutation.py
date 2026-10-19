@@ -1085,6 +1085,12 @@ class TestBackslashNewlineContinuation:
         command = "ruff check \\\n  src/x.py"
         assert run_hook(HOOK, bash_input(command, agent_type="staff-backend-engineer")) == "allow"
 
+    def test_reviewer_plain_newline_between_read_only_commands_allowed(self):
+        # A plain newline separates two commands, so the join must leave it in place
+        # rather than fuse them into the non-read-only subcommand git statusgit.
+        command = "git status\ngit diff"
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-backend-engineer")) == "allow"
+
     def test_reviewer_escaped_backslash_line_end_does_not_hide_next_line_denied(self):
         # The quote strip turns the escaped `\\` at the line end into a lone `\`.
         # Joining alone would fuse `x` onto `ruff`, so only the unjoined copy
