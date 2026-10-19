@@ -70,25 +70,25 @@
 # Paired glob site: the continuity-path case glob below is copied verbatim
 # from the `case "$FILE_PATH" in` arm of consume-durable-continuity-file-on-read.sh.
 #
-# Known gaps: a session whose .cwd has drifted out of the worktree where the
-# work lives, writing a file with no usable --cwd, announces a command without
-# that worktree's --cwd, matching a resume launched from the wrong directory.
-# A config dir or
-# FILE_PATH containing a space produces no announcement at all. A worktree
-# path containing a space instead drops both --cwd and the /resume-context
-# form, falling back to the bare `resume-context $FILE_PATH` form. The
-# continuity file's own §7/§7.5 text still carries the correct command either
-# way. Resolving the
-# bare `resume-context` name requires ~/.local/bin on PATH. install.sh
-# manages this for bash/zsh; README documents the manual fish step. A
-# same-character-set English directive -- a handoff/brief filename, or the
-# file's own --cwd directory, spelled as an instruction using only letters,
-# digits, and the allowed punctuation -- still passes the allowlist and is
-# echoed verbatim into additionalContext. This is a known, accepted residual,
-# not a bug.
-# The file's own --cwd is compared raw, with no canonicalization (symlinks and
-# `.` and `..` components), so a non-canonical spelling of this worktree gets the
-# shell-only announce (its reason names that spelling) while /resume-context loads it.
+# Known gaps:
+#   - A session whose .cwd has drifted out of the worktree where the work
+#     lives, writing a file with no usable --cwd, announces a command without
+#     that worktree's --cwd, matching a resume launched from the wrong directory.
+#   - A config dir or FILE_PATH containing a space produces no announcement at all.
+#   - A worktree path containing a space instead drops both --cwd and the
+#     /resume-context form, falling back to the bare `resume-context $FILE_PATH`
+#     form. The continuity file's own §7/§7.5 text still carries the correct
+#     command either way.
+#   - Resolving the bare `resume-context` name requires ~/.local/bin on PATH.
+#     install.sh manages this for bash/zsh; README documents the manual fish step.
+#   - A same-character-set English directive -- a handoff/brief filename, or the
+#     file's own --cwd directory, spelled as an instruction using only letters,
+#     digits, and the allowed punctuation -- still passes the allowlist and is
+#     echoed verbatim into additionalContext. This is a known, accepted residual,
+#     not a bug.
+#   - The file's own --cwd is compared raw, with no canonicalization (symlinks and
+#     `.` and `..` components), so a non-canonical spelling of this worktree gets the
+#     shell-only announce (its reason names that spelling) while /resume-context loads it.
 #
 # Defense-in-depth: filters tool_name and file_path itself; does not rely
 # solely on the settings.json matcher condition.

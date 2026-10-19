@@ -1056,6 +1056,45 @@ class TestConsume:
         assert outcome.first("LOAD") == str(good_copy)
         assert not pending.exists()
 
+    def test_a_mode_field_with_a_trailing_acl_marker_still_counts_as_owner_only(
+        self, sandbox: _Sandbox, tmp_path: Path
+    ) -> None:
+        """Twin of the `group-and-world-readable` deny row: a 0600 file whose `ls -ld` mode field ends in `.`
+        (the SELinux marker; `+` for an ACL) loads."""
+        sandbox.write_pending("mine", sandbox.worktree_a)
+        ls_mode_call_log = tmp_path / "ls-mode-calls"
+        shim_bin = tmp_path / "marker-ls-bin"
+        _write_path_shim(
+            shim_bin,
+            "ls",
+            'case "$1" in\n'
+            "  -ld) printf x >> \"$LS_MODE_CALL_LOG\"; \"$REAL_LS\" \"$@\" | sed '1s/^[^ ]*/&./'; exit \"${PIPESTATUS[0]}\" ;;\n"
+            "esac\n"
+            'exec "$REAL_LS" "$@"',
+        )
+
+        outcome = sandbox.run(
+            "mine",
+            cwd=sandbox.worktree_a,
+            env_extra={
+                "PATH": f"{shim_bin}:{os.environ['PATH']}",
+                "REAL_LS": shutil.which("ls") or "ls",
+                "LS_MODE_CALL_LOG": str(ls_mode_call_log),
+            },
+        )
+
+        assert ls_mode_call_log.read_text() == "x", "the owner-only check should have called `ls -ld` exactly once"
+        assert outcome.has("LOAD")
+
+    def test_a_slash_terminated_temp_dir_root_loads_through_the_real_consumer(self, sandbox: _Sandbox) -> None:
+        sandbox.write_pending("mine", sandbox.worktree_a)
+
+        outcome = sandbox.run(
+            "mine", cwd=sandbox.worktree_a, env_extra={"RESUME_CONTEXT_TMPDIR": f"{sandbox.tmpdir_root}/"}
+        )
+
+        assert outcome.has("LOAD")
+
     @pytest.mark.parametrize("printed_separator", ["/", "//"], ids=["single-slash", "double-slash"])
     def test_a_trailing_slash_temp_dir_root_still_matches_a_destination_printed_with_either_separator(
         self, sandbox: _Sandbox, printed_separator: str

@@ -4,12 +4,6 @@ shapes that handoff/SKILL.md §7 and brief/SKILL.md §7.5 prescribe.
 The templates are read at test time, so a reword of either section that changes what the
 parser answers fails here. test_lib.py's TestLibContinuityFileResumeCwd copies hand-written
 shapes and cannot see that drift.
-
-A bare command followed by the template's own explanatory `--cwd` paragraph parses to
-"unknown". That is the fail-closed residual the plan accepts (".claude/plans/
-same-session-handoff-resume.md", FYI residuals: any `--cwd` text in a main-checkout file
-reads "unknown" and gets the shell route instead of a load), so the test pins it as a
-decision, not as a defect.
 """
 from __future__ import annotations
 
@@ -92,8 +86,9 @@ class TestResumeCommandTemplateContract:
     def test_bare_command_followed_by_the_explanatory_cwd_paragraph_is_unknown(
         self, skill_path: Path, heading_pattern: str, tmp_path: Path
     ) -> None:
-        """The paragraph holds `--cwd` text but no own command carries a `--cwd`, so the file
-        cannot be proven to name no worktree. See the module docstring for the accepted residual."""
+        """The paragraph holds `--cwd` text but no own command carries a `--cwd`, so the parser
+        cannot prove the file names no worktree. It fails closed to `unknown`, which gets the
+        shell route, and this test pins that intended result."""
         shapes = _PrescribedShapes(_section_body(skill_path, heading_pattern))
         assert "--cwd" in shapes.explanatory_paragraph, "template no longer explains `--cwd`; this pin is stale"
         continuity_file = write_continuity_body(

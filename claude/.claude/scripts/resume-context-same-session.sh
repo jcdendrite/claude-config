@@ -271,6 +271,7 @@ load_file() {
   # A rewrite of the pending path between the parse and this move loads bytes the verdict never saw.
   # On a temp root (RESUME_CONTEXT_TMPDIR or TMPDIR) that another uid can write without the sticky bit, that uid can swap the destination before the model's Read.
   # Every resume-context.sh move has the same residual, and it is accepted.
+  # The consume has no time cap, as in the shell resume-context, so a hung config-dir filesystem holds the call until the Bash tool's timeout and can leave the file pending or moved.
   dest=$(RESUME_CONTEXT_EXACT_SOURCE=1 "$CONSUMER" --consume-only "$file") || consume_status=$?
   if [ "$consume_status" -eq 0 ] && is_usable_destination "$dest" "$tmpdir_root"; then
     printf 'LOAD: %s\n' "$dest"

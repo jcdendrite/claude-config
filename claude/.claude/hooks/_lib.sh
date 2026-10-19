@@ -4690,7 +4690,8 @@ _lib_linked_worktree_root() {
 #     `--cwd` text but the tail has no own command carrying one, or FILE cannot
 #     be read or searched.
 # An own command without --cwd does not override an own command with one. A
-# line ending in a backslash joins the next one; a trailing CR is ignored.
+# line ending in a backslash joins the next non-empty line, so a blank line does not end
+# the command as it would in a shell; a trailing CR is ignored.
 # Only lines containing `resume-context` within the last
 # _LIB_RESUME_CWD_TAIL_BYTES of FILE are tokenized, so tokenizing is bounded.
 # The whole-file `--cwd` search is linear in the file's size.
