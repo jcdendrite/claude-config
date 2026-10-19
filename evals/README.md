@@ -477,6 +477,12 @@ after that sample completes, so the batch can overshoot it by up to
 `(MAX_ARM_MISMATCH_RETRIES + 1) * budget_cap_usd` before the check blocks
 the next sample from starting.
 
+On an UNCALLABLE verdict, `run_recall_gate` runs one extra batch of
+`UNCALLABLE_K_INCREMENT` additional samples per case per model and
+re-evaluates the gate. `--max-k-raises` caps how many times this can
+happen (default: `DEFAULT_MAX_K_RAISES`); pass `0` to disable it. That
+extra batch still counts against `--cumulative-stop-usd`.
+
 Tests: `evals/test_measure_explore_recall.py`, fixture-based, no live
 sessions.
 
