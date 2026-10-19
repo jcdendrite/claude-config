@@ -317,7 +317,7 @@ This plan keeps the name *item 6* for that rule, although it no longer sits in t
 - *The parser procedure actually followed.* `derive`'s parser was tuned against `golden.tsv`, then against successive held-out draws, then against a full blind re-read, with a fix after each. Every parser-tuning input became tuning data once its fix landed, so no accuracy figure from the study is a held-out figure. The halt rule above was not followed as written: the session replaced its fresh-draw procedure with hand-checks of parser changes. That this waives the halt rule, and what the architect's path comprised, is the session's reading; row 113 quotes the engineer's replies on it. Procedure counts are not study figures.
 - *One observation held for GH-1213.* It carries no rate and no cause. It is held in the work dir and outside this plan until the engineer says to send it. Sending it is a public write of its own: any figure in it needs its own row-27 authorization, the engineer approves the exact text in session, and `denylist-check` runs over that text first (Verification 8's rule applies by analogy). If it is sent, it must name row 20's production-logic definition and the guard-surface exclusions, not a path class.
 - *Retention.* The work dir holds a snapshot of the corpus. On this path the purge is asked about only after Phase 2a merges and the last PR-body `denylist-check` has run, and only with the engineer's confirmation (step 10's `purge` procedure). An unsent held observation goes with the work dir. A later re-measure takes a fresh `freeze`.
-- *Revisit trigger.* Re-measure after GH-1213 ships, on the cumulative passes that stay dirty only on prose-only or FYI rows.
+- *Revisit trigger.* Re-measure after the GH-1213 pilot, which merged default-off, is adopted as the default, on the cumulative passes that stay dirty only on prose-only or FYI rows.
 
 **Phase 2a: `code-review` criteria (one `code-writer` dispatch, after the revision).**
 - Add item 6 to `code-review/SKILL.md` § "Finding disposition" after L399's smell test, which makes it the section's last content. It sits outside the closed DEFER list (row 13), inside a `DISPOSITION_RULE:code-review-measured-non-blocking` region whose start anchor is inline on its first line and whose end anchor is inline on its last line (row 17). It states, in this order:
@@ -651,6 +651,7 @@ Bounding the number of rounds stays with GH-1213 and the Cap.
 111. [unverified: the session's reading of `gh pr list` and of rows 67 and G7, not engineer text] The trim merged (#1217), so it does not gate a no-pick revision. A no-pick revision edits no `SKILL.md`.
 112. [unverified: the session's relay of the `plan-architect` and Fable consults, not the engineer's words] Both recommended adopting no rule after `stage1`, and Fable also proposed the rounds measure.
 113. [engineer-verified: "Option 2 definitely"] Asked how to proceed after the re-reads of unseen records, the engineer typed this answer. The tag covers only the choice of that option. [unverified: the session's reading of the option] It meant fixing the parser's false bars and fix/no-fix readings and re-running; it did not mention the halt rule. [engineer-verified: "I think follow the architect's path. Just to be safe get an adversarial check from fable"] The quote covers choosing the architect's path. [unverified: the session's relay of the architect] That path was hand-checks of parser changes in place of a fresh held-out draw. [unverified: the session's record of decision-07, not engineer text in this plan] Earlier the engineer did not select the option to narrow the halt rule. [unverified: the session's own message] The session told the engineer this reversed that earlier choice and invited correction; the session recorded no objection. [engineer-verified: "Yes I agree. Accept all of Fable's advice"] This reply covers accepting that advice, and the content of the advice, which included recording the halt-rule waiver, is [unverified: the session's relay of Fable]. The engineer never said "waive the halt rule" in those words; that the halt rule was waived is [unverified: the session's reading].
+114. [engineer-verified: "Yes, keep new slug (Recommended)"] The engineer selected this label. The tag covers only that selection. [unverified: the session's framing of the question, not the engineer's words] The question named `cumulative-review-exempts-no-finding-class.md` as the no-pick decision file in place of the `measured-non-blocking-keep.md` slug that Critical files named. [verified: `.claude/rules/design-decisions.md` "Filename grammar"] A slug never changes after its file merges. [unverified: the session's reading, not engineer text] With no pick, no behavior changes, so the no-pick CHANGELOG entry sits under `### Added`; row 94's reason for `### Changed` does not reach that path.
 
 **Mechanisms.**
 - M1. Disposition rows as the unit. anchors: row5, row9, row23.
@@ -702,7 +703,7 @@ Bounding the number of rounds stays with GH-1213 and the Cap.
   - (b) A pin on the opening phrase only: it catches deletion but not a narrowed or widened list.
   - (c) Pinning the three bullets whole: it would freeze unrelated wording in them, which the exact-sentence form leaves free.
   - Standing behavioral eval cases: rejected, because synthetic disposition fixtures have measured as non-discriminating (row 56).
-- M8. A new decision file plus supersession lines added in place, and a `CHANGELOG.md` entry. anchors: row18, row19, row94, row99.
+- M8. A new decision file plus supersession lines added in place, and a `CHANGELOG.md` entry. anchors: row18, row19, row94, row99, row114.
   - (a) PR body only: readers lose it after merge.
   - (b) A line in `REFERENCES.md`: that file is used only when editing, and it cannot mark §16 as superseded.
   - `.claude/rules/design-decisions.md`'s supersession rule requires the in-place line where a statement is overturned, and only there.
@@ -944,7 +945,7 @@ Bounding the number of rounds stays with GH-1213 and the Cap.
 
 **Pre-Phase-2a revision** edits only `.claude/plans/clean-pass-criteria.md`, through `plan-it` Step 5 and `/plan-review`.
 
-**Phase 2a** is one `code-writer` dispatch. Item 6's text must match its pin byte for byte, and the contradiction-route edit and the bullet edits must match their own pins, so splitting the dispatch would make two agents restate the same rule text. Its verification commands are Verification Phase 2a items 2 and 3. It edits nothing under `claude/` (row 69).
+**Phase 2a** is one `code-writer` dispatch. Item 6's text must match its pin byte for byte, and the contradiction-route edit and the bullet edits must match their own pins, so splitting the dispatch would make two agents restate the same rule text. Its verification commands are Verification Phase 2a items 2 and 3. It edits nothing under `claude/` (row 69). On the no-pick path only the no-pick decision file and the `CHANGELOG.md` entry below change.
 - `claude-skills/skills/code-review/SKILL.md`:
   - item 6's region after L399, as one paragraph or two (Phase 2a line budget);
   - the in-place edits to L378's two settled-site sentences, to L390, L391 and L394 (current line numbers);
@@ -956,7 +957,8 @@ Bounding the number of rounds stays with GH-1213 and the Cap.
   - a sibling parametrized list of exact-sentence assertions for the edited L390, L391 and L394 sentences, modeled on `_REVIEW_LEDGER_PROSE_CONTROLS` (L5875) and its test (L6035-6039), reusing `_heading_section_text`.
 
   All other pins stay as they are.
-- `docs/design-decisions/measured-non-blocking-keep.md` (new). It cites item 6 rather than restating it, and it records:
+- `docs/design-decisions/cumulative-review-exempts-no-finding-class.md` (new), the decision file when no rule is picked (row 114). It states that no miss rate was measured, gives the corpus freeze date, and names the rules considered by citing the Candidate rules heading. It states no rate, count, threshold or size. The committed plan holds the definitions and the method.
+- `docs/design-decisions/measured-non-blocking-keep.md` (new), the decision file when a rule is picked. It cites item 6 rather than restating it, and it records:
   - the picks, and which way the results pointed. It states no figure, no T and no branch name unless row 27 authorizes it.
   - how the change squares with §16 and `round3-consult-verdict-routing.md`, linked by slug. It also says that `comment-discipline-reviewer-deferred-to-cumulative-pass.md`'s cumulative pass is now the only pass whose prose findings a rule can keep. That decision states nothing item 6 overturns, so it gets no supersession line.
   - the gate chain a clean cumulative pass feeds and that gate's tier, with the engineer's acceptance of each pick by its recorded label, re-confirmed at the revision (row 79). R1 is marked as resting on a reviewer label alone.
@@ -976,10 +978,9 @@ Bounding the number of rounds stays with GH-1213 and the Cap.
     - `author_outcome.py`'s PASS share, through the existing SETTLED counter. `docs/transcript-analysis.md`'s note describes only the one-time step at the first SETTLED row, and item-6 keeps add a later rise it does not describe (row 64).
     - reviewer-yield's cited-path edit rate behind `reviewer_gap_pp` (row 81). The engineer adds a cost-ledger `--note` in the week the first merged PR carrying an item-6 keep lands, and the leak-signal query is what finds that PR (row 97).
   - this plan's Out of scope follow-ups, as the levers that would cut how many findings are generated;
-  - if no rule is picked: the rules considered, stating that no miss rate was measured, and the corpus freeze date. The committed plan holds the definitions and the method.
 - `docs/design-decisions/finding-disposition-by-review-surface.md`: a partial-supersession line under its provenance line.
 - `docs/design-decisions/round3-consult-verdict-routing.md`: a partial-supersession line under its provenance line, for any pick (row 18).
-- `CHANGELOG.md`: one entry under `## [Unreleased]` › `### Changed` (rows 94 and 99). For a pick, it says a cumulative pass can now be clean with item-6 keeps, which show in the PR body's Settled table with `plan-architect` and the rule token. Only GH-1213's architect dispatch applies item 6, a restriction the skill states and no check enforces. With no pick, it names the decision file only. It cites the decision file and states no figure.
+- `CHANGELOG.md`: one entry under `## [Unreleased]` › `### Changed` for a pick, or `### Added` with no pick (rows 94, 99 and 114). For a pick, it says a cumulative pass can now be clean with item-6 keeps, which show in the PR body's Settled table with `plan-architect` and the rule token. Only GH-1213's architect dispatch applies item 6, a restriction the skill states and no check enforces. With no pick, it states that no finding class became non-blocking and cites the no-pick decision file. It states no figure.
 
 **Phase 2b** has no files here, because it moved to GH-1213.
 
