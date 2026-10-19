@@ -760,7 +760,7 @@ class TestDenyGateLabelConformance:
 # ---------------------------------------------------------------------------
 
 
-# Bootstrap source-failure wording, one row per gate hook — the same
+# Bootstrap source-failure wording, for a fixed subset of gate hooks — the same
 # "could not source _lib.sh" idiom TestDenialHookLabelEnumeration's fixture
 # rows above already carry for the hooks whose labels are _DENIAL_HOOK_LABELS
 # members, plus the hooks whose labels (for example architect-consult,
@@ -810,7 +810,7 @@ _LIB_SOURCE_FIXTURES: tuple[tuple[str, str], ...] = (
      "Blocked by invisible-commit-content gate: could not source _lib.sh."),
 )
 
-# Tool-input parse-failure wording, one row per gate hook — each
+# Tool-input parse-failure wording, for a fixed subset of gate hooks — each
 # hook's own _lib_parse_tool_input_or_deny argument.
 _INPUT_PARSE_FIXTURES: tuple[tuple[str, str], ...] = (
     ("block-gh-pr-merge.sh", "Blocked: could not parse tool-input JSON for gh-pr-merge gate."),
