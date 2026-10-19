@@ -184,9 +184,10 @@ next genuine growth.
 **What holds these gates.** No hook or marker enforces the `AskUserQuestion`
 pauses in Steps 3, 4, and 6. Quarantine bounds a skipped deletion pause.
 `deny-private-project-refs.sh` scans a filing or a migrate commit for tracker
-IDs and structural shapes when the session started, and still runs, inside the `claude-config` checkout, but
-not for project names (absent the opt-in blocklist), internal tool names, or
-structural fingerprints. A migrate into any other repo has no scan.
+IDs and structural shapes inside the `claude-config` checkout or a repo that
+commits `.claude/private-projects-optin`, but not for project names (absent the
+opt-in blocklist), internal tool names, or structural fingerprints. A migrate
+into any other repo has no scan.
 
 ## Closing note
 
