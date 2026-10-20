@@ -29,13 +29,15 @@ SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
 def _run(
     *args: str, cwd: Path | None = None, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess:
+    # PYTHONPATH dropped: these tests claim the package resolves through sys.path[0] alone.
+    subprocess_env = {name: value for name, value in (os.environ if env is None else env).items() if name != "PYTHONPATH"}
     return subprocess.run(
         [sys.executable] + list(args),
         cwd=cwd or SCRIPTS_DIR,
         capture_output=True,
         text=True,
         timeout=30,
-        env=env,
+        env=subprocess_env,
     )
 
 
@@ -214,9 +216,8 @@ def _isolated_config_env(config_dir: Path, tmp_path: Path) -> dict[str, str]:
 
 
 def test_transcript_analysis_cost_subprocess_finds_seeded_session(tmp_path):
-    """Proves `from transcript_analysis import cost` resolves under a real
-    subprocess -- no in-process `_mod.cmd_cost(...)` test can see a broken
-    re-export in the real shim entrypoint."""
+    """Proves, in a fresh interpreter, that cost.py resolves through sys.path[0] alone and that real argparse
+    dispatches cost to cmd_cost through set_defaults(func=...)."""
     config_dir = _seed_priced_account(tmp_path)
 
     result = _run("transcript-analysis.py", "cost", env=_isolated_config_env(config_dir, tmp_path))
@@ -357,9 +358,8 @@ def _seed_reviewer_dispatch_account(tmp_path: Path) -> Path:
 
 
 def test_transcript_analysis_reviewer_yield_subprocess_finds_seeded_dispatch(tmp_path):
-    """Proves `from transcript_analysis import reviewer_yield` resolves under a
-    real subprocess -- no in-process `_mod.cmd_reviewer_yield(...)` test can see
-    a broken re-export in the real shim entrypoint."""
+    """Proves, in a fresh interpreter, that reviewer_yield.py resolves through sys.path[0] alone and that real
+    argparse dispatches reviewer-yield to cmd_reviewer_yield through set_defaults(func=...)."""
     config_dir = _seed_reviewer_dispatch_account(tmp_path)
 
     result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "reviewer-yield")
@@ -397,9 +397,8 @@ def _seed_review_trace_skill_account(tmp_path: Path) -> Path:
 
 
 def test_transcript_analysis_review_trace_subprocess_finds_seeded_skill_invocation(tmp_path):
-    """Proves `from transcript_analysis import review_trace` resolves under a
-    real subprocess -- no in-process `_mod.cmd_review_trace(...)` test can see
-    a broken re-export in the real shim entrypoint."""
+    """Proves, in a fresh interpreter, that review_trace.py resolves through sys.path[0] alone and that real
+    argparse dispatches review-trace to cmd_review_trace through set_defaults(func=...)."""
     config_dir = _seed_review_trace_skill_account(tmp_path)
 
     result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "review-trace")
@@ -431,10 +430,9 @@ def _seed_review_trace_denial_account(tmp_path: Path) -> Path:
 
 
 def test_transcript_analysis_review_trace_deny_summary_subprocess_finds_seeded_denial(tmp_path):
-    """Proves `from transcript_analysis import denials` (via review_trace's own
-    --deny-summary accumulation) resolves under a real subprocess -- no
-    in-process `_mod.cmd_review_trace(...)` test can see a broken re-export in
-    the real shim entrypoint."""
+    """Proves, in a fresh interpreter, that review_trace.py and its denials.py import resolve through sys.path[0]
+    alone and that real argparse dispatches review-trace --deny-summary to cmd_review_trace through
+    set_defaults(func=...)."""
     config_dir = _seed_review_trace_denial_account(tmp_path)
 
     result = _run(
@@ -443,6 +441,64 @@ def test_transcript_analysis_review_trace_deny_summary_subprocess_finds_seeded_d
 
     assert result.returncode == 0, result.stderr
     assert "code-review" in result.stdout
+
+
+def test_transcript_analysis_skill_invocation_help_exits_zero():
+    """Proves, in a fresh interpreter, that build_parser calls the skill-invocation registrar."""
+    result = _run("transcript-analysis.py", "skill-invocation", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--include-subagents" in result.stdout
+
+
+def test_transcript_analysis_skill_pair_help_exits_zero():
+    """Proves, in a fresh interpreter, that build_parser calls the skill-pair registrar."""
+    result = _run("transcript-analysis.py", "skill-pair", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "LEADER" in result.stdout
+
+
+def test_transcript_analysis_judgment_pair_help_exits_zero():
+    """Proves, in a fresh interpreter, that build_parser calls the judgment-pair registrar."""
+    result = _run("transcript-analysis.py", "judgment-pair", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--truncate-chars" in result.stdout
+
+
+def test_transcript_analysis_skill_invocation_subprocess_finds_seeded_skill_invocation(tmp_path):
+    """Proves, in a fresh interpreter, that real argparse dispatches skill-invocation to cmd_skill_invocation
+    through set_defaults(func=...) and that the command reads the seeded corpus."""
+    config_dir = _seed_review_trace_skill_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "skill-invocation", "--projects", "*")
+
+    assert result.returncode == 0, result.stderr
+    # The user-slash column exists only in skill-invocation output, so a sibling command bound here fails.
+    cols = _table_cols(result.stdout, header_contains="user-slash", row_contains="code-review", row_startswith=True)
+    assert (int(cols["top-level"]), int(cols["routed"]), int(cols["user-slash"])) == (1, 0, 0), cols
+
+
+def test_transcript_analysis_skill_pair_subprocess_finds_seeded_leader_week(tmp_path):
+    """Proves, in a fresh interpreter, that real argparse dispatches skill-pair to cmd_skill_pair through
+    set_defaults(func=...) and that the command buckets the seeded leader invocation into its ISO week."""
+    config_dir = _seed_review_trace_skill_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "skill-pair", "code-review", "plan-review")
+
+    assert result.returncode == 0, result.stderr
+    # The seed's 2026-05-19T10:00:00Z leader invocation falls in ISO week 2026-W21.
+    cols = _table_cols(result.stdout, header_contains="Lead", row_contains="2026-W21", row_startswith=True)
+    assert int(cols["Lead"]) == 1, cols
+
+
+def test_transcript_analysis_judgment_pair_subprocess_finds_seeded_review_skill(tmp_path):
+    """Proves, in a fresh interpreter, that real argparse dispatches judgment-pair to cmd_judgment_pair through
+    set_defaults(func=...) and that the command pairs the seeded review-skill invocation."""
+    config_dir = _seed_review_trace_skill_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "judgment-pair")
+
+    assert result.returncode == 0, result.stderr
+    assert "Skill: code-review" in result.stdout
 
 
 def test_transcript_analysis_read_scope_help_exits_zero():
@@ -487,9 +543,8 @@ def _seed_read_scope_account(tmp_path: Path) -> Path:
 
 
 def test_transcript_analysis_read_scope_subprocess_finds_seeded_read(tmp_path):
-    """Proves `from transcript_analysis.read_scope import cmd_read_scope`
-    resolves under a real subprocess -- no in-process `_mod.cmd_read_scope(...)`
-    test can see a broken re-export in the real shim entrypoint. Uses
+    """Proves, in a fresh interpreter, that read_scope.py resolves through sys.path[0] alone and that real
+    argparse dispatches read-scope to cmd_read_scope through set_defaults(func=...). Uses
     _isolated_config_env rather than a top-level --config-dir: read-scope is a
     member of _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR."""
     config_dir = _seed_read_scope_account(tmp_path)
@@ -536,9 +591,8 @@ def _seed_cache_rebuild_account(tmp_path: Path) -> Path:
 
 
 def test_transcript_analysis_cache_rebuild_subprocess_finds_seeded_call(tmp_path):
-    """Proves `from transcript_analysis.cache_rebuild import cmd_cache_rebuild`
-    resolves under a real subprocess -- no in-process `_mod.cmd_cache_rebuild(...)`
-    test can see a broken re-export in the real shim entrypoint. Uses
+    """Proves, in a fresh interpreter, that cache_rebuild.py resolves through sys.path[0] alone and that real
+    argparse dispatches cache-rebuild to cmd_cache_rebuild through set_defaults(func=...). Uses
     _isolated_config_env rather than a top-level --config-dir: cache-rebuild is a
     member of _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR."""
     config_dir = _seed_cache_rebuild_account(tmp_path)
@@ -582,9 +636,8 @@ def _seed_audit_routing_account(tmp_path: Path) -> Path:
 
 
 def test_transcript_analysis_audit_routing_subprocess_finds_seeded_turn(tmp_path):
-    """Proves `from transcript_analysis.audit_routing import cmd_audit_routing`
-    resolves under a real subprocess -- no in-process `_mod.cmd_audit_routing(...)`
-    test can see a broken re-export in the real shim entrypoint."""
+    """Proves, in a fresh interpreter, that audit_routing.py resolves through sys.path[0] alone and that real
+    argparse dispatches audit-routing to cmd_audit_routing through set_defaults(func=...)."""
     config_dir = _seed_audit_routing_account(tmp_path)
 
     result = _run("transcript-analysis.py", "--config-dir", str(config_dir), "audit-routing")
@@ -653,9 +706,8 @@ def test_transcript_analysis_cost_ledger_help_exits_zero():
 
 
 def test_transcript_analysis_cost_ledger_subprocess_finds_seeded_session(tmp_path):
-    """Proves `from transcript_analysis.cost_ledger import cmd_cost_ledger`
-    resolves under a real subprocess -- no in-process `_mod.cmd_cost_ledger(...)`
-    test can see a broken re-export in the real shim entrypoint. Read mode needs
+    """Proves, in a fresh interpreter, that cost_ledger.py resolves through sys.path[0] alone and that real
+    argparse dispatches cost-ledger to cmd_cost_ledger through set_defaults(func=...). Read mode needs
     no sentinel and no wall clock, so a ledger file holding only the canonical
     header and separator (no data rows) is enough to exercise it."""
     config_dir = _seed_priced_account(tmp_path)
@@ -683,9 +735,8 @@ def test_transcript_analysis_workstream_cost_help_exits_zero():
 
 
 def test_transcript_analysis_workstream_cost_subprocess_finds_seeded_session(tmp_path):
-    """Proves `from transcript_analysis.workstream_cost import cmd_workstream_cost`
-    resolves under a real subprocess -- no in-process `_mod.cmd_workstream_cost(...)`
-    test can see a broken re-export in the real shim entrypoint."""
+    """Proves, in a fresh interpreter, that workstream_cost.py resolves through sys.path[0] alone and that real
+    argparse dispatches workstream-cost to cmd_workstream_cost through set_defaults(func=...)."""
     config_dir = _seed_priced_account(tmp_path)
 
     result = _run("transcript-analysis.py", "workstream-cost", env=_isolated_config_env(config_dir, tmp_path))
@@ -701,9 +752,8 @@ def test_transcript_analysis_subagents_help_exits_zero():
 
 
 def test_transcript_analysis_subagents_subprocess_finds_seeded_sidechain(tmp_path):
-    """Proves `from transcript_analysis.subagents import cmd_subagents` resolves
-    under a real subprocess -- no in-process `_mod.cmd_subagents(...)` test can
-    see a broken re-export in the real shim entrypoint. "sidechain" appearing in
+    """Proves, in a fresh interpreter, that subagents.py resolves through sys.path[0] alone and that real
+    argparse dispatches subagents to cmd_subagents through set_defaults(func=...). "sidechain" appearing in
     stdout proves the paired subagent file was read, not only the main session."""
     config_dir = _seed_reviewer_dispatch_account(tmp_path)
 
@@ -720,9 +770,8 @@ def test_transcript_analysis_subagent_mix_help_exits_zero():
 
 
 def test_transcript_analysis_subagent_mix_subprocess_finds_seeded_dispatch(tmp_path):
-    """Proves `from transcript_analysis.subagent_mix import cmd_subagent_mix`
-    resolves under a real subprocess -- no in-process `_mod.cmd_subagent_mix(...)`
-    test can see a broken re-export in the real shim entrypoint. The per-agent-type
+    """Proves, in a fresh interpreter, that subagent_mix.py resolves through sys.path[0] alone and that real
+    argparse dispatches subagent-mix to cmd_subagent_mix through set_defaults(func=...). The per-agent-type
     row's Runs and Observed cells prove the paired subagent file was read: the
     main-thread spawn table alone carries only the spawn count."""
     config_dir = _seed_reviewer_dispatch_account(tmp_path)
@@ -745,9 +794,8 @@ def test_transcript_analysis_cost_counts_help_exits_zero():
 
 
 def test_transcript_analysis_cost_counts_subprocess_refuses_without_branches(tmp_path):
-    """Proves `from transcript_analysis.subagent_mix import cmd_cost_counts`
-    resolves under a real subprocess -- no in-process `_mod.cmd_cost_counts(...)`
-    test can see a broken re-export in the real shim entrypoint. The refusal path
+    """Proves, in a fresh interpreter, that subagent_mix.py resolves through sys.path[0] alone and that real
+    argparse dispatches cost-counts to cmd_cost_counts through set_defaults(func=...). The refusal path
     is the bootstrap proof: cost-counts' success path needs `--this-repo`, which
     resolves project slugs from `git worktree list` in the working directory, so
     a seeded success run would depend on the checkout this suite happens to run in."""
@@ -757,3 +805,78 @@ def test_transcript_analysis_cost_counts_subprocess_refuses_without_branches(tmp
 
     assert result.returncode == 2
     assert "--branches is required" in result.stderr
+
+
+def test_transcript_analysis_rearm_backtest_help_exits_zero():
+    result = _run("transcript-analysis.py", "rearm-backtest", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--spacings" in result.stdout
+
+
+def test_transcript_analysis_rearm_backtest_subprocess_finds_seeded_session(tmp_path):
+    """Proves, in a fresh interpreter, that rearm_backtest.py resolves through sys.path[0] alone and
+    that real argparse dispatches rearm-backtest to cmd_rearm_backtest through set_defaults(func=...).
+    "Sessions in scope: 1" shows the seeded session was read and priced."""
+    config_dir = _seed_priced_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "rearm-backtest", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "Sessions in scope: 1" in result.stdout
+
+
+def test_transcript_analysis_spend_over_threshold_help_exits_zero():
+    result = _run("transcript-analysis.py", "spend-over-threshold", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--since DATE" in result.stdout
+
+
+def test_transcript_analysis_spend_over_threshold_subprocess_finds_seeded_session(tmp_path):
+    """Proves, in a fresh interpreter, that spend_over_threshold.py resolves through sys.path[0] alone
+    and that real argparse dispatches spend-over-threshold to cmd_spend_over_threshold through
+    set_defaults(func=...). The 2026-W21 row shows the seeded session was read and priced."""
+    config_dir = _seed_priced_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "spend-over-threshold", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "2026-W21" in result.stdout
+
+
+def test_transcript_analysis_plan_boundary_help_exits_zero():
+    result = _run("transcript-analysis.py", "plan-boundary", "--help")
+    assert result.returncode == 0, result.stderr
+    # Only plan-boundary's --no-redact help says "no plan text". Whitespace is
+    # collapsed because argparse wraps help by terminal width.
+    assert "no plan text" in " ".join(result.stdout.split())
+
+
+def test_transcript_analysis_plan_boundary_subprocess_finds_seeded_session(tmp_path):
+    """Proves, in a fresh interpreter, that plan_boundary.py resolves through sys.path[0] alone and
+    that real argparse dispatches plan-boundary to cmd_plan_boundary through set_defaults(func=...).
+    "Sessions scanned: 1" shows the seeded session was read."""
+    config_dir = _seed_priced_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "plan-boundary", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "Sessions scanned: 1" in result.stdout
+
+
+def test_transcript_analysis_handoff_signal_response_help_exits_zero():
+    result = _run("transcript-analysis.py", "handoff-signal-response", "--help")
+    assert result.returncode == 0, result.stderr
+    assert "--context-turns N" in result.stdout
+
+
+def test_transcript_analysis_handoff_signal_response_subprocess_dispatches_on_seeded_account(tmp_path):
+    """Proves, in a fresh interpreter, that handoff_signal_response.py resolves through sys.path[0] alone
+    and that real argparse dispatches handoff-signal-response to cmd_handoff_signal_response through
+    set_defaults(func=...). The seeded session carries no signal, so the zero-signal heading claims only
+    resolution and dispatch."""
+    config_dir = _seed_priced_account(tmp_path)
+
+    result = _run("transcript-analysis.py", "handoff-signal-response", env=_isolated_config_env(config_dir, tmp_path))
+
+    assert result.returncode == 0, result.stderr
+    assert "## Handoff signal response (0 signal(s) in scope)" in result.stdout

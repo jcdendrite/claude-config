@@ -19,6 +19,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from helpers import link_bash_into
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "render-settings.sh"
 _SETTINGS_BASE_JSON = Path(__file__).resolve().parents[2] / "settings.base.json"
@@ -215,8 +216,9 @@ class TestJqCannotRun:
         self, tmp_path: Path
     ) -> None:
         config_dir = self._make_configs(tmp_path)
-        empty_bin = tmp_path / "empty-bin"
+        empty_bin = tmp_path / "bash-only-bin"
         empty_bin.mkdir()
+        link_bash_into(empty_bin)
 
         result = _run_script(config_dir=config_dir, extra_env={"PATH": str(empty_bin)})
 

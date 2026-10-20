@@ -1764,7 +1764,8 @@ class TestBuildToolResultTsMap:
 class TestScanReviewerTranscripts:
     """_scan_reviewer_transcripts(records, dispatch_index) ->
     {dispatch_id: _ReviewerTranscriptScan}: the pre-pass behind
-    _reviewer_write_tool_use_ids' edit-index exclusion set."""
+    _reviewer_write_tool_use_ids' edit-index exclusion set. The class also
+    covers the per-file _scan_reviewer_transcript(path) decode contract."""
 
     def test_unreadable_transcript_scans_to_empty_code_write_ids(self, tmp_path):
         """A reviewer dispatch resolvable through dispatch_index whose own
@@ -1781,6 +1782,59 @@ class TestScanReviewerTranscripts:
         assert scans["a1"].read_error is True
         assert scans["a1"].code_write_tool_use_ids == frozenset()
         assert _mod.reviewer_yield._reviewer_write_tool_use_ids(scans) == frozenset()
+
+    def test_non_utf8_line_is_skipped_and_the_scan_continues_past_it(self, tmp_path):
+        """A non-UTF-8 line between two valid assistant records drops only
+        itself: the scan is not a read error, and last_assistant_text is the
+        record after the bad line, proving the walk continued."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        first_record = _asst(
+            "claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "text before the bad line"}],
+        )
+        second_record = _asst(
+            "claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "text after the bad line"}],
+        )
+        transcript_path.write_bytes(
+            json.dumps(first_record).encode("utf-8")
+            + b"\n\xff\xfe\x00\x01\n"
+            + json.dumps(second_record).encode("utf-8")
+            + b"\n"
+        )
+        scan = _mod.reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.read_error is False
+        assert scan.last_assistant_text == "text after the bad line"
+
+    def test_transcript_of_only_non_utf8_bytes_scans_as_readable_and_empty(self, tmp_path):
+        """A readable file with no decodable line is an empty scan, not a
+        read error, so it is not counted in the "failed to read" line."""
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        transcript_path.write_bytes(b"\xff\xfe\x00\x01")
+        scan = _mod.reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan == _mod.reviewer_yield._ReviewerTranscriptScan("", [], [], "", False, frozenset())
+
+    def test_record_with_a_truncated_multibyte_character_inside_its_text_is_dropped_whole(self, tmp_path):
+        """A final record whose JSON string holds a truncated multibyte
+        character is dropped rather than kept with U+FFFD, so a lossy local
+        decode (errors="replace") fails this test."""
+        truncated_text_sentinel = "TRUNCATED_MULTIBYTE_SENTINEL"
+        transcript_path = tmp_path / "agent-a1.jsonl"
+        intact_record = _asst(
+            "claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "text before the corrupted record"}],
+        )
+        corrupted_record = _asst(
+            "claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": truncated_text_sentinel}],
+        )
+        transcript_path.write_bytes(
+            json.dumps(intact_record).encode("utf-8")
+            + b"\n"
+            + json.dumps(corrupted_record).encode("utf-8").replace(
+                truncated_text_sentinel.encode("utf-8"), b"caf\xc3",
+            )
+            + b"\n"
+        )
+        scan = _mod.reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan.read_error is False
+        assert scan.last_assistant_text == "text before the corrupted record"
 
 
 class TestIndexSessionEdits:

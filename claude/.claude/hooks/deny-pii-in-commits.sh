@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, irreversible
 # Gate: deny `git commit` when the commit's content — added lines of the
@@ -11,8 +11,8 @@
 #
 # Fires on every repo (no origin scoping) — a PII commit gate is only
 # useful if it covers the repos that actually hold PII. This is the
-# deliberate opposite of deny-private-project-refs.sh, which is scoped to
-# the claude-config repo alone.
+# deliberate opposite of deny-private-project-refs.sh, whose content scans run
+# only in claude-config and in repos that commit .claude/private-projects-optin.
 #
 # Dispatch: wired on the PreToolUse `Bash` matcher with NO `if`-condition,
 # so it runs for every Bash tool call and filters internally. A narrowing
@@ -72,6 +72,10 @@
 # by literal spelling — the hook cannot statically verify what git will read.
 # A message-source path that is not a readable regular file is rejected too.
 # Both apply only to the spellings the extractor recognises (see Known gaps).
+# A command is rejected as well when `_lib_command_words` returns nonzero,
+# because the -F path cannot be located. The conditions are in that
+# function's header in _lib.sh. The fallback tokenizer is uncapped without
+# timeout or gtimeout; see split-command-words.py's docstring.
 #
 # Self-exclusion: claude/.claude/hooks/tests/** is always excluded from
 # the diff scan (this hook's own synthetic-PII test fixtures live there).
@@ -91,12 +95,12 @@
 #   party even if the developer named the file after an identifier.
 #
 # Known gaps (documented, not closed):
-#  - The pseudo-file guard matches literal spellings only (`-`, `/dev/stdin`,
-#    `/dev/fd/*`, `/proc/*/fd/*`), then requires a regular readable file.
-#    Alias spellings such as `//dev/fd/N` or `/dev/./fd/N` are not recognised
-#    and can evade the scan: under /bin/bash 3.2 the `-f` test passes for them
-#    inside the reading loop. Accepted debt shared with
-#    deny-escaped-backticks-in-pr-body.sh and deny-private-project-refs.sh.
+#  - The pseudo-file guard's alias-spelling gap and its unconfirmed over-64-KiB
+#    path-list residual are in `_lib_is_pseudo_file_path`'s header in _lib.sh.
+#  - The `xargs -n1` fast path's miss is listed in `_lib_command_words`'s
+#    header in _lib.sh.
+#    The fallback tokenizer's residual over-denies and misses are listed in
+#    split-command-words.py's module docstring.
 #  - A capped `cat` of a message-source file that ends in any nonzero status
 #    denies; _lib_status_consistent_with_cap_kill only picks whether the
 #    message says "killed".
@@ -175,9 +179,8 @@
 #    captured stdout pipe keeps the hook open past the cap, because the cap
 #    bounds only the direct child.
 #    The hook then stays open until the harness's own hook timeout.
-#    A PreToolUse command hook that times out does not block the tool call,
-#    so the commit then proceeds unscanned.
-#    _lib_capped_for's header in _lib.sh quotes the vendor rule.
+#    Whether that timeout blocks the commit depends on `onFailure`;
+#    _lib_capped_for's header in _lib.sh covers both and quotes the vendor rule.
 #  - The diff calls pass `--no-ext-diff` so a repo-local `diff.external`
 #    driver is not such a descendant.
 #  - A file git classifies as binary yields "Binary files differ" with no
@@ -415,18 +418,6 @@ while IFS=$'\t' read -r config_lineno line; do
 done < <(_lib_config_lines "$PII_PATTERNS_FILE")
 fi
 
-# --- Extract `-F` / `--file` commit-message-source paths -----------------
-# xargs tokenization mirrors deny-private-project-refs.sh: flag-like text
-# inside a quoted value is one token and never matched as a standalone flag.
-extract_commit_message_source_paths() {
-  printf '%s\n' "$1" | xargs -n1 2>/dev/null | awk '
-    BEGIN { cap = 0 }
-    cap { print; cap = 0; next }
-    /^(--file|-F)$/ { cap = 1; next }
-    /^(--file=|-F=)/ { sub(/^[^=]*=/, ""); print }
-  '
-}
-
 # --- Build the scan target -----------------------------------------------
 # Always exclude this hook's own synthetic-PII test fixtures, plus every
 # user-configured `exclude:` glob. `:(top,exclude)` is repo-root-relative.
@@ -502,7 +493,12 @@ if [ "$HEAD_SCAN_NEEDED" -eq 1 ]; then
   fi
 fi
 
-COMMIT_MSG_SOURCES=$(extract_commit_message_source_paths "$COMMAND")
+COMMIT_MSG_SOURCES=$(_lib_git_commit_message_source_paths "$COMMAND")
+COMMIT_MSG_SOURCES_STATUS=$?
+if [ "$COMMIT_MSG_SOURCES_STATUS" -ne 0 ]; then
+  emit_deny "$(_lib_command_words_deny_reason 'git commit' '-F/--file' "$COMMIT_MSG_SOURCES_STATUS")"
+  exit 0
+fi
 if [ -n "$COMMIT_MSG_SOURCES" ]; then
   while IFS= read -r msg_path; do
     [ -z "$msg_path" ] && continue
@@ -565,7 +561,7 @@ luhn_valid() {
 # Prints $1 with each apostrophe-grouped thousands numeral replaced by a space, unless stripping quotes would join its digits to another digit.
 # The substitution runs twice because one global pass skips a numeral whose leading bound character the previous match consumed.
 # This expression must stay backreference-free — sed's runtime here is linear in input only without one.
-# A superlinear runtime here would reopen the fail-open timeout gap this hook's Known-gaps section already accepts as a residual risk.
+# A superlinear runtime here would hold the hook open until the harness timeout, as this hook's Known gaps describe.
 mask_thousands_numerals() {
   local expr=$'s/(^|[^0-9\'"\\$])([\'"\\$]*)[0-9]{1,3}(\'[0-9]{3})+([\'"\\$]*)([^0-9\'"\\$]|$)/\\1\\2 \\4\\5/g'
   printf '%s' "$1" | sed -E -e "$expr" -e "$expr"

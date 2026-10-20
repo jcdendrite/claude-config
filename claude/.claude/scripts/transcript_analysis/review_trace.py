@@ -2,11 +2,11 @@
 only by it -- --deny-summary's grouped denial/friction accumulation and
 report, and the per-session event-timeline detector shared by both.
 
-Imports corpus, denials, render, reviewer_yield, and scope by module
-(attribute access, not by name) -- see scope.py's own top-of-file comment
-for why. Calls reviewer_yield._is_reviewer_subagent_type and
-review_rounds._round_skill_name -- the package's first two imports from one
-command-group module into another.
+Imports corpus, denials, render, review_rounds, reviewer_yield, scope, and
+skill_invocation by module (attribute access, not by name) -- see scope.py's
+own top-of-file comment for why. Calls reviewer_yield._is_reviewer_subagent_type,
+review_rounds._round_skill_name, and skill_invocation._normalize_skill_name,
+each owned by another command-group module.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import argparse
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from transcript_analysis import corpus, denials, render, review_rounds, reviewer_yield, scope
+from transcript_analysis import corpus, denials, render, review_rounds, reviewer_yield, scope, skill_invocation
 
 # Skills counted as review invocations in review-trace.
 REVIEW_TRACE_SKILLS: frozenset[str] = frozenset(
@@ -31,19 +31,6 @@ _ARCHITECT_CONSULT_PLAN_SECTIONS_MODE_LINE = "MODE=plan-sections"
 # Shared by review-trace's two zero-match termini (default timeline and
 # --deny-summary) so both read identically under the scope header.
 _REVIEW_TRACE_NO_SESSIONS_MSG = "No sessions matched in scope."
-
-
-def _normalize_skill_name(raw: str) -> str:
-    """Strip a directory qualifier from a transcript skill name, keeping any
-    plugin:/dir: prefix as a display label.
-
-    Mirrors transcript-analysis.py's own _normalize_skill_name -- re-expressed
-    here since the package may not import back from the shim. Used only for
-    the emitted "skill" event field; REVIEW_TRACE_SKILLS membership and
-    --skill filtering use review_rounds._round_skill_name's fully-bare strip
-    instead.
-    """
-    return raw.rsplit("/", 1)[-1]
 
 
 def _print_deny_summary(
@@ -179,8 +166,12 @@ def _review_trace_session_events(
 
     Signal 1 (skill invocations) detects both invocation shapes: a `Skill`
     tool_use block on an assistant record, and a `/slash`-command
-    <command-name> tag on a user record. This mirrors _round_open_skill's
-    (review_rounds.py) own two-shape detection for review-round-cost.
+    <command-name> tag on a user record. These are the two shapes this
+    mirrors from _round_open_skill (review_rounds.py). review-round-cost also
+    opens a round on a `review-orchestrator` dispatch. review-trace needs no
+    such shape. cmd_review_trace reads every session with
+    include_subagents=True, which merges subagent transcripts, so the records
+    here include the orchestrator's own `Skill` call.
 
     Shared by cmd_review_trace's timeline printer and compute_deny_summary_data
     so the denial/friction detection and dedup rules exist in one place rather
@@ -236,7 +227,10 @@ def _review_trace_session_events(
     # dispatching main-thread record, not its own. Applied before the date
     # filter below, so the branch/model attributed to an event is whatever a
     # prior main-thread record last set, including one outside the
-    # --since/--until window.
+    # --since/--until window. The carried branch then takes the pre-branch step
+    # (scope._attribute_carried_branch) at emission, from a context built over
+    # every record so the window never changes which entry is first.
+    branch_context = scope._session_branch_context(records)
     last_branch = ""
     last_model = ""
     pre_regime_tool_result_count = 0
@@ -263,8 +257,8 @@ def _review_trace_session_events(
         thread = "sidechain" if bool(rec.get("isSidechain")) else "main"
 
         if not bool(rec.get("isSidechain")):
-            b = rec.get("gitBranch") or ""
-            if b:
+            b = scope._branch_tag(rec)
+            if b is not None:
                 last_branch = b
             if rec.get("type") == "assistant":
                 m = (rec.get("message") or {}).get("model") or ""
@@ -293,7 +287,7 @@ def _review_trace_session_events(
                 continue
 
         rec_type = rec.get("type", "")
-        evt_branch = last_branch or "?"
+        evt_branch = scope._attribute_carried_branch(last_branch, rec, branch_context) or "?"
         evt_model = render._fam(last_model) if last_model else "?"
 
         # --- Signals 1 + 3: skill invocations and reviewer-agent spawns ---
@@ -314,7 +308,7 @@ def _review_trace_session_events(
                         continue
                     events.append({
                         "kind": "skill",
-                        "skill": _normalize_skill_name(raw_skill_name),
+                        "skill": skill_invocation._normalize_skill_name(raw_skill_name),
                         "ts": rec_ts_str,
                         "line_no": line_no,
                         "branch": evt_branch,
@@ -351,8 +345,7 @@ def _review_trace_session_events(
             # --- Signal 1 continued: skill invocations, /slash shape ---
             # A /slash-invoked skill injects its body directly with no Skill
             # tool_use block, so it never reaches the assistant branch above.
-            # Mirrors cmd_skill_invocation's own user-record branch
-            # (transcript-analysis.py's own cmd_skill_invocation).
+            # Mirrors skill_invocation.cmd_skill_invocation's user-record branch.
             content_raw = (rec.get("message") or {}).get("content", "")
             content_str = content_raw if isinstance(content_raw, str) else render._content_text(content_raw)
             for m in review_rounds._SLASH_COMMAND_RE.finditer(content_str):
@@ -364,7 +357,7 @@ def _review_trace_session_events(
                     continue
                 events.append({
                     "kind": "skill",
-                    "skill": _normalize_skill_name(raw_skill_name),
+                    "skill": skill_invocation._normalize_skill_name(raw_skill_name),
                     "ts": rec_ts_str,
                     "line_no": line_no,
                     "branch": evt_branch,
@@ -642,7 +635,9 @@ def cmd_review_trace(args: argparse.Namespace) -> None:
     not from the session's first record: each is the last non-empty value
     carried forward up to that point, so a session that moves from one branch
     (or model) to another attributes each event correctly instead of labelling
-    every event with whatever the session started on. An event whose branch or
+    every event with whatever the session started on. A carried default-branch
+    value recorded before the session's first real branch is credited to that
+    branch (scope._attribute_carried_branch). An event whose branch or
     model cannot be resolved renders '?'. --branches filters the emitted event
     list by this per-event value, not by a single session-wide branch. A
     sidechain event's thread field prints as `thread=sidechain` in the

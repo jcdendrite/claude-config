@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, irreversible
 # Gate: denies a Bash `git commit` or `git <merge|rebase|cherry-pick|
@@ -124,9 +124,8 @@
 #  - None of this hook's own forks carries an internal timeout, except
 #    `_lib_mask_shell_quotes`'s own 5s `_lib_capped_for` cap (see `_lib.sh`) — a
 #    wedged or replaced grep/sed/tr/awk/xargs binary is unbounded, so it
-#    just means this gate silently did not run (per the harness's
-#    PreToolUse contract, code.claude.com/docs/en/hooks, fetched
-#    2026-09-01).
+#    holds the call until the harness's hook timeout, whose outcome
+#    `_lib_capped_for`'s header in `_lib.sh` states.
 #  - Hoisting COMMAND_UNQUOTED's computation ahead of the fast-reject
 #    widened this hook's failure blast radius from commit-shaped Bash
 #    calls only to every Bash call in the session on a missing or wedged
@@ -279,7 +278,7 @@ CONCLUDING_FRAGMENT_LABEL=$(_first_concluding_fragment_label "$STRIPPED_FRAGMENT
 # whitespace (`${IFS}`) defeats this regex — see Known gaps below.     #
 # ------------------------------------------------------------------ #
 EXECUTION_WRAPPER_TOKEN_RE='(^|/|[[:space:]])(bash|sh|zsh|ksh|dash)[[:space:]]+-c([[:space:]]|$)|(^|[^A-Za-z0-9_])eval([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])xargs([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])source([^A-Za-z0-9_]|$)|(^|&&?|;|\|\|?)[[:space:]]*\.[[:space:]]+[^[:space:]]|(^|/|[[:space:]])perl[[:space:]]+-e([[:space:]]|$)|(^|/|[[:space:]])(python|python2|python3)[[:space:]]+-c([[:space:]]|$)|(^|/|[[:space:]])ruby[[:space:]]+-e([[:space:]]|$)|(^|/|[[:space:]])node[[:space:]]+-e([[:space:]]|$)'
-printf '%s\n' "$COMMAND" | grep -qE "$EXECUTION_WRAPPER_TOKEN_RE"
+grep -qE "$EXECUTION_WRAPPER_TOKEN_RE" <<< "$COMMAND"
 WRAPPER_TOKEN_EXIT=$?
 if [ "$WRAPPER_TOKEN_EXIT" -eq 0 ]; then
   emit_deny "this Bash call carries both a ${CONCLUDING_FRAGMENT_LABEL} and an execution-wrapper token (bash -c, sh -c, eval, xargs, source/bare '.', perl -e, python -c, ruby -e, node -e, or similar) — content executed inside the wrapper is invisible to this and every other commit gate's git diff --cached snapshot, regardless of quoting or ordering. Staging must run as its own Bash tool call, with the ${CONCLUDING_FRAGMENT_LABEL} as a second, separate call."

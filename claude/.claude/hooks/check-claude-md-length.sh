@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # Gate: block git commit when a staged CLAUDE.md or AGENTS.md grows past its limit.
@@ -44,15 +44,19 @@ set -uo pipefail
 
 DENY_GATE_LABEL="CLAUDE.md length"
 
-# Byte limit: 25,600 bytes = 25 KiB (binary reading), the nearest in-family
-# precedent — MEMORY.md's documented "200 lines or 25KB" threshold
+# Byte limit: 30,720 bytes = 30 KiB (binary reading), a repo-owned ceiling
+# under the 32 KiB Codex project_doc_max_bytes truncation
 # (claude-skills/skills/ai-instruction-and-memory-files/REFERENCES.md's
 # "Cross-vendor size table" section). Applies to every stow consumer's
 # CLAUDE.md/AGENTS.md, the same scope the 200-line check above already has.
+# The 30,720 figure is checked per file and says nothing about a combined
+# AGENTS.md chain (Codex's combined-size behavior is not verified here).
+# A raise past 32,768 bytes needs a new basis, not only a log line below.
 #
 # Dated log of prior values (one line per raise: date, old value, new value,
-# one-line reason) — empty today; append here on every future change.
-GLOBAL_CLAUDE_MD_BYTE_LIMIT=25600
+# one-line reason); append here on every future change.
+# 2026-10-17: 25600 -> 30720; the global CLAUDE.md was already over 25600.
+GLOBAL_CLAUDE_MD_BYTE_LIMIT=30720
 
 # Minimal bootstrap so a failed `source` of _lib.sh below can still deny.
 # Re-pointed at _lib.sh's _lib_emit_deny immediately after a successful
@@ -125,3 +129,5 @@ limit_for() {
 # files in arbitrary subdirectories (e.g. foo/CLAUDE.md) — only root-level
 # and .claude/-scoped files.
 _lib_staged_length_gate "$REPO_ROOT" '^(CLAUDE\.md|AGENTS\.md|(.*/)?\.claude/(CLAUDE|AGENTS)\.md)$' "one or more files grew past the 200-line or ${GLOBAL_CLAUDE_MD_BYTE_LIMIT}-byte limit." "$GLOBAL_CLAUDE_MD_BYTE_LIMIT"
+
+exit 0

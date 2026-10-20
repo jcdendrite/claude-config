@@ -56,6 +56,41 @@ class TestSubagentMixDollars:
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Actual$"] == "$3.00"
 
+    def test_past_rate_expiry_prints_stale_pricing_banner(self, fake_projects, capsys, monkeypatch):
+        """A priced model whose re-verify-by date is already past prints the STALE PRICING banner naming that model."""
+        monkeypatch.setitem(_mod.subagent_mix.pricing._MODEL_RATE_EXPIRES, "claude-sonnet-4-6", date(2000, 1, 1))
+        session_id = "sess-stale"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        assert "STALE PRICING — today is past the re-verify-by date for: claude-sonnet-4-6." in out
+
+    def test_future_rate_expiry_prints_no_stale_pricing_banner(self, fake_projects, capsys, monkeypatch):
+        """A priced model whose re-verify-by date is still ahead leaves the STALE PRICING banner out. The date is
+        pinned far ahead so the outcome never flips on the real expiry date."""
+        monkeypatch.setitem(_mod.subagent_mix.pricing._MODEL_RATE_EXPIRES, "claude-sonnet-4-6", date(2999, 1, 1))
+        session_id = "sess-fresh"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-1", "a1",
+            [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
+            agent_type="staff-sdet",
+        )
+        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
+        assert cols["Actual$"] == "$3.00"  # priced row present, so banner absence is not an empty-corpus artifact
+        assert "STALE PRICING" not in out
+
     def test_reprice_as_delta_arithmetic(self, fake_projects, capsys):
         """The same 1,000,000-input-token dispatch re-priced at
         claude-haiku-4-5-20251001's $1.00/MTok rate: Actual $3.00,
@@ -499,15 +534,17 @@ class TestDispatchUsageSummaryDedupBeforePricing:
 
     def test_file_that_fails_to_open_returns_empty_summary(self, tmp_path, monkeypatch):
         """A file that passes is_file() but raises OSError on open takes the
-        same empty-tuple return as a missing path rather than raising."""
+        same empty-tuple return as a missing path rather than raising. The
+        open happens in corpus._parse_jsonl_records, which maps the OSError
+        to None."""
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, self._two_block_run("claude-sonnet-4-6"))
 
         def _open_failing(*_args, **_kwargs):
             raise PermissionError("denied")
 
-        # Shadows the builtin only inside the module under test.
-        monkeypatch.setattr(_mod.subagent_mix, "open", _open_failing, raising=False)
+        # Shadows the builtin only inside corpus, which opens the transcript.
+        monkeypatch.setattr(_mod.subagent_mix.corpus, "open", _open_failing, raising=False)
         result = _mod.subagent_mix._dispatch_usage_summary(jsonl_path, None, None, None, date(2026, 8, 2))
         assert result == (None, 0.0, {}, None, 0, 0, set())
 
@@ -708,3 +745,52 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         # output), priced in full despite that record's own timestamp
         # falling after until_ts.
         assert actual_dollars == pytest.approx(3.00075)
+
+
+class TestDispatchUsageSummaryUndecodableLines:
+    """_dispatch_usage_summary skips a non-UTF-8 line like a malformed-JSON
+    line instead of aborting, so the valid turns around it are still priced."""
+
+    _two_block_run = TestDispatchUsageSummaryDedupBeforePricing._two_block_run
+
+    def test_non_utf8_line_between_two_runs_prices_the_same_as_without_it(self, tmp_path):
+        """Two distinct-requestId runs around a non-UTF-8 line summarize
+        identically to the same two runs written without it. The dollars
+        also equal 2 x per_dispatch, so two empty summaries cannot satisfy
+        the equality."""
+        first_run = self._two_block_run("claude-sonnet-4-6", request_id="req-1")
+        second_run = self._two_block_run("claude-sonnet-4-6", request_id="req-2")
+        with_bad_line = tmp_path / "with-bad-line.jsonl"
+        with_bad_line.write_bytes(
+            b"".join(json.dumps(rec).encode("utf-8") + b"\n" for rec in first_run)
+            + b"\xff\xfe\x00\x01\n"
+            + b"".join(json.dumps(rec).encode("utf-8") + b"\n" for rec in second_run)
+        )
+        without_bad_line = tmp_path / "without-bad-line.jsonl"
+        _write_jsonl(without_bad_line, first_run + second_run)
+
+        summary_with_bad_line = _mod.subagent_mix._dispatch_usage_summary(
+            with_bad_line, None, None, None, date(2026, 8, 2)
+        )
+        summary_without_bad_line = _mod.subagent_mix._dispatch_usage_summary(
+            without_bad_line, None, None, None, date(2026, 8, 2)
+        )
+
+        assert summary_with_bad_line == summary_without_bad_line
+        # claude-sonnet-4-6: $3.00/MTok input, $15.00/MTok output; each
+        # deduped run prices its last record's usage once.
+        per_dispatch = 1_000_000 / 1_000_000 * 3.00 + 50 / 1_000_000 * 15.00
+        assert summary_with_bad_line[1] == pytest.approx(2 * per_dispatch)
+
+    def test_transcript_of_only_a_non_utf8_line_is_readable_and_empty_not_unreadable(self, tmp_path):
+        """A readable transcript that decodes to nothing returns the
+        "other" bucket with $0.00, not the (None, ...) tuple that marks a
+        dangling dispatch, so the dispatch is not excluded as unreadable."""
+        jsonl_path = tmp_path / "dispatch.jsonl"
+        jsonl_path.write_bytes(b"\xff\xfe\x00\x01\n")
+
+        summary = _mod.subagent_mix._dispatch_usage_summary(
+            jsonl_path, None, None, None, date(2026, 8, 2)
+        )
+
+        assert summary == ("other", 0.0, {}, None, 0, 0, set())

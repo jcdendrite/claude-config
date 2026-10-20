@@ -11,7 +11,6 @@ comment for why.
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 from collections import defaultdict
@@ -61,8 +60,14 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
     name.
     Under --this-repo, every branch prints raw (account-<K>/<branch>) with
     no attestation gate: this function excludes isSidechain records before
-    ever reading gitBranch, unlike cmd_subagents, so a subagent's own
+    attributing a branch, unlike cmd_subagents, so a subagent's own
     gitBranch never reaches this table.
+    A leading default-branch dispatch prints under its session's pre-branch
+    successor.
+    scope._pre_branch_run takes that successor from the first non-candidate
+    main-thread entry of any record type, after skipping HEAD and worktree-agent-*.
+    The raw label is therefore justified for a successor recorded by any
+    main-thread record type.
     A subagent_type prints raw only when it is tracked in this repo's own
     agents/ directory or is a Claude Code built-in
     (_repo_tracked_agent_type_names); every other value stays opaque.
@@ -109,10 +114,7 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         args, "subagent-mix", since_attr="since_date", until_attr="until_date"
     )
 
-    # Read once, matching cost's own "never read the clock inside the
-    # per-record loop" rationale -- kept as a plain wall-clock read here
-    # (rather than cost's separate entry/report split) since no
-    # test asserts on stale-pricing output for subagent-mix.
+    # Read once, never inside the per-record loop, matching cost.
     today = datetime.now(UTC).date()
     total_unpriced_turns = 0
     total_unpriced_tokens = 0
@@ -177,10 +179,11 @@ def cmd_subagent_mix(args: argparse.Namespace) -> None:
         session_data: dict[str, dict] = defaultdict(
             lambda: {"spawns": defaultdict(int), "skills": defaultdict(int)}
         )
+        branch_context = scope._session_branch_context(records)
         for rec in records:
             if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
                 continue
-            branch = rec.get("gitBranch") or ""
+            branch = scope._attributed_branch(rec, branch_context) or ""
             if not branch or (branch_filter and branch not in branch_filter):
                 continue
             if since_ts is not None:
@@ -337,20 +340,20 @@ def _spawn_counts_by_agent_type(
     Main-thread dispatches only: excludes isSidechain records before ever
     reading gitBranch, matching cmd_subagent_mix's own exclusion order. So a
     subagent's own gitBranch never reaches this count. branch_filter matches
-    a record's own literal gitBranch, not review_rounds' carry-forward
-    attribution. For a main-thread record the two agree in every case that
-    matters here, since cost._attributed_branch's own carry-forward logic
-    exists only to resolve a worktree-agent-* sidechain record.
+    a record's attributed branch (scope._attributed_branch), so a session's
+    leading default-branch dispatches count toward the first branch it enters,
+    as in review_rounds' carry-forward attribution.
 
     No disclosure gate applied here -- see _partition_spawn_counts_by_disclosure
     for the allowlist partition this raw count feeds.
     """
     counts: dict[str, int] = defaultdict(int)
     for _jsonl, records in session_iter:
+        branch_context = scope._session_branch_context(records)
         for rec in records:
             if rec.get("type") != "assistant" or bool(rec.get("isSidechain")):
                 continue
-            branch = rec.get("gitBranch") or ""
+            branch = scope._attributed_branch(rec, branch_context) or ""
             if branch_filter is not None and branch not in branch_filter:
                 continue
             for block in (rec.get("message") or {}).get("content") or []:
@@ -473,7 +476,8 @@ def _partition_spawn_counts_by_disclosure(raw_counts: dict[str, int]) -> list[tu
 
 
 _COST_COUNTS_ROUNDS_CAPTION = (
-    "Each invocation of a review skill is one round, whether or not it produced findings."
+    "Each invocation of a review skill, and each main-thread `review-orchestrator` dispatch, is one"
+    " round, whether or not it produced findings."
     " Counts reflect this section's last render; a review round that ran afterward may not"
     " be included yet."
 )
@@ -620,15 +624,8 @@ def _dispatch_usage_summary(
     unpriced_turns = 0
     unpriced_tokens = 0
     stale_models: set[str] = set()
-    records: list[dict] = []
-    try:
-        with open(jsonl_path) as fh:
-            for raw in fh:
-                try:
-                    records.append(json.loads(raw))
-                except json.JSONDecodeError:
-                    continue
-    except OSError:
+    records = corpus._parse_jsonl_records(jsonl_path)
+    if records is None:
         return None, 0.0, {}, None, 0, 0, set()
 
     for rec in pricing.dedup_turns_by_request_id(records):

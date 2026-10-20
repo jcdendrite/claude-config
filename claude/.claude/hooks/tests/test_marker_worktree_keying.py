@@ -31,6 +31,7 @@ from helpers import (
     write_skill_review_marker,
 )
 
+from .conftest import REVIEW_WORKTREE_NAME, _add_worktree_under_worktrees_dir
 from .conftest import _seed_session as _seed_session_at
 
 MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
@@ -244,6 +245,76 @@ class TestMarkerScriptRefusesMainTreeUnderEnforcement:
             f"stderr: {result.stderr!r}"
         )
         assert not (active_dir / "dead-session").exists(), "orphan should have been evicted"
+
+
+class TestMarkerScriptRefusalIgnoresReviewPrCheckouts:
+    """A review-pr checkout is a detached PR tree no session works in, so it
+    must not make the main tree look like the wrong place to write from. A
+    real branch worktree beside it still must."""
+
+    def test_allows_from_main_tree_when_the_only_linked_worktree_is_a_review_checkout(
+        self, isolated_home, opted_in_repo
+    ):
+        sid = _seed_session(isolated_home)
+        _add_worktree_under_worktrees_dir(opted_in_repo, REVIEW_WORKTREE_NAME)
+        _stage_a_change(opted_in_repo)
+
+        result = _run_marker(["write", "code-review"], cwd=opted_in_repo, home=isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        marker = (
+            isolated_home / ".claude" / "code-review-markers"
+            / f"{_repo_hash(opted_in_repo)}.{sid}"
+        )
+        assert marker.exists()
+
+    def test_refusal_names_the_branch_worktree_when_a_review_checkout_also_exists(
+        self, isolated_home, opted_in_repo
+    ):
+        """Holds whichever order git lists the two; the lib tests pin both
+        orders of the skip."""
+        _seed_session(isolated_home)
+        review_worktree = _add_worktree_under_worktrees_dir(opted_in_repo, REVIEW_WORKTREE_NAME)
+        branch_worktree = _add_worktree_under_worktrees_dir(
+            opted_in_repo, "feature", branch="feature"
+        )
+        _stage_a_change(opted_in_repo)
+
+        result = _run_marker(["write", "code-review"], cwd=opted_in_repo, home=isolated_home)
+
+        assert result.returncode == 2, result.stderr
+        assert str(branch_worktree) in result.stderr
+        assert str(review_worktree) not in result.stderr
+
+    def test_refuses_for_a_branch_worktree_that_has_a_review_shaped_name(
+        self, isolated_home, opted_in_repo
+    ):
+        """Review checkouts are detached, so a branch worktree is never one,
+        whatever it is named."""
+        _seed_session(isolated_home)
+        branch_worktree = _add_worktree_under_worktrees_dir(
+            opted_in_repo, REVIEW_WORKTREE_NAME, branch="review-branch"
+        )
+        _stage_a_change(opted_in_repo)
+
+        result = _run_marker(["write", "code-review"], cwd=opted_in_repo, home=isolated_home)
+
+        assert result.returncode == 2, result.stderr
+        assert str(branch_worktree) in result.stderr
+
+    def test_refuses_for_a_user_named_review_prefixed_worktree(
+        self, isolated_home, opted_in_repo
+    ):
+        """A name that only starts with review-pr- is not the shape the
+        checkout script creates, so the worktree stays a live one."""
+        _seed_session(isolated_home)
+        user_worktree = _add_worktree_under_worktrees_dir(opted_in_repo, "review-pr-hardening")
+        _stage_a_change(opted_in_repo)
+
+        result = _run_marker(["write", "code-review"], cwd=opted_in_repo, home=isolated_home)
+
+        assert result.returncode == 2, result.stderr
+        assert str(user_worktree) in result.stderr
 
 
 class TestMarkerScriptRefusalTradeoffRemovingTheWorktreeReopensMainTreeWrites:

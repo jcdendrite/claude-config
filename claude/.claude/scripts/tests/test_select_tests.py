@@ -14,6 +14,7 @@ import ast
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -21,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 from .conftest import _commit, _init_repo, _make_repo_with_remote
 
@@ -142,11 +144,13 @@ def _resolve_module_level_repo_paths(source: str, *, test_file_relpath: str) -> 
 def _test_corpus(repo_root: Path) -> list[str]:
     """Repo-relative paths of every test_*.py file the completeness scanner
     parses: claude/.claude/hooks/tests/, claude/.claude/scripts/tests/,
-    claude-skills/skills/tests/, claude/.claude/tests/, and plugins/*/tests/."""
+    claude-skills/skills/tests/, claude-skills/skills/*/tests/ (nested
+    per-skill test trees), claude/.claude/tests/, and plugins/*/tests/."""
     patterns = (
         "claude/.claude/hooks/tests/test_*.py",
         "claude/.claude/scripts/tests/test_*.py",
         "claude-skills/skills/tests/test_*.py",
+        "claude-skills/skills/*/tests/test_*.py",
         "claude/.claude/tests/test_*.py",
         "plugins/*/tests/test_*.py",
     )
@@ -430,8 +434,9 @@ class TestSelectPytestTargets:
         }
 
     def test_hooks_dir_shell_script_change_also_selects_scripts_tests(self):
-        """test_no_bash4_constructs.py (SCRIPTS_TESTS_DIR) recursively globs
-        claude/.claude/ for *.sh files, picking up claude/.claude/hooks/.
+        """test_default_branch_resolution_is_shared.py (SCRIPTS_TESTS_DIR)
+        recursively globs claude/.claude/ for *.sh files, picking up
+        claude/.claude/hooks/.
         Without this cross-domain exception, that check goes unrun on a
         hooks-dir shell script change."""
         result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.sh"])
@@ -491,11 +496,22 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
 
-    def test_skill_md_change_selects_skills_tests_and_transcript_analysis(self):
+    def test_root_scripts_dir_sibling_sharing_prefix_does_not_match(self):
+        """scripts-old/ shares ROOT_SCRIPTS_DIR's string prefix but is a distinct
+        sibling directory -- _is_under's directory-boundary check must not
+        treat it as under scripts/."""
+        result = _mod.select_pytest_targets(["scripts-old/x.sh"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
+    def test_skill_md_change_selects_skills_tests_transcript_analysis_and_doc_counts(self):
+        """test_doc_counts.py reads every name-only skill's SKILL.md frontmatter
+        (_name_only_skills_carrying_trigger_blocks), so any SKILL.md edit selects it."""
         result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/SKILL.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+            _mod.DOC_COUNTS_TEST_PATH,
         }
 
     def test_skill_auxiliary_md_change_selects_skills_tests(self):
@@ -815,7 +831,33 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.SKILLS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.DOC_COUNTS_TEST_PATH,
+        }
+
+    def test_marker_clear_stale_py_change_also_selects_hooks_tests(self):
+        """TestMarkerScriptClearStale (HOOKS_TESTS_DIR's test_marker_script.py)
+        exercises marker-clear-stale.py end-to-end only via `marker.sh
+        clear-stale`'s subprocess call, never by import or by-path read.
+        Without this cross-domain exception, the scripts domain rule claims
+        the path first and that HOOKS_TESTS_DIR coverage goes unrun."""
+        result = _mod.select_pytest_targets([_mod.MARKER_CLEAR_STALE_PY])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
             _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR,
+            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
+        }
+
+    def test_review_pr_audit_script_change_also_selects_scripts_tests(self):
+        """test_review_pr_lib.py (SCRIPTS_TESTS_DIR) runs the audit script and
+        compares its stdout byte-for-byte to the clean-document constant, by a
+        function-local path read. Without this cross-domain exception, the
+        review-pr domain rule claims the path first and that coverage goes
+        unrun."""
+        result = _mod.select_pytest_targets([_mod.REVIEW_PR_AUDIT_SCRIPT])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.REVIEW_PR_SKILL_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR,
+            _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
         }
 
     def test_skill_files_read_by_hook_tests_each_also_select_hooks_tests(self):
@@ -942,31 +984,24 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is True
         assert result.reason == "global-trigger"
 
-    def test_global_trigger_keeps_domain_targets_outside_the_full_suite_roots(self):
-        """FULL_SUITE_TARGETS never collects evals/, so a review-bench path
-        beside a global-trigger path must still contribute its own tests."""
-        result = _mod.select_pytest_targets(["pyproject.toml", "evals/review_bench/runner.py"])
+    @pytest.mark.parametrize(
+        ("fail_open_trigger", "expected_reason"),
+        [("pyproject.toml", "global-trigger"), (".gitignore", "unmatched-path")],
+    )
+    @pytest.mark.parametrize(
+        "domain_matched_path",
+        ["evals/review_bench/runner.py", "claude/.claude/scripts/mark-terminal.py"],
+    )
+    def test_fail_open_selects_exactly_the_full_suite_roots_beside_a_domain_matched_path(
+        self, fail_open_trigger, expected_reason, domain_matched_path,
+    ):
+        """Each root already collects its own domain's tests, so a fail-open
+        selection adds no domain target to FULL_SUITE_TARGETS. Both
+        fail-open return sites (global trigger, unmatched path) are covered."""
+        result = _mod.select_pytest_targets([fail_open_trigger, domain_matched_path])
         assert result.is_full_suite is True
-        assert result.reason == "global-trigger"
-        assert result.triggering_paths == ("pyproject.toml",)
-        assert result.target_paths == (
-            *_mod.FULL_SUITE_TARGETS,
-            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.REVIEW_BENCH_TEST_GLOB,
-        )
-
-    def test_unmatched_path_keeps_domain_targets_outside_the_full_suite_roots(self):
-        result = _mod.select_pytest_targets([".gitignore", "evals/review_bench/runner.py"])
-        assert result.is_full_suite is True
-        assert result.reason == "unmatched-path"
-        assert result.triggering_paths == (".gitignore",)
-        assert result.target_paths == (
-            *_mod.FULL_SUITE_TARGETS,
-            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST, _mod.REVIEW_BENCH_TEST_GLOB,
-        )
-
-    def test_fail_open_does_not_duplicate_a_domain_target_a_full_suite_root_already_covers(self):
-        result = _mod.select_pytest_targets([".gitignore", "claude/.claude/scripts/mark-terminal.py"])
-        assert result.is_full_suite is True
+        assert result.reason == expected_reason
+        assert result.triggering_paths == (fail_open_trigger,)
         assert result.target_paths == _mod.FULL_SUITE_TARGETS
 
     def test_unmatched_path_falls_open_to_full_suite(self):
@@ -985,17 +1020,18 @@ class TestSelectPytestTargets:
         assert result.reason == "empty-diff"
         assert result.target_paths == _mod.FULL_SUITE_TARGETS
 
-    def test_agents_dir_change_also_selects_hooks_and_skills_tests(self):
-        """test_agent_roster.py (HOOKS_TESTS_DIR) and test_skills.py
-        (SKILLS_TESTS_DIR) both read claude/.claude/agents/*.md by path, not
-        by import. Without this cross-domain exception, a change under
-        claude/.claude/agents/ falls open to the full suite instead of
-        selecting the two domains that actually depend on it. Also selects
-        REVIEW_BENCH_TEST_GLOB (see the AGENTS_DIR comment on CROSS_DOMAIN_EXCEPTIONS)."""
+    def test_agents_dir_change_selects_the_declared_agents_dir_readers(self):
+        """Tests that read claude/.claude/agents/*.md by path, not by import,
+        are selected by the cross-domain exception; without it a change there
+        falls open to the full suite. The AGENTS_DIR comment on
+        CROSS_DOMAIN_EXCEPTIONS carries the hand-audited list."""
         result = _mod.select_pytest_targets(["claude/.claude/agents/code-writer.md"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR, _mod.REVIEW_BENCH_TEST_GLOB,
+            _mod.TRANSCRIPT_COST_COUNTS_TEST_PATH, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB,
+            _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            _mod.TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
         }
 
     def test_rules_dir_change_also_selects_hooks_and_skills_tests(self):
@@ -1052,14 +1088,25 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == ()
 
-    def test_transcript_analysis_doc_md_change_selects_hooks_and_skills_tests(self):
-        """No test reads docs/transcript-analysis.md's content by path --
-        every existing reference is a source-code comment citing the doc for
-        human readers -- but it's still covered by the docs/ blanket like
-        every other docs/*.md file."""
+    def test_transcript_analysis_doc_md_change_selects_scripts_hooks_and_skills_tests(self):
+        """test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads
+        docs/transcript-analysis.md's content by path, in addition to the
+        docs/ blanket's HOOKS_TESTS_DIR and SKILLS_TESTS_DIR."""
         result = _mod.select_pytest_targets(["docs/transcript-analysis.md"])
         assert result.is_full_suite is False
-        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR}
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR,
+        }
+
+    def test_private_project_redaction_doc_md_change_selects_scripts_hooks_and_skills_tests(self):
+        """test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads
+        docs/private-project-redaction.md's content by path, in addition to
+        the docs/ blanket's HOOKS_TESTS_DIR and SKILLS_TESTS_DIR."""
+        result = _mod.select_pytest_targets(["docs/private-project-redaction.md"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR,
+        }
 
     def test_transcript_analysis_architecture_doc_md_change_selects_scripts_hooks_and_skills_tests(self):
         """test_transcript_analysis_architecture_doc.py (SCRIPTS_TESTS_DIR)
@@ -1108,6 +1155,29 @@ class TestSelectPytestTargets:
         result = _mod.select_pytest_targets([_mod.INSTALL_SH])
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
+
+    def test_install_dev_sh_change_selects_hooks_and_scripts_tests(self):
+        """test_install_dev.py (SCRIPTS_TESTS_DIR) reads install-dev.sh by
+        path. test_shellcheck.py (HOOKS_TESTS_DIR) also lints it, and
+        test_deny_network_installs.py and
+        test_install_sh_contributor_intent_prompt.py (both HOOKS_TESTS_DIR)
+        each reference it."""
+        result = _mod.select_pytest_targets([_mod.INSTALL_DEV_SH])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR}
+
+    def test_root_scripts_dir_script_selects_hooks_and_scripts_tests(self):
+        """test_shellcheck.py and test_shell_lib_function_liveness.py
+        (HOOKS_TESTS_DIR) lint or scan every tracked shell file under scripts/;
+        test_venv_run.py (SCRIPTS_TESTS_DIR) runs scripts/venv-run.sh by path."""
+        result = _mod.select_pytest_targets(["scripts/venv-run.sh"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR}
+
+    def test_nested_root_scripts_dir_script_selects_hooks_and_scripts_tests(self):
+        result = _mod.select_pytest_targets(["scripts/dev/fork-topology-probe.sh"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR}
 
     def test_claude_settings_json_change_selects_hooks_skills_and_scripts_tests(self):
         """test_hook_alignment.py and test_doc_counts.py (HOOKS_TESTS_DIR)
@@ -1160,12 +1230,26 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert result.target_paths == (_mod.SKILLS_TESTS_DIR,)
 
-    def test_root_settings_json_change_selects_hooks_tests(self):
+    def test_root_settings_json_change_selects_hooks_and_scripts_tests(self):
         """test_claude_md_excludes.py (HOOKS_TESTS_DIR) reads the repo-root
-        .claude/settings.json's claudeMdExcludes entry by path."""
+        .claude/settings.json's claudeMdExcludes entry by path, and
+        test_review_pr_post.py (SCRIPTS_TESTS_DIR) reads its permissions.allow
+        entries."""
         result = _mod.select_pytest_targets([_mod.ROOT_SETTINGS_JSON])
         assert result.is_full_suite is False
-        assert result.target_paths == (_mod.HOOKS_TESTS_DIR,)
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR}
+
+    def test_review_pr_skill_md_change_also_selects_scripts_tests(self):
+        """test_review_pr_post.py (SCRIPTS_TESTS_DIR) reads review-pr/SKILL.md
+        by path. Without this cross-domain exception, a SKILL.md change
+        selects none of SCRIPTS_TESTS_DIR, so that coverage goes unrun. A
+        different skill's SKILL.md is the contrast case."""
+        review_pr_result = _mod.select_pytest_targets([_mod.REVIEW_PR_SKILL_MD])
+        other_skill_result = _mod.select_pytest_targets(["claude-skills/skills/test-conventions/SKILL.md"])
+        assert review_pr_result.is_full_suite is False
+        assert other_skill_result.is_full_suite is False
+        assert {_mod.SCRIPTS_TESTS_DIR, _mod.REVIEW_PR_SKILL_TESTS_DIR} <= set(review_pr_result.target_paths)
+        assert _mod.SCRIPTS_TESTS_DIR not in other_skill_result.target_paths
 
     def test_skills_test_tree_change_selects_skills_tests(self):
         """`_is_under(p, SKILLS_TESTS_DIR)` mirrors the hooks and scripts
@@ -1203,7 +1287,7 @@ class TestSelectPytestTargets:
         """A path that matches a domain rule alongside a path that matches
         none still falls open to the full suite. The matched domain's targets
         add nothing to FULL_SUITE_TARGETS here because they sit inside its
-        roots; only a matched target outside them (e.g. evals/) is kept."""
+        roots."""
         result = _mod.select_pytest_targets(
             ["claude/.claude/scripts/mark-terminal.py", ".gitignore"],
         )
@@ -1335,9 +1419,9 @@ class TestSelectPytestTargets:
     def test_statusline_command_sh_change_selects_hooks_scripts_and_claude_tests(self):
         """test_statusline_command.py (CLAUDE_TESTS_DIR) reads this exact
         file by path. test_shellcheck.py (HOOKS_TESTS_DIR) lints every
-        tracked shell script, and test_no_bash4_constructs.py /
-        test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
-        recursively glob claude/.claude/ for *.sh files."""
+        tracked shell script, and
+        test_default_branch_resolution_is_shared.py (SCRIPTS_TESTS_DIR)
+        recursively globs claude/.claude/ for *.sh files."""
         result = _mod.select_pytest_targets([_mod.STATUSLINE_COMMAND_SH])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
@@ -1367,24 +1451,29 @@ class TestSelectPytestTargets:
         claude-skills/, and plugins/ (e.g. SKILL_EVALS_RUNNER) must not match."""
         assert _mod._is_py_source_under_claude_or_plugins(_mod.SKILL_EVALS_RUNNER) is False
 
-    def test_config_module_change_selects_its_hooks_tests_importers(self):
-        """HOOKS_TESTS_IMPORTING_CONFIG's four test files import CONFIG_MODULE
-        by name, invisible to path-constant scanning, so its declared
-        CROSS_DOMAIN_EXCEPTIONS row is the only thing that selects them for
-        this change."""
+    def test_config_module_change_selects_its_declared_importers(self):
+        """HOOKS_TESTS_IMPORTING_CONFIG's and SKILLS_TESTS_IMPORTING_CONFIG's
+        test files import CONFIG_MODULE by name, invisible to path-constant
+        scanning, so its declared CROSS_DOMAIN_EXCEPTIONS row is the only
+        thing that selects them for this change."""
         result = _mod.select_pytest_targets([_mod.CONFIG_MODULE])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
             *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
+            *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
         }
+        # Hand-typed literal, independent of the constant: an emptied
+        # SKILLS_TESTS_IMPORTING_CONFIG would otherwise satisfy the set above.
+        assert "claude-skills/skills/tests/test_skills.py" in result.target_paths
 
-    def test_config_dir_module_change_selects_all_three_declared_importer_sets(self):
-        """CONFIG_DIR_MODULE's own row selects three declared importer sets:
+    def test_config_dir_module_change_selects_all_four_declared_importer_sets(self):
+        """CONFIG_DIR_MODULE's own row selects four declared importer sets:
         - HOOKS_TESTS_IMPORTING_CONFIG's test files, via _config.py's own import
+        - SKILLS_TESTS_IMPORTING_CONFIG's test files, via _config.py's own import
         - REVIEW_LEDGER_SCRIPT_TEST_PATH, via transcript_analysis.author_outcome -> scope -> _config_dir
         - SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER's test files, via run_skill_evals
-        A fourth contributor, the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES row, adds
+        A fifth contributor, the _REVIEW_BENCH_SCRIPTS_DEPENDENCIES row, adds
         REVIEW_BENCH_TEST_GLOB and MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST.
         """
         result = _mod.select_pytest_targets([_mod.CONFIG_DIR_MODULE])
@@ -1393,6 +1482,7 @@ class TestSelectPytestTargets:
             _mod.SCRIPTS_TESTS_DIR, _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
             _mod.REVIEW_LEDGER_SCRIPT_TEST_PATH,
             *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
+            *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
             *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
             _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
         }
@@ -1506,16 +1596,14 @@ class TestResolveTargetPaths:
         )
         assert resolved == [_mod.SCRIPTS_TESTS_DIR]
 
-    def test_full_suite_roots_keep_the_evals_targets_beside_them(self):
-        """A fail-open selection's evals/ targets sit outside every
-        FULL_SUITE_TARGETS root, so none absorbs them."""
+    def test_evals_root_absorbs_the_evals_test_targets(self):
+        """The evals/ FULL_SUITE_TARGETS root's own pytest walk already
+        collects the review-bench glob's files and the model-resolution test."""
         resolved = _mod.resolve_target_paths(
             [*_mod.FULL_SUITE_TARGETS, _mod.REVIEW_BENCH_TEST_GLOB, _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST],
             repo_root=_REPO_ROOT,
         )
-        assert set(_mod.FULL_SUITE_TARGETS) <= set(resolved)
-        assert _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST in resolved
-        assert any(path.startswith("evals/test_review_bench_") for path in resolved)
+        assert resolved == sorted(_mod.FULL_SUITE_TARGETS)
 
     def test_three_level_containment_chain_collapses_to_the_outermost_container(self):
         """Structural, synthetic -- not an observed collision. The real
@@ -1567,13 +1655,12 @@ class TestResolveTargetPaths:
         DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS target, resolved, must leave no
         pair where one covers the other, so this self-updates when a row
         gains a target. Excludes FULL_SUITE_TARGETS (ledger rows 13/14).
-        Including it collapses the check to disjoint survivors
-        (claude/.claude/, claude-skills/, plugins/, and the evals/ test
-        files), making the assertion pass regardless of whether _covers
+        Including it collapses the check to the disjoint FULL_SUITE_TARGETS
+        roots, making the assertion pass regardless of whether _covers
         works -- and that combined universe (FULL_SUITE_TARGETS plus every
         inside-root domain target) isn't a selection select_pytest_targets
-        ever actually returns: its fail-open result adds only targets
-        outside those roots."""
+        ever actually returns: its fail-open result is FULL_SUITE_TARGETS
+        alone."""
         universe: set[str] = set()
         for _predicate, targets in (*_mod.DOMAIN_RULES, *_mod.CROSS_DOMAIN_EXCEPTIONS):
             universe.update(targets)
@@ -1867,11 +1954,17 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     *sorted(_mod.HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS),
     _mod.README_MD,
     _mod.INSTALL_SH,
+    _mod.INSTALL_DEV_SH,
     _mod.CLAUDE_SETTINGS_JSON,
     _mod.HANDOFF_SKILL_MD,
+    _mod.MARKER_CLEAR_STALE_PY,
+    _mod.REVIEW_PR_AUDIT_SCRIPT,
+    _mod.REVIEW_PR_SKILL_MD,
     *sorted(_mod.SKILL_FILES_READ_BY_HOOK_TESTS),
     _mod.GITHUB_ACTIONS_WORKFLOWS_RULE_MD,
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,
+    _mod.TRANSCRIPT_ANALYSIS_DOC_MD,
+    _mod.PRIVATE_PROJECT_REDACTION_DOC_MD,
     _mod.GLOBAL_CLAUDE_MD,
     _mod.ROOT_CLAUDE_MD,
     _mod.ROOT_SETTINGS_JSON,
@@ -1891,9 +1984,13 @@ _FILE_TARGETS: frozenset[str] = frozenset({
     _mod.TICKET_REFERENCE_DISCIPLINE_TEST_PATH,
     _mod.SELECT_TESTS_TEST_PATH,
     _mod.TRANSCRIPT_DENIALS_TEST_PATH,
+    _mod.TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
+    _mod.TRANSCRIPT_COST_COUNTS_TEST_PATH,
+    _mod.DOC_COUNTS_TEST_PATH,
     _mod.MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
     *_mod.HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS,
     *_mod.HOOKS_TESTS_IMPORTING_CONFIG,
+    *_mod.SKILLS_TESTS_IMPORTING_CONFIG,
     *_mod.HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR,
     *_mod.SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER,
     *_mod.SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES,
@@ -1922,6 +2019,8 @@ _KNOWN_CROSS_DOMAIN_READS: tuple[tuple[str, str], ...] = (
      "claude-skills/skills/error-mode-analysis/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_respond_pr.py",
      "claude-skills/skills/respond-pr/SKILL.md"),
+    ("claude/.claude/hooks/tests/test_require_review_orchestrator_routing.py",
+     "claude-skills/skills/subagent-delegation/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_routing_read.py",
      "claude-skills/skills/plan-review/SKILL.md"),
     ("claude/.claude/hooks/tests/test_require_skill_review.py",
@@ -1961,6 +2060,67 @@ class TestKnownCrossDomainReadsAudit:
         assert expected == _mod.SKILL_FILES_READ_BY_HOOK_TESTS
 
 
+_TESTS_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "tests.yml"
+_CI_PYTEST_COMMAND = ("pytest",)
+_CI_LINT_COMMAND = ("ruff", "check")
+_CI_PYTEST_STEP_COUNT = 2
+
+
+def _leading_positional_roots(run_command: str, command_words: tuple[str, ...]) -> frozenset[str]:
+    """The `rstrip("/")` roots between `command_words` and the first
+    option-looking token of a shell command line."""
+    tokens = shlex.split(run_command)
+    assert tuple(tokens[:len(command_words)]) == command_words, run_command
+    roots: list[str] = []
+    for token in tokens[len(command_words):]:
+        if token.startswith("-"):
+            break
+        roots.append(token.rstrip("/"))
+    return frozenset(roots)
+
+
+def _steps_running(steps: list[dict], command_words: tuple[str, ...]) -> list[dict]:
+    return [step for step in steps if tuple(step.get("run", "").split()[:len(command_words)]) == command_words]
+
+
+def _ci_step_roots(steps: list[dict]) -> list[tuple[str, frozenset[str]]]:
+    """A (step name, positional roots) pair for every pytest step plus the
+    lint step. Each is found by its command (`pytest`, `ruff check`), not by
+    its step name, so a rename cannot hide a step from the parity check."""
+    pytest_steps = _steps_running(steps, _CI_PYTEST_COMMAND)
+    assert len(pytest_steps) == _CI_PYTEST_STEP_COUNT, (
+        f"expected {_CI_PYTEST_STEP_COUNT} pytest steps in tests.yml's tests job, "
+        f"found {[step.get('name') for step in pytest_steps]}"
+    )
+    lint_steps = _steps_running(steps, _CI_LINT_COMMAND)
+    assert len(lint_steps) == 1, (
+        f"expected exactly one `{' '.join(_CI_LINT_COMMAND)}` step in tests.yml's tests job, "
+        f"found {[step.get('name') for step in lint_steps]}"
+    )
+    (lint_step,) = lint_steps
+    return [
+        (
+            step.get("name", step["run"]),
+            _leading_positional_roots(step["run"], _CI_LINT_COMMAND if step is lint_step else _CI_PYTEST_COMMAND),
+        )
+        for step in [*pytest_steps, lint_step]
+    ]
+
+
+def _steps_whose_roots_differ_from(
+    steps: list[dict], expected_roots: frozenset[str],
+) -> list[tuple[str, frozenset[str]]]:
+    return [(name, roots) for name, roots in _ci_step_roots(steps) if roots != expected_roots]
+
+
+def _targets_outside_roots(targets: set[str], roots: tuple[str, ...]) -> list[str]:
+    stripped_roots = [root.rstrip("/") for root in roots]
+    return sorted(
+        target for target in targets
+        if not any(_mod._is_under(target, root) for root in stripped_roots)
+    )
+
+
 class TestRuleTablePathFidelity:
     """Catches silent drift if a rule-table target directory is later
     renamed or a glob pattern stops matching anything."""
@@ -1984,6 +2144,76 @@ class TestRuleTablePathFidelity:
             config = tomllib.load(f)
         norecursedirs = config["tool"]["pytest"]["ini_options"]["norecursedirs"]
         assert _mod.WORKTREES_DIR_NAME in norecursedirs
+
+    def test_every_domain_target_sits_under_a_full_suite_root(self):
+        """A fail-open selection is exactly FULL_SUITE_TARGETS, so a domain
+        target outside every root would be selected by a diff yet never run
+        by a fail-open fallback."""
+        # Checks root membership only, not norecursedirs pruning: no domain target sits under a pruned directory.
+        domain_targets: set[str] = set()
+        for _, targets in (*_mod.DOMAIN_RULES, *_mod.CROSS_DOMAIN_EXCEPTIONS):
+            domain_targets.update(targets)
+        assert _targets_outside_roots(domain_targets, _mod.FULL_SUITE_TARGETS) == []
+
+    def test_a_domain_target_outside_every_full_suite_root_is_reported(self):
+        outside_targets = _targets_outside_roots(
+            {"claude/.claude/hooks/tests", "docs/other"}, _mod.FULL_SUITE_TARGETS,
+        )
+        assert outside_targets == ["docs/other"]
+
+    def test_full_suite_targets_equal_the_roots_of_every_ci_pytest_and_lint_step(self):
+        steps = yaml.safe_load(_TESTS_WORKFLOW_PATH.read_text())["jobs"]["tests"]["steps"]
+        expected_roots = frozenset(root.rstrip("/") for root in _mod.FULL_SUITE_TARGETS)
+        assert _steps_whose_roots_differ_from(steps, expected_roots) == []
+
+    def test_a_ci_step_missing_a_root_is_reported_by_name(self):
+        steps = [
+            {"name": "Run tests (parallel)", "run": 'pytest a/ b/ -v -m "not timing"'},
+            {"name": "Run tests (timing, serial)", "run": "pytest a/ -v -m timing -n0"},
+            {"name": "Lint", "run": "ruff check a/ b/"},
+        ]
+        differing = _steps_whose_roots_differ_from(steps, frozenset({"a", "b"}))
+        assert differing == [("Run tests (timing, serial)", frozenset({"a"}))]
+
+    def test_a_renamed_lint_step_is_still_found_by_its_command(self):
+        steps = [
+            {"name": "Run tests (parallel)", "run": "pytest a/ -v"},
+            {"name": "Run tests (timing, serial)", "run": "pytest a/ -v -n0"},
+            {"name": "Static analysis", "run": "ruff check a/ b/"},
+        ]
+        differing = _steps_whose_roots_differ_from(steps, frozenset({"a"}))
+        assert differing == [("Static analysis", frozenset({"a", "b"}))]
+
+    def test_ci_roots_extraction_rejects_a_workflow_without_the_expected_pytest_steps(self):
+        steps = [
+            {"name": "Run tests (parallel)", "run": "pytest a/ -v"},
+            {"name": "Lint", "run": "ruff check a/"},
+        ]
+        with pytest.raises(AssertionError):
+            _ci_step_roots(steps)
+
+    def test_ci_roots_extraction_rejects_a_workflow_without_a_lint_step(self):
+        steps = [
+            {"name": "Run tests (parallel)", "run": "pytest a/ -v"},
+            {"name": "Run tests (timing, serial)", "run": "pytest a/ -v -n0"},
+            {"name": "Format", "run": "ruff format a/"},
+        ]
+        with pytest.raises(AssertionError):
+            _ci_step_roots(steps)
+
+    def test_ci_roots_extraction_rejects_a_workflow_with_two_lint_steps(self):
+        steps = [
+            {"name": "Run tests (parallel)", "run": "pytest a/ -v"},
+            {"name": "Run tests (timing, serial)", "run": "pytest a/ -v -n0"},
+            {"name": "Lint", "run": "ruff check a/"},
+            {"name": "Lint again", "run": "ruff check b/"},
+        ]
+        with pytest.raises(AssertionError):
+            _ci_step_roots(steps)
+
+    def test_leading_positional_roots_rejects_a_command_with_a_different_prefix(self):
+        with pytest.raises(AssertionError):
+            _leading_positional_roots("ruff format a/", _CI_LINT_COMMAND)
 
     def test_every_directory_target_exists_on_disk(self):
         directory_targets = [
@@ -2010,6 +2240,9 @@ class TestRuleTablePathFidelity:
     def test_review_bench_directory_constants_exist_on_disk(self):
         for constant in (_mod.REVIEW_BENCH_DIR, _mod.REVIEW_BENCH_FIXTURES_DIR):
             assert (_REPO_ROOT / constant).is_dir(), f"{constant} does not exist as a directory"
+
+    def test_root_scripts_dir_constant_exists_on_disk(self):
+        assert (_REPO_ROOT / _mod.ROOT_SCRIPTS_DIR).is_dir(), f"{_mod.ROOT_SCRIPTS_DIR} does not exist as a directory"
 
     def test_every_global_trigger_path_exists_on_disk(self):
         for path in _mod.GLOBAL_TRIGGER_PATHS:

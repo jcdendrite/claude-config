@@ -3,13 +3,14 @@
 # single machine-parseable terminal result line.
 #
 # Invoked by ready-for-review/SKILL.md's "CI watch (out-of-band)" section via
-# `Bash` `run_in_background`, once the PR number is known. Never run in the
-# foreground for a real PR: `gh pr checks --watch` blocks until every check
-# reaches a terminal state, which can take hours.
+# `Bash` `run_in_background`, once the branch's commits are pushed to the PR.
+# Never run in the foreground for a real PR: `gh pr checks --watch` blocks
+# until every check reaches a terminal state, which can take hours.
 #
 # Output contract (stdout):
 #   LAUNCH_SHA: <oid>          -- printed once, at start, before the watch
-#   CI_RESULT: none            -- zero checks were ever configured on this PR
+#   CI_RESULT: none            -- no checks had registered on this PR when
+#                                  gh last polled
 #   CI_RESULT: error <reason>  -- couldn't determine CI status
 #   CI_RESULT: checks <json>   -- structured snapshot; `bucket` per check is
 #                                  the pass/fail source of truth
@@ -19,11 +20,13 @@
 # (cli/cli's pkg/cmd/pr/checks/checks.go).
 #
 # Input (environment):
-#   CI_CHECKS_GH_TOKEN  -- optional; used only for the two `gh pr checks`
-#                           calls, since fine-grained PATs 403 on the Checks
+#   CI_CHECKS_GH_TOKEN  -- optional; used for the two `gh pr checks` calls,
+#                           since fine-grained PATs 403 on the Checks
 #                           API. Resolved via direnv and withheld on a
 #                           cross-host mismatch — see docs/scripts.md's
 #                           CI_CHECKS_GH_TOKEN entry for the full mechanism.
+#                           review-pr-acquire.sh also reads it; see its entry
+#                           in docs/scripts.md.
 #   GH_HOST             -- optional; tells `gh` which host to target. Needed
 #                           when a GHE host is supplied only via direnv and
 #                           was never registered via `gh auth login`, so

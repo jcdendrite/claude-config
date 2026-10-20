@@ -2,7 +2,7 @@
 
 `transcript-analysis.py` is an analysis toolkit for Claude Code transcripts. By default it scans the union of the active profile's `<config-dir>/projects/*/*.jsonl` (`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`) and every config dir declared in `~/.claude/transcript-config-dirs`, not just the active profile alone — except `cost --summary`, which is scoped to this repository on the active account only — see "Corpus scope: the declared-roots file" below. Run it directly from the shell — there is no `~/.local/bin/` wrapper.
 
-All subcommands are local-only reads except `pr-link` (calls `gh`), `judgment-pair --out` (writes to a specified file), and `cost-ledger --record` (writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default, overridable via `COST_LEDGER_PATH`, gated on an opt-in sentinel — see the `cost-ledger` section below). No other subcommand writes to disk.
+All subcommands are local-only reads except `pr-link` (calls `gh`), `judgment-pair --out` (writes to a specified file), and `cost-ledger --record` (writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default, overridable via `COST_LEDGER_PATH`, gated on the `cost_ledger_recording` config key — see the `cost-ledger` section below). No other subcommand writes to disk.
 
 For question-driven routing ("which subcommand answers X?"), use the `/transcript-analysis` skill. This page is the per-subcommand reference: flags, output shape, and when to reach for each one.
 
@@ -29,7 +29,7 @@ Every subcommand below accepts `--this-repo` as a mutually exclusive alternative
 
 **`--projects` under more than one root.** When the invocation resolves more than one root (a populated `~/.claude/transcript-config-dirs`, or an explicit `--config-dir` extra), `--projects` must match one project-directory name: a value containing `/` or `**`, or equal to `.` or `..`, exits 2. A single-root invocation has no such restriction — `--projects` there supports `Path.glob`'s full nested-directory syntax, except that a `..` component reads nothing. A single-root invocation keeps a project directory or transcript symlinked outside the scan root in scope. Under more than one root, one symlinked outside every declared root makes any run that attributes sessions to a root abort. Under `review-round-cost --pooled`, that surfaces as the generic unexpected-error refusal.
 
-The default differs by subcommand: `skill-invocation` defaults to repo-scoped (safe-by-default) and treats `--this-repo` as a no-op; every other subcommand defaults to machine-wide (unsafe-by-default) and requires `--this-repo` to opt into repo scoping.
+The default differs by subcommand: `skill-invocation` defaults to repo-scoped (safe-by-default, except under `--include-subagents`; see Limits) and treats `--this-repo` as a no-op; every other subcommand defaults to machine-wide (unsafe-by-default) and requires `--this-repo` to opt into repo scoping.
 
 **`review-trace` output is not publish-safe under the default machine-wide scope** — each event line's branch string can carry a ticket ID or project name. `--this-repo` does not guarantee single-account output either: once `~/.claude/transcript-config-dirs` declares more than one root, or an explicit `--config-dir` extra is combined with `--this-repo`, it unions across every resolved root the same way the default scope does (see "Corpus scope: the declared-roots file" below). No flag on `review-trace` narrows output to one account short of an explicit single top-level `--config-dir PATH`; use that before quoting output anywhere public. This applies to a zero-match run too: its scope header echoes an explicit `--projects` glob verbatim, so a glob naming a private project reaches the output even when no session matched.
 
@@ -44,7 +44,7 @@ The default differs by subcommand: `skill-invocation` defaults to repo-scoped (s
 
   The trailing `*` picks up both per-worktree project dirs and sessions started in a subdirectory. A stricter `<slug>-*` prefix match is not used because it still collides with a sibling clone like `<repo>-fork`. Because it is a prefix, it also over-includes rows for any other sibling sharing that prefix; for `buckets` that shows up as extra rows in the output, visibly, rather than silently returning nothing.
 - **An orphaned project directory.** If a worktree is removed, its project directory under `<config-dir>/projects/` is not cleaned up automatically, and its slug no longer matches any live `git worktree list` entry — it is silently excluded from `--this-repo`. This is the same behavior `skill-invocation`'s default scope has always had.
-- **A subagent dispatched from another repo's session.** With `--include-subagents`, `--this-repo` does read every subagent file whose *parent* session ran in this repo — that path works. The gap is the inverse: a parent session anchored in a different repo that dispatches a subagent whose own cwd is inside this repo. That subagent's transcript still lives under the *parent's* project directory, so no scope resolved by directory identity — `--this-repo` or otherwise — ever reaches it. More generally, most subagent cwds have no project directory of their own at all, so a name-based match has nothing to find regardless of scope. The fallback is content-based, not directory-based: content-grep across `*/subagents/*.jsonl`, or traverse those files and read each one's own `cwd` field directly. Note that `--include-subagents` is off by default on every subcommand that offers it, so even a correctly-scoped run under-reports subagent work unless it's passed explicitly. For enumerating sessions after a crash rather than analyzing scoped history, see `post-crash-sessions` ([`docs/scripts.md`](scripts.md)). That fallback recovers *scope*, not *branch attribution* — a subagent's `gitBranch` field can silently disagree with the branch actually checked out in a pre-existing different-repo cwd, so treat an all-zero `--branches` result there as inconclusive, not proof of zero spend.
+- **A subagent dispatched from another repo's session.** With `--include-subagents`, `--this-repo` does read every subagent file whose *parent* session ran in this repo — that path works. The gap is the inverse: a parent session anchored in a different repo that dispatches a subagent whose own cwd is inside this repo. That subagent's transcript still lives under the *parent's* project directory, so no scope resolved by directory identity — `--this-repo` or otherwise — ever reaches it. More generally, most subagent cwds have no project directory of their own at all, so a name-based match has nothing to find regardless of scope. The fallback is content-based, not directory-based: content-grep across `*/subagents/*.jsonl`, or traverse those files and read each one's own `cwd` field directly. Note that `--include-subagents` is off by default on every subcommand that offers it, so even a correctly-scoped run under-reports subagent work unless it's passed explicitly. For enumerating sessions after a crash rather than analyzing scoped history, see `post-crash-sessions` ([`docs/scripts.md`](scripts.md)). That fallback recovers *scope*, not *branch attribution*: a subagent that worked in this repo from another repo's session counts under that session's branch, per "Subagent attribution" and the consumer list under `cost`. An all-zero result for this repo's branch is therefore expected there, and it is still not proof of zero spend. The same holds for the consumers that count spawns from main-thread records only.
 
 The four gaps are silent under-coverage, not an error: a narrower-than-expected corpus reads identically to "no evidence exists" unless you notice the resolved-scope header's project-dir count is lower than expected. The slug-collision exception in the first gap is the reverse case, silent over-inclusion: the resolved-scope header's project-dir count comes from `git worktree list`, so it does not change, and `cost --summary` prints no such header.
 
@@ -82,7 +82,7 @@ This is the safe way to smoke-test any of these subcommands against synthetic da
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
-- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--branches B1,B2,...` — filter to specific branches (default: all). Attribution follows the "Subagent attribution" and "Pre-branch default-branch attribution" blocks under `cost`. Only a sidechain record that sits inline in a main transcript file reaches `buckets`; the Sess and turn counts come from main-thread records.
 
 **Sample output.**
 ```
@@ -116,7 +116,7 @@ HEAD                                        6   401    3664   1261    2278    12
 **Purpose.** Emit the ordered sequence of test-failure counts per branch/model to distinguish convergent debugging (spike then zeros) from thrashing (sustained oscillation).
 
 **Flags.**
-- `--branches B1,B2,...` *(required)* — branches to analyze
+- `--branches B1,B2,...` *(required)* — branches to analyze. Attribution follows the "Pre-branch default-branch attribution" block under `cost`. The pending test-run pairing still resets on a literal `gitBranch` change, so a test run issued on the last default-branch record is not paired with a result recorded after the switch.
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 
@@ -142,7 +142,7 @@ Sequence: 0 0 5 0 0 0 3 0 0 0 0 0
 **Purpose.** Count correction and frustration signal phrases in user turns, split by model, to surface whether one model generated more rework prompts.
 
 **Flags.**
-- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--branches B1,B2,...` — filter to specific branches (default: all). Attribution follows the "Pre-branch default-branch attribution" block under `cost`.
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 
@@ -167,7 +167,7 @@ Text inside a `<task-notification>` envelope is excluded from matching, because 
 **Purpose.** Decompose branch time into active work spans versus idle gaps.
 
 **Flags.**
-- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--branches B1,B2,...` — filter to specific branches (default: all). Attribution follows the "Subagent attribution" and "Pre-branch default-branch attribution" blocks under `cost`. Span and Active include a session's leading default-branch records once they count toward the branch it enters.
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--gap-minutes N` — threshold (in minutes) for classifying an inter-turn gap as idle (default: 30)
@@ -192,14 +192,14 @@ GH-333/audit-routing-samples-subcommand        1553         112       1442      
 **Purpose.** Show `isSidechain` (subagent) versus main-thread turn counts per branch, split by model family, plus total tool-result bytes per thread — and a second table breaking those same bytes down by the tool name that produced them.
 
 **Flags.**
-- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--branches B1,B2,...` — filter to specific branches (default: all). Attribution follows the "Subagent attribution" and "Pre-branch default-branch attribution" blocks under `cost`.
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--since Nd` — limit both tables to records with timestamp in the last N days (e.g. `35d`). Never narrows the corpus-wide spawn/sidechain-turn counters that feed the format-drift warning — a narrow window can't manufacture a false warning.
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), same contract as `cost`'s own `--config-dir` (see the `cost` section above):
   - The default resolved config dir is always scanned first; each extra directory must contain its own `projects/` subdirectory.
   - Unlike `cost`, there is no `--no-redact` escape hatch here — under more than one root, branch names are always redacted (`account-<K>/branch-<N>`, stable only within one run), and `DO NOT PUBLISH` prints on stdout and stderr.
-  - **Except** under `--this-repo` (see line 34 above for why it isn't refused together with `--config-dir`), a branch prints raw as `account-<K>/<branch>` when a non-sidechain record attested that same (root, branch) pair anywhere in the corpus (not narrowed by `--since`); a branch seen only on a sidechain record stays opaque, since a subagent's own `gitBranch` can name a different repo than its parent session's.
+  - **Except** under `--this-repo` (see line 34 above for why it isn't refused together with `--config-dir`), a branch prints raw as `account-<K>/<branch>` when a main-thread `assistant` or `user` record carried that same (root, branch) pair anywhere in the corpus (not narrowed by `--since`); any other branch, such as one only a main-thread record of another type carried, stays opaque. The printed branch is the attributed branch, so a subagent's turns print under its dispatching main-thread branch, and, provided its records carry the `isSidechain` flag, every printed branch was recorded by a main-thread record.
   - `--this-repo`'s raw disclosure applies to whichever repo `--this-repo` resolves to for the invoking CWD, not specifically to this repo.
   - Every `mcp__<server>__<tool>` tool name in the byte-by-tool table collapses into one `mcp__*` row regardless of root count — an MCP server name is a per-account integration identifier, not just a multi-root concern.
 
@@ -232,7 +232,7 @@ Byte totals are aggregate-only: no tool-result content, file paths, session IDs,
 **Purpose.** Show per-branch subagent spawn type counts and code/plan/ready-for-review review-skill spawn counts, plus a second table breaking each `agentType`'s dispatches down by declared, requested, and observed model.
 
 **Flags.**
-- `--branches B1,B2,...` — filter to specific branches (default: all)
+- `--branches B1,B2,...` — filter to specific branches (default: all). Attribution follows the "Pre-branch default-branch attribution" block under `cost`.
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--per-session` — break out by individual session instead of aggregating per branch. Refused when `--config-dir` puts more than one root in scope — a per-session row would join a foreign account's own session-id prefix to its branch name.
@@ -276,7 +276,7 @@ Columns: `CR` = `/code-review` spawns, `PR` = `/plan-review` spawns, `RR` = `/re
 
 ## reviewer-yield
 
-**Purpose.** Per-reviewer-agent-type dispatch-to-verdict yield: for each main-thread reviewer-agent dispatch (`staff-*`, `ciso-reviewer`, `comment-discipline-reviewer`, `skill-fidelity-reviewer`), joins it to its own subagent transcript via `subagents/<id>.meta.json`'s `toolUseId` field, then classifies the transcript's last assistant text block as findings-found, zero-finding, or unclassified — answering "are reviewer-agent dispatches producing real findings, or mostly zero-finding passes" (the efficiency-audit tracking issue's F4). A second table reports, per (agent type, verdict bucket), whether the paths a reviewer cited were later edited — answering "did the session subsequently act on what was cited," not only whether the reviewer spoke (GH-558).
+**Purpose.** Per-reviewer-agent-type dispatch-to-verdict yield: for each main-thread reviewer-agent dispatch (`staff-*`, `ciso-reviewer`, `comment-discipline-reviewer`, `skill-fidelity-reviewer`), joins it to its own subagent transcript via `subagents/<id>.meta.json`'s `toolUseId` field, then classifies the transcript's last assistant text block as findings-found, zero-finding, or unclassified — answering "are reviewer-agent dispatches producing real findings, or mostly zero-finding passes" (the efficiency-audit tracking issue's F4). A second table reports, per (agent type, verdict bucket), whether the paths a reviewer cited were later edited — answering "did the session subsequently act on what was cited," not only whether the reviewer spoke (GH-558). A reviewer that `review-orchestrator` dispatches is not a main-thread dispatch, so it never appears here.
 
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
@@ -316,7 +316,7 @@ The second table's columns: `Cited` = dispatches yielding at least one extracted
 
 **Flags.**
 - `--repo OWNER/REPO` — GitHub repository. Default: parsed from this checkout's `origin` remote, with a GitHub Enterprise origin host-qualified so `gh` reaches the right host. With no usable `origin` and no `--repo`, the command exits 1 with a one-line error naming `--repo`. Supplying `--repo` explicitly does not host-qualify the `gh api` comment-count calls the way the auto-derived path does
-- `--branches B1,B2,...` *(required)* — branches to look up
+- `--branches B1,B2,...` *(required)* — branches to look up. Attribution follows the "Pre-branch default-branch attribution" block under `cost`.
 - `--author LOGIN` — filter comment counts to one GitHub login
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
@@ -357,7 +357,7 @@ Each label is this module's own classification of `gh`'s stderr, not `gh`'s own 
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--exclude-projects GLOB` — skip project dirs matching this glob
-- `--branches B1,B2,...` — filter to specific branches
+- `--branches B1,B2,...` — filter to specific branches. Attribution follows the "Subagent attribution" and "Pre-branch default-branch attribution" blocks under `cost`.
 
 **Sample output.**
 ```
@@ -387,7 +387,7 @@ Bin         Lead  Main  Side   Pair%
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
 - `--exclude-projects GLOB` — exclude project dirs matching this glob
-- `--branches B1,B2,...` — branch name filter (default: all)
+- `--branches B1,B2,...` — branch name filter (default: all). A whole-session filter on the literal `gitBranch`, so the "Pre-branch default-branch attribution" block under `cost` does not apply.
 
 **Sample output.**
 ```
@@ -408,13 +408,13 @@ bin          sessions   turns  skill-inv  skill/1k commits  w-skill  wo-skill  n
 
 **Purpose.** Per-skill invocation-source tally for a scoped set of projects (this repo by default), split into three buckets: `top-level` (description-triggered Skill tool_use on a main-thread turn with no parent skill active), `routed` (Skill tool_use fired while another skill's body was active — `attributionSkill` is non-empty), and `user-slash` (user record containing `<command-name>/skillname</command-name>`, the `/slash` invocation path). The classification summary at the bottom identifies routed-only candidates (name-only eligible) and slash-only candidates (disable-model-invocation eligible) for skill-description budget analysis.
 
-**Scope defaults to this repo.** With `--projects` unset, the read is scoped to *this repository's own worktrees*, derived from `git worktree list` and matched by exact directory identity. This is a minimization control: the output is routinely quoted into public PR descriptions, and skill names on the machine can themselves be private-project identifiers. It fails closed (error, no output) rather than falling back to a machine-wide read if the repo scope cannot be derived. Passing an explicit `--projects` glob is an escape hatch for corpus analysis — the output is then no longer scoped to this repo. The header labels that state as `explicit --projects (not repo-scoped)` rather than interpolating the glob, so the glob itself never reaches stdout; `review-trace`, whose scope label is the glob, differs here.
+**Scope defaults to this repo.** With `--projects` unset, the read is scoped to *this repository's own worktrees*, derived from `git worktree list` and matched by exact directory identity. This is a minimization control: the output is routinely quoted into public PR descriptions, and skill names on the machine can themselves be private-project identifiers. `--include-subagents` weakens this bound; see Limits below. It fails closed (error, no output) rather than falling back to a machine-wide read if the repo scope cannot be derived. Passing an explicit `--projects` glob is an escape hatch for corpus analysis — the output is then no longer scoped to this repo. The header labels that state as `explicit --projects (not repo-scoped)` rather than interpolating the glob, so the glob itself never reaches stdout; `review-trace`, whose scope label is the glob, differs here.
 
 **Flags.**
-- `--projects GLOB` — project directory glob. Default: this repo's own worktrees only (publish-safe); an explicit glob is the escape hatch (not repo-scoped).
+- `--projects GLOB` — project directory glob. Default: this repo's own worktrees only (publish-safe without `--include-subagents`; see Limits); an explicit glob is the escape hatch (not repo-scoped).
 - `--this-repo` — explicit no-op: `skill-invocation` already defaults to this repo's own worktrees. Kept so the flag is uniform across every `--projects` subcommand; mutually exclusive with `--projects` like everywhere else.
-- `--branches B1,B2,...` — restrict to named `gitBranch` values (default: all branches in scope).
-- `--include-subagents` — also count invocations inside spawned subagents, adding a `thread` column (`main` vs `sidechain`). Off by default so budget analysis stays main-thread-only; the fidelity consumer opts in.
+- `--branches B1,B2,...` — restrict to the named branches (default: all branches in scope). Attribution follows the "Pre-branch default-branch attribution" block under `cost`, and with `--include-subagents` the "Subagent attribution" block too.
+- `--include-subagents` — also count invocations inside spawned subagents, adding a `thread` column (`main` vs `sidechain`). Off by default so budget analysis stays main-thread-only; the fidelity consumer opts in. Its output can carry another project's skill names; see Limits.
 
 **Sample output** (default scope — this repo, main thread):
 ```
@@ -454,7 +454,7 @@ CLASSIFICATION SUMMARY
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above); required before quoting output publicly (see below)
-- `--branches B1,B2,...` — filter to specific branches
+- `--branches B1,B2,...` — filter to specific branches. Attribution follows the "Pre-branch default-branch attribution" block under `cost`.
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
 - `--until DATE` — inclusive end date (`YYYY-MM-DD`)
 - `--deny-only` — restrict to sessions containing at least one hook denial
@@ -462,7 +462,7 @@ CLASSIFICATION SUMMARY
 - `--skill NAME` — restrict skill-invocation matching to one skill name
 - Scope is always the main thread plus every dispatched subagent's own transcript file, merged into one chronological stream — unlike `skill-invocation`, there is no flag to narrow this to main-thread-only. Each event's `thread` field (`main` or `sidechain`) marks which thread it came from.
 
-Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. An event whose branch or model cannot be resolved renders `?`.
+Branch and model are resolved *per event*, from the record that produced it — not from the session's first record — so a session that moves from one branch or model to another attributes each event correctly, and `--branches` filters by that per-event value. A carried default-branch value recorded before the session's first real branch is credited to that branch, per the "Pre-branch default-branch attribution" block under `cost`. An event whose branch or model cannot be resolved renders `?`.
 
 `line_no` carries two meanings depending on the event's `thread`. For `thread=main` it is the real 1-based line of the main transcript file, accurate only when every earlier line in the file parsed as valid JSON — a malformed earlier line is silently skipped during parsing, shifting every later line's number down by one. For `thread=sidechain` it is only a position in the merged main+subagent stream, indexing no single file — those rows print `line n/a` instead of a number.
 
@@ -471,9 +471,9 @@ Branch and model are resolved *per event*, from the record that produced it — 
 REVIEW TRACE SOURCES (this repo (6 project dirs); 1 root (no ~/.claude/transcript-config-dirs declared))
 
 ### <config-dir>/projects/my-project/abc123.jsonl
-branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=5  architect-consults=1
-  [2026-05-20T10:15:00.000Z] line   45  skill        plan-review  (branch=main model=opus)
-  [2026-05-20T10:16:00.000Z] line   50  consult      plan-architect  (branch=main model=opus)
+branches=my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spawns=5  architect-consults=1
+  [2026-05-20T10:15:00.000Z] line   45  skill        plan-review  (branch=my-feature model=opus)
+  [2026-05-20T10:16:00.000Z] line   50  consult      plan-architect  (branch=my-feature model=opus)
   [2026-05-20T10:17:30.000Z] line   62  reviewer     staff-backend-engineer  (branch=my-feature model=sonnet)
   [2026-05-20T10:17:31.000Z] line   63  reviewer     staff-sdet  (branch=my-feature model=sonnet)
   [2026-05-20T10:17:45.000Z] line   n/a  reviewer     staff-sdet  (branch=my-feature model=sonnet thread=sidechain)
@@ -481,7 +481,7 @@ branches=main,my-feature  models=opus,sonnet  skills=3  denials=1  reviewer-spaw
   [2026-05-20T11:02:00.000Z] line  145  skill        code-review  (branch=my-feature model=sonnet)
 ```
 
-The session above opened on `main`, then moved to `my-feature` partway through — the header's `branches=`/`models=` lists both, and each event line carries its own attribution rather than inheriting the session's first-record branch. The `thread=sidechain` row is a reviewer spawned from inside the `staff-sdet` dispatch above it — its `line` prints `n/a` rather than a number, and its timestamp still sorts chronologically alongside the main-thread rows around it.
+The session above opened on `main`, then moved to `my-feature` partway through. The "Pre-branch default-branch attribution" block under `cost` credits its opening events to `my-feature`, so the header's `branches=` lists that one branch. `models=` still shows per-event model attribution, here opus for the opening events and sonnet for the later ones. The `thread=sidechain` row is a reviewer spawned from inside the `staff-sdet` dispatch above it — its `line` prints `n/a` rather than a number, and its timestamp still sorts chronologically alongside the main-thread rows around it.
 
 **When to reach for it.** Audit which sessions hit hook denials (`--deny-only`), or compare review-skill activity before vs. after a convention landed using `--since`/`--until`. The timeline locates sessions; judging whether a review caught a material issue is a qualitative read. A `consult` row has two limits:
 
@@ -558,14 +558,14 @@ interrupted                    1
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above)
-- `--branches B1,B2,...` — filter to specific branches
+- `--branches B1,B2,...` — filter to specific branches. Attribution follows the "Pre-branch default-branch attribution" block under `cost`.
 - `--since DATE` — inclusive start date (`YYYY-MM-DD`)
 - `--until DATE` — inclusive end date (`YYYY-MM-DD`)
 - `--skills SKILL1,SKILL2,...` — comma-separated skill names to match (default: `code-review,plan-review,ready-for-review`)
 - `--truncate-chars N` — maximum characters for the review output block (default: 1000)
 - `--out PATH` — write output to this file instead of stdout
 
-`--branches` filters on the invocation record's own `gitBranch`, not a session-wide branch — a session whose branch changes between the review invocation and the user's reply is selected by where the invocation itself happened.
+`--branches` filters on the invocation record's attributed branch, not a session-wide branch — a session whose branch changes between the review invocation and the user's reply is selected by where the invocation itself happened.
 
 **Sample output.**
 ```
@@ -644,7 +644,7 @@ Like `subagents` and `skill-pair`, `cost` calls `_warn_if_subagent_format_drift`
 **Flags.**
 - `--projects GLOB` — project directory glob (default: `*`, all projects)
 - `--this-repo` — scope to this repo's own worktrees by identity, instead of a machine-wide glob (see "Scoping to this repo" above); mutually exclusive with `--projects`
-- `--branches B1,B2,...` — filter to specific branches (default: all). Per-record, not per-session: a single session routinely spans branches, so a session-level filter would misprice it in both directions. A `worktree-agent-*` subagent record's own literal `gitBranch` is not what `--branches` filters on — see "Worktree-isolated subagent attribution" below.
+- `--branches B1,B2,...` — filter to specific branches (default: all). Per-record, not per-session: a single session routinely spans branches, so a session-level filter would misprice it in both directions. A subagent record's own literal `gitBranch` is not what `--branches` filters on — see "Subagent attribution" below. A session's leading default-branch records count toward the first branch it enters — see "Pre-branch default-branch attribution" below.
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable), on top of the default corpus already described in "Corpus scope: the declared-roots file" above (the active profile plus every root declared in `~/.claude/transcript-config-dirs`). Each `--config-dir` extra must also contain its own `projects/` subdirectory or the run is rejected. Composes with `--this-repo`: its worktree-identity match is root-independent, so `--this-repo` unions across the default corpus and every `--config-dir` extra the same way it does under the declared-roots file alone. Refused together with `--no-redact` (more than one root in scope would put one profile's real project names into a report meant to also cover another).
 - `--by-project` — add a per-project cost breakdown, keyed on (account root, project family); composes with both `--projects` and `--this-repo`. One repo's own worktrees collapse into a single family row instead of fragmenting per branch. When `--config-dir` puts more than one root in scope, each row also carries an `Account` column using the same `account-N` labeling the per-root scan-summary lines use. Under `--no-redact` (single-root only — see below), the Project column shows the raw, suffix-collapsed directory name instead of a `private-project-N` placeholder, same as every other section of this report. Refused together with `--summary`.
 - `--since Nd` — limit to turns with timestamp in the last N days (e.g. `30d`). When given, each scanned root's actual earliest in-scope turn is tracked (regardless of the filter) and compared against the requested window start: a root whose earliest turn is more than a day newer prints its own `WARNING: cost: <root>: earliest turn found is …` line, naming that date and the requested window start, so a corpus that starts partway through the requested window is visible instead of silently under-reporting. One warning per short root — a well-covered root never suppresses a sibling root's own warning.
@@ -666,7 +666,65 @@ Like `subagents` and `skill-pair`, `cost` calls `_warn_if_subagent_format_drift`
 
 Redacted project labels (`private-project-N`, `account-N`) and the printed corpus fingerprint are **not comparable across two report runs built from different declared-roots files** — a changed corpus (a new session, a removed project dir, a different declared-roots or `--config-dir` set) can renumber every ordinal. Two runs built from the *same* declared-roots file, even from different active profiles, assign the same ordinal to the same physical root and stay comparable — see "Corpus scope: the declared-roots file" above. This comparability guarantee excludes `cost --summary`: it always resolves to one root, so its `account-N` for the active root is not guaranteed to match the ordinal a full (non-`--summary`) run built from the same declared-roots file assigns that same physical root. Treat a run's redacted output as self-contained unless you know the roots file behind it is unchanged; never diff `private-project-3` between two runs without that guarantee and assume it names the same project.
 
-**Worktree-isolated subagent attribution.** A subagent dispatched with `isolation: "worktree"` runs on a harness-generated `worktree-agent-<hash>` branch, not the branch that dispatched it. `--branches` filters on each record's *attributed* branch, not that literal value: for every `worktree-agent-*` record, `cost` resolves the dispatching session's own branch active at that record's timestamp (falling forward to the session's earliest branch if the record predates every main-thread record), and folds the subagent's dollars and tokens into that branch's total — the same real spend a plain literal-`gitBranch` filter would otherwise silently drop. The one genuinely unattributable case — a session with no main-thread branch-bearing record at all — renders `?` (reusing the `?` sentinel `review-trace`/`judgment-pair` already use for "no signal to carry forward") and is excluded from every `--branches`-filtered total. Attribution is scoped to the dispatching session only; a `worktree-agent-*` record is never resolved against a *different* session's main-thread history. For the separate case of a subagent whose cwd is simply a different, already-existing repo than its parent's (no `isolation: "worktree"` involved), see "A subagent dispatched from another repo's session" above.
+**Subagent attribution.** In every subcommand the next block lists as applying both blocks, every sidechain (subagent) record, `isolation: "worktree"` or not, takes the branch its dispatching session's main thread was on at that record's timestamp.
+- **Timeline.** That branch is the last main-thread record with a branch at or before the record's timestamp.
+- **Predates the timeline.** The record falls forward to the session's earliest main-thread branch when it predates every main-thread record or carries no parseable timestamp.
+- **No timestamps in the session.** When no branch-bearing main-thread record in the session has a parseable timestamp, the record takes the first main-thread branch in file order.
+- **No branch in the session.** A session with no branch-bearing main-thread record at all renders `?` and is excluded from every `--branches`-filtered total. The `?` is the sentinel `review-trace`/`judgment-pair` already use for "no signal to carry forward".
+- **Consumers with no `?` column.** Such a consumer treats the record as having no branch.
+  - `subagents`, `buckets` and `duration` omit it with or without `--branches`.
+  - The `skill-*` filters omit it under `--branches`.
+  - `review-trace` prints `?`.
+- **Session scope.** Attribution is scoped to the dispatching session only. A subagent record is never resolved against a *different* session's main-thread history.
+- **Labels.** Provided its records carry the `isSidechain` flag (see Limits), a subagent's own branch name never becomes a label.
+- **Own tag and `cwd`.** A subagent's spend counts toward its dispatching session's branch whatever its own tag or `cwd`, including a subagent this repo's session dispatched into another repo.
+- **`worktree-agent-*`.** A `worktree-agent-*` record is one case of this rule.
+- **Cross-repo.** For a subagent that worked in this repo from another repo's session, see "A subagent dispatched from another repo's session" above.
+
+**Pre-branch default-branch attribution.** Within one session, a main-thread record tagged with a default-branch candidate (`main`, `master` or `develop`, mirroring `_lib_default_branch_or_guess`'s candidate list in `claude/.claude/hooks/_lib.sh`) and recorded before the main thread first moves to another branch counts toward that first branch. Planning that precedes a feature branch's creation is the usual source. A sidechain record first resolves through "Subagent attribution", and this block then applies to the branch it resolved to, so a subagent that ran during the leading run moves with it.
+- **Skipped entries.** `HEAD` (the tag observed on a detached checkout in local transcripts) and `worktree-agent-*` main-thread entries are never the successor, and they keep their own tag.
+- **Tie ordering.** Entries sort by timestamp, and entries that share a timestamp sort by branch name, not file order. When the first two distinct-branch entries share a timestamp, the name order decides whether a leading run exists. When two real branches share the boundary timestamp, the same name order picks the successor.
+- **Boundary.** The first non-candidate main-thread entry sets the successor branch and the boundary timestamp.
+- **Moves and stays.** A record strictly before the boundary moves. A main-thread record at or after it, or with no timestamp, stays. A sidechain record is compared by the timestamp of the timeline entry it resolved to.
+- **Single successor.** Every candidate entry before the boundary, including a `main` to `develop` hop, folds into that one branch.
+- **First leading run only.** Later default-branch stretches stay on the default branch, so planning between later PRs is not credited to them, and a later move from one real branch to another does not repeat the step.
+- **Conservation.** The pre-branch step moves records between branches without changing unfiltered turn and record totals. `buckets`' per-branch Sess counts are the exception: a session counts only under the branches it is attributed to, so the default branch's Sess count excludes sessions whose only default-branch records were the leading run. The subagent step's cohorts under Effects can change totals in consumers that omit unbranched records.
+- **Window.** The leading run is found from the session's full records, before any `--since`/`--until` filter.
+
+These subcommands apply this block, except where the last bullet says otherwise, and this is the only list. Those in the first two bullets also apply "Subagent attribution":
+- `cost`, `pr-cost`, `workstream-cost` and the startup-burn benchmark of `handoff-signal-response` apply both blocks. `pr-cost` and `workstream-cost` share `cost`'s per-branch totals pass, and the benchmark comes from `workstream-cost`'s computation.
+- `subagents`, `skill-invocation --include-subagents` and `skill-pair` read sidechain records, so they apply both blocks. `buckets` and `duration` apply both for a sidechain record that sits inline in a main transcript file.
+- `fail-seq`, `struggle`, `user-input`, `judgment-pair`, `pr-link` and `skill-invocation` without `--include-subagents` exclude sidechain records, so only this block reaches them.
+- `review-round-cost`, `cost-counts` and `subagent-mix` detect rounds and count spawns from main-thread records only, so only this block reaches them, and "Subagent attribution" does not. Review-bench mining (`evals/review_bench`, not a subcommand) joins them through the same round attribution, so a round held before the branch exists joins the branch's group.
+- Round attribution (`review-round-cost`, `cost-counts` round counts, review-bench mining) and `review-trace` are positional: they carry the last main-thread branch forward to every record, sidechain records included, and apply only this block to that carried value, using the record's own timestamp (`scope._attribute_carried_branch`).
+- Raw-tag exceptions: `commit-gate` and `rearm-backtest` select whole sessions by the literal tag, `turn-shape` ends a streak on a literal tag change, and `fail-seq` resets its pending test-run pairing on one. `subagents` also reads the literal tag of a main-thread `assistant` or `user` record to decide which branches print raw.
+
+The full `cost` report under `--branches` prints one extra line, `Pre-branch default-branch records credited to this --branches filter: <N> turns, $<X>`. It counts only the turns this block moved into the filter set from outside it, so a filter that holds both the default branch and its successor prints nothing for that session. Unpriced turns count toward the turns but not the dollars. It never prints under `--summary` or `--share-only`. The shift from "Subagent attribution" has no audit line.
+
+**Effects.**
+- Startup burn includes a later session's cold-start turns on the default branch, so `workstream-cost`'s burn share, its sessions per branch and the `handoff-signal-response` benchmark move.
+- `review-round-cost --pooled`'s branch units move.
+- `duration`'s Span and Active include the leading default-branch records, and `buckets`' Date range for the branch entered starts at them, while the default branch's turn counts drop. The default branch's Sess count drops only for sessions whose only default-branch records were the leading run.
+- `user-input`'s labels follow the attributed branch, and under `--branches` the prefix's first prompt becomes the branch's initial prompt, so its initial, follow-up and correction counts move. `--branches` is not a content-disclosure boundary for `user-input` and `judgment-pair`: under `--branches X` they also emit the same session's leading default-branch prompts and reviews. `judgment-pair` scopes which sessions are read with `--this-repo` (see "Scoping to this repo" above); `user-input` has no `--this-repo` and scopes by `--projects GLOB` only.
+- `skill-invocation --include-subagents` and `skill-pair` count a subagent invocation under the dispatching branch, whatever the subagent record's own tag.
+- A subagent record whose own tag differs from its dispatching main thread's branch takes that branch, for example one still running after a switch.
+- A subagent record with no tag of its own takes the main thread's branch.
+- A session with no branch-bearing main-thread record leaves its subagent records unbranched.
+
+**Limits.**
+- A default branch outside `main`, `master` and `develop` gets no remap.
+- Unrelated work done on the default branch before the branch is entered is folded in with the rest of the leading run.
+- Only the first PR a session enters is credited with its pre-branch work; see "First leading run only" above.
+- A leading stretch on a detached checkout keeps the `HEAD` tag and is not credited.
+- Main-thread records with no timestamp stay where they are tagged.
+- Planning done in a separate session that stays on the default branch has no same-session successor and is not moved.
+- The `Scope:` caption's "this repository only" names the sessions read, not each subagent's working directory (see "Subagent attribution").
+- Inside a review round's window, the round's own key governs every record.
+- Rounds price a whole dispatch at its spawn record's branch, while per-record consumers split a subagent that straddles a switch.
+- `review-trace` renders `?` where per-record consumers fall forward.
+- `--include-subagents` output, in any form, can carry another project's skill names, because a subagent file under an in-repo session is read whatever repo the subagent worked in. A skill name can itself identify a private project. `--branches X` additionally counts such records under X. Treat all `skill-invocation --include-subagents` output as local-only.
+- A session that moves its working directory into another repo can name a foreign branch as the pre-branch successor, so the leading run goes to that name and this PR's branch loses it. A foreign-repo default-branch stretch followed by a branch here is credited to this PR.
+- Sidechain records are identified by each record's own `isSidechain` flag, not by which file holds them. A record in a `subagents/*.jsonl` file without the flag is treated as a main-thread record: it keeps its own tag, and that tag enters the timeline, where it can attribute later subagent records and become the pre-branch successor. The subagent-format drift warning fires only when main-thread spawns are recorded and no flagged assistant turn is read, so it does not catch a partial loss of the flag. `pr-cost` and `workstream-cost` emit no drift warning.
 
 **The disclosed fields are not neutral.** `--summary`'s output is aggregate-only, but "aggregate" does not mean "safe to publish by default": session count and priced-turn count signal how much engagement went into a branch, per-class token volume signals how long that engagement ran, and per-model-ID dollars discloses which models are in use; the branch name in the `Scope:` caption is a disclosed field too. The same PR body's `cost-counts` subsections (below) add per-review-skill round counts and per-agent-type spawn counts, both bare integers with no dollar figure attached. That is the intended read for an account that opts into publishing it (see `pr-description`'s PR body cost block and `docs/hooks.md`'s `pr-cost-disclosure` entry) — it is not a property of the output format itself, and an account enabling the sentinel for an unrelated reason should not assume these fields are harmless to expose.
 
@@ -1087,7 +1145,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 **Flags.**
 - `--projects GLOB` / `--this-repo` — project directory scope (see "Scoping to this repo" above)
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable). Refuses (exit 2) whenever more than one root resolves, since this subcommand durably writes.
-- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the opt-in sentinel `~/.claude/.pr-cost-enabled`.
+- `--record` — capture ledger rows for eligible merged PRs instead of reading. Requires the `pr_cost_recording` config key to resolve true (legacy-fallback mechanics: `docs/config-file.md`). It can exit 1 after a completed run when a row was recorded without its per-model breakdown, per `docs/pr-cost.md` § "Write-time check failures".
 - `--pr N` — target exactly one PR number instead of every branch with local corpus activity.
 - `--machine-label LABEL` — narrows read mode's uncaptured-PR listing to one machine: an opaque token matching `^[a-z0-9]{1,8}$`. Refused (exit 1) together with `--record` — machine identity is generated and persisted automatically there (see `docs/pr-cost.md`'s "Machine identity").
 - `--force` — with `--record` and `--pr`, append a correcting row for an already-captured PR instead of refusing.
@@ -1097,7 +1155,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 
 **Default (read) output.** Every row currently in the ledger file, followed by every merged PR with local-corpus activity that no row has captured yet — the gap between "recorded" and "still recoverable," mirroring `cost-ledger`'s own uncaptured-week listing.
 
-**Two modes, one sentinel.** Read mode makes only the calls discovery already needs, so it stays cheap enough to run often as a capture-trigger check. `--record` is gated behind `~/.claude/.pr-cost-enabled` precisely because it durably writes branch names and a repo identifier to an external file, unlike the weekly ledger's aggregate-only rows — `install.sh` prompts for both sentinels together.
+**Two modes, one opt-in key.** Read mode makes only the calls discovery already needs, so it stays cheap enough to run often as a capture-trigger check. `--record` is gated behind the `pr_cost_recording` config key precisely because it durably writes the at-rest data listed in `docs/pr-cost.md` § "Data" to an external file, unlike the weekly ledger's aggregate-only rows — `install.sh` prompts for both opt-in keys together.
 
 **When to reach for it.** Run in read mode routinely to catch merged PRs about to age out of the local transcript window; run `--record` once a PR clears the as-of window to capture its row permanently before that happens.
 
@@ -1111,7 +1169,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 - `--out PATH` — required; the destination TSV. Refused if it already exists (never overwritten). There is deliberately no stdout fallback — stdout inside a Claude Code session is captured into that session's own transcript.
 - `--config-dir DIR` — additional Claude Code config directory to scan (repeatable).
 
-**Default output.** There is no read-mode/`--record` split like `pr-cost`'s — every invocation writes the export file, honoring each account's existing `~/.claude/.pr-cost-enabled` sentinel (an account without it contributes zero rows).
+**Default output.** There is no read-mode/`--record` split like `pr-cost`'s — every invocation writes the export file, honoring each account's existing `pr_cost_recording` config key (an account whose key resolves false or unset contributes zero rows).
 
 **When to reach for it.** Before a cross-account or cross-repo cost analysis that needs to leave the machine it was captured on, or before comparing per-PR cost figures across more than one declared account in one artifact.
 
@@ -1126,7 +1184,7 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 - `--check-pr-status` -- additionally classify every branch as merged / closed-unmerged / no PR match at all via `gh`, pinned to this invocation's own repo identity the same way `pr-cost` pins one (`_resolve_pinned_gh_repo`, from `git remote get-url origin`). Requires `gh`.
 
 **Default (pure-transcript) mode.**
-- Groups sessions by attributed branch (carry-forward via `_attributed_branch`/`_session_branch_index`, so `worktree-agent-*` dispatches roll up to the real branch).
+- Groups sessions by attributed branch (`scope._attributed_branch`, so subagent records, `worktree-agent-*` dispatches included, roll up to the dispatching branch). These figures follow the "Subagent attribution" and "Pre-branch default-branch attribution" blocks under `cost`; for the cutover and comparing runs across it, see `docs/pr-cost.md` § "Pre-branch and subagent attribution".
 - Orders each branch's sessions by first-turn timestamp, not iteration order (`iter_sessions` yields file-path sort order).
 - Prints branch count, mean/median sessions per branch, and startup-burn dollars as a share of total branch dollars.
 - Startup burn = each non-first session's first 5 main-thread turns' summed dollars (5 is `_RAMP_CURVE_TURN_INDEX_BUCKETS`'s own early-turns boundary), never padded when a session has fewer than 5 turns.
@@ -1139,23 +1197,25 @@ Each session's file is read twice — once by the shared scope iterator, once mo
 
 ## review-round-cost
 
-**Purpose.** Per-branch dollar cost of the `plan-review`/`code-review`/`ready-for-review` review loop: opens a round at every invocation of one of the three skills (both the `Skill` tool_use path and the `/slash` path), closes it at the next round-open or the next fresh user prompt, and prices every main-thread turn in that window plus every subagent transcript dispatched inside it (recursive `toolUseId` join, following a reviewer spawned from inside another subagent too). Every invocation is its own round -- no dedup by diff-state, since token cost is incurred whether or not the round produced findings. Read-only, corpus-wide, no `gh` calls.
+**Purpose.** Per-branch dollar cost of the `plan-review`/`code-review`/`ready-for-review` review loop: opens a round at every invocation of one of the three skills (the `Skill` tool_use path and the `/slash` path) and at every main-thread `Agent`/`Task` dispatch of a `review-orchestrator` (which runs `code-review` in its own transcript). It closes each round at the next round-open or the next fresh user prompt. It prices every main-thread turn in that window plus every subagent transcript dispatched inside it (recursive `toolUseId` join, following a reviewer spawned from inside another subagent too). Every invocation is its own round -- no dedup by diff-state, since token cost is incurred whether or not the round produced findings. Read-only, corpus-wide, no `gh` calls.
 
 **Flags.**
 - `--projects GLOB` / `--this-repo` -- project directory scope (see "Scoping to this repo" above)
-- `--branches B1,B2,...` -- filter to specific branches (default: all)
+- `--branches B1,B2,...` -- filter to specific branches (default: all). A round's branch follows the "Pre-branch default-branch attribution" block under `cost`.
 - `--since DATE` / `--until DATE` -- inclusive absolute date bounds (`YYYY-MM-DD`) on each round's own opening timestamp, matching `judgment-pair`'s convention. These narrow which *rounds* are counted, not which turns are priced -- a branch's "branch $" denominator in the reconciliation line below is always its full, unwindowed corpus total, so a `--since`-narrowed run compares in-window round dollars against all-time branch spend.
 - `--skill NAME` -- an output filter over already-detected rounds to one of `code-review`/`plan-review`/`ready-for-review` (default: all three), applied after detection exactly like `--branches`/`--since`/`--until`. It never narrows round-window detection itself, so a round's own `main $`/`agent $`/`agents` figures are invariant to which `--skill` value is passed -- only which rounds are printed and aggregated changes. `branch_totals` (the reconciliation line's denominator, below) is likewise never narrowed by `--skill`, so a filtered run's lower round-share percentage reflects an unchanged denominator against a smaller numerator, not a regression.
 - `--pooled` -- render a pooled cross-account share block instead of the per-branch table and footer, publishable only under `docs/private-project-redaction.md` § "The owner can authorize one figure, case by case". See "Pooled mode" below.
 - `--show-withheld` -- requires `--pooled`; also prints the figures the dominance-precision floor would otherwise withhold, plus the two data-quality-gap lines plain `--pooled` never prints, under a `DO NOT PUBLISH` banner on both stdout and stderr. Never publishable -- see "Pooled mode" below.
 
 **Round detection caveats.**
+- **A dispatch spawned from inside another subagent prices into its round.** The session's one flat `subagents/` index resolves it.
 - **Main-thread only.** A review skill invoked *inside* a dispatched subagent is already priced as that dispatch's own cost; counting it as its own round would double-count its dollars. That subagent's own review-skill spend, if reached from outside any round window, lands in the branch's non-round remainder below -- visible, not silently dropped.
+- **A main-thread `review-orchestrator` dispatch is a round.** `review-orchestrator` is the only agent type the code recognizes as running a review inside a subagent, and the dispatch itself opens a `code-review` round. Its reviewers and `code-writer` dispatches are priced into that round. Its own `Skill` call is never a second round. The dispatch counts as a round whether or not it invoked a review skill; see "Orchestrator rounds" under `author-outcome` for the halted and never-ran cases.
 - **A round's dollars are attributed to its own opening branch across its whole window.** Every dollar inside a round's window -- not only the opening record's own turn -- is attributed to the branch the round opened on, even when the session's own `gitBranch` changes partway through the window (e.g. a worktree switch mid-review). A record outside every window carries forward the last main-thread branch, unaffected by any window.
 - **A mid-review user interjection closes the window early.** The window closes at the first fresh user prompt *or* the next round-open, whichever comes first -- a user message sent partway through a review (before the reviewer's own output lands) ends the round there, and everything after it belongs to whatever comes next, not to the interrupted round.
 - **A round open at session end is priced through the last record.** No closing fresh user prompt and no next invocation before EOF still prices every turn and dispatch through the transcript's end -- never dropped or thrown on.
 
-**Reconciliation line.** `round $ X of Y branch $ (Z%)`, printed per branch: `X` is that branch's own rounds' summed dollars (main + subagent), `Y` is the branch's full corpus total (main + subagent, round or not). The gap between them is real work the review loop's own windows don't capture -- everything from ordinary implementation turns to a review-skill dispatch reached only from inside a subagent (see above). The "Non-round dollars" footer is the same ratio summed across every branch with at least one round in scope; a branch with zero rounds is not reported at all, so it never enters either sum. The "Reviewer-dispatch dollars" footer is the subagent-only component of round dollars (`agent $`, summed across every round in scope), expressed as a share of that same branch-dollars denominator. It is narrower than "round $" above, which also includes each round's own main-thread turns. Under more than one scan root the footer prints one `account-<K>`-prefixed block per root, summed only from that root's own branches, never blended across roots. Under a single root it prints one unprefixed block, as shown below. "Dangling dispatches"/"Unpriced turns" sum, across every round, a dispatch with no readable `meta.json`/`.jsonl` pair and a turn on an unrecognized model ID, respectively -- both are counted inside round windows only. What falls outside them is listed under "Coverage the scan-gap refusal does not give" in "Pooled mode" below.
+**Reconciliation line.** `round $ X of Y branch $ (Z%)`, printed per branch: `X` is that branch's own rounds' summed dollars (main + subagent), `Y` is the branch's full corpus total (main + subagent, round or not). The gap between them is real work the review loop's own windows don't capture -- everything from ordinary implementation turns to a review-skill dispatch reached only from inside a subagent (see above). The "Non-round dollars" footer is the same ratio summed across every branch with at least one round in scope; a branch with zero rounds is not reported at all, so it never enters either sum. The "Subagent-dispatch dollars" footer is the subagent-only component of round dollars (`agent $`, summed across every round in scope), expressed as a share of that same branch-dollars denominator. It counts every Agent/Task dispatch spawned in a round window, nested dispatches included, whatever the agent type. It is narrower than "round $" above, which also includes each round's own main-thread turns. Under more than one scan root the footer prints one `account-<K>`-prefixed block per root, summed only from that root's own branches, never blended across roots. Under a single root it prints one unprefixed block, as shown below. "Dangling dispatches"/"Unpriced turns" sum, across every round, a dispatch with no readable `meta.json`/`.jsonl` pair and a turn on an unrecognized model ID, respectively -- both are counted inside round windows only. What falls outside them is listed under "Coverage the scan-gap refusal does not give" in "Pooled mode" below.
 
 **PR numbers.** This subcommand prints branch names only, never a PR number -- compose with `pr-link --branches B1,B2,...` (against this command's own `--this-repo` output) to map a reported branch to its GitHub PR, rather than embedding a `gh` join here (see the architecture doc's package/shim import-direction note for why).
 
@@ -1176,7 +1236,7 @@ Totals: 4 branches, 19 rounds (code-review=11  plan-review=4  ready-for-review=4
 Mean rounds per branch: 4.75
 Mean $ per round — code-review 2.41  plan-review 1.90  ready-for-review 1.12
 Non-round dollars: 61.2% of branch dollars fell outside every round window
-Reviewer-dispatch dollars: 24.7% of branch dollars, inside round windows
+Subagent-dispatch dollars: 24.7% of branch dollars, inside round windows
 Dangling dispatches inside round windows: 2 (no readable meta.json/jsonl pair)
 Unpriced turns inside round windows: 0
 ```
@@ -1364,6 +1424,23 @@ Two non-failure buckets, each of which would bias the share if collapsed into PA
 - **UNRESOLVED** -- no `code-review` round after the dispatch at all (typically the last dispatch of a session). Excluded from the failure-share denominator.
 - **UNATTRIBUTED** -- a round ran and left neither a matching ledger row nor a marker write. Excluded from the denominator and reported, so the operator sees the compliance rate rather than absorbing it as a passing grade. A round that raised a genuine `ADDRESS` finding but whose every append failed is indistinguishable from this bucket, since the failed append leaves no row; accepted as narrow, since an append fails only on a script or filesystem error.
 
+**Orchestrator rounds.** A main-thread `review-orchestrator` dispatch is a `code-review` round-open, and the round opens at the dispatch record. The orchestrator runs the review in its own transcript, so author-outcome also reads that one transcript, found through the session's `subagents/*.meta.json` `toolUseId` join, one transcript at a time:
+
+- **Marker fallback.** The fallback also reads whether the orchestrator's own transcript holds a `marker.sh write code-review` call, for each orchestrator spawn inside the round's outcome span. The signal is "attempted, not confirmed": a write counts whether or not it succeeded, on the inline path and the orchestrator path alike. It also counts a command that never ran, in any of these shapes:
+  - a short-circuited `false && marker.sh write code-review`;
+  - heredoc-body or unbalanced-quote text that tokenizes as an operator followed by the call;
+  - any directory's `marker.sh` with trailing arguments.
+
+  A failed, denied or unexecuted marker write therefore reads as PASS in a session with no round-keyed ledger rows. That false-PASS residual can inflate the PASS share, and it affects analytics only.
+- **Nested dispatches.** A dispatch of the `--agent` type inside the orchestrator's transcript takes the orchestrator's spawn position as its completion index, so it attributes to the first round-open after the orchestrator's round. Its `--since` check uses its own start timestamp. It is UNDECIDABLE when the orchestrator's transcript holds no `tool_result` for it.
+- **Launch-position limitation.** Completion at the spawn position is the same limitation the main thread has, where a dispatch whose `tool_result` is a launch acknowledgement completes at its launch position, and an acknowledgement satisfies the result check. Two residuals follow. A main-thread round that opens while the orchestrator is running is credited with its fix. An orchestrator can return while a nested `code-writer` is still in flight, so the next round is credited with that fix.
+- **Unreadable transcripts.** An orchestrator whose transcript is dangling, unreadable or empty, or whose spawn block has no usable `id` (absent or not a string), contributes no marker and no nested dispatches, and counts under "orchestrator dispatches with no readable transcript records". A non-zero value can explain a rise in the `authoring_agent inconsistent` count, because the unreadable orchestrator's nested `code-writer` is missing and the round's transcript side reads `inline`. The counter also counts dispatches that never ran, which lose no nested `code-writer`, so a non-zero value alone does not establish such a rise.
+- **Rounds that end before a ledger append.** All three round-consuming subcommands count a halted or never-run orchestrator dispatch as a round, whether or not it invoked a review skill. The "Round-number-sequence check" below decides when a round-open with no ledger block makes the session a mismatch. Three cases differ in what author-outcome does with a round that ends early:
+  - **Cannot start (it lacks the `Skill` or `Agent` tool), or returns a round-ending `HALT:` before its first ledger append.** The round-open has no ledger block. In a session with no round-keyed ledger rows, the round reads as UNATTRIBUTED and the round-number-mismatch counter does not move. A session flagged by the "Ledger-possibly-swept check" below instead has its dispatches leave the headline under that counter.
+  - **Halts after its first ledger append.** The round-open has a ledger block, so the session is no mismatch.
+  - **Halts and another round appends a block.** An inline `/code-review` after a round-ending `HALT:` is the designed path. The session holds a round-open with no ledger block and another round-keyed block, so the mismatch rule in the "Round-number-sequence check" below applies.
+- **Inherited aborts.** For a session holding an orchestrator spawn, author-outcome reads `subagents/`, so it inherits `corpus._index_subagent_dispatches`' abort on a non-object `*.meta.json`. A non-object line in an orchestrator transcript likewise aborts the run, as it does for the main file.
+
 **Accepted risk: a project-level `cleanupPeriodDays` override is not honored.** `_ledger_sweep_window_days` reads only `$CONFIG_DIR/settings.json` (the global/user-level file), deliberately skipping Claude Code's full settings-precedence resolution. A project-level override that Claude Code's real precedence would honor -- one raising the value above the global default -- is invisible to it, so a session under that project sweeps against the global default instead of its own project's wider window.
 
 **Accepted risk: a deploy-boundary or compaction can mislabel a session's round sequence.** A mid-session deploy boundary or compaction can desynchronize a session's own round-open count from its ledger's `round` sequence in ways the round-number-sequence check below is built to catch. It is bounded by the round-number-mismatch exclusion below, which removes an affected session's dispatches from the headline aggregate entirely rather than leaving them to bias it silently.
@@ -1379,7 +1456,11 @@ Two non-failure buckets, each of which would bias the share if collapsed into PA
 
 A session whose ledger rows are entirely legacy (no row carries a `round` key) or that has no rows at all is not evaluated by this check. A session that fails it has every one of its dispatches excluded from the headline outcomes/"Dispatches in scope" numerator-denominator -- the ledger-to-round join for that session can't be trusted, so its dispatches count toward this counter only, never toward FAILURE/PASS/UNRESOLVED/UNATTRIBUTED.
 
-A mismatched session's rounds are not classified, and its rows are not read by the counters below. The counters "rounds with a clean marker write but no round-keyed ledger rows" and "authoring_agent inconsistent with the transcript join" therefore skip it. Both read the round-to-row join that the mismatch marks untrusted, and classifying its rounds as row-less would count every marker-write round as having no row, whether or not it had rows. The other counters -- co-authored rounds, undecidable dispatches, malformed dispatch ids -- are transcript-side and unchanged.
+A session is a round-number mismatch when any round-open leaves no ledger block and the session holds another round-keyed block. Another round in the session can supply that block, such as an inline `/code-review` or a retried orchestrator dispatch after a denial. The mismatch leaves every round of the session unclassified, the halted round included, and keeps the session's dispatches out of the headline.
+
+The counter "mismatched sessions with fewer ledger blocks than round-opens" is a subset of the one above, and its unit is sessions too. It records that a mismatched session's blocks fall short, not why. Causes include a round that halts before its append, inline or orchestrator, and consecutive rounds that write the same round value to one ledger file, which `_round_blocks` merges into one block. A stray extra block that makes up for a missing round hides the missing one from both counters (see the first residual below).
+
+A mismatched session's rounds are not classified, and its rows are not read by the counters below. The counters "rounds with a clean marker write but no round-keyed ledger rows" and "authoring_agent inconsistent with the transcript join" therefore skip it. Both read the round-to-row join that the mismatch marks untrusted, and classifying its rounds as row-less would count every marker-write round as having no row, whether or not it had rows. The other counters -- co-authored rounds, undecidable dispatches, malformed dispatch ids, unreadable orchestrator transcripts -- are transcript-side and unchanged.
 
 These residuals remain:
 
@@ -1402,7 +1483,9 @@ This can't tell a swept ledger apart from a session that never landed a row, sin
 
 This counter is meaningful only when `--agent` is `code-writer` (the default). `review-ledger.sh`'s `--authoring-agent` enum has no case for any other value, so `declared` can never match and the counter fires on nearly every round. Treat that as reduced signal from an unsupported `--agent` value, not a data-quality problem.
 
-**The `dispatches with a missing or empty tool_use_id` counter is corpus-wide, not `--since`-filtered.** A malformed dispatch never reaches the per-dispatch loop where `in_scope` is computed, since `_agent_dispatch_tool_use_ids` drops it from its returned list before that loop ever sees it. Gating it would need a second return channel for a case rare enough -- a well-formed Agent/Task `tool_use` block with a genuinely missing id isn't a shape real transcripts produce -- not to warrant one.
+**The `dispatches with a missing or empty tool_use_id` counter is corpus-wide, not `--since`-filtered.** A malformed dispatch never reaches the per-dispatch loop where `in_scope` is computed, since `_agent_dispatch_tool_use_ids` drops it from its returned list before that loop ever sees it. Gating it would need a second return channel for a case rare enough -- a well-formed Agent/Task `tool_use` block with a genuinely missing id isn't a shape real transcripts produce -- not to warrant one. The counter also covers a nested dispatch with a missing or empty id inside an orchestrator's transcript.
+
+**The `orchestrator dispatches with no readable transcript records` counter is per spawn and corpus-wide, not `--since`-filtered.** It counts once per orchestrator spawn whose transcript is dangling, unreadable, or readable with no parseable line, even when two spawns share one record, like the malformed-id counter above. It is transcript-side, so a round-number-mismatched session still counts it.
 
 **Sample output.**
 ```
@@ -1420,10 +1503,13 @@ Data quality
   rounds co-authored by >1 dispatch                                                                                                               3
   rounds with a clean marker write but no round-keyed ledger rows                                                                                 0
   sessions whose ledger round sequence doesn't match the transcript's round-opens                                                                 0
+  mismatched sessions with fewer ledger blocks than round-opens                                                                                   0
   sessions with a code-review round, no attributed ledger row, no opened session-keyed ledger file, and a first round older than the sweep floor  0
   dispatches with no paired tool_result (undecidable)                                                                                             0
   authoring_agent inconsistent with the transcript join                                                                                           1
+  dispatches with a missing or empty tool_use_id                                                                                                  0
   rounds classified PASS with at least one SETTLED row                                                                                            2
+  orchestrator dispatches with no readable transcript records                                                                                     0
 ```
 
 `Failure share` is `FAILURE / (FAILURE + PASS)` -- UNRESOLVED and UNATTRIBUTED are excluded from both the numerator and the denominator, since neither one is evidence the dispatch's diff was reviewed and judged. The aggregate table and Data-quality counters carry no per-project, per-branch, or per-session dimension by construction, so neither has anything for redaction to pseudonymize. The scope header printed above them is a separate case -- see "Scoping to this repo: `--this-repo`" above for its `--projects` glob echo caveat.
@@ -1438,13 +1524,14 @@ Data quality
 
 **Flags.**
 - `--this-repo` — required; there is no machine-wide or `--projects`-scoped mode
-- `--branches B1,B2,...` — required at runtime (refused with exit 2 when absent, not an argparse-level requirement); a corpus-wide count is never a legitimate PR-body figure
+- `--branches B1,B2,...` — required at runtime (refused with exit 2 when absent, not an argparse-level requirement); a corpus-wide count is never a legitimate PR-body figure. Attribution follows the "Pre-branch default-branch attribution" block under `cost`.
 
 Always scoped to the active account alone (`config_dir()/projects`), with no `--config-dir` flag of its own — a populated `~/.claude/transcript-config-dirs` contributes nothing here, unlike every other multi-root subcommand in this reference (see "Corpus scope: the declared-roots file" above).
 
 **Scope caveats.**
 - **Main-thread only, both counts.** A round or spawn reached only from inside a dispatched subagent is never counted — matching `review-round-cost`'s own main-thread-only round detection and `subagent-mix`'s own spawn-counting scope.
-- **Two different branch-attribution models, deliberately.** Round counts use `review-round-cost`'s own carry-forward branch attribution (a round's opening record's `gitBranch`, carried forward when absent); spawn counts use a record's own literal `gitBranch`. The two agree in every case but a round opened on a record with no `gitBranch` of its own.
+- **A `review-orchestrator` dispatch is a `code-review` round.** A main-thread `review-orchestrator` dispatch counts as one `code-review` round. The dispatch itself is one spawn, and the agents it dispatches in turn are not counted as spawns. A halted or never-run dispatch still counts as a round: see the "Rounds that end before a ledger append" bullet under `docs/transcript-analysis.md` § "author-outcome".
+- **Two different branch-attribution models, deliberately.** Round counts use `review-round-cost`'s own carry-forward branch attribution (a round's opening record's `gitBranch`, carried forward when absent); spawn counts use `scope._attributed_branch`. Both apply the "Pre-branch default-branch attribution" block under `cost`, and they still differ only on a round opened on a record with no `gitBranch` of its own.
 - **The two tables render zero-count scope differently, deliberately.** The rounds table always prints all three `REVIEW_SKILLS` rows, zeros included, since a fixed three-row table of zeros is already the more explicit rendering of zero. The spawns table instead prints a `No subagent spawns found in scope.` sentence in place of a table when there is nothing to show, since an all-zero spawns table has no fixed row set to fall back on.
 - **Every disclosed row is re-checked against the allowlist just before it prints.** Each non-withheld agent-type label is asserted, immediately before its own print, to be a member of `_repo_tracked_agent_type_names()` — independent of the disclosure-partitioning check above — so a future regression to a direct, unpartitioned label reuse fails loudly here instead of silently disclosing an untracked `subagent_type`.
 - **A snapshot at render time.** Counts reflect this section's last render; a review round or subagent spawn that ran afterward is not included until the next `/pr-description` sync re-renders the block — the rounds caption states this explicitly, since a `ready-for-review` round routinely runs after the branch's last sync.
@@ -1453,7 +1540,7 @@ Always scoped to the active account alone (`config_dir()/projects`), with no `--
 ```
 ### Review rounds
 
-Each invocation of a review skill is one round, whether or not it produced findings. Counts reflect this section's last render; a review round that ran afterward may not be included yet.
+Each invocation of a review skill, and each main-thread `review-orchestrator` dispatch, is one round, whether or not it produced findings. Counts reflect this section's last render; a review round that ran afterward may not be included yet.
 
 | Skill | Rounds |
 |---|---|
@@ -1595,7 +1682,7 @@ Field definitions:
 - `pct_spend_after_signal` — `dollars_after_signal / session_total_dollars`. `null` (JSON) / `None` (aggregate) when `session_total_dollars` is zero, avoiding a divide-by-zero rather than reporting a misleading 0%.
 - `exceeds_startup_burn_benchmark` — whether this row's own `dollars_after_signal` exceeds the startup-burn benchmark described below. `null`/`None` when the benchmark itself is unavailable.
 
-**Startup-burn benchmark.** Once per invocation, this subcommand resolves the same scope a second time (an independent scan, since the main pass's own `session_iter` is a consumed single-pass generator) and feeds it to `_compute_workstream_dollars` — the same "startup burn" instrument `workstream-cost` reports: a branch's non-first sessions' own first `until_first_n_turns` (default 5) main-thread turns, summed. The benchmark is the sum of every branch's `startup_burn_dollars` divided by the sum of every branch's non-first-session count: a session-count-weighted average, not an unweighted per-branch average (which would let a low-continuation branch skew the result). It is unavailable (`None`) when no branch in scope has a non-first session to sum, realistic only for a tiny or degenerate corpus. Every row's `exceeds_startup_burn_benchmark` compares that row's own `dollars_after_signal` against this one corpus-wide figure.
+**Startup-burn benchmark.** Once per invocation, this subcommand resolves the same scope a second time (an independent scan, since the main pass's own `session_iter` is a consumed single-pass generator) and feeds it to `_compute_workstream_dollars` — the same "startup burn" instrument `workstream-cost` reports: a branch's non-first sessions' own first `until_first_n_turns` (default 5) main-thread turns, summed. The benchmark is the sum of every branch's `startup_burn_dollars` divided by the sum of every branch's non-first-session count: a session-count-weighted average, not an unweighted per-branch average (which would let a low-continuation branch skew the result). It is unavailable (`None`) when no branch in scope has a non-first session to sum, realistic only for a tiny or degenerate corpus. Every row's `exceeds_startup_burn_benchmark` compares that row's own `dollars_after_signal` against this one corpus-wide figure. The benchmark follows the "Subagent attribution" and "Pre-branch default-branch attribution" blocks under `cost`; for the cutover and comparing runs across it, see `docs/pr-cost.md` § "Pre-branch and subagent attribution".
 
 **Excerpt source-turn eligibility (curation cards only).** An excerpt is never sourced from a `tool_use` block, a `tool_result` block, or any user-type record, however unambiguous its content — only a main-thread assistant record's own `"text"` content blocks are excerpt-eligible. This closes the cross-turn leak vector: a pasted path, diff, stack trace, or credential that reached the agent via tool output or a user message can never become a published excerpt. It does not catch an assistant turn that paraphrases such content in its own words — a manual redaction read over the sampled set is still required before anything from `--sample`/`--no-redact` output ships anywhere public.
 

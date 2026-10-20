@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, bash_input, edit_input, run_hook, run_hook_reason
+from helpers import HOOKS_DIR, LARGE_MULTILINE_TAIL, bash_input, edit_input, run_hook, run_hook_reason
 
 _PLUGINS_DIR = HOOKS_DIR.parent.parent.parent / "plugins"
 VERSION_BUMP_HOOK = _PLUGINS_DIR / "plugin-semver" / "hooks" / "require-plugin-version-bump.sh"
@@ -104,6 +104,17 @@ class TestRequirePluginVersionBump:
         _write_skill_file(git_repo, "plugins/foo/skills/bar/SKILL.md")
         _git_q(git_repo, "add", "plugins/foo/skills/bar/SKILL.md")
         assert run_hook(VERSION_BUMP_HOOK, bash_input("git commit -m foo"), cwd=git_repo) == "deny"
+
+    def test_large_multiline_git_commit_still_gated(self, isolated_home, git_repo):
+        """A `git commit` first line followed by multi-line command text above pipe capacity is still gated.
+
+        The mechanism is in the LARGE_MULTILINE_TAIL comment in tests/helpers.py."""
+        _commit_plugin(git_repo, "plugins/foo", "1.0.0")
+        _write_skill_file(git_repo, "plugins/foo/skills/bar/SKILL.md")
+        _git_q(git_repo, "add", "plugins/foo/skills/bar/SKILL.md")
+        reason = run_hook_reason(VERSION_BUMP_HOOK, bash_input("git commit -m foo" + LARGE_MULTILINE_TAIL), cwd=git_repo)
+        assert reason is not None, "hook allowed silently; expected deny"
+        assert "staged changes touch a plugin whose version was not bumped" in reason
 
     def test_version_raised_allows(self, isolated_home, git_repo):
         _commit_plugin(git_repo, "plugins/foo", "1.0.0")

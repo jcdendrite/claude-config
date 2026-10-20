@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 set -uo pipefail
 # PostToolUse: when ROUTING.md is Read, record a pending-read timestamp so a

@@ -118,10 +118,24 @@ class TestDenyEnvReads:
         assert reason is not None
         assert ".env.example" in reason
 
+    def test_deny_message_routes_template_rename_to_the_user(self):
+        reason = run_hook_reason(DENY_ENV_READS_HOOK, read_input("/foo/.env.local"))
+        assert reason is not None
+        assert "ask the user to rename it to .env.example" in reason
+
     def test_deny_message_names_path(self):
         reason = run_hook_reason(DENY_ENV_READS_HOOK, read_input("/project/.env.production"))
         assert reason is not None
         assert ".env.production" in reason
+
+    def test_deny_message_routes_inspection_to_separate_terminal_not_shell_escape(self):
+        reason = run_hook_reason(DENY_ENV_READS_HOOK, read_input("/project/.env.production"))
+        assert reason is not None
+        # The shell escape's output enters the transcript, so the message must not route recourse there.
+        assert "ask the user to inspect it in a separate terminal" in reason
+        assert "`!" not in reason
+        assert " ! " not in reason
+        assert "shell escape" not in reason
 
     # ------------------------------------------------------------------ #
     # Symlink cases (require real filesystem symlinks)                    #

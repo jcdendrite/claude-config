@@ -115,6 +115,15 @@ class TestNorecursedirsDefaultsPreserved:
         )
         assert "worktrees" in configured, "norecursedirs no longer excludes nested worktree checkouts"
 
+    def test_configured_norecursedirs_excludes_the_evals_fixtures_sample_project(self):
+        import tomllib
+
+        with (REPO_ROOT / "pyproject.toml").open("rb") as f:
+            config = tomllib.load(f)
+        configured = set(config["tool"]["pytest"]["ini_options"]["norecursedirs"])
+
+        assert "evals/fixtures" in configured, "norecursedirs no longer excludes the evals sample project"
+
 
 class TestPythonpathIncludesScriptsDir:
     """Pins that claude/.claude/scripts is on pytest's pythonpath, so

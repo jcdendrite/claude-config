@@ -18,6 +18,7 @@ from .conftest import (
     _table_cols,
     _user_msg,
     _write_jsonl,
+    _write_subagent_dispatch,
     _write_subagent_jsonl,
 )
 
@@ -599,6 +600,31 @@ class TestReviewTrace:
         assert "architect-consults=1" in out
         assert "thread=sidechain" in out
         assert "line   n/a" in out
+
+    def test_review_trace_sees_the_code_review_skill_call_inside_a_merged_orchestrator_transcript(
+        self, fake_projects, capsys
+    ):
+        """A main-thread review-orchestrator dispatch carries no Skill block, so
+        review-trace gets the code-review skill event only by merging the
+        orchestrator's own subagent transcript, where the call sits on a
+        sidechain record."""
+        session_id = "sess-orchestrator-round"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst("claude-sonnet-4-6", branch="feat", ts="2026-05-19T10:00:00.000Z",
+                  content=[_agent_use("o1", "review-orchestrator")]),
+        ])
+        _write_subagent_dispatch(
+            fake_projects, session_id, "agent-o", "o1",
+            [_asst("claude-sonnet-4-6", branch="feat", sidechain=True, ts="2026-05-19T10:01:00.000Z",
+                   content=[_skill_use("s1", "code-review")])],
+            agent_type="review-orchestrator",
+        )
+
+        _mod.review_trace.cmd_review_trace(_review_trace_args())
+        out = capsys.readouterr().out
+
+        assert "skills=1" in out
+        assert "skill        code-review  (branch=feat model=sonnet thread=sidechain)" in out
 
     def test_merged_stream_interleaves_main_and_sidechain_chronologically(self):
         """Main and subagent records are merged into one chronological
@@ -1865,6 +1891,67 @@ class TestReviewTrace:
         data = _mod.review_trace.compute_deny_summary_data([("sess.jsonl", records)])
         assert data["command_shape_counts"].get(_mod.denials._DENY_SUMMARY_OTHER_COMMAND_SHAPE, 0) == 0
         assert data["hook_counts"].get(_mod.denials._DENY_SUMMARY_UNMATCHED_HOOK, 0) == 0
+
+
+class TestReviewTracePreBranchAttribution:
+    """A session that opens on the default branch and then enters a feature branch:
+    events carried from the leading default-branch records print the branch entered,
+    while an event with no preceding main-thread record still renders '?'."""
+
+    @staticmethod
+    def _prefix_session_records() -> list[dict]:
+        return [
+            _asst("claude-opus-4-7", branch="main", ts="2026-05-19T10:00:00.000Z",
+                  content=[_skill_use("s1", "plan-it")]),
+            _asst("claude-opus-4-7", branch="main", ts="2026-05-19T10:01:00.000Z",
+                  content=[_agent_use("a1", "plan-architect", prompt="MODE=consult\nquestion")]),
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True, ts="2026-05-19T10:02:00.000Z",
+                  content=[_skill_use("s2", "code-review")]),
+            _asst("claude-opus-4-7", branch="feature-x", ts="2026-05-19T10:05:00.000Z"),
+        ]
+
+    def test_prefix_skill_consult_and_sidechain_events_print_the_branch_entered(self):
+        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+            self._prefix_session_records(), None, None, None,
+        )
+        assert {e["kind"] for e in events} == {"skill", "architect-consult"}
+        assert len(events) == 3
+        assert {e["branch"] for e in events} == {"feature-x"}
+        assert any(e["thread"] == "sidechain" for e in events)
+
+    def test_event_with_no_preceding_main_thread_record_still_renders_the_sentinel(self):
+        records = [
+            _asst("claude-sonnet-4-6", branch="main", sidechain=True, ts="2026-05-19T09:00:00.000Z",
+                  content=[_skill_use("s1", "code-review")]),
+            _asst("claude-opus-4-7", branch="main", ts="2026-05-19T10:00:00.000Z"),
+            _asst("claude-opus-4-7", branch="feature-x", ts="2026-05-19T10:05:00.000Z"),
+        ]
+        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+            records, None, None, None,
+        )
+        assert [e["branch"] for e in events] == ["?"]
+
+    def test_until_before_the_boundary_still_prints_the_branch_entered(self):
+        records = self._prefix_session_records()
+        records[-1]["timestamp"] = "2026-05-20T10:05:00.000Z"  # the branch entry falls outside the window
+        since_ts, until_epoch = _since_until_epochs(None, "2026-05-19")
+        events, _tool_use_commands, _pre_regime = _mod.review_trace._review_trace_session_events(
+            records, since_ts, until_epoch, None,
+        )
+        assert len(events) == 3
+        assert {e["branch"] for e in events} == {"feature-x"}
+
+    def test_header_and_branches_filter_follow_the_attributed_branch(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", self._prefix_session_records())
+
+        _mod.review_trace.cmd_review_trace(_review_trace_args(branches="feature-x"))
+        kept = capsys.readouterr().out
+        _mod.review_trace.cmd_review_trace(_review_trace_args(branches="main"))
+        dropped = capsys.readouterr().out
+
+        assert "branches=feature-x" in kept
+        assert "skill        plan-it  (branch=feature-x model=opus)" in kept
+        assert _mod.review_trace._REVIEW_TRACE_NO_SESSIONS_MSG in dropped
 
 
 class TestComputeDenySummaryDataGroupBoundaryFreshRead:

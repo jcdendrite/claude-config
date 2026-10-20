@@ -13,10 +13,10 @@ import textwrap
 from pathlib import Path
 
 _INSTALL_SH = Path(__file__).resolve().parents[4] / "install.sh"
+_PLUGIN_INSTALL_LIB = _INSTALL_SH.parent / "claude" / ".claude" / "scripts" / "_plugin-install-lib.sh"
 _BASH = shutil.which("bash") or "/bin/bash"
 
-_MATCH_START = "# INSTALL_TEST_FIXTURE: project-plugin-match — start\n"
-_MATCH_END = "# INSTALL_TEST_FIXTURE: project-plugin-match — end"
+_SOURCE_PLUGIN_INSTALL_LIB = f". {shlex.quote(str(_PLUGIN_INSTALL_LIB))}\n"
 
 _INSTALL_START = "# INSTALL_TEST_FIXTURE: project-scope-plugin-install — start\n"
 _INSTALL_END = "# INSTALL_TEST_FIXTURE: project-scope-plugin-install — end"
@@ -38,24 +38,21 @@ def _extract_block(start_marker: str, end_marker: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Pure matching-function tests: _project_plugin_already_installed
+# Pure matching-function tests: _plugin_installed_at_path
 # ---------------------------------------------------------------------------
 
 
 def _run_match(repo_dir: Path, plugin_id: str, existing_tsv: str) -> subprocess.CompletedProcess:
     script = (
         "set -e\n"
-        + _extract_block(_MATCH_START, _MATCH_END)
-        + f"\n_project_plugin_already_installed {shlex.quote(plugin_id)} {shlex.quote(existing_tsv)}\n"
+        + _SOURCE_PLUGIN_INSTALL_LIB
+        + f"\n_plugin_installed_at_path {shlex.quote(plugin_id)} {shlex.quote(existing_tsv)} {shlex.quote(str(repo_dir))}\n"
     )
-    env = dict(os.environ)
-    env["REPO_DIR"] = str(repo_dir)
     return subprocess.run(
         [_BASH, "-c", script],
         capture_output=True,
         text=True,
         check=False,
-        env=env,
     )
 
 
@@ -98,6 +95,20 @@ class TestProjectPluginAlreadyInstalled:
         (repo_dir / "sub").mkdir(parents=True)
         noncanonical_path = repo_dir / "sub" / ".."
         existing_tsv = f"skill-management@claude-config\t{noncanonical_path}"
+
+        result = _run_match(repo_dir, "skill-management@claude-config", existing_tsv)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+
+    def test_canonicalization_resolves_real_symlink_to_match(self, tmp_path: Path) -> None:
+        """A recorded projectPath that is an actual symlink to REPO_DIR
+        (not just a `..`-relative path) must also resolve to a match —
+        exercises `readlink -f`'s success branch on a genuine symlink."""
+        repo_dir = tmp_path / "repo"
+        repo_dir.mkdir()
+        symlinked_path = tmp_path / "repo-symlink"
+        symlinked_path.symlink_to(repo_dir)
+        existing_tsv = f"skill-management@claude-config\t{symlinked_path}"
 
         result = _run_match(repo_dir, "skill-management@claude-config", existing_tsv)
 
@@ -204,7 +215,7 @@ def _run_install_block(
         "set -e\n"
         f"REPO_DIR={shlex.quote(str(repo_dir))}\n"
         f"PROJECT_SETTINGS_FILE={shlex.quote(str(settings_file))}\n"
-        + _extract_block(_MATCH_START, _MATCH_END)
+        + _SOURCE_PLUGIN_INSTALL_LIB
         + _extract_block(_INSTALL_START, _INSTALL_END)
     )
     result = subprocess.run(
@@ -308,7 +319,7 @@ class TestProjectScopePluginInstallLoop:
             "set -e\n"
             f"REPO_DIR={shlex.quote(str(repo_dir))}\n"
             f"PROJECT_SETTINGS_FILE={shlex.quote(str(settings_file))}\n"
-            + _extract_block(_MATCH_START, _MATCH_END)
+            + _SOURCE_PLUGIN_INSTALL_LIB
             + _extract_block(_INSTALL_START, _INSTALL_END)
         )
         result = subprocess.run(
@@ -371,7 +382,7 @@ class TestProjectScopePluginInstallLoop:
             "set -e\n"
             f"REPO_DIR={shlex.quote(str(repo_dir))}\n"
             f"PROJECT_SETTINGS_FILE={shlex.quote(str(settings_file))}\n"
-            + _extract_block(_MATCH_START, _MATCH_END)
+            + _SOURCE_PLUGIN_INSTALL_LIB
             + _extract_block(_INSTALL_START, _INSTALL_END)
         )
         result = subprocess.run(
@@ -434,7 +445,7 @@ class TestProjectScopePluginInstallLoop:
             "set -e\n"
             f"REPO_DIR={shlex.quote(str(repo_dir))}\n"
             f"PROJECT_SETTINGS_FILE={shlex.quote(str(settings_file))}\n"
-            + _extract_block(_MATCH_START, _MATCH_END)
+            + _SOURCE_PLUGIN_INSTALL_LIB
             + _extract_block(_INSTALL_START, _INSTALL_END)
         )
         result = subprocess.run(

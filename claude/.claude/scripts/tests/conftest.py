@@ -1,25 +1,12 @@
-"""Shared git-repo scaffolding helpers for the worktree-cleanup script tests
-(test_cleanup_merged_branches.py, test_cleanup_idle_open_pr_worktrees.py),
-plus suite-wide transcript-corpus isolation (see the autouse fixture below),
-plus the transcript-record fixture builders shared across
-test_transcript_analysis.py, test_transcript_cost.py, test_token_analyzer.py,
-test_context_composition.py, test_transcript_denials.py,
-test_transcript_review_trace.py, test_transcript_read_scope.py,
-test_transcript_ledger_common.py, test_transcript_cost_ledger.py,
-test_transcript_cost_ledger_record_gates.py, test_transcript_gh_cli.py,
-test_transcript_pr_cost_ledger.py, test_transcript_pr_cost.py,
-test_transcript_pr_cost_gh.py, test_transcript_pr_cost_export.py,
-test_transcript_pr_cost_export_accounts.py, test_transcript_cache_rebuild.py,
-test_transcript_cache_rebuild_attribution.py,
-test_transcript_cache_rebuild_switch_delta.py,
-test_transcript_cache_rebuild_ttl_rules.py,
-test_transcript_cache_rebuild_ttl_accumulation.py,
-test_transcript_cache_rebuild_ttl_footing.py, test_transcript_audit_routing.py,
-test_transcript_audit_routing_shape.py, test_transcript_audit_routing_samples.py,
-test_transcript_subagents.py, test_transcript_subagent_mix.py,
-test_transcript_subagent_mix_dollars.py, test_transcript_cost_counts.py, and
-tests/_cache_rebuild_helpers.py (see the extraction rationale on
-_write_jsonl below).
+"""Shared test scaffolding, in three roles:
+
+- git-repo scaffolding for the worktree-cleanup script tests (e.g. test_cleanup_merged_branches.py,
+  test_cleanup_idle_open_pr_worktrees.py);
+- suite-wide transcript-corpus isolation (see the autouse fixture below);
+- transcript-record fixture builders (e.g. for test_transcript_cost.py and tests/_handoff_nudge_helpers.py;
+  see the extraction rationale on _write_jsonl below).
+
+The file names above are examples, not a complete consumer list.
 
 The scaffolding helpers are plain functions, not pytest fixtures — they take
 `tmp_path` (or a repo built from it) as an explicit argument rather than
@@ -41,8 +28,8 @@ import uuid
 from pathlib import Path
 
 import pytest
-from helpers import init_git_repo
-from transcript_analysis import pricing, scope
+from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo, install_shell_exec_guard
+from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
 
@@ -89,6 +76,26 @@ def _base_test_env() -> dict:
         for key, value in os.environ.items()
         if not key.startswith("DIRENV_") and key not in _SENSITIVE_ENV_VARS
     }
+
+
+_INHERITED_GIT_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+
+
+def _clean_env(**overrides: str | None) -> dict[str, str]:
+    """The base test env without inherited repository-selection variables; a None override removes the key."""
+    env = {key: value for key, value in _base_test_env().items() if key not in _INHERITED_GIT_VARIABLES}
+    for key, value in overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    return env
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, env=_clean_env(), capture_output=True, text=True, check=True
+    ).stdout
 
 
 # Tools the scripts under test (cleanup-merged-branches.sh, ci-watch.sh) and
@@ -264,6 +271,486 @@ def _direnv_shim_source_stalls_without_reading_stdin(seconds: int) -> str:
     """)
 
 
+# ---------------------------------------------------------------------------
+# review-pr scaffolding shared across its own gh-shimmed test files
+# (test_review_pr_checkout.py, test_review_pr_diff.py,
+# test_review_pr_acquire.py, test_review_pr_finish.py, test_review_pr_post.py,
+# test_review_pr_findings_path.py). They live here, matching _shimmed_env's own
+# precedent above.
+# ---------------------------------------------------------------------------
+
+
+def _provenance_fields(path: Path) -> dict:
+    """Parse a `.provenance` file's key=value lines into a dict, skipping
+    the `schema=1` header line -- the shape review-pr-acquire.sh/
+    -checkout.sh/-diff.sh write via _lib_write_review_pr_provenance
+    (_lib.sh) and marker.sh/marker-clear-stale.py read back by key. Shared
+    by every review-pr test file that asserts on written provenance
+    content, so none carries its own line-index-based parse that could
+    drift from the production key=value shape. Requires the first line to
+    be exactly `schema=1`, matching _lib_review_pr_provenance_field's own
+    fail-closed read, so a writer regression that drops the header fails
+    this parse instead of silently falling through to a fields dict missing
+    nothing the caller checks."""
+    lines = path.read_text().splitlines()
+    assert lines and lines[0] == "schema=1", (
+        f"provenance file {path} missing required 'schema=1' header line: {lines[:1]!r}"
+    )
+    fields: dict = {}
+    for line in lines[1:]:
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        fields[key] = value
+    return fields
+
+
+# One line of shim source defining `sanitize_like_gh(name)`, for the review-pr
+# scripts' gh shims. Models gh 2.100.0's behavior: a JSON-escaped C0 control
+# character other than tab, LF, VT and CR reaches `--jq` as caret notation (ESC
+# as `^[`, NUL as `^@`), so it never reaches a script raw.
+# `gh api --help` documents the sanitizing itself, which `--allow-escape-sequences`
+# turns off. The caret notation and the four exempt characters are not
+# documented there and are not independently re-verified.
+# The shims' `pulls/<N>` payloads model GitHub's "Get a pull request" response
+# (the pulls page of the GitHub REST reference, https://docs.github.com/en/rest/pulls/pulls).
+GH_CONTROL_CHARACTER_SANITIZER_SHIM_LINE = (
+    "sanitize_like_gh = lambda name: ''.join("
+    "'^' + chr(ord(c) ^ 0x40) if ord(c) < 32 and c not in '\\t\\n\\x0b\\r' else c for c in name)"
+)
+
+
+def _assert_gh_calls_are_read_only(
+    calls: list[list[str]],
+    *,
+    known_api_endpoint: re.Pattern,
+    allowed_pr_subcommands: tuple[str, ...] = ("view",),
+) -> None:
+    """Allowlists the `gh` call shapes a review-pr script makes. A `gh pr`
+    call must use one of `allowed_pr_subcommands`, name its repo with `-R`, and
+    for `view` carry `--json`; the guard does not check its other tokens. A
+    `gh api <endpoint>` call must use an endpoint matching `known_api_endpoint`,
+    followed by nothing or by exactly `--paginate --jq <filter>`, so a method,
+    field or input flag in any spelling is rejected without being enumerated.
+    Any other `gh` command fails, as does an unanticipated write shape a
+    suite's fixtures never modeled.
+
+    Covers only the `gh` invocations the shimmed code paths a suite drives
+    actually make; it says nothing about a non-`gh` network write a script
+    might issue.
+    """
+    for args in calls:
+        if args[:1] == ["pr"] and len(args) > 1 and args[1] in allowed_pr_subcommands:
+            assert "-R" in args, f"gh pr {args[1]} missing -R: {args}"
+            if args[1] == "view":
+                assert "--json" in args, f"gh pr view missing --json: {args}"
+            continue
+        if args[:1] == ["api"]:
+            endpoint = args[1] if len(args) > 1 else ""
+            assert known_api_endpoint.fullmatch(endpoint), f"unexpected gh api endpoint: {args}"
+            trailing_tokens = args[2:]
+            assert trailing_tokens == [] or (
+                len(trailing_tokens) == 3 and trailing_tokens[:2] == ["--paginate", "--jq"]
+            ), f"gh api call carries a token outside `--paginate --jq <filter>`: {args}"
+            continue
+        pytest.fail(f"gh invocation outside the allowlist: {args}")
+
+
+def _pythonpath_env_that_forges_a_clean_audit(poison_dir: Path, sentinel: Path) -> dict[str, str]:
+    """Environment whose PYTHONPATH holds a `json` module that, when the audit
+    script is the running program, writes `sentinel` and prints the audit's
+    clean document, so an audit not run under `python3 -I` reports "clean" for
+    any file list. Any other program (the tests' python `gh` shim) gets the
+    standard library's own json."""
+    poison_dir.mkdir(parents=True, exist_ok=True)
+    (poison_dir / "json.py").write_text(
+        "import importlib.util, os, sys, sysconfig\n"
+        "if os.path.basename(sys.argv[0]) == 'audit-execution-surface.py':\n"
+        f"    open({str(sentinel)!r}, 'w').write('ran')\n"
+        "    print('{\"stop\": false, \"matches\": []}')\n"
+        "    sys.exit(0)\n"
+        "real_init = os.path.join(sysconfig.get_paths()['stdlib'], 'json', '__init__.py')\n"
+        "spec = importlib.util.spec_from_file_location(\n"
+        "    'json', real_init, submodule_search_locations=[os.path.dirname(real_init)])\n"
+        "real_json = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['json'] = real_json\n"
+        "spec.loader.exec_module(real_json)\n"
+    )
+    return {"PYTHONPATH": str(poison_dir)}
+
+
+def _review_pr_audit_limit(name: str) -> int:
+    """The display bound `name` (REVIEW_PR_AUDIT_MATCH_LINE_LIMIT or
+    REVIEW_PR_AUDIT_PATH_ECHO_LIMIT) as _review-pr-lib.sh defines it, so a
+    test sizes its input from the production constant."""
+    result = subprocess.run(
+        ["bash", "-c", f'. "{SCRIPTS_DIR / "_review-pr-lib.sh"}"; printf "%s" "${name}"'],
+        capture_output=True, text=True, check=True, timeout=60,
+    )
+    return int(result.stdout)
+
+
+def _review_pr_findings_body_path(home: Path, session_id: str) -> Path:
+    """The findings-body path the agent's Write tool targets, resolved through
+    the production path helper (`_lib_review_pr_artifact_path`) rather than a
+    suffix the test spells out."""
+    result = subprocess.run(
+        [
+            "bash", "-c",
+            f'. "{HOOKS_DIR / "_lib.sh"}"; _lib_review_pr_artifact_path "$1" "$2" body',
+            "bash", str(home / ".claude"), session_id,
+        ],
+        capture_output=True, text=True, check=True, timeout=60,
+    )
+    return Path(result.stdout)
+
+
+def _assert_finish_and_clear_stale_each_empty_the_active_directory(home: Path, repo: Path, session_id: str) -> None:
+    """After a real review-pr flow has left its artifacts under
+    `.review-pr-active.d`, both `review-pr-finish.sh` and `marker.sh
+    clear-stale` (once the provenance's PID is dead and no live session names
+    the session id) leave that directory empty. The directory's contents, not
+    a list of suffixes, are the invariant, so an artifact a writer adds that
+    neither cleanup knows about fails here. `repo` is the working directory
+    the cleanups run from. The findings body is written here because the
+    agent's Write tool, not a script, creates it."""
+    active_dir = home / ".claude" / ".review-pr-active.d"
+    _review_pr_findings_body_path(home, session_id).write_text("findings\n")
+    assert len(list(active_dir.iterdir())) >= 3, "control: the flow left its artifacts behind"
+    snapshot_dir = home / "active-dir-snapshot"
+    shutil.copytree(active_dir, snapshot_dir)
+    env = {"HOME": str(home), "PATH": os.environ["PATH"]}
+
+    finish = subprocess.run(
+        ["bash", str(SCRIPTS_DIR / "review-pr-finish.sh")],
+        cwd=repo, env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert finish.returncode == 0, finish.stderr
+    assert list(active_dir.iterdir()) == []
+
+    shutil.rmtree(active_dir)
+    shutil.copytree(snapshot_dir, active_dir)
+    ended_process = subprocess.Popen(["true"])
+    ended_process.wait()
+    provenance = active_dir / f"{session_id}.provenance"
+    provenance.write_text(re.sub(r"(?m)^pid=.*$", f"pid={ended_process.pid}", provenance.read_text()))
+    shutil.rmtree(home / ".claude" / "sessions")
+    clear_stale = subprocess.run(
+        ["bash", str(SCRIPTS_DIR / "marker.sh"), "clear-stale"],
+        cwd=repo, env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert clear_stale.returncode == 0, clear_stale.stderr
+    assert list(active_dir.iterdir()) == []
+
+
+def _install_audit_script(home: Path, audit_script_source: Path | None = None) -> None:
+    """Symlink the real audit-execution-surface.py into the isolated
+    $HOME/.claude/skills/review-pr/ -- the installed-layout path
+    review-pr-checkout.sh/review-pr-diff.sh resolve via
+    $CONFIG_DIR/skills/review-pr/ (stow-packages.sh: claude-skills/ stows to
+    ~/.claude/). Exercises the real predicate rather than a stand-in copy
+    that could drift from it. `audit_script_source` redirects the link for a
+    test whose own failure could write through it."""
+    skill_dir = home / ".claude" / "skills" / "review-pr"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    target = skill_dir / "audit-execution-surface.py"
+    # Unlink first so an earlier stand-in in this home never survives as the "real" audit.
+    target.unlink(missing_ok=True)
+    target.symlink_to(audit_script_source or SKILLS_DIR / "review-pr" / "audit-execution-surface.py")
+
+
+def _install_audit_script_that_runs(home: Path, script_body: str) -> None:
+    """Install a stand-in audit-execution-surface.py at the installed-layout
+    path, for a run whose audit must end a way the real one never does."""
+    skill_dir = home / ".claude" / "skills" / "review-pr"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    target = skill_dir / "audit-execution-surface.py"
+    # Unlink first: writing through the symlink _install_audit_script creates would overwrite the tracked audit script.
+    target.unlink(missing_ok=True)
+    target.write_text(script_body)
+
+
+def _seed_session(home: Path, session_id: str, pid: int | None = None) -> None:
+    """Write $HOME/.claude/sessions/<pid> in the two-line format
+    capture-session-id.sh writes -- every review-pr script under test here
+    resolves its own session id (and, for the provenance-writing scripts,
+    its own Claude PID) by walking process ancestors via
+    _lib_resolve_claude_pid, so a test exercising a success path needs a
+    live session file for that walk to find.
+
+    pid defaults to this test process's own pid: marker.sh (invoked by
+    several of these scripts) resolves its session id by walking process
+    ancestors, and when it runs as a subprocess of pytest, that walk
+    reaches the pytest process itself.
+    """
+    target_pid = os.getpid() if pid is None else pid
+    sessions_dir = home / ".claude" / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    start_time = subprocess.run(
+        ["ps", "-o", "lstart=", "-p", str(target_pid)],
+        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,  # same bound as the _SUBPROCESS_TIMEOUT_SECONDS the review-pr test modules declare
+    ).stdout.rstrip("\n")
+    (sessions_dir / str(target_pid)).write_text(f"{session_id}\n{start_time}\n")
+
+
+def _git_shim_that_fails_on_worktree_subcommand(
+    tmp_path: Path, *subcommands: str, exit_status: int = 1
+) -> Path:
+    """A `git` PATH shim that fails only "git ... worktree <subcommand>"
+    for each named subcommand (e.g. `add`, `remove`, `prune`) with
+    `exit_status`, delegating every other invocation to the real git
+    binary -- shared by the review-pr checkout and finish tests, each
+    proving a failed worktree operation surfaces through that script's own
+    exit code and stderr message. At least one subcommand is required: an
+    empty list would emit a syntactically invalid shim."""
+    if not subcommands:
+        raise ValueError("name at least one worktree subcommand for the shim to fail")
+    real_git = shutil.which("git")
+    failing_conditions = " || ".join(
+        f'[[ "$*" == *{shlex.quote(f"worktree {subcommand}")}* ]]' for subcommand in subcommands
+    )
+    shim_dir = tmp_path / f"git_shim_{uuid.uuid4().hex}"
+    shim_dir.mkdir()
+    git_shim = shim_dir / "git"
+    git_shim.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env bash
+        if {failing_conditions}; then
+          echo "synthetic worktree failure" >&2
+          exit {exit_status}
+        fi
+        exec {shlex.quote(real_git)} "$@"
+    """))
+    git_shim.chmod(0o755)
+    return shim_dir
+
+
+def _git_shim_that_fails_on_subcommand(
+    tmp_path: Path, args_glob: str, *, exit_status: int, fail_only_match_number: int | None = None
+) -> Path:
+    """A `git` PATH shim that fails any invocation whose space-joined
+    arguments match the bash glob `args_glob` with `exit_status` and a
+    synthetic stderr line, and delegates every other invocation to the real
+    git binary. With `fail_only_match_number`, only the Nth matching
+    invocation (1-based) fails and every other match reaches the real git.
+    Each matching invocation appends one line to `matches.log` in the returned
+    directory, so a test can count them."""
+    shim_dir = tmp_path / f"git_shim_on_subcommand_{uuid.uuid4().hex}"
+    shim_dir.mkdir()
+    match_log = shim_dir / "matches.log"
+    spaces_escaped_glob = args_glob.replace(" ", "\\ ")
+    real_git = shlex.quote(shutil.which("git"))
+    if fail_only_match_number is not None and fail_only_match_number < 1:
+        raise ValueError(f"fail_only_match_number is 1-based, got {fail_only_match_number}")
+    failing_match_number = 0 if fail_only_match_number is None else fail_only_match_number
+    git_shim = shim_dir / "git"
+    git_shim.write_text(
+        f'#!/usr/bin/env bash\nif [[ "$*" == {spaces_escaped_glob} ]]; then\n'
+        f'  echo "$*" >> {shlex.quote(str(match_log))}\n'
+        "  match_number=0\n"
+        f'  while IFS= read -r _; do match_number=$((match_number + 1)); done < {shlex.quote(str(match_log))}\n'
+        f'  if [[ {failing_match_number} != 0 && $match_number != {failing_match_number} ]]; then exec {real_git} "$@"; fi\n'
+        f'  echo "synthetic git failure" >&2\n  exit {exit_status}\nfi\n'
+        f'exec {real_git} "$@"\n'
+    )
+    git_shim.chmod(0o755)
+    return shim_dir
+
+
+def _shim_match_count(shim_dir: Path) -> int:
+    """How many invocations `_git_shim_that_fails_on_subcommand`'s glob matched."""
+    match_log = shim_dir / "matches.log"
+    return len(match_log.read_text().splitlines()) if match_log.exists() else 0
+
+
+def _git_shim_that_logs_terminal_prompt_on_fetch(tmp_path: Path) -> Path:
+    """A `git` PATH shim that appends the `GIT_TERMINAL_PROMPT` value (or `unset`) of every
+    `fetch` invocation to `fetch_prompt.log`, its `GIT_ASKPASS` and `SSH_ASKPASS` values
+    to `fetch_askpass.log`, and its space-joined arguments to `fetch_argv.log`, in the
+    returned directory, then delegates to the real git binary."""
+    shim_dir = tmp_path / f"git_shim_fetch_prompt_{uuid.uuid4().hex}"
+    shim_dir.mkdir()
+    prompt_log = shim_dir / "fetch_prompt.log"
+    askpass_log = shim_dir / "fetch_askpass.log"
+    argv_log = shim_dir / "fetch_argv.log"
+    real_git = shlex.quote(shutil.which("git"))
+    git_shim = shim_dir / "git"
+    git_shim.write_text(
+        '#!/usr/bin/env bash\nfor argument in "$@"; do\n'
+        "  if [[ $argument == fetch ]]; then\n"
+        f'    echo "${{GIT_TERMINAL_PROMPT-unset}}" >> {shlex.quote(str(prompt_log))}\n'
+        f'    echo "${{GIT_ASKPASS-unset}} ${{SSH_ASKPASS-unset}}" >> {shlex.quote(str(askpass_log))}\n'
+        f'    echo "$*" >> {shlex.quote(str(argv_log))}\n'
+        "    break\n"
+        "  fi\n"
+        "done\n"
+        f'exec {real_git} "$@"\n'
+    )
+    git_shim.chmod(0o755)
+    return shim_dir
+
+
+def _fetch_terminal_prompt_values(shim_dir: Path) -> list[str]:
+    """The `GIT_TERMINAL_PROMPT` value each fetch saw, in call order, as recorded by
+    `_git_shim_that_logs_terminal_prompt_on_fetch`."""
+    prompt_log = shim_dir / "fetch_prompt.log"
+    return prompt_log.read_text().splitlines() if prompt_log.exists() else []
+
+
+def _fetch_askpass_values(shim_dir: Path) -> list[str]:
+    """The `GIT_ASKPASS SSH_ASKPASS` pair each fetch saw, in call order, as recorded by
+    `_git_shim_that_logs_terminal_prompt_on_fetch`."""
+    askpass_log = shim_dir / "fetch_askpass.log"
+    return askpass_log.read_text().splitlines() if askpass_log.exists() else []
+
+
+def _fetch_argument_lines(shim_dir: Path) -> list[str]:
+    """The space-joined git arguments of each fetch, in call order, as recorded by
+    `_git_shim_that_logs_terminal_prompt_on_fetch`."""
+    argv_log = shim_dir / "fetch_argv.log"
+    return argv_log.read_text().splitlines() if argv_log.exists() else []
+
+
+# Sentinel default for `base_ref_oid` in the review-pr checkout and diff-only
+# tests' `_run`: "the commit origin/main points at in the repo under test" --
+# the base commit _build_repo_with_pr_ref's PR branched from -- so a test that
+# does not care about the base still reaches a successful base fetch. None
+# omits baseRefOid from the shimmed gh reply.
+_BASE_FROM_ORIGIN_MAIN = "__BASE_FROM_ORIGIN_MAIN__"
+
+
+def _origin_main_sha(repo: Path) -> str | None:
+    """The commit origin/main points at in repo, or None when repo has no
+    such ref (a test whose cwd is not the PR repo)."""
+    resolved = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", "origin/main"], cwd=repo, capture_output=True, text=True,
+        timeout=60,
+    )
+    return resolved.stdout.strip() or None
+
+
+def _push_new_base_commit(repo: Path, tmp_path: Path) -> str:
+    """Pushes a commit adding base_only.txt to origin's main from a separate
+    clone, so the commit is absent from `repo`'s object store, and returns
+    its SHA. The PR branched before this commit, so a three-dot diff against
+    it must leave base_only.txt out."""
+    origin_url = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=True,
+        timeout=60,
+    ).stdout.strip()
+    clone = tmp_path / "base-clone"
+    for command in (
+        ["git", "clone", "-q", "-b", "main", origin_url, str(clone)],
+        ["git", "-C", str(clone), "config", "user.email", "test@test.com"],
+        ["git", "-C", str(clone), "config", "user.name", "test"],
+    ):
+        subprocess.run(command, check=True, capture_output=True, timeout=60)
+    (clone / "base_only.txt").write_text("base moved\n")
+    for command in (
+        ["git", "-C", str(clone), "add", "base_only.txt"],
+        ["git", "-C", str(clone), "commit", "-q", "-m", "base moved"],
+        ["git", "-C", str(clone), "push", "-q", "origin", "main"],
+    ):
+        subprocess.run(command, check=True, capture_output=True, timeout=60)
+    return subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+        timeout=60,
+    ).stdout.strip()
+
+
+def _git_commit_is_present(repo: Path, commit_sha: str) -> bool:
+    return subprocess.run(
+        ["git", "cat-file", "-e", f"{commit_sha}^{{commit}}"], cwd=repo, capture_output=True, timeout=60,
+    ).returncode == 0
+
+
+def _install_reference_transaction_sentinel_hook(repo: Path, sentinel: Path) -> None:
+    """Installs in repo a `reference-transaction` hook that touches `sentinel`."""
+    hook = repo / ".git" / "hooks" / "reference-transaction"
+    hook.write_text(f"#!/bin/sh\ntouch '{sentinel}'\n")
+    hook.chmod(0o755)
+
+
+def _install_reference_transaction_sentinel_hooks(repo: Path, tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Clones repo's origin into tmp_path/control-repo, then installs in both
+    repo and the clone a `reference-transaction` hook that touches a sentinel
+    file. Returns (control_repo, repo's sentinel, the clone's sentinel)."""
+    control_repo = tmp_path / "control-repo"
+    origin_url = subprocess.run(
+        ["git", "remote", "get-url", "origin"], cwd=repo, capture_output=True, text=True, check=True,
+        timeout=60,
+    ).stdout.strip()
+    subprocess.run(["git", "clone", "-q", origin_url, str(control_repo)], check=True, capture_output=True, timeout=60)
+    hook_ran_sentinel = tmp_path / "hook-ran"
+    control_hook_ran_sentinel = tmp_path / "control-hook-ran"
+    for hook_repo, sentinel in ((repo, hook_ran_sentinel), (control_repo, control_hook_ran_sentinel)):
+        _install_reference_transaction_sentinel_hook(hook_repo, sentinel)
+    return control_repo, hook_ran_sentinel, control_hook_ran_sentinel
+
+
+def _skip_unless_a_hooks_enabled_fetch_by_object_name_fires_reference_transaction(
+    control_repo: Path, commit_sha: str, control_hook_ran_sentinel: Path,
+) -> None:
+    """The control for a hooks-off base fetch: skips if a hooks-enabled fetch by object name fires no
+    reference-transaction hook, as on a git version that does not fire it for that fetch."""
+    subprocess.run(
+        ["git", "fetch", "--no-write-fetch-head", "--", "origin", commit_sha],
+        cwd=control_repo, capture_output=True, check=True, timeout=60,
+    )
+    if control_hook_ran_sentinel.exists():
+        return
+    pytest.skip(
+        "control: this test assumes a hooks-enabled fetch by object name fires reference-transaction, "
+        "but it did not, so the hook is not wired or this git version may not fire it on that fetch"
+    )
+
+
+def _build_repo_with_pr_ref(
+    tmp_path: Path, owner_repo: str = "foo/bar", pr_number: str = "42",
+) -> tuple[Path, str]:
+    """A local repo with an `origin` remote and a PR ref pushed directly to
+    it under `refs/pull/<N>/head` -- mirrors GitHub's synthetic per-PR ref,
+    which is never a normal branch on the base repo. Returns (repo, pr_sha)
+    with the working copy left checked out at the pre-PR commit, so a
+    successful checkout's own worktree content is what proves the PR
+    commit landed, not the main checkout's.
+
+    The bare remote's own path embeds owner_repo's two path segments (e.g.
+    `.../remote/foo/bar`), so review-pr-checkout.sh's/review-pr-diff.sh's own
+    origin-identity check (comparing $1's owner/repo against the worktree's
+    actual origin) sees the same value callers pass as $1 -- the same
+    last-two-path-segments shape a real `https://github.com/<owner>/<repo>.git`
+    origin parses to.
+    """
+    bare = tmp_path / "remote" / owner_repo
+    bare.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "--bare"], cwd=bare, check=True)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    (repo / "file.txt").write_text("main\n")
+    subprocess.run(["git", "add", "file.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(bare)], cwd=repo, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "HEAD:refs/heads/main"], cwd=repo, check=True)
+    main_sha = head_sha(repo)
+
+    (repo / "pr_file.txt").write_text("pr change\n")
+    subprocess.run(["git", "add", "pr_file.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "pr commit"], cwd=repo, check=True)
+    pr_sha = head_sha(repo)
+    subprocess.run(["git", "push", "-q", "origin", f"HEAD:refs/pull/{pr_number}/head"], cwd=repo, check=True)
+    subprocess.run(["git", "reset", "-q", "--hard", main_sha], cwd=repo, check=True)
+
+    return repo, pr_sha
+
+
 def _write_subagent_jsonl(
     proj: Path, session_id: str, agent_id: str, records: list[dict]
 ) -> None:
@@ -276,18 +763,20 @@ def _write_subagent_jsonl(
 def _write_subagent_dispatch(
     proj: Path, session_id: str, agent_id: str, tool_use_id: str, records: list[dict],
     *, agent_type: str = "staff-backend-engineer", description: str = "review",
-    requested_model: str | None = None,
+    requested_model: str | None = None, spawn_depth: int = 1,
 ) -> None:
     """Write both the .jsonl and its paired .meta.json for a synthetic subagent
     dispatch — _write_subagent_jsonl (above) writes only the .jsonl, never the
     meta.json sidecar reviewer-yield's and subagent-mix's dispatch joins read.
     Matches the real on-disk shape: {"agentType", "description", "toolUseId",
-    "spawnDepth"}. requested_model, when given, adds meta.json's own "model"
-    key — absent by default, matching a dispatch that requested no explicit
-    model."""
+    "spawnDepth"}. spawn_depth marks a nested dispatch with a value above 1;
+    where nested dispatches are written on disk is described in
+    corpus._index_subagent_dispatches.
+    requested_model, when given, adds meta.json's own "model" key —
+    absent by default, matching a dispatch that requested no explicit model."""
     _write_subagent_jsonl(proj, session_id, agent_id, records)
     subdir = proj / session_id / SUBAGENT_SUBDIR
-    meta = {"agentType": agent_type, "description": description, "toolUseId": tool_use_id, "spawnDepth": 1}
+    meta = {"agentType": agent_type, "description": description, "toolUseId": tool_use_id, "spawnDepth": spawn_depth}
     if requested_model is not None:
         meta["model"] = requested_model
     (subdir / f"{agent_id}.meta.json").write_text(json.dumps(meta))
@@ -878,6 +1367,21 @@ def _skill_use(tool_id: str, skill: str) -> dict:
     return {"type": "tool_use", "id": tool_id, "name": "Skill", "input": {"skill": skill}}
 
 
+def _skill_use_rec(skill: str, ts: str, branch: str = "main", tool_id: str = "s1") -> dict:
+    """Main-thread assistant record containing a Skill tool_use.
+
+    Pass distinct tool_id values when two invocations appear in the same session
+    to match production transcript invariants (tool_use ids are unique per block).
+    """
+    return _asst("claude-sonnet-4-6", branch=branch, ts=ts, content=[_skill_use(tool_id, skill)])
+
+
+def _attr_ts(minute: int) -> str:
+    """Strictly increasing timestamps for branch-attribution fixtures: one minute apart
+    within one hour of 2026-05-12 (ISO 2026-W20)."""
+    return f"2026-05-12T12:{minute:02d}:00.000Z"
+
+
 def _read_use(tool_id: str, file_path: str) -> dict:
     """Build a Read tool_use block with the given file_path."""
     return {"type": "tool_use", "id": tool_id, "name": "Read", "input": {"file_path": file_path}}
@@ -892,36 +1396,28 @@ def _thinking_block() -> dict:
 
 
 @pytest.fixture()
-def fake_projects(tmp_path, monkeypatch, request):
-    """Isolated single-account corpus: patches scope.PROJECTS_DIR and
-    scope.config_dir on the calling test file's own loaded transcript-analysis.py
-    module (`request.module._mod`) -- every test file loads its own independent
-    copy via spec_from_file_location, but each copy's `from transcript_analysis
-    import scope` resolves to the one process-wide transcript_analysis.scope
-    module, so patching `mod.scope` here is visible regardless of which file's
-    `_mod` requested the fixture.
+def fake_projects(tmp_path, monkeypatch):
+    """Isolated single-account corpus: patches scope.PROJECTS_DIR and each package
+    module's by-name config_dir binding directly, so a test file needs no shim
+    loader to use it.
 
     _resolve_cost_roots (subagents, subagent-mix, cost, context-distribution)
     derives its default root from a fresh config_dir() call, not from the
     PROJECTS_DIR patch above — without this, a subcommand routed through
     _resolve_cost_roots would silently fall back to this machine's real
-    config dir instead of this fixture's isolated tmp_path. spend-over-threshold
-    and rearm-backtest stay in the shim (not yet moved into the package) and call config_dir()
-    via their own separate import, so mod.config_dir is patched too. cost_ledger,
+    config dir instead of this fixture's isolated tmp_path. cost_ledger,
     ledger_common, and pr_cost_ledger each bind config_dir by name from _config_dir, mirroring
-    scope.py's own binding, so all three are patched too -- five bindings of the same initial
+    scope.py's own binding, so all three are patched too -- four bindings of the same initial
     value, each the sole read path for its own still-independent call sites.
     """
-    mod = request.module._mod
     projects = tmp_path / "projects"
     proj = projects / "-home-user-testrepo"
     proj.mkdir(parents=True)
-    monkeypatch.setattr(mod.scope, "PROJECTS_DIR", projects)
-    monkeypatch.setattr(mod.scope, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(mod, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(mod.cost_ledger, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(mod.ledger_common, "config_dir", lambda: tmp_path)
-    monkeypatch.setattr(mod.pr_cost_ledger, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+    monkeypatch.setattr(scope, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(cost_ledger, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(ledger_common, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(pr_cost_ledger, "config_dir", lambda: tmp_path)
     return proj
 
 
@@ -939,56 +1435,59 @@ def fake_config_dir_factory(tmp_path):
 
 
 @pytest.fixture()
-def cost_ledger_file(tmp_path, monkeypatch, request):
+def cost_ledger_file(tmp_path, monkeypatch):
     """Isolated docs/cost-ledger.md: a fresh file with the canonical header/
     separator and zero data rows, matching the real committed file's own
-    shape. _cost_ledger_path is monkeypatched (on the calling test file's own
-    `_mod.cost_ledger` -- see fake_projects above for why `request.module._mod`)
-    so every test in this section reads/writes this file, never this repo's
-    own tracked ledger."""
-    mod = request.module._mod
+    shape. _cost_ledger_path is monkeypatched (on `cost_ledger`) so every test in
+    this section reads/writes this file, never this repo's own tracked ledger."""
     ledger_path = tmp_path / "cost-ledger.md"
     ledger_path.write_text(
         "# Cost-trend ledger\n\n"
-        + mod.cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
-        + mod.cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
+        + cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
+        + cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
     )
-    monkeypatch.setattr(mod.cost_ledger, "_cost_ledger_path", lambda: ledger_path)
+    monkeypatch.setattr(cost_ledger, "_cost_ledger_path", lambda: ledger_path)
     return ledger_path
 
 
 @pytest.fixture()
-def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects, request):
+def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects):
     """Isolated config dir carrying the cost-ledger opt-in sentinel and a
     seeded machine identity. Shared by test_transcript_cost_ledger.py's and
     test_transcript_cost_ledger_record_gates.py's own cost-ledger tests and
-    test_transcript_ledger_common.py's TestMachineIdentity (see fake_projects
-    above for why `request.module._mod`).
+    test_transcript_ledger_common.py's TestMachineIdentity.
 
     - Sets `CLAUDE_CONFIG_DIR` explicitly rather than relying on
       `_isolate_transcript_corpus_lookups`'s coincidental tmp-path match.
       `_cost_ledger_report`'s sentinel check resolves `config_dir` through
-      `_config.py`'s own binding, not `_mod`'s, so patching
-      `_mod.cost_ledger.config_dir` alone has no effect on it.
+      `_config.py`'s own binding, so patching
+      `cost_ledger.config_dir` alone has no effect on it.
     - The env var alone is not sufficient either. `fake_projects`
-      monkeypatches `_mod.cost_ledger.config_dir` to its own `tmp_path`,
+      monkeypatches `cost_ledger.config_dir` to its own `tmp_path`,
       which wins over the env var since it never re-reads the environment.
     - Declaring `fake_projects` as this fixture's own parameter (not just
       requested alongside it) makes pytest's fixture graph run it first,
       regardless of a test's own parameter order.
-    - `mod.cost_ledger.config_dir` and `mod.ledger_common.config_dir` are
+    - `cost_ledger.config_dir` and `ledger_common.config_dir` are
       both patched again here so they and `_config.config_enabled()`'s
       env-var-based resolution all agree on the same directory.
     """
-    mod = request.module._mod
     cfg_dir = tmp_path / "isolated-claude-config"
     cfg_dir.mkdir()
     (cfg_dir / ".cost-ledger-enabled").touch()
-    (cfg_dir / mod.ledger_common._MACHINE_IDENTITY_FILENAME).write_text("7e57c0de")
+    (cfg_dir / ledger_common._MACHINE_IDENTITY_FILENAME).write_text("7e57c0de")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
-    monkeypatch.setattr(mod.cost_ledger, "config_dir", lambda: cfg_dir)
-    monkeypatch.setattr(mod.ledger_common, "config_dir", lambda: cfg_dir)
+    monkeypatch.setattr(cost_ledger, "config_dir", lambda: cfg_dir)
+    monkeypatch.setattr(ledger_common, "config_dir", lambda: cfg_dir)
     return cfg_dir
+
+
+@pytest.fixture(autouse=True)
+def _guard_shell_exec(monkeypatch):
+    """Fail a test that execs a shell file in a way that can pass without the file running.
+    The wrapper lives in helpers.install_shell_exec_guard; each test tree defines its own
+    fixture because importing one into a conftest trips ruff F401."""
+    install_shell_exec_guard(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

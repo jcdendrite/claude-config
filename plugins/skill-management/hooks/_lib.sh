@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Trimmed shared helper library for skill-management plugin hooks.
 # Source this file (do NOT invoke it). Contains the helpers needed by
 # require-skill-review.sh: _lib_config_dir, _lib_jq, _lib_capped_for,
@@ -42,6 +42,27 @@
 # stowed copy, so this gate and the stowed code-review gate cannot drift
 # apart on which commit-concluding commands they recognize.
 
+# A plugin cannot source across the plugin boundary, so this block duplicates claude/.claude/hooks/_config.sh's.
+# test_bash_floor.py pins the copies together.
+# Everything down to this block's `return 1` must parse and run on bash 3.2.
+_BASH_FLOOR_MAJOR=5
+_BASH_FLOOR_MINOR=2
+
+# Returns 0 when MAJOR MINOR are numeric and at or above the floor, else 1.
+_bash_version_meets_floor() {
+  case "${1-}" in '' | *[!0-9]*) return 1 ;; esac
+  case "${2-}" in '' | *[!0-9]*) return 1 ;; esac
+  if [ "$1" -gt "$_BASH_FLOOR_MAJOR" ]; then
+    return 0
+  fi
+  [ "$1" -eq "$_BASH_FLOOR_MAJOR" ] && [ "$2" -ge "$_BASH_FLOOR_MINOR" ]
+}
+
+# No message: this file's only callers are gate bootstraps that discard stderr, and each gate's deny text carries the fix.
+if ! _bash_version_meets_floor "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"; then
+  return 1
+fi
+
 # Prints the active Claude Code config directory: $CLAUDE_CONFIG_DIR if set
 # (must be absolute — a relative value resolves differently per invocation
 # cwd, the same path-mismatch bug this function exists to fix), else
@@ -75,7 +96,8 @@ _lib_config_dir() {
 # install.sh warns about missing timeout at onboarding time.
 # Security implication: on BSD/macOS without coreutils, a stalled or
 # replaced jq binary can hold a gate hook open until the harness's own hook
-# timeout, which does not block the tool call (see _lib_capped_for below).
+# timeout. See _lib_capped_for below for whether that blocks the call,
+# including the effect of `onFailure`.
 _lib_jq() {
   if command -v timeout >/dev/null 2>&1; then
     timeout 5 jq "$@"
@@ -98,7 +120,9 @@ _lib_jq() {
 # --foreground, so the outer cap's group-directed signal does not reach it.
 # On the uncapped fallback, or with a child that survives SIGKILL, a stalled
 # PreToolUse gate exits only by the harness's own hook timeout, which does not
-# block the tool call (hooks reference, Timeouts section, fetched 2026-09-19).
+# block the tool call by default (hooks reference, Timeouts section, fetched
+# 2026-09-19). Gate registrations set `onFailure: "block"`, so on Claude Code
+# 2.1.295 or later a timed-out gate blocks the call instead.
 # The short `-k 2` spelling is load-bearing: BusyBox's timeout rejects
 # `--kill-after=2` with a usage error and never runs the command.
 # The requirement is a `timeout` or `gtimeout` that accepts `-k`: GNU coreutils,

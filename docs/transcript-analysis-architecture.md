@@ -15,7 +15,9 @@ Every command-group module moves in leafward first: the shim imports it, never t
 circular import is possible while `cmd_*` functions remain split across both the shim and the
 package. `cost.py`, `reviewer_yield.py`, `review_rounds.py`, `denials.py`, `review_trace.py`,
 `read_scope.py`, `pr_cost.py`, `pr_cost_export.py`, `cache_rebuild.py`, `audit_routing.py`,
-`cost_ledger.py`, `workstream_cost.py`, `subagents.py`, and `subagent_mix.py` are the only modules
+`cost_ledger.py`, `workstream_cost.py`, `subagents.py`, `subagent_mix.py`, `rearm_backtest.py`,
+`spend_over_threshold.py`, `plan_boundary.py`, `handoff_signal_response.py`, `judgment_pair.py`,
+`skill_invocation.py`, and `skill_pair.py` are the only modules
 the shim imports back into (not just from). The CLI's own `build_parser()` still wires up `review_trace.py`'s
 `cmd_review_trace`/`REVIEW_TRACE_SKILLS` from the shim, until the `cli.py` phase migrates both. Two
 still-unmigrated friction/command-shape helpers likewise call `denials.py`'s
@@ -23,12 +25,13 @@ still-unmigrated friction/command-shape helpers likewise call `denials.py`'s
 `build_parser()` likewise wires up `read_scope.py`'s `cmd_read_scope` from the shim.
 The still-unmigrated context-composition code separately reads `read_scope.py`'s
 `_READ_SCOPE_CHARS_PER_TOKEN` by name from the shim.
-`review_trace.py` also imports `reviewer_yield.py`, for its own reviewer-spawn detection
-(`reviewer_yield._is_reviewer_subagent_type`), and `review_rounds.py`, for its `/slash`-invocation
-skill-name matching (`review_rounds._round_skill_name`, `review_rounds._SLASH_COMMAND_RE`) — the
-package's first two imports from one command-group module into another.
-`subagent_mix.py` likewise imports `review_rounds.py`, for `REVIEW_SKILLS` and
-`compute_review_round_counts`.
+A command-group module may import another by module (attribute access). Among the review modules,
+`reviewer_yield.py` and `review_rounds.py` import no other command-group module. `review_rounds.py`
+is imported by `subagent_mix.py` (for `REVIEW_SKILLS` and `compute_review_round_counts`),
+`judgment_pair.py` (for `REVIEW_SKILLS`), `skill_invocation.py` (for `_SLASH_COMMAND_RE`), and
+`author_outcome.py` (for `detect_round_windows` and `spawn_round_skill`). `review_trace.py` imports `reviewer_yield.py` (for
+`_is_reviewer_subagent_type`), `review_rounds.py` (for `_round_skill_name` and
+`_SLASH_COMMAND_RE`), and `skill_invocation.py` (for `_normalize_skill_name`).
 `build_parser()` likewise wires up `pr_cost.py`'s `cmd_pr_cost` (with its two
 `--asof-window-days`/`--plan-file-glob` default constants) and `pr_cost_export.py`'s
 `cmd_pr_cost_export` from the shim.
@@ -41,6 +44,17 @@ package's first two imports from one command-group module into another.
 `cmd_subagent_mix`/`cmd_cost_counts` from the shim.
 The still-unmigrated context-composition code reads `subagents.py`'s `_MCP_TOOL_BUCKET_LABEL` by
 name from the shim.
+`build_parser()` likewise wires up `rearm_backtest.py`'s `cmd_rearm_backtest` and
+`spend_over_threshold.py`'s `cmd_spend_over_threshold` from the shim.
+`build_parser()` likewise wires up `plan_boundary.py`'s `cmd_plan_boundary` and
+`handoff_signal_response.py`'s `cmd_handoff_signal_response` from the shim.
+`build_parser()` registers judgment-pair, skill-invocation, and skill-pair by calling each owning
+module's `_add_<command>_subparser` from the shim at that command's place in registration order. Each
+module's own registration binds `set_defaults(func=...)` to its own handler.
+The shim also binds `cmd_judgment_pair`, `cmd_skill_invocation`, and `cmd_skill_pair`, and those
+bindings exist only for test files, which read them as `_mod.cmd_<command>`. They are read-only test
+affordances: a test that needs to steer a moved command patches the module whose binding the
+handler reads at call time, not the shim name.
 
 ## The package
 
@@ -49,10 +63,10 @@ name from the shim.
 JSONL transcript read/parse and session iteration: `iter_sessions`, `read_session_file`,
 `SUBAGENT_SUBDIR` (the `<session_id>/subagents/*.jsonl` split-transcript convention), `_parse_ts`,
 and `_index_subagent_dispatches` (one session's toolUseId → paired subagent `.jsonl`/requested-model
-join, reused recursively by `review_rounds.py`'s nested-dispatch descent since the function's own
-`jsonl.parent / jsonl.stem / SUBAGENT_SUBDIR` layout resolves identically for a subagent's own
-transcript file). No dependency on scope resolution, redaction, or pricing — every other module
-(and the shim) builds on this one.
+join). The harness writes every nested dispatch's `.meta.json` into the session's own flat
+`subagents/` directory. One session's index therefore also resolves a dispatch spawned from inside
+another subagent. `review_rounds.py`'s nested-dispatch descent reuses it. No dependency on scope
+resolution, redaction, or pricing — every other module (and the shim) builds on this one.
 
 Also owns `split_command_segments` (tokenize a raw shell command, then split on `&&`/`||`/`;`/`|`)
 as the single source of truth for two consumers: the shim's own mutating-git classifier, and
@@ -64,7 +78,19 @@ Scan-root and project-scope resolution: `PROJECTS_DIR`, `resolve_scan_roots`,
 `print_resolved_scope`, the `--this-repo` project-slug machinery, and the multi-root
 `--config-dir` resolution cost-family subcommands share (`_resolve_cost_roots`,
 `_SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR`). Also owns `_redaction_ordinals` — kept here instead of
-`redaction.py` so `redaction.py`'s dependency on it stays one-directional, not circular.
+`redaction.py` so `redaction.py`'s dependency on it stays one-directional, not circular. Also owns the
+per-record branch attribution that the consumers listed under "Pre-branch default-branch attribution" in `docs/transcript-analysis.md` share: `_session_branch_context` (built once
+per session), `_attributed_branch` (the timeline step for sidechain records, then the pre-branch step) and
+`_attribute_carried_branch` (the pre-branch step alone, for positional consumers).
+The rule itself is documented in `docs/transcript-analysis.md` under "Subagent attribution" and
+"Pre-branch default-branch attribution".
+
+`scope.py` also owns `_add_project_scope_args`, which registers the mutually exclusive
+`--projects`/`--this-repo` flags on a subparser. `_resolve_project_scope` reads the `this_repo`
+attribute that function defines.
+
+`scope.py` also owns `_iso_date`, the argparse `type=` validator for every YYYY-MM-DD flag, which
+`_parse_absolute_window_args` relies on.
 
 Read reassignable module globals (`scope.PROJECTS_DIR`, `scope.config_dir`,
 `pricing._usage_drift_warned`) via attribute access, never `from module import NAME` — the latter
@@ -109,7 +135,9 @@ into one record per API call). Self-contained: no dependency on `scope.py` or `r
 
 Small display-formatting and text-normalization helpers with no state of their own: model-family
 labels (`_fam`), markdown/table rendering, `_content_text`, `_fmt_usd`, `_pct_of`,
-`_strip_task_notifications`. Self-contained.
+`_strip_task_notifications`, `_is_fresh_user_prompt`. Self-contained. `_is_fresh_user_prompt` has its
+one definition here; `judgment_pair.py`, `review_rounds.py`'s round-window detection, and
+`rearm_backtest.py`'s boundary detection all read it.
 
 ### `cost.py`
 
@@ -139,23 +167,26 @@ shim, since review-trace's own detection moved into the package.
 ### `review_rounds.py`
 
 The review-round-cost command family: `cmd_review_round_cost` and every helper used only by it —
-per-branch review-round-window detection across both the `Skill` tool_use and `/slash` invocation
-shapes, and recursive per-round subagent dollar attribution via `corpus._index_subagent_dispatches`'
-toolUseId join (`compute_review_round_costs`). Also exports `compute_review_round_counts`, a
+per-branch review-round-window detection across three invocation shapes (the `Skill` tool_use, the
+`/slash` tag, and an `Agent`/`Task` spawn of a `review-orchestrator`), and recursive per-round
+subagent dollar attribution via `corpus._index_subagent_dispatches`' toolUseId join (`compute_review_round_costs`). Also exports `compute_review_round_counts`, a
 count-only sibling reusing the same detection helpers to produce per-skill round counts with no
 pricing, no dispatch index, and no recursion — `subagent_mix.py`'s `cmd_cost_counts` calls it as
 `review_rounds.compute_review_round_counts` for the `### Review rounds` half of its output. Imports `corpus`, `pricing`, `redaction`, `render`,
 and `scope` all by module (attribute access), matching `cost.py`'s convention — deliberately no
 `cost.py` import: a round's own branch is its opening record's own `gitBranch`, carried forward
-when absent, and every record inside that round's window is attributed to it, never
-`cost._attributed_branch`'s worktree-agent-\* resolution, which a main-thread round-opening record
-never needs. `REVIEW_SKILLS`, `compute_review_round_counts`, and `detect_round_windows` are the
-public names here. `REVIEW_SKILLS` is back-imported by the still-unmigrated `cmd_judgment_pair` in
-the shim for its own `--skills` default, one instance of the one-directional exception noted
-above. `_round_skill_name` and `_SLASH_COMMAND_RE` are two more instances, both back-imported by
-the still-unmigrated review-trace code: `_round_skill_name` for its own `REVIEW_TRACE_SKILLS`
-membership test and `--skill` filter comparison, `_SLASH_COMMAND_RE` to extract a `/slash`-invoked
-skill name before `_round_skill_name` normalizes it.
+when absent and passed through `scope._attribute_carried_branch`, and every record inside that round's
+window is attributed to it, never `scope._attributed_branch`'s sidechain timeline step, which a
+main-thread round-opening record never needs. `REVIEW_SKILLS`, `compute_review_round_counts`, `detect_round_windows`, `spawn_round_skill`,
+and `round_opened_by_spawn` are the public names here. `spawn_round_skill` maps a spawn block to the
+review skill it opens (`author_outcome.py` is its consumer), and `round_opened_by_spawn` reports
+whether a record's round came from a spawn block rather than a `Skill` block (the review-bench
+miner's round filter is its consumer). `REVIEW_SKILLS` is read by `judgment_pair.py`, for
+judgment-pair's `--skills` default, and by the shim's `build_parser()`, for review-round-cost's
+`--skill` choices. `_round_skill_name` and `_SLASH_COMMAND_RE` are read by `review_trace.py`:
+`_round_skill_name` for its `REVIEW_TRACE_SKILLS` membership test and `--skill` filter comparison, and
+`_SLASH_COMMAND_RE` to extract a `/slash`-invoked skill name before `_round_skill_name` normalizes it.
+`_SLASH_COMMAND_RE` is also `skill_invocation.py`'s `/slash` pattern, and this is its one definition.
 `detect_round_windows` is public (no leading
 underscore) for a separate reason: `author_outcome.py` is a second consumer, reading only each
 window's own `open_idx`/`skill`.
@@ -175,7 +206,11 @@ still leave. `_round_blocks` groups a session's rows into blocks, and the k-th r
 the k-th block by rank, not by `round` value. The transcript is still the sole source for
 round-open positions, dispatch completion ordering, and the `marker.sh write code-review` Bash
 `tool_use` fallback signal used only when a round has no ledger row at all
-(`_is_clean_marker_write`).
+(`_is_clean_marker_write`). For a main-thread `review-orchestrator` round-open,
+`_orchestrator_spawns` also projects that spawn's own transcript, when it has readable records,
+into a `_OrchestratorSpawn` of derived facts (the marker write and the nested `--agent`
+dispatches), located through
+`corpus._index_subagent_dispatches`' `toolUseId` join.
 
 See `_lib.sh`'s own `_lib_acquire_append_lock`/`_lib_append_json_line_locked`
 docstrings for the append-lock mechanism `review-ledger.sh`'s
@@ -205,14 +240,13 @@ The review-trace command family: `cmd_review_trace` and every helper used only b
 `--deny-summary`'s grouped denial/friction accumulation and report (`compute_deny_summary_data`,
 promoted from a shim-private `_compute_deny_summary_data`), and the per-session event-timeline
 detector both the default output and `--deny-summary` share (`_review_trace_session_events`).
-Imports `corpus`, `denials`, `render`, `reviewer_yield`, `review_rounds`, and `scope` all by module
-(attribute access), matching `cost.py`'s convention; calls `reviewer_yield._is_reviewer_subagent_type`
-for its own reviewer-spawn detection and `review_rounds._round_skill_name`/
-`review_rounds._SLASH_COMMAND_RE` for its `/slash`-invocation skill matching — see that module's own
-section above for why these are the package's first cross-command-group imports.
-`_review_trace_session_events` re-expresses its own `_normalize_skill_name` (the emitted display
-label's lighter directory-only strip) locally rather than back-importing the shim's copy — the same
-re-expression pattern `review_rounds.py` uses for `_is_fresh_user_prompt` and `_SLASH_COMMAND_RE`.
+Imports `corpus`, `denials`, `render`, `reviewer_yield`, `review_rounds`, `scope`, and
+`skill_invocation` all by module (attribute access), matching `cost.py`'s convention; calls
+`reviewer_yield._is_reviewer_subagent_type` for its own reviewer-spawn detection and `review_rounds._round_skill_name`/
+`review_rounds._SLASH_COMMAND_RE` for its `/slash`-invocation skill matching — see the intro for the
+cross-command-group import rule.
+`_review_trace_session_events` reads `skill_invocation._normalize_skill_name` for the emitted display
+label's directory-only strip.
 `cmd_review_trace` and `REVIEW_TRACE_SKILLS` are the two names reached bare from the shim's own
 still-monolithic `build_parser()` — see the exception noted above. `compute_deny_summary_data` is
 read by `cost_ledger.py`'s own `_cost_ledger_report` as `review_trace.compute_deny_summary_data`, a
@@ -354,6 +388,94 @@ attribute access, per the rule under `scope.py` above, so `fake_projects`' exist
 `scope.config_dir` patch isolates it with no further patch. `cmd_subagent_mix` and `cmd_cost_counts`
 are the two names reached bare from the shim, from `build_parser()`.
 
+### `handoff_nudge.py`
+
+The handoff-nudge family's shared core, with no `cmd_*` of its own: the mirror of the hook's fire
+threshold (`_hook_effective_fire_threshold`, `_HANDOFF_NUDGE_ABS_CAP`, `_HANDOFF_NUDGE_PCT_THRESHOLD`),
+the turn-index ramp curve (`_ramp_curve_turn_index_bucket`, `_ramp_curve_from_corpus`), the single
+dedup-and-price pass over one session (`_extract_rearm_session_turns`) with its whole-session scope
+filter (`_session_matches_rearm_scope`), and the `.handoff-nudge.log` reader, parser,
+operator-response lag join, and diagnostic footer (`_read_bounded_log_lines`,
+`_parse_nudge_log_entries`, `_operator_response_lag_from_log`, `_print_nudge_log_diagnostic`). Its
+consumers are `rearm_backtest.py`, `spend_over_threshold.py`, `plan_boundary.py`, and
+`handoff_signal_response.py`. Imports `corpus`, `pricing`, and `scope` all by module (attribute
+access), matching `cost.py`'s convention. `_print_nudge_log_diagnostic` reads
+`config_dir() / ".handoff-nudge.log"` as `scope.config_dir()` by attribute access, per the rule
+under `scope.py` above, so `fake_projects`' existing `scope.config_dir` patch isolates it with no
+further patch.
+
+### `rearm_backtest.py`
+
+The rearm-backtest command: `cmd_rearm_backtest` and `_rearm_backtest_report`, plus every helper only
+they use — hook-observable boundary detection (`_hook_observable_boundaries`), per-spacing replay
+(`_simulate_rearm_spacing`), `--spacings` parsing (`_parse_rearm_spacings_arg`), the
+nudge-to-handoff conversion classifier (`_nudge_conversion_from_log`), and the per-root log-size
+disclosure line (`_rearm_backtest_log_size_lines`). Imports `handoff_nudge`, `render`, and `scope` all
+by module (attribute access), matching `cost.py`'s convention. The multi-root `--no-redact` refusal
+stays inline in `_rearm_backtest_report`, ahead of any output, in addition to
+`scope._resolve_cost_roots`' own CLI-level refusal. `cmd_rearm_backtest` is the one name reached bare
+from the shim, from `build_parser()`.
+
+### `spend_over_threshold.py`
+
+The spend-over-threshold command: `cmd_spend_over_threshold` — each ISO week's share of session spend
+earned at or above the hook's fire threshold, followed by the nudge-log diagnostic footer. Reads its
+per-session turns through `handoff_nudge._extract_rearm_session_turns` and prints the footer through
+`handoff_nudge._print_nudge_log_diagnostic`. Imports `corpus`, `handoff_nudge`, `render`, and `scope`
+all by module (attribute access), matching `cost.py`'s convention. `cmd_spend_over_threshold` is the
+one name reached bare from the shim, from `build_parser()`.
+
+### `plan_boundary.py`
+
+The plan-boundary command: `cmd_plan_boundary` and `_plan_boundary_report`, plus every helper only
+they use — boundary-turn location (`_plan_boundary_turn_index`), the three arms' repricing
+(`_arm_b_boundary_plus_one_dollars`, `_arm_b_later_turn_dollars`, `_arm_c_turn_dollars`), and the
+pairwise work-inflation breakeven (`_plan_boundary_work_inflation_breakeven`). Imports
+`handoff_nudge`, `pricing`, `render`, and `scope` all by module (attribute access), matching
+`cost.py`'s convention. The multi-root `--no-redact` refusal is inline in `_plan_boundary_report`,
+ahead of any output, in addition to `scope._resolve_cost_roots`' own CLI-level refusal.
+`cmd_plan_boundary` is the one name reached bare from the shim, from `build_parser()`.
+
+### `handoff_signal_response.py`
+
+The handoff-signal-response command: `cmd_handoff_signal_response` and every helper only it uses — the
+per-record signal classifiers (`_handoff_signal_bash_check_call`, `_handoff_signal_marker_transition`,
+`_handoff_signal_is_handoff_event`), the excerpt and forward-context windows, the single-pass session
+scan (`_handoff_signal_response_session_rows`), spend ranking, curation cards, the startup-burn
+benchmark, and the aggregate and markdown renderers. Imports `corpus`, `cost`, `handoff_nudge`,
+`pricing`, `redaction`, `render`, and `scope` all by module (attribute access), matching `cost.py`'s
+convention. The multi-root `--no-redact` refusal lives inline in `cmd_handoff_signal_response`, since
+`scope.resolve_scan_roots` refuses nothing. Its `.handoff-nudge.log` read goes through
+`scope.config_dir()` by attribute access, per the rule under `scope.py` above, so `fake_projects`'
+existing `scope.config_dir` patch isolates it. `cmd_handoff_signal_response` is the one name reached
+bare from the shim, from `build_parser()`.
+
+### `judgment_pair.py`
+
+The judgment-pair command: `cmd_judgment_pair`, which pairs each review skill's last main-thread
+assistant output with the user's next fresh prompt, and the `_add_judgment_pair_subparser`
+registration. Imports `corpus`, `redaction`, `render`, `review_rounds`, and `scope` all by module
+(attribute access), matching `cost.py`'s convention; `review_rounds.REVIEW_SKILLS` is the default
+for its `--skills` flag. `_add_judgment_pair_subparser` is the one name `build_parser()` reaches
+bare.
+
+### `skill_invocation.py`
+
+The skill-invocation command: `cmd_skill_invocation`, the per-skill tally of top-level, routed, and
+`/slash` invocations, `_normalize_skill_name`, the display-label helper that strips a directory
+qualifier from a skill name, and the `_add_skill_invocation_subparser` registration. Imports
+`corpus`, `render`, `review_rounds`, and `scope` all by module (attribute access), matching
+`cost.py`'s convention. `_normalize_skill_name` has its one definition here, and `review_trace.py`
+reads it. The `/slash` pattern is `review_rounds._SLASH_COMMAND_RE`.
+`_add_skill_invocation_subparser` is the one name `build_parser()` reaches bare.
+
+### `skill_pair.py`
+
+The skill-pair command: `cmd_skill_pair`, the ISO-week rate at which a follower skill fires in
+sessions where a leader skill fired on the main thread, and the `_add_skill_pair_subparser`
+registration. Imports `corpus`, `pricing`, and `scope` all by module (attribute access), matching
+`cost.py`'s convention. `_add_skill_pair_subparser` is the one name `build_parser()` reaches bare.
+
 ## Sibling scripts
 
 `token-analyzer.py` and `analyze-context.py` import these modules directly
@@ -392,14 +514,31 @@ on. `tests/conftest.py` carries the shared fixtures that reach across the shim/p
 boundary and across every test file (`fake_projects`, `fake_config_dir_factory`, `_table_cols`,
 `cost_ledger_file`, `cost_ledger_enabled`, `_hook_deny`, `_hook_deny_current`, `_review_trace_args`,
 `_compact_boundary_rec`, `_cost_ledger_args`, `_cost_ledger_row`, `_two_declared_roots`,
-`_exit_plan_mode`, `_priced_opus`, `_priced_sidechain_asst`, `_read_use`, `_thinking_block`); see its own
-docstrings for why `fake_projects` patches five `config_dir` bindings: `scope.config_dir` and the
-shim's still-independent `config_dir` (for spend-over-threshold and rearm-backtest, not yet moved
-into the package), plus `cost_ledger.config_dir`, `ledger_common.config_dir`, and
+`_attr_ts`, `_exit_plan_mode`, `_priced_opus`, `_priced_sidechain_asst`, `_read_use`, `_skill_use_rec`, `_thinking_block`); see its own
+docstrings for why `fake_projects` patches four `config_dir` bindings: `scope.config_dir`, plus
+`cost_ledger.config_dir`, `ledger_common.config_dir`, and
 `pr_cost_ledger.config_dir` (each module's own by-name binding, mirroring `scope.py`'s pattern). `author_outcome.py`'s own tests
 live in `tests/test_author_outcome.py`: most exercise the package module directly
 (`from transcript_analysis import author_outcome`), with a small `spec_from_file_location`-loaded
 shim copy reserved for the argparse-wiring and `cmd_author_outcome` end-to-end tests.
+
+`fake_projects`, `cost_ledger_file`, and `cost_ledger_enabled` patch the package modules directly, so a
+test file that uses them needs no `transcript-analysis.py` loader of its own.
+`tests/test_transcript_shared_fixtures.py` requests them from a file that loads no shim.
+
+`tests/_move_fidelity.py` checks a code move between files: moved-node AST equality modulo a rename
+map applied to code only, what remains of each source file, byte-compared CLI captures under a pinned
+environment, a per-subcommand dump of each parser's argparse configuration, and per-test outcomes
+across junit XML runs. Its seeded-defect self-test is split by subject:
+`tests/test_transcript_move_fidelity_test_ids.py` covers `test-ids`,
+`tests/test_transcript_move_fidelity_parser.py` covers the parser dump and
+`compare-captures --moved-callable`, and `tests/test_transcript_move_fidelity.py` covers the rest.
+Run `tests/_move_fidelity.py` with `--help` for usage.
+`tests/_move_fidelity_helpers.py`, a plain module, not a test file itself, holds the helpers
+the self-test files share: `_invoke` and `_checks` (run the harness and read its output) and `_write`
+and `_write_capture` (write input files and capture directories). The test-ids file imports only
+`_invoke` and `_checks`. A new self-test file imports these helpers instead of defining its own
+copies.
 
 The cache-rebuild family splits along thematic seams rather than one file per module:
 
@@ -463,3 +602,44 @@ family-only helpers local to itself.
 `TestFormatDriftCanary` stays in `tests/test_transcript_analysis.py` rather than moving with the
 family: it spans subagents, skill-pair, and cache-efficiency. `TestSubagentFormatContract` stays
 there too: it pins `corpus.py`'s on-disk subagent-file contract and reads no name from the family.
+
+The handoff-nudge command family splits at module seams, and handoff-signal-response's tests split
+again at its detection/reporting seam:
+
+- `tests/test_transcript_handoff_nudge.py` covers `handoff_nudge.py`: fire threshold, ramp curve,
+  per-session turn extraction and scope, and nudge-log parsing, including a contract test against
+  the real hook
+- `tests/test_transcript_rearm_backtest.py` covers `rearm_backtest.py`'s boundary detection, spacing
+  replay, `--spacings` parsing, and report
+- `tests/test_transcript_rearm_backtest_nudge_log.py` covers its nudge-to-handoff conversion
+  classifier and per-root log-size disclosure line
+- `tests/test_transcript_spend_over_threshold.py` covers `cmd_spend_over_threshold`, including its
+  diagnostic footer
+- `tests/test_transcript_plan_boundary.py` covers `plan_boundary.py`: boundary-turn location, the
+  three arms' repricing helpers, the work-inflation breakeven, and the report end to end
+- `tests/test_transcript_handoff_signal_response_detection.py` covers `handoff_signal_response.py`'s
+  per-record signal classifiers, excerpt and forward-context windows, and single-pass session-row
+  detection
+- `tests/test_transcript_handoff_signal_response.py` covers its reporting side: spend ranking,
+  curation cards, the startup-burn benchmark, the renderers, and `cmd_handoff_signal_response` end
+  to end
+
+`tests/_handoff_nudge_helpers.py`, a plain module, not a test file itself, holds the six helpers more
+than one file reads: `_spend_over_threshold_args`, `_rearm_backtest_args`,
+`_ramp_curve_from_records`, `_check_result_json`, `_handoff_advisory_attachment`, and
+`_check_call_turn`. `tests/test_transcript_analysis.py` imports only `_spend_over_threshold_args` and
+`_rearm_backtest_args`, for its cross-subcommand table. All consumers import it relatively, as `from ._handoff_nudge_helpers import ...`
+— see `.claude/rules/test-tree-packaging.md` for why. Each file keeps its other family-only helpers
+local to itself.
+
+The skill command group splits at command seams, one test file per module:
+`tests/test_transcript_skill_invocation.py` covers `cmd_skill_invocation` (invocation buckets,
+`--branches` and `--include-subagents` scoping, name normalization, provenance, the repo-scoped
+default, and the `/slash` `<command-args>` exclusion), `tests/test_transcript_skill_pair.py` covers
+`cmd_skill_pair`, and `tests/test_transcript_judgment_pair.py` covers `cmd_judgment_pair`. None of the
+three loads the shim: each imports its package module directly and relies on the loader-free
+`fake_projects` fixture. `tests/_skill_helpers.py`, a plain module, not a test file itself, holds the
+helpers more than one of those files, or `tests/test_transcript_analysis.py`, reads. The legacy file
+imports it too, as `from ._skill_helpers import ...` — see `.claude/rules/test-tree-packaging.md` for
+why. `TestIsFreshUserPrompt` stays in `tests/test_transcript_analysis.py` because it tests
+`render.py`, not the judgment-pair command.

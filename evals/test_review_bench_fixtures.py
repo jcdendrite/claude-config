@@ -9,14 +9,26 @@ instead. No test launches `claude`.
 """
 from __future__ import annotations
 
+import io
 import json
+import os
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
-from review_bench import adjudicate, arms, fixture_repo
+from review_bench import adjudicate, arms, defects, fixture_repo, local_git
 from review_bench.defects import ConfirmedDefect
-from test_review_bench_mining import _commit, _commit_at, _git, _init_repo, _write
+from test_review_bench_mining import (
+    ENGINEER_GIT_SETUPS,
+    _commit,
+    _commit_at,
+    _git,
+    _init_repo,
+    _write,
+    apply_engineer_git_setup,
+    commit_two_versions_of_a_multi_line_python_file,
+)
 
 # One unfixed build can miss the edit only some of the time, so a regression
 # needs repeated builds to fail reliably.
@@ -27,6 +39,7 @@ def _confirmed_defect(*, base_commit: str, head_commit: str, lens: str = "staff-
     return ConfirmedDefect(
         id="defect-1", source="szz", lens=lens, base_commit=base_commit, head_commit=head_commit,
         fix_commit=head_commit, fix_date="2024-01-01", description="test defect",
+        path="app.py", file_is_markdown=False,
     )
 
 
@@ -190,6 +203,67 @@ class TestBuildTwoCommitRepo:
         assert _git(dest_dir, "ls-tree", "-r", "HEAD~1") == _git(source_repo, "ls-tree", "-r", base_commit)
         assert _git(dest_dir, "ls-tree", "-r", "HEAD") == _git(source_repo, "ls-tree", "-r", head_commit)
 
+    def _assert_snapshots_and_diff_match_source(
+        self, tmp_path: Path, source_repo: Path, base_commit: str, head_commit: str,
+    ) -> None:
+        defect = _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
+
+        # `ls-tree -r` lines carry each entry's mode, object type, oid, and path.
+        assert _git(dest_dir, "ls-tree", "-r", "HEAD~1") == _git(source_repo, "ls-tree", "-r", base_commit)
+        assert _git(dest_dir, "ls-tree", "-r", "HEAD") == _git(source_repo, "ls-tree", "-r", head_commit)
+        source_diff = _git(source_repo, "diff", *local_git.DIFF_TEXT_ARGS, base_commit, head_commit)
+        assert (dest_dir / ".bench" / "change.diff").read_text() == source_diff
+
+    def test_an_executable_file_and_a_mode_only_change_keep_their_source_modes_and_diff(
+        self, tmp_path: Path,
+    ) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "mode_only.sh", "echo same\n")
+        _write(source_repo, "edited.sh", "echo 1\n")
+        (source_repo / "edited.sh").chmod(0o755)
+        base_commit = _commit(source_repo, "base")
+        (source_repo / "mode_only.sh").chmod(0o755)
+        _write(source_repo, "edited.sh", "echo 2\n")
+        _write(source_repo, "added.sh", "echo added\n")
+        (source_repo / "added.sh").chmod(0o755)
+        head_commit = _commit(source_repo, "fix: bug")
+        # The control: the source really holds the executable mode the fixture must keep.
+        head_modes = {
+            line.split("\t")[1]: line.split()[0]
+            for line in _git(source_repo, "ls-tree", "-r", head_commit).splitlines()
+        }
+        assert head_modes == {"mode_only.sh": "100755", "edited.sh": "100755", "added.sh": "100755"}
+        assert "old mode 100644" in _git(source_repo, "diff", base_commit, head_commit)
+
+        self._assert_snapshots_and_diff_match_source(tmp_path, source_repo, base_commit, head_commit)
+
+    def test_a_relative_file_symlink_below_the_top_level_keeps_its_source_oid_and_diff(self, tmp_path: Path) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "pkg/target.txt", "target\n")
+        _write(source_repo, "pkg/other.txt", "other\n")
+        (source_repo / "pkg" / "sub").mkdir()
+        (source_repo / "pkg" / "sub" / "link.txt").symlink_to("../target.txt")
+        base_commit = _commit(source_repo, "base")
+        (source_repo / "pkg" / "sub" / "link.txt").unlink()
+        (source_repo / "pkg" / "sub" / "link.txt").symlink_to("../other.txt")
+        head_commit = _commit(source_repo, "fix: bug")
+        assert "120000" in _git(source_repo, "ls-tree", "-r", head_commit)
+
+        self._assert_snapshots_and_diff_match_source(tmp_path, source_repo, base_commit, head_commit)
+
+    def test_a_binary_blob_keeps_its_source_oid_and_diff(self, tmp_path: Path) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        (source_repo / "blob.bin").write_bytes(b"\x00\x01\x02\xff base\n")
+        base_commit = _commit(source_repo, "base")
+        (source_repo / "blob.bin").write_bytes(b"\x00\x01\x02\xff head\n")
+        head_commit = _commit(source_repo, "fix: bug")
+
+        self._assert_snapshots_and_diff_match_source(tmp_path, source_repo, base_commit, head_commit)
+
 
 class TestWriteBenchArtifacts:
     def _build_fixture(self, tmp_path: Path) -> Path:
@@ -258,6 +332,226 @@ class TestWriteBenchArtifacts:
         assert actual == expected
         assert actual != default_diff  # -W actually pulled in more context than the default diff
 
+    def _function_context_diff_of_one_edited_markdown_item(self, tmp_path: Path, *, markdown_driver: bool) -> str:
+        """Builds a three-section markdown fixture whose edited list item sits
+        under a letter-initial prose line, so git's default function-name
+        pattern anchors on the prose and not the heading."""
+        source_repo = _init_repo(tmp_path / "source")
+        document = (
+            "# Guide\n\nIntro prose.\n\n"
+            "## Setup\n\nSetup prose line one.\nSetup prose line two.\nSetup prose line three.\n\n"
+            "## Usage\n\nUsage prose before the list.\n\n- first usage item\n- second usage item\n\n"
+            "## Notes\n\nNotes prose line one.\nNotes prose line two.\nNotes prose line three.\n"
+        )
+        _write(source_repo, "docs/guide.md", document)
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "docs/guide.md", document.replace("- second usage item", "- second usage item, edited"))
+        head_commit = _commit(source_repo, "fix: item")
+        defect = _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        fixture_repo.build_two_commit_repo(source_repo, defect, dest_dir)
+        if markdown_driver:
+            fixture_repo.write_bench_artifacts(dest_dir, "fix: item")
+            return (dest_dir / ".bench" / "change-function-context.diff").read_text()
+        return _git(dest_dir, "diff", "-W", "HEAD~1", "HEAD")
+
+    def test_markdown_function_context_holds_the_enclosing_heading_and_no_neighboring_section_body(
+        self, tmp_path: Path,
+    ) -> None:
+        diff = self._function_context_diff_of_one_edited_markdown_item(tmp_path, markdown_driver=True)
+
+        assert "\n ## Usage\n" in diff
+        assert "+- second usage item, edited" in diff
+        assert "Setup prose" not in diff
+        assert "Notes prose" not in diff
+
+    def test_without_the_markdown_driver_the_enclosing_heading_is_absent_from_the_function_context(
+        self, tmp_path: Path,
+    ) -> None:
+        diff = self._function_context_diff_of_one_edited_markdown_item(tmp_path, markdown_driver=False)
+
+        assert "\n ## Usage\n" not in diff
+
+    def test_the_markdown_driver_covers_both_markdown_suffixes_and_is_written_once(self, tmp_path: Path) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "a.md", "# A\n")
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "a.md", "# A\n\nedited\n")
+        head_commit = _commit(source_repo, "fix: a")
+        defect = _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
+        fixture_repo.write_bench_artifacts(dest_dir, "fix: a")
+
+        attributes_text = (dest_dir / ".git" / "info" / "attributes").read_text()
+        assert attributes_text.splitlines() == ["*.md diff=markdown", "*.markdown diff=markdown"]
+        for markdown_name in ("x.md", "docs/notes.markdown"):
+            check_attr = _git(dest_dir, "check-attr", "diff", "--", markdown_name)
+            assert check_attr.strip().endswith("diff: markdown")
+
+    def test_every_markdown_suffix_the_predicate_accepts_has_a_matching_attribute_line(self, tmp_path: Path) -> None:
+        """The attribute globs are a second encoding of `defects.is_markdown_path`'s suffixes."""
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "a.md", "# A\n")
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "a.md", "# A\n\nedited\n")
+        head_commit = _commit(source_repo, "fix: a")
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        fixture_repo.build_defect_fixture(
+            source_repo, _confirmed_defect(base_commit=base_commit, head_commit=head_commit), dest_dir,
+        )
+
+        attribute_lines = (dest_dir / ".git" / "info" / "attributes").read_text().splitlines()
+
+        assert sorted(attribute_lines) == sorted(
+            f"*{suffix} diff={fixture_repo._MARKDOWN_DIFF_DRIVER}" for suffix in defects._MARKDOWN_SUFFIXES
+        )
+
+    @pytest.mark.parametrize(
+        ("ignore_case", "expected_driver"),
+        [
+            pytest.param("false", "unspecified", id="case-sensitive-volume"),
+            pytest.param("true", "markdown", id="case-insensitive-volume"),
+        ],
+    )
+    def test_an_upper_case_markdown_suffix_gets_the_markdown_driver_only_when_core_ignorecase_is_set(
+        self, tmp_path: Path, ignore_case: str, expected_driver: str,
+    ) -> None:
+        """Attribute globs follow `core.ignorecase`, which `git init` sets on a case-insensitive volume, and
+        `is_markdown_path` ignores case. On a case-sensitive volume `x.MD` is a markdown file (the markdown
+        gate, the comment-discipline lens) whose arm-2 diff keeps git's default function context: a known
+        gap. The key is pinned here, so the result does not depend on the volume running the test."""
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "x.MD", "# A\n")
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "x.MD", "# A\n\nedited\n")
+        head_commit = _commit(source_repo, "fix: x")
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        fixture_repo.build_defect_fixture(
+            source_repo, _confirmed_defect(base_commit=base_commit, head_commit=head_commit), dest_dir,
+        )
+        _git(dest_dir, "config", "core.ignorecase", ignore_case)
+
+        assert defects.is_markdown_path("x.MD") is True
+        assert _git(dest_dir, "check-attr", "diff", "--", "x.MD").strip().endswith(f"diff: {expected_driver}")
+        assert _git(dest_dir, "check-attr", "diff", "--", "x.md").strip().endswith("diff: markdown")
+
+    def test_the_markdown_config_lands_in_the_fixtures_own_git_dir(self, tmp_path: Path) -> None:
+        dest_dir = self._two_commit_markdown_fixture(tmp_path)
+
+        configured_pattern = _git(dest_dir, "config", "--local", "--get", "diff.markdown.xfuncname").strip()
+
+        assert configured_pattern == fixture_repo._MARKDOWN_HEADING_XFUNCNAME
+
+    def test_the_config_is_never_written_into_an_enclosing_repository(self, tmp_path: Path) -> None:
+        enclosing_repo = _init_repo(tmp_path / "enclosing")
+        not_a_repo_root = enclosing_repo / "fixture"
+        not_a_repo_root.mkdir()
+        config_before = (enclosing_repo / ".git" / "config").read_text()
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="not a git repository root"):
+            fixture_repo.write_bench_artifacts(not_a_repo_root, "fix: a")
+
+        assert (enclosing_repo / ".git" / "config").read_text() == config_before
+        assert not (not_a_repo_root / ".git").exists()
+
+    def test_a_git_file_in_place_of_a_git_directory_is_refused(self, tmp_path: Path) -> None:
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        (dest_dir / ".git").write_text("gitdir: ../elsewhere\n")
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError):
+            fixture_repo.write_bench_artifacts(dest_dir, "fix: a")
+
+    def _two_commit_markdown_fixture(self, tmp_path: Path) -> Path:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "docs/guide.md", "# Guide\n\nIntro prose.\n")
+        base_commit = _commit(source_repo, "base")
+        _write(source_repo, "docs/guide.md", "# Guide\n\nIntro prose, edited.\n")
+        head_commit = _commit(source_repo, "fix: guide")
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        fixture_repo.build_defect_fixture(
+            source_repo, _confirmed_defect(base_commit=base_commit, head_commit=head_commit), dest_dir,
+        )
+        return dest_dir
+
+    def test_a_conflicting_global_diff_driver_does_not_change_the_diff_artifacts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A converter configured for the `markdown` driver in the engineer's global git config would otherwise
+        rewrite the fixture's diffs on that machine alone."""
+        global_config = tmp_path / "global-gitconfig"
+        global_config.write_text('[diff "markdown"]\n\ttextconv = cat -n\n')
+        artifact_names = ("change.diff", "change-function-context.diff")
+        unaffected_dir = self._two_commit_markdown_fixture(tmp_path / "unaffected")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+
+        conflicted_dir = self._two_commit_markdown_fixture(tmp_path / "conflicted")
+
+        for name in artifact_names:
+            assert (conflicted_dir / ".bench" / name).read_text() == (unaffected_dir / ".bench" / name).read_text()
+        # The control: under that config a plain `git diff` of the same tree does change.
+        assert _git(conflicted_dir, "diff", "HEAD~1", "HEAD") != (conflicted_dir / ".bench" / "change.diff").read_text()
+
+    def _python_source_repo(self, root: Path) -> tuple[Path, ConfirmedDefect]:
+        source_repo = _init_repo(root)
+        base_commit, head_commit = commit_two_versions_of_a_multi_line_python_file(source_repo)
+        return source_repo, _confirmed_defect(base_commit=base_commit, head_commit=head_commit)
+
+    def _build_fixture_of(self, source_repo: Path, defect: ConfirmedDefect, dest_dir: Path) -> Path:
+        dest_dir.mkdir()
+        fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
+        return dest_dir
+
+    @pytest.mark.parametrize("setup", ENGINEER_GIT_SETUPS)
+    def test_the_engineers_git_setup_does_not_change_the_diff_artifacts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setup: str,
+    ) -> None:
+        """Covers color, an external diff (config and environment), `GIT_DIFF_OPTS`, and the default
+        global attributes file, none of which may reach the bytes a reviewer reads."""
+        source_repo, defect = self._python_source_repo(tmp_path / "source")
+        unaffected_dir = self._build_fixture_of(source_repo, defect, tmp_path / "unaffected")
+        apply_engineer_git_setup(setup, tmp_path, monkeypatch)
+
+        affected_dir = self._build_fixture_of(source_repo, defect, tmp_path / "affected")
+
+        for name in ("change.diff", "change-function-context.diff"):
+            assert (affected_dir / ".bench" / name).read_bytes() == (unaffected_dir / ".bench" / name).read_bytes()
+        # The control: under that setup a plain `git diff` of the same tree does change.
+        assert _git(affected_dir, "diff", "HEAD~1", "HEAD") != (affected_dir / ".bench" / "change.diff").read_text()
+
+    def test_a_filter_driver_in_the_engineers_global_config_changes_neither_the_extracted_files_nor_the_committed_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`smudge` runs at `git archive` and `clean` at `git add`, so the tree equality fails
+        whichever of the two calls loses the isolated environment."""
+        source_repo, defect = self._python_source_repo(tmp_path / "source")
+        unaffected_dir = self._build_fixture_of(source_repo, defect, tmp_path / "unaffected")
+        global_attributes = tmp_path / "engineer-attributes"
+        global_attributes.write_text("*.py filter=shout\n")
+        global_config = tmp_path / "engineer-gitconfig"
+        global_config.write_text(
+            f'[core]\n\tattributesFile = {global_attributes}\n'
+            '[filter "shout"]\n\tclean = tr a-z A-Z\n\tsmudge = tr a-z A-Z\n'
+        )
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+
+        affected_dir = self._build_fixture_of(source_repo, defect, tmp_path / "affected")
+
+        assert (affected_dir / "app.py").read_bytes() == (unaffected_dir / "app.py").read_bytes()
+        assert _git(affected_dir, "rev-parse", "HEAD^{tree}") == _git(unaffected_dir, "rev-parse", "HEAD^{tree}")
+        # The control: under that config a plain `git archive` rewrites the file's content.
+        plain_archive = subprocess.run(
+            ["git", "archive", defect.head_commit, "app.py"], cwd=source_repo, capture_output=True, check=True,
+        ).stdout
+        with tarfile.open(fileobj=io.BytesIO(plain_archive)) as tar:
+            assert tar.extractfile("app.py").read() != (unaffected_dir / "app.py").read_bytes()
+
     def test_over_read_cap_flag_follows_the_chars_divided_by_four_threshold(self, tmp_path: Path) -> None:
         source_repo = _init_repo(tmp_path / "source")
         _write(source_repo, "at_cap.py", "a\n")
@@ -319,6 +613,26 @@ class TestChangedFilesAcrossDeletedRenamedAndNonAsciiPaths:
             self.NON_ASCII_PATH: ["2", "4", "0"],
         }
 
+    def test_changed_files_tsv_writes_a_non_utf8_file_name_back_as_its_original_bytes(self, tmp_path: Path) -> None:
+        non_utf8_name = b"caf\xe9.py"
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "kept.py", "kept = True\n")
+        base_commit = _commit(source_repo, "base")
+        try:
+            _write(source_repo, os.fsdecode(non_utf8_name), "named = 1\n")
+        except OSError:
+            pytest.skip("this filesystem rejects a non-UTF-8 file name")
+        head_commit = _commit(source_repo, "fix: bug")
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        fixture_repo.build_defect_fixture(
+            source_repo, _confirmed_defect(base_commit=base_commit, head_commit=head_commit), dest_dir,
+        )
+
+        row_paths = [row.split(b"\t")[0] for row in (dest_dir / ".bench" / "changed-files.tsv").read_bytes().splitlines()[1:]]
+        assert row_paths == [non_utf8_name]
+
     def test_changed_relpaths_for_returns_the_same_unquoted_paths_from_the_source_repo(self, tmp_path: Path) -> None:
         source_repo, defect, dest_dir = self._build_source_and_fixture(tmp_path)
         fixture_paths = {
@@ -326,6 +640,48 @@ class TestChangedFilesAcrossDeletedRenamedAndNonAsciiPaths:
         }
         assert set(adjudicate.changed_relpaths_for(source_repo, defect)) == fixture_paths
         assert self.NON_ASCII_PATH in fixture_paths
+
+
+class TestFixCommitPaths:
+    def _defect_fixed_by(self, fix_commit: str) -> ConfirmedDefect:
+        return ConfirmedDefect(
+            id="defect-1", source="szz", lens="staff-backend-engineer", base_commit=fix_commit,
+            head_commit=fix_commit, fix_commit=fix_commit, fix_date="2024-01-01", description="test defect",
+            path="app.py", file_is_markdown=False,
+        )
+
+    def test_a_merge_fix_commit_lists_what_the_merge_brought_in_against_its_first_parent(self, tmp_path: Path) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "app.py", "value = 1\n")
+        _commit(source_repo, "base")
+        _git(source_repo, "checkout", "-q", "-b", "feature")
+        _write(source_repo, "merged_in.py", "merged = True\n")
+        _commit(source_repo, "feature work")
+        _git(source_repo, "checkout", "-q", "main")
+        _write(source_repo, "app.py", "value = 2\n")
+        _commit(source_repo, "mainline work")
+        _git(source_repo, "merge", "-q", "--no-ff", "-m", "merge feature", "feature")
+        merge_commit = _git(source_repo, "rev-parse", "HEAD").strip()
+
+        paths = fixture_repo.fix_commit_paths(source_repo, self._defect_fixed_by(merge_commit))
+
+        assert paths == ["merged_in.py"]
+
+    def test_a_fix_commit_with_no_parent_raises_rather_than_listing_the_whole_tree(self, tmp_path: Path) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "app.py", "value = 1\n")
+        root_commit = _commit(source_repo, "the only commit")
+
+        with pytest.raises(subprocess.CalledProcessError):
+            fixture_repo.fix_commit_paths(source_repo, self._defect_fixed_by(root_commit))
+
+    def test_a_fix_commit_the_repository_lacks_raises(self, tmp_path: Path) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "app.py", "value = 1\n")
+        _commit(source_repo, "base")
+
+        with pytest.raises(subprocess.CalledProcessError):
+            fixture_repo.fix_commit_paths(source_repo, self._defect_fixed_by("f" * 40))
 
 
 class TestRefusesExecutableProjectConfig:
@@ -422,9 +778,11 @@ class TestRefusesExecutableProjectConfig:
         with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match=refusal):
             self._build(tmp_path / "built", base_files={}, head_files=head_files)
 
-    def test_refuses_a_settings_symlink_whose_target_holds_a_disallowed_key(self, tmp_path: Path) -> None:
-        """The build follows the extracted symlink and reads the hooks-bearing
-        target; the commit check sees only the link text, which is not JSON."""
+    def test_refuses_a_settings_symlink_at_extraction_before_reading_its_hooks_bearing_target(
+        self, tmp_path: Path,
+    ) -> None:
+        """The extraction refuses any link under `.claude`; the commit check
+        sees only the link text, which is not JSON."""
         source_repo, defect = self._source_repo_and_defect(
             tmp_path, base_files={}, head_files={"tools/hooked-settings.json": json.dumps({"hooks": {}})},
             head_symlinks={".claude/settings.json": "../tools/hooked-settings.json"},
@@ -434,8 +792,29 @@ class TestRefusesExecutableProjectConfig:
             fixture_repo.refuse_executable_project_config_at_commit(source_repo, defect.head_commit)
         dest_dir = tmp_path / "fixture"
         dest_dir.mkdir()
-        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="hooks"):
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="link .* under \\.claude/"):
             fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
+
+    def test_refuses_a_bench_symlink_that_would_carry_the_commit_subject_write_into_settings(
+        self, tmp_path: Path,
+    ) -> None:
+        """A `.bench/commit-subject.txt` link to the head's own `.claude/settings.json`
+        passes the settings check, so only the extraction refusal keeps the later
+        subject write from overwriting that file."""
+        settings_text = json.dumps({"permissions": {}})
+        source_repo, defect = self._source_repo_and_defect(
+            tmp_path, base_files={}, head_files={".claude/settings.json": settings_text},
+            head_symlinks={".bench/commit-subject.txt": "../.claude/settings.json"},
+        )
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="harness reserves"):
+            fixture_repo.build_defect_fixture(source_repo, defect, dest_dir)
+
+        # Pins only that nothing was extracted; the refuse-before-any-write ordering is pinned by the `_extract_archive` tests.
+        assert not (dest_dir / ".claude" / "settings.json").exists()
+        assert not (dest_dir / ".bench").exists()
 
     def test_refuses_a_dangling_mcp_json_symlink(self, tmp_path: Path) -> None:
         source_repo, defect = self._source_repo_and_defect(
@@ -517,6 +896,321 @@ def _write_production_agent(
     body = f"You are `{lens}`.\n\n## Review\n\n{clause_text}and check style.\n"
     text = f"---\nname: {lens}\nmodel: sonnet\ntools: {tools}\n{extra_frontmatter}---\n{body}"
     (agents_dir / f"{lens}.md").write_text(text)
+
+
+def _tar_of(member_names: list[str]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        for name in member_names:
+            content = b"x = 1\n"
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            tar.addfile(member, io.BytesIO(content))
+    return buffer.getvalue()
+
+
+class TestExtractArchiveRefusesAGitPathComponent:
+    """A member under `.git` would overwrite the fixture's own repository
+    files, so the refusal runs before any member is written."""
+
+    @pytest.mark.parametrize(
+        "git_member_name", [".git/config", "sub/.git/config", ".GIT/config", "sub/.Git", "./.git/hooks/pre-commit"],
+    )
+    def test_a_member_with_a_git_component_is_refused_and_nothing_is_written(
+        self, tmp_path: Path, git_member_name: str,
+    ) -> None:
+        archive = _tar_of(["readable.py", git_member_name])
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="\\.git path component"):
+            fixture_repo._extract_archive(archive, dest_dir)
+
+        assert list(dest_dir.iterdir()) == []
+
+    @pytest.mark.parametrize("allowed_name", [".gitignore", ".github/workflows/ci.yml", "docs/dot.git.md", "sub/.gitmodules"])
+    def test_a_name_that_only_starts_with_git_is_extracted(self, tmp_path: Path, allowed_name: str) -> None:
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        fixture_repo._extract_archive(_tar_of([allowed_name]), dest_dir)
+
+        assert (dest_dir / allowed_name).read_bytes() == b"x = 1\n"
+
+
+def _tar_with_link(link_type: bytes, name: str, linkname: str) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        member = tarfile.TarInfo(name)
+        member.type = link_type
+        member.linkname = linkname
+        tar.addfile(member)
+    return buffer.getvalue()
+
+
+def _tar_with_regular_file_then_link(file_name: str, link_type: bytes, link_name: str, linkname: str) -> bytes:
+    """A hardlink member is only extractable when its target member precedes it in the archive."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        content = b"x = 1\n"
+        file_member = tarfile.TarInfo(file_name)
+        file_member.size = len(content)
+        tar.addfile(file_member, io.BytesIO(content))
+        link_member = tarfile.TarInfo(link_name)
+        link_member.type = link_type
+        link_member.linkname = linkname
+        tar.addfile(link_member)
+    return buffer.getvalue()
+
+
+class TestExtractArchiveRefusesALinkIntoGit:
+    """A link to `.git` lets a later member write through it into the fixture's own repository."""
+
+    @pytest.mark.parametrize("link_type", [tarfile.SYMTYPE, tarfile.LNKTYPE], ids=["symlink", "hardlink"])
+    @pytest.mark.parametrize("git_target", [".git", "sub/.git", ".GIT/config"])
+    def test_a_link_whose_target_has_a_git_component_is_refused_and_nothing_is_written(
+        self, tmp_path: Path, link_type: bytes, git_target: str,
+    ) -> None:
+        archive = _tar_with_link(link_type, "innocent-name", git_target)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="link .* \\.git path component"):
+            fixture_repo._extract_archive(archive, dest_dir)
+
+        assert list(dest_dir.iterdir()) == []
+
+    @pytest.mark.parametrize(
+        "link_target", ["changed_file.py", ".github/workflows/ci.yml", ".gitignore"],
+        ids=["ordinary-file", "github-dir-file", "gitignore"],
+    )
+    def test_a_symlink_outside_bench_and_claude_is_extracted(self, tmp_path: Path, link_target: str) -> None:
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        fixture_repo._extract_archive(_tar_with_link(tarfile.SYMTYPE, "link-to-file.py", link_target), dest_dir)
+
+        assert (dest_dir / "link-to-file.py").is_symlink()
+        assert os.readlink(dest_dir / "link-to-file.py") == link_target
+
+
+def _tar_with_benign_member_then_hostile_member(hostile_name: str, *, link_type: bytes | None, linkname: str = "") -> bytes:
+    """A tar whose first member is a benign regular file, so a refusal that
+    ran after extraction began would leave `readable.py` behind. A `link_type`
+    of None makes the hostile member a regular file."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        benign_content = b"x = 1\n"
+        benign_member = tarfile.TarInfo("readable.py")
+        benign_member.size = len(benign_content)
+        tar.addfile(benign_member, io.BytesIO(benign_content))
+        hostile_member = tarfile.TarInfo(hostile_name)
+        if link_type is None:
+            hostile_content = b"hostile\n"
+            hostile_member.size = len(hostile_content)
+            tar.addfile(hostile_member, io.BytesIO(hostile_content))
+        else:
+            hostile_member.type = link_type
+            hostile_member.linkname = linkname
+            tar.addfile(hostile_member)
+    return buffer.getvalue()
+
+
+class TestExtractArchiveRefusesWritesThroughHarnessAndConfigPaths:
+    """The harness writes `.bench/` files and `.claude/agents/` after the
+    config check, so a member that redirects either write would reach project
+    config unchecked."""
+
+    @pytest.mark.parametrize("link_type", [tarfile.SYMTYPE, tarfile.LNKTYPE], ids=["symlink", "hardlink"])
+    @pytest.mark.parametrize(
+        "bench_member_name",
+        [".bench/commit-subject.txt", ".bench", ".BENCH/commit-subject.txt", "./.bench/x", "/.bench/x"],
+    )
+    def test_a_link_under_bench_is_refused_and_nothing_is_written(
+        self, tmp_path: Path, link_type: bytes, bench_member_name: str,
+    ) -> None:
+        archive = _tar_with_benign_member_then_hostile_member(
+            bench_member_name, link_type=link_type, linkname="../.claude/settings.json",
+        )
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="harness reserves"):
+            fixture_repo._extract_archive(archive, dest_dir)
+
+        assert list(dest_dir.iterdir()) == []
+
+    @pytest.mark.parametrize(
+        "bench_member_name", [".bench/commit-subject.txt", ".Bench/notes.txt", "x/../.bench/y", "/.bench/x"],
+    )
+    def test_a_regular_file_under_bench_is_refused_and_nothing_is_written(
+        self, tmp_path: Path, bench_member_name: str,
+    ) -> None:
+        archive = _tar_with_benign_member_then_hostile_member(bench_member_name, link_type=None)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="harness reserves"):
+            fixture_repo._extract_archive(archive, dest_dir)
+
+        assert list(dest_dir.iterdir()) == []
+
+    @pytest.mark.parametrize("link_type", [tarfile.SYMTYPE, tarfile.LNKTYPE], ids=["symlink", "hardlink"])
+    @pytest.mark.parametrize(
+        ("claude_member_name", "link_target"),
+        [
+            pytest.param(".claude/settings.json", "../tools/hooked-settings.json", id="settings-file"),
+            pytest.param(".claude", "elsewhere", id="claude-dir"),
+            pytest.param(".claude/agents", "../tools/agents", id="agents-dir"),
+            pytest.param(".CLAUDE/settings.json", "../tools/hooked-settings.json", id="case-folded"),
+        ],
+    )
+    def test_a_link_at_or_under_claude_is_refused_and_nothing_is_written(
+        self, tmp_path: Path, link_type: bytes, claude_member_name: str, link_target: str,
+    ) -> None:
+        archive = _tar_with_benign_member_then_hostile_member(claude_member_name, link_type=link_type, linkname=link_target)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="link .* under \\.claude/"):
+            fixture_repo._extract_archive(archive, dest_dir)
+
+        assert list(dest_dir.iterdir()) == []
+
+    def test_a_regular_file_under_claude_is_extracted(self, tmp_path: Path) -> None:
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        fixture_repo._extract_archive(_tar_of([".claude/settings.json", ".claude/agents/reviewer.md"]), dest_dir)
+
+        assert (dest_dir / ".claude" / "settings.json").read_bytes() == b"x = 1\n"
+        assert (dest_dir / ".claude" / "agents" / "reviewer.md").read_bytes() == b"x = 1\n"
+
+    @pytest.mark.parametrize("allowed_name", [".benchmark/notes.txt", "docs/.bench/notes.txt", ".claude-plugin/plugin.json"])
+    def test_a_name_that_only_resembles_a_reserved_directory_is_extracted(
+        self, tmp_path: Path, allowed_name: str,
+    ) -> None:
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        fixture_repo._extract_archive(_tar_of([allowed_name]), dest_dir)
+
+        assert (dest_dir / allowed_name).read_bytes() == b"x = 1\n"
+
+    @pytest.mark.parametrize(
+        ("link_name", "symlink_target", "hardlink_target"),
+        [
+            pytest.param(".claude-plugin/x", "../readable.py", "readable.py", id="claude-plugin-dir"),
+            pytest.param("docs/.claude/x", "../../readable.py", "readable.py", id="nested-claude-dir"),
+            pytest.param("docs/agents", "../.claude/agents", ".claude/agents/reviewer.md", id="link-outside-claude-into-it"),
+        ],
+    )
+    @pytest.mark.parametrize("link_type", [tarfile.SYMTYPE, tarfile.LNKTYPE], ids=["symlink", "hardlink"])
+    def test_a_link_that_only_resembles_or_targets_claude_is_extracted(
+        self, tmp_path: Path, link_type: bytes, link_name: str, symlink_target: str, hardlink_target: str,
+    ) -> None:
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        linkname = symlink_target if link_type == tarfile.SYMTYPE else hardlink_target
+        archive = _tar_with_regular_file_then_link(hardlink_target, link_type, link_name, linkname)
+
+        fixture_repo._extract_archive(archive, dest_dir)
+
+        if link_type == tarfile.SYMTYPE:
+            assert os.readlink(dest_dir / link_name) == symlink_target
+        else:
+            assert os.path.samefile(dest_dir / link_name, dest_dir / hardlink_target)
+
+
+class TestExtractArchiveRefusesWhatTheDataFilterRefuses:
+    """The traversal shapes no hand-written check names reach tarfile's `data` filter, which
+    raises per member during extraction, so members before the refused one are already on disk."""
+
+    @pytest.mark.parametrize(
+        ("hostile_name", "link_type", "linkname"),
+        [
+            pytest.param("../escape.py", None, "", id="regular-member-outside-the-destination"),
+            pytest.param("escaping-link", tarfile.SYMTYPE, "../../outside", id="symlink-leaving-the-destination"),
+            pytest.param("absolute-link", tarfile.SYMTYPE, "/outside/target", id="symlink-to-an-absolute-path"),
+        ],
+    )
+    def test_a_member_the_filter_refuses_raises_and_nothing_lands_outside_the_destination(
+        self, tmp_path: Path, hostile_name: str, link_type: bytes | None, linkname: str,
+    ) -> None:
+        archive = _tar_with_benign_member_then_hostile_member(hostile_name, link_type=link_type, linkname=linkname)
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="extraction filter refuses"):
+            fixture_repo._extract_archive(archive, dest_dir)
+
+        assert [entry.name for entry in tmp_path.iterdir()] == ["fixture"]
+        assert not os.path.lexists(dest_dir / Path(hostile_name).name)
+
+
+class TestExtractCommitTreeRefusesAGitMemberFromGitArchive:
+    def test_a_git_member_in_the_archive_stage_output_is_refused_and_the_fixtures_git_config_is_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        source_repo = _init_repo(tmp_path / "source")
+        _write(source_repo, "changed_file.py", "x = 1\n")
+        commit = _commit(source_repo, "base")
+        dest_dir = tmp_path / "fixture"
+        dest_dir.mkdir()
+        _git(dest_dir, "init", "-q")
+        git_config_before = (dest_dir / ".git" / "config").read_bytes()
+        real_run = subprocess.run
+
+        def run_with_a_hostile_archive(command, **kwargs):
+            if command[:2] == ["git", "archive"]:
+                return subprocess.CompletedProcess(command, 0, stdout=_tar_of(["readable.py", ".git/config"]))
+            return real_run(command, **kwargs)
+
+        monkeypatch.setattr(fixture_repo.subprocess, "run", run_with_a_hostile_archive)
+
+        with pytest.raises(fixture_repo.UnsafeFixtureConfigError, match="\\.git path component"):
+            fixture_repo._extract_commit_tree(source_repo, commit, dest_dir)
+
+        assert (dest_dir / ".git" / "config").read_bytes() == git_config_before
+        assert not (dest_dir / "readable.py").exists()
+
+
+class TestFixtureGitCallsTolerateNonUtf8Output:
+    def test_a_diff_of_a_non_utf8_file_decodes_with_a_replacement_character(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path / "repo")
+        (repo / "latin1.txt").write_bytes(b"caf\xe9 = 1\n")
+        _commit(repo, "base")
+        (repo / "latin1.txt").write_bytes(b"caf\xe9 = 2\n")
+        _commit(repo, "edit")
+
+        diff = fixture_repo._run_git(["diff", "HEAD~1", "HEAD"], cwd=repo).stdout
+
+        assert "caf\ufffd = 2" in diff
+
+    def test_a_commit_subject_that_is_not_valid_utf8_decodes_with_a_replacement_character(self, tmp_path: Path) -> None:
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "app.py", "x = 1\n")
+        _git(repo, "add", "-A")
+        tree = _git(repo, "write-tree").strip()
+        raw_commit = (
+            f"tree {tree}\nauthor A <a@example.com> 0 +0000\ncommitter A <a@example.com> 0 +0000\n\n".encode() + b"fix caf\xe9\n"
+        )
+        commit = subprocess.run(
+            ["git", "hash-object", "-t", "commit", "-w", "--stdin"], cwd=repo, input=raw_commit,
+            capture_output=True, check=True,
+        ).stdout.decode().strip()
+
+        assert fixture_repo._head_commit_subject(repo, commit) == "fix caf\ufffd"
+
+
+class TestIsolatedGitEnvironmentDisablesSystemFiles:
+    @pytest.mark.parametrize("variable", ["GIT_ATTR_NOSYSTEM", "GIT_CONFIG_NOSYSTEM"])
+    def test_the_system_file_switch_is_set_even_when_the_engineer_environment_sets_it_off(
+        self, monkeypatch: pytest.MonkeyPatch, variable: str,
+    ) -> None:
+        monkeypatch.setenv(variable, "0")
+
+        assert local_git.isolated_git_environment()[variable] == "1"
 
 
 class TestRenderArmAgent:

@@ -7,12 +7,12 @@ govern any contribution (human or agent).
 ## Commands
 
 ```bash
-./install.sh                                                 # first-time setup (stow + plugin registration)
-./install-dev.sh                                             # contributor venv setup from requirements-dev.txt (one-time, run from repo root)
-.venv/bin/python3 claude/.claude/scripts/select-tests.py     # test suite, scoped to the domains your changes touch
-.venv/bin/pytest claude/.claude/ claude-skills/              # full test suite (hooks + skills)
-.venv/bin/ruff check claude/.claude/ claude-skills/          # lint (Python)
-scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck  # lint (shell, all tracked scripts)
+./install.sh                                                                     # first-time setup (stow + plugin registration)
+./install-dev.sh                                                                 # contributor venv setup from requirements-dev.txt (one-time, run from the main checkout's root)
+scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py               # test suite, scoped to the domains your changes touch
+scripts/venv-run.sh pytest claude/.claude/ claude-skills/ plugins/ evals/        # full test suite
+scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/    # lint (Python)
+scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck            # lint (shell, all tracked scripts)
 ```
 
 Agents: run `select-tests.py`, not the full suite — including in
@@ -34,7 +34,7 @@ in its rule table, not a licence to widen the run by hand.
 
 See README.md's Tests section for `select-tests.py`'s domain-mapping
 mechanism, ShellCheck flag sourcing, `pytest-xdist` debugging flags, and
-the worktree-relative `.venv` paths.
+how `scripts/venv-run.sh` reaches the shared `.venv` from a linked worktree.
 
 ## Working in this repo
 
@@ -49,8 +49,8 @@ the split between this file, `claude/.claude/CLAUDE.md`, and
 Configuration files section for what each rule covers.
 
 Worktree enforcement is active — see README.md's Worktree enforcement
-section for the hook, the opt-in mechanism, and why. `git worktree add
-.claude/worktrees/<branch> -b <branch>` (or an agent with `isolation:
+section for the hook, the opt-in mechanism, and why. A worktree created
+per the `branch-management` skill (or an agent with `isolation:
 worktree`) satisfies it.
 
 `claude/` is stowed into `$HOME`. Changes under `claude/.claude/**` go live on `git pull` — no re-install needed. Exception: `settings.json` is generated from `settings.base.json`, so a `settings.base.json` change reaches it at the next new bash or zsh shell, or the next `./install.sh` or `render-settings.sh` run, not on pull. `docs/scripts.md`'s `render-settings.sh` and `ensure-settings-render.sh` entries describe the render and name the shells that never render.
@@ -116,7 +116,7 @@ Never commit anything that identifies a specific private project,
 engagement, or codebase. Three enforcement tiers apply:
 
 **Always caught by hook:** tracker IDs matching `[A-Z]{2,}-\d+` not on
-the OSS allowlist (`CVE-`, `RFC-`, `GH-`, and similar), plus six
+the OSS allowlist (e.g. `CVE-`, `GH-`), plus six
 always-on structural detectors — see `docs/private-project-redaction.md`
 for the full detector list and non-matching illustrative shapes. For
 tracker-ID-shaped placeholders in examples, use `PROJ-<digits>` or

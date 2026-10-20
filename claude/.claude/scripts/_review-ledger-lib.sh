@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # _review-ledger-lib.sh — validation, site hash, row reader and render for review-ledger.sh.
 #
 # Sourced by review-ledger.sh after hooks/_lib.sh, whose _lib_jq, _lib_capped and

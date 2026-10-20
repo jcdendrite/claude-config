@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # _capped-for-lib.sh — portable timeout/gtimeout wrapper for render-settings.sh
 # invocations.
 #

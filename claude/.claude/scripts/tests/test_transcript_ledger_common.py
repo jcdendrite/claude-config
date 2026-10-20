@@ -128,26 +128,26 @@ class TestMachineIdentity:
         assert identity_a == "aabbccdd"
         assert identity_b == "11223344"
 
-    def test_resolve_machine_identity_routes_through_ledger_common_config_dir_not_the_shims(
+    def test_resolve_machine_identity_routes_through_ledger_common_config_dir_not_scopes(
         self, tmp_path, monkeypatch,
     ):
         """_machine_identity_path resolves config_dir() through ledger_common's own by-name
-        binding, not the shim's -- every other test in this class either passes
+        binding, not scope.py's -- every other test in this class either passes
         config_dir_override explicitly or patches both bindings to the same directory, so
         neither would catch a call routed through the wrong one. Patching the two bindings to
         distinct directories and asserting the identity file lands only in ledger_common's own
         closes that gap."""
         ledger_common_dir = tmp_path / "ledger-common-config"
         ledger_common_dir.mkdir()
-        shim_dir = tmp_path / "shim-config"
-        shim_dir.mkdir()
+        scope_dir = tmp_path / "scope-config"
+        scope_dir.mkdir()
         monkeypatch.setattr(_mod.ledger_common, "config_dir", lambda: ledger_common_dir)
-        monkeypatch.setattr(_mod, "config_dir", lambda: shim_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: scope_dir)
 
         _mod.ledger_common._resolve_machine_identity("cost-ledger")
 
         assert (ledger_common_dir / _mod.ledger_common._MACHINE_IDENTITY_FILENAME).exists()
-        assert not (shim_dir / _mod.ledger_common._MACHINE_IDENTITY_FILENAME).exists()
+        assert not (scope_dir / _mod.ledger_common._MACHINE_IDENTITY_FILENAME).exists()
 
     def test_shared_across_subcommands(self, fake_projects, cost_ledger_file, tmp_path, monkeypatch):
         """One identity, resolved through the same config dir, is shared

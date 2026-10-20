@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import re
 from collections import defaultdict
@@ -100,42 +99,37 @@ def _scan_reviewer_transcript(jsonl_path: Path) -> _ReviewerTranscriptScan:
     write_target_paths: list[str] = []
     transcript_cwd = ""
     code_write_tool_use_ids: set[str] = set()
-    try:
-        with open(jsonl_path) as fh:
-            for raw in fh:
-                try:
-                    rec = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if not transcript_cwd:
-                    rec_cwd = rec.get("cwd")
-                    if isinstance(rec_cwd, str) and rec_cwd:
-                        transcript_cwd = rec_cwd
-                if rec.get("type") != "assistant":
-                    continue
-                content = (rec.get("message") or {}).get("content", "")
-                if isinstance(content, list):
-                    for block in content:
-                        if not isinstance(block, dict) or block.get("type") != "tool_use":
-                            continue
-                        if block.get("name") in corpus._CODE_WRITE_TOOLS:
-                            block_id = block.get("id")
-                            if block_id:
-                                code_write_tool_use_ids.add(block_id)
-                        if block.get("name") != "Write":
-                            continue
-                        block_input = block.get("input") or {}
-                        blob = block_input.get("content")
-                        if isinstance(blob, str):
-                            write_content_blobs.append(blob)
-                        target = block_input.get("file_path")
-                        if isinstance(target, str) and target:
-                            write_target_paths.append(target)
-                text = render._content_text(content)
-                if text.strip():
-                    last_text = text
-    except OSError:
+    records = corpus._parse_jsonl_records(jsonl_path)
+    if records is None:
         return _ReviewerTranscriptScan("", [], [], "", True, frozenset())
+    for rec in records:
+        if not transcript_cwd:
+            rec_cwd = rec.get("cwd")
+            if isinstance(rec_cwd, str) and rec_cwd:
+                transcript_cwd = rec_cwd
+        if rec.get("type") != "assistant":
+            continue
+        content = (rec.get("message") or {}).get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                if block.get("name") in corpus._CODE_WRITE_TOOLS:
+                    block_id = block.get("id")
+                    if block_id:
+                        code_write_tool_use_ids.add(block_id)
+                if block.get("name") != "Write":
+                    continue
+                block_input = block.get("input") or {}
+                blob = block_input.get("content")
+                if isinstance(blob, str):
+                    write_content_blobs.append(blob)
+                target = block_input.get("file_path")
+                if isinstance(target, str) and target:
+                    write_target_paths.append(target)
+        text = render._content_text(content)
+        if text.strip():
+            last_text = text
     return _ReviewerTranscriptScan(
         last_text, write_content_blobs, write_target_paths, transcript_cwd, False, frozenset(code_write_tool_use_ids)
     )

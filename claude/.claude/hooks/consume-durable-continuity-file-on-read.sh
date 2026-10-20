@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # PostToolUse Read hook: when a /handoff or /brief continuity file under
 # ~/.claude/handoffs/ or ~/.claude/briefs/ is read, move it out via

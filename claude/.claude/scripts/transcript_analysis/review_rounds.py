@@ -1,21 +1,24 @@
 """The review-round-cost command family: cmd_review_round_cost, every helper
 used only by this command, and REVIEW_SKILLS.
 
-REVIEW_SKILLS is the round-opening skill set. The shim's cmd_judgment_pair
-back-imports REVIEW_SKILLS for its own default.
+REVIEW_SKILLS is the round-opening skill set. judgment_pair.py reads it for
+judgment-pair's --skills default.
 
-This module detects per-branch review-round windows across both the `Skill`
-tool_use and `/slash` invocation shapes. It attributes each round's dollars
+This module detects per-branch review-round windows across three invocation
+shapes: the `Skill` tool_use, the `/slash` tag, and an `Agent`/`Task` spawn of
+an agent type in _ROUND_OPEN_AGENT_SKILLS. It attributes each round's dollars
 recursively, via corpus._index_subagent_dispatches' toolUseId join.
 
 Imports corpus, pricing, redaction, render, and scope by module (attribute
 access, not by name) — see scope.py's own top-of-file comment for why.
 
 This module never imports cost.py. A round's own branch is the opening
-record's own gitBranch, carried forward when absent. A main-thread
+record's own gitBranch, carried forward when absent, then passed through
+scope._attribute_carried_branch so a session's leading default-branch
+records count toward the first branch it enters. A main-thread
 round-opening record is never a worktree-agent-* sidechain record, so
-cost._attributed_branch's worktree-agent-* resolution is never needed for a
-round's own branch key (see docs/transcript-analysis-architecture.md).
+the sidechain timeline step in scope._attributed_branch is never needed for
+a round's own branch key (see docs/transcript-analysis-architecture.md).
 """
 from __future__ import annotations
 
@@ -34,84 +37,118 @@ from typing import NamedTuple
 from _config_dir import declared_roots_file_is_overridden
 from transcript_analysis import corpus, pricing, redaction, render, scope
 
-# The three review-loop skills a round opens on; the shim's cmd_judgment_pair
-# back-imports this name for its own default (the one-directional exception
-# documented in docs/transcript-analysis-architecture.md).
+# The three review-loop skills a round opens on.
 REVIEW_SKILLS: tuple[str, ...] = ("code-review", "plan-review", "ready-for-review")
 
 _REVIEW_SKILL_SET: frozenset[str] = frozenset(REVIEW_SKILLS)
 
 
-def _is_fresh_user_prompt(rec: dict) -> bool:
-    """A genuine new user message, not a tool result or injected record.
-
-    Mirrors transcript-analysis.py:199-223's own _is_fresh_user_prompt —
-    re-expressed here since the package may not import back from the shim.
-    """
-    if rec.get("type") != "user":
-        return False
-    if rec.get("isSidechain"):
-        return False
-    if rec.get("isMeta"):
-        return False
-    if rec.get("isCompactSummary"):
-        return False
-    content = (rec.get("message") or {}).get("content", "")
-    if isinstance(content, list) and any(
-        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
-    ):
-        return False
-    return bool(render._content_text(content).strip())
-
-
-# Mirrors cmd_skill_invocation's own <command-name> regex
-# (transcript-analysis.py:2371) — re-expressed here since the package may
-# not import back from the shim.
+# Captures only the skill name from a /slash invocation's <command-name> tag, never its <command-args>.
+# skill_invocation.py and review_trace.py read this pattern too.
 _SLASH_COMMAND_RE = re.compile(r"<command-name>/([^<]+)</command-name>")
 
 
 def _round_skill_name(raw: str) -> str:
     """Normalize one Skill/`/slash` invocation name for REVIEW_SKILLS or
     REVIEW_TRACE_SKILLS membership: strip the directory qualifier (as
-    _normalize_skill_name does) and then the plugin:/dir: qualifier too.
+    skill_invocation._normalize_skill_name does) and then the plugin:/dir:
+    qualifier too.
 
-    _normalize_skill_name (transcript-analysis.py:2253-2277) strips the
-    directory qualifier (segment after the last "/"). It keeps a
-    plugin:/dir: prefix for its own display-label use. This function also
-    strips that prefix, by taking the segment after the last ":". That is
-    safe here because both REVIEW_SKILLS and REVIEW_TRACE_SKILLS are
-    closed-set membership tests, not display labels.
+    skill_invocation._normalize_skill_name strips the directory qualifier
+    (segment after the last "/"). It keeps a plugin:/dir: prefix for its own
+    display-label use. This function also strips that prefix, by taking the
+    segment after the last ":". That is safe here because both REVIEW_SKILLS
+    and REVIEW_TRACE_SKILLS are closed-set membership tests, not display
+    labels.
     """
     normalized = raw.rsplit("/", 1)[-1]
     return normalized.rsplit(":", 1)[-1]
+
+
+# Agent types whose main-thread dispatch runs a review skill in the agent's own transcript, mapped to that skill.
+_ROUND_OPEN_AGENT_SKILLS: dict[str, str] = {"review-orchestrator": "code-review"}
+
+
+def spawn_round_skill(block: dict) -> str | None:
+    """The review skill a spawn tool_use block opens a round for, or None.
+
+    A block opens a round when its tool name is an Agent/Task spawn and its
+    input["subagent_type"], normalized through _round_skill_name, is a key of
+    _ROUND_OPEN_AGENT_SKILLS. Anything else returns None, including a block
+    that is not a dict, an input that is not a dict and a subagent_type that is
+    not a str, so a stray non-object in a content list cannot abort a scan.
+
+    Public (no leading underscore): author_outcome.py is a further consumer.
+    Reads only input["subagent_type"]; see _round_open_skill's OUTPUT
+    INVARIANT for the fields that must never be extracted.
+    """
+    if not isinstance(block, dict) or block.get("type") != "tool_use":
+        return None
+    if block.get("name") not in pricing._SPAWN_TOOL_NAMES:
+        return None
+    block_input = block.get("input")
+    if not isinstance(block_input, dict):
+        return None
+    subagent_type = block_input.get("subagent_type")
+    if not isinstance(subagent_type, str):
+        return None
+    return _ROUND_OPEN_AGENT_SKILLS.get(_round_skill_name(subagent_type))
+
+
+def _assistant_content_blocks(rec: dict) -> list:
+    return (rec.get("message") or {}).get("content") or []
+
+
+def _skill_block_round_skill(blocks: list) -> str | None:
+    """The REVIEW_SKILLS member the first round-opening `Skill` tool_use in
+    `blocks` names, or None."""
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        if block.get("name") != "Skill":
+            continue
+        raw_skill = (block.get("input") or {}).get("skill") or ""
+        matched = _round_skill_name(raw_skill)
+        if matched in _REVIEW_SKILL_SET:
+            return matched
+    return None
+
+
+def _spawn_block_round_skill(blocks: list) -> str | None:
+    """The skill the first round-opening spawn block in `blocks` maps to, or None."""
+    for block in blocks:
+        skill = spawn_round_skill(block)
+        if skill is not None:
+            return skill
+    return None
 
 
 def _round_open_skill(rec: dict) -> str | None:
     """The REVIEW_SKILLS member this main-thread record opens a round for,
     or None.
 
-    Two disjoint invocation shapes: a `Skill` tool_use's input.skill, and a
-    `/slash` user record's <command-name> tag.
+    Three invocation shapes: a `Skill` tool_use's input.skill, a `/slash` user
+    record's <command-name> tag, and an Agent/Task spawn block of an agent type
+    in _ROUND_OPEN_AGENT_SKILLS (see spawn_round_skill). The `Skill` and spawn
+    shapes are both assistant-record shapes and can share one record, so the
+    order is per record: every block is tried against the `Skill` shape first,
+    and the spawn blocks only when no `Skill` block opens a round. A record
+    therefore opens at most one round.
 
     OUTPUT INVARIANT: only input["skill"] is ever read from a Skill
-    tool_use block, mirroring cmd_skill_invocation's own comment
-    (transcript-analysis.py:2311-2323). input["args"] can carry an absolute
-    local path and must never be extracted or surfaced here.
+    tool_use block, mirroring skill_invocation.cmd_skill_invocation's OUTPUT
+    INVARIANT comment. input["args"] can carry an absolute local path and must
+    never be extracted or surfaced here. From an
+    Agent/Task tool_use block only input["subagent_type"] is extracted.
+    input["prompt"] and input["description"] carry free text and must never be
+    extracted or surfaced here.
     """
     if rec.get("isSidechain"):
         return None
     rtype = rec.get("type")
     if rtype == "assistant":
-        for block in (rec.get("message") or {}).get("content") or []:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            if block.get("name") != "Skill":
-                continue
-            raw_skill = (block.get("input") or {}).get("skill") or ""
-            matched = _round_skill_name(raw_skill)
-            if matched in _REVIEW_SKILL_SET:
-                return matched
-        return None
+        blocks = _assistant_content_blocks(rec)
+        return _skill_block_round_skill(blocks) or _spawn_block_round_skill(blocks)
     if rtype == "user":
         content_raw = (rec.get("message") or {}).get("content", "")
         content_str = content_raw if isinstance(content_raw, str) else render._content_text(content_raw)
@@ -123,22 +160,40 @@ def _round_open_skill(rec: dict) -> str | None:
     return None
 
 
+def round_opened_by_spawn(rec: dict) -> bool:
+    """True iff this record opens its round through a spawn block rather than
+    a `Skill` block, the same per-record order _round_open_skill applies.
+
+    Public (no leading underscore): the review-bench miner skips such a round,
+    and must agree with _round_open_skill about which shape opened it.
+    """
+    if rec.get("isSidechain") or rec.get("type") != "assistant":
+        return False
+    blocks = _assistant_content_blocks(rec)
+    return _skill_block_round_skill(blocks) is None and _spawn_block_round_skill(blocks) is not None
+
+
 def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
     """Every (open_idx, window_end, skill) round window in one session's
     (already deduped, main-thread-only) records.
 
-    Re-expresses cmd_judgment_pair's own boundary rule
-    (transcript-analysis.py:2166-2197). window_end is the index of the next
-    fresh user prompt or the next round-open record, whichever comes first
-    (exclusive of window_end itself). The window is inclusive of its own
-    opening record. No cross-path dedup is needed between the two
-    invocation shapes. They are disjoint by construction: a Skill tool_use
-    lives on an assistant record, a /slash tag lives on a user record.
+    Re-expresses judgment_pair.cmd_judgment_pair's boundary rule. window_end
+    is the index of the next fresh user prompt or the next round-open record,
+    whichever comes first (exclusive of window_end itself). The window is
+    inclusive of its own opening record. No cross-path dedup is needed between
+    the invocation shapes. A record opens at most one round by
+    _round_open_skill's per-record order, so a record holding both a `Skill`
+    block and a spawn block is one round. A /slash tag lives on a user record.
 
-    Public (no leading underscore): author_outcome.py is a second consumer,
-    reading only each window's own open_idx/skill (its own outcome-span
-    definition is not this function's window_end -- see
-    docs/transcript-analysis.md's author-outcome section).
+    Public (no leading underscore): author_outcome.py and the review-bench
+    miner (evals/review_bench/mine_review_rounds.py, which also calls
+    round_opened_by_spawn) are further consumers. author_outcome.py reads only
+    each window's own open_idx/skill (its own outcome-span definition is not
+    this function's window_end -- see docs/transcript-analysis.md's
+    author-outcome section).
+
+    cmd_judgment_pair keeps its own `Skill`-only matcher, so it deliberately
+    does not open a round on a spawn block.
     """
     n = len(records)
     windows: list[tuple[int, int, str]] = []
@@ -149,7 +204,7 @@ def detect_round_windows(records: list[dict]) -> list[tuple[int, int, str]]:
         window_end = n
         for scan_idx in range(idx + 1, n):
             scan_rec = records[scan_idx]
-            if _is_fresh_user_prompt(scan_rec):
+            if render._is_fresh_user_prompt(scan_rec):
                 window_end = scan_idx
                 break
             if _round_open_skill(scan_rec) is not None:
@@ -164,11 +219,13 @@ def _session_record_branches(records: list[dict], windows: list[tuple[int, int, 
     pricing as a pure function of (records, windows).
 
     Pass 1 carries forward the last non-empty gitBranch from a
-    non-sidechain record at every index, mirroring cost.py's
-    _session_branch_index main-thread-only carry-forward. A sidechain
-    record's own gitBranch can be an isolation:"worktree" dispatch's
-    ephemeral worktree-agent-* branch, not this session's real one, so it
-    is read but never becomes the carried value.
+    non-sidechain record at every index, mirroring scope._session_branch_index's
+    main-thread-only timeline. A sidechain record's own gitBranch can be an
+    isolation:"worktree" dispatch's ephemeral worktree-agent-* branch, not this
+    session's real one, so it is read but never becomes the carried value.
+    Each index's carried value then goes through scope._attribute_carried_branch,
+    which credits the session's leading default-branch records to the first
+    branch the session enters, by that index's own record timestamp.
 
     Pass 2 overwrites every index inside a round's window
     [open_idx, window_end) with that window's own opening-record branch,
@@ -177,14 +234,15 @@ def _session_record_branches(records: list[dict], windows: list[tuple[int, int, 
     changes mid-window. Windows are disjoint and in index order, so this
     never writes one index twice.
     """
+    branch_context = scope._session_branch_context(records)
     branches: list[str] = [""] * len(records)
     last_branch = ""
     for idx, rec in enumerate(records):
         if not rec.get("isSidechain"):
-            branch = rec.get("gitBranch") or ""
+            branch = scope._branch_tag(rec)
             if branch:
                 last_branch = branch
-        branches[idx] = last_branch
+        branches[idx] = scope._attribute_carried_branch(last_branch, rec, branch_context) or ""
     for open_idx, window_end, _skill in windows:
         window_branch = branches[open_idx]
         for idx in range(open_idx, window_end):
@@ -200,9 +258,9 @@ def _price_dispatch(
     """Price one subagent dispatch and recurse into every Agent/Task spawn
     inside its own transcript.
 
-    Recursion works via corpus._index_subagent_dispatches' recursive
-    layout: a subagent's own jsonl resolves its *own* nested subagents/
-    directory the same way a session's jsonl does.
+    Recursion reuses the session's own dispatch_index (see
+    corpus._index_subagent_dispatches for why one index covers nested
+    dispatches).
 
     `visited` is a toolUseId set shared across one session's whole recursive
     walk. A colliding toolUseId (a corrupted/retried-dispatch shape) is
@@ -234,7 +292,6 @@ def _price_dispatch(
     if records is None:
         return 0.0, 0, 1, 0
     records = pricing.dedup_turns_by_request_id(records)
-    nested_index, _meta_errors = corpus._index_subagent_dispatches(jsonl_path)
 
     dollars = 0.0
     unpriced_turns = 0
@@ -260,7 +317,7 @@ def _price_dispatch(
             if not nested_tool_use_id:
                 continue
             n_dollars, n_unpriced, n_dangling, n_resolved = _price_dispatch(
-                nested_tool_use_id, nested_index, visited,
+                nested_tool_use_id, dispatch_index, visited,
             )
             dollars += n_dollars
             unpriced_turns += n_unpriced
@@ -283,7 +340,9 @@ def compute_review_round_costs(
 
     Rounds are detected on the main thread only. A review skill run inside a
     dispatched subagent is already priced as that dispatch's own cost, so
-    counting it as its own round would double-count its dollars.
+    counting it as its own round would double-count its dollars. That includes
+    a review-orchestrator's own `Skill` call: the dispatch itself opens the
+    round, so that call never opens a second one.
 
     Computes every review-skill round window, its main-thread plus
     recursively-priced subagent dollars, and each touched branch's total
@@ -293,7 +352,9 @@ def compute_review_round_costs(
 
     A round's branch is keyed (root_idx, branch). branch is the round's own
     opening record's gitBranch, carried forward from the last non-empty
-    main-thread value when absent, and every record inside that round's
+    main-thread value when absent and credited to the first branch the
+    session enters when it is a leading default-branch record
+    (_session_record_branches), and every record inside that round's
     window — not only the opening record — is attributed to that same
     branch for branch_totals purposes (_session_record_branches), so a
     round's dollars always land in the branch_totals bucket the round
@@ -309,8 +370,8 @@ def compute_review_round_costs(
     single root.
 
     skill_filter/branch_filter/since_ts/until_ts are applied as a final
-    filter over the detected rounds, by the round's own skill / raw branch
-    name / opening timestamp, matching judgment-pair's convention. They do
+    filter over the detected rounds, by the round's own skill / attributed
+    branch name / opening timestamp, matching judgment-pair's convention. They do
     not narrow which records are priced or which windows are detected, so
     branch_totals always reflects each branch's full, unwindowed corpus
     activity and a round's own main_dollars/agent_dollars/agents are
@@ -427,9 +488,10 @@ def compute_review_round_counts(
     call's Skill tool_use can appear in more than one record and count as
     two rounds.
 
-    branch_filter matches a round's own opening record's raw gitBranch,
-    carried forward when absent -- the same attribution
-    compute_review_round_costs uses for branch_key's second element.
+    branch_filter matches a round's own opening record's gitBranch, carried
+    forward when absent and attributed by _session_record_branches -- the
+    same attribution compute_review_round_costs uses for branch_key's second
+    element.
 
     No pricing, no dispatch index, no recursion: unlike
     compute_review_round_costs, this never opens a dispatched subagent's own
@@ -1131,8 +1193,7 @@ def _pooled_compute_review_round_costs(*args, **kwargs) -> dict:
 def cmd_review_round_cost(args: argparse.Namespace) -> None:
     """Per-branch review-round dollar cost.
 
-    Opens a round at every `code-review`/`plan-review`/`ready-for-review`
-    invocation, both the `Skill` tool_use path and the `/slash` path.
+    Opens a round wherever detect_round_windows does.
     Closes it at the next round-open or the next fresh user prompt,
     whichever comes first. See compute_review_round_costs's own docstring
     for how each round's dollars are priced.
@@ -1148,7 +1209,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
 
     See docs/transcript-analysis.md's review-round-cost section for the
     round/non-round reconciliation-line formula, and for the
-    "Non-round dollars"/"Reviewer-dispatch dollars"/"Dangling dispatches"/
+    "Non-round dollars"/"Subagent-dispatch dollars"/"Dangling dispatches"/
     "Unpriced turns" footer lines.
     Under multi-root scope the footer prints one block per root, never
     blended across roots.
@@ -1360,7 +1421,7 @@ def cmd_review_round_cost(args: argparse.Namespace) -> None:
             " of branch dollars fell outside every round window"
         )
         print(
-            f"{prefix}Reviewer-dispatch dollars: {render._pct_of(totals['total_agent_dollars'], totals['total_branch_dollars'])}"
+            f"{prefix}Subagent-dispatch dollars: {render._pct_of(totals['total_agent_dollars'], totals['total_branch_dollars'])}"
             " of branch dollars, inside round windows"
         )
         print(f"{prefix}Dangling dispatches inside round windows: {totals['total_dangling']} (no readable meta.json/jsonl pair)")

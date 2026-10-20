@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, irreversible
 # Gate: review-only agents (the eight staff-*/ciso-reviewer personas, the
@@ -50,12 +50,18 @@
 #     constantly, so only the `-i` form denies.
 #   - eslint: writes only with `--fix`; without it, only reports — a reviewer
 #     legitimately lints, so only `--fix` denies.
-#   - ruff: `ruff format` denies unconditionally (any invocation, like the
-#     pure-formatter tier above). Otherwise ruff denies whenever a --fix /
-#     --fix-only token is present (both write to disk), independent of a
-#     literal `check` subcommand token — so `ruff check --fix`, `ruff check
-#     --fix-only`, and bare `ruff --fix` are all caught; `ruff check` alone
-#     stays allowed as read-only linting.
+#   - ruff: `ruff format` denies on any invocation, like the pure-formatter
+#     tier above.
+#     Any invocation carrying --fix, --fix-only or --add-noqa denies, since
+#     each writes to disk.
+#     --add-noqa also denies in its `--add-noqa=REASON` form.
+#     The flag alone decides, so bare `ruff --fix` denies with no `check` word.
+#     `ruff check` alone stays allowed as read-only linting.
+#
+# worktree-ensure.sh is denied by command word.
+# require-worktree-for-git-writes.sh's main-tree deny message advertises it.
+# It fetches refs and creates a branch and a worktree.
+# Its command text holds no git word for this scan to catch.
 #
 # Known gaps (what this model does NOT close):
 #   - The Bash arm denies only the shapes this header names, so any other
@@ -63,6 +69,9 @@
 #     interpreter write such as `python3 -c`, a tool's own output flag) is
 #     not inspected.
 #     GH-1103 tracks the structural fix for this closed enumeration.
+#   - Plain `ruff check` writes to disk when the target repo's ruff config
+#     sets `fix = true`, or when the command passes `--config fix=true`.
+#     This gap is accepted permanently.
 #   - GH-751 is only partly closed: _fragment_raw_write_targets below
 #     catches a `cp`/`mv`/`tee`/`>`/`>>` write target only when it is the
 #     fragment's sole or first command; a target behind a bare `&`
@@ -108,6 +117,31 @@
 #   - An agent reached only through an alias, wrapper script, or another
 #     level of indirection this fragment-level scan cannot see is
 #     undecidable, same class of gap as require-worktree-for-git-writes.sh.
+#     For worktree-ensure.sh the residual is every command whose command
+#     word, after _lib.sh's command-word resolution, is not the script.
+#     That includes wrappers outside the runner skip list (`bash`, `sh`,
+#     `source`, `timeout N`, `exec`, `nohup`, `setsid`), syntax the fragment
+#     splitter does not unwrap (a brace group, `then`/`do` bodies, a bare `&`),
+#     and glob- or variable-built command words.
+#     Each is undecidable here, the same as the `bash -c` gap below.
+#     The class is accepted.
+#   - The `venv-run.sh` wrapper word is stripped only from fragments whose
+#     command word is the wrapper, a guard applied at the call site.
+#     Under that guard `scripts/venv-run.sh ruff format` resolves to `ruff`,
+#     while `cp /tmp/x scripts/venv-run.sh` keeps its write target because
+#     its command word is `cp`, not the wrapper.
+#     The strip is local to this gate and is not part of _lib.sh's runner
+#     words, which also feed gates that skip a check on a match.
+#     `bash scripts/venv-run.sh ruff format` is not unwrapped and stays in the
+#     accepted indirection class above.
+#   - The strip removes the first word whose basename is `venv-run.sh`, not
+#     the command word the guard classified, so
+#     `FOO=a/venv-run.sh scripts/venv-run.sh ruff format x.py` passes.
+#     The cooperative tier accepts this.
+#   - A redirect-led command word (`2>w ruff format`, `<w ruff format`) is
+#     allowed, with or without the wrapper, because the command-word resolver
+#     skips no redirect word. The unwrapped `2>/dev/null ruff format` is
+#     allowed the same way.
 #   - A git-write or in-place-edit reached through a command name quoted
 #     directly in the Bash arm's own command text (`'sed' -i file`) IS
 #     caught: the Bash arm strips quote characters from $COMMAND before
@@ -115,6 +149,10 @@
 #     command name reached only through a nested shell boundary this scan
 #     never executes (`bash -c "git checkout"`) is still undecidable — same
 #     indirection class as the alias/wrapper gap above.
+#   - A gated word, write flag, or write target split across a
+#     backslash-newline continuation is caught, because the Bash arm also
+#     scans a copy of the stripped text with every backslash-newline pair
+#     deleted.
 #   - macOS `/tmp` is a symlink to `/private/tmp`. If a future harness build
 #     resolves `file_path` to its real path before invoking this hook, a
 #     legitimate reviewer write under `/tmp/...` would miss the literal
@@ -173,14 +211,58 @@ _lib_is_review_only_agent "$AGENT_TYPE" || exit 0
 
 SANCTIONED_ALTERNATIVE="Reviewers are read-only on the tree under review. Treat a hook denial as final. Use Read, Grep, or Glob for a read the hook misjudges. Do not retry any other denied action through a script, another command form, or another tool. Confirm a claim by reading and tracing the code before running anything. Scratch work belongs only in a fresh directory you created under /tmp, holding only files you create there. Spell a /tmp path out literally, because this hook matches write targets as written. Never overwrite or replace an existing path, even one you created; write a new file under a new name instead. A write through a symlink or hard link changes the linked file, wherever it lives, so a /tmp path can still change a file outside /tmp. The only sanctioned in-tree write is the findings file (agent-reviews/<agent>-<epoch>-<slug>.md, via the Write tool)."
 
-# Local to this hook, not _lib.sh: this -i-prefix matcher is the only
+# Local to this hook, not _lib.sh: this prefix matcher is the only
 # in-place-edit-family word matcher without a second caller elsewhere.
 
 # True iff $1 contains a whitespace-delimited token STARTING with $2 — for
-# flags whose value is attached with no separator (sed/perl's -i[SUFFIX]).
+# flags whose value is attached with no separator (sed/perl's -i[SUFFIX],
+# ruff's --add-noqa=REASON).
 _fragment_has_token_prefix() {
   local fragment="$1" prefix="$2"
   [[ "$fragment" =~ (^|[[:space:]])${prefix} ]]
+}
+
+# Removes the first word whose basename is exactly `venv-run.sh` (bare or
+# path-prefixed) from the fragment held in the variable named by $1, so the
+# tool it launches becomes the command word. Leaves the variable untouched
+# when no word matches. The match is case-insensitive, like
+# _lib_fragment_invokes_tool.
+#
+# Caller contract: quote-blind, same as every other word-walk in this file.
+# The function strips the first wrapper-named word wherever it sits, so the
+# caller must guarantee that the fragment's command word is the wrapper and
+# not a redirect such as `2>x/venv-run.sh`.
+_strip_venv_run_wrapper_word() {
+  local target_name="$1"
+  local text="${!target_name}"
+  local saved_opts=$-
+  set -f
+  shopt -s nocasematch
+  local word rebuilt="" stripped=false
+  for word in $text; do
+    if ! $stripped && [[ "$word" == venv-run.sh || "$word" == */venv-run.sh ]]; then
+      stripped=true
+      continue
+    fi
+    rebuilt+=" $word"
+  done
+  rebuilt="${rebuilt# }"
+  shopt -u nocasematch
+  if [[ "$saved_opts" != *f* ]]; then set +f; fi
+  if $stripped; then printf -v "$target_name" '%s' "$rebuilt"; fi
+}
+
+# True iff the fragment's command word is the venv-run.sh wrapper and not a
+# redirect operator word (`>x`, `2>x`, `<x`) whose destination merely ends in
+# `/venv-run.sh`.
+_fragment_launches_venv_run_wrapper() {
+  local fragment="$1"
+  _lib_fragment_invokes_tool "$fragment" venv-run.sh || return 1
+  local command_word
+  command_word=$(_lib_fragment_command_word "$fragment")
+  # In a variable because an unquoted `<` or `>` inside `[[ =~ ]]` is a bash syntax error.
+  local redirect_word_pattern='^[0-9]*[<>]'
+  [[ ! "$command_word" =~ $redirect_word_pattern ]]
 }
 
 # Prints, one per line, every destination a `cp`/`mv`/`tee` invocation or a
@@ -280,13 +362,10 @@ case "$TOOL_NAME" in
         # _lib_parse_tool_input_or_deny already reads .cwd fail-closed, so
         # CWD is never empty here as a silent read failure — the
         # zero-length check below is for a genuinely absent field.
-        # macOS's system /bin/bash (3.2, what a bare `#!/bin/bash` shebang
-        # resolves to) treats `cd ''` as a silent no-op that stays in the
-        # current directory and returns 0 — unlike bash 4+, which errors.
-        # Relying on `cd "$CWD"` to fail on an empty CWD would silently check
-        # whatever directory the hook process happens to be running in
-        # instead of failing closed. Verified empirically on this machine's
-        # /bin/bash 3.2.57 and Homebrew bash 5.3.15. Deliberately stricter
+        # This zero-length check denies an empty CWD because, on bash 5.2,
+        # `cd ''` succeeds in place, so `cd "$CWD"` alone would silently check
+        # whatever directory the hook process happens to be running in instead
+        # of failing closed. Deliberately stricter
         # than require-worktree-for-git-writes.sh:103's `[ -z "$CWD" ] &&
         # CWD="$PWD"` fallback: that hook's invariant is "is this a git
         # write inside a worktree," where an unresolvable cwd can safely
@@ -390,13 +469,30 @@ case "$TOOL_NAME" in
       exit 0
     fi
 
-    FRAGMENTS=$(_lib_split_fragments "$COMMAND_UNQUOTED")
+    # The shell deletes a backslash-newline pair, so the joined copy is what
+    # runs, and a write flag continued onto the next line belongs to its tool.
+    # The unjoined copy stays because the quote strip turns an escaped `\\` at
+    # a line end into a lone `\`, which joining would wrongly fuse with the
+    # next line.
+    # The fragment loop only denies, so scanning both copies can only add
+    # denials.
+    BACKSLASH_NEWLINE=$'\\\n'
+    COMMAND_UNQUOTED_JOINED=${COMMAND_UNQUOTED//"$BACKSLASH_NEWLINE"/}
+    FRAGMENT_SCAN_UNQUOTED="$COMMAND_UNQUOTED"
+    if [ "$COMMAND_UNQUOTED_JOINED" != "$COMMAND_UNQUOTED" ]; then
+      FRAGMENT_SCAN_UNQUOTED="$COMMAND_UNQUOTED"$'\n'"$COMMAND_UNQUOTED_JOINED"
+    fi
+
+    FRAGMENTS=$(_lib_split_fragments "$FRAGMENT_SCAN_UNQUOTED")
     FRAGMENTS_SPLIT_EXIT=$?
     if [ "$FRAGMENTS_SPLIT_EXIT" -ne 0 ]; then
       emit_deny "could not split the command into fragments (exit ${FRAGMENTS_SPLIT_EXIT}) — sed may be missing, killed, or errored. Failing closed rather than allowing an unscanned command for a review-only agent."
       exit 0
     fi
     while IFS= read -r fragment; do
+      if _fragment_launches_venv_run_wrapper "$fragment"; then
+        _strip_venv_run_wrapper_word fragment
+      fi
       [ -z "$fragment" ] && continue
 
       if _lib_fragment_invokes_git "$fragment"; then
@@ -440,23 +536,31 @@ case "$TOOL_NAME" in
         fi
       fi
 
+      # The command word is matched, so reading the script (`cat`, `grep`,
+      # `bash -n`) stays allowed.
+      if _lib_fragment_invokes_tool "$fragment" worktree-ensure.sh; then
+        emit_deny "The worktree gate's pointer to worktree-ensure.sh does not apply to review-only agents: it fetches refs and creates a branch and a worktree, and a review-only agent never writes git state. $SANCTIONED_ALTERNATIVE"
+        exit 0
+      fi
+
       # Linters and text tools KEEP write-flag gating — unlike the pure
       # formatters above, their bare / read-only forms (`ruff check`, `eslint`
       # without --fix, `sed`/`perl` without -i) are ordinary review actions a
       # reviewer legitimately runs, so only the mutating flag/subcommand denies.
       if _lib_fragment_invokes_tool "$fragment" ruff; then
-        # Deny `ruff format` (any invocation) and any ruff invocation carrying
-        # a --fix or --fix-only token (both write to disk). Matched as exact
-        # tokens, NOT a --fix* prefix, so the read-only `--fixable` selector
-        # (`ruff check --fixable RULE`, which filters fixable rules without
-        # writing) is not false-denied — that would contradict keeping linter
-        # reads available. Gated on the flag, NOT on a literal `check` token,
-        # so `ruff check --fix-only` and bare `ruff --fix` (implicit-check
-        # form) are both caught; `ruff check` alone stays allowed.
+        # Deny `ruff format` and any invocation carrying a write flag.
+        # --fix and --fix-only rewrite files, and --add-noqa inserts `# noqa`
+        # comments.
+        # --fix and --fix-only match as exact tokens, so `--fixable` stays
+        # allowed.
+        # --add-noqa matches as a token prefix, so `--add-noqa=REASON` denies
+        # too.
+        # No `check` token is required, so bare `ruff --fix` denies.
         if _lib_fragment_has_token "$fragment" format \
           || _lib_fragment_has_token "$fragment" --fix \
-          || _lib_fragment_has_token "$fragment" --fix-only; then
-          emit_deny "'ruff format' / 'ruff --fix' rewrites files in place. $SANCTIONED_ALTERNATIVE"
+          || _lib_fragment_has_token "$fragment" --fix-only \
+          || _fragment_has_token_prefix "$fragment" --add-noqa; then
+          emit_deny "'ruff format' / 'ruff --fix' / 'ruff --add-noqa' rewrites files in place. $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
       fi
@@ -513,3 +617,6 @@ case "$TOOL_NAME" in
     exit 0
     ;;
 esac
+
+# shellcheck disable=SC2317 # Every arm above exits; this `exit 0` backstops a later arm that does not.
+exit 0

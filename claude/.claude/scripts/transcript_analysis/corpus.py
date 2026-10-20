@@ -24,9 +24,10 @@ def _index_subagent_dispatches(jsonl: Path) -> tuple[dict[str, tuple[Path, str |
     is meta.json's own "model" key (absent when the dispatch carried no
     explicit model request) -- reading it here, alongside the toolUseId this
     function already parses meta.json for, avoids a second per-dispatch
-    meta.json read in subagent-mix's model-mix join. review_rounds.py's
-    _price_dispatch also calls this function recursively, once per nested
-    subagent transcript, to descend into a dispatch's own further spawns.
+    meta.json read in subagent-mix's model-mix join. The harness writes every
+    nested dispatch's .meta.json into this same flat subagents/ directory, so
+    one session's index also resolves a dispatch spawned from inside another
+    subagent.
 
     Returns (index, meta_read_errors): meta_read_errors counts *.meta.json
     files present but unusable. A file is unusable when it is:

@@ -2,7 +2,7 @@
 
 *2026-09-30.*
 
-`/plan-it` opens no pull request, draft or ready, when it produces a plan. The engineer reads the plan at its absolute path, which [`announce-approved-plan-path.sh`](../../claude/.claude/hooks/announce-approved-plan-path.sh) shows when `/plan-review` records approval. The session also gives the plan file's own absolute path, because the hook's banner is not always shown and the session cannot see it. When readers outside the session need the plan before implementation starts — a new design document, or a contract other teams depend on — the session pushes the branch with no PR, only on the engineer's yes, and shares the plan file's URL.
+`/plan-it` opens no pull request, draft or ready, when it produces a plan. The engineer reads the plan at its absolute path, which [`announce-approved-plan-path.sh`](../../claude/.claude/hooks/announce-approved-plan-path.sh) shows when `/plan-review` records approval. The session also gives the plan file's own absolute path, because the hook's banner is not always shown and reaches only the engineer, so the session cannot tell whether it appeared. When readers outside the session need the plan before implementation starts — a new design document, or a contract other teams depend on — the session pushes the branch with no PR, only on the engineer's yes, and shares the plan file's URL.
 
 The engineer's reasoning: "I think we have to exclude the draft PR option entirely because it forces cumulative diff reviews earlier which is cost prohibitive."
 

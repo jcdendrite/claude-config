@@ -16,6 +16,7 @@ from helpers import (
     build_conflicted_revert,
     build_path_without,
     edit_input,
+    link_bash_into,
     push_conflicting_edit_to_origin,
     resolve_conflicted_rebase,
     run_hook,
@@ -45,6 +46,7 @@ def stub_bin_without_timeout(tmp_path: Path) -> Path:
         if not real_path:
             pytest.skip(f"{tool} not found in PATH")
         (stub_bin / tool).symlink_to(real_path)
+    link_bash_into(stub_bin)
     return stub_bin
 
 
@@ -589,10 +591,10 @@ class TestCheckSkillLength:
 
     def test_byte_limit_never_fires_for_this_caller(self, isolated_home, new_skill_repo):
         """check-skill-length.sh calls _lib_staged_length_gate in its 2-arg
-        form, omitting BYTE_LIMIT — a new SKILL.md well over 25,600 bytes but
+        form, omitting BYTE_LIMIT — a new SKILL.md well over 30,720 bytes but
         under its line limit must still be allowed, proving the opt-in byte
         check stays opt-out for this caller."""
-        (new_skill_repo / SKILL_PATH).write_text("a" * 30000 + "\n")
+        (new_skill_repo / SKILL_PATH).write_text("a" * 40000 + "\n")
         subprocess.run(["git", "add", SKILL_PATH], cwd=new_skill_repo, check=True)
         assert (
             run_hook(

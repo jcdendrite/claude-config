@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from review_bench.defects import Candidate, assert_unique_ids, guess_lens
+from review_bench.defects import Candidate, assert_unique_ids, canonical_fix_date, guess_lens, is_markdown_path
 from review_bench.identifiers import validate_base_ref
 
 # A candidate fix commit's subject must mention fix/bug/regression to be considered.
@@ -75,13 +75,12 @@ def _is_blank_or_comment(line: str) -> bool:
     return not line.strip() or bool(_COMMENT_LINE_RE.match(line))
 
 
-def _is_markdown_path(path: str) -> bool:
-    return path.endswith(".md")
-
-
 def _run_git(args: Sequence[str], *, cwd: Path) -> str:
+    """git's stdout, with undecodable bytes replaced so one non-UTF-8 commit
+    cannot abort the run."""
     result = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True, timeout=_LOCAL_GIT_TIMEOUT_S,
+        ["git", *args], cwd=cwd, capture_output=True, encoding="utf-8", errors="replace", check=True,
+        timeout=_LOCAL_GIT_TIMEOUT_S,
     )
     return result.stdout
 
@@ -216,7 +215,9 @@ def blame_fix_commit(
     Returns (introducing_shas, is_low_confidence).
     """
     try:
-        diff_text = _run_git(["diff", "-U0", f"{fix_commit}^", fix_commit, "--", path], cwd=repo_dir)
+        diff_text = _run_git(
+            ["--literal-pathspecs", "diff", "-U0", f"{fix_commit}^", fix_commit, "--", path], cwd=repo_dir,
+        )
     except _GIT_CALL_ERRORS:
         if stats is not None:
             stats.git_call_failures += 1
@@ -262,7 +263,7 @@ def _build_candidate(
 ) -> Candidate | None:
     try:
         parent = _run_git(["rev-parse", f"{introducing_sha}^"], cwd=repo_dir).strip()
-        fix_date = _run_git(["log", "-1", "--format=%aI", fix_commit], cwd=repo_dir).strip()
+        author_date = _run_git(["log", "-1", "--format=%aI", fix_commit], cwd=repo_dir).strip()
     except _GIT_CALL_ERRORS:
         # introducing_sha is a root commit with no parent, or a wedged git
         # call -- see _MineStats's own docstring for why these share one
@@ -272,6 +273,9 @@ def _build_candidate(
         return None
     if not parent:
         return None
+    # Git always prints a parseable date for a real commit.
+    # A bad value raises ValueError, which _GIT_CALL_ERRORS does not catch, so it aborts the sweep.
+    fix_date = canonical_fix_date(author_date)
     pr_match = _PR_SUFFIX_RE.search(subject)
     return Candidate(
         id=f"szz:{fix_commit[:12]}:{introducing_sha[:12]}:{path}",
@@ -328,7 +332,7 @@ def mine(repo_dir: Path, *, base_ref: str = "origin/main") -> list[Candidate]:
         for file_diff in _parse_unified_diff(diff_text):
             if file_diff.old_path is None:
                 continue
-            if _is_markdown_path(file_diff.old_path):
+            if is_markdown_path(file_diff.old_path):
                 stats.markdown_path_skips += 1
                 continue
             confident, low_confidence = _blame_file_diff(repo_dir, fix_commit, file_diff, stats=stats)

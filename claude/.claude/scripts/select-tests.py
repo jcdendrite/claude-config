@@ -36,6 +36,8 @@ SCRIPTS_DIR = "claude/.claude/scripts"
 SCRIPTS_TESTS_DIR = "claude/.claude/scripts/tests"
 SKILLS_DIR = "claude-skills/skills"
 SKILLS_TESTS_DIR = "claude-skills/skills/tests"
+REVIEW_PR_SKILL_DIR = "claude-skills/skills/review-pr"
+REVIEW_PR_SKILL_TESTS_DIR = "claude-skills/skills/review-pr/tests"
 AGENTS_DIR = "claude/.claude/agents"
 RULES_DIR = "claude/.claude/rules"
 # Common ancestor for the plugin-generic hooks/skills/agents predicates below.
@@ -97,15 +99,24 @@ CLAUDE_SKILLS_TOP_LEVEL_DIR = "claude-skills"
 # collected.
 WORKTREES_DIR_NAME = "worktrees"
 
-# test_transcript_analysis.py and its two siblings (matched by the glob
-# below) shell into specific hook scripts and read specific SKILL.md files by
-# path, not by import. Domain-narrowing can't see that dependency, so it's
-# declared here as a cross-domain exception rather than folded into the
-# scripts domain rule. test_transcript_denials.py has the identical
-# dependency shape but isn't glob-matched (its own name doesn't share the
-# "test_transcript_analysis" prefix), so it gets its own exact-path constant.
+# test_transcript_analysis.py (matched by the glob below, with its two
+# siblings) reads specific SKILL.md files by path, not by import.
+# Domain-narrowing can't see that dependency, so it's declared here as a
+# cross-domain exception rather than folded into the scripts domain rule.
+# test_transcript_denials.py shells into specific hook scripts by path. It
+# isn't glob-matched (its own name doesn't share the "test_transcript_analysis"
+# prefix), so it gets its own exact-path constant.
 TRANSCRIPT_ANALYSIS_TEST_GLOB = "claude/.claude/scripts/tests/test_transcript_analysis*.py"
 TRANSCRIPT_DENIALS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_denials.py"
+# test_transcript_review_rounds.py reads claude/.claude/agents/ by path, to
+# check review_rounds' agent-type mapping names real agent files. It is a
+# SCRIPTS_TESTS_DIR test, so it gets an exact-path constant instead of
+# selecting that whole domain from an agent-file edit.
+TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_review_rounds.py"
+# test_transcript_cost_counts.py reads claude/.claude/agents/ through
+# redaction._REPO_AGENT_DEFINITIONS_DIR, a production constant
+# TestCrossDomainReadCompleteness's scan cannot see.
+TRANSCRIPT_COST_COUNTS_TEST_PATH = "claude/.claude/scripts/tests/test_transcript_cost_counts.py"
 
 # test_ticket_reference_discipline.py statically scans every tracked .py and
 # .sh file under claude/ and plugins/ for ticket-prefixed identifiers,
@@ -135,6 +146,30 @@ HANDOFF_SKILL_MD = "claude-skills/skills/handoff/SKILL.md"
 # Import dependency of test_skills.py; see _skill_auxiliary_files.py's docstring.
 SKILL_AUXILIARY_FILES_MODULE = "claude/.claude/scripts/_skill_auxiliary_files.py"
 
+# marker.sh's `clear-stale` arm shells out to this script; its end-to-end
+# coverage (TestMarkerScriptClearStale) lives in HOOKS_TESTS_DIR's
+# test_marker_script.py, reached only via that subprocess call, never by
+# import or by-path read -- undetectable by TestCrossDomainReadCompleteness's
+# constant-scan, so declared here by hand.
+MARKER_CLEAR_STALE_PY = "claude/.claude/scripts/marker-clear-stale.py"
+
+# SCRIPTS_TESTS_DIR's test_review_pr_lib.py runs this script and compares its
+# stdout to _review-pr-lib.sh's clean-document constant, and the
+# review-pr-checkout/review-pr-diff tests symlink it into their fixtures. Both
+# are function-local path reads, invisible to TestCrossDomainReadCompleteness,
+# so declared here by hand.
+REVIEW_PR_AUDIT_SCRIPT = "claude-skills/skills/review-pr/audit-execution-surface.py"
+
+# SCRIPTS_TESTS_DIR's test_review_pr_post.py reads this exact file by path, to
+# compare its literal script invocations against the settings allow entries,
+# and test_review_pr_lib.py reads it for the BASE_IS_DEFAULT_BRANCH token.
+REVIEW_PR_SKILL_MD = "claude-skills/skills/review-pr/SKILL.md"
+
+# test_doc_counts.py reads the SKILL.md frontmatter of every name-only skill
+# in settings.json. The path is built in a function body, so
+# TestCrossDomainReadCompleteness cannot see it.
+DOC_COUNTS_TEST_PATH = "claude/.claude/hooks/tests/test_doc_counts.py"
+
 # The cross-domain import declarations below (CONFIG_MODULE through
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES) are enumerated by hand from a
 # grep of static `import`/`from` statements, not derived by a test, so the
@@ -144,11 +179,13 @@ SKILL_AUXILIARY_FILES_MODULE = "claude/.claude/scripts/_skill_auxiliary_files.py
 # one added later, needs its own manual addition to the matching *_IMPORTING_*
 # constant below.
 
-# Import dependency of HOOKS_TESTS_IMPORTING_CONFIG's test files.
+# Import dependency of HOOKS_TESTS_IMPORTING_CONFIG's and
+# SKILLS_TESTS_IMPORTING_CONFIG's test files.
 CONFIG_MODULE = "claude/.claude/scripts/_config.py"
 
-# Import dependency of HOOKS_TESTS_IMPORTING_CONFIG, REVIEW_LEDGER_SCRIPT_TEST_PATH,
-# and SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER's test files.
+# Import dependency of HOOKS_TESTS_IMPORTING_CONFIG, SKILLS_TESTS_IMPORTING_CONFIG,
+# REVIEW_LEDGER_SCRIPT_TEST_PATH, and SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER's
+# test files.
 CONFIG_DIR_MODULE = "claude/.claude/scripts/_config_dir.py"
 
 # Import dependency of REVIEW_LEDGER_SCRIPT_TEST_PATH, via its import of
@@ -173,10 +210,13 @@ HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS: frozenset[str] = frozenset({
 # HOOKS_TESTS_DIR test files that import CONFIG_MODULE by name.
 HOOKS_TESTS_IMPORTING_CONFIG: frozenset[str] = frozenset({
     "claude/.claude/hooks/tests/test_config_lib.py",
-    "claude/.claude/hooks/tests/test_doc_counts.py",
+    DOC_COUNTS_TEST_PATH,
     "claude/.claude/hooks/tests/test_install_sh_machine_level_opt_ins.py",
     "claude/.claude/hooks/tests/test_install_sh_sentinel_inventory.py",
 })
+
+# SKILLS_TESTS_DIR test files that import CONFIG_MODULE by name.
+SKILLS_TESTS_IMPORTING_CONFIG: frozenset[str] = frozenset({"claude-skills/skills/tests/test_skills.py"})
 
 # Imports transcript_analysis.author_outcome by name.
 REVIEW_LEDGER_SCRIPT_TEST_PATH = "claude/.claude/hooks/tests/test_review_ledger_script.py"
@@ -205,6 +245,7 @@ SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES: frozenset[str] = frozenset({
     "claude/.claude/scripts/tests/test_author_outcome.py",
     "claude/.claude/scripts/tests/test_config_parser_parity.py",
     "claude/.claude/scripts/tests/test_review_ledger_lib.py",
+    "claude/.claude/scripts/tests/test_review_pr_lib.py",
 })
 
 CODE_REVIEW_SKILL_MD = "claude-skills/skills/code-review/SKILL.md"
@@ -213,6 +254,7 @@ PLAN_REVIEW_SKILL_MD = "claude-skills/skills/plan-review/SKILL.md"
 RESPOND_PR_SKILL_MD = "claude-skills/skills/respond-pr/SKILL.md"
 ERROR_MODE_ANALYSIS_SKILL_MD = "claude-skills/skills/error-mode-analysis/SKILL.md"
 READY_FOR_REVIEW_SKILL_MD = "claude-skills/skills/ready-for-review/SKILL.md"
+SUBAGENT_DELEGATION_SKILL_MD = "claude-skills/skills/subagent-delegation/SKILL.md"
 AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD = "claude-skills/skills/ai-instruction-and-memory-files/SKILL.md"
 SKILL_REVIEW_SKILL_MD = "plugins/skill-management/skills/skill-review/SKILL.md"
 
@@ -230,6 +272,7 @@ SKILL_FILES_READ_BY_HOOK_TESTS: frozenset[str] = frozenset({
     RESPOND_PR_SKILL_MD,
     ERROR_MODE_ANALYSIS_SKILL_MD,
     READY_FOR_REVIEW_SKILL_MD,
+    SUBAGENT_DELEGATION_SKILL_MD,
     AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD,
     SKILL_REVIEW_SKILL_MD,
 })
@@ -266,6 +309,10 @@ CHANGELOG_MD = "CHANGELOG.md"
 # this exact file by path.
 TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD = "docs/transcript-analysis-architecture.md"
 
+# test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads each of these files by path.
+TRANSCRIPT_ANALYSIS_DOC_MD = "docs/transcript-analysis.md"
+PRIVATE_PROJECT_REDACTION_DOC_MD = "docs/private-project-redaction.md"
+
 # Blanket for every file under docs/, rather than one exact-match constant
 # per file: test_hook_alignment.py reads docs/hooks.md, test_doc_counts.py
 # reads docs/design-decisions/specialist-reviewer-roster.md,
@@ -286,6 +333,20 @@ README_MD = "README.md"
 # The test_install_sh_*.py family and test_shellcheck.py, both in
 # HOOKS_TESTS_DIR, read this file by path.
 INSTALL_SH = "install.sh"
+
+# test_install_dev.py (SCRIPTS_TESTS_DIR) reads this file by path.
+# test_shellcheck.py (HOOKS_TESTS_DIR) also lints it as part of its
+# tracked-shell-script sweep. test_deny_network_installs.py
+# (HOOKS_TESTS_DIR) pins its pip-install command as a regression test.
+# test_install_sh_contributor_intent_prompt.py (HOOKS_TESTS_DIR) asserts
+# that install.sh's hint text names this filename.
+INSTALL_DEV_SH = "install-dev.sh"
+
+# test_shellcheck.py and test_shell_lib_function_liveness.py (HOOKS_TESTS_DIR)
+# execute scripts/list-shell-files.sh and read every tracked shell file it
+# enumerates, so a file added under scripts/ joins that corpus.
+# test_venv_run.py (SCRIPTS_TESTS_DIR) executes scripts/venv-run.sh by path.
+ROOT_SCRIPTS_DIR = "scripts"
 
 # test_skills.py (SKILLS_TESTS_DIR) and test_doc_counts.py (HOOKS_TESTS_DIR)
 # each read it by path. test_nudge_transcript_toolkit.py's
@@ -315,14 +376,14 @@ ROOT_RULES_DIR = ".claude/rules"
 ROOT_SKILLS_DIR = ".claude/skills"
 
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) reads this exact file's
-# claudeMdExcludes entry by path.
+# claudeMdExcludes entry by path. test_review_pr_post.py (SCRIPTS_TESTS_DIR)
+# also reads it, for its permissions.allow entries.
 ROOT_SETTINGS_JSON = ".claude/settings.json"
 
 # test_statusline_command.py (CLAUDE_TESTS_DIR) reads this file by path.
 # test_shellcheck.py (HOOKS_TESTS_DIR) also lints it as part of its
-# tracked-shell-script sweep. test_no_bash4_constructs.py and
-# test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR) pick
-# it up via their own recursive *.sh globs.
+# tracked-shell-script sweep. test_default_branch_resolution_is_shared.py
+# (SCRIPTS_TESTS_DIR) picks it up via its own recursive *.sh glob.
 STATUSLINE_COMMAND_SH = "claude/.claude/statusline-command.sh"
 
 # Directory names directly under claude/.claude/ that DOMAIN_RULES or
@@ -350,11 +411,10 @@ MAPPED_ROOT_CLAUDE_DIRS: frozenset[str] = frozenset({
     Path(ROOT_SKILLS_DIR).name,
 })
 
-# Matches CI's own collectible pytest scope verbatim (see
-# .github/workflows/tests.yml's `pytest claude/.claude/ claude-skills/ plugins/` step).
-# Targeting plugins/ instead of enumerating individual plugin subtrees means
-# a new plugin gaining a tests/ directory is covered automatically.
-FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "claude-skills/", "plugins/")
+# Matches the positional roots of CI's pytest steps in .github/workflows/tests.yml.
+# Targeting plugins/ and evals/ instead of enumerating individual subtrees means
+# a new plugin or evals test gets covered automatically.
+FULL_SUITE_TARGETS: tuple[str, ...] = ("claude/.claude/", "claude-skills/", "plugins/", "evals/")
 
 # Each path below forces a full-suite run rather than a domain selection:
 # - claude/.claude/tests/helpers.py's own DOMAIN_RULES match alone would
@@ -437,7 +497,7 @@ def _is_scripts_dir_shell_script_change(path: str) -> bool:
     return _is_under(path, SCRIPTS_DIR) and (path.endswith(".sh") or "." not in Path(path).name)
 
 
-# test_no_bash4_constructs.py's rglob("*.sh") is suffix-only.
+# test_default_branch_resolution_is_shared.py's rglob("*.sh") is suffix-only.
 # Unlike test_shellcheck.py's shebang-based discovery, it never matches an
 # extensionless script, so this predicate omits the extensionless branch
 # _is_scripts_dir_shell_script_change has.
@@ -516,6 +576,7 @@ def _is_review_bench_change(path: str) -> bool:
 DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
     (lambda p: _is_under(p, HOOKS_DIR), (HOOKS_TESTS_DIR,)),
     (lambda p: _is_under(p, SCRIPTS_DIR), (SCRIPTS_TESTS_DIR,)),
+    (lambda p: _is_under(p, REVIEW_PR_SKILL_DIR), (REVIEW_PR_SKILL_TESTS_DIR,)),
     (_is_skill_md_change, (SKILLS_TESTS_DIR,)),
     (_is_skill_auxiliary_md_change, (SKILLS_TESTS_DIR,)),
     (lambda p: _is_under(p, SKILLS_TESTS_DIR), (SKILLS_TESTS_DIR,)),
@@ -543,17 +604,17 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # A green run therefore means no known read is unmapped, not that none
 # exists.
 #
-# _is_hooks_or_skills_change: TRANSCRIPT_ANALYSIS_TEST_GLOB and
-# TRANSCRIPT_DENIALS_TEST_PATH shell into hook scripts and read SKILL.md
-# files by path.
+# _is_hooks_or_skills_change: TRANSCRIPT_ANALYSIS_TEST_GLOB reads SKILL.md
+# files by path, and TRANSCRIPT_DENIALS_TEST_PATH shells into hook scripts.
 # _is_skill_management_or_evals_change: SKILLS_TESTS_DIR covers the skill
 # validator scripts and eval runner it exercises.
 # SKILL_AUXILIARY_FILES_MODULE: SKILLS_TESTS_DIR's test_skills.py imports the
 # module, and that import is invisible to path-constant scanning.
-# CONFIG_MODULE: every HOOKS_TESTS_IMPORTING_CONFIG member imports it by name.
+# CONFIG_MODULE: every HOOKS_TESTS_IMPORTING_CONFIG and
+# SKILLS_TESTS_IMPORTING_CONFIG member imports it by name.
 # CONFIG_DIR_MODULE: same shape as CONFIG_MODULE's row, but each group
 # depends on it transitively rather than by direct name-import:
-# - HOOKS_TESTS_IMPORTING_CONFIG, via _config
+# - HOOKS_TESTS_IMPORTING_CONFIG and SKILLS_TESTS_IMPORTING_CONFIG, via _config
 # - REVIEW_LEDGER_SCRIPT_TEST_PATH, via transcript_analysis.author_outcome -> scope
 # - SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER, via run_skill_evals
 # TRANSCRIPT_ANALYSIS_PACKAGE_DIR: HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS's
@@ -601,10 +662,20 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) and
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
-# _is_hooks_dir_shell_script_change: test_no_bash4_constructs.py and
-# test_default_branch_resolution_is_shared.py (both SCRIPTS_TESTS_DIR)
-# recursively glob claude/.claude/ for *.sh files, picking up
-# claude/.claude/hooks/ in addition to their own SCRIPTS_DIR.
+# MARKER_CLEAR_STALE_PY: see its own comment above for citation.
+# REVIEW_PR_AUDIT_SCRIPT and REVIEW_PR_SKILL_MD: see each constant's own
+# comment above for its citation.
+# DOC_COUNTS_TEST_PATH: see its own comment above for citation.
+# _is_hooks_dir_shell_script_change: test_default_branch_resolution_is_shared.py
+# (SCRIPTS_TESTS_DIR) recursively globs claude/.claude/ for *.sh files,
+# picking up claude/.claude/hooks/ in addition to its own SCRIPTS_DIR.
+# test_transcript_handoff_nudge.py (SCRIPTS_TESTS_DIR) also fires
+# nudge-handoff-near-context-cap.sh, which sources _lib.sh and _config.sh.
+# That read is a class attribute, so TestCrossDomainReadCompleteness can't
+# see it.
+# The hook's read closure is .sh files plus config-keys.psv. This rule and
+# the CONFIG_KEYS_PSV row both map to SCRIPTS_TESTS_DIR, so the test needs no
+# exact-path constant. A read of any other file type would need one.
 # _is_plugin_hooks_change, _is_plugin_skills_change, _is_plugin_agents_change,
 # and _is_plugin_manifest_change match every plugin under plugins/, not only
 # lovable-cloud -- the test globs cited above are plugin-generic, so the
@@ -617,6 +688,18 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # file needs review_bench's own tests re-run too. This selects on every
 # agent file rather than only the lenses with a read clause to copy --
 # over-selection is the safe direction.
+# TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_ANALYSIS_TEST_GLOB, and
+# MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST are also targets. Each has a test
+# that reads the real agents directory unpatched, through a production constant:
+# redaction._REPO_AGENT_DEFINITIONS_DIR for the first two,
+# measure_subagent_model_resolution's AGENTS_DIR for the third.
+# The glob matches several files and is selected for the one of them that
+# reads it.
+# TestCrossDomainReadCompleteness cannot see a read through a production
+# constant, so these three are hand-audited.
+# TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH is also a target. Its test file reads
+# the directory through a module-level _AGENTS_DIR constant, so
+# TestCrossDomainReadCompleteness verifies it.
 # RULES_DIR: test_rules_frontmatter.py (SKILLS_TESTS_DIR) and
 # test_claude_md_excludes.py (HOOKS_TESTS_DIR) each rglob
 # claude/.claude/rules/*.md by path.
@@ -626,8 +709,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD: test_transcript_analysis_architecture_doc.py
 # (SCRIPTS_TESTS_DIR) reads this exact file by path, in addition to the
 # DOCS_DIR blanket below.
-# DOCS_DIR, README_MD, INSTALL_SH, and CLAUDE_SETTINGS_JSON: see each
-# constant's own comment above for its citation.
+# TRANSCRIPT_ANALYSIS_DOC_MD and PRIVATE_PROJECT_REDACTION_DOC_MD: see their own comment above for citation.
+# DOCS_DIR, README_MD, INSTALL_SH, INSTALL_DEV_SH, ROOT_SCRIPTS_DIR, and CLAUDE_SETTINGS_JSON:
+# see each constant's own comment above for its citation.
 # GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and
 # ROOT_SETTINGS_JSON: see each constant's own comment above for its citation.
 # STATUSLINE_COMMAND_SH: see its own comment above for citation.
@@ -673,11 +757,15 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == EVALS_README_MD, (SKILLS_TESTS_DIR,)),
     (_is_skill_management_or_evals_change, (SKILLS_TESTS_DIR,)),
     (lambda p: p == SKILL_AUXILIARY_FILES_MODULE, (SKILLS_TESTS_DIR,)),
-    (lambda p: p == CONFIG_MODULE, tuple(sorted(HOOKS_TESTS_IMPORTING_CONFIG))),
+    (
+        lambda p: p == CONFIG_MODULE,
+        tuple(sorted(HOOKS_TESTS_IMPORTING_CONFIG | SKILLS_TESTS_IMPORTING_CONFIG)),
+    ),
     (
         lambda p: p == CONFIG_DIR_MODULE,
         tuple(sorted(
             HOOKS_TESTS_IMPORTING_CONFIG
+            | SKILLS_TESTS_IMPORTING_CONFIG
             | {REVIEW_LEDGER_SCRIPT_TEST_PATH}
             | SKILLS_TESTS_IMPORTING_SKILL_EVALS_RUNNER
         )),
@@ -695,20 +783,34 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == CODE_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
+    (_is_skill_md_change, (DOC_COUNTS_TEST_PATH,)),
+    (lambda p: p == MARKER_CLEAR_STALE_PY, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == REVIEW_PR_AUDIT_SCRIPT, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p == REVIEW_PR_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
-    (lambda p: _is_under(p, AGENTS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB)),
+    (
+        lambda p: _is_under(p, AGENTS_DIR),
+        (
+            HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, REVIEW_BENCH_TEST_GLOB,
+            TRANSCRIPT_COST_COUNTS_TEST_PATH, TRANSCRIPT_ANALYSIS_TEST_GLOB, MEASURE_SUBAGENT_MODEL_RESOLUTION_TEST,
+            TRANSCRIPT_REVIEW_ROUNDS_TEST_PATH,
+        ),
+    ),
     (lambda p: _is_under(p, RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: p == GITHUB_ACTIONS_WORKFLOWS_RULE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: p == TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p in (TRANSCRIPT_ANALYSIS_DOC_MD, PRIVATE_PROJECT_REDACTION_DOC_MD), (SCRIPTS_TESTS_DIR,)),
     (lambda p: _is_under(p, DOCS_DIR), (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == README_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == INSTALL_SH, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == INSTALL_DEV_SH, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
+    (lambda p: _is_under(p, ROOT_SCRIPTS_DIR), (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: p == CLAUDE_SETTINGS_JSON, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: p == GLOBAL_CLAUDE_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == ROOT_CLAUDE_MD, (HOOKS_TESTS_DIR,)),
     (lambda p: _is_under(p, ROOT_RULES_DIR), (SKILLS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (lambda p: _is_under(p, ROOT_SKILLS_DIR), (SKILLS_TESTS_DIR,)),
-    (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR,)),
+    (lambda p: p == ROOT_SETTINGS_JSON, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: p == STATUSLINE_COMMAND_SH, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, CLAUDE_TESTS_DIR)),
     (lambda p: p == CONFIG_KEYS_PSV, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (_is_py_source_under_claude_or_plugins, (TICKET_REFERENCE_DISCIPLINE_TEST_PATH,)),
@@ -727,15 +829,6 @@ class SelectionResult(NamedTuple):
     triggering_paths: tuple[str, ...] = ()
 
 
-def _targets_outside_full_suite(targets: Iterable[str]) -> tuple[str, ...]:
-    """The targets no FULL_SUITE_TARGETS root's pytest walk collects (e.g.
-    the evals/ tests), sorted."""
-    roots = [root.rstrip("/") for root in FULL_SUITE_TARGETS]
-    return tuple(sorted(
-        target for target in targets if not any(_is_under(target, root) for root in roots)
-    ))
-
-
 def select_pytest_targets(changed_paths: Iterable[str]) -> SelectionResult:
     """Map a changed-path set to pytest targets via DOMAIN_RULES/CROSS_DOMAIN_EXCEPTIONS.
 
@@ -743,11 +836,6 @@ def select_pytest_targets(changed_paths: Iterable[str]) -> SelectionResult:
     - the diff is empty
     - a global-trigger path is present (a domain match can never suppress it)
     - any changed path matches no rule at all
-
-    The two non-empty fail-open results also keep every domain-selected
-    target outside FULL_SUITE_TARGETS' roots (e.g. the evals/ tests), which
-    the full suite would not otherwise collect. The empty diff selects no
-    domain, so it adds none.
     """
     changed = list(changed_paths)
     if not changed:
@@ -770,13 +858,9 @@ def select_pytest_targets(changed_paths: Iterable[str]) -> SelectionResult:
 
     global_trigger_paths = tuple(path for path in changed if path in GLOBAL_TRIGGER_PATHS)
     if global_trigger_paths:
-        return SelectionResult(
-            FULL_SUITE_TARGETS + _targets_outside_full_suite(targets), True, "global-trigger", global_trigger_paths,
-        )
+        return SelectionResult(FULL_SUITE_TARGETS, True, "global-trigger", global_trigger_paths)
     if unmatched_paths:
-        return SelectionResult(
-            FULL_SUITE_TARGETS + _targets_outside_full_suite(targets), True, "unmatched-path", tuple(unmatched_paths),
-        )
+        return SelectionResult(FULL_SUITE_TARGETS, True, "unmatched-path", tuple(unmatched_paths))
 
     return SelectionResult(tuple(sorted(targets)), False, "domain-selected")
 

@@ -2,7 +2,8 @@
 
 The hook blocks `gh pr create` and `gh pr edit` commands whose PR
 body contains literal backslash-backtick sequences. It fails closed
-on pseudo-file paths and unreadable body-source files.
+on pseudo-file paths, unreadable body-source files, and a command that neither xargs nor the
+fallback tokenizer can split.
 """
 from __future__ import annotations
 
@@ -14,10 +15,14 @@ import subprocess
 
 import pytest
 from helpers import (
+    HEREDOC_BODY_WITH_GAP_APOSTROPHE,
     HOOKS_DIR,
+    LARGE_MULTILINE_TAIL,
     assert_cap_engaged,
     bash_input,
+    build_path_with_silent_python3,
     build_path_without,
+    heredoc_substitution,
     run_hook,
     run_hook_reason,
 )
@@ -25,6 +30,9 @@ from helpers import (
 from .conftest import _real_timeout_is_gnu_coreutils, _write_conditional_sleep_shim
 
 DENY_ESCAPED_BACKTICKS_HOOK = HOOKS_DIR / "deny-escaped-backticks-in-pr-body.sh"
+
+# A read-only gh pr subcommand carrying a multi-line quoted --jq value: xargs fails on it, bash accepts it.
+GH_PR_VIEW_XARGS_FAILING_COMMAND = 'gh pr view 12 --json title --jq ".title\n| ascii_downcase"'
 
 
 class TestDenyEscapedBackticksInPrBody:
@@ -54,6 +62,16 @@ class TestDenyEscapedBackticksInPrBody:
         cmd = f"gh pr create --body-file {body_file}"
         assert run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd)) == "deny"
 
+    def test_large_multiline_body_file_with_escaped_backtick_on_first_line_is_denied(self, tmp_path):
+        """The escaped-backtick scan must see a match on the first line of a large
+        multi-line body file."""
+        body_file = tmp_path / "body.md"
+        body_file.write_text("Use `\\`grep\\`` to search." + LARGE_MULTILINE_TAIL)
+        cmd = f"gh pr create --body-file {body_file}"
+        reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd))
+        assert reason is not None
+        assert "backslash-backtick" in reason
+
     def test_clean_body_file_is_allowed(self, tmp_path):
         body_file = tmp_path / "body.md"
         body_file.write_text("## Summary\n\nUse `grep` to search.\n")
@@ -65,6 +83,22 @@ class TestDenyEscapedBackticksInPrBody:
         reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd))
         assert reason is not None
         assert "pseudo-file path" in reason
+
+    @pytest.mark.parametrize(
+        "alias_path",
+        ["//dev/fd/0", "/dev/./fd/0"],
+        ids=["double-slash-dev-fd", "dot-segment-dev-fd"],
+    )
+    def test_body_file_alias_pseudo_file_spelling_denied(self, alias_path):
+        """Alias spellings of /dev/fd/N slip past `_lib_is_pseudo_file_path`, so only the
+        regular-file check denies them.
+        A failure here once `_lib_is_pseudo_file_path` learns alias spellings means
+        `_lib_is_pseudo_file_path`'s header in _lib.sh, this hook's Known-gaps pointer and the
+        expected message must change together."""
+        cmd = f"gh pr create --body-file {alias_path}"
+        reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(cmd))
+        assert reason is not None
+        assert "not a regular file" in reason
 
     def test_missing_body_file_is_denied_fail_closed(self):
         cmd = "gh pr create --body-file /nonexistent/path.md"
@@ -215,3 +249,132 @@ class TestDenyEscapedBackticksInPrBody:
         )
         assert reason is not None
         assert "could not determine" in reason
+
+    # ------------------------------------------------------------------ #
+    # Commands xargs cannot tokenize                                      #
+    # ------------------------------------------------------------------ #
+
+    @pytest.mark.parametrize(
+        "command_template",
+        [
+            "gh pr create --title {substitution} --body-file {body_file}",
+            "git commit -m {substitution} && gh pr create --body-file {body_file}",
+        ],
+        ids=["flag-after-heredoc-value", "chained-after-heredoc-commit"],
+    )
+    def test_body_file_after_xargs_failure_is_scanned(self, tmp_path, command_template):
+        """A body file named after a value xargs cannot tokenize is still read and scanned."""
+        body_file = tmp_path / "body.md"
+        body_file.write_text("## Summary\n\nUse `\\`grep\\`` to search.\n")
+        command = command_template.format(
+            substitution=heredoc_substitution(HEREDOC_BODY_WITH_GAP_APOSTROPHE),
+            body_file=body_file,
+        )
+        reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(command))
+        assert reason is not None
+        assert "literal backslash-backtick sequences" in reason
+
+    def test_untokenizable_pr_command_denied(self, tmp_path):
+        """An unterminated quote defeats xargs and the fallback tokenizer, so the gate denies
+        instead of skipping the --body-file that follows."""
+        body_file = tmp_path / "body.md"
+        body_file.write_text("clean body, no escapes\n")
+        command = f'gh pr create --title "unterminated --body-file {body_file}'
+        reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(command))
+        assert reason is not None
+        assert "The gh pr command could not be tokenized" in reason
+
+    def test_silent_python3_denies_xargs_failing_pr_command(self, tmp_path):
+        """A python3 that exits 0 with no output is denied as a tokenizer that found no words,
+        not allowed as a command naming no body files."""
+        body_file = tmp_path / "body.md"
+        body_file.write_text("clean body, no escapes\n")
+        shim_dir = tmp_path / "silent-python3"
+        shim_dir.mkdir()
+        command_text_marker = "distinctive-marker-text"
+        command = f'gh pr create --title "{command_text_marker}\nsecond line" --body-file {body_file}'
+        reason = run_hook_reason(
+            DENY_ESCAPED_BACKTICKS_HOOK,
+            bash_input(command),
+            extra_env={"PATH": build_path_with_silent_python3(shim_dir)},
+        )
+        assert reason is not None
+        assert "The gh pr command could not be checked" in reason
+        assert "found no command words to check" in reason
+        assert "a tool in the extraction step failed" not in reason
+        assert command_text_marker not in reason
+        assert str(body_file) not in reason
+
+    def test_gh_pr_view_xargs_failing_command_makes_plain_xargs_fail(self):
+        """Precondition for the python3-absent allow case below: the command must defeat plain
+        xargs, or that case would pass without ever reaching the tokenization skip."""
+        if shutil.which("xargs") is None:
+            pytest.skip("xargs not on PATH")
+        result = subprocess.run(
+            ["xargs", "-n1"],
+            input=GH_PR_VIEW_XARGS_FAILING_COMMAND + "\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+
+    def test_gh_pr_view_with_xargs_failing_value_allowed_without_python3(self, tmp_path):
+        """Scope guard: tokenization runs only for gh pr create/edit, so a gh pr subcommand that
+        is neither is allowed even when a quoted value defeats xargs and python3 is absent."""
+        command = GH_PR_VIEW_XARGS_FAILING_COMMAND
+        farm_dir = tmp_path / "path-without-python3"
+        farm_dir.mkdir()
+        decision = run_hook(
+            DENY_ESCAPED_BACKTICKS_HOOK,
+            bash_input(command),
+            extra_env={"PATH": build_path_without("python3", farm_dir)},
+        )
+        assert decision == "allow"
+
+    def test_untokenizable_non_pr_command_allowed(self):
+        """Scope guard: tokenization runs only for a gh pr create/edit command, so an unbalanced
+        quote in an unrelated command is not this gate's concern."""
+        assert run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input('echo "unterminated')) == "allow"
+
+    def test_heredoc_pr_body_with_quotes_and_apostrophes_allowed(self):
+        """Over-deny guard: the dominant heredoc shape with a clean body passes through the
+        fallback tokenizer, whose heredoc-body strip is what keeps the apostrophe harmless."""
+        command = f"gh pr create --title Tidy --body {heredoc_substitution(HEREDOC_BODY_WITH_GAP_APOSTROPHE)}"
+        assert run_hook(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(command)) == "allow"
+
+    @pytest.mark.parametrize(
+        "heredoc_body",
+        ["Plain body.", "It's a plain body."],
+        ids=["without-apostrophe", "with-apostrophe"],
+    )
+    def test_create_then_pass_body_file_denied_with_and_without_apostrophe(self, tmp_path, heredoc_body):
+        """A command that writes a new body file and passes it in the same call denies in both
+        arms: the file does not exist yet at hook time, whatever the heredoc body holds."""
+        body_file = tmp_path / "created-body.md"
+        command = f"cat > {body_file} <<'EOF'\n{heredoc_body}\nEOF\ngh pr create --body-file {body_file}"
+        reason = run_hook_reason(DENY_ESCAPED_BACKTICKS_HOOK, bash_input(command))
+        assert reason is not None
+        assert "references a body-source file at" in reason
+        assert str(body_file) in reason
+
+    def test_tokenizer_file_not_linked_denies(self, tmp_path):
+        """With the fallback tokenizer missing from the hooks directory, a command xargs cannot
+        split denies and names ./install.sh; a command xargs can split still passes."""
+        hooks_copy = tmp_path / "hooks-copy"
+        hooks_copy.mkdir()
+        for name in (DENY_ESCAPED_BACKTICKS_HOOK.name, "_lib.sh", "_config.sh", "config-keys.psv"):
+            shutil.copy(HOOKS_DIR / name, hooks_copy / name)
+        hook_copy = hooks_copy / DENY_ESCAPED_BACKTICKS_HOOK.name
+
+        multiline_command = (
+            f"gh pr create --title Tidy --body {heredoc_substitution(HEREDOC_BODY_WITH_GAP_APOSTROPHE)}"
+        )
+        reason = run_hook_reason(hook_copy, bash_input(multiline_command))
+        assert reason is not None
+        assert "not linked into the hooks directory" in reason
+        assert "./install.sh" in reason
+        assert "Write multi-line" not in reason
+
+        single_line_command = "gh pr create --title Tidy --body 'clean body no escapes'"
+        assert run_hook(hook_copy, bash_input(single_line_command)) == "allow"

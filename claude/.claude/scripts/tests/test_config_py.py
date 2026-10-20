@@ -23,6 +23,7 @@ from _config import config_enabled, config_value, schema  # noqa: E402
 _CONFIG_GET_SH = SCRIPTS_DIR / "config-get.sh"
 _CONFIG_KEYS_PSV = HOOKS_DIR / "config-keys.psv"
 _CONFIG_SH = HOOKS_DIR / "_config.sh"
+_OPT_IN_PILOT_KEYS = ["architect_fix_plan_pilot", "review_orchestrator_routing"]
 
 
 def _count_config_keys_psv_rows() -> int:
@@ -73,6 +74,47 @@ class TestSchema:
         row = schema()["pr_cost_disclosure"]
         assert row.type == "enum:dollars"
         assert row.legacy_polarity == "content-matches"
+
+    def test_keys_with_no_legacy_polarity_and_their_defaults_are_exactly_the_known_set(self):
+        """Hand-typed literals, deliberately not derived from schema(): flipping
+        a default here (e.g. the architect_fix_plan_pilot opt-in) or blanking a
+        legacy-bearing key's polarity must fail this test, not silently
+        re-derive."""
+        no_legacy_polarity_defaults = {
+            key: row.default for key, row in schema().items() if row.legacy_polarity == ""
+        }
+        assert no_legacy_polarity_defaults == {
+            "test_selection_tracking": "false",
+            "architect_fix_plan_pilot": "false",
+            "review_orchestrator_routing": "false",
+        }
+
+    @pytest.mark.parametrize("key", _OPT_IN_PILOT_KEYS)
+    def test_opt_in_pilot_key_resolves_per_account(self, key):
+        """A widening to config-dir-or-home would make a home-level file enable
+        the key for every account."""
+        assert schema()[key].resolution == "config-dir"
+
+    @pytest.mark.parametrize("key", _OPT_IN_PILOT_KEYS)
+    def test_opt_in_pilot_key_is_bool_typed(self, key):
+        """config-get.sh's exit-0 gate compares against the literal "false",
+        which holds for a bool only."""
+        assert schema()[key].type == "bool"
+
+    @pytest.mark.parametrize("key", _OPT_IN_PILOT_KEYS)
+    def test_opt_in_pilot_key_has_no_prompt_description(self, key):
+        """A non-empty prompt_description would offer the key in install.sh's
+        opt-in prompt to every consumer."""
+        assert schema()[key].prompt_description == ""
+
+    def test_legacy_filename_is_empty_iff_legacy_polarity_is_empty(self):
+        """A row's legacy-filename is empty if and only if its legacy-polarity
+        is empty. Guards against a row gaining a legacy file path without a
+        polarity, or the reverse, which the scaffold would then mis-handle."""
+        for key, row in schema().items():
+            assert (row.legacy_filename == "") == (row.legacy_polarity == ""), (
+                f"{key}: legacy_filename={row.legacy_filename!r} legacy_polarity={row.legacy_polarity!r}"
+            )
 
     def test_every_config_dir_or_home_row_is_bool_typed(self):
         """config_value()'s union branch (and _config.sh's own _config_value
@@ -434,7 +476,7 @@ def _run_config_get(args: list[str], env: dict) -> subprocess.CompletedProcess:
         [str(_CONFIG_GET_SH), *args],
         capture_output=True,
         text=True,
-        env=env,
+        env={"PATH": os.environ["PATH"], **env},
     )
 
 
@@ -490,7 +532,7 @@ class TestConfigGetShExitCodes:
             [str(isolated_root / "scripts" / "config-get.sh"), "worktree_required"],
             capture_output=True,
             text=True,
-            env={"HOME": str(home)},
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
         )
         assert result.returncode == 3
         assert "schema file not found or unreadable" in result.stderr

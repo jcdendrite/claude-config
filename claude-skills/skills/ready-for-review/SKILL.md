@@ -39,7 +39,7 @@ If the chain fails (empty `SESSION_ID`), `marker.sh` could not resolve this sess
 - Continue silently in every other case — `"status":"ok"` under threshold, or any other status including `cannot-resolve`/`schema-drift`. This gate's outcome never depends on the tool's own success.
 - Do not quote the raw `session_id` into prose that may reach the PR body.
 - See `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for the remaining fields.
-- If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`. Then launch the CI watch now (see "CI watch (out-of-band)" below).
+- If a PR exists for the branch, capture its number and base: `gh pr view --json number,baseRefName`.
 - If no PR exists, step 5 authors the body and step 8 opens the PR from it, after verification and review.
 - **Branch is in sync with `origin/<base>`.** Run the canonical detection recipe (see `git-feature-branch-sync/SKILL.md` § "Detecting divergence"). If behind > 0, invoke `/git-feature-branch-sync`, then re-run step 2 against the synced tree; step 7's completion marker must record the post-resync HEAD SHA so it matches what the push-gate hook checks.
 
@@ -79,7 +79,7 @@ On a cache miss, compute the **cumulative** PR-vs-default-branch diff — not st
 This pass reviews the cumulative diff with no responsibility-boundary narrowing — see `code-review/SKILL.md`'s Step 0.6 for the rule and why. Decisions from earlier in this branch's fix loop — per-commit rounds and prior cumulative passes alike — feed in as context per `code-review/SKILL.md` § "Ripple effect triage", never as a substitute for this pass. The cache marker is written only from a clean pass of this step's own cumulative `/code-review`, never from a fix commit's staged-diff pass.
 <!-- SCOPE_RULE:ready-for-review-cumulative-unnarrowed end -->
 
-Run `/code-review` against that diff, passing it the path the `DIFF_FILE:` line named. If no `DIFF_FILE:` line appeared, quote the script's stderr line and halt before invoking `/code-review` — the reviewer it spawns for comment and durable-doc prose carries no `Bash`, so it has no way to read a diff you did not write down. That diff is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If ADDRESS rows remain, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every one. Its fix commit goes through the standard staged-diff `/code-review` + marker gate, and the Overview's fix-loop rule then brings the loop back through step 2 to a full pass of this step over the fixed bytes, within the cap below.
+Run `/code-review` against that diff, invoking the skill with args "unrouted <path>" without the quotation marks, where `<path>` is the path the `DIFF_FILE:` line named (`unrouted` keeps this pass in this session). If no `DIFF_FILE:` line appeared, quote the script's stderr line and halt before invoking `/code-review` — the reviewer it spawns for comment and durable-doc prose carries no `Bash`, so it has no way to read a diff you did not write down. That diff is not the staged diff, so do NOT write `/code-review`'s own review-completion marker (per its rule); on a clean pass, write the cache marker instead — `~/.claude/scripts/marker.sh write cumulative-review`. If ADDRESS rows remain, dispatch one `code-writer` per `subagent-delegation`'s review-round default, covering every one. Its fix commit goes through the standard staged-diff `/code-review` + marker gate, and the Overview's fix-loop rule then brings the loop back through step 2 to a full pass of this step over the fixed bytes, within the cap below.
 
 **Disposition record.** Once each pass's `/code-review` returns, `Write` its disposition table to `agent-reviews/code-review-dispositions-<suffix>.md`, reusing that round's `<suffix>` or running `findings-path-suffix.sh` once if nothing spawned; a pass with no findings records one row whose finding cell reads `none`. This branch's records are those whose `<suffix>` carries the same slug after its first hyphen. Add an Outcome column holding each row's fix route, consult verdict, DEFER criterion, `SETTLED <id>` (the new row's id, read from the Id column of `review-ledger.sh render`) or `carry <id>` (the decision's id, as the carry line prints it), and amend a cell if the landed fix departs from that row's suggested fix. The branch ledger holds each disposition canonically; this record is canonical only for the Cap's pass accounting. The pass is clean when every row is resolved as `code-review/SKILL.md` § "Step — Record review completion" counts it (a `none` row counts as resolved), and dirty otherwise. No record grants a review skip and the `cumulative-review` marker stays the sole authorization, but the Cap counts records, so a record's clean or dirty status can relax the Cap; later reviews otherwise read it only as context.
 
@@ -121,6 +121,8 @@ Steps 3–5 may have produced new commits or body writes. Reconfirm:
 - All commits are pushed. If `git status` shows the branch ahead of `origin/<branch>` because steps 2/3/4 produced fix commits, push them now — those commits are inside the approved scope of this gate and the user does not need to re-authorize the push. After pushing, re-verify the branch is no longer ahead.
 - The PR body landed, when step 5 edited an already-open PR — re-fetch with `gh pr view` and confirm. With a PR open, edited or not, then run the PR-open path in `code-review/SKILL.md` § "Review-findings persistence": `unchanged` is expected, and `changed:` publishes the ledger's block over the body's copy. A failed `render` or `gh pr edit` halts this step.
 - Branch is not behind the base branch — if steps 3–5 produced new commits, re-run the divergence detection recipe (`git-feature-branch-sync/SKILL.md` § "Detecting divergence") before handing off.
+
+With a PR open, launch the CI watch now (see "CI watch (out-of-band)" below), whether or not this step pushed.
 
 ## 7. Record gate completion
 
@@ -171,13 +173,13 @@ Summarize for the user, then (and only then) signal that the branch is ready for
 
 ## CI watch (out-of-band)
 
-Steps 1 and 8 launch this; it resolves after the gate has finished, possibly hours later. Not a gate step — never wait on it.
+Steps 6 and 8 launch this; it resolves after the gate has finished, possibly hours later. Not a gate step — never wait on it.
 
 **Launch.** Run `~/.claude/scripts/ci-watch.sh <pr-number>` via `Bash` with `run_in_background: true` and continue the gate immediately. The script prints `LAUNCH_SHA: <oid>` when it starts and one terminal line the harness returns with its completion notification:
 
 | Terminal line | Do this |
 |---|---|
-| `CI_RESULT: none` | Report "no CI checks configured for this PR." Stop. |
+| `CI_RESULT: none` | Report "no CI checks had registered for PR `<n>` when `gh` last polled — check `gh pr checks <n>` yourself." Stop. |
 | `CI_RESULT: error <reason>` | Report "couldn't determine CI status for PR `<n>` — check `gh pr checks <n>` yourself." Stop. |
 | `CI_RESULT: checks <json>` | Resolve below. |
 
@@ -191,7 +193,7 @@ Steps 1 and 8 launch this; it resolves after the gate has finished, possibly hou
    | `pending` | "Still pending, re-check" — a check registered after the watch saw a terminal state. |
    | `pass` | One-line success confirmation. Done. |
    | `skipping` / `cancel` only | Nothing ran: report neutrally — no diagnosis, no "passed" claim. Done. |
-   | *(none — empty array)* | All checks were removed or reconfigured mid-watch: report "no CI checks remain configured for this PR" — same as `CI_RESULT: none`, not a failure. Done. |
+   | *(none — empty array)* | All checks were removed or reconfigured mid-watch: report "no CI checks remain configured for this PR" — not a failure. Done. |
 
 3. **Diagnose.** Per `subagent-delegation/REFERENCES.md` § "Diagnosis-delegation: two variants, not one", dispatch `general-purpose` (`model: sonnet`) to run `/root-cause-analysis` on the failing checks, instructed to check first whether step 2's local run of the same suite passed — a local-pass/CI-fail split is that skill's Stage C asymmetry signal — and to obey step 2's "Test-to-fit is forbidden." If the dispatch fails or never returns, report that and name the failing checks; no retry.
 4. **Offer, don't act.** Report the diagnosis and offer a fix. Dispatch `code-writer` (`model: sonnet`) only on explicit user confirmation; without it, stop and do not re-offer — the diagnosis stays available if the user raises it again. That dispatch carries step 2's "Test-to-fit is forbidden" — a make-the-check-green prompt is the shape most likely to produce a weakened assertion.

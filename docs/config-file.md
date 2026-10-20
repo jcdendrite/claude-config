@@ -74,6 +74,8 @@ over any paraphrase here.
 | `round_consult_round2_pilot` | bool | `false` | config-dir | no | [hooks.md § Gate hooks](hooks.md#gate-hooks) |
 | `authorization_boundary_restore` | bool | `true` | config-dir | no | [hooks.md § Utility hooks](hooks.md#utility-hooks) |
 | `test_selection_tracking` | bool | `false` | config-dir | no | [README § Tests](../README.md#tests) |
+| `architect_fix_plan_pilot` | bool | `false` | config-dir | no | [architect-authored-fix-plan-pilot.md](design-decisions/architect-authored-fix-plan-pilot.md) |
+| `review_orchestrator_routing` | bool | `false` | config-dir | no | [review-orchestrator-routing-gate.md](design-decisions/review-orchestrator-routing-gate.md) |
 
 `worktree_required`, `autonomous_shipping`, `round_consult_gate`,
 `commit_stall_block`, and `authorization_boundary_restore` are the five
@@ -140,7 +142,7 @@ installer on failure.
 It runs two phases, always in this order:
 
 1. **Non-interactive import, then schema-default scaffold.** For each of
-   the 17 keys:
+   the 19 keys:
    - Checks for a legacy value at the location(s) `legacy-import-locations`
      names — the resolved config dir alone, or (for the six keys
      `install.sh`'s pre-migration writer always wrote to `$HOME/.claude`
@@ -171,15 +173,17 @@ It runs two phases, always in this order:
      that fails `pr_cost_disclosure`'s `content-matches` grammar) does not
      abort the run; the remaining keys still import normally.
    - After every key has been processed, a schema-default scaffold fills in
-     a default row only for a key with no legacy fallback mechanism at
-     all. None exist among today's 17 keys besides `test_selection_tracking`,
-     whose `legacy-filename` and `legacy-polarity` are both empty. Scaffold
-     therefore currently writes only that one key's default row. A key with
-     a legacy-polarity
-     (`presence-enables`/`presence-disables`/`content-matches`) stays
-     absent from the state file unless this run's import path already
-     gave it an explicit row, so its legacy file remains a live override
-     rather than being permanently shadowed by a locked-in default.
+     a default row only for a key with no legacy fallback mechanism at all.
+     None exist among today's 19 keys besides `test_selection_tracking`,
+     `architect_fix_plan_pilot` and `review_orchestrator_routing`, whose
+     `legacy-filename` and `legacy-polarity` are both empty. Scaffold
+     therefore currently writes all three keys' default rows. A scaffolded
+     explicit row shadows the schema default, so changing such a key's
+     `default` column needs a row migration. A key with a legacy-polarity
+     (`presence-enables`/`presence-disables`/`content-matches`) stays absent
+     from the state file unless this run's import path already gave it an
+     explicit row, so its legacy file remains a live override rather than
+     being permanently shadowed by a locked-in default.
 2. **Interactive per-file delete offer**, gated once on `[ -t 0 ]` for the
    whole phase — hang-prevention only, not a security control, since
    nothing here stops an agent from running `rm` on a legacy file
@@ -245,13 +249,16 @@ instead once you know it's there.
 See `config-get.sh`'s own header for the exit-code table — the exit code
 is the sole authority, and the effective value is also printed to stdout
 for a human, but never trust stdout alone.
+The query resolves `<config-dir>` from the invoking shell's
+`CLAUDE_CONFIG_DIR`, so check another account by setting it to that account's
+absolute config dir or by running the query inside that account's session.
 This is the query surface skill prose uses instead of learning the file's
 internal format (`pr-description/SKILL.md`, `transcript-analysis/SKILL.md`).
 
 ## Per-account isolation
 
 Because every key now lives in one file, symlinking `claude-config.toml`
-itself from one Claude account's config dir to another's merges *all 17
+itself from one Claude account's config dir to another's merges *all 19
 keys* between the two accounts at once — a wider blast radius than the
 single-sentinel symlink risk this repo already warned about for
 `pr-cost.md`'s `.pr-cost-enabled` file. A symlinked `claude-config.toml`
@@ -306,15 +313,15 @@ against this shape and should be treated as an upper bound for that path:
 The second `autonomous_shipping` lookup above is a memo hit, not a second
 resolution.
 
-Eleven hook files call into this resolution path today, several on the
-highest-frequency PreToolUse gates in the repo (every `Edit`/`Write`/
-`MultiEdit`, every git write) — see `_config.sh`'s own callers. This is
-judged tolerable against the repo's stated <100ms-per-fire hook budget.
-Because a repeated lookup of an already-resolved key is nearly free, the
-real cost driver in one fire is the number of distinct keys checked, not
-the total call count -- a hook checking three or more distinct keys should
-still measure its own total against that budget rather than assume it
-stays under it.
+Several hook files call into this resolution path, directly or through
+the `_lib_*` helpers in `_lib.sh`, including the highest-frequency
+PreToolUse gates in the repo (every `Edit`/`Write`/`MultiEdit`, every
+git write) — see `_config.sh`'s own callers. This is judged tolerable against the repo's stated <100ms-per-fire
+hook budget. Because a repeated lookup of an already-resolved key is nearly
+free, the real cost driver in one fire is the number of distinct keys
+checked, not the total call count -- a hook checking three or more distinct
+keys should still measure its own total against that budget rather than
+assume it stays under it.
 
 ## A hand-edit-loss fragility for enforcement-critical keys
 

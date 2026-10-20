@@ -22,7 +22,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, assert_cap_engaged, build_path_without
+from helpers import HOOKS_DIR, assert_cap_engaged, build_isolated_hook, build_path_without
 
 from .conftest import _real_timeout_is_gnu_coreutils, _write_conditional_sleep_shim
 
@@ -89,22 +89,6 @@ def _clear_memory_audit_nudge_override_env(monkeypatch):
 
 def _base_payload(source: str = "startup") -> dict:
     return {"source": source}
-
-
-def _isolated_hooks_dir(tmp_path: Path) -> Path:
-    """Symlink the nudge hook plus its _lib.sh/_config.sh dependencies into
-    a directory with no config-keys.psv sibling, so _config_schema_field sees
-    an absent (unreadable) schema and _config_enabled memory_audit_nudge
-    returns exit 3. Mirrors
-    test_nudge_handoff_near_context_cap.py's identical-purpose helper.
-    Returns the isolated hook's own path."""
-    isolated = tmp_path / "isolated-hooks"
-    isolated.mkdir()
-    (isolated / NUDGE_HOOK.name).symlink_to(NUDGE_HOOK)
-    (isolated / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
-    (isolated / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
-    (isolated / "nudge-memory-store-audit.awk").symlink_to(WC_TOTAL_ROW_AWK_PROGRAM)
-    return isolated / NUDGE_HOOK.name
 
 
 def _state_file(home: Path) -> Path:
@@ -218,7 +202,7 @@ class TestNudgeMemoryStoreAudit:
         than silently suppressed. A schema-unreadable hook that stayed
         silent here would be indistinguishable from a correctly-suppressed
         one without this test."""
-        isolated_hook = _isolated_hooks_dir(tmp_path)
+        isolated_hook = build_isolated_hook(tmp_path, NUDGE_HOOK, extra_links=(WC_TOTAL_ROW_AWK_PROGRAM,))
         _write_memory_file(
             tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-unreadable-schema", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 3
         )
@@ -244,7 +228,7 @@ class TestNudgeMemoryStoreAudit:
         """A config-keys.psv with the memory_audit_nudge row absent or
         truncated to two fields is a schema-read failure, which leaves the
         nudge enabled -- even beside a legacy kill-switch file."""
-        isolated_hook = _isolated_hooks_dir(tmp_path)
+        isolated_hook = build_isolated_hook(tmp_path, NUDGE_HOOK, extra_links=(WC_TOTAL_ROW_AWK_PROGRAM,))
         kept_rows = [
             line
             for line in (HOOKS_DIR / "config-keys.psv").read_text().splitlines()
@@ -657,7 +641,7 @@ class TestNudgeMemoryStoreAudit:
                 check=False,
             )
 
-        control = run_copy(_isolated_hooks_dir(tmp_path))
+        control = run_copy(build_isolated_hook(tmp_path, NUDGE_HOOK, extra_links=(WC_TOTAL_ROW_AWK_PROGRAM,)))
         assert control.stdout.strip() != "", "control with siblings present must fire"
 
         bare_dir = tmp_path / "bare-hooks"
@@ -673,12 +657,13 @@ class TestNudgeMemoryStoreAudit:
         """A copy of the hook with _lib.sh/_config.sh siblings present but no
         nudge-memory-store-audit.awk sidecar exits 0 with no output rather
         than erroring -- `awk -f` on an absent/unreadable program file fails
-        the way this hook's fail-open contract requires. A control with the
-        sidecar present and the same over-threshold store fires, so the
-        silence is attributable to the missing sidecar and not to an empty
-        store. Mirrors test_missing_lib_sh_sibling_fails_open above for the
-        newer sidecar dependency introduced by the wc-total-row-and-project-
-        count refactor."""
+        the way this hook's fail-open contract requires. A control that links
+        the sidecar into the same directory over the same over-threshold
+        store fires, so the silence is attributable to the missing sidecar
+        and not to an empty store. Mirrors
+        test_missing_lib_sh_sibling_fails_open above for the newer sidecar
+        dependency introduced by the wc-total-row-and-project-count
+        refactor."""
         _write_memory_file(
             tmp_path, f"{SYNTHETIC_PROJECT_PREFIX}-no-awk", "MEMORY.md", DEFAULT_PER_PROJECT_BYTES * 3
         )
@@ -695,17 +680,16 @@ class TestNudgeMemoryStoreAudit:
                 check=False,
             )
 
-        control = run_copy(_isolated_hooks_dir(tmp_path))
-        assert control.stdout.strip() != "", "control with the sidecar present must fire"
-
-        no_awk_dir = tmp_path / "no-awk-sidecar-hooks"
-        no_awk_dir.mkdir()
-        (no_awk_dir / NUDGE_HOOK.name).symlink_to(NUDGE_HOOK)
-        (no_awk_dir / "_lib.sh").symlink_to(HOOKS_DIR / "_lib.sh")
-        (no_awk_dir / "_config.sh").symlink_to(HOOKS_DIR / "_config.sh")
-        result = run_copy(no_awk_dir / NUDGE_HOOK.name)
+        isolated_hook = build_isolated_hook(tmp_path, NUDGE_HOOK)
+        result = run_copy(isolated_hook)
         assert result.returncode == 0
         assert result.stdout.strip() == ""
+
+        # The control runs second: a firing run writes the shared HOME's
+        # .memory-audit-nudge-fired state, which would silence a variant run after it.
+        (isolated_hook.parent / WC_TOTAL_ROW_AWK_PROGRAM.name).symlink_to(WC_TOTAL_ROW_AWK_PROGRAM)
+        control = run_copy(isolated_hook)
+        assert control.stdout.strip() != "", "control with the sidecar present must fire"
 
     def test_unresolvable_config_dir_fails_open(self, tmp_path):
         """Empty $HOME and no CLAUDE_CONFIG_DIR leaves _lib_config_dir

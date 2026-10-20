@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Append-only review-narrative ledger: /code-review appends one line per
 # finding-disposition event as it runs, so a mid-review compaction or
 # session resume doesn't lose which findings were raised, how they were

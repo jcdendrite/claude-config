@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # SessionStart hook: set the terminal tab title (hookSpecificOutput.sessionTitle)
 # to `<repo>/<branch>` from git state, so a feature-branch or handoff-resumed
@@ -136,7 +136,7 @@ WORKTREE_PORCELAIN=$(git -C "$PAYLOAD_CWD" -c core.quotePath=false worktree list
 MAIN_WORKTREE_RECORD=$(printf '%s\n' "$WORKTREE_PORCELAIN" | LC_ALL=C awk '/^$/{exit} {print}')
 MAIN_WORKTREE_ROOT=$(printf '%s\n' "$MAIN_WORKTREE_RECORD" | LC_ALL=C awk '/^worktree /{print substr($0, 10); exit}')
 [ -z "$MAIN_WORKTREE_ROOT" ] && exit 0
-printf '%s\n' "$MAIN_WORKTREE_RECORD" | LC_ALL=C grep -qx 'bare' && exit 0
+LC_ALL=C grep -qx 'bare' <<< "$MAIN_WORKTREE_RECORD" && exit 0
 
 # --- per-repo kill switch --------------------------------------------------
 # Resolved against the main worktree root, never cwd: an untracked sentinel
@@ -151,8 +151,8 @@ REPO_COMPONENT=$(basename "$MAIN_WORKTREE_ROOT")
 # --- character allowlist ---------------------------------------------------
 
 ALLOWLIST_RE='^[A-Za-z0-9._/@+-]+$'
-printf '%s' "$REPO_COMPONENT" | LC_ALL=C grep -Eq "$ALLOWLIST_RE" || exit 0
-printf '%s' "$BRANCH_COMPONENT" | LC_ALL=C grep -Eq "$ALLOWLIST_RE" || exit 0
+LC_ALL=C grep -Eq "$ALLOWLIST_RE" <<< "$REPO_COMPONENT" || exit 0
+LC_ALL=C grep -Eq "$ALLOWLIST_RE" <<< "$BRANCH_COMPONENT" || exit 0
 
 BRANCH_COMPONENT="${BRANCH_COMPONENT:0:32}"
 

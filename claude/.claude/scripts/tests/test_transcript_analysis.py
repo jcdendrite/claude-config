@@ -4,7 +4,6 @@ import errno
 import importlib.util
 import json
 import os
-import random
 import re
 import stat
 import subprocess
@@ -15,14 +14,24 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SKILLS_DIR
+from helpers import SKILLS_DIR
 
 from ._audit_routing_helpers import _audit_routing_samples_args, _audit_routing_shape_args
 from ._cache_rebuild_helpers import _cache_rebuild_args
+from ._handoff_nudge_helpers import _rearm_backtest_args, _spend_over_threshold_args
+from ._skill_helpers import (
+    _TS_FIXED,
+    _judgment_pair_args,
+    _review_asst,
+    _skill_inv_args,
+    _skill_pair_args,
+    _user_reply,
+)
 from ._subagent_helpers import _subagents_args
 from .conftest import (
     _agent_use,
     _asst,
+    _attr_ts,
     _audit_routing_args,
     _bash_use,
     _compact_boundary_rec,
@@ -30,17 +39,16 @@ from .conftest import (
     _cost_args,
     _cost_ledger_args,
     _cost_trend_args,
-    _exit_plan_mode,
     _extract_grand_total,
     _hook_deny,
     _hook_deny_current,
     _opus,
     _priced,
-    _priced_sidechain_asst,
     _read_use,
     _review_trace_args,
     _reviewer_yield_args,
     _skill_use,
+    _skill_use_rec,
     _table_cols,
     _thinking_block,
     _tool_result,
@@ -61,15 +69,6 @@ _spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
 _mod = importlib.util.module_from_spec(_spec)
 sys.path.insert(0, str(_SCRIPT.parent))
 _spec.loader.exec_module(_mod)
-
-
-def _extract_arm_dollars(out: str, arm_label: str) -> float:
-    """Read plan-boundary's per-arm dollar figure (e.g. arm_label='C: fresh
-    Sonnet handoff') by row-label prefix, not by the row's full formatted
-    text -- survives cosmetic changes to column width/precision."""
-    match = re.search(rf"^{re.escape(arm_label)}\s+([\d,]+\.\d\d)\s*$", out, re.MULTILINE)
-    assert match is not None, f"no row found for arm {arm_label!r}"
-    return float(match.group(1).replace(",", ""))
 
 
 def test_projects_dir_honors_claude_config_dir(monkeypatch, tmp_path):
@@ -1115,209 +1114,6 @@ class TestRepoTrackedAgentTypeNames:
 
 
 # ---------------------------------------------------------------------------
-# skill-pair
-# ---------------------------------------------------------------------------
-
-# Fixed timestamp used for tests 1–6, 8–10: 2026-05-12T12:00:00Z → ISO 2026-W20
-_TS_FIXED = "2026-05-12T12:00:00Z"
-# Boundary timestamps for test 7 (ISO week boundary Sun → Mon)
-_TS_SUNDAY = "2026-05-17T23:59:59Z"   # ISO 2026-W20 (Sunday = last day of W20)
-_TS_MONDAY = "2026-05-18T00:00:01Z"   # ISO 2026-W21 (Monday = first day of W21)
-
-
-def _skill_pair_args(leader="plan-it", follower="plan-review", *, projects="*", this_repo=False,
-                      exclude_projects=None, branches=None):
-    return type("A", (), {
-        "leader": leader,
-        "follower": follower,
-        "projects": projects,
-        "this_repo": this_repo,
-        "exclude_projects": exclude_projects,
-        "branches": branches,
-    })()
-
-
-class TestSkillPair:
-    def test_empty_jsonl_prints_no_data(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [])
-        _mod.cmd_skill_pair(_skill_pair_args())
-        assert "No data found." in capsys.readouterr().out
-
-    def test_leader_only_session_counted_with_zero_followers(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s1", "plan-it"),
-            ]),
-        ])
-        _mod.cmd_skill_pair(_skill_pair_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
-        assert cols["Lead"] == "1"
-        assert cols["Main"] == "0"
-        assert cols["Side"] == "0"
-        assert "0.0%" in cols["Pair%"]
-
-    def test_leader_plus_main_follower_counted(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s1", "plan-it"),
-            ]),
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s2", "plan-review"),
-            ]),
-        ])
-        _mod.cmd_skill_pair(_skill_pair_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
-        assert cols["Lead"] == "1"
-        assert cols["Main"] == "1"
-        assert "100.0%" in cols["Pair%"]
-
-    def test_leader_plus_sidechain_only_follower(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s1", "plan-it"),
-            ]),
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, sidechain=True, content=[
-                _skill_use("s2", "plan-review"),
-            ]),
-        ])
-        _mod.cmd_skill_pair(_skill_pair_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
-        assert cols["Lead"] == "1"
-        assert cols["Main"] == "0"  # no main-thread follower
-        assert cols["Side"] == "1"
-
-    def test_both_main_and_sidechain_follower_counts_main_only(self, fake_projects, capsys):
-        """Session with both main and sidechain follower hits counts in Main, NOT Side."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s1", "plan-it"),
-            ]),
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s2", "plan-review"),
-            ]),
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, sidechain=True, content=[
-                _skill_use("s3", "plan-review"),
-            ]),
-        ])
-        _mod.cmd_skill_pair(_skill_pair_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
-        assert cols["Main"] == "1"
-        assert cols["Side"] == "0"  # sidechain-only requires no main hit
-
-    def test_multiple_leader_hits_count_as_one_session(self, fake_projects, capsys):
-        """Three leader invocations in one session → Lead=1, not 3."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s1", "plan-it"),
-                _skill_use("s2", "plan-it"),
-                _skill_use("s3", "plan-it"),
-            ]),
-        ])
-        _mod.cmd_skill_pair(_skill_pair_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
-        assert cols["Lead"] == "1"
-
-    def test_iso_week_boundary_sunday_vs_monday(self, fake_projects, capsys):
-        """Leader on Sun 23:59:59 UTC → W20; leader on Mon 00:00:01 UTC → W21."""
-        proj2 = fake_projects.parent / "-home-user-testrepo2"
-        proj2.mkdir(parents=True)
-        _write_jsonl(fake_projects / "sess-sun.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_SUNDAY, content=[
-                _skill_use("s1", "plan-it"),
-            ]),
-        ])
-        _write_jsonl(proj2 / "sess-mon.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_MONDAY, content=[
-                _skill_use("s2", "plan-it"),
-            ]),
-        ])
-        _mod.cmd_skill_pair(_skill_pair_args())
-        out = capsys.readouterr().out
-        data_lines = [ln for ln in out.splitlines() if ln.startswith("2026-W")]
-        bins = [ln.split()[0] for ln in data_lines]
-        assert "2026-W20" in bins
-        assert "2026-W21" in bins
-        assert bins != ["2026-W20"]  # both bins present as distinct rows
-
-    def test_projects_glob_excludes_unmatched_project(self, fake_projects, capsys):
-        """Only project dirs matching --projects are included."""
-        proj_b = fake_projects.parent / "-home-user-other-repo"
-        proj_b.mkdir(parents=True)
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s1", "plan-it"),
-            ]),
-        ])
-        _write_jsonl(proj_b / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s2", "plan-it"),
-            ]),
-        ])
-        # Only match the first project dir
-        _mod.cmd_skill_pair(_skill_pair_args(projects="-home-user-testrepo"))
-        out = capsys.readouterr().out
-        # Only 1 leader session (the included project)
-        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
-        assert cols["Lead"] == "1"
-
-    def test_exclude_projects_glob_omits_matching_dir(self, fake_projects, capsys):
-        """Project dirs matching --exclude-projects are skipped even when also matching --projects=*."""
-        proj_eval = fake_projects.parent / "-tmp-claude-eval-abc123"
-        proj_normal = fake_projects.parent / "-home-user-normalrepo"
-        proj_eval.mkdir(parents=True)
-        proj_normal.mkdir(parents=True)
-        # Normal project: 1 leader session
-        _write_jsonl(proj_normal / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s1", "plan-it"),
-            ]),
-        ])
-        # Eval project: 2 leader sessions — should be excluded
-        _write_jsonl(proj_eval / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s2", "plan-it"),
-            ]),
-        ])
-        _write_jsonl(proj_eval / "sess2.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s3", "plan-it"),
-            ]),
-        ])
-        # fake_projects itself has no sessions for this test; use exclude on the eval dir
-        _mod.cmd_skill_pair(_skill_pair_args(exclude_projects="-tmp-claude-eval-*"))
-        out = capsys.readouterr().out
-        # Only 1 session from the normal project; eval sessions excluded
-        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
-        assert cols["Lead"] == "1"
-
-    def test_branches_filter_excludes_other_branch(self, fake_projects, capsys):
-        """With --branches=branch-a, only sessions on branch-a contribute."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="branch-a", ts=_TS_FIXED, content=[
-                _skill_use("s1", "plan-it"),
-            ]),
-            _asst("claude-sonnet-4-6", branch="branch-a", ts=_TS_FIXED, content=[
-                _skill_use("s2", "plan-review"),
-            ]),
-        ])
-        _write_jsonl(fake_projects / "sess2.jsonl", [
-            _asst("claude-sonnet-4-6", branch="branch-b", ts=_TS_FIXED, content=[
-                _skill_use("s3", "plan-it"),
-            ]),
-        ])
-        _mod.cmd_skill_pair(_skill_pair_args(branches="branch-a"))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
-        assert cols["Lead"] == "1"  # branch-a only
-        assert cols["Main"] == "1"  # follower on branch-a
-
-
-# ---------------------------------------------------------------------------
 # pr-link (stubbed gh)
 # ---------------------------------------------------------------------------
 
@@ -2312,6 +2108,76 @@ class TestPriceTurnSpeedGeoMultipliers:
         dollars, _context_at_turn, unpriced = _mod._price_turn("claude-sonnet-4-6", usage)
         assert unpriced == 0
         assert dollars["input"] == pytest.approx(1_000_000 / 1_000_000 * 3.0 * 2.2)
+
+
+_PRICING_VARIANT_USAGE_CASES = [
+    pytest.param({}, "standard", id="neither-field-present"),
+    pytest.param({"speed": "fast"}, "fast", id="fast"),
+    pytest.param({"inference_geo": "us"}, "us_geo", id="us-geo"),
+    pytest.param({"speed": "fast", "inference_geo": "us"}, "fast_us_geo", id="fast-and-us-geo"),
+    pytest.param({"speed": "standard"}, "standard", id="speed-standard"),
+    pytest.param({"speed": None}, "standard", id="speed-none"),
+    pytest.param({"speed": "FAST"}, "standard", id="speed-uppercase"),
+    pytest.param({"inference_geo": "global"}, "standard", id="geo-global"),
+    pytest.param({"inference_geo": "US"}, "standard", id="geo-uppercase"),
+    pytest.param({"inference_geo": ""}, "standard", id="geo-empty"),
+    pytest.param({"inference_geo": None}, "standard", id="geo-none"),
+    pytest.param({"speed": "FAST", "inference_geo": "us"}, "us_geo", id="uppercase-speed-with-us-geo"),
+    pytest.param({"speed": "fast", "inference_geo": "US"}, "fast", id="fast-with-uppercase-geo"),
+]
+
+
+class TestPricingVariant:
+    """pricing._pricing_variant labels a turn by the multiplier conditions _price_turn applies, so
+    pr-cost's per-model cells file each turn under the variant its dollars were priced with."""
+
+    @pytest.mark.parametrize("extra_usage_fields,expected_label", _PRICING_VARIANT_USAGE_CASES)
+    def test_label_for_each_speed_and_geo_combination_and_near_miss(self, extra_usage_fields, expected_label):
+        usage = {**_priced("claude-sonnet-5", input=1_000)["message"]["usage"], **extra_usage_fields}
+        assert _mod.pricing._pricing_variant(usage) == expected_label
+
+    @pytest.mark.parametrize("extra_usage_fields,expected_label", _PRICING_VARIANT_USAGE_CASES)
+    def test_price_turn_dollars_follow_the_label_implied_multiplier_under_the_listed_usage_perturbations(
+        self, extra_usage_fields, expected_label,
+    ):
+        """For the listed perturbations, dollars equal standard dollars times the label's multiplier. A new
+        multiplier keyed on one of those fields moves the dollars while the label stays unchanged, which
+        fails this test. Dollars are compared with a relative tolerance, so a multiplication-order
+        refactor does not."""
+        label_multiplier = {
+            "standard": 1,
+            "fast": _mod.pricing._FAST_MODE_RATE_MULTIPLIER,
+            "us_geo": _mod.pricing._INFERENCE_GEO_US_RATE_MULTIPLIER,
+            "fast_us_geo": _mod.pricing._FAST_MODE_RATE_MULTIPLIER * _mod.pricing._INFERENCE_GEO_US_RATE_MULTIPLIER,
+        }
+        realistic_usage = {
+            **_priced(
+                "claude-sonnet-5", input=123_457, output=7_891, cache_read=3_333_333,
+                ephemeral_1h=45_671, ephemeral_5m=98_765,
+            )["message"]["usage"],
+            "service_tier": "standard",
+            "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 0},
+        }
+        standard_dollars, _context, _unpriced = _mod._price_turn("claude-sonnet-5", realistic_usage)
+        perturbations = [
+            {},
+            {"service_tier": "priority"},
+            {"service_tier": "batch"},
+            {"service_tier": None},
+            {"server_tool_use": {"web_search_requests": 3, "web_fetch_requests": 2}},
+            {"server_tool_use": None},
+            {"not_a_known_usage_field": "some-future-value"},
+            {"iterations": [{"type": "message", "input_tokens": 1, "output_tokens": 1}]},
+        ]
+
+        for perturbation in perturbations:
+            usage = {**realistic_usage, **perturbation, **extra_usage_fields}
+            assert _mod.pricing._pricing_variant(usage) == expected_label, perturbation
+            actual_dollars, _context, _unpriced = _mod._price_turn("claude-sonnet-5", usage)
+            for token_class in _mod.pricing._TOKEN_CLASSES:
+                assert actual_dollars[token_class] == pytest.approx(
+                    standard_dollars[token_class] * label_multiplier[expected_label], rel=1e-9,
+                ), (perturbation, token_class)
 
 
 class TestReportableUnpricedModelIds:
@@ -3655,6 +3521,22 @@ class TestCorpusSubagentDirAndUtf8ErrorHandling:
             {"type": "user", "n": 2, "text": multibyte_text},
         ]
 
+    def test_parse_jsonl_records_drops_a_record_with_a_truncated_multibyte_character_and_keeps_its_neighbours(
+        self, tmp_path
+    ):
+        """An invalid byte inside an otherwise valid record's JSON string
+        drops that whole record rather than keeping it with a replacement
+        character, so a lossy decode (errors="replace") fails this test."""
+        truncated_multibyte_jsonl = tmp_path / "truncated.jsonl"
+        truncated_multibyte_jsonl.write_bytes(
+            b'{"type": "user", "n": 1}\n'
+            + b'{"type": "user", "n": 2, "text": "caf\xc3"}\n'
+            + b'{"type": "user", "n": 3}\n'
+        )
+        assert _mod.corpus._parse_jsonl_records(truncated_multibyte_jsonl) == [
+            {"type": "user", "n": 1}, {"type": "user", "n": 3},
+        ]
+
     def test_index_subagent_dispatches_reads_a_multibyte_utf8_meta_json_without_a_read_error(self, fake_projects):
         """A meta.json written as raw UTF-8 with non-ASCII text next to a
         valid toolUseId is indexed, not counted under meta_read_errors."""
@@ -4306,7 +4188,7 @@ class TestCacheEfficiency:
         in scope, mirroring cost's/edit-format's/read-scope's own refusal."""
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
             _mod.cmd_cache_efficiency(_cache_efficiency_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
@@ -4447,171 +4329,6 @@ class TestCacheRebuildCrossInstrumentReconciliation:
         efficiency_row = _table_cols(efficiency_out, header_contains="Write5m", row_contains="sidechain")
 
         assert rebuild_row["W5m"] == efficiency_row["Write5m"]
-
-
-# ---------------------------------------------------------------------------
-# spend-over-threshold
-# ---------------------------------------------------------------------------
-
-
-def _spend_over_threshold_args(since: str | None = None, projects: str = "*") -> argparse.Namespace:
-    return type("A", (), {"projects": projects, "this_repo": False, "since": since})()
-
-
-class TestSpendOverThreshold:
-    def test_session_entirely_under_threshold_reports_zero_share(self, fake_projects, capsys):
-        """Every main-thread turn's context_at_turn stays below the session's
-        own fire threshold (150,000 for claude-sonnet-5): above-threshold
-        dollars is 0, share is 0.0%."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=50_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-sonnet-5", input=60_000, output=1_000, ts="2026-05-19T10:01:00.000Z"),
-        ])
-        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
-        assert int(cols["Sessions"]) == 1
-        assert cols["Share"] == "0.0%"
-
-    def test_session_entirely_over_threshold_reports_full_share(self, fake_projects, capsys):
-        """Every main-thread turn's context_at_turn is at or above the
-        session's own fire threshold: share is 100.0%."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-sonnet-5", input=450_000, output=1_000, ts="2026-05-19T10:01:00.000Z"),
-        ])
-        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
-        assert cols["Share"] == "100.0%"
-
-    def test_mixed_session_reports_partial_share(self, fake_projects, capsys):
-        """One turn under threshold, one turn at/above it: the reported
-        share is exactly the above-threshold turn's own dollar fraction of
-        the session's total -- a hand-computed value, not just a nonzero
-        check."""
-        under = _priced("claude-sonnet-5", input=50_000, output=1_000, ts="2026-05-19T10:00:00.000Z")
-        over = _priced("claude-sonnet-5", input=400_000, output=2_000, ts="2026-05-19T10:01:00.000Z")
-        _write_jsonl(fake_projects / "sess.jsonl", [under, over])
-        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
-        out = capsys.readouterr().out
-
-        rates = _mod._model_rates("claude-sonnet-5")
-        under_dollars = 50_000 / 1_000_000 * rates["input"] + 1_000 / 1_000_000 * rates["output"]
-        over_dollars = 400_000 / 1_000_000 * rates["input"] + 2_000 / 1_000_000 * rates["output"]
-        expected_share = 100.0 * over_dollars / (under_dollars + over_dollars)
-
-        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
-        assert cols["Share"] == f"{expected_share:.1f}%"
-
-    def test_session_with_no_main_thread_usage_block_is_excluded(self, fake_projects, capsys):
-        """A session with no main-thread turn carrying a usage block has no
-        session_threshold to be above or below -- excluded from the report
-        entirely, not shown with an undefined/blank share."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-5", branch="main", ts="2026-05-19T10:00:00.000Z"),  # usage={}
-        ])
-        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
-        out = capsys.readouterr().out
-        assert "No sessions with a resolvable handoff-nudge threshold" in out
-
-    def test_session_with_all_unpriced_turns_is_excluded_not_a_zero_division(self, fake_projects, capsys):
-        """Every turn's model has no price-table entry (session_threshold is
-        still resolvable -- pricing and context-window resolution are
-        independent), so total_dollars is 0: the session is excluded from
-        the report rather than raising ZeroDivisionError or reporting an
-        undefined share."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-opus-4-7", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
-        out = capsys.readouterr().out
-        assert "No sessions with a resolvable handoff-nudge threshold" in out
-
-    def test_multiple_qualifying_sessions_aggregate_correctly_within_and_across_weeks(
-        self, fake_projects, capsys
-    ):
-        """Two qualifying sessions in the same ISO week (2026-W21): the
-        week row's Sessions/AboveUSD/TotalUSD reflect the sum of both, not
-        just one -- an accumulation bug (data[week_str] reset instead of
-        incremented, a wrong dict key, or the Total row summed from the
-        wrong per-week field) would slip through every single-session test
-        above."""
-        under = _priced("claude-sonnet-5", input=50_000, output=1_000, ts="2026-05-19T10:00:00.000Z")
-        over = _priced("claude-sonnet-5", input=400_000, output=2_000, ts="2026-05-21T10:00:00.000Z")
-        _write_jsonl(fake_projects / "sess_a.jsonl", [under])
-        _write_jsonl(fake_projects / "sess_b.jsonl", [over])
-        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
-        out = capsys.readouterr().out
-
-        rates = _mod._model_rates("claude-sonnet-5")
-        under_dollars = 50_000 / 1_000_000 * rates["input"] + 1_000 / 1_000_000 * rates["output"]
-        over_dollars = 400_000 / 1_000_000 * rates["input"] + 2_000 / 1_000_000 * rates["output"]
-        expected_total = under_dollars + over_dollars
-        expected_share = 100.0 * over_dollars / expected_total
-
-        week_cols = _table_cols(out, header_contains="Sessions", row_contains="2026-W21")
-        assert int(week_cols["Sessions"]) == 2
-        assert float(week_cols["AboveUSD"].replace(",", "")) == pytest.approx(over_dollars, rel=1e-4)
-        assert float(week_cols["TotalUSD"].replace(",", "")) == pytest.approx(expected_total, rel=1e-4)
-        assert week_cols["Share"] == f"{expected_share:.1f}%"
-
-        total_cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
-        assert int(total_cols["Sessions"]) == 2
-        assert float(total_cols["AboveUSD"].replace(",", "")) == pytest.approx(over_dollars, rel=1e-4)
-        assert float(total_cols["TotalUSD"].replace(",", "")) == pytest.approx(expected_total, rel=1e-4)
-
-    def test_context_at_turn_exactly_equal_to_threshold_counts_as_above(self, fake_projects, capsys):
-        """context_at_turn == session_threshold exactly -- the boundary the
-        `>=` comparison in cmd_spend_over_threshold governs, and the same
-        point the real hook fires at -- counts toward AboveUSD. An off-by-one
-        (`>` written instead of `>=`) would silently misclassify this turn as
-        under, since no other test in this class exercises the exact
-        boundary (all use values far below or far above it)."""
-        threshold = _mod._hook_effective_fire_threshold("claude-sonnet-5")
-        exactly_at_threshold = _priced(
-            "claude-sonnet-5", input=threshold, output=1_000, ts="2026-05-19T10:00:00.000Z"
-        )
-        _write_jsonl(fake_projects / "sess.jsonl", [exactly_at_threshold])
-        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
-        assert cols["Share"] == "100.0%"
-
-    def test_since_filter_excludes_whole_sessions_before_cutoff(self, fake_projects, capsys):
-        """--since scopes whole sessions (by first timestamp), matching
-        _session_matches_rearm_scope's own convention for this shared
-        per-turn machinery -- not individual records within one session."""
-        _write_jsonl(fake_projects / "old.jsonl", [
-            _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-01-15T10:00:00.000Z"),
-        ])
-        _write_jsonl(fake_projects / "new.jsonl", [
-            _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        _mod.cmd_spend_over_threshold(_spend_over_threshold_args(since="2026-05-01"))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
-        assert int(cols["Sessions"]) == 1
-
-    def test_nudge_log_diagnostic_footer_swallows_unresolvable_config_dir(
-        self, fake_projects, capsys, monkeypatch
-    ):
-        """An unresolvable config dir (e.g. $HOME unset) inside the trailing
-        _print_nudge_log_diagnostic() footer must not crash an
-        already-successful report -- the primary table has already printed."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-
-        def _raise_value_error():
-            raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
-
-        monkeypatch.setattr(_mod, "config_dir", _raise_value_error)
-        _mod.cmd_spend_over_threshold(_spend_over_threshold_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
-        assert cols["Share"] == "100.0%"
-        assert "Diagnostic" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -5718,631 +5435,8 @@ class TestCmdUserInput:
 
 
 # ---------------------------------------------------------------------------
-# skill-invocation
+# _repo_scoped_project_slugs guard, build_parser, and iter_sessions ordering
 # ---------------------------------------------------------------------------
-
-
-class TestSkillInvocation:
-    def _run(self, capsys):
-        args = argparse.Namespace(projects="*")
-        _mod.cmd_skill_invocation(args)
-        return capsys.readouterr().out
-
-    def test_top_level_invocation_counted(self, fake_projects, capsys):
-        """Assistant record with Skill tool_use and no attributionSkill → counted as top-level."""
-        asst_rec = _asst("claude-opus-4-7", branch="main", content=[
-            _skill_use("t1", "code-review")
-        ])
-        # No attributionSkill field → top-level
-        _write_jsonl(fake_projects / "s1.jsonl", [asst_rec])
-        out = self._run(capsys)
-        assert "code-review" in out
-        # Top-level column should be ≥1
-        cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
-        assert int(cols["top-level"]) >= 1, f"expected top-level ≥1, got: {cols}"
-        assert int(cols["routed"]) == 0, f"expected routed=0, got: {cols}"
-        assert int(cols["user-slash"]) == 0, f"expected slash=0, got: {cols}"
-
-    def test_routed_invocation_counted(self, fake_projects, capsys):
-        """Assistant record with Skill tool_use AND attributionSkill → counted as routed."""
-        asst_rec = _asst("claude-haiku-4-5", branch="main", content=[
-            _skill_use("t2", "code-review")
-        ])
-        asst_rec["attributionSkill"] = "ready-for-review"
-        _write_jsonl(fake_projects / "s2.jsonl", [asst_rec])
-        out = self._run(capsys)
-        # Routed pair must appear in the ROUTED PAIRS section with count 1
-        pair_lines = [ln for ln in out.splitlines() if "ready-for-review -> code-review" in ln]
-        assert pair_lines, "ready-for-review -> code-review pair line not found in output"
-        assert ": 1" in pair_lines[0], f"expected count=1 in pair line: {pair_lines[0]!r}"
-
-    def test_routed_column_count_correct(self, fake_projects, capsys):
-        """Routed invocation increments the routed column and not top-level."""
-        asst_rec = _asst("claude-haiku-4-5", branch="main", content=[
-            _skill_use("t3", "plan-review")
-        ])
-        asst_rec["attributionSkill"] = "plan-it"
-        _write_jsonl(fake_projects / "s3.jsonl", [asst_rec])
-        out = self._run(capsys)
-        cols = _table_cols(out, header_contains="user-slash", row_contains="plan-review", row_startswith=True)
-        assert int(cols["top-level"]) == 0, f"expected top-level=0, got: {cols}"
-        assert int(cols["routed"]) >= 1, f"expected routed≥1, got: {cols}"
-
-    def test_slash_invocation_counted(self, fake_projects, capsys):
-        """User record whose content contains <command-name>/plan-it</command-name> → user-slash count."""
-        user_rec = _user_msg(
-            "<command-message>plan-it</command-message>\n<command-name>/plan-it</command-name>",
-            branch="main",
-        )
-        _write_jsonl(fake_projects / "s4.jsonl", [user_rec])
-        out = self._run(capsys)
-        # plan-it must appear in the table; slash column should be ≥1
-        assert "plan-it" in out
-        cols = _table_cols(out, header_contains="user-slash", row_contains="plan-it", row_startswith=True)
-        assert int(cols["user-slash"]) >= 1, f"expected slash≥1, got: {cols}"
-
-    def test_sidechain_excluded(self, fake_projects, capsys):
-        """Sidechain assistant records are not counted in any bucket."""
-        asst_rec = _asst("claude-opus-4-7", branch="main", sidechain=True, content=[
-            _skill_use("t5", "code-review")
-        ])
-        _write_jsonl(fake_projects / "s5.jsonl", [asst_rec])
-        out = self._run(capsys)
-        # No non-sidechain invocations → no data → "No skill invocations found."
-        assert "No skill invocations found." in out
-
-    def test_routed_pair_grouping(self, fake_projects, capsys):
-        """Two records both with attributionSkill='ready-for-review' and skill='code-review'
-        → routed_pairs contains (ready-for-review, code-review): 2."""
-        rec1 = _asst("claude-haiku-4-5", branch="main", content=[_skill_use("t6a", "code-review")])
-        rec1["attributionSkill"] = "ready-for-review"
-        rec2 = _asst("claude-haiku-4-5", branch="main", content=[_skill_use("t6b", "code-review")])
-        rec2["attributionSkill"] = "ready-for-review"
-        _write_jsonl(fake_projects / "s6.jsonl", [rec1, rec2])
-        out = self._run(capsys)
-        # The pair should appear exactly once in the routed pairs section with count 2
-        pair_lines = [ln for ln in out.splitlines() if "ready-for-review -> code-review" in ln]
-        assert len(pair_lines) == 1, f"Expected exactly one pair line, got: {pair_lines}"
-        assert ": 2" in pair_lines[0], f"Expected count=2 in pair line: {pair_lines[0]!r}"
-
-    def test_routed_only_candidate_in_summary(self, fake_projects, capsys):
-        """A skill with only routed invocations appears in the 'Routed-only candidates' section."""
-        rec = _asst("claude-haiku-4-5", branch="main", content=[_skill_use("t7", "agent-review")])
-        rec["attributionSkill"] = "code-review"
-        _write_jsonl(fake_projects / "s7.jsonl", [rec])
-        out = self._run(capsys)
-        assert "Routed-only candidates" in out, f"section header not found in output: {out!r}"
-        assert "agent-review" in out
-        # agent-review must appear in the routed-only section, not load-bearing
-        routed_only_start = out.find("Routed-only candidates")
-        slash_only_start = out.find("Slash-only candidates")
-        assert routed_only_start != -1, "Routed-only candidates section not found"
-        assert slash_only_start != -1, "Slash-only candidates section not found"
-        routed_only_section = out[routed_only_start:slash_only_start]
-        assert "agent-review" in routed_only_section
-
-    def test_load_bearing_in_summary(self, fake_projects, capsys):
-        """A skill with top-level invocations appears in the 'Load-bearing' section."""
-        rec = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("t8", "skill-review")])
-        _write_jsonl(fake_projects / "s8.jsonl", [rec])
-        out = self._run(capsys)
-        load_bearing_start = out.find("Load-bearing")
-        routed_only_start = out.find("Routed-only candidates")
-        assert load_bearing_start != -1, "Load-bearing section not found"
-        assert routed_only_start != -1, "Routed-only candidates section not found"
-        load_bearing_section = out[load_bearing_start:routed_only_start]
-        assert "skill-review" in load_bearing_section
-
-    def test_slash_only_candidate_in_summary(self, fake_projects, capsys):
-        """A skill with only slash invocations appears in the 'Slash-only candidates' section."""
-        user_rec = _user_msg(
-            "<command-name>/handoff</command-name>",
-            branch="main",
-        )
-        _write_jsonl(fake_projects / "s9.jsonl", [user_rec])
-        out = self._run(capsys)
-        slash_only_start = out.find("Slash-only candidates")
-        assert slash_only_start != -1, "Slash-only candidates section not found"
-        slash_only_section = out[slash_only_start:]
-        assert "handoff" in slash_only_section
-
-    def test_no_invocations_prints_not_found(self, fake_projects, capsys):
-        """Empty corpus prints 'No skill invocations found.'"""
-        # Write a session with only a Bash call — no Skill tool_use or slash
-        _write_jsonl(fake_projects / "s_empty.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", content=[
-                _bash_use("b1", "git status")
-            ])
-        ])
-        out = self._run(capsys)
-        assert "No skill invocations found." in out
-
-    def test_projects_filter_restricts_to_named_project(self, tmp_path, monkeypatch, capsys):
-        """--projects filter causes only the named project dir to be scanned."""
-        projects = tmp_path / "projects"
-        proj_a = projects / "-home-user-repoA"
-        proj_b = projects / "-home-user-repoB"
-        proj_a.mkdir(parents=True)
-        proj_b.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        # repoA has a skill invocation; repoB has a different skill
-        rec_a = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("ta1", "code-review")])
-        rec_b = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("tb1", "plan-review")])
-        _write_jsonl(proj_a / "s_a.jsonl", [rec_a])
-        _write_jsonl(proj_b / "s_b.jsonl", [rec_b])
-        # Filter to repoA only
-        args = argparse.Namespace(projects="-home-user-repoA")
-        _mod.cmd_skill_invocation(args)
-        out = capsys.readouterr().out
-        assert "code-review" in out, "repoA skill not found"
-        assert "plan-review" not in out, "repoB skill leaked through the project filter"
-
-    def test_empty_skill_field_in_tool_use_skipped(self, fake_projects, capsys):
-        """Skill tool_use with empty or absent input.skill is not counted."""
-        rec_empty = _asst("claude-sonnet-4-6", branch="main", content=[
-            {"type": "tool_use", "id": "te1", "name": "Skill", "input": {"skill": ""}},
-        ])
-        rec_absent = _asst("claude-sonnet-4-6", branch="main", content=[
-            {"type": "tool_use", "id": "te2", "name": "Skill", "input": {}},
-        ])
-        _write_jsonl(fake_projects / "s_empty_skill.jsonl", [rec_empty, rec_absent])
-        out = self._run(capsys)
-        assert "No skill invocations found." in out
-
-    def test_multiple_skills_in_one_assistant_record(self, fake_projects, capsys):
-        """Two Skill tool_use blocks in a single assistant record's content → both counted."""
-        rec = _asst("claude-sonnet-4-6", branch="main", content=[
-            _skill_use("tm1", "code-review"),
-            _skill_use("tm2", "plan-review"),
-        ])
-        _write_jsonl(fake_projects / "s_multi_skill.jsonl", [rec])
-        out = self._run(capsys)
-        cr_cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
-        assert int(cr_cols["top-level"]) == 1, f"code-review top-level count should be 1: {cr_cols}"
-        pr_cols = _table_cols(out, header_contains="user-slash", row_contains="plan-review", row_startswith=True)
-        assert int(pr_cols["top-level"]) == 1, f"plan-review top-level count should be 1: {pr_cols}"
-
-    def test_multiple_slash_tags_in_one_user_record(self, fake_projects, capsys):
-        """Two <command-name> tags in a single user record → both skill names counted in slash column."""
-        user_rec = _user_msg(
-            "<command-name>/plan-it</command-name>\n<command-name>/code-review</command-name>",
-            branch="main",
-        )
-        _write_jsonl(fake_projects / "s_multi_slash.jsonl", [user_rec])
-        out = self._run(capsys)
-        pi_cols = _table_cols(out, header_contains="user-slash", row_contains="plan-it", row_startswith=True)
-        assert int(pi_cols["user-slash"]) >= 1, f"plan-it slash count should be ≥1: {pi_cols}"
-        cr_cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
-        assert int(cr_cols["user-slash"]) >= 1, f"code-review slash count should be ≥1: {cr_cols}"
-
-    def test_slash_detection_with_list_form_user_content(self, fake_projects, capsys):
-        """User record whose content is a list-of-blocks → slash command still detected via _content_text."""
-        user_rec = {
-            "type": "user",
-            "gitBranch": "main",
-            "message": {
-                "content": [
-                    {"type": "text", "text": "<command-name>/plan-it</command-name>"},
-                ]
-            },
-        }
-        _write_jsonl(fake_projects / "s_list_content.jsonl", [user_rec])
-        out = self._run(capsys)
-        assert "plan-it" in out
-        cols = _table_cols(out, header_contains="user-slash", row_contains="plan-it", row_startswith=True)
-        assert int(cols["user-slash"]) >= 1, f"plan-it slash count should be ≥1: {cols}"
-
-    def test_mixed_top_and_routed_in_same_session(self, fake_projects, capsys):
-        """A session with both top-level and routed calls for the same skill tallies both columns."""
-        top_rec = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("t10a", "code-review")])
-        # No attributionSkill → top-level
-        routed_rec = _asst("claude-haiku-4-5", branch="main", content=[_skill_use("t10b", "code-review")])
-        routed_rec["attributionSkill"] = "ready-for-review"
-        _write_jsonl(fake_projects / "s10.jsonl", [top_rec, routed_rec])
-        out = self._run(capsys)
-        cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
-        assert int(cols["top-level"]) == 1, f"expected top-level=1, got: {cols}"
-        assert int(cols["routed"]) == 1, f"expected routed=1, got: {cols}"
-        assert int(cols["total"]) == 2, f"expected total=2, got: {cols}"
-
-    def test_sidechain_user_records_excluded_from_slash(self, fake_projects, capsys):
-        """User records with isSidechain=True are not scanned for slash invocations."""
-        sidechain_user = {
-            "type": "user",
-            "isSidechain": True,
-            "gitBranch": "main",
-            "message": {"content": "<command-name>/code-review</command-name>"},
-        }
-        _write_jsonl(fake_projects / "s_sidechain_user.jsonl", [sidechain_user])
-        out = self._run(capsys)
-        assert "No skill invocations found." in out
-
-    def test_sidechain_user_excluded_main_thread_user_counted(self, fake_projects, capsys):
-        """Mixed session: sidechain user slash is excluded, main-thread user slash is counted."""
-        sidechain_user = {
-            "type": "user",
-            "isSidechain": True,
-            "gitBranch": "main",
-            "message": {"content": "<command-name>/plan-review</command-name>"},
-        }
-        main_user = _user_msg("<command-name>/code-review</command-name>", branch="main")
-        _write_jsonl(fake_projects / "s_sidechain_mixed.jsonl", [sidechain_user, main_user])
-        out = self._run(capsys)
-        assert "code-review" in out, "main-thread slash should be counted"
-        assert "plan-review" not in out, "sidechain slash should be excluded"
-        cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
-        assert int(cols["user-slash"]) == 1, f"expected slash=1, got: {cols}"
-
-    def test_multiple_skill_blocks_on_routed_record(self, fake_projects, capsys):
-        """An attributed record with two Skill tool_use blocks counts both as routed, not top-level."""
-        rec = _asst("claude-haiku-4-5", branch="main", content=[
-            _skill_use("tr1", "code-review"),
-            _skill_use("tr2", "plan-review"),
-        ])
-        rec["attributionSkill"] = "ready-for-review"
-        _write_jsonl(fake_projects / "s_multi_routed.jsonl", [rec])
-        out = self._run(capsys)
-        cr_cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
-        assert int(cr_cols["top-level"]) == 0, f"code-review top-level should be 0: {cr_cols}"
-        assert int(cr_cols["routed"]) == 1, f"code-review routed should be 1: {cr_cols}"
-        pr_cols = _table_cols(out, header_contains="user-slash", row_contains="plan-review", row_startswith=True)
-        assert int(pr_cols["top-level"]) == 0, f"plan-review top-level should be 0: {pr_cols}"
-        assert int(pr_cols["routed"]) == 1, f"plan-review routed should be 1: {pr_cols}"
-
-    def test_cross_project_aggregation(self, tmp_path, monkeypatch, capsys):
-        """Default glob aggregates counts across multiple project directories."""
-        projects = tmp_path / "projects"
-        proj_a = projects / "-home-user-repoA"
-        proj_b = projects / "-home-user-repoB"
-        proj_a.mkdir(parents=True)
-        proj_b.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        rec_a = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("tc1", "code-review")])
-        rec_b = _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("tc2", "code-review")])
-        _write_jsonl(proj_a / "s_a.jsonl", [rec_a])
-        _write_jsonl(proj_b / "s_b.jsonl", [rec_b])
-        args = argparse.Namespace(projects="*")
-        _mod.cmd_skill_invocation(args)
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="user-slash", row_contains="code-review", row_startswith=True)
-        assert int(cols["top-level"]) == 2, f"expected 2 top-level from both projects: {cols}"
-
-
-# ---------------------------------------------------------------------------
-# skill-invocation: --branches, --include-subagents, name normalization
-# ---------------------------------------------------------------------------
-
-
-def _skill_inv_args(*, projects="*", branches=None, include_subagents=False):
-    """Args object for cmd_skill_invocation. projects='*' takes the explicit-glob
-    escape hatch, bypassing git derivation — the default for cases that only
-    exercise counting/filtering logic on fake_projects data."""
-    return argparse.Namespace(
-        projects=projects, branches=branches, include_subagents=include_subagents
-    )
-
-
-class TestSkillInvocationScoping:
-    """Covers the branch/subagent scoping the procedural-fidelity consumer needs.
-
-    The default (no flags) path is pinned by TestSkillInvocation above; these
-    cases assert the opt-in behavior and that enabling it does not change what
-    the default reports. They pass projects='*' (explicit escape hatch) so the
-    git-derivation path is exercised separately in TestSkillInvocationRepoScope.
-    """
-
-    def _run(self, capsys, **kw):
-        _mod.cmd_skill_invocation(_skill_inv_args(**kw))
-        return capsys.readouterr().out
-
-    def test_branch_filter_excludes_other_branches(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="wanted", content=[_skill_use("b1", "code-review")]),
-            _asst("claude-sonnet-4-6", branch="other", content=[_skill_use("b2", "plan-review")]),
-        ])
-        out = self._run(capsys, branches="wanted")
-        assert "code-review" in out, "on-branch skill should be counted"
-        assert "plan-review" not in out, "off-branch skill must be excluded"
-
-    def test_branch_filter_accepts_comma_separated_list(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="b-one", content=[_skill_use("m1", "code-review")]),
-            _asst("claude-sonnet-4-6", branch="b-two", content=[_skill_use("m2", "plan-review")]),
-            _asst("claude-sonnet-4-6", branch="b-three", content=[_skill_use("m3", "handoff")]),
-        ])
-        out = self._run(capsys, branches="b-one,b-two")
-        assert "code-review" in out and "plan-review" in out
-        assert "handoff" not in out, "branch outside the list must be excluded"
-
-    def test_branch_filter_applies_to_slash_invocations(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "s.jsonl", [
-            _user_msg("<command-name>/plan-it</command-name>", branch="wanted"),
-            _user_msg("<command-name>/handoff</command-name>", branch="other"),
-        ])
-        out = self._run(capsys, branches="wanted")
-        assert "plan-it" in out
-        assert "handoff" not in out, "off-branch slash invocation must be excluded"
-
-    def test_unfiltered_run_still_counts_records_without_gitbranch(self, fake_projects, capsys):
-        """A record with no gitBranch is counted when no --branches filter is given —
-        guards the default-output regression noted in the plan."""
-        rec = {
-            "type": "assistant",
-            "message": {"model": "claude-sonnet-4-6", "content": [_skill_use("nb", "code-review")]},
-        }
-        _write_jsonl(fake_projects / "s.jsonl", [rec])
-        out = self._run(capsys)
-        assert "code-review" in out, "branchless record must still count when unfiltered"
-
-    def test_subagent_invocation_ignored_by_default(self, fake_projects, capsys):
-        session_id = "sess-sub"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [_asst("claude-opus-4-7", branch="main")])
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="main", sidechain=True,
-                  content=[_skill_use("sa1", "code-review")]),
-        ])
-        out = self._run(capsys)
-        assert "No skill invocations found." in out
-
-    def test_include_subagents_reports_sidechain_row(self, fake_projects, capsys):
-        session_id = "sess-sub"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [_asst("claude-opus-4-7", branch="main")])
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="main", sidechain=True,
-                  content=[_skill_use("sa1", "code-review")]),
-        ])
-        out = self._run(capsys, include_subagents=True)
-        cols = _table_cols(out, header_contains="thread", row_contains="code-review",
-                           row_startswith=True)
-        assert cols["thread"] == "sidechain", f"expected sidechain thread row: {cols}"
-        assert int(cols["top-level"]) == 1, f"expected 1 sidechain invocation: {cols}"
-
-    def test_main_and_sidechain_kept_on_separate_rows(self, fake_projects, capsys):
-        session_id = "sess-both"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-opus-4-7", branch="main", content=[_skill_use("m1", "code-review")]),
-        ])
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="main", sidechain=True,
-                  content=[_skill_use("s1", "code-review")]),
-        ])
-        out = self._run(capsys, include_subagents=True)
-        rows = [ln for ln in out.splitlines() if ln.startswith("code-review")]
-        assert len(rows) == 2, f"expected separate main and sidechain rows, got: {rows}"
-        # The thread value is the second whitespace-delimited column; compare on the
-        # parsed token rather than a padded-substring match, which would break on a
-        # benign column-width change.
-        threads = {r.split()[1] for r in rows}
-        assert threads == {"main", "sidechain"}, f"expected one main and one sidechain row, got: {rows}"
-
-    def test_thread_column_absent_without_flag(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("t1", "code-review")]),
-        ])
-        out = self._run(capsys)
-        header = [ln for ln in out.splitlines() if "user-slash" in ln][0]
-        assert "thread" not in header, f"default output must not gain a thread column: {header!r}"
-
-    def test_branch_filter_composes_with_include_subagents(self, fake_projects, capsys):
-        session_id = "sess-mix"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [_asst("claude-opus-4-7", branch="wanted")])
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="wanted", sidechain=True,
-                  content=[_skill_use("s1", "code-review")]),
-            _asst("claude-sonnet-4-6", branch="other", sidechain=True,
-                  content=[_skill_use("s2", "plan-review")]),
-        ])
-        out = self._run(capsys, branches="wanted", include_subagents=True)
-        assert "code-review" in out
-        assert "plan-review" not in out, "off-branch subagent invocation must be excluded"
-
-
-class TestSkillInvocationNameNormalization:
-    """Worktree-qualified and colon-prefixed skill-name handling (row hygiene)."""
-
-    def _run(self, capsys, **kw):
-        _mod.cmd_skill_invocation(_skill_inv_args(**kw))
-        return capsys.readouterr().out
-
-    def test_worktree_qualified_name_collapses_to_bare(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", content=[
-                _skill_use("c1", ".claude/worktrees/b1/claude:code-review"),
-                _skill_use("c2", "claude:code-review"),
-            ]),
-        ])
-        out = self._run(capsys)
-        rows = [ln for ln in out.splitlines() if ln.startswith("claude:code-review")]
-        assert len(rows) == 1, f"expected one collapsed row, got: {rows}"
-        cols = _table_cols(out, header_contains="user-slash",
-                           row_contains="claude:code-review", row_startswith=True)
-        assert int(cols["top-level"]) == 2, f"both spellings should sum into one row: {cols}"
-        assert "worktrees" not in out, "path fragment must not survive normalization"
-
-    def test_plugin_prefix_preserved(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main",
-                  content=[_skill_use("p1", "skill-management:skill-review")]),
-        ])
-        out = self._run(capsys)
-        assert "skill-management:skill-review" in out, "plugin qualifier must be preserved"
-
-    def test_attribution_parent_normalized_in_routed_pairs(self, fake_projects, capsys):
-        """The ROUTED PAIRS parent is normalized too, so a worktree-qualified
-        attributionSkill does not carry its path into output."""
-        rec = _asst("claude-sonnet-4-6", branch="main",
-                    content=[_skill_use("r1", "code-review")])
-        rec["attributionSkill"] = ".claude/worktrees/some-branch/claude:ready-for-review"
-        _write_jsonl(fake_projects / "s.jsonl", [rec])
-        out = self._run(capsys)
-        assert "ready-for-review -> code-review" in out, "normalized pair should appear"
-        assert "worktrees" not in out, "attribution path fragment must not survive"
-
-
-class TestSkillInvocationProvenance:
-    """Only input['skill'] is extracted — never input['args'], which carries
-    absolute paths even for an in-scope session's own record. Scoping the read to
-    this repo cannot prevent this leak (the path is inside a dir that IS in
-    scope), so the extract-only-skill rule is its own supporting invariant and
-    needs its own regression test."""
-
-    def test_args_value_never_appears_in_output(self, fake_projects, capsys):
-        skill_with_args = {
-            "type": "tool_use", "id": "a1", "name": "Skill",
-            "input": {"skill": "code-review", "args": "/abs/path/secret-name"},
-        }
-        _write_jsonl(fake_projects / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", content=[skill_with_args]),
-        ])
-        _mod.cmd_skill_invocation(_skill_inv_args())
-        out = capsys.readouterr().out
-        assert "code-review" in out, "the skill name must still be counted"
-        assert "secret-name" not in out, "input['args'] value must never reach output"
-        assert "/abs/path" not in out, "no fragment of input['args'] may reach output"
-
-
-class TestSkillInvocationRepoScope:
-    """The repo-scoped default (--projects unset) derives this repo's worktree
-    slugs via git and fails closed. subprocess.run is stubbed at the module seam
-    used by TestPrLink, so no real git repo is needed."""
-
-    def _worktree_porcelain(self, *paths):
-        return "\n".join(f"worktree {p}\nHEAD 0000\nbranch refs/heads/x\n" for p in paths)
-
-    def test_scoped_default_reads_only_this_repos_dirs(self, tmp_path, monkeypatch, capsys):
-        projects = tmp_path / "projects"
-        mine = projects / "-repo-main"
-        theirs = projects / "-other-project"
-        mine.mkdir(parents=True)
-        theirs.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        _write_jsonl(mine / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("x1", "code-review")]),
-        ])
-        _write_jsonl(theirs / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("x2", "plan-review")]),
-        ])
-        # cwd "/repo/main" maps via the real _path_to_project_slug to "-repo-main"
-        # (only '/' and '.' become '-'); git lists that one worktree. Let the real
-        # function run — a hand-copied lambda would freeze it against future drift.
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
-
-        def fake_run(cmd, *a, **k):
-            if cmd[:3] == ["git", "worktree", "list"]:
-                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/repo/main"), "")
-            assert cmd == ["git", "rev-parse", "--show-toplevel"]
-            return subprocess.CompletedProcess(cmd, 0, "/repo/main\n", "")
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
-        out = capsys.readouterr().out
-        assert "code-review" in out, "in-scope skill must appear"
-        assert "plan-review" not in out, "another project's skill must not appear"
-
-    def test_fail_closed_when_git_unavailable(self, fake_projects, monkeypatch, capsys):
-        """git failing must exit non-zero with NOTHING on stdout — not fall back to '*'."""
-        def boom(cmd, *a, **k):
-            raise FileNotFoundError("git")
-        monkeypatch.setattr(subprocess, "run", boom)
-        with pytest.raises(SystemExit):
-            _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
-        captured = capsys.readouterr()
-        assert captured.out == "", "fail-closed path must print nothing to stdout"
-        assert "refusing" in captured.err.lower(), "should explain the refusal on stderr"
-
-    def test_fail_closed_when_cwd_not_in_worktrees(self, fake_projects, monkeypatch, capsys):
-        """git succeeds but resolves a repo unrelated to cwd (GIT_DIR / submodule):
-        the cwd-not-in-slugs guard must fail closed."""
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/somewhere/else")
-
-        def fake_run(cmd, *a, **k):
-            return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/a/foreign/repo"), "")
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        with pytest.raises(SystemExit):
-            _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
-        assert capsys.readouterr().out == "", "fail-closed path must print nothing to stdout"
-
-    def test_explicit_projects_never_invokes_git(self, fake_projects, monkeypatch, capsys):
-        """The escape hatch: an explicit --projects must not touch the git derivation."""
-        def boom(cmd, *a, **k):
-            raise AssertionError("git must not be called when --projects is explicit")
-        monkeypatch.setattr(subprocess, "run", boom)
-        _write_jsonl(fake_projects / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("e1", "code-review")]),
-        ])
-        # Must not raise AssertionError from boom, and must produce output.
-        _mod.cmd_skill_invocation(argparse.Namespace(projects="*", branches=None, include_subagents=False))
-        assert "code-review" in capsys.readouterr().out
-
-    def test_scope_matches_by_literal_name_not_glob(self, tmp_path, monkeypatch, capsys):
-        """A derived slug is matched as a literal directory name, not a glob. A
-        slug containing a glob metacharacter (`*`/`?`/`[` in any path component)
-        must not widen the read to a sibling project dir the wildcard would
-        otherwise match — string equality does not; Path.glob would."""
-        projects = tmp_path / "projects"
-        mine = projects / "-r*-main"       # in-scope slug carries a '*'
-        theirs = projects / "-rX-main"     # a wildcard on 'mine' would match this
-        mine.mkdir(parents=True)
-        theirs.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        _write_jsonl(mine / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("y1", "code-review")]),
-        ])
-        _write_jsonl(theirs / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("y2", "plan-review")]),
-        ])
-        # The real _path_to_project_slug maps "/r*/main" -> "-r*-main"
-        # ('/' and '.' -> '-'; the '*' is preserved), so no monkeypatch is needed —
-        # letting it run is what makes this a real test of the '*' surviving into a
-        # slug and still being matched literally.
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/r*/main")
-
-        def fake_run(cmd, *a, **k):
-            if cmd[:3] == ["git", "worktree", "list"]:
-                return subprocess.CompletedProcess(cmd, 0, self._worktree_porcelain("/r*/main"), "")
-            assert cmd == ["git", "rev-parse", "--show-toplevel"]
-            return subprocess.CompletedProcess(cmd, 0, "/r*/main\n", "")
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
-        out = capsys.readouterr().out
-        assert "code-review" in out, "the exact-name dir must be read"
-        assert "plan-review" not in out, "a glob metacharacter must not widen the match to a sibling dir"
-
-    def test_multiple_worktrees_all_in_scope(self, tmp_path, monkeypatch, capsys):
-        """git worktree list returns main + a linked worktree, and cwd is the
-        *linked* one (a non-first entry). Both of this repo's worktree project dirs
-        must contribute — not just the first — which a first-match-only bug in the
-        slug list would break."""
-        projects = tmp_path / "projects"
-        main_dir = projects / "-repo"                        # slug of /repo
-        linked_dir = projects / "-repo--claude-worktrees-feat"  # slug of the linked worktree
-        main_dir.mkdir(parents=True)
-        linked_dir.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        _write_jsonl(main_dir / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", content=[_skill_use("m1", "code-review")]),
-        ])
-        _write_jsonl(linked_dir / "s.jsonl", [
-            _asst("claude-sonnet-4-6", branch="feat", content=[_skill_use("l1", "handoff")]),
-        ])
-        # cwd is the linked worktree (the second git entry), not the main one.
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/.claude/worktrees/feat")
-
-        def fake_run(cmd, *a, **k):
-            if cmd[:3] == ["git", "worktree", "list"]:
-                return subprocess.CompletedProcess(
-                    cmd, 0,
-                    self._worktree_porcelain("/repo", "/repo/.claude/worktrees/feat"), "",
-                )
-            assert cmd == ["git", "rev-parse", "--show-toplevel"]
-            return subprocess.CompletedProcess(cmd, 0, "/repo/.claude/worktrees/feat\n", "")
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        _mod.cmd_skill_invocation(argparse.Namespace(projects=None, branches=None, include_subagents=False))
-        out = capsys.readouterr().out
-        assert "code-review" in out, "the main worktree's skill must appear"
-        assert "handoff" in out, "the linked worktree's skill must appear"
 
 
 class TestRepoScopedProjectSlugsGuard:
@@ -6530,6 +5624,44 @@ class TestBuildParser:
         with pytest.raises(SystemExit):
             parser.parse_args(["skill-invocation", "--this-repo", "--projects", "x"])
 
+    def test_bare_skill_invocation_leaves_projects_unset(self):
+        """None, not "*", is what makes skill-invocation default to this repo's worktrees."""
+        parsed = _mod.build_parser().parse_args(["skill-invocation"])
+        assert parsed.projects is None
+
+    @staticmethod
+    def _subcommand_flags(parser):
+        """Subcommand name -> its registered option strings, from the real registrar."""
+        subparsers = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+        return {name: set(sub._option_string_actions) for name, sub in subparsers.choices.items()}
+
+    def test_subcommands_with_projects_but_no_this_repo_are_the_known_exemptions(self):
+        """A subcommand silently losing --this-repo would drop out of the exclusivity walk
+        below, so the set that has --projects without it is pinned explicitly."""
+        flags = self._subcommand_flags(_mod.build_parser())
+        assert {name for name, opts in flags.items() if "--projects" in opts and "--this-repo" not in opts} == {"user-input"}
+
+    def test_every_subcommand_with_both_scope_flags_refuses_them_together(self, capsys):
+        """Walks the real registrar, so a subcommand registered later is covered automatically.
+        Asserts argparse's own refusal text: a SystemExit from a missing required flag would
+        otherwise pass for the wrong reason. Collects every offender rather than stopping at the first."""
+        parser = _mod.build_parser()
+        both_flags = [name for name, opts in self._subcommand_flags(parser).items() if {"--projects", "--this-repo"} <= opts]
+        # One subcommand per registration path: the shim's helper call, the hand-rolled group
+        # in skill_invocation.py, and a module-registered subparser.
+        assert {"buckets", "skill-invocation", "skill-pair"} <= set(both_flags)
+        not_refused = []
+        for name in both_flags:
+            try:
+                parser.parse_args([name, "--this-repo", "--projects", "x"])
+            except SystemExit:
+                refused = "not allowed with argument" in capsys.readouterr().err
+            else:
+                refused = False
+            if not refused:
+                not_refused.append(name)
+        assert not not_refused, f"accepted both flags or exited for another reason: {not_refused}"
+
     def test_this_repo_alone_parses_without_error(self):
         parser = _mod.build_parser()
         parsed = parser.parse_args(["buckets", "--this-repo"])
@@ -6681,28 +5813,6 @@ class TestIterSessionsSubagentMerge:
         _path, records = results[0]
         sidechain = [r for r in records if r.get("isSidechain")]
         assert len(sidechain) == 1, "corrupt line skipped; valid sidechain record present"
-
-
-class TestSkillPairSubagentFile:
-    def test_follower_in_subagent_file_increments_sidechain_only(self, fake_projects, capsys):
-        """Follower skill in a split subagent file (isSidechain=True) counts as Side, not Main."""
-        session_id = "sess-pair"
-        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, content=[
-                _skill_use("s1", "plan-it"),
-            ]),
-        ])
-        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
-            _asst("claude-sonnet-4-6", branch="main", ts=_TS_FIXED, sidechain=True, content=[
-                _skill_use("s2", "plan-review"),
-            ]),
-        ])
-        _mod.cmd_skill_pair(_skill_pair_args())
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
-        assert cols["Lead"] == "1"
-        assert cols["Main"] == "0"
-        assert cols["Side"] == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -6911,50 +6021,8 @@ class TestSubagentFormatContract:
 
 
 # ---------------------------------------------------------------------------
-# judgment-pair
+# _is_fresh_user_prompt (render.py)
 # ---------------------------------------------------------------------------
-
-
-def _judgment_pair_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    branches: str | None = None,
-    since: str | None = None,
-    until: str | None = None,
-    skills: str | None = None,
-    truncate_chars: int = 1000,
-    out: str | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "branches": branches,
-        "since": since,
-        "until": until,
-        "skills": skills or ",".join(_mod.REVIEW_SKILLS),
-        "truncate_chars": truncate_chars,
-        "out": out,
-    })()
-
-
-def _skill_use_rec(skill: str, ts: str, branch: str = "main", tool_id: str = "s1") -> dict:
-    """Main-thread assistant record containing a Skill tool_use.
-
-    Pass distinct tool_id values when two invocations appear in the same session
-    to match production transcript invariants (tool_use ids are unique per block).
-    """
-    return _asst("claude-sonnet-4-6", branch=branch, ts=ts, content=[_skill_use(tool_id, skill)])
-
-
-def _review_asst(text: str, ts: str, branch: str = "main") -> dict:
-    """Main-thread assistant record with plain text content."""
-    return _asst("claude-sonnet-4-6", branch=branch, ts=ts, content=[{"type": "text", "text": text}])
-
-
-def _user_reply(text: str, branch: str = "main") -> dict:
-    """Plain user message (fresh user prompt)."""
-    return _user_msg(text, branch=branch)
 
 
 class TestIsFreshUserPrompt:
@@ -7000,287 +6068,6 @@ class TestIsFreshUserPrompt:
     def test_assistant_record_returns_false(self):
         rec = _asst("claude-sonnet-4-6", branch="main")
         assert _mod._is_fresh_user_prompt(rec) is False
-
-
-class TestJudgmentPair:
-    def test_single_turn_review_emits_pair(self, fake_projects, capsys):
-        """Invocation record followed by one review text turn and a user reply emits one pair."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
-            _review_asst("Found 3 issues with the auth middleware.", "2026-05-20T10:01:00.000Z"),
-            _user_reply("Thanks, I'll fix those auth issues."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args())
-        out = capsys.readouterr().out
-        assert "Found 3 issues with the auth middleware." in out
-        assert "Thanks, I'll fix those auth issues." in out
-
-    def test_multi_turn_review_captures_last_text_turn(self, fake_projects, capsys):
-        """Among multiple assistant turns in the window, the last with non-empty text is used."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
-            _review_asst("Preamble: reviewing now.", "2026-05-20T10:00:30.000Z"),
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-20T10:00:45.000Z",
-                  content=[_bash_use("b1", "ls")]),  # tool-only, no text
-            _review_asst("Synthesis: two real issues found in cache invalidation.", "2026-05-20T10:01:00.000Z"),
-            _user_reply("Got it, will fix cache invalidation."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args())
-        out = capsys.readouterr().out
-        assert "Synthesis: two real issues found in cache invalidation." in out
-        assert "Preamble: reviewing now." not in out
-
-    def test_skill_outside_set_excluded(self, fake_projects, capsys):
-        """Invocation of a skill not in the default set produces no pair."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-20T10:00:00.000Z",
-                  content=[_skill_use("s1", "handoff")]),
-            _review_asst("Handoff summary.", "2026-05-20T10:01:00.000Z"),
-            _user_reply("OK."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args())
-        out = capsys.readouterr().out
-        assert "No judgment pairs found." in out
-
-    def test_skills_override_filters_correctly(self, fake_projects, capsys):
-        """--skills plan-review causes only the plan-review pair to be emitted."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("plan-review", "2026-05-20T10:00:00.000Z", tool_id="s1"),
-            _review_asst("Plan looks good but step 3 is ambiguous.", "2026-05-20T10:01:00.000Z"),
-            _user_reply("I'll clarify step 3."),
-            _skill_use_rec("code-review", "2026-05-20T10:10:00.000Z", tool_id="s2"),
-            _review_asst("Code has an off-by-one in the loop.", "2026-05-20T10:11:00.000Z"),
-            _user_reply("Fixing the loop now."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args(skills="plan-review"))
-        out = capsys.readouterr().out
-        assert "Plan looks good but step 3 is ambiguous." in out
-        assert "Code has an off-by-one in the loop." not in out
-        assert "I'll clarify step 3." in out
-
-    def test_sidechain_invocation_excluded(self, fake_projects, capsys):
-        """Skill tool_use on a sidechain assistant record is not detected as an invocation."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-4-6", branch="main", ts="2026-05-20T10:00:00.000Z",
-                  sidechain=True, content=[_skill_use("s1", "code-review")]),
-            _review_asst("Some review text.", "2026-05-20T10:01:00.000Z"),
-            _user_reply("Thanks."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args())
-        out = capsys.readouterr().out
-        assert "No judgment pairs found." in out
-
-    def test_tool_result_user_not_taken_as_response(self, fake_projects, capsys):
-        """A user record bearing tool_result blocks is skipped; the next real user prompt is used."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
-            _review_asst("Missing null check in parser.", "2026-05-20T10:01:00.000Z"),
-            _user_msg([_tool_result("t1", "tool output text")]),  # tool result — not a fresh prompt
-            _user_reply("I'll add the null check."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args())
-        out = capsys.readouterr().out
-        assert "I'll add the null check." in out
-        assert "tool output text" not in out
-
-    def test_ismeta_user_not_taken_as_response(self, fake_projects, capsys):
-        """A user record with isMeta=True is skipped; the next real user turn is used."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
-            _review_asst("Security issue in token validation.", "2026-05-20T10:01:00.000Z"),
-            {"type": "user", "isMeta": True,
-             "message": {"content": "meta injection"}, "gitBranch": "main"},
-            _user_reply("I'll harden the token validation."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args())
-        out = capsys.readouterr().out
-        assert "I'll harden the token validation." in out
-        assert "meta injection" not in out
-
-    def test_iscompactsummary_user_not_taken_as_response(self, fake_projects, capsys):
-        """A user record with isCompactSummary=True is skipped; the next real user turn is used."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
-            _review_asst("Duplicate logic in helper.", "2026-05-20T10:01:00.000Z"),
-            {"type": "user", "isCompactSummary": True,
-             "message": {"content": "compaction summary text"}, "gitBranch": "main"},
-            _user_reply("Extracting the duplicate now."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args())
-        out = capsys.readouterr().out
-        assert "Extracting the duplicate now." in out
-        assert "compaction summary text" not in out
-
-    def test_since_filter_excludes_old_invocation(self, fake_projects, capsys):
-        """Invocation with timestamp before --since is excluded."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-04-01T10:00:00.000Z"),
-            _review_asst("Old review output.", "2026-04-01T10:01:00.000Z"),
-            _user_reply("Response to old review."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args(since="2026-05-01"))
-        out = capsys.readouterr().out
-        assert "No judgment pairs found." in out
-
-    def test_until_filter_excludes_future_invocation(self, fake_projects, capsys):
-        """Invocation with timestamp after --until is excluded."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-06-20T10:00:00.000Z"),
-            _review_asst("Future review output.", "2026-06-20T10:01:00.000Z"),
-            _user_reply("Response to future review."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args(until="2026-06-01"))
-        out = capsys.readouterr().out
-        assert "No judgment pairs found." in out
-
-    def test_missing_timestamp_no_filter_emits_sentinel_date(self, fake_projects, capsys):
-        """Invocation with no timestamp field and no date filter emits pair with '?' date label."""
-        invocation_no_ts = {
-            "type": "assistant",
-            "message": {"content": [_skill_use("sv1", "code-review")]},
-            "gitBranch": "main",
-            # deliberately no "timestamp" key
-        }
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            invocation_no_ts,
-            _review_asst("Review emitted despite missing timestamp.", "2026-05-20T10:01:00.000Z"),
-            _user_reply("Understood."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args())
-        out = capsys.readouterr().out
-        assert "Review emitted despite missing timestamp." in out
-        assert "Understood." in out
-        assert "· ?" in out  # sentinel date label from the missing-timestamp guard
-
-    def test_no_user_response_emits_sentinel(self, fake_projects, capsys):
-        """When no user turn follows the review window, the sentinel message is shown."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
-            _review_asst("Looks good overall.", "2026-05-20T10:01:00.000Z"),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args())
-        out = capsys.readouterr().out
-        assert "(no user response — end of session)" in out
-
-    def test_truncate_chars_truncates_review_output(self, fake_projects, capsys):
-        """Review text longer than --truncate-chars is cut and suffixed with ellipsis."""
-        long_review = "X" * 50
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
-            _review_asst(long_review, "2026-05-20T10:01:00.000Z"),
-            _user_reply("Got it."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args(truncate_chars=10))
-        out = capsys.readouterr().out
-        assert "XXXXXXXXXX…" in out
-        assert "X" * 11 not in out
-
-    def test_branches_filter(self, fake_projects, capsys):
-        """--branches restricts output to sessions on the matching branch."""
-        _write_jsonl(fake_projects / "sess-main.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z", branch="main"),
-            _review_asst("Main branch review.", "2026-05-20T10:01:00.000Z", branch="main"),
-            _user_reply("Main branch reply.", branch="main"),
-        ])
-        _write_jsonl(fake_projects / "sess-feat.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z", branch="feat"),
-            _review_asst("Feature branch review.", "2026-05-20T10:01:00.000Z", branch="feat"),
-            _user_reply("Feature branch reply.", branch="feat"),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args(branches="feat"))
-        out = capsys.readouterr().out
-        assert "Feature branch review." in out
-        assert "Main branch review." not in out
-
-    def test_branches_filter_selects_by_invocation_branch_across_a_branch_change(self, fake_projects, capsys):
-        """--branches filters on the invocation record's own gitBranch, not a single
-        session-wide branch — a session whose branch changes between the invocation
-        and the user response is selected by where the invocation itself happened."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z", branch="feat"),
-            _review_asst("Review while still on feat.", "2026-05-20T10:01:00.000Z", branch="feat"),
-            _user_reply("Reply after switching to main.", branch="main"),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args(branches="feat"))
-        out_feat = capsys.readouterr().out
-        assert "Review while still on feat." in out_feat
-
-        _mod.cmd_judgment_pair(_judgment_pair_args(branches="main"))
-        out_main = capsys.readouterr().out
-        assert "No judgment pairs found." in out_main
-
-    def test_out_path_writes_to_file(self, fake_projects, capsys, tmp_path):
-        """--out writes the pair block to the specified file instead of stdout,
-        with the resolved-scope header prepended so the file stays
-        self-documenting about its scope even pasted elsewhere without the
-        original terminal output."""
-        out_file = tmp_path / "output.txt"
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z"),
-            _review_asst("Logic error in retry loop.", "2026-05-20T10:01:00.000Z"),
-            _user_reply("Will fix the retry logic."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args(out=str(out_file)))
-        out_stdout = capsys.readouterr().out
-        assert out_stdout == ""  # nothing printed to stdout
-        file_content = out_file.read_text()
-        assert (
-            file_content.splitlines()[0]
-            == "JUDGMENT PAIR SOURCES (*; 1 root (no ~/.claude/transcript-config-dirs declared))"
-        )
-        assert "Logic error in retry loop." in file_content
-        assert "Will fix the retry logic." in file_content
-
-    def test_no_pairs_found_prints_message(self, fake_projects, capsys):
-        """When no matching sessions exist, 'No judgment pairs found.' is printed."""
-        _mod.cmd_judgment_pair(_judgment_pair_args())
-        out = capsys.readouterr().out
-        assert "No judgment pairs found." in out
-
-    def test_out_path_with_no_pairs_prints_to_stdout(self, fake_projects, capsys, tmp_path):
-        """--out set but no pairs found: sentinel goes to stdout, no file is created."""
-        out_file = tmp_path / "output.txt"
-        _mod.cmd_judgment_pair(_judgment_pair_args(out=str(out_file)))
-        out_stdout = capsys.readouterr().out
-        assert "No judgment pairs found." in out_stdout
-        assert not out_file.exists()
-
-    def test_back_to_back_invocations_get_distinct_outputs(self, fake_projects, capsys):
-        """Two consecutive skill invocations each get their own distinct review output block."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z", tool_id="s1"),
-            _review_asst("First review: missing validation.", "2026-05-20T10:01:00.000Z"),
-            _skill_use_rec("plan-review", "2026-05-20T10:02:00.000Z", tool_id="s2"),
-            _review_asst("Second review: plan is incomplete.", "2026-05-20T10:03:00.000Z"),
-            _user_reply("Thanks for both reviews."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args())
-        out = capsys.readouterr().out
-        # Both review texts are present.
-        assert "First review: missing validation." in out
-        assert "Second review: plan is incomplete." in out
-        # The first invocation's window closes at the second invocation, so its user
-        # response is the sentinel (no user prompt between the two skill calls).
-        assert "(no user response — end of session)" in out
-        # The second invocation's window closes at the user reply.
-        assert "Thanks for both reviews." in out
-        # Sanity: two block headers (structural, supplements content checks above).
-        assert out.count("--- REVIEW OUTPUT") == 2
-
-    def test_back_to_back_invocations_with_no_text_between(self, fake_projects, capsys):
-        """Two skill invocations with no assistant turns between: first emits '(no review text found)'."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _skill_use_rec("code-review", "2026-05-20T10:00:00.000Z", tool_id="s1"),
-            _skill_use_rec("plan-review", "2026-05-20T10:01:00.000Z", tool_id="s2"),
-            _review_asst("Plan is missing rollback steps.", "2026-05-20T10:02:00.000Z"),
-            _user_reply("Adding rollback steps now."),
-        ])
-        _mod.cmd_judgment_pair(_judgment_pair_args())
-        out = capsys.readouterr().out
-        # First invocation window is empty (no assistant turns before the next invocation).
-        assert "(no review text found)" in out
-        # Second invocation window contains the review text.
-        assert "Plan is missing rollback steps." in out
 
 
 # ---------------------------------------------------------------------------
@@ -7915,10 +6702,10 @@ def _fake_gh_pr_list_run(cmd, *a, **k):
     return subprocess.CompletedProcess(cmd, 0, "", "")
 
 
-# (cli_name, header_name, cmd_func, zero-arg args factory) for the 23
+# (cli_name, header_name, cmd_func, zero-arg args factory) for the
 # subcommands whose resolved-scope header prints unconditionally, even over
 # an empty scope. review-trace and skill-invocation print unconditionally
-# too, but carry zero-match message text and branches the other 23 don't, so
+# too, but carry zero-match message text and branches the other rows don't, so
 # they get their own tests below rather than a row here.
 _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
     ("buckets", "BUCKETS", _mod.cmd_buckets,
@@ -7950,6 +6737,7 @@ _UNCONDITIONAL_HEADER_CASES: list[tuple[str, str, object, object]] = [
     ("cost-trend", "COST TREND", _mod.cmd_cost_trend, _cost_trend_args),
     ("cache-rebuild", "CACHE REBUILD", _mod.cmd_cache_rebuild, _cache_rebuild_args),
     ("spend-over-threshold", "SPEND OVER THRESHOLD", _mod.cmd_spend_over_threshold, _spend_over_threshold_args),
+    ("rearm-backtest", "REARM BACKTEST", _mod.cmd_rearm_backtest, _rearm_backtest_args),
     ("audit-routing-shape", "AUDIT ROUTING SHAPE", _mod.cmd_audit_routing_shape, _audit_routing_shape_args),
     ("audit-routing-samples", "AUDIT ROUTING SAMPLES", _mod.cmd_audit_routing_samples, _audit_routing_samples_args),
     ("judgment-pair", "JUDGMENT PAIR", _mod.cmd_judgment_pair, _judgment_pair_args),
@@ -8221,13 +7009,13 @@ class TestRootsThreadingSpy:
         with the full roots list (not iter_sessions' single-Path shape)."""
         expected_roots = _two_declared_roots(tmp_path, monkeypatch)
         calls: list[list] = []
-        real_glob_scoped = _mod._iter_glob_scoped_sessions
+        real_glob_scoped = _mod.scope._iter_glob_scoped_sessions
 
         def spy_glob_scoped(roots, *a, **k):
             calls.append(list(roots))
             return real_glob_scoped(roots, *a, **k)
 
-        monkeypatch.setattr(_mod, "_iter_glob_scoped_sessions", spy_glob_scoped)
+        monkeypatch.setattr(_mod.scope, "_iter_glob_scoped_sessions", spy_glob_scoped)
 
         _mod.cmd_skill_invocation(_skill_inv_args())  # projects="*" -- the explicit-glob branch
 
@@ -8239,13 +7027,13 @@ class TestRootsThreadingSpy:
         roots=roots into _iter_scoped_sessions rather than defaulting."""
         expected_roots = _two_declared_roots(tmp_path, monkeypatch)
         calls: list[list | None] = []
-        real_scoped = _mod._iter_scoped_sessions
+        real_scoped = _mod.scope._iter_scoped_sessions
 
         def spy_scoped(slugs, include_subagents, roots=None):
             calls.append(list(roots) if roots is not None else None)
             return real_scoped(slugs, include_subagents, roots=roots)
 
-        monkeypatch.setattr(_mod, "_iter_scoped_sessions", spy_scoped)
+        monkeypatch.setattr(_mod.scope, "_iter_scoped_sessions", spy_scoped)
         monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
 
         def fake_git_run(cmd, *a, **k):
@@ -8267,13 +7055,13 @@ class TestRootsThreadingSpy:
         iter_sessions' documented flat-sort-over-full-paths ordering guarantee
         is unaffected by this plan at single root."""
         calls: list[Path] = []
-        real_iter_sessions = _mod.iter_sessions
+        real_iter_sessions = _mod.corpus.iter_sessions
 
         def spy_iter_sessions(projects_dir, *a, **k):
             calls.append(projects_dir)
             return real_iter_sessions(projects_dir, *a, **k)
 
-        monkeypatch.setattr(_mod, "iter_sessions", spy_iter_sessions)
+        monkeypatch.setattr(_mod.corpus, "iter_sessions", spy_iter_sessions)
 
         _mod.cmd_skill_invocation(_skill_inv_args())  # projects="*", single root (fake_projects' PROJECTS_DIR)
 
@@ -9224,7 +8012,7 @@ class TestSingleLevelProjectsGlob:
         root_b = tmp_path / "acct-b"
         root_b.mkdir()
         args = argparse.Namespace(projects="a/b", branches=None, include_subagents=False, config_dir=None)
-        monkeypatch.setattr(_mod, "_resolve_scan_roots", lambda _args: [root_a, root_b])
+        monkeypatch.setattr(_mod.scope, "resolve_scan_roots", lambda _args: [root_a, root_b])
         with pytest.raises(SystemExit) as exc:
             _mod.cmd_skill_invocation(args)
         assert exc.value.code == 2
@@ -9646,1546 +8434,8 @@ class TestBuildRedactMapDirectUnit:
 
 
 # ---------------------------------------------------------------------------
-# rearm-backtest
+# cache_miss_reason (pricing.py)
 # ---------------------------------------------------------------------------
-
-
-def _rearm_backtest_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    since: str | None = None,
-    branches: str | None = None,
-    no_redact: bool = False,
-    extra_config_dirs: list[str] | None = None,
-    spacings: str | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "since": since,
-        "branches": branches,
-        "no_redact": no_redact,
-        "extra_config_dirs": extra_config_dirs,
-        "spacings": spacings,
-    })()
-
-
-def _tool_use_asst(model: str, tool_id: str, *, output: int = 100, ts: str = "2026-05-19T10:00:00.000Z") -> dict:
-    """A priced main-thread assistant turn carrying a real Bash tool_use block
-    -- _priced's content=[] default can't exercise _hook_observable_boundaries,
-    which needs a tool_use/tool_result content shape (not just known usage) to
-    tell a tool-call-only stretch apart from a genuine user message."""
-    return _priced(model, output=output, ts=ts, content=[_bash_use(tool_id, "echo hi")])
-
-
-def _ramp_curve_from_records(*sessions_records: list[dict]) -> tuple[dict[str, dict[str, float]], int]:
-    """Build _ramp_curve_from_corpus's own input the way _rearm_backtest_report
-    does -- one _extract_rearm_session_turns call per session's raw records --
-    for TestRampCurveFromCorpus's synthetic-records tests."""
-    return _mod._ramp_curve_from_corpus(_mod._extract_rearm_session_turns(recs) for recs in sessions_records)
-
-
-class TestHookEffectiveFireThreshold:
-    def test_200k_window_model_fires_at_40pct_not_the_abs_cap(self):
-        """A 200k-context-window model's real fire point is 80,000 (40% of
-        its own window) -- well under the 1M-window arm's 150,000 cap, so
-        using the cap uniformly for every session would understate how early
-        such sessions actually get nudged today."""
-        assert _mod._hook_effective_fire_threshold("claude-sonnet-4-5") == 80_000
-
-    def test_1m_window_model_fires_at_the_abs_cap_not_40pct(self):
-        """A 1M-context-window model's 40% figure (400,000) exceeds
-        _HANDOFF_NUDGE_ABS_CAP, so the cap governs instead."""
-        assert _mod._hook_effective_fire_threshold("claude-sonnet-5") == 150_000
-
-
-class TestHookObservableBoundaries:
-    def test_tool_call_only_stretch_produces_no_mid_stretch_boundary(self):
-        """Three tool_use turns chained by tool_result-bearing user records,
-        then one genuine user message, contribute exactly one internal
-        boundary -- at position 3 (after the third turn), not one per turn --
-        since Stop only fires once the agent yields back to the user."""
-        records = [
-            _tool_use_asst("claude-sonnet-5", "t1"),
-            _user_msg([_tool_result("t1", "ok")]),
-            _tool_use_asst("claude-sonnet-5", "t2"),
-            _user_msg([_tool_result("t2", "ok")]),
-            _tool_use_asst("claude-sonnet-5", "t3"),
-            _user_msg("please continue"),
-        ]
-        assert _mod._hook_observable_boundaries(records) == [0, 3]
-
-    def test_genuine_multi_turn_conversation_produces_one_boundary_per_turn(self):
-        """Each turn immediately followed by a genuine user message
-        contributes its own boundary."""
-        records = [
-            _priced("claude-sonnet-5", output=100), _user_msg("go on"),
-            _priced("claude-sonnet-5", output=100), _user_msg("go on"),
-            _priced("claude-sonnet-5", output=100), _user_msg("go on"),
-        ]
-        assert _mod._hook_observable_boundaries(records) == [0, 1, 2, 3]
-
-    def test_session_end_with_no_trailing_user_message_still_surfaces_boundary(self):
-        """A session whose last record is an assistant turn with no further
-        user message still gets a boundary at session end -- the case
-        nudge-handoff-near-context-cap.sh's own Stop registration exists to
-        cover (docs/handoff-nudge.md: "registered on both events so a session
-        that crosses the threshold on its final turn... still gets warned")."""
-        records = [
-            _user_msg("go"),
-            _priced("claude-sonnet-5", output=100),
-            _priced("claude-sonnet-5", output=100),
-        ]
-        assert _mod._hook_observable_boundaries(records) == [0, 2]
-
-
-class TestRampCurveFromCorpus:
-    def test_turn_index_bucket_edges_match_bands_including_the_gap(self):
-        """PR #605's own table never labeled turn index 10-19 (its bands jump
-        from "5-10" to "20-40"); the cascading less-than lookup this reuses
-        from _EDIT_OLD_STRING_SIZE_BUCKETS' own convention folds that range
-        into "20-40" rather than leaving it unbucketed."""
-        cases = {
-            0: "0-5", 4: "0-5",
-            5: "5-10", 9: "5-10",
-            10: "20-40", 19: "20-40", 39: "20-40",
-            40: "40-80", 79: "40-80",
-            80: "80-150", 149: "80-150",
-            150: "150-300", 299: "150-300",
-            300: "300+", 1000: "300+",
-        }
-        for turn_index, expected_label in cases.items():
-            assert _mod._ramp_curve_turn_index_bucket(turn_index) == expected_label, turn_index
-
-    def test_sane_rate_and_mean_context_on_synthetic_corpus_with_known_growth(self):
-        """A two-turn session with known input/output/context, both turns
-        landing in the '0-5' bucket, produces a hand-computed $/1k-output
-        rate and output-token-weighted mean context -- not a bounds check."""
-        recs = [
-            _priced("claude-sonnet-5", input=100_000, output=1000, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-sonnet-5", input=200_000, output=3000, ts="2026-05-19T10:01:00.000Z"),
-        ]
-        curve, total_output_tokens = _ramp_curve_from_records(recs)
-        rates = _mod._model_rates("claude-sonnet-5")
-        turn1_dollars = 100_000 / 1_000_000 * rates["input"] + 1000 / 1_000_000 * rates["output"]
-        turn2_dollars = 200_000 / 1_000_000 * rates["input"] + 3000 / 1_000_000 * rates["output"]
-        expected_rate = (turn1_dollars + turn2_dollars) / ((1000 + 3000) / 1000)
-        expected_mean_context = (100_000 * 1000 + 200_000 * 3000) / (1000 + 3000)
-        assert curve["0-5"]["rate"] == pytest.approx(expected_rate)
-        assert curve["0-5"]["mean_context"] == pytest.approx(expected_mean_context)
-        assert total_output_tokens == 1000 + 3000
-
-    def test_bucket_with_zero_turns_falls_back_to_corpus_wide_rate_not_nan(self):
-        """A corpus with data only in the '0-5' bucket still returns a
-        defined, non-NaN rate/mean_context for a bucket with zero turns
-        (e.g. '300+'), equal to the corpus-wide rate/context since '0-5' is
-        the only contributing bucket -- not a division-by-zero or NaN
-        propagating into _simulate_rearm_spacing."""
-        recs = [_priced("claude-sonnet-5", input=100_000, output=1000)]
-        curve, _total_output_tokens = _ramp_curve_from_records(recs)
-        assert curve["300+"]["rate"] == pytest.approx(curve["0-5"]["rate"])
-        assert curve["300+"]["mean_context"] == pytest.approx(curve["0-5"]["mean_context"])
-
-    def test_whole_corpus_unpriced_reports_zero_total_output_tokens(self):
-        """A corpus whose only turns are on an unpriced model can't compute
-        a real ramp curve at all -- total_output_tokens is 0, letting a
-        caller (_rearm_backtest_report) tell "genuinely cheap ramp" apart
-        from "curve couldn't be computed", which every bucket's own
-        rate/mean_context (both silently 0.0 here) can't distinguish."""
-        recs = [_priced("claude-opus-4-7", input=100_000, output=1000)]  # unpriced model
-        curve, total_output_tokens = _ramp_curve_from_records(recs)
-        assert total_output_tokens == 0
-        assert curve["0-5"]["rate"] == 0.0
-
-
-class TestSimulateRearmSpacing:
-    def test_hand_computed_dollar_total_with_a_single_split(self):
-        """One band crossing splits the session into an actual-priced prefix
-        and a ramp-priced remainder -- hand-computed against a synthetic ramp
-        curve, not a bounds check against baseline or a naive reprice."""
-        ramp_curve = {label: {"rate": 1.0, "mean_context": 0.0} for label in _mod._RAMP_CURVE_BUCKET_LABELS}
-        ramp_curve["0-5"] = {"rate": 2.0, "mean_context": 100.0}
-        turns = [
-            (0, 50, 5.0),
-            (50, 60, 6.0),      # abs=110 >= threshold(100) at boundary 2 -> split after this turn
-            (110, 10, 999.0),   # post-split turn 0: priced at ramp rate, not the (unreachable) actual 999.0
-        ]
-        boundaries = [0, 1, 2, 3]
-        total, _ctx_weighted, weight = _mod._simulate_rearm_spacing(
-            turns, boundaries, spacing=50, ramp_curve=ramp_curve, threshold=100,
-        )
-        assert total == pytest.approx(5.0 + 6.0 + (10 / 1000 * 2.0))
-        assert weight == 50 + 60 + 10
-
-    def test_two_sequential_rearms_within_one_session(self):
-        """A remainder that itself crosses a second band splits again -- the
-        compounding re-arm this feature exists to model, distinct from a
-        one-shot baseline that only ever splits once."""
-        ramp_curve = {label: {"rate": 1.0, "mean_context": 0.0} for label in _mod._RAMP_CURVE_BUCKET_LABELS}
-        turns = [
-            (0, 50, 5.0),
-            (50, 60, 6.0),       # split 1 after this turn (abs=110 >= 100)
-            (110, 10, 999.0),    # ramp-priced, turns-since-restart 0
-            (120, 200, 999.0),   # abs=320 >= 150 (100 + 1*50) -> split 2 after this turn
-            (320, 5, 999.0),     # ramp-priced again, turns-since-restart 0 (post split 2)
-        ]
-        boundaries = [0, 1, 2, 3, 4, 5]
-        total, _ctx_weighted, weight = _mod._simulate_rearm_spacing(
-            turns, boundaries, spacing=50, ramp_curve=ramp_curve, threshold=100,
-        )
-        expected = 5.0 + 6.0 + (10 / 1000 * 1.0) + (200 / 1000 * 1.0) + (5 / 1000 * 1.0)
-        assert total == pytest.approx(expected)
-        assert weight == 50 + 60 + 10 + 200 + 5
-
-    def test_response_lag_delays_the_split_point(self):
-        """response_lag_tokens shifts a band's trigger point later -- the
-        compliance-realistic model's operator-response-lag correction."""
-        ramp_curve = {label: {"rate": 5.0, "mean_context": 0.0} for label in _mod._RAMP_CURVE_BUCKET_LABELS}
-        turns = [
-            (0, 50, 5.0),
-            (50, 60, 6.0),
-            (110, 20, 7.0),
-        ]
-        boundaries = [0, 1, 2, 3]
-        total_no_lag, _c1, _w1 = _mod._simulate_rearm_spacing(
-            turns, boundaries, spacing=50, ramp_curve=ramp_curve, threshold=100, response_lag_tokens=0,
-        )
-        total_with_lag, _c2, _w2 = _mod._simulate_rearm_spacing(
-            turns, boundaries, spacing=50, ramp_curve=ramp_curve, threshold=100, response_lag_tokens=20,
-        )
-        # No lag: the crossing fires after turn index 1 (abs=110 >= 100), so
-        # turn index 2's dollars are ramp-priced (20/1000*5.0=0.1) instead of actual (7.0).
-        assert total_no_lag == pytest.approx(5.0 + 6.0 + 0.1)
-        # With a 20-token lag, that same crossing isn't detectable until
-        # abs>=120, which only happens after turn index 2 -- too late for any
-        # turn to be re-priced, so every turn keeps its actual dollars.
-        assert total_with_lag == pytest.approx(5.0 + 6.0 + 7.0)
-        assert total_with_lag > total_no_lag
-
-
-class TestParseNudgeLogEntries:
-    def test_all_three_line_shapes_are_parsed(self, tmp_path):
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text(
-            "nudged session=abc123 est=400000 model=claude-opus-5 window=1000000 event=Stop\n"
-            "schema-drift session=def456 event=UserPromptSubmit\n"
-            "handoff session=abc123\n"
-        )
-        assert _mod._parse_nudge_log_entries(log_path) == [
-            {"kind": "nudged", "session": "abc123", "est": 400000, "model": "claude-opus-5",
-             "window": 1000000, "event": "Stop"},
-            {"kind": "schema-drift", "session": "def456", "event": "UserPromptSubmit"},
-            {"kind": "handoff", "session": "abc123"},
-        ]
-
-    def test_malformed_lines_are_skipped_without_raising(self, tmp_path):
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text(
-            "not a recognized line at all\n"
-            "nudged session=abc est=not-an-int model=x window=1000000 event=Stop\n"
-            "nudged session=abc est=400000 model=x window=1000000\n"  # missing event=
-            "nudged session=abc bare-token-no-equals est=400000 model=x window=1000000 event=Stop\n"
-            "nudged session=abc est=400000 model=x window=1000000 event=Stop\n"  # valid
-        )
-        assert _mod._parse_nudge_log_entries(log_path) == [
-            {"kind": "nudged", "session": "abc", "est": 400000, "model": "x", "window": 1000000, "event": "Stop"},
-        ]
-
-    def test_missing_log_file_returns_empty_list(self, tmp_path):
-        assert _mod._parse_nudge_log_entries(tmp_path / "does-not-exist.log") == []
-
-    def test_action_block_field_is_captured_when_present(self, tmp_path):
-        """A hard-block fire's nudged line carries action=block -- captured
-        as an absent-key-by-default field, not an always-present None, so
-        an ordinary advisory line (no action= token) produces a dict with no
-        "action" key at all, matching test_all_three_line_shapes_are_parsed's
-        exact-equality assertion above."""
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text(
-            "nudged session=abc est=400000 model=x window=1000000 event=PostToolBatch action=block\n"
-        )
-        assert _mod._parse_nudge_log_entries(log_path) == [
-            {"kind": "nudged", "session": "abc", "est": 400000, "model": "x",
-             "window": 1000000, "event": "PostToolBatch", "action": "block"},
-        ]
-
-    def test_ignored_and_skills_fields_are_captured_when_present(self, tmp_path):
-        """A telemetry-era nudged line carries ignored=/skills= -- captured
-        as typed fields (ignored as int, skills as the raw comma-joined
-        string), the same optional-key style action= already uses."""
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text(
-            "nudged session=abc est=400000 model=x window=1000000 event=PostToolBatch "
-            "ignored=3 skills=handoff,memory-skill action=block\n"
-        )
-        assert _mod._parse_nudge_log_entries(log_path) == [
-            {"kind": "nudged", "session": "abc", "est": 400000, "model": "x",
-             "window": 1000000, "event": "PostToolBatch", "action": "block",
-             "ignored": 3, "skills": "handoff,memory-skill"},
-        ]
-
-    def test_pre_telemetry_line_parses_without_ignored_or_skills_keys(self, tmp_path):
-        """A `nudged` line written before the ignored=/skills= telemetry
-        addition carries neither field -- the returned dict has no
-        "ignored" or "skills" key at all, distinguishable from a live
-        session with nothing active (skills=-, ignored=0) rather than
-        conflated with it."""
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text(
-            "nudged session=abc est=400000 model=x window=1000000 event=Stop\n"
-        )
-        entries = _mod._parse_nudge_log_entries(log_path)
-        assert "ignored" not in entries[0]
-        assert "skills" not in entries[0]
-
-    def test_malformed_ignored_field_drops_only_that_key(self, tmp_path):
-        """A non-integer ignored= value doesn't discard the whole entry --
-        only the "ignored" key is left unset, matching how a pre-telemetry
-        line (missing the key entirely) is already handled. skills= is
-        unaffected, confirming the malformed field is isolated from its
-        sibling."""
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text(
-            "nudged session=abc est=400000 model=x window=1000000 event=Stop "
-            "ignored=not-an-int skills=-\n"
-        )
-        entries = _mod._parse_nudge_log_entries(log_path)
-        assert len(entries) == 1
-        assert "ignored" not in entries[0]
-        assert entries[0]["skills"] == "-"
-
-
-class TestParseNudgeLogEntriesRealHookLineContract:
-    """Fires the real nudge-handoff-near-context-cap.sh hook and feeds its
-    emitted `nudged` line straight into _parse_nudge_log_entries, rather than
-    a hand-written fixture line on each side -- a field-ordering or delimiter
-    drift between the hook's printf format and this parser could otherwise
-    pass both suites while breaking the real pipeline."""
-
-    _NUDGE_HOOK = HOOKS_DIR / "nudge-handoff-near-context-cap.sh"
-
-    @staticmethod
-    def _usage_record(total: int, *, model: str = "claude-sonnet-5") -> dict:
-        """An assistant record whose four usage fields sum to `total`,
-        matching nudge-handoff-near-context-cap.sh's own ESTIMATE
-        computation (cache_read + cache_creation + input + output tokens)."""
-        rec = _asst(model)
-        rec["message"]["usage"] = {
-            "cache_read_input_tokens": total,
-            "cache_creation_input_tokens": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-        }
-        return rec
-
-    def _fire(self, tmp_path: Path, transcript: Path, env: dict) -> subprocess.CompletedProcess:
-        payload = {
-            "session_id": "contract-session",
-            "transcript_path": str(transcript),
-            "hook_event_name": "PostToolBatch",
-        }
-        return subprocess.run(
-            [str(self._NUDGE_HOOK)], input=json.dumps(payload),
-            capture_output=True, text=True, env=env, check=False,
-        )
-
-    def test_real_hard_block_line_parses_with_ignored_and_skills_correctly_typed(self, tmp_path):
-        # claude-sonnet-5's 1M window caps its threshold at
-        # HANDOFF_NUDGE_ABS_CAP's shipped default (150000); block_at is one
-        # rearm-spacing hop past that, so the second fire is both a qualifying
-        # rearm and past the block point.
-        threshold = 150_000
-        block_at = threshold + 80_000
-        env = {**os.environ, "HOME": str(tmp_path)}
-        env.pop("CLAUDE_CONFIG_DIR", None)
-        for var in ("HANDOFF_NUDGE_ABS_CAP", "HANDOFF_NUDGE_REARM_SPACING", "HANDOFF_NUDGE_BLOCK_AFTER"):
-            env.pop(var, None)
-        env["HANDOFF_NUDGE_BLOCK_AT"] = str(block_at)
-
-        transcript = tmp_path / "t.jsonl"
-        _write_jsonl(transcript, [self._usage_record(threshold)])
-        first = self._fire(tmp_path, transcript, env)
-        assert first.returncode == 0  # first-ever crossing: always advisory
-
-        with transcript.open("a") as f:
-            f.write(json.dumps(self._usage_record(block_at)) + "\n")
-        second = self._fire(tmp_path, transcript, env)
-        assert second.returncode == 2, f"estimate reaches HANDOFF_NUDGE_BLOCK_AT={block_at}"
-
-        log_path = tmp_path / ".claude" / ".handoff-nudge.log"
-        nudged_lines = [line for line in log_path.read_text().splitlines() if line.startswith("nudged")]
-        # Pre-parse sanity tripwire on the raw log line; the parser-based
-        # assertions below are what actually validate the contract.
-        assert nudged_lines[-1].endswith("action=block")
-
-        entries = _mod._parse_nudge_log_entries(log_path)
-        block_entry = entries[-1]
-        assert block_entry["action"] == "block"
-        assert block_entry["ignored"] == 1
-        assert isinstance(block_entry["ignored"], int)
-        assert block_entry["skills"] == "-"
-
-
-class TestOperatorResponseLagFromLog:
-    def test_exact_match_join_measures_lag_past_the_fire_point(self):
-        session_traces = {"abc": [100, 200, 405_000, 410_000]}
-        log_entries = [
-            {"kind": "nudged", "session": "abc", "est": 405_000, "model": "x", "window": 1_000_000, "event": "Stop"},
-        ]
-        lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
-        assert lags == [410_000 - 405_000]
-        assert excluded == 0
-
-    def test_no_match_is_excluded_and_counted_not_silently_dropped(self):
-        session_traces = {"abc": [100, 200]}
-        log_entries = [
-            {"kind": "nudged", "session": "does-not-exist", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-        ]
-        lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
-        assert lags == []
-        assert excluded == 1
-
-    def test_first_value_at_or_above_est_is_picked_over_an_earlier_below_est_value(self):
-        """A nudged line carries no timestamp, only est= -- the join skips
-        300 (below est=400, however close) and picks 500 (index 2), the
-        trace's first value that actually reaches est. This fixture's peak-
-        from-fire-point-onward happens to land on the same lag either way a
-        fire index is chosen here (the suffix's max value dominates
-        regardless of start point), so it does not by itself distinguish
-        first-crossing from a nearest-value join -- see
-        test_post_compaction_dip_does_not_mis_join_to_a_later_closer_looking_turn
-        for the fixture that actually pins that distinction, since a
-        same-lag result requires the higher peak to be reachable from every
-        candidate start point, which a monotonically non-decreasing trace
-        (like this one) always satisfies."""
-        session_traces = {"s": [100, 300, 500]}
-        log_entries = [{"kind": "nudged", "session": "s", "est": 400, "model": "x", "window": 1, "event": "Stop"}]
-        lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
-        # First value >= est is 500 (index 2); peak at or after it is 500,
-        # so lag = 500 - 400 = 100.
-        assert lags == [100]
-        assert excluded == 0
-
-    def test_no_trace_value_reaches_est_is_excluded_not_crashing(self):
-        """A trace that never reaches the logged est (e.g. a truncated or
-        mismatched transcript) can't identify a fire turn -- excluded and
-        counted, not a false join to whichever value happens to be closest."""
-        session_traces = {"s": [100, 200, 300]}
-        log_entries = [{"kind": "nudged", "session": "s", "est": 400, "model": "x", "window": 1, "event": "Stop"}]
-        lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
-        assert lags == []
-        assert excluded == 1
-
-    def test_hard_block_entry_is_excluded_and_counted_not_measured_as_lag(self):
-        """A hard-block fire's overshoot is forced by the block itself, not
-        the voluntary operator-response lag this function measures -- an
-        action=block entry is excluded from the lag population and counted,
-        even though its session_id joins and its trace does reach est."""
-        session_traces = {"abc": [100, 200, 405_000, 410_000]}
-        log_entries = [
-            {"kind": "nudged", "session": "abc", "est": 405_000, "model": "x",
-             "window": 1_000_000, "event": "PostToolBatch", "action": "block"},
-        ]
-        lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
-        assert lags == []
-        assert excluded == 1
-
-    def test_post_compaction_dip_does_not_mis_join_to_a_later_closer_looking_turn(self):
-        """A mid-session isCompactSummary drop can produce a later turn
-        whose abs-token value is numerically closer to est than the true,
-        earlier first-crossing turn -- the join must still land on the first
-        turn that actually reaches est, not the nearest-looking one after
-        the dip."""
-        session_traces = {"abc": [100, 450_000, 900_000, 60_000, 200_000, 449_000]}
-        log_entries = [
-            {"kind": "nudged", "session": "abc", "est": 400_000, "model": "x", "window": 1, "event": "Stop"},
-        ]
-        lags, excluded = _mod._operator_response_lag_from_log(session_traces, log_entries)
-        # True first crossing is index 1 (450_000 >= est); the peak at or
-        # after it is 900_000, so lag = 900_000 - 400_000 = 500_000. A
-        # nearest-est join would instead pick index 5 (449_000, closer to
-        # est than 450_000 is) and understate the lag to 49_000.
-        assert lags == [500_000]
-        assert excluded == 0
-
-
-class TestNudgeConversionFromLog:
-    """Pure unit tests against _nudge_conversion_from_log, mirroring
-    TestOperatorResponseLagFromLog's own convention for its sibling
-    function -- plain session_traces/log_entries_by_root dicts, no
-    filesystem or report-rendering plumbing. Pins the pre-registered
-    classification from .claude/plans/handoff-nudge-deep-tail-lever.md."""
-
-    def test_nudged_then_handoff_is_voluntary(self):
-        session_traces = {"s": [100]}
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-            {"kind": "handoff", "session": "s"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        assert result["voluntary"] == 1
-        assert result["forced"] == 0
-        assert result["blocked_no_handoff"] == 0
-        assert result["no_compliance"] == 0
-        assert result["dropped"] == 0
-
-    def test_block_before_handoff_is_forced(self):
-        session_traces = {"s": [100]}
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-            {"kind": "nudged", "session": "s", "est": 200, "model": "x", "window": 1,
-             "event": "PostToolBatch", "action": "block"},
-            {"kind": "handoff", "session": "s"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        assert result["forced"] == 1
-        assert result["voluntary"] == 0
-
-    def test_block_after_handoff_is_still_voluntary(self):
-        """The classification's 'precedes' language is load-bearing: a block
-        that fires only after a handoff already ran -- the session kept
-        working and later hit the block -- must not be misclassified as
-        forced just because a block line exists somewhere in the log."""
-        session_traces = {"s": [100]}
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-            {"kind": "handoff", "session": "s"},
-            {"kind": "nudged", "session": "s", "est": 200, "model": "x", "window": 1,
-             "event": "PostToolBatch", "action": "block"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        assert result["voluntary"] == 1
-        assert result["forced"] == 0
-
-    def test_second_handoff_line_does_not_flip_classification_to_forced(self):
-        """Classification is decided against the FIRST handoff line reached,
-        per this function's own documented contract -- a block sandwiched
-        between two handoff lines must not flip an otherwise-voluntary
-        session to forced."""
-        session_traces = {"s": [100]}
-        log_entries_by_root = {"root": [
-            {"kind": "handoff", "session": "s"},
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1,
-             "event": "PostToolBatch", "action": "block"},
-            {"kind": "handoff", "session": "s"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        assert result["voluntary"] == 1
-        assert result["forced"] == 0
-
-    def test_block_with_no_handoff_is_its_own_bucket_not_folded_into_forced(self):
-        session_traces = {"s": [100]}
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1,
-             "event": "PostToolBatch", "action": "block"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        assert result["blocked_no_handoff"] == 1
-        assert result["forced"] == 0
-        assert result["voluntary"] == 0
-
-    def test_nudged_only_is_no_compliance_observed(self):
-        session_traces = {"s": [100]}
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        assert result["no_compliance"] == 1
-
-    def test_handoff_session_without_in_scope_trace_is_dropped(self):
-        """Mirrors test_excluded_operator_lag_count_is_reported: a session
-        with no surviving in-scope transcript is excluded and counted, not
-        silently discarded -- even though it has both a nudged and a
-        handoff line."""
-        session_traces: dict = {}
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-            {"kind": "handoff", "session": "s"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        assert result["dropped"] == 1
-        assert result["voluntary"] == 0
-
-    def test_nudged_only_session_without_in_scope_trace_is_dropped_not_no_compliance(self):
-        """The mirror orphan shape: a nudged-only session with no in-scope
-        trace must land in dropped, not inflate no_compliance."""
-        session_traces: dict = {}
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        assert result["dropped"] == 1
-        assert result["no_compliance"] == 0
-
-    def test_entry_with_missing_session_field_is_silently_unaccounted_for(self):
-        """A missing/empty `session` skips the `if session:` guard entirely,
-        landing in no bucket (not even `dropped`)."""
-        session_traces = {"s": [100]}
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-            {"kind": "handoff", "session": "s"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        total_classified = (
-            result["voluntary"] + result["forced"] + result["blocked_no_handoff"]
-            + result["no_compliance"] + result["dropped"]
-        )
-        assert total_classified == 1  # only the "s" session is accounted for anywhere
-        assert result["voluntary"] == 1  # "s" itself still classifies normally
-
-    def test_missing_ignored_field_is_counted_not_defaulted_to_zero(self):
-        session_traces = {"s": [100]}
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-            {"kind": "handoff", "session": "s"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        assert result["voluntary"] == 1
-        assert result["no_ignored_field"] == 1
-        assert result["ignored_values"] == []
-
-    def test_ignored_value_of_zero_is_counted_not_treated_as_missing(self):
-        """The lookup checks key presence, not truthiness. ignored=0 (complied
-        on the first nudge) must land in ignored_values, not no_ignored_field
-        -- a truthiness-style regression would misclassify it as missing."""
-        session_traces = {"s": [100]}
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1,
-             "event": "Stop", "ignored": 0},
-            {"kind": "handoff", "session": "s"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        assert result["ignored_values"] == [0]
-        assert result["no_ignored_field"] == 0
-
-    def test_ignored_value_is_read_from_the_line_immediately_preceding_handoff(self):
-        """Not the first, min, max, or a sum/average -- a plausible wrong
-        selection would not surface by hand-checking the report."""
-        session_traces = {"s": [100]}
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1,
-             "event": "Stop", "ignored": 2},
-            {"kind": "nudged", "session": "s", "est": 200, "model": "x", "window": 1,
-             "event": "Stop", "ignored": 9},
-            {"kind": "nudged", "session": "s", "est": 300, "model": "x", "window": 1,
-             "event": "Stop", "ignored": 4},
-            {"kind": "handoff", "session": "s"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        assert result["ignored_values"] == [4]
-        assert result["no_ignored_field"] == 0
-
-    def test_non_overlapping_session_ids_yield_zero_join_validity(self):
-        """The hook resolves its session id from the hook-event payload.
-        handoff-record-conversion.sh resolves its own by PID walk. A
-        systematic mismatch between the two would read as universal
-        non-compliance. This fixture's two well-formed, never-coincident
-        ids exercise that shape directly, distinct from a malformed or
-        missing-field input. pidwalk-B's orphan handoff line is neither
-        classified nor counted as dropped -- it never appeared on a
-        nudged line, so it was never a candidate for any bucket."""
-        session_traces = {"hookid-A": [100]}
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "hookid-A", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-            {"kind": "handoff", "session": "pidwalk-B"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-        assert result["join_validity"] == 0
-        assert result["no_compliance"] == 1
-        assert result["dropped"] == 0
-
-    def test_bucket_exhaustiveness_and_derived_rate_arithmetic_match_hand_computed_counts(self):
-        """Every fired, in-scope session lands in exactly one of the four
-        buckets or dropped, and the derived conversion/block-reach rates are
-        simple sums over those bucket counts.
-        test_conversion_bucket_and_rate_arithmetic_matches_hand_computed_counts
-        is the equivalent check against the printed report, additionally
-        verifying the percentage strings. Bucket sizes are pairwise
-        distinct (5/1/3/7), so a bucket-swap regression in the rate formula
-        changes the asserted total instead of passing coincidentally."""
-        session_traces = {
-            "voluntary-1": [100], "voluntary-2": [100], "voluntary-3": [100],
-            "voluntary-4": [100], "voluntary-5": [100],
-            "forced-1": [100],
-            "blocked-1": [100], "blocked-2": [100], "blocked-3": [100],
-            "nocompliance-1": [100], "nocompliance-2": [100], "nocompliance-3": [100],
-            "nocompliance-4": [100], "nocompliance-5": [100], "nocompliance-6": [100],
-            "nocompliance-7": [100],
-        }
-        log_entries_by_root = {"root": [
-            {"kind": "nudged", "session": "voluntary-1", "est": 100, "model": "x", "window": 1,
-             "event": "Stop", "ignored": 3},
-            {"kind": "handoff", "session": "voluntary-1"},
-            *[
-                entry
-                for i in range(2, 6)
-                for entry in (
-                    {"kind": "nudged", "session": f"voluntary-{i}", "est": 100, "model": "x", "window": 1,
-                     "event": "Stop"},
-                    {"kind": "handoff", "session": f"voluntary-{i}"},
-                )
-            ],
-            {"kind": "nudged", "session": "forced-1", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-            {"kind": "nudged", "session": "forced-1", "est": 200, "model": "x", "window": 1,
-             "event": "PostToolBatch", "action": "block"},
-            {"kind": "handoff", "session": "forced-1"},
-            *[
-                {"kind": "nudged", "session": f"blocked-{i}", "est": 100, "model": "x", "window": 1,
-                 "event": "PostToolBatch", "action": "block"}
-                for i in range(1, 4)
-            ],
-            *[
-                {"kind": "nudged", "session": f"nocompliance-{i}", "est": 100, "model": "x", "window": 1,
-                 "event": "Stop"}
-                for i in range(1, 8)
-            ],
-            {"kind": "nudged", "session": "dropped-1", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-        ]}
-        result = _mod._nudge_conversion_from_log(session_traces, log_entries_by_root)
-
-        total = (
-            result["voluntary"] + result["forced"] + result["blocked_no_handoff"]
-            + result["no_compliance"] + result["dropped"]
-        )
-        assert total == 17  # 16 fired, in-scope sessions + dropped-1
-        assert result["voluntary"] == 5
-        assert result["forced"] == 1
-        assert result["blocked_no_handoff"] == 3
-        assert result["no_compliance"] == 7
-        assert result["dropped"] == 1
-
-        conversion = result["voluntary"] + result["forced"]
-        block_reach = result["forced"] + result["blocked_no_handoff"]
-        assert conversion == 6
-        assert block_reach == 4
-
-    def test_session_id_repeated_across_two_roots_lands_in_root_scan_order(self):
-        """Pins the function's own documented limitation (the comment above
-        its per_session grouping loop): a session id colliding across two
-        roots (stale symlink, merged log, PID reuse) is not detected.
-        Entries from both roots merge in root-scan order -- the dict
-        iteration order of log_entries_by_root -- rather than true
-        chronological order, since neither line type carries a timestamp.
-        Swapping which root is scanned first changes whether the block line
-        lands before or after the handoff line, flipping the bucket, turning
-        the comment's claim into a regression-guarded fact."""
-        session_traces = {"s": [100]}
-        entries_root_a = [
-            {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
-            {"kind": "handoff", "session": "s"},
-        ]
-        entries_root_b = [
-            {"kind": "nudged", "session": "s", "est": 200, "model": "x", "window": 1,
-             "event": "PostToolBatch", "action": "block"},
-        ]
-
-        handoff_scanned_first = _mod._nudge_conversion_from_log(
-            session_traces, {"root-a": entries_root_a, "root-b": entries_root_b}
-        )
-        assert handoff_scanned_first["voluntary"] == 1
-        assert handoff_scanned_first["forced"] == 0
-
-        block_scanned_first = _mod._nudge_conversion_from_log(
-            session_traces, {"root-b": entries_root_b, "root-a": entries_root_a}
-        )
-        assert block_scanned_first["forced"] == 1
-        assert block_scanned_first["voluntary"] == 0
-
-
-class TestParseRearmSpacingsArg:
-    def test_default_value_when_spacings_is_unset(self):
-        """--spacings absent falls back to _REARM_BACKTEST_DEFAULT_SPACINGS."""
-        assert _mod._parse_rearm_spacings_arg(argparse.Namespace(spacings=None)) == list(
-            _mod._REARM_BACKTEST_DEFAULT_SPACINGS
-        )
-
-    def test_non_integer_token_exits_2(self, capsys):
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._parse_rearm_spacings_arg(argparse.Namespace(spacings="40000,not-a-number"))
-        assert exc_info.value.code == 2
-        assert "expected comma-separated integers" in capsys.readouterr().err
-
-    def test_non_positive_value_exits_2(self, capsys):
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._parse_rearm_spacings_arg(argparse.Namespace(spacings="40000,0"))
-        assert exc_info.value.code == 2
-        assert "values must be positive" in capsys.readouterr().err
-
-    def test_whitespace_only_value_exits_2_at_least_one_required(self, capsys):
-        """A --spacings value that's non-empty but strips to nothing on
-        every comma-separated token (all whitespace) leaves the parsed list
-        empty -- the same "at least one required" exit as an entirely blank
-        flag, not a silent empty result."""
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._parse_rearm_spacings_arg(argparse.Namespace(spacings="   "))
-        assert exc_info.value.code == 2
-        assert "at least one spacing value is required" in capsys.readouterr().err
-
-
-class TestSessionMatchesRearmScope:
-    """--since and --branches scope whole sessions here (unlike `cost`'s
-    per-record --branches filter) -- see _session_matches_rearm_scope's own
-    docstring for why."""
-
-    def test_session_excluded_when_first_timestamp_is_before_since_cutoff(self):
-        since_ts = _mod._parse_ts("2026-05-10T00:00:00.000Z")
-        records = [_asst("claude-sonnet-5", ts="2026-05-01T00:00:00.000Z")]
-        assert _mod._session_matches_rearm_scope(records, since_ts, None) is False
-
-    def test_session_included_when_first_timestamp_is_exactly_at_the_since_boundary(self):
-        since_ts = _mod._parse_ts("2026-05-10T00:00:00.000Z")
-        records = [_asst("claude-sonnet-5", ts="2026-05-10T00:00:00.000Z")]
-        assert _mod._session_matches_rearm_scope(records, since_ts, None) is True
-
-    def test_session_excluded_when_no_main_thread_turn_matches_branches(self):
-        records = [_asst("claude-sonnet-5", branch="other")]
-        assert _mod._session_matches_rearm_scope(records, None, {"main"}) is False
-
-    def test_session_excluded_when_only_a_sidechain_turn_matches_the_branch_filter(self):
-        """A sidechain turn sharing the target branch name must not count --
-        --branches scopes to main-thread turns only, matching the
-        `not bool(r.get("isSidechain"))` guard."""
-        records = [_asst("claude-sonnet-5", branch="main", sidechain=True)]
-        assert _mod._session_matches_rearm_scope(records, None, {"main"}) is False
-
-    def test_session_included_when_branch_changes_mid_session_and_only_some_turns_match(self):
-        records = [
-            _asst("claude-sonnet-5", branch="other"),
-            _asst("claude-sonnet-5", branch="main"),
-        ]
-        assert _mod._session_matches_rearm_scope(records, None, {"main"}) is True
-
-
-class TestRearmBacktestLogSizeLines:
-    """Pure unit tests against _rearm_backtest_log_size_lines: plain
-    (Path, size-or-None) tuples in, no filesystem or report-rendering
-    plumbing."""
-
-    def test_single_root_prints_account_n_label_and_byte_count(self):
-        root = Path("/fake/config-dir/projects")
-        lines = _mod._rearm_backtest_log_size_lines(
-            [(root, 12_345)], multi_root=False, redact=True,
-            redact_ordinals={root.resolve(): 1},
-        )
-        assert lines == ["  account-1 nudge log: 12,345 bytes"]
-
-    def test_single_root_no_redact_prints_raw_path(self):
-        root = Path("/fake/config-dir/projects")
-        lines = _mod._rearm_backtest_log_size_lines(
-            [(root, 100)], multi_root=False, redact=False,
-            redact_ordinals={root.resolve(): 1},
-        )
-        assert lines == [f"  {root.parent / '.handoff-nudge.log'} nudge log: 100 bytes"]
-
-    def test_single_root_over_cap_flags_truncated(self):
-        root = Path("/fake/config-dir/projects")
-        oversized = _mod._NUDGE_LOG_MAX_READ + 1
-        lines = _mod._rearm_backtest_log_size_lines(
-            [(root, oversized)], multi_root=False, redact=True,
-            redact_ordinals={root.resolve(): 1},
-        )
-        assert lines == [
-            f"  account-1 nudge log: {oversized:,} bytes [truncated -- oldest lines dropped]"
-        ]
-
-    def test_single_root_at_exactly_the_cap_is_not_flagged_truncated(self):
-        root = Path("/fake/config-dir/projects")
-        lines = _mod._rearm_backtest_log_size_lines(
-            [(root, _mod._NUDGE_LOG_MAX_READ)], multi_root=False, redact=True,
-            redact_ordinals={root.resolve(): 1},
-        )
-        assert lines == [f"  account-1 nudge log: {_mod._NUDGE_LOG_MAX_READ:,} bytes"]
-
-    def test_single_root_unreadable_prints_no_byte_count(self):
-        root = Path("/fake/config-dir/projects")
-        lines = _mod._rearm_backtest_log_size_lines(
-            [(root, None)], multi_root=False, redact=True,
-            redact_ordinals={root.resolve(): 1},
-        )
-        assert lines == ["  account-1 nudge log: unreadable"]
-
-    def test_multi_root_pools_bytes_with_no_per_root_breakdown(self):
-        root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
-        lines = _mod._rearm_backtest_log_size_lines(
-            [(root_a, 100), (root_b, 200)], multi_root=True, redact=True,
-            redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
-        )
-        assert lines == ["  nudge logs across every resolved root: 300 bytes"]
-        assert "account-" not in lines[0]
-
-    def test_multi_root_at_exactly_the_cap_is_not_flagged_truncated(self):
-        root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
-        lines = _mod._rearm_backtest_log_size_lines(
-            [(root_a, _mod._NUDGE_LOG_MAX_READ), (root_b, 10)], multi_root=True, redact=True,
-            redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
-        )
-        assert lines == [f"  nudge logs across every resolved root: {_mod._NUDGE_LOG_MAX_READ + 10:,} bytes"]
-
-    def test_multi_root_flags_truncated_without_a_count_or_naming_the_root(self):
-        root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
-        oversized = _mod._NUDGE_LOG_MAX_READ + 1
-        lines = _mod._rearm_backtest_log_size_lines(
-            [(root_a, oversized), (root_b, 10)], multi_root=True, redact=True,
-            redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
-        )
-        assert lines == [
-            f"  nudge logs across every resolved root: {oversized + 10:,} bytes"
-            " (some roots truncated -- oldest lines dropped)"
-        ]
-
-    def test_multi_root_flags_unreadable_without_a_count_and_excludes_it_from_the_total(self):
-        root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
-        lines = _mod._rearm_backtest_log_size_lines(
-            [(root_a, None), (root_b, 500)], multi_root=True, redact=True,
-            redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
-        )
-        assert lines == ["  nudge logs across every resolved root: 500 bytes (some roots unreadable)"]
-
-    def test_multi_root_combines_truncated_and_unreadable_in_expected_order(self):
-        root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
-        oversized = _mod._NUDGE_LOG_MAX_READ + 1
-        lines = _mod._rearm_backtest_log_size_lines(
-            [(root_a, oversized), (root_b, None)], multi_root=True, redact=True,
-            redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
-        )
-        assert lines == [
-            f"  nudge logs across every resolved root: {oversized:,} bytes"
-            " (some roots truncated -- oldest lines dropped) (some roots unreadable)"
-        ]
-
-    def test_multi_root_disclosure_line_never_contains_a_digit_that_varies_with_root_count(self):
-        """Redaction regression guard: a per-condition digit (a count of
-        truncated or unreadable roots) discloses a root/account-cardinality
-        lower bound, which docs/private-project-redaction.md's
-        Account-cardinality bar prohibits at any pooling breadth. Sweeps
-        the healthy-root count (0 extra vs. 3 extra, alongside one fixed
-        truncated root and one fixed unreadable root) and asserts the note
-        text itself (after the pooled byte total, which does legitimately
-        vary) contains no digit and is identical across both sweep sizes."""
-        oversized = _mod._NUDGE_LOG_MAX_READ + 1
-
-        def note_for(root_count: int) -> str:
-            roots = [Path(f"/fake/{n}/projects") for n in range(root_count)]
-            per_root_sizes = [(roots[0], oversized), (roots[1], None)] + [
-                (r, 10) for r in roots[2:]
-            ]
-            lines = _mod._rearm_backtest_log_size_lines(
-                per_root_sizes, multi_root=True, redact=True,
-                redact_ordinals={r.resolve(): i + 1 for i, r in enumerate(roots)},
-            )
-            assert len(lines) == 1
-            return lines[0].split("bytes", 1)[1]
-
-        assert not any(char.isdigit() for char in note_for(2))
-        assert note_for(2) == note_for(5)
-
-    def test_multi_root_at_three_roots_still_prints_exactly_one_line(self):
-        roots = [Path(f"/fake/{n}/projects") for n in "abc"]
-        lines = _mod._rearm_backtest_log_size_lines(
-            [(roots[0], 10), (roots[1], 20), (roots[2], 30)], multi_root=True, redact=True,
-            redact_ordinals={r.resolve(): i + 1 for i, r in enumerate(roots)},
-        )
-        assert len(lines) == 1
-        assert "account-" not in lines[0]
-        assert lines[0] == "  nudge logs across every resolved root: 60 bytes"
-
-
-class TestRearmBacktestReport:
-    """End-to-end coverage against .claude/plans/handoff-nudge-rearm-backtest.md's
-    Verification section -- items 2, 4, and 5, encoded as pytests against a
-    shared fixture corpus rather than a one-time manual run."""
-
-    def test_baseline_dollars_match_cost_reports_own_total(self, fake_projects, capsys):
-        """Verification item 2: the baseline row (today's real recorded
-        totals, no re-arm simulation) must equal _cost_report's own total for
-        the same fixture scope -- an independent, already-verified code path
-        computing the same real, non-counterfactual dollars over the same
-        corpus should agree."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=500_000, output=5_000, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-sonnet-5", input=500_000, output=5_000, ts="2026-05-19T10:01:00.000Z"),
-        ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
-        cost_total = _extract_grand_total(capsys.readouterr().out)
-
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Spacing", row_contains="baseline")
-        baseline_total = float(cols["$"].replace(",", ""))
-        assert baseline_total == pytest.approx(cost_total)
-
-    def test_prints_fixed_threshold_and_model_routing_disclosure(self, fake_projects, capsys):
-        """Verification item 5: the report explicitly states that model
-        routing and the fixed fire threshold are not backtested."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        assert "Model routing and each session's own fire threshold" in out
-        assert "NOT backtested" in out
-
-    def test_excluded_operator_lag_count_is_reported(self, fake_projects, tmp_path, capsys):
-        """Verification item 4: a nudged log line that can't be joined to any
-        session in scope is counted in the excluded figure, not silently
-        dropped."""
-        (tmp_path / ".handoff-nudge.log").write_text(
-            "nudged session=not-in-scope est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
-        )
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        assert "1 excluded" in out
-
-    def test_unresolvable_config_dir_exits_cleanly(self, capsys, monkeypatch):
-        """An unresolvable config dir (e.g. $HOME unset) exits 2 with a
-        diagnostic, rather than an uncaught ValueError traceback --
-        _resolve_cost_roots's own stderr+exit(2) convention. Exercised via
-        cmd_rearm_backtest: _rearm_backtest_report takes scan_roots as an
-        already-resolved argument, so it never calls config_dir() itself
-        and can't raise this error directly."""
-
-        def _raise_value_error():
-            raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
-
-        monkeypatch.setattr(_mod.scope, "config_dir", _raise_value_error)
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_rearm_backtest(_rearm_backtest_args())
-        assert exc_info.value.code == 2
-        assert "HOME is unset or empty" in capsys.readouterr().err
-
-    def test_200k_window_session_re_arms_off_its_own_80k_threshold(self, fake_projects, capsys):
-        """A session on a 200k-context-window model crosses its own real fire
-        point (80,000) well under _HANDOFF_NUDGE_ABS_CAP (150,000) -- a
-        report that used the cap uniformly for every session would never
-        simulate a split for this session at all, understating the re-arm
-        benefit on the 200k-window arm entirely."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-4-5", input=70_000, output=5_000, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-sonnet-4-5", input=80_000, output=5_000, ts="2026-05-19T10:01:00.000Z"),
-            _user_msg("continue", ts="2026-05-19T10:02:00.000Z"),
-            _priced("claude-sonnet-4-5", input=90_000, output=5_000, ts="2026-05-19T10:03:00.000Z"),
-        ])
-        _mod._rearm_backtest_report(_rearm_backtest_args(spacings="40000"), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Spacing", row_contains=["40,000", "perfect"])
-        assert cols["DeltaUSD"] != "-0.00", "40k-spacing row must diverge from baseline once the 80k threshold fires"
-
-    def test_warns_when_no_priced_output_tokens_are_in_scope_for_the_ramp_curve(self, fake_projects, capsys):
-        """A corpus with only unpriced-model turns can't derive a real ramp
-        curve -- every re-armed remainder would otherwise be silently priced
-        at $0 with nothing distinguishing "genuinely cheap ramp" from "curve
-        couldn't be computed at all"."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-opus-4-7", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        assert "WARNING" in out
-        assert "ramp curve could not be computed" in out
-
-    def test_synthetic_no_usage_record_does_not_desync_boundaries_from_main_thread_turns(
-        self, fake_projects, capsys
-    ):
-        """A main-thread assistant record with no usage block (a synthetic
-        error record) sits between two real, priced turns -- if it were to
-        advance _hook_observable_boundaries' own turn-count position (as it
-        would if that function's usage-block guard were ever lost), the
-        crossing right after the first real turn would never line up with
-        any boundary this report's own main_thread_turns list can use, and
-        the second turn would silently keep its actual (unrepriced) dollars.
-        Runs the real pipeline end to end and checks a hand-computed dollar
-        total, not merely a nonzero delta, so an index mismatch between the
-        two functions actually fails the test."""
-        threshold = _mod._hook_effective_fire_threshold("claude-sonnet-5")
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _asst("claude-sonnet-5", ts="2026-05-19T10:00:00.000Z"),  # no usage block
-            _priced("claude-sonnet-5", input=threshold, output=5_000, ts="2026-05-19T10:00:01.000Z"),
-            _user_msg("continue", ts="2026-05-19T10:00:02.000Z"),
-            _priced("claude-sonnet-5", input=500, output=2_000, ts="2026-05-19T10:00:03.000Z"),
-        ])
-        _mod._rearm_backtest_report(_rearm_backtest_args(spacings="40000"), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        cols = _table_cols(out, header_contains="Spacing", row_contains=["40,000", "perfect"])
-        total = float(cols["$"].replace(",", ""))
-
-        rates = _mod._model_rates("claude-sonnet-5")
-        turn0_dollars = threshold / 1_000_000 * rates["input"] + 5_000 / 1_000_000 * rates["output"]
-        turn1_dollars = 500 / 1_000_000 * rates["input"] + 2_000 / 1_000_000 * rates["output"]
-        # Turn 0's own abs-tokens (threshold input + 5,000 output) clears the
-        # model's fire threshold (its 1M-window 40% figure exceeds
-        # _HANDOFF_NUDGE_ABS_CAP, so the cap governs), so turn 1 is
-        # ramp-priced at the "0-5" bucket's rate -- which, since both turns
-        # land in that bucket, is their own blended $/1k-output rate.
-        ramp_rate = (turn0_dollars + turn1_dollars) / ((5_000 + 2_000) / 1000)
-        expected_total = turn0_dollars + (2_000 / 1000) * ramp_rate
-        # abs= accounts for the table's own 2-decimal-place rounding
-        # ($X,XXX.XX), not slack in the expected computation itself.
-        assert total == pytest.approx(expected_total, abs=0.005)
-
-    def test_conversion_section_never_prints_session_ids(self, fake_projects, tmp_path, capsys):
-        """Redaction: the conversion section's output carries no raw session
-        id, matching the pooled, pseudonymous-aggregate discipline the
-        spacing table already follows. Also asserts the session was
-        actually classified voluntary, not silently dropped -- redaction
-        alone can't be credited if the session never reached a bucket."""
-        (tmp_path / ".handoff-nudge.log").write_text(
-            "nudged session=super-secret-session est=100000 model=claude-sonnet-5"
-            " window=1000000 event=Stop\n"
-            "handoff session=super-secret-session\n"
-        )
-        _write_jsonl(fake_projects / "super-secret-session.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        assert "super-secret-session" not in out
-        assert "Fired sessions in scope: 1 (0 dropped -- no in-scope trace)" in out
-        assert _table_cols(out, header_contains="Bucket", row_contains="voluntary")["Count"] == "1"
-
-    def test_root_aware_join_reads_every_root_own_log_not_just_the_default(
-        self, fake_projects, fake_config_dir_factory, tmp_path, capsys
-    ):
-        """A session logged only under a second declared root's own log must
-        still join -- a fixture that reads only the default root's log would
-        leave this session's nudged line unjoined and silently understate
-        both the lag sample and the conversion population. Also asserts
-        redaction holds at multi-root scope: neither root's own session id
-        leaks into the printed report."""
-        _write_jsonl(fake_projects / "sess-a.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        (tmp_path / ".handoff-nudge.log").write_text(
-            "nudged session=sess-a est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
-        )
-
-        acct_b = fake_config_dir_factory("acct-b")
-        proj_b = acct_b / "projects" / "-home-user-other-repo"
-        proj_b.mkdir(parents=True)
-        _write_jsonl(proj_b / "sess-b.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        (acct_b / ".handoff-nudge.log").write_text(
-            "nudged session=sess-b est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
-        )
-
-        _mod._rearm_backtest_report(
-            _rearm_backtest_args(), date(2026, 8, 2), roots=[fake_projects.parent, acct_b / "projects"]
-        )
-        out = capsys.readouterr().out
-        assert "Operator-response-lag sample: 2 joined" in out
-        cols = _table_cols(out, header_contains="Bucket", row_contains="no-compliance-observed")
-        assert cols["Count"] == "2"
-        # Redaction: each root's own distinctive session id must not leak
-        # into the printed report, the multi-root counterpart to
-        # test_conversion_section_never_prints_session_ids' single-root
-        # assertion.
-        assert "sess-a" not in out
-        assert "sess-b" not in out
-
-    def test_multi_root_session_pricing_aggregates_across_every_root(
-        self, fake_projects, fake_config_dir_factory, capsys
-    ):
-        """The Spacing table's Sessions in scope count and baseline $ total
-        are the report's primary output. A regression that narrowed
-        session aggregation back to one root -- the mirror-image of the
-        defect this diff's root-aware log join exists to fix -- would
-        silently understate both. Each root contributes one priced
-        session so a single-root regression halves the expected total,
-        not merely rounds it."""
-        _write_jsonl(fake_projects / "sess-a.jsonl", [
-            _priced("claude-sonnet-5", input=500_000, output=5_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        _mod._cost_report(_cost_args(), date(2026, 8, 2))
-        single_session_dollars = _extract_grand_total(capsys.readouterr().out)
-
-        acct_b = fake_config_dir_factory("acct-b")
-        proj_b = acct_b / "projects" / "-home-user-other-repo"
-        proj_b.mkdir(parents=True)
-        _write_jsonl(proj_b / "sess-b.jsonl", [
-            _priced("claude-sonnet-5", input=500_000, output=5_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-
-        _mod._rearm_backtest_report(
-            _rearm_backtest_args(), date(2026, 8, 2), roots=[fake_projects.parent, acct_b / "projects"]
-        )
-        out = capsys.readouterr().out
-        assert "Sessions in scope: 2" in out
-        cols = _table_cols(out, header_contains="Spacing", row_contains="baseline")
-        baseline_total = float(cols["$"].replace(",", ""))
-        assert baseline_total == pytest.approx(2 * single_session_dollars)
-
-    def test_root_with_no_log_file_contributes_zero_entries_without_raising(
-        self, fake_projects, fake_config_dir_factory, tmp_path, capsys
-    ):
-        """Exercises _read_bounded_log_lines' absent-file path: a root with
-        no .handoff-nudge.log at all must contribute zero entries rather
-        than raising, while a sibling root's log line still joins
-        normally. Also confirms the log-less root contributes 0 bytes to
-        the pooled multi-root byte total instead of omitting the root or
-        erroring."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text(
-            "nudged session=sess est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
-        )
-        acct_b = fake_config_dir_factory("acct-b")  # no .handoff-nudge.log written for this root
-        acct_b_root = acct_b / "projects"
-        _mod._rearm_backtest_report(
-            _rearm_backtest_args(), date(2026, 8, 2), roots=[fake_projects.parent, acct_b_root]
-        )
-        out = capsys.readouterr().out
-        assert "Operator-response-lag sample: 1 joined" in out
-        assert f"nudge logs across every resolved root: {log_path.stat().st_size:,} bytes" in out
-
-    @pytest.mark.parametrize(
-        "unreadable_error",
-        [
-            PermissionError(13, "Permission denied"),
-            OSError(errno.ESTALE, "Stale file handle"),
-        ],
-        ids=["permission-denied", "estale"],
-    )
-    def test_unreadable_root_nudge_log_is_flagged_unreadable_without_crash_or_path_leak(
-        self, fake_projects, fake_config_dir_factory, tmp_path, capsys, monkeypatch, unreadable_error
-    ):
-        """An OSError from an unreadable log must not crash the report or
-        leak the root's path, and a sibling readable root's bytes must
-        still be folded into the pooled multi-root total. Uses a targeted
-        Path.exists() monkeypatch rather than chmod, since chmod-ing the
-        whole account directory would also block the unrelated
-        project-dir scan."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text(
-            "nudged session=sess est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
-        )
-        acct_b = fake_config_dir_factory("acct-b")
-        acct_b_root = acct_b / "projects"
-        unreadable_log = acct_b / ".handoff-nudge.log"
-        unreadable_log.write_text(
-            "nudged session=sess-b est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
-        )
-
-        real_exists = Path.exists
-
-        def fake_exists(self, *args, **kwargs):
-            if self == unreadable_log:
-                raise unreadable_error
-            return real_exists(self, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "exists", fake_exists)
-
-        # Unreadable root iterates first so a regression turning `continue`
-        # into `break` would abort before the readable sibling ever
-        # contributes to the pooled total.
-        _mod._rearm_backtest_report(
-            _rearm_backtest_args(), date(2026, 8, 2), roots=[acct_b_root, fake_projects.parent]
-        )
-        out, _err = capsys.readouterr()
-        assert str(acct_b) not in out
-        assert "account-" not in out  # no per-account byte-size breakdown under multi-root scope
-        assert (
-            f"nudge logs across every resolved root: {log_path.stat().st_size:,} bytes"
-            " (some roots unreadable)" in out
-        )
-
-    def test_truncation_can_drop_an_early_block_line_causing_real_misclassification(
-        self, fake_projects, tmp_path, capsys, monkeypatch
-    ):
-        """Truncation dropping an early `action=block` line while a later
-        plain nudged line and the handoff line survive misclassifies the
-        session voluntary instead of forced. Asserted against the Bucket
-        table itself, not just the truncation banner."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        early_nudge = "nudged session=sess est=100000 model=claude-sonnet-5 window=1000000 event=Stop"
-        early_block = (
-            "nudged session=sess est=200000 model=claude-sonnet-5 window=1000000"
-            " event=PostToolBatch action=block"
-        )
-        later_nudge = "nudged session=sess est=300000 model=claude-sonnet-5 window=1000000 event=Stop"
-        handoff_line = "handoff session=sess"
-        surviving_tail = f"{later_nudge}\n{handoff_line}\n"
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text(f"{early_nudge}\n{early_block}\n{surviving_tail}")
-        # Sized to the exact byte length of the surviving tail so the tail
-        # read boundary lands on a real newline, not mid-line -- isolating
-        # the early_nudge/early_block drop from any partial-line noise.
-        monkeypatch.setattr(_mod, "_NUDGE_LOG_MAX_READ", len(surviving_tail.encode()))
-
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        assert "[truncated -- oldest lines dropped]" in out
-        cols = _table_cols(out, header_contains="Bucket", row_contains="voluntary")
-        assert cols["Count"] == "1"
-
-    def test_single_root_byte_size_line_prints_the_real_ordinal_and_byte_count(
-        self, fake_projects, tmp_path, capsys
-    ):
-        """The single-root allow-path companion to the multi-root pooling
-        tests below: the default `redact=True` byte-size line must carry
-        the real ordinal and the real byte count, not just omit a raw
-        path -- content, not just absence, needs a test."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text("schema-drift session=x event=Stop\n")
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        ordinal = _mod._redaction_ordinals([fake_projects.parent])[fake_projects.parent.resolve()]
-        assert f"account-{ordinal} nudge log: {log_path.stat().st_size:,} bytes" in out
-
-    def test_conversion_bucket_and_rate_arithmetic_matches_hand_computed_counts(
-        self, fake_projects, tmp_path, capsys
-    ):
-        """The printed percentage strings (Conversion rate, Block-reach rate,
-        Join validity) are verified end-to-end against a hand-computed mixed
-        corpus here; the bucket-exhaustiveness and derived-rate arithmetic
-        invariant itself is covered directly against
-        _nudge_conversion_from_log's own return dict in
-        TestNudgeConversionFromLog. The appended conversion section must
-        also not disturb the pre-existing Spacing table's own `_table_cols`
-        parsing. Bucket sizes are pairwise distinct (5/1/3/7), so a
-        bucket-swap regression in the rate formula changes the asserted
-        percentage rather than passing coincidentally."""
-        sessions = (
-            [f"voluntary-{i}" for i in range(1, 6)]
-            + ["forced-1"]
-            + [f"blocked-{i}" for i in range(1, 4)]
-            + [f"nocompliance-{i}" for i in range(1, 8)]
-        )
-        for session_id in sessions:
-            _write_jsonl(fake_projects / f"{session_id}.jsonl", [
-                _priced("claude-sonnet-5", input=100, output=100, ts="2026-05-19T10:00:00.000Z"),
-            ])
-        # dropped-1 has a log line but no transcript -- excluded from every bucket.
-        log_lines = [
-            "nudged session=voluntary-1 est=100 model=claude-sonnet-5 window=1000000 event=Stop ignored=3",
-            "handoff session=voluntary-1",
-        ]
-        for i in range(2, 6):
-            log_lines += [
-                f"nudged session=voluntary-{i} est=100 model=claude-sonnet-5 window=1000000 event=Stop",
-                f"handoff session=voluntary-{i}",
-            ]
-        log_lines += [
-            "nudged session=forced-1 est=100 model=claude-sonnet-5 window=1000000 event=Stop",
-            "nudged session=forced-1 est=200 model=claude-sonnet-5 window=1000000 event=PostToolBatch action=block",
-            "handoff session=forced-1",
-        ]
-        log_lines += [
-            f"nudged session=blocked-{i} est=100 model=claude-sonnet-5 window=1000000 event=PostToolBatch action=block"
-            for i in range(1, 4)
-        ]
-        log_lines += [
-            f"nudged session=nocompliance-{i} est=100 model=claude-sonnet-5 window=1000000 event=Stop"
-            for i in range(1, 8)
-        ]
-        log_lines.append("nudged session=dropped-1 est=100 model=claude-sonnet-5 window=1000000 event=Stop")
-        (tmp_path / ".handoff-nudge.log").write_text("\n".join(log_lines) + "\n")
-
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-
-        assert "Fired sessions in scope: 16 (1 dropped -- no in-scope trace)" in out
-        assert _table_cols(out, header_contains="Bucket", row_contains="voluntary")["Count"] == "5"
-        assert _table_cols(out, header_contains="Bucket", row_contains="forced")["Count"] == "1"
-        assert _table_cols(out, header_contains="Bucket", row_contains="blocked-no-handoff")["Count"] == "3"
-        assert _table_cols(out, header_contains="Bucket", row_contains="no-compliance-observed")["Count"] == "7"
-        assert "Conversion rate (voluntary + forced / fired): 37.5% (6/16)" in out
-        assert "Block-reach rate (forced + blocked-no-handoff / fired): 25.0% (4/16)" in out
-        assert "Join validity (fired sessions with a matching handoff line): 6" in out
-        assert (
-            "Re-arms tolerated at voluntary compliance: median ignored=3 across 1 voluntary session(s)"
-            " (4 voluntary session(s) missing ignored=)" in out
-        )
-        spacing_cols = _table_cols(out, header_contains="Spacing", row_contains="baseline")
-        assert spacing_cols["$"] != ""
-
-    def test_non_overlapping_session_ids_report_states_zero_join_validity(
-        self, fake_projects, tmp_path, capsys
-    ):
-        """Report-level check for a systematic session-id mismatch between
-        the two writers: well-formed, never-coincident session ids
-        (hookid-A nudged, pidwalk-B handoff) must print join validity 0,
-        not merely return it from _nudge_conversion_from_log. The
-        pure-function half is pinned separately by
-        TestNudgeConversionFromLog.test_non_overlapping_session_ids_yield_zero_join_validity."""
-        _write_jsonl(fake_projects / "hookid-A.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        (tmp_path / ".handoff-nudge.log").write_text(
-            "nudged session=hookid-A est=100000 model=claude-sonnet-5"
-            " window=1000000 event=Stop\n"
-            "handoff session=pidwalk-B\n"
-        )
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        assert "Join validity (fired sessions with a matching handoff line): 0" in out
-
-    def test_zero_fired_sessions_prints_the_degenerate_conversion_branch_text(self, fake_projects, capsys):
-        """No .handoff-nudge.log at all (an account that has never fired a
-        nudge) still yields a priced spacing table plus a conversion section
-        reporting zero fired sessions -- _pct_of already guards the 0/0
-        division (transcript_analysis/render.py), so this pins the exact
-        wording of both degenerate-count branches rather than merely
-        confirming no crash."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        assert "Fired sessions in scope: 0 (0 dropped -- no in-scope trace)" in out
-        assert (
-            "Re-arms tolerated at voluntary compliance: no voluntary session(s) with ignored="
-            " present (0 voluntary session(s) missing ignored=)" in out
-        )
-
-    def test_current_format_action_block_line_with_ignored_and_skills_parses_through_full_stack(
-        self, fake_projects, tmp_path, capsys
-    ):
-        """Routes a current-format action=block line (ignored=/skills=, per
-        nudge-handoff-near-context-cap.sh:644) through the real text-log
-        parser into _nudge_conversion_from_log, so a field-name or type
-        regression in that parsing path fails here."""
-        _write_jsonl(fake_projects / "forced-tele.jsonl", [
-            _priced("claude-sonnet-5", input=100, output=100, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        (tmp_path / ".handoff-nudge.log").write_text(
-            "nudged session=forced-tele est=100 model=claude-sonnet-5 window=1000000"
-            " event=PostToolBatch ignored=2 skills=handoff,memory-skill action=block\n"
-            "handoff session=forced-tele\n"
-        )
-        _mod._rearm_backtest_report(_rearm_backtest_args(), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        assert "Fired sessions in scope: 1 (0 dropped -- no in-scope trace)" in out
-        assert _table_cols(out, header_contains="Bucket", row_contains="forced")["Count"] == "1"
-
-    def test_malformed_empty_session_value_is_silently_dropped_through_the_real_parser(
-        self, tmp_path
-    ):
-        """Routes a real .handoff-nudge.log line with an empty session=
-        value (a hook payload bug shape) through the real text-log parser,
-        then straight into _nudge_conversion_from_log with a hand-built
-        session_traces dict -- exercising the same parsing regression
-        surface as the full-stack pattern, without the report/table-text
-        layer above it. _parse_nudge_log_entries checks key presence, not
-        truthiness, so this line survives parsing with session=="". It
-        then fails the `if session:` guard downstream, landing in no
-        bucket -- not even dropped. The classification must not crash or
-        inflate any count as a result."""
-        log_path = tmp_path / ".handoff-nudge.log"
-        log_path.write_text(
-            "nudged session= est=100 model=claude-sonnet-5 window=1000000 event=Stop\n"
-            "nudged session=voluntary-tele est=100 model=claude-sonnet-5 window=1000000 event=Stop\n"
-            "handoff session=voluntary-tele\n"
-        )
-        entries = _mod._parse_nudge_log_entries(log_path)
-        session_traces = {"voluntary-tele": [100]}
-        result = _mod._nudge_conversion_from_log(session_traces, {log_path.parent: entries})
-        assert result["voluntary"] == 1
-        assert result["dropped"] == 0
-
-    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
-        """--no-redact is refused when --config-dir puts more than one root
-        in scope, mirroring cost's and context-distribution's own refusal --
-        the pre-existing guard is exercised via cmd_rearm_backtest itself,
-        before any log read."""
-        default_dir = tmp_path / "default"
-        (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
-        acct_b = fake_config_dir_factory("acct-b")
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_rearm_backtest(_rearm_backtest_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
-        assert exc_info.value.code == 2
-        assert "--no-redact" in capsys.readouterr().err
-
-    def test_no_redact_prints_literal_log_path_in_per_root_log_size_line(self, fake_projects, tmp_path, capsys):
-        """Single-root --no-redact prints the literal .handoff-nudge.log path,
-        not an account-N label, in the per-root log-size line -- exercises
-        the `else str(log_path)` branch (multi-root refuses --no-redact
-        outright, so this branch is only reachable at single-root scope)."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        _mod._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        assert str(tmp_path / ".handoff-nudge.log") in out
-        assert "account-1" not in out
-
-    def test_no_redact_still_omits_session_id_of_a_real_fired_session(
-        self, fake_projects, tmp_path, capsys
-    ):
-        """--no-redact discloses the literal log path (the test above), but
-        must not also disclose the session id of a real fired/classified
-        session -- the existing --no-redact test writes no
-        .handoff-nudge.log at all, so it never has a session id that could
-        leak. This one constructs a real voluntary-bucket session so there's
-        something to assert isn't leaking."""
-        _write_jsonl(fake_projects / "leaky-session-1.jsonl", [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
-        ])
-        (tmp_path / ".handoff-nudge.log").write_text(
-            "nudged session=leaky-session-1 est=100000 model=claude-sonnet-5"
-            " window=1000000 event=Stop\n"
-            "handoff session=leaky-session-1\n"
-        )
-        _mod._rearm_backtest_report(_rearm_backtest_args(no_redact=True), date(2026, 8, 2))
-        out = capsys.readouterr().out
-        assert str(tmp_path / ".handoff-nudge.log") in out
-        assert _table_cols(out, header_contains="Bucket", row_contains="voluntary")["Count"] == "1"
-        assert "leaky-session-1" not in out
-
-
-# ---------------------------------------------------------------------------
-# plan-boundary
-# ---------------------------------------------------------------------------
-
-
-class TestExtractRearmSessionTurnsModelAndPosition:
-    """main_thread_models / main_thread_record_positions are new parallel
-    lists alongside main_thread_turns, not a widening of its own 3-tuple
-    shape -- _ramp_curve_from_corpus, _simulate_rearm_spacing, and
-    _rearm_backtest_report all positionally unpack that tuple as
-    Sequence[tuple[int, int, float]]."""
-
-    def test_models_and_positions_are_parallel_to_main_thread_turns(self):
-        records = [
-            _priced("claude-opus-5", input=100, output=50, ts="2026-05-19T10:00:00.000Z"),
-            _user_msg("go", ts="2026-05-19T10:00:01.000Z"),
-            _priced("claude-sonnet-5", input=200, output=75, ts="2026-05-19T10:00:02.000Z"),
-        ]
-        data = _mod._extract_rearm_session_turns(records)
-        assert data["main_thread_models"] == ["claude-opus-5", "claude-sonnet-5"]
-        assert len(data["main_thread_record_positions"]) == len(data["main_thread_turns"])
-        for turn_index, record_index in enumerate(data["main_thread_record_positions"]):
-            rec = data["deduped"][record_index]
-            assert rec["message"]["model"] == data["main_thread_models"][turn_index]
-
-    def test_record_positions_skip_sidechain_and_no_usage_records(self):
-        """A no-usage synthetic record and a sidechain turn both advance
-        "deduped"'s own index but must not appear in
-        main_thread_record_positions -- that list only indexes usage-carrying
-        main-thread turns, mirroring _hook_observable_boundaries' own
-        desync guard."""
-        records = [
-            _asst("claude-opus-5", ts="2026-05-19T10:00:00.000Z"),  # no usage block
-            _priced_sidechain_asst("claude-opus-5", output_tokens=10, ts="2026-05-19T10:00:01.000Z"),
-            _priced("claude-opus-5", input=100, output=50, ts="2026-05-19T10:00:02.000Z"),
-        ]
-        data = _mod._extract_rearm_session_turns(records)
-        assert data["main_thread_record_positions"] == [2]
 
 
 class TestCacheMissReason:
@@ -11243,1893 +8493,331 @@ class TestCacheMissReason:
         assert _mod._cache_miss_reason(merged[0]["message"]) == "model_changed"
 
 
-def _plan_boundary_turn_index(records: list[dict]) -> int | None:
-    """Run _extract_rearm_session_turns + _plan_boundary_turn_index end to
-    end -- the shape _plan_boundary_report itself uses."""
-    data = _mod._extract_rearm_session_turns(records)
-    return _mod._plan_boundary_turn_index(data["deduped"], data["main_thread_record_positions"])
+# ---------------------------------------------------------------------------
+# per-record --branches consumers: pre-branch and subagent attribution
+# ---------------------------------------------------------------------------
+
+_SONNET = "claude-sonnet-4-6"
 
 
-class TestPlanBoundaryTurnIndex:
-    def test_exit_plan_mode_signal_marks_the_boundary_turn(self):
-        records = [
-            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-opus-5", output=20, content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
-            _priced("claude-opus-5", output=30, ts="2026-05-19T10:00:02.000Z"),
-        ]
-        assert _plan_boundary_turn_index(records) == 1
-
-    def test_plan_review_skill_invocation_signal_marks_the_boundary_turn(self):
-        records = [
-            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-opus-5", output=20, content=[_skill_use("s1", "plan-review")], ts="2026-05-19T10:00:01.000Z"),
-            _priced("claude-opus-5", output=30, ts="2026-05-19T10:00:02.000Z"),
-        ]
-        assert _plan_boundary_turn_index(records) == 1
-
-    def test_no_boundary_signal_returns_none(self):
-        records = [
-            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-opus-5", output=20, ts="2026-05-19T10:00:01.000Z"),
-        ]
-        assert _plan_boundary_turn_index(records) is None
-
-    def test_boundary_as_the_session_final_turn_still_resolves_a_turn_index(self):
-        """The divide-by-zero guard against zero post-boundary turns lives in
-        the report, not here -- this function must still return the correct
-        index when the boundary turn is the session's last one."""
-        records = [
-            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-opus-5", output=20, content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
-        ]
-        assert _plan_boundary_turn_index(records) == 1
-
-    def test_boundary_inside_sidechain_is_ignored(self):
-        records = [
-            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
-            _asst("claude-opus-5", sidechain=True, content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
-            _priced("claude-opus-5", output=20, content=[_exit_plan_mode("epm2")], ts="2026-05-19T10:00:02.000Z"),
-        ]
-        assert _plan_boundary_turn_index(records) == 1
-
-    def test_multiple_boundaries_first_occurrence_wins(self):
-        """A session's later ExitPlanMode/plan-review calls are re-planning
-        inside work this measurement already treats as post-boundary -- the
-        first occurrence is the boundary, not the last."""
-        records = [
-            _priced("claude-opus-5", output=10, content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-opus-5", output=20, ts="2026-05-19T10:00:01.000Z"),
-            _priced("claude-opus-5", output=30, content=[_skill_use("s1", "plan-review")], ts="2026-05-19T10:00:02.000Z"),
-        ]
-        assert _plan_boundary_turn_index(records) == 0
-
-    def test_no_usage_record_before_boundary_does_not_desync_boundary_index(self):
-        """A main-thread assistant record with no usage block sitting before
-        the real boundary turn must not shift the boundary's own mapped
-        main_thread_turns index -- main_thread_record_positions gives
-        the boundary's own "deduped" record index directly, so no manual
-        turn-counting desync (the class of bug
-        test_synthetic_no_usage_record_does_not_desync_boundaries_from_main_thread_turns
-        guards in the sibling rearm-backtest code) is possible here."""
-        records = [
-            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
-            _asst("claude-opus-5", ts="2026-05-19T10:00:01.000Z"),  # no usage block
-            _priced("claude-opus-5", output=20, content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:02.000Z"),
-            _priced("claude-opus-5", output=30, ts="2026-05-19T10:00:03.000Z"),
-        ]
-        assert _plan_boundary_turn_index(records) == 1
-
-    def test_no_usage_record_at_the_trigger_itself_cannot_be_mapped_and_returns_none(self):
-        """A boundary signal on a record with no usage block has no entry in
-        main_thread_record_positions to map onto -- undetectable, not
-        silently mapped to the wrong main_thread_turns index."""
-        records = [
-            _priced("claude-opus-5", output=10, ts="2026-05-19T10:00:00.000Z"),
-            _asst("claude-opus-5", content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),  # no usage
-            _priced("claude-opus-5", output=20, ts="2026-05-19T10:00:02.000Z"),
-        ]
-        assert _plan_boundary_turn_index(records) is None
+def _branch_args(**fields) -> object:
+    """Args object for a per-record --branches consumer; `fields` overrides the defaults."""
+    base = {"projects": "*", "this_repo": False, "branches": None}
+    base.update(fields)
+    return type("A", (), base)()
 
 
-class TestArmBBoundaryPlusOneDollars:
-    def test_charges_sonnet_cache_write_over_boundary_context_and_own_new_tokens_no_cache_read(self):
-        """Component-level pin: expected values derive from
-        _model_rates("claude-sonnet-5") per token class, never a hardcoded
-        multiplier -- a hardcoded value would pass even if the price table
-        drifted."""
-        usage = {
-            "input_tokens": 500, "output_tokens": 1000,
-            "cache_read_input_tokens": 999_000,  # must be ignored entirely, never scaled
-            "cache_creation_input_tokens": 0,
-        }
-        boundary_context_tokens = 200_000
-        result = _mod._arm_b_boundary_plus_one_dollars(usage, boundary_context_tokens)
+class TestPerRecordConsumersCreditPrefixToTheBranchEntered:
+    """A session that opens on the default branch and then enters a feature branch:
+    each shim subcommand credits the leading default-branch records to that branch
+    (docs/transcript-analysis.md, "Pre-branch default-branch attribution")."""
 
-        rates = _mod._model_rates("claude-sonnet-5")
-        expected = (
-            boundary_context_tokens / 1_000_000 * rates["cache_write_5m"]
-            + 500 / 1_000_000 * rates["input"]
-            + 1000 / 1_000_000 * rates["output"]
-        )
-        assert result == pytest.approx(expected)
-
-    def test_cache_read_never_changes_the_result(self):
-        """Regression guard against scaling the observed cache-read and also
-        charging a cache-write over the same tokens -- double-billing them
-        as both a read and a write."""
-        usage_no_read = {"input_tokens": 500, "output_tokens": 1000, "cache_read_input_tokens": 0}
-        usage_high_read = {"input_tokens": 500, "output_tokens": 1000, "cache_read_input_tokens": 500_000}
-        assert _mod._arm_b_boundary_plus_one_dollars(usage_no_read, 200_000) == pytest.approx(
-            _mod._arm_b_boundary_plus_one_dollars(usage_high_read, 200_000)
-        )
-
-
-class TestArmBLaterTurnDollars:
-    def test_prices_observed_read_write_split_at_sonnet_rates(self):
-        """Component-level pin: every turn after boundary+1 carries the
-        observed read/write split forward, priced at Sonnet rates via
-        _model_rates, not the turn's real (Opus) model."""
-        usage = {
-            "input_tokens": 200, "output_tokens": 800,
-            "cache_read_input_tokens": 50_000,
-            "cache_creation_input_tokens": 3_000,
-            "cache_creation": {"ephemeral_1h_input_tokens": 1_000, "ephemeral_5m_input_tokens": 2_000},
-        }
-        result = _mod._arm_b_later_turn_dollars(usage)
-
-        rates = _mod._model_rates("claude-sonnet-5")
-        expected = (
-            200 / 1_000_000 * rates["input"]
-            + 800 / 1_000_000 * rates["output"]
-            + 50_000 / 1_000_000 * rates["cache_read"]
-            + 1_000 / 1_000_000 * rates["cache_write_1h"]
-            + 2_000 / 1_000_000 * rates["cache_write_5m"]
-        )
-        assert result == pytest.approx(expected)
-
-    def test_zero_cache_creation_prices_cleanly(self):
-        usage = {
-            "input_tokens": 100, "output_tokens": 100,
-            "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
-        }
-        rates = _mod._model_rates("claude-sonnet-5")
-        expected = 100 / 1_000_000 * rates["input"] + 100 / 1_000_000 * rates["output"]
-        assert _mod._arm_b_later_turn_dollars(usage) == pytest.approx(expected)
-
-
-class TestArmCTurnDollars:
-    def test_prices_via_multiply_back_convention(self):
-        """Arm C prices (output_tokens/1000) * the ramp curve's own bucket
-        rate -- never a scaled actual-dollars figure, which would double-
-        count the model-price gap already embedded in the observed dollars."""
-        ramp_curve = {"0-5": {"rate": 3.5, "mean_context": 10_000}}
-        assert _mod._arm_c_turn_dollars(2_000, 0, ramp_curve) == pytest.approx((2_000 / 1000) * 3.5)
-
-    def test_falls_back_to_zero_rate_when_ramp_curve_has_no_bucket_entry(self):
-        assert _mod._arm_c_turn_dollars(1_000, 0, {}) == 0.0
-
-
-class TestPlanBoundaryWorkInflationBreakeven:
-    def test_breakeven_pin_against_hand_computed_delta(self):
-        """Hand-computed fixture: a $6 cheaper arm with a $4 delta over 100
-        post-boundary turns / 10,000 output tokens absorbs pct=4/6 more work
-        (~66.67 extra turns, ~6,666.7 extra output tokens) before the
-        advantage disappears."""
-        result = _mod._plan_boundary_work_inflation_breakeven(6.0, 4.0, 100, 10_000)
-        assert result["pct"] == pytest.approx(4.0 / 6.0)
-        assert result["extra_turns"] == pytest.approx(100 * (4.0 / 6.0))
-        assert result["extra_output_tokens"] == pytest.approx(10_000 * (4.0 / 6.0))
-
-    def test_zero_cheaper_dollars_returns_none_fields(self):
-        result = _mod._plan_boundary_work_inflation_breakeven(0.0, 4.0, 100, 10_000)
-        assert result == {"pct": None, "extra_turns": None, "extra_output_tokens": None}
-
-
-def _plan_boundary_args(
-    *,
-    projects: str = "*",
-    this_repo: bool = False,
-    since: str | None = None,
-    no_redact: bool = False,
-    extra_config_dirs: list[str] | None = None,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "since": since,
-        "no_redact": no_redact,
-        "extra_config_dirs": extra_config_dirs,
-    })()
-
-
-def _opus_boundary_session(*, boundary_content: list | None = None) -> list[dict]:
-    """One Opus-anchored session with a plan boundary at main-thread turn
-    index 1 and two post-boundary turns -- the shared fixture for
-    plan-boundary's end-to-end report tests."""
-    boundary_content = boundary_content if boundary_content is not None else [_exit_plan_mode("epm1")]
-    return [
-        _priced("claude-opus-5", input=1000, output=100, cache_read=50_000, ts="2026-05-19T10:00:00.000Z"),
-        _user_msg("approve the plan", ts="2026-05-19T10:00:01.000Z"),
-        _priced("claude-opus-5", input=2000, output=200, cache_read=100_000, content=boundary_content,
-                ts="2026-05-19T10:00:02.000Z"),
-        _user_msg("go", ts="2026-05-19T10:00:03.000Z"),
-        _priced("claude-opus-5", input=500, output=300, cache_read=150_000, ts="2026-05-19T10:00:04.000Z"),
-        _user_msg("go", ts="2026-05-19T10:00:05.000Z"),
-        _priced("claude-opus-5", input=500, output=400, cache_read=155_000, ts="2026-05-19T10:00:06.000Z"),
-    ]
-
-
-class TestPlanBoundaryReport:
-    def test_unpriced_sonnet_model_fails_at_report_start_not_mid_scan(self, fake_projects, monkeypatch, capsys):
-        """Arms B and C reprice every post-boundary turn at
-        _PLAN_BOUNDARY_SONNET_MODEL's rates; an unpriced model must fail the
-        whole report up front with a named message, not crash mid-scan on an
-        arbitrary turn."""
-        monkeypatch.setattr(_mod, "_PLAN_BOUNDARY_SONNET_MODEL", "claude-sonnet-5-unpriced-test-double")
-        _write_jsonl(fake_projects / "sess.jsonl", _opus_boundary_session())
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
-        assert exc_info.value.code != 0
-        assert "claude-sonnet-5-unpriced-test-double" in capsys.readouterr().err
-
-    def test_redacts_by_default(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", _opus_boundary_session())
-        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+    def test_buckets_date_range_starts_at_prefix_and_main_row_counts_drop(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(_SONNET, branch="main", ts="2026-06-01T10:00:00.000Z"),
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:00:00.000Z"),
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:05:00.000Z"),
+            _asst(_SONNET, branch="main", ts="2026-06-03T10:00:00.000Z"),
+        ])
+        # Never returns to main, so its main row membership moves entirely to the branch.
+        _write_jsonl(fake_projects / "sess-no-return.jsonl", [
+            _asst(_SONNET, branch="main", ts="2026-06-01T11:00:00.000Z"),
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T11:00:00.000Z"),
+        ])
+        _mod.cmd_buckets(_branch_args())
         out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER not in out
+        feature_cols = _table_cols(out, header_contains="Branch", row_contains="feature-x", max_labels=8)
+        main_cols = _table_cols(out, header_contains="Branch", row_contains="main", max_labels=8)
+        assert feature_cols["Total"] == "5"  # each session's prefix turn plus its turns on the branch
+        assert feature_cols["Sess"] == "2"
+        assert main_cols["Total"] == "1"  # only the turn after the boundary stays
+        assert main_cols["Sess"] == "1"
+        assert "2026-06-01..2026-06-02" in out
+        assert "2026-06-03..2026-06-03" in out
 
-    def test_no_redact_prints_do_not_publish_banner(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", _opus_boundary_session())
-        _mod._plan_boundary_report(_plan_boundary_args(no_redact=True), date(2026, 8, 16), roots=[fake_projects.parent])
+    def test_buckets_branch_filter_keeps_the_prefix_turn(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(_SONNET, branch="main", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+        ])
+        _mod.cmd_buckets(_branch_args(branches="feature-x"))
         out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER in out
+        assert _table_cols(out, header_contains="Branch", row_contains="feature-x", max_labels=8)["Total"] == "2"
 
-    def test_no_redact_refused_by_report_itself_when_multi_root(self, tmp_path):
-        """Defense-in-depth, mirroring _cache_rebuild_report's own version of
-        this test: every test in this module calls _plan_boundary_report
-        directly, bypassing _resolve_cost_roots' CLI-level enforcement."""
-        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _opus_boundary_session())
-        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", _opus_boundary_session())
-        with pytest.raises(SystemExit) as exc_info:
-            _mod._plan_boundary_report(_plan_boundary_args(no_redact=True), date(2026, 8, 16), roots=[root_a, root_b])
-        assert exc_info.value.code == 2
-
-    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
-        """CLI-level enforcement, mirroring the sibling cost/context-distribution/
-        edit-format/subagent-mix tests of the same name: cmd_plan_boundary itself
-        (via _resolve_cost_roots), not just _plan_boundary_report, refuses the
-        combination."""
-        default_dir = tmp_path / "default"
-        (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
-        acct_b = fake_config_dir_factory("acct-b")
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_plan_boundary(_plan_boundary_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
-        assert exc_info.value.code == 2
-        assert "--no-redact" in capsys.readouterr().err
-
-    def test_output_never_contains_plan_text_or_plan_file_path(self, fake_projects, capsys):
-        """Negative assertion: a fixture record carrying plan text and
-        planFilePath must never surface in this report's output, redacted or
-        not -- boundary records are consumed for type and position only."""
-        secret_plan_text = "REDACT-ME-PLAN-BODY"
-        secret_plan_file_path = "REDACT-ME-PLAN-FILE-PATH"
-        session = _opus_boundary_session(
-            boundary_content=[{
-                "type": "tool_use", "id": "epm1", "name": "ExitPlanMode",
-                "input": {"plan": secret_plan_text, "planFilePath": secret_plan_file_path},
-            }]
-        )
-        _write_jsonl(fake_projects / "sess.jsonl", session)
-        for no_redact in (False, True):
-            _mod._plan_boundary_report(
-                _plan_boundary_args(no_redact=no_redact), date(2026, 8, 16), roots=[fake_projects.parent]
-            )
-            out = capsys.readouterr().out
-            assert secret_plan_text not in out
-            assert secret_plan_file_path not in out
-            assert "planFilePath" not in out
-
-    def test_output_never_contains_a_per_session_breakdown(self, fake_projects, tmp_path, monkeypatch, capsys):
-        """Aggregate-only claim: across the whole argument surface (default
-        redact, --no-redact, --since, multi-root, --this-repo), no output
-        ever names an individual session."""
-        _write_jsonl(fake_projects / "sess-one.jsonl", _opus_boundary_session())
-        _write_jsonl(fake_projects / "sess-two.jsonl", _opus_boundary_session())
-        single_root = [fake_projects.parent]
-
-        root_a = _write_cost_root(tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _opus_boundary_session())
-        root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", _opus_boundary_session())
-        multi_root = [root_a, root_b]
-
-        monkeypatch.setattr(_mod.scope, "_repo_scoped_project_slugs", lambda *a, **k: ["-home-user-testrepo"])
-
-        for kwargs, roots in (
-            ({}, single_root),
-            ({"no_redact": True}, single_root),
-            ({"since": "365d"}, single_root),
-            ({}, multi_root),
-            ({"this_repo": True}, single_root),
-        ):
-            _mod._plan_boundary_report(_plan_boundary_args(**kwargs), date(2026, 8, 16), roots=roots)
-            out = capsys.readouterr().out
-            assert "sess-one" not in out
-            assert "sess-two" not in out
-            assert "sess-a" not in out
-            assert "sess-b" not in out
-            assert "session-" not in out  # _redact_session_id's own placeholder shape
-
-    def test_unpriced_post_boundary_model_lands_in_unpriced_turns_not_priced_at_zero(self, fake_projects, capsys):
-        """A post-boundary turn on a model with no price-table entry is
-        excluded from arm A's own dollar total and counted as unpriced, not
-        silently priced at $0 and folded in as if genuinely free."""
-        session = [
-            _priced("claude-opus-5", input=1000, output=100, cache_read=50_000, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-opus-5", input=2000, output=200, cache_read=100_000,
-                    content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
-            _priced("claude-opus-4-9-unpriced", input=500, output=300, ts="2026-05-19T10:00:02.000Z"),
-        ]
-        _write_jsonl(fake_projects / "sess.jsonl", session)
-        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
+    def test_duration_span_includes_the_prefix(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(_SONNET, branch="main", ts=_attr_ts(0)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(10)),
+        ])
+        _mod.cmd_duration(_branch_args(branches="feature-x"))
         out = capsys.readouterr().out
-        assert "Plan-boundary sessions repriced: 1" in out
-        assert "1 unpriced turns" in out
+        cols = _table_cols(out, header_contains="Span(min)", row_contains="feature-x")
+        assert cols["Span(min)"] == "10"  # 12:00 to 12:10, not 12:05 to 12:10
+        assert cols["Active(min)"] == "10"
 
-    def test_unpriced_post_boundary_turn_contributes_zero_dollars_to_every_arm_symmetrically(
+    def test_struggle_counts_a_prefix_correction_under_the_branch_entered(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst("claude-opus-4-7", branch="main", ts=_attr_ts(1)),
+            _user_msg([{"type": "text", "text": "this is the wrong approach"}], branch="main", ts=_attr_ts(2)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+        ])
+        _mod.cmd_struggle(_branch_args(branches="feature-x"))
+        out = capsys.readouterr().out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feature-x")
+        assert cols["Opus"] == "1"
+
+    def test_user_input_unfiltered_branchless_prompt_keeps_an_empty_label(self, fake_projects, capsys):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _ui_user("a prompt recorded with no branch", branch="", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="", ts=_attr_ts(2)),
+        ])
+        _mod.cmd_user_input(_user_input_args())
+        out = capsys.readouterr().out
+        assert "a prompt recorded with no branch" in out
+        assert "None" not in out
+        assert re.search(r"^### \S+ ·  · \d{4}-\d{2}-\d{2}$", out, re.MULTILINE)
+
+    def test_user_input_branch_filter_counts_the_prefix_first_prompt_as_the_initial_prompt(
         self, fake_projects, capsys
     ):
-        """An unpriced post-boundary turn among priced ones must be excluded
-        from arms B and C the same way it's already excluded from arm A --
-        repricing it from raw tokens would bias every dollar comparison
-        toward arm A."""
-        boundary_turn = _priced(
-            "claude-opus-5", input=2000, output=200, cache_read=100_000,
-            content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z",
-        )
-        priced_offset0 = _priced(
-            "claude-opus-5", input=500, output=300, cache_read=150_000, ts="2026-05-19T10:00:02.000Z"
-        )
-        unpriced_offset1 = _priced(
-            "claude-opus-4-9-unpriced", input=600, output=400, cache_read=99_000, ts="2026-05-19T10:00:03.000Z"
-        )
-        priced_offset2 = _priced(
-            "claude-opus-5", input=500, output=250, cache_read=160_000, ts="2026-05-19T10:00:04.000Z"
-        )
-        session = [
-            _priced("claude-opus-5", input=1000, output=100, cache_read=50_000, ts="2026-05-19T10:00:00.000Z"),
-            boundary_turn,
-            priced_offset0,
-            unpriced_offset1,
-            priced_offset2,
-        ]
-        _write_jsonl(fake_projects / "sess.jsonl", session)
-        ramp_curve, _ramp_tokens = _ramp_curve_from_records(session)
-        boundary_context_tokens = _mod._context_at_turn(boundary_turn["message"]["usage"])
-
-        def priced_dollars(rec: dict) -> float:
-            dollars_by_class, _c, _u = _mod._price_turn("claude-opus-5", rec["message"]["usage"])
-            return sum(dollars_by_class.values())
-
-        expected_arm_a = priced_dollars(priced_offset0) + priced_dollars(priced_offset2)
-        expected_arm_b = (
-            _mod._arm_b_boundary_plus_one_dollars(priced_offset0["message"]["usage"], boundary_context_tokens)
-            + _mod._arm_b_later_turn_dollars(priced_offset2["message"]["usage"])
-        )
-        expected_arm_c = _mod._arm_c_turn_dollars(300, 0, ramp_curve) + _mod._arm_c_turn_dollars(250, 2, ramp_curve)
-
-        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
-        out = capsys.readouterr().out
-        assert "1 unpriced turns" in out
-        assert _extract_arm_dollars(out, "A: continue on Opus") == pytest.approx(expected_arm_a, abs=0.005)
-        assert _extract_arm_dollars(out, "B: switch to Sonnet") == pytest.approx(expected_arm_b, abs=0.005)
-        assert _extract_arm_dollars(out, "C: fresh Sonnet handoff") == pytest.approx(expected_arm_c, abs=0.005)
-
-    def test_boundary_as_final_turn_is_excluded_without_dividing_by_zero(self, fake_projects, capsys):
-        session = [
-            _priced("claude-opus-5", input=1000, output=100, cache_read=50_000, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-opus-5", input=2000, output=200, cache_read=100_000,
-                    content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
-        ]
-        _write_jsonl(fake_projects / "sess.jsonl", session)
-        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
-        out = capsys.readouterr().out
-        assert "final main-thread turn (excluded, no post-boundary work): 1" in out
-        assert "No plan-boundary sessions with post-boundary work found in scope." in out
-
-    def test_no_boundary_session_is_excluded_and_counted(self, fake_projects, capsys):
-        session = [
-            _priced("claude-opus-5", input=1000, output=100, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-opus-5", input=2000, output=200, ts="2026-05-19T10:00:01.000Z"),
-        ]
-        _write_jsonl(fake_projects / "sess.jsonl", session)
-        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
-        out = capsys.readouterr().out
-        assert "No plan boundary detected: 1" in out
-
-    def test_multiple_post_boundary_model_switches_do_not_break_ground_truth_check(self, fake_projects, capsys):
-        """A session with more than one post-boundary model switch must not
-        crash or miscount the boundary+1 ground-truth check, which looks
-        only at the single boundary_index -> boundary_index+1 transition."""
-        session = [
-            _priced("claude-opus-5", input=1000, output=100, cache_read=50_000, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-opus-5", input=2000, output=200, cache_read=100_000,
-                    content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
-            _priced("claude-sonnet-5", input=500, output=300, cache_read=0, ts="2026-05-19T10:00:02.000Z"),
-            _priced("claude-opus-5", input=500, output=300, cache_read=150_000, ts="2026-05-19T10:00:03.000Z"),
-            _priced("claude-sonnet-5", input=500, output=300, cache_read=0, ts="2026-05-19T10:00:04.000Z"),
-        ]
-        _write_jsonl(fake_projects / "sess.jsonl", session)
-        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
-        out = capsys.readouterr().out
-        assert "Sessions with a real model change observed at boundary+1: 1 of 1" in out
-
-    def test_ground_truth_buckets_previous_message_not_found_reason(self, fake_projects, capsys):
-        """A missing/malformed cache_miss_reason, including the
-        previous_message_not_found variant (which carries no
-        cache_missed_input_tokens field), must be reported rather than
-        raising or silently dropped."""
-        boundary_plus_one = _priced(
-            "claude-sonnet-5", input=500, output=300, cache_read=0, ts="2026-05-19T10:00:02.000Z"
-        )
-        boundary_plus_one["message"]["diagnostics"] = {"cache_miss_reason": {"type": "previous_message_not_found"}}
-        session = [
-            _priced("claude-opus-5", input=1000, output=100, cache_read=50_000, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-opus-5", input=2000, output=200, cache_read=100_000,
-                    content=[_exit_plan_mode("epm1")], ts="2026-05-19T10:00:01.000Z"),
-            boundary_plus_one,
-        ]
-        _write_jsonl(fake_projects / "sess.jsonl", session)
-        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
-        out = capsys.readouterr().out
-        assert "previous_message_not_found: 1" in out
-
-    def test_zero_sessions_in_scope_prints_zero_state_without_crashing(self, fake_projects, capsys):
-        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
-        out = capsys.readouterr().out
-        assert "Sessions scanned: 0" in out
-        assert "No plan-boundary sessions with post-boundary work found in scope." in out
-
-    def test_arm_c_ramp_curve_is_scoped_to_sonnet_anchored_sessions_not_pooled(self, fake_projects, capsys):
-        """Arm C models a fresh Sonnet handoff, so its ramp curve must come
-        from Sonnet-anchored ramp sessions only -- a curve pooled across both
-        families would misprice arm C toward Opus's own rate."""
-        opus_ramp_session = [
-            _priced("claude-opus-5", input=1000, output=1000, cache_read=50_000, ts="2026-05-19T09:00:00.000Z"),
-            _priced("claude-opus-5", input=1000, output=1000, cache_read=50_000, ts="2026-05-19T09:00:01.000Z"),
-        ]
-        sonnet_ramp_session = [
-            _priced("claude-sonnet-5", input=1000, output=1000, cache_read=50_000, ts="2026-05-19T09:01:00.000Z"),
-            _priced("claude-sonnet-5", input=1000, output=1000, cache_read=50_000, ts="2026-05-19T09:01:01.000Z"),
-        ]
-        boundary_session = _opus_boundary_session()
-        _write_jsonl(fake_projects / "ramp-opus.jsonl", opus_ramp_session)
-        _write_jsonl(fake_projects / "ramp-sonnet.jsonl", sonnet_ramp_session)
-        _write_jsonl(fake_projects / "boundary.jsonl", boundary_session)
-
-        sonnet_only_curve, _sonnet_only_tokens = _ramp_curve_from_records(sonnet_ramp_session)
-        pooled_curve, _pooled_tokens = _ramp_curve_from_records(opus_ramp_session, sonnet_ramp_session, boundary_session)
-        # Sanity check: if the two curves' "0-5" rates happened to agree, this
-        # test couldn't distinguish Sonnet-only scoping from pooling.
-        assert sonnet_only_curve["0-5"]["rate"] != pooled_curve["0-5"]["rate"]
-
-        # _opus_boundary_session's two post-boundary turns (output 300, 400)
-        # both fall in the "0-5" turns-since-boundary bucket.
-        expected_arm_c_dollars = (
-            _mod._arm_c_turn_dollars(300, 0, sonnet_only_curve)
-            + _mod._arm_c_turn_dollars(400, 1, sonnet_only_curve)
-        )
-
-        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
-        out = capsys.readouterr().out
-        assert _extract_arm_dollars(out, "C: fresh Sonnet handoff") == pytest.approx(expected_arm_c_dollars, abs=0.005)
-
-    def test_sonnet_anchored_session_is_excluded_from_opus_anchored_count(self, fake_projects, capsys):
-        """A session whose first main-thread turn is on Sonnet, not Opus, is
-        excluded from repricing entirely -- Opus-anchored-only scope is this
-        measurement's own design choice, not a general corpus convention."""
-        session = [
-            _priced("claude-sonnet-5", input=1000, output=100, ts="2026-05-19T10:00:00.000Z"),
-            _priced("claude-sonnet-5", input=2000, output=200, content=[_exit_plan_mode("epm1")],
-                    ts="2026-05-19T10:00:01.000Z"),
-            _priced("claude-sonnet-5", input=500, output=300, ts="2026-05-19T10:00:02.000Z"),
-        ]
-        _write_jsonl(fake_projects / "sess.jsonl", session)
-        _mod._plan_boundary_report(_plan_boundary_args(), date(2026, 8, 16), roots=[fake_projects.parent])
-        out = capsys.readouterr().out
-        assert "Sessions scanned: 1" in out
-        assert "Opus-anchored: 0" in out
-        assert "No plan-boundary sessions with post-boundary work found in scope." in out
-
-
-class TestPlanBoundaryArgparseWiring:
-    def test_registers_plan_boundary_subcommand_with_expected_defaults(self):
-        parser = _mod.build_parser()
-        args = parser.parse_args(["plan-boundary"])
-        assert args.since is None
-        assert args.extra_config_dirs is None
-        assert args.no_redact is False
-        assert args.func == _mod.cmd_plan_boundary
-
-
-# ---------------------------------------------------------------------------
-# handoff-signal-response
-# ---------------------------------------------------------------------------
-
-def _handoff_signal_response_args(
-    *, projects: str = "*", this_repo: bool = False, config_dir: str | None = None,
-    no_redact: bool = False, sample: int = 0, seed: int | None = None,
-    output_format: str = "json", context_turns: int = 0,
-) -> object:
-    return type("A", (), {
-        "projects": projects,
-        "this_repo": this_repo,
-        "config_dir": config_dir,
-        "no_redact": no_redact,
-        "sample": sample,
-        "seed": seed,
-        "output_format": output_format,
-        "context_turns": context_turns,
-    })()
-
-
-def _check_result_json(
-    *, status: str = "ok", over_threshold: bool = False, already_fired: bool = False,
-    estimate: int = 200_000, threshold: int = 150_000,
-) -> str:
-    """The exact JSON shape nudge-handoff-near-context-cap.sh --check prints
-    (run_check_mode's own jq -n object)."""
-    return json.dumps({
-        "status": status, "session_id": "s", "estimate": estimate, "threshold": threshold,
-        "over_threshold": over_threshold, "model": "claude-sonnet-5", "context_window": 1_000_000,
-        "model_recognized": True, "already_fired": already_fired, "nudge_disabled": False,
-    })
-
-
-def _handoff_advisory_attachment() -> dict:
-    """The real advisory-fire attachment record shape (a "hook_success"
-    attachment whose stdout is nudge-handoff-near-context-cap.sh's own
-    injected-additionalContext JSON envelope)."""
-    return {
-        "type": "attachment",
-        "attachment": {
-            "type": "hook_success",
-            "command": "~/.claude/hooks/nudge-handoff-near-context-cap.sh",
-            "hookEvent": "PostToolBatch",
-            "stdout": json.dumps({
-                "hookSpecificOutput": {
-                    "hookEventName": "PostToolBatch",
-                    "additionalContext": (
-                        "Context is past this session's handoff-nudge threshold (150000 tokens)."
-                        " If the current task is not close to done, suggest running /handoff to the"
-                        " user. If the task is nearly complete, ignore this and finish -- judge that"
-                        " by what the remaining work costs, not by how many steps are left."
-                    ),
-                },
-            }),
-            "stderr": "",
-            "exitCode": 0,
-        },
-    }
-
-
-def _handoff_hard_block_attachment() -> dict:
-    """The real hard-block attachment record shape ("hook_stopped_continuation",
-    carrying "message" but no "command"/"stdout" -- nudge-handoff-near-context-cap.sh
-    lines 644-649)."""
-    return {
-        "type": "attachment",
-        "attachment": {
-            "type": "hook_stopped_continuation",
-            "message": (
-                "[~/.claude/hooks/nudge-handoff-near-context-cap.sh]: Context (507297 tokens) is"
-                " past this session's handoff-nudge hard-block point (HANDOFF_NUDGE_BLOCK_AT=470000),"
-                " after 4 ignored re-arms. Blocking rather than advising: run /handoff now -- it"
-                " captures state in a /tmp file and resumes in a fresh session."
-            ),
-            "hookName": "PostToolBatch",
-            "hookEvent": "PostToolBatch",
-        },
-    }
-
-
-def _check_call_turn(tool_id: str = "chk1", **usage_kwargs) -> dict:
-    """A main-thread assistant turn whose only tool call is the real --check
-    invocation (handoff/SKILL.md's own command text)."""
-    return _priced(
-        "claude-sonnet-5",
-        content=[_bash_use(tool_id, "~/.claude/hooks/nudge-handoff-near-context-cap.sh --check")],
-        **usage_kwargs,
-    )
-
-
-class TestHandoffSignalDetectorHelpers:
-    """Unit coverage for the small Bash-command/tool_use classifiers
-    _handoff_signal_response_session_rows' own single pass reuses."""
-
-    def test_bash_check_call_detected_in_plain_invocation(self):
-        block = _bash_use("t1", "~/.claude/hooks/nudge-handoff-near-context-cap.sh --check")
-        assert _mod._handoff_signal_bash_check_call(block) is True
-
-    def test_bash_check_call_detected_inside_chained_segment(self):
-        block = _bash_use("t1", "cd /tmp && ~/.claude/hooks/nudge-handoff-near-context-cap.sh --check")
-        assert _mod._handoff_signal_bash_check_call(block) is True
-
-    def test_bash_call_without_check_flag_is_not_a_check_call(self):
-        block = _bash_use("t1", "~/.claude/hooks/nudge-handoff-near-context-cap.sh")
-        assert _mod._handoff_signal_bash_check_call(block) is False
-
-    def test_non_bash_tool_use_is_not_a_check_call(self):
-        block = _skill_use("t1", "handoff")
-        assert _mod._handoff_signal_bash_check_call(block) is False
-
-    def test_marker_activate_ready_for_review_detected(self):
-        block = _bash_use("m1", "~/.claude/scripts/marker.sh activate ready-for-review")
-        assert _mod._handoff_signal_marker_transition(block) == "activate"
-
-    def test_marker_deactivate_ready_for_review_detected(self):
-        block = _bash_use("m1", "~/.claude/scripts/marker.sh deactivate ready-for-review")
-        assert _mod._handoff_signal_marker_transition(block) == "deactivate"
-
-    def test_marker_transition_for_a_different_skill_is_ignored(self):
-        """A marker.sh call for a DIFFERENT skill (e.g. handoff's own) must
-        not be misread as a ready-for-review transition."""
-        block = _bash_use("m1", "~/.claude/scripts/marker.sh activate handoff")
-        assert _mod._handoff_signal_marker_transition(block) is None
-
-    def test_marker_activate_detected_inside_an_and_chained_segment(self):
-        block = _bash_use("m1", "cd /tmp && ~/.claude/scripts/marker.sh activate ready-for-review")
-        assert _mod._handoff_signal_marker_transition(block) == "activate"
-
-    def test_marker_deactivate_detected_inside_a_semicolon_chained_segment(self):
-        block = _bash_use("m1", "cd /tmp ; ~/.claude/scripts/marker.sh deactivate ready-for-review")
-        assert _mod._handoff_signal_marker_transition(block) == "deactivate"
-
-    def test_skill_handoff_invocation_is_a_handoff_event(self):
-        assert _mod._handoff_signal_is_handoff_event(_skill_use("h1", "handoff")) is True
-
-    def test_skill_invocation_for_a_different_skill_is_not_a_handoff_event(self):
-        assert _mod._handoff_signal_is_handoff_event(_skill_use("h1", "plan-review")) is False
-
-    def test_write_to_handoffs_file_is_a_handoff_event(self):
-        block = _write_use("w1", "body", path="/repo/.claude/handoffs/my-task-handoff.md")
-        assert _mod._handoff_signal_is_handoff_event(block) is True
-
-    def test_write_to_an_unrelated_path_is_not_a_handoff_event(self):
-        block = _write_use("w1", "body", path="/repo/scratch/notes.md")
-        assert _mod._handoff_signal_is_handoff_event(block) is False
-
-
-class TestHandoffSignalExcerptEligibility:
-    """The source-turn-eligibility filter: an excerpt candidate is only
-    ever a main-thread assistant record's own "text" content block."""
-
-    _RATIONALIZATION_TEXT = "nearly complete, ignore this and finish -- no cost reasoning needed"
-
-    def test_tool_use_block_inside_an_assistant_record_is_never_excerpt_eligible(self):
-        """The record itself IS type=="assistant" -- pins that eligibility is
-        filtered at the block level (type=="text" only), not merely by the
-        record's own top-level type."""
-        rec = _priced("claude-sonnet-5", content=[_bash_use("t1", f"echo '{self._RATIONALIZATION_TEXT}'")])
-        assert _mod._handoff_signal_excerpt_eligible_text(rec) == ""
-
-    def test_tool_result_record_is_never_excerpt_eligible(self):
-        rec = _user_msg([_tool_result("t1", self._RATIONALIZATION_TEXT)])
-        assert _mod._handoff_signal_excerpt_eligible_text(rec) == ""
-
-    def test_plain_user_turn_record_is_never_excerpt_eligible(self):
-        rec = _user_msg(self._RATIONALIZATION_TEXT)
-        assert _mod._handoff_signal_excerpt_eligible_text(rec) == ""
-
-    def test_sidechain_assistant_text_is_not_excerpt_eligible(self):
-        """A subagent's own text turn: the nudge never fires inside a
-        subagent, so this isn't the orchestrating session's own rationalization."""
-        rec = _priced("claude-sonnet-5", content=[{"type": "text", "text": self._RATIONALIZATION_TEXT}])
-        rec["isSidechain"] = True
-        assert _mod._handoff_signal_excerpt_eligible_text(rec) == ""
-
-    def test_plain_main_thread_assistant_text_is_excerpt_eligible(self):
-        rec = _priced("claude-sonnet-5", content=[{"type": "text", "text": self._RATIONALIZATION_TEXT}])
-        assert _mod._handoff_signal_excerpt_eligible_text(rec) == self._RATIONALIZATION_TEXT
-
-    def test_excerpt_skips_ineligible_records_and_finds_next_eligible_assistant_text(self):
-        deduped = [
-            _priced("claude-sonnet-5", content=[_bash_use("t1", "echo hi")], request_id="r1"),
-            _user_msg([_tool_result("t1", self._RATIONALIZATION_TEXT)]),
-            _priced(
-                "claude-sonnet-5", request_id="r2",
-                content=[{"type": "text", "text": "Continuing because remaining steps are few."}],
-            ),
-        ]
-        assert _mod._handoff_signal_excerpt(deduped, after_record_index=0) == (
-            "Continuing because remaining steps are few."
-        )
-
-    def test_excerpt_truncates_eligible_text_to_max_chars(self):
-        # Sequential digits, not a repeated character: a wrong-window slice
-        # (e.g. text[50:450]) is byte-distinguishable from the correct prefix.
-        long_text = "".join(str(i % 10) for i in range(_mod._HANDOFF_SIGNAL_EXCERPT_MAX_CHARS + 50))
-        turn = _priced("claude-sonnet-5", content=[{"type": "text", "text": long_text}], request_id="r1")
-        deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
-        assert _mod._handoff_signal_excerpt(deduped, after_record_index=0) == (
-            long_text[:_mod._HANDOFF_SIGNAL_EXCERPT_MAX_CHARS]
-        )
-
-    def test_tool_use_block_content_never_leaks_into_the_base_excerpt(self):
-        """Mirrors TestHandoffSignalForwardContext's own
-        test_tool_use_block_content_never_leaks_into_forward_context_text_or_thinking:
-        a tool_use block mixed into an otherwise-eligible assistant record's
-        content must never surface in the excerpt -- pinned as a
-        security-invariant regression, not just a coverage gap, since a
-        future refactor could otherwise leak tool-call content into a
-        published case-study excerpt."""
-        identifiable_command = "cat /scratch/api-keys.txt"
-        rec = _priced(
-            "claude-sonnet-5",
-            content=[_bash_use("t1", identifiable_command), {"type": "text", "text": "wrapping up now"}],
-        )
-        assert _mod._handoff_signal_excerpt_eligible_text(rec) == "wrapping up now"
-        assert identifiable_command not in _mod._handoff_signal_excerpt_eligible_text(rec)
-
-
-class TestHandoffSignalForwardContext:
-    """_handoff_signal_forward_context's own turn-walking, truncation, and
-    thinking-block contract. Unlike _handoff_signal_excerpt_eligible_text
-    (text blocks only), this reads both text and thinking content -- closing
-    the base excerpt's own blind spot for an agent's extended-thinking
-    reasoning."""
-
-    def test_returns_up_to_n_turns_in_order_with_correct_turn_offset(self):
-        deduped = [
-            _priced("claude-sonnet-5", request_id="r0"),
-            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn one"}], request_id="r1"),
-            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn two"}], request_id="r2"),
-            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn three"}], request_id="r3"),
-        ]
-        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=2)
-        assert [(c["turn_offset"], c["text"]) for c in contexts] == [(1, "turn one"), (2, "turn two")]
-
-    def test_returns_fewer_than_n_turns_when_the_transcript_runs_out(self):
-        deduped = [
-            _priced("claude-sonnet-5", request_id="r0"),
-            _priced("claude-sonnet-5", content=[{"type": "text", "text": "only turn"}], request_id="r1"),
-        ]
-        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=5)
-        assert len(contexts) == 1
-        assert contexts[0]["turn_offset"] == 1
-
-    def test_thinking_only_turn_surfaces_in_forward_context_but_not_in_base_excerpt(self):
-        """Regression test for the base excerpt's own thinking-block blind
-        spot: a turn with a thinking block and no text block is invisible to
-        _handoff_signal_excerpt_eligible_text, but must still appear here."""
-        turn = _priced("claude-sonnet-5", content=[_thinking_block()], request_id="r1")
-        assert _mod._handoff_signal_excerpt_eligible_text(turn) == ""
-        deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
-        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
-        assert contexts == [{"turn_offset": 1, "text": "", "thinking": "some thought"}]
-
-    def test_truncates_text_and_thinking_independently_to_max_chars(self):
-        long_text = "t" * (_mod._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS + 50)
-        long_thinking = "k" * (_mod._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS + 50)
-        turn = _priced(
-            "claude-sonnet-5", request_id="r1",
-            content=[{"type": "text", "text": long_text}, {"type": "thinking", "thinking": long_thinking}],
-        )
-        deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
-        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
-        assert contexts[0]["text"] == long_text[:_mod._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS]
-        assert contexts[0]["thinking"] == long_thinking[:_mod._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS]
-
-    def test_sidechain_and_non_assistant_records_are_never_counted_as_turns(self):
-        sidechain = _priced("claude-sonnet-5", content=[{"type": "text", "text": "subagent text"}], request_id="r1")
-        sidechain["isSidechain"] = True
-        deduped = [
-            _priced("claude-sonnet-5", request_id="r0"),
-            _user_msg([_tool_result("t1", "irrelevant")]),
-            sidechain,
-            _priced("claude-sonnet-5", content=[{"type": "text", "text": "real turn"}], request_id="r2"),
-        ]
-        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=5)
-        assert len(contexts) == 1
-        assert contexts[0]["text"] == "real turn"
-
-    def test_no_session_id_or_path_field_ever_appears_in_an_entry(self):
-        deduped = [
-            _priced("claude-sonnet-5", request_id="r0"),
-            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn"}], request_id="r1"),
-        ]
-        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
-        assert set(contexts[0]) == {"turn_offset", "text", "thinking"}
-
-    def test_n_turns_zero_or_negative_returns_empty_list(self):
-        """Docstring says "up to n_turns" entries -- n_turns<=0 must return
-        none at all, not one spurious entry from appending before checking
-        the length guard (the CLI-reachable --context-turns -1 boundary)."""
-        deduped = [
-            _priced("claude-sonnet-5", request_id="r0"),
-            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn one"}], request_id="r1"),
-        ]
-        assert _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=0) == []
-        assert _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=-1) == []
-
-    def test_interior_turn_with_only_tool_use_content_still_consumes_a_turn_slot(self):
-        """A turn with no text/thinking content (only a tool_use block) must
-        still count as a visited turn -- keeping turn_offset stable for every
-        turn that follows it -- not be silently skipped like a sidechain or
-        non-assistant record is."""
-        empty_turn = _priced("claude-sonnet-5", content=[_bash_use("t1", "git status")], request_id="r1")
-        deduped = [
-            _priced("claude-sonnet-5", request_id="r0"),
-            empty_turn,
-            _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn two"}], request_id="r2"),
-        ]
-        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=2)
-        assert contexts[0] == {"turn_offset": 1, "text": "", "thinking": ""}
-        assert contexts[1]["turn_offset"] == 2
-        assert contexts[1]["text"] == "turn two"
-
-    def test_tool_use_block_content_never_leaks_into_forward_context_text_or_thinking(self):
-        """Mirrors TestHandoffSignalExcerptEligibility's own
-        test_tool_use_block_inside_an_assistant_record_is_never_excerpt_eligible:
-        a tool_use block mixed into an otherwise-eligible assistant record's
-        content must never surface in either forward_context field -- pinned
-        as a security-invariant regression, not just a coverage gap, since a
-        future refactor could otherwise leak tool-call content into a
-        published case-study excerpt."""
-        identifiable_command = "cat /scratch/api-keys.txt"
-        turn = _priced(
-            "claude-sonnet-5", request_id="r1",
-            content=[_bash_use("t1", identifiable_command), {"type": "text", "text": "wrapping up now"}],
-        )
-        deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
-        contexts = _mod._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
-        assert contexts[0]["text"] == "wrapping up now"
-        assert identifiable_command not in contexts[0]["text"]
-        assert identifiable_command not in contexts[0]["thinking"]
-
-
-class TestHandoffSignalResponseSessionRows:
-    """_handoff_signal_response_session_rows' own signal-detection and
-    row-composition contract, per
-    .claude/plans/handoff-nudge-rationalization-gap.md."""
-
-    def test_over_threshold_true_already_fired_false_emits_one_check_signal(self):
-        records = [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True, already_fired=False))]),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert len(rows) == 1
-        assert rows[0]["kind"] == _mod._HANDOFF_SIGNAL_CHECK
-
-    def test_over_threshold_false_already_fired_true_emits_one_check_signal(self):
-        records = [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=False, already_fired=True))]),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert len(rows) == 1
-        assert rows[0]["kind"] == _mod._HANDOFF_SIGNAL_CHECK
-
-    def test_over_threshold_and_already_fired_both_true_is_still_one_row_not_two(self):
-        records = [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True, already_fired=True))]),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert len(rows) == 1
-
-    def test_neither_over_threshold_nor_already_fired_emits_no_signal(self):
-        records = [
-            _check_call_turn(input=50_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=False, already_fired=False))]),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert rows == []
-
-    def test_cannot_resolve_status_emits_no_signal(self):
-        """A --check refusal (status != "ok") must never be misread as a
-        qualifying over_threshold/already_fired result."""
-        records = [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", json.dumps({"status": "cannot-resolve", "reason": "transcript-not-found"}))]),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert rows == []
-
-    def test_session_with_check_and_advisory_signals_emits_two_distinct_rows(self):
-        records = [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            _handoff_advisory_attachment(),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert [r["kind"] for r in rows] == [_mod._HANDOFF_SIGNAL_CHECK, _mod._HANDOFF_SIGNAL_ADVISORY]
-
-    def test_advisory_then_later_hard_block_emits_two_distinct_rows_not_collapsed(self):
-        """The only shape a hard-block signal occurs in: an earlier
-        same-session advisory record (the hook's LAST_FIRED_AT invariant
-        makes a session's first-ever fire always advisory) followed by a
-        later hard-block record."""
-        records = [
-            _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1"),
-            _handoff_advisory_attachment(),
-            _priced("claude-sonnet-5", input=480_000, output=1_000, request_id="r2"),
-            _handoff_hard_block_attachment(),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert [r["kind"] for r in rows] == [_mod._HANDOFF_SIGNAL_ADVISORY, _mod._HANDOFF_SIGNAL_HARD_BLOCK]
-        assert rows[0]["record_index"] < rows[1]["record_index"]
-
-    def test_hard_block_record_shape_alone_is_detected_in_isolation(self):
-        """Parser-level supplement to the session-level fixture above --
-        does not substitute for it."""
-        records = [
-            _priced("claude-sonnet-5", input=480_000, output=1_000, request_id="r1"),
-            _handoff_hard_block_attachment(),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert len(rows) == 1
-        assert rows[0]["kind"] == _mod._HANDOFF_SIGNAL_HARD_BLOCK
-
-    def test_marker_active_state_reflects_the_most_recent_transition_at_signal_time(self):
-        records = [
-            _priced(
-                "claude-sonnet-5", input=160_000, output=1_000, request_id="r1",
-                content=[_bash_use("m1", "~/.claude/scripts/marker.sh activate ready-for-review")],
-            ),
-            _handoff_advisory_attachment(),
-            _priced(
-                "claude-sonnet-5", input=480_000, output=1_000, request_id="r2",
-                content=[_bash_use("m2", "~/.claude/scripts/marker.sh deactivate ready-for-review")],
-            ),
-            _handoff_hard_block_attachment(),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert rows[0]["marker_active"] is True
-        assert rows[1]["marker_active"] is False
-
-    def test_handoff_followed_true_when_handoff_skill_invoked_after_signal_same_session(self):
-        records = [
-            _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1"),
-            _handoff_advisory_attachment(),
-            _priced("claude-sonnet-5", input=170_000, output=1_000, request_id="r2", content=[_skill_use("h1", "handoff")]),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert rows[0]["handoff_followed"] is True
-
-    def test_handoff_followed_false_when_no_handoff_event_this_session(self):
-        records = [
-            _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1"),
-            _handoff_advisory_attachment(),
-            _priced("claude-sonnet-5", input=170_000, output=1_000, request_id="r2"),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert rows[0]["handoff_followed"] is False
-
-    def test_handoff_followed_true_via_write_to_handoffs_file(self):
-        records = [
-            _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1"),
-            _handoff_advisory_attachment(),
-            _priced(
-                "claude-sonnet-5", input=170_000, output=1_000, request_id="r2",
-                content=[_write_use("w1", "body", path="/repo/.claude/handoffs/task-handoff.md")],
-            ),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert rows[0]["handoff_followed"] is True
-
-    def test_turns_and_dollars_after_signal_count_only_turns_strictly_after_the_signal(self):
-        rec_before = _priced("claude-sonnet-5", input=160_000, output=1_000, request_id="r1")
-        rec_after_1 = _priced("claude-sonnet-5", input=170_000, output=2_000, request_id="r2")
-        rec_after_2 = _priced("claude-sonnet-5", input=180_000, output=2_000, request_id="r3")
-        records = [rec_before, _handoff_advisory_attachment(), rec_after_1, rec_after_2]
-
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-
-        dollars_after_1, _ctx1, _u1 = _mod._price_turn("claude-sonnet-5", rec_after_1["message"]["usage"])
-        dollars_after_2, _ctx2, _u2 = _mod._price_turn("claude-sonnet-5", rec_after_2["message"]["usage"])
-        expected_dollars = sum(dollars_after_1.values()) + sum(dollars_after_2.values())
-
-        assert rows[0]["turns_after_signal"] == 2
-        assert rows[0]["dollars_after_signal"] == pytest.approx(expected_dollars)
-
-    def test_pct_spend_after_signal_is_relative_to_the_whole_session_not_the_tail(self):
-        """Two signals in one session, at different positions: each row's
-        own pct_spend_after_signal must divide by the WHOLE session's total
-        dollars (session_total_dollars), not by the spend remaining between
-        the two signals -- a bug here would make the second signal's
-        percentage look artificially high."""
-        rec1 = _priced("claude-sonnet-5", input=100_000, output=1_000, request_id="r1")
-        rec2 = _priced("claude-sonnet-5", input=110_000, output=2_000, request_id="r2")
-        rec3 = _priced("claude-sonnet-5", input=120_000, output=3_000, request_id="r3")
-        records = [
-            rec1,
-            _handoff_advisory_attachment(),  # signal A fires after rec1
-            rec2,
-            _handoff_hard_block_attachment(),  # signal B fires after rec2
-            rec3,
-        ]
-
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert len(rows) == 2
-        row_a, row_b = rows
-
-        d1 = sum(_mod._price_turn("claude-sonnet-5", rec1["message"]["usage"])[0].values())
-        d2 = sum(_mod._price_turn("claude-sonnet-5", rec2["message"]["usage"])[0].values())
-        d3 = sum(_mod._price_turn("claude-sonnet-5", rec3["message"]["usage"])[0].values())
-        total = d1 + d2 + d3
-
-        assert row_a["session_total_dollars"] == pytest.approx(total)
-        assert row_a["dollars_after_signal"] == pytest.approx(d2 + d3)
-        assert row_a["pct_spend_after_signal"] == pytest.approx((d2 + d3) / total)
-
-        assert row_b["session_total_dollars"] == pytest.approx(total)
-        assert row_b["dollars_after_signal"] == pytest.approx(d3)
-        assert row_b["pct_spend_after_signal"] == pytest.approx(d3 / total)
-
-    def test_pct_spend_after_signal_is_none_when_session_total_dollars_is_zero(self):
-        """A session whose every priced turn is $0 (zero usage counts) must
-        report pct_spend_after_signal as None rather than raising
-        ZeroDivisionError."""
-        records = [
-            _check_call_turn(input=0, output=0, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert len(rows) == 1
-        assert rows[0]["session_total_dollars"] == 0.0
-        assert rows[0]["pct_spend_after_signal"] is None
-
-    def test_signal_at_transcript_end_reports_zero_turns_and_dollars_after_not_none(self):
-        """The firing tool_result is the LAST record, with nothing after it --
-        distinct from the zero-cost-session case above (session_total_dollars
-        is nonzero here), this pins that "no turns follow" still resolves to
-        0.0/0.0, never None, when there IS spend to divide against."""
-        records = [
-            _priced("claude-sonnet-5", input=100_000, output=1_000, request_id="r1"),
-            _check_call_turn(input=200_000, output=1_000, request_id="r2"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert len(rows) == 1
-        assert rows[0]["turns_after_signal"] == 0
-        assert rows[0]["dollars_after_signal"] == 0.0
-        assert rows[0]["pct_spend_after_signal"] == 0.0
-
-    def test_malformed_json_in_check_tool_result_content_emits_no_signal(self):
-        """The --check tool_result's own content is not valid JSON -- the
-        (json.JSONDecodeError, ValueError) guard around that parse must
-        swallow it silently, emitting no signal, rather than raise."""
-        records = [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", "not valid json{")]),
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert rows == []
-
-    def test_malformed_json_in_advisory_attachment_stdout_emits_no_signal(self):
-        """The advisory hook_success attachment's own stdout is not valid
-        JSON -- the (json.JSONDecodeError, ValueError) guard around that
-        parse must swallow it silently, emitting no signal, rather than raise."""
-        records = [
-            {
-                "type": "attachment",
-                "attachment": {
-                    "type": "hook_success",
-                    "command": "~/.claude/hooks/nudge-handoff-near-context-cap.sh",
-                    "hookEvent": "PostToolBatch",
-                    "stdout": "not valid json{",
-                    "stderr": "",
-                    "exitCode": 0,
-                },
-            },
-        ]
-        rows, _deduped, _trace = _mod._handoff_signal_response_session_rows(records)
-        assert rows == []
-
-
-class TestCmdHandoffSignalResponseScopeAndRedaction:
-    """cmd_handoff_signal_response's own CLI-boundary contract: the
-    resolved-scope banner and the context-distribution-style multi-root
-    --no-redact refusal (.claude/plans/handoff-nudge-rationalization-gap.md)."""
-
-    def test_resolved_scope_banner_reports_a_single_root(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
-        _mod.cmd_handoff_signal_response(_handoff_signal_response_args())
-        out = capsys.readouterr().out
-        assert "HANDOFF SIGNAL RESPONSE SOURCES" in out
-        assert "1 root" in out
-
-    @pytest.mark.parametrize("sample", [0, 5])
-    def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, sample):
-        """sample=5 pins the higher-risk curation-card path (raw excerpts and
-        text), which sample=0's aggregate-only fixture never reached."""
-        _two_declared_roots(tmp_path, monkeypatch)
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_handoff_signal_response(_handoff_signal_response_args(no_redact=True, sample=sample))
-        assert exc_info.value.code == 2
-        err = capsys.readouterr().err
-        assert "--no-redact" in err
-        assert "more than one root" in err
-
-    def test_no_redact_allowed_and_stamps_banner_at_single_root(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
-        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(no_redact=True))
-        captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
-
-    def test_default_redact_omits_do_not_publish_banner(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
-        _mod.cmd_handoff_signal_response(_handoff_signal_response_args())
-        captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.err
-
-
-class TestCmdHandoffSignalResponseSampleCards:
-    """--sample curation-card output: session-id redaction and the excerpt
-    join against the real (re-read) session file."""
-
-    def test_sample_redacts_session_id_by_default(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _ui_user("prefix planning prompt", branch="main", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="main", ts=_attr_ts(2)),
+            _ui_user("prompt after entering the branch", branch="feature-x", ts=_attr_ts(5)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(6)),
         ])
-        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="json"))
+        _mod.cmd_user_input(_user_input_args(branches="feature-x"))
         out = capsys.readouterr().out
-        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
-        assert len(cards) == 1
-        assert cards[0]["session_id"] == "session-1"
-        assert cards[0]["session_id"] != "sess"  # "sess" is the real jsonl.stem this must not leak
+        assert re.search(r"INITIAL · \w+\]\*\*\n~~~text\nprefix planning prompt\n~~~", out)
+        assert re.search(r"FOLLOWUP · \w+\]\*\*\n~~~text\nprompt after entering the branch\n~~~", out)
 
-    def test_sample_no_redact_emits_raw_session_id(self, fake_projects, capsys):
+    def test_judgment_pair_prints_the_attributed_branch_of_a_prefix_invocation(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _skill_use_rec("code-review", _attr_ts(1), branch="main"),
+            _review_asst("Review text recorded before the branch existed.", _attr_ts(2), branch="main"),
+            _user_reply("Acknowledged.", branch="main"),
+            _review_asst("Work on the branch.", _attr_ts(5), branch="feature-x"),
         ])
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=5, seed=1, output_format="json", no_redact=True)
-        )
+        _mod.cmd_judgment_pair(_judgment_pair_args(branches="feature-x"))
         out = capsys.readouterr().out
-        # DO NOT PUBLISH banner (stdout) + resolved-scope header precede the JSON array.
-        json_start = out.index("[")
-        cards = json.loads(out[json_start:])
-        assert len(cards) == 1
-        assert cards[0]["session_id"] == "sess"
+        assert "Skill: code-review  branch=feature-x" in out
 
-    def test_sample_card_excerpt_matches_next_eligible_assistant_text_turn(self, fake_projects, capsys):
-        """Drives the excerpt seam through the real CLI path (file write ->
-        cmd_handoff_signal_response -> card), not just the in-memory unit
-        test. _handoff_signal_response_cards re-reads the session file
-        independently of the initial scan's own deduped list."""
-        excerpt_text = "Continuing because remaining steps are few, not because of cost."
+    def test_user_input_since_window_leaves_a_later_default_branch_prompt_on_the_default_branch(
+        self, fake_projects, capsys
+    ):
+        """main -> X -> main -> Y with --since between X and the second main. The session
+        context is built before the window filter; one built from in-window prompts would
+        see the second main as the leading run and credit its prompt to Y."""
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            _priced(
-                "claude-sonnet-5", input=210_000, output=500, request_id="r2",
-                content=[{"type": "text", "text": excerpt_text}],
-            ),
+            _ui_user("prefix prompt", branch="main", ts="2026-06-01T10:00:00.000Z"),
+            _ui_user("prompt on branch x", branch="feature-x", ts="2026-06-02T10:00:00.000Z"),
+            _ui_user("later prompt on the default branch", branch="main", ts="2026-06-04T10:00:00.000Z"),
+            _ui_user("prompt on branch y", branch="feature-y", ts="2026-06-06T10:00:00.000Z"),
         ])
-        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="json"))
-        out = capsys.readouterr().out
-        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
-        assert cards[0]["excerpt"] == excerpt_text
 
-    def test_multiple_signals_from_the_same_session_get_the_same_redacted_label(self, fake_projects, capsys):
-        """Two signals from one real session must redact to the same
-        session-N label, not session-1/session-2 for the same underlying
-        session -- pins _assign_session_redact_label's per-session (not
-        per-row) keying."""
+        _mod.cmd_user_input(_user_input_args(branches="main", since="2026-06-03"))
+        main_out = capsys.readouterr().out
+        assert "later prompt on the default branch" in main_out
+        _mod.cmd_user_input(_user_input_args(branches="feature-y", since="2026-06-03"))
+        feature_y_out = capsys.readouterr().out
+        assert "prompt on branch y" in feature_y_out
+        assert "later prompt on the default branch" not in feature_y_out
+
+    def test_judgment_pair_since_window_leaves_a_later_default_branch_invocation_on_the_default_branch(
+        self, fake_projects, capsys
+    ):
+        """main -> X -> main -> Y with --since between X and the second main: the second
+        main's invocation stays on main, as a context built from in-window records would
+        not keep it."""
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn("chk1", input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            _check_call_turn("chk2", input=210_000, output=1_000, request_id="r2"),
-            _user_msg([_tool_result("chk2", _check_result_json(over_threshold=True))]),
+            _skill_use_rec("code-review", "2026-06-01T10:00:00.000Z", branch="main", tool_id="s1"),
+            _review_asst("Review recorded before the branch existed.", "2026-06-01T10:01:00.000Z", branch="main"),
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:00:00.000Z"),
+            _skill_use_rec("code-review", "2026-06-04T10:00:00.000Z", branch="main", tool_id="s2"),
+            _review_asst("Review recorded on the default branch later.", "2026-06-04T10:01:00.000Z", branch="main"),
+            _asst(_SONNET, branch="feature-y", ts="2026-06-06T10:00:00.000Z"),
         ])
-        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="json"))
-        out = capsys.readouterr().out
-        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
-        assert len(cards) == 2
-        assert cards[0]["session_id"] == cards[1]["session_id"] == "session-1"
 
+        _mod.cmd_judgment_pair(_judgment_pair_args(branches="main", since="2026-06-03"))
+        main_out = capsys.readouterr().out
+        assert "Skill: code-review  branch=main" in main_out
+        assert "Review recorded on the default branch later." in main_out
+        _mod.cmd_judgment_pair(_judgment_pair_args(branches="feature-y", since="2026-06-03"))
+        assert "Review recorded on the default branch later." not in capsys.readouterr().out
 
-class TestCmdHandoffSignalResponseContextTurns:
-    """--context-turns wiring through the CLI: the --sample precondition,
-    the omitted-flag no-op contract, and the forward_context shape --
-    including the thinking-block regression the flag exists to close."""
-
-    def test_context_turns_without_sample_exits_2_naming_both_flags(self, capsys):
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=0, context_turns=2))
-        assert exc_info.value.code == 2
-        err = capsys.readouterr().err
-        assert "--context-turns" in err
-        assert "--sample" in err
-
-    def test_negative_context_turns_exits_2_with_stderr_message(self, fake_projects, capsys):
-        """--sample is set here so this isolates the negative-value check
-        from the --context-turns-requires---sample check above."""
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=1, context_turns=-1))
-        assert exc_info.value.code == 2
-        assert "--context-turns must not be negative" in capsys.readouterr().err
-
-    def test_context_turns_omitted_forward_context_key_absent_from_every_card(self, fake_projects, capsys):
+    def test_pr_link_counts_the_prefix_turn_toward_the_branch_model_split(self, fake_projects, monkeypatch, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+            _asst("claude-opus-4-7", branch="main", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
         ])
-        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="json"))
+
+        def fake_run(cmd, *_, **__):
+            class Completed:
+                stdout = json.dumps([{"number": 77}]) if "list" in cmd else ""
+                returncode = 0
+
+            return Completed()
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        _mod.cmd_pr_link(_branch_args(repo="owner/repo", branches="feature-x", author="alice"))
         out = capsys.readouterr().out
-        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
-        assert len(cards) == 1
-        assert "forward_context" not in cards[0]
-
-    def test_context_turns_surfaces_up_to_n_turns_with_turn_offset(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
-                    content=[{"type": "text", "text": "turn one text"}]),
-            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r3",
-                    content=[{"type": "text", "text": "turn two text"}]),
-        ])
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=5, seed=1, output_format="json", context_turns=2)
-        )
-        out = capsys.readouterr().out
-        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
-        forward_context = cards[0]["forward_context"]
-        assert [(t["turn_offset"], t["text"]) for t in forward_context] == [
-            (1, "turn one text"), (2, "turn two text"),
-        ]
-
-    def test_context_turns_returns_fewer_than_n_when_the_transcript_runs_out(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
-                    content=[{"type": "text", "text": "only turn"}]),
-        ])
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=5, seed=1, output_format="json", context_turns=5)
-        )
-        out = capsys.readouterr().out
-        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
-        assert len(cards[0]["forward_context"]) == 1
-
-    def test_thinking_only_turn_surfaces_in_forward_context_but_not_in_the_excerpt(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2", content=[_thinking_block()]),
-        ])
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=5, seed=1, output_format="json", context_turns=1)
-        )
-        out = capsys.readouterr().out
-        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
-        assert cards[0]["excerpt"] == ""
-        assert cards[0]["forward_context"] == [{"turn_offset": 1, "text": "", "thinking": "some thought"}]
-
-    @pytest.mark.parametrize("no_redact", [False, True])
-    def test_forward_context_never_contains_session_id_or_path_fields(self, fake_projects, capsys, no_redact):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
-                    content=[{"type": "text", "text": "turn text"}]),
-        ])
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(
-                sample=5, seed=1, output_format="json", context_turns=1, no_redact=no_redact,
-            )
-        )
-        out = capsys.readouterr().out
-        cards = json.loads(out[out.index("["):])
-        for turn in cards[0]["forward_context"]:
-            assert set(turn) == {"turn_offset", "text", "thinking"}
+        cols = _table_cols(out, header_contains="Branch", row_contains="feature-x")
+        assert (cols["Opus"], cols["Sonnet"]) == ("1", "1")
 
 
-class TestCmdHandoffSignalResponseContextTurnsViaRealArgparse:
-    """Exercises --context-turns through the real argparse CLI
-    (build_parser()), not the _handoff_signal_response_args() test-helper
-    shortcut every other handoff-signal-response test uses -- cmd_handoff_signal_response
-    reads the flag via getattr(args, "context_turns", 0), a silent
-    fallback-to-0 read that a dest/flag-string wiring bug would pass
-    unnoticed by every helper-driven test above."""
+class TestFailSeqAttribution:
+    @staticmethod
+    def _run_fail_seq(capsys) -> str:
+        _mod.cmd_fail_seq(_branch_args(branches="feature-x"))
+        return capsys.readouterr().out
 
-    def test_context_turns_flag_drives_cmd_handoff_signal_response_through_the_real_parser(
-        self, fake_projects, capsys,
+    def test_prefix_test_run_with_its_result_in_the_prefix_counts_under_the_branch_entered(
+        self, fake_projects, capsys
     ):
         _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
-                    content=[{"type": "text", "text": "turn one text"}]),
+            _asst(_SONNET, branch="main", ts=_attr_ts(1), content=[_bash_use("t1", "pytest")]),
+            _user_msg([_tool_result("t1", "3 failed, 17 passed")], branch="main", ts=_attr_ts(2)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
         ])
-        parser = _mod.build_parser()
-        args = parser.parse_args(["handoff-signal-response", "--sample", "5", "--context-turns", "2"])
-        assert args.context_turns == 2
-        assert args.func == _mod.cmd_handoff_signal_response
+        out = self._run_fail_seq(capsys)
+        assert "### feature-x" in out
+        assert "Sequence: 3" in out
 
-        _mod.cmd_handoff_signal_response(args)
+    def test_test_run_spanning_the_branch_switch_is_dropped_by_the_literal_tag_reset(
+        self, fake_projects, capsys
+    ):
+        """The pending-pair reset marks a physical checkout change, so it reads the
+        record's own tag: the tool_use on the last `main` record is not paired with a
+        tool_result on the first feature-x record."""
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(_SONNET, branch="main", ts=_attr_ts(1), content=[_bash_use("t1", "pytest")]),
+            _user_msg([_tool_result("t1", "3 failed, 17 passed")], branch="feature-x", ts=_attr_ts(5)),
+        ])
+        out = self._run_fail_seq(capsys)
+        assert "No test runs found for the specified branches." in out
 
+
+class TestInlineSidechainRecordsFollowTheDispatchingBranchInBucketsAndDuration:
+    """A sidechain record sitting inline in a main transcript file takes the branch its
+    main thread was on, so neither a foreign tag nor a worktree-agent-* tag becomes a row."""
+
+    def test_buckets_folds_inline_sidechain_records_into_the_dispatching_branch_date_range(
+        self, fake_projects, capsys
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:00:00.000Z"),
+            _asst(_SONNET, branch="feature-x", ts="2026-06-02T10:05:00.000Z"),
+            _asst(_SONNET, branch="foreign-branch", sidechain=True, ts="2026-06-05T10:00:00.000Z"),
+            _asst(_SONNET, branch="worktree-agent-abc123", sidechain=True, ts="2026-06-06T10:00:00.000Z"),
+        ])
+        _mod.cmd_buckets(_branch_args())
         out = capsys.readouterr().out
-        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
-        assert cards[0]["forward_context"] == [{"turn_offset": 1, "text": "turn one text", "thinking": ""}]
+        assert "foreign-branch" not in out
+        assert "worktree-agent" not in out
+        cols = _table_cols(out, header_contains="Branch", row_contains="feature-x", max_labels=8)
+        assert cols["Total"] == "2"  # sidechain records never count as turns
+        assert cols["Sess"] == "1"
+        assert "2026-06-02..2026-06-06" in out
 
-    def test_negative_context_turns_through_the_real_parser_exits_2(self, fake_projects, capsys):
-        parser = _mod.build_parser()
-        args = parser.parse_args(["handoff-signal-response", "--sample", "5", "--context-turns", "-1"])
-        assert args.context_turns == -1
-
-        with pytest.raises(SystemExit) as exc_info:
-            _mod.cmd_handoff_signal_response(args)
-        assert exc_info.value.code == 2
-
-
-class TestCmdHandoffSignalResponseSampleTruncation:
-    """--sample N ranks by post-signal spend and truncates to exactly N
-    cards. TestCmdHandoffSignalResponseSampleCards' own fixtures build exactly
-    one signal-bearing session each, so truncation itself is untested there."""
-
-    def test_sample_n_truncates_more_than_n_signal_rows_to_exactly_n_cards(self, fake_projects, capsys):
-        for i in range(8):
-            _write_jsonl(fake_projects / f"sess{i}.jsonl", [
-                _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-                _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            ])
-        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=3, seed=1, output_format="json"))
+    def test_duration_folds_inline_sidechain_records_into_the_dispatching_branch_span(
+        self, fake_projects, capsys
+    ):
+        _write_jsonl(fake_projects / "sess.jsonl", [
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(0)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+            _asst(_SONNET, branch="foreign-branch", sidechain=True, ts=_attr_ts(20)),
+            _asst(_SONNET, branch="foreign-branch", sidechain=True, ts=_attr_ts(22)),
+            _asst(_SONNET, branch="worktree-agent-abc123", sidechain=True, ts=_attr_ts(25)),
+            _asst(_SONNET, branch="worktree-agent-abc123", sidechain=True, ts=_attr_ts(27)),
+        ])
+        _mod.cmd_duration(_branch_args())
         out = capsys.readouterr().out
-        cards = json.loads(out.split("\n", 1)[1])  # drop the resolved-scope header line
-        assert len(cards) == 3
+        assert "foreign-branch" not in out
+        assert "worktree-agent" not in out
+        cols = _table_cols(out, header_contains="Span(min)", row_contains="feature-x")
+        assert cols["Span(min)"] == "27"  # 12:00 to 12:27, not 12:00 to 12:05
+        assert cols["Active(min)"] == "27"
 
 
-class TestCmdHandoffSignalResponseSampleRanking:
-    """--sample ranks by post-signal spend (.claude/plans/handoff-nudge-rationalization-gap.md
-    row 14): the highest-spend rows are where a wrong continue-decision
-    actually cost something."""
+class TestSubagentRecordsFollowTheDispatchingBranch:
+    """skill-invocation --include-subagents and skill-pair attribute every subagent
+    record to the branch its dispatching main thread was on at the record's time."""
 
     @staticmethod
-    def _signal_session(post_signal_output: int) -> list[dict]:
-        return [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            _priced("claude-sonnet-5", input=200_000, output=post_signal_output, request_id="r2"),
-        ]
+    def _run_skill_invocation(capsys, **kw) -> str:
+        _mod.cmd_skill_invocation(_skill_inv_args(include_subagents=True, **kw))
+        return capsys.readouterr().out
 
-    def test_sample_sorted_descending_by_dollars_after_signal(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "low.jsonl", self._signal_session(1_000))
-        _write_jsonl(fake_projects / "mid.jsonl", self._signal_session(20_000))
-        _write_jsonl(fake_projects / "high.jsonl", self._signal_session(50_000))
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=3, seed=1, output_format="json", no_redact=True)
-        )
-        out = capsys.readouterr().out
-        cards = json.loads(out[out.index("["):])
-        assert [c["session_id"] for c in cards] == ["high", "mid", "low"]
-
-    def test_seed_produces_reproducible_tie_break_order_across_invocations(self, fake_projects, capsys):
-        """Multiple $0.00 rows (no turns after the signal) tie on
-        dollars_after_signal; a given --seed must break the tie the same way
-        every run, via a pre-shuffle before the stable sort."""
-        names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
-        for name in names:
-            _write_jsonl(fake_projects / f"{name}.jsonl", [
-                _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-                _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            ])
-        expected_order = list(names)
-        random.Random(99).shuffle(expected_order)
-
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=6, seed=99, output_format="json", no_redact=True)
-        )
-        first_out = capsys.readouterr().out
-        first_order = [c["session_id"] for c in json.loads(first_out[first_out.index("["):])]
-
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=6, seed=99, output_format="json", no_redact=True)
-        )
-        second_out = capsys.readouterr().out
-        second_order = [c["session_id"] for c in json.loads(second_out[second_out.index("["):])]
-
-        assert first_order == second_order == expected_order
-
-    def test_omitting_seed_keeps_ties_in_scan_order_and_is_repeatable(self, fake_projects, capsys):
-        """No --seed means no shuffle at all, not an unseeded-but-fixed RNG:
-        ties keep the rows' scan order (alphabetical by session filename),
-        deterministically across repeated runs."""
-        names = ["alpha", "bravo", "charlie", "delta"]
-        for name in names:
-            _write_jsonl(fake_projects / f"{name}.jsonl", [
-                _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-                _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            ])
-
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=4, output_format="json", no_redact=True)
-        )
-        first_out = capsys.readouterr().out
-        first_order = [c["session_id"] for c in json.loads(first_out[first_out.index("["):])]
-
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=4, output_format="json", no_redact=True)
-        )
-        second_out = capsys.readouterr().out
-        second_order = [c["session_id"] for c in json.loads(second_out[second_out.index("["):])]
-
-        assert first_order == second_order == names
-
-    def test_sample_with_no_signal_rows_in_scope_produces_empty_cards(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, output=100)])
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=5, seed=1, output_format="json", no_redact=True)
-        )
-        out = capsys.readouterr().out
-        cards = json.loads(out[out.index("["):])
-        assert cards == []
-
-
-class TestRankSignalRowsBySpend:
-    """_rank_signal_rows_by_spend's own ranking/tie-break contract, exercised
-    directly against fabricated rows rather than through the CLI."""
-
-    def test_ranks_descending_by_dollars_after_signal(self):
-        rows = [
-            {"dollars_after_signal": 1.0, "session_id": "low"},
-            {"dollars_after_signal": 5.0, "session_id": "high"},
-            {"dollars_after_signal": 3.0, "session_id": "mid"},
-        ]
-        ranked = _mod._rank_signal_rows_by_spend(rows, sample_n=3, seed=None)
-        assert [r["session_id"] for r in ranked] == ["high", "mid", "low"]
-
-    def test_seeded_tie_break_is_reproducible_across_calls(self):
-        rows = [{"dollars_after_signal": 0.0, "session_id": name} for name in "abcdef"]
-        first = _mod._rank_signal_rows_by_spend(rows, sample_n=6, seed=99)
-        second = _mod._rank_signal_rows_by_spend(rows, sample_n=6, seed=99)
-        assert [r["session_id"] for r in first] == [r["session_id"] for r in second]
-
-    def test_omitting_seed_keeps_ties_in_input_order(self):
-        rows = [{"dollars_after_signal": 0.0, "session_id": name} for name in "abcdef"]
-        ranked = _mod._rank_signal_rows_by_spend(rows, sample_n=6, seed=None)
-        assert [r["session_id"] for r in ranked] == list("abcdef")
-
-
-class TestHandoffSignalResponseAggregateReport:
-    """_handoff_signal_response_aggregate_report's own conversion-rate and
-    per-group breakdown math, pinned against hand-computed values for a
-    mixed kind/marker-context row set -- the census run's headline numbers."""
-
-    def test_conversion_rate_and_breakdown_match_hand_computed_values(self, capsys):
-        rows = [
-            {"session_id": "s1", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": False,
-             "handoff_followed": True, "dollars_after_signal": 1.0},
-            {"session_id": "s1", "kind": _mod._HANDOFF_SIGNAL_ADVISORY, "marker_active": True,
-             "handoff_followed": False, "dollars_after_signal": 3.0},
-            {"session_id": "s2", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": True,
-             "handoff_followed": False, "dollars_after_signal": 2.0},
-            {"session_id": "s3", "kind": _mod._HANDOFF_SIGNAL_HARD_BLOCK, "marker_active": False,
-             "handoff_followed": True, "dollars_after_signal": 5.0},
-        ]
-        _mod._handoff_signal_response_aggregate_report(
-            rows, log_diagnostic=None, benchmark_dollars=None,
-        )
-        out = capsys.readouterr().out
-
-        assert "Sessions with at least one signal: 3" in out
-        assert "Conversion rate (a same-session /handoff followed the signal): 50.0% (2/4)" in out
-
-        def _breakdown_row(label: str) -> list[str]:
-            for line in out.splitlines():
-                if line.startswith(label):
-                    return line[len(label):].split()
-            raise AssertionError(f"breakdown row not found for {label!r}")
-
-        # By signal kind: check={rows 0,2} advisory={row 1} hard-block={row 3}.
-        assert _breakdown_row("check") == ["2", "50.0%", "1.50"]
-        assert _breakdown_row("advisory") == ["1", "0.0%", "3.00"]
-        assert _breakdown_row("hard-block") == ["1", "100.0%", "5.00"]
-
-        # By ready-for-review active-marker context: active={rows 1,2} inactive={rows 0,3}.
-        assert _breakdown_row("active") == ["2", "0.0%", "2.50"]
-        assert _breakdown_row("inactive") == ["2", "100.0%", "3.00"]
-
-    def test_benchmark_line_and_exceeded_summary_printed_when_available(self, capsys):
-        rows = [
-            {"session_id": "s1", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": False,
-             "handoff_followed": True, "dollars_after_signal": 1.0, "exceeds_startup_burn_benchmark": False},
-            {"session_id": "s2", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": False,
-             "handoff_followed": False, "dollars_after_signal": 5.0, "exceeds_startup_burn_benchmark": True},
-        ]
-        _mod._handoff_signal_response_aggregate_report(
-            rows, log_diagnostic=None, benchmark_dollars=2.00,
-        )
-        out = capsys.readouterr().out
-        assert "Startup-burn benchmark (this scope): $2.00 per continuation session." in out
-        assert "Signals whose post-signal spend exceeded the benchmark: 1 (50.0%)" in out
-
-    def test_benchmark_reported_unavailable_when_none(self, capsys):
-        _mod._handoff_signal_response_aggregate_report(
-            [], log_diagnostic=None, benchmark_dollars=None,
-        )
-        out = capsys.readouterr().out
-        assert "Startup-burn benchmark (this scope): unavailable (no continuation sessions found in scope)." in out
-
-    def test_breakdown_and_benchmark_output_never_pairs_a_count_with_a_summable_dollar_figure(self, capsys):
-        """Pins the composition-reconstruction invariant itself, not just
-        today's output string: no printed breakdown row may carry both a
-        Signals/count column and a mean or per-unit-rate dollar column for
-        the same group, and the startup-burn benchmark line must never
-        surface a session/branch count alongside its dollar figure --
-        pairing either would let a reader recombine the two halves into a
-        raw pooled dollar total (docs/private-project-redaction.md
-        "Composition is publication")."""
-        rows = [
-            {"session_id": "s1", "kind": _mod._HANDOFF_SIGNAL_CHECK, "marker_active": False,
-             "handoff_followed": True, "dollars_after_signal": 1.0, "exceeds_startup_burn_benchmark": False},
-            {"session_id": "s2", "kind": _mod._HANDOFF_SIGNAL_ADVISORY, "marker_active": True,
-             "handoff_followed": False, "dollars_after_signal": 3.0, "exceeds_startup_burn_benchmark": True},
-            {"session_id": "s3", "kind": _mod._HANDOFF_SIGNAL_HARD_BLOCK, "marker_active": True,
-             "handoff_followed": True, "dollars_after_signal": 5.0, "exceeds_startup_burn_benchmark": True},
-        ]
-        _mod._handoff_signal_response_aggregate_report(
-            rows, log_diagnostic=None, benchmark_dollars=2.00,
-        )
-        out = capsys.readouterr().out
-
-        expected_header = f"{'Group':<14} {'Signals':>8} {'Handoff%':>9} {'Median $ after':>15}"
-        header_lines = [line for line in out.splitlines() if line.startswith("Group")]
-        assert header_lines, "no breakdown header printed"
-        for header_line in header_lines:
-            assert header_line == expected_header
-        assert "Mean" not in out
-
-        assert "Startup-burn benchmark (this scope): $2.00 per continuation session." in out
-        assert "per continuation session." in out
-        assert "non-first sessions" not in out
-        assert "branches with corpus activity" not in out
-
-
-class TestStartupBurnBenchmark:
-    """_startup_burn_benchmark's own weighted-average formula, exercised
-    directly against fabricated workstream dicts (_compute_workstream_dollars'
-    own per-branch shape) rather than through a full corpus scan --
-    complements TestCmdHandoffSignalResponseStartupBurnBenchmark's own
-    end-to-end wiring test below."""
-
-    def test_weighted_average_across_a_solo_branch_and_a_continuation_branch(self):
-        workstream = {
-            "solo": {"session_count": 1, "total_dollars": 2.41, "startup_burn_dollars": 0.0, "last_activity_ts": 0.0},
-            "cont": {"session_count": 2, "total_dollars": 1.61, "startup_burn_dollars": 1.41, "last_activity_ts": 0.0},
-        }
-        benchmark, total_continuations, branch_count = _mod._startup_burn_benchmark(workstream)
-        assert benchmark == pytest.approx(1.41)
-        assert total_continuations == 1
-        assert branch_count == 2
-
-    def test_benchmark_is_weighted_by_continuation_count_not_averaged_per_branch(self):
-        """Two branches with very different continuation counts: the
-        benchmark must be sum-of-burn / sum-of-continuations (weighted), not
-        the mean of each branch's own per-branch average -- an unweighted
-        average would let the low-volume branch skew the result as much as
-        the high-volume one."""
-        workstream = {
-            # 10 continuations at $10.00/continuation.
-            "high-volume": {
-                "session_count": 11, "total_dollars": 0.0, "startup_burn_dollars": 100.0, "last_activity_ts": 0.0,
-            },
-            # 1 continuation at $2.00/continuation.
-            "low-volume": {
-                "session_count": 2, "total_dollars": 0.0, "startup_burn_dollars": 2.0, "last_activity_ts": 0.0,
-            },
-        }
-        benchmark, total_continuations, _branch_count = _mod._startup_burn_benchmark(workstream)
-        # An unweighted mean of (10.00, 2.00) would be 6.00; the correct
-        # weighted figure is (100 + 2) / (10 + 1).
-        assert benchmark == pytest.approx(102.0 / 11)
-        assert total_continuations == 11
-
-    def test_benchmark_is_none_when_no_branch_has_a_continuation_session(self):
-        workstream = {
-            "solo-a": {"session_count": 1, "total_dollars": 1.0, "startup_burn_dollars": 0.0, "last_activity_ts": 0.0},
-            "solo-b": {"session_count": 1, "total_dollars": 2.0, "startup_burn_dollars": 0.0, "last_activity_ts": 0.0},
-        }
-        benchmark, total_continuations, branch_count = _mod._startup_burn_benchmark(workstream)
-        assert benchmark is None
-        assert total_continuations == 0
-        assert branch_count == 2
-
-    def test_empty_workstream_reports_unavailable_benchmark_and_zero_branches(self):
-        benchmark, total_continuations, branch_count = _mod._startup_burn_benchmark({})
-        assert benchmark is None
-        assert total_continuations == 0
-        assert branch_count == 0
-
-
-class TestCmdHandoffSignalResponseStartupBurnBenchmark:
-    """cmd_handoff_signal_response's own end-to-end startup-burn benchmark
-    wiring: a second, independent _resolve_project_scope pass feeds
-    _compute_workstream_dollars, and _startup_burn_benchmark's weighted-average
-    formula (.claude/plans/handoff-nudge-rationalization-gap.md) sets
-    exceeds_startup_burn_benchmark on every signal row."""
-
-    def test_benchmark_and_exceeds_flag_match_hand_computed_values(self, fake_projects, capsys):
-        # Branch "solo": exactly one session -- contributes zero to both the
-        # benchmark's numerator (startup_burn_dollars) and denominator
-        # (session_count - 1 == 0). Its own signal's post-signal spend
-        # ($2.00) ends up well above the benchmark computed below.
-        _write_jsonl(fake_projects / "solo.jsonl", [
-            _check_call_turn(branch="solo", input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))], branch="solo"),
-            _priced("claude-sonnet-5", branch="solo", input=1_000_000, output=0, request_id="r2"),  # $2.00
-        ])
-
-        # Branch "cont": two sessions -- cont-1 (chronologically first)
-        # contributes nothing; cont-2 (non-first) contributes both of its own
-        # main-thread turns' dollars as startup burn (until_first_n_turns=5
-        # is never reached with only 2 turns). Its own signal's post-signal
-        # spend ($1.00) ends up below the benchmark.
-        _write_jsonl(fake_projects / "cont-1.jsonl", [
-            _priced("claude-sonnet-5", branch="cont", input=100_000, output=0, ts="2026-08-01T10:00:00.000Z"),
-        ])  # $0.20, first session by time
-        _write_jsonl(fake_projects / "cont-2.jsonl", [
-            _check_call_turn(
-                "chk2", branch="cont", input=200_000, output=1_000, request_id="r3", ts="2026-08-02T10:00:00.000Z",
-            ),  # $0.41
-            _user_msg(
-                [_tool_result("chk2", _check_result_json(over_threshold=True))],
-                branch="cont", ts="2026-08-02T10:00:01.000Z",
-            ),
-            _priced(
-                "claude-sonnet-5", branch="cont", input=500_000, output=0, ts="2026-08-02T10:01:00.000Z",
-            ),  # $1.00
-        ])
-
-        # Hand-computed benchmark: total_burn = cont-2's own two main-thread
-        # turns ($0.41 + $1.00 = $1.41); total_continuations = 1 (only
-        # branch "cont" has a non-first session); benchmark = $1.41 / 1.
-        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(no_redact=True))
-        out = capsys.readouterr().out
-        assert "Startup-burn benchmark (this scope): $1.41 per continuation session." in out
-        # solo's $2.00 exceeds $1.41; cont's $1.00 does not -- 1 of 2 signals.
-        assert "Signals whose post-signal spend exceeded the benchmark: 1 (50.0%)" in out
-
-    def test_exceeds_flag_set_per_card_above_and_below_the_benchmark(self, fake_projects, capsys):
-        """Same fixture as above, read through the --sample curation-card
-        path instead of the aggregate report, to pin exceeds_startup_burn_benchmark
-        on the per-row/per-card data itself."""
-        _write_jsonl(fake_projects / "solo.jsonl", [
-            _check_call_turn(branch="solo", input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))], branch="solo"),
-            _priced("claude-sonnet-5", branch="solo", input=1_000_000, output=0, request_id="r2"),  # $2.00
-        ])
-        _write_jsonl(fake_projects / "cont-1.jsonl", [
-            _priced("claude-sonnet-5", branch="cont", input=100_000, output=0, ts="2026-08-01T10:00:00.000Z"),
-        ])
-        _write_jsonl(fake_projects / "cont-2.jsonl", [
-            _check_call_turn(
-                "chk2", branch="cont", input=200_000, output=1_000, request_id="r3", ts="2026-08-02T10:00:00.000Z",
-            ),
-            _user_msg(
-                [_tool_result("chk2", _check_result_json(over_threshold=True))],
-                branch="cont", ts="2026-08-02T10:00:01.000Z",
-            ),
-            _priced(
-                "claude-sonnet-5", branch="cont", input=500_000, output=0, ts="2026-08-02T10:01:00.000Z",
-            ),  # $1.00
-        ])
-
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=2, seed=1, output_format="json", no_redact=True)
-        )
-        out = capsys.readouterr().out
-        cards = json.loads(out[out.index("["):])
-        by_session = {c["session_id"]: c for c in cards}
-        assert by_session["solo"]["exceeds_startup_burn_benchmark"] is True
-        assert by_session["cont-2"]["exceeds_startup_burn_benchmark"] is False
-
-    def test_exceeds_flag_is_false_on_an_exact_tie_with_the_benchmark(self, fake_projects, capsys):
-        """dollars_after_signal == benchmark_dollars exactly must resolve to
-        False -- pins the "> benchmark_dollars" (not ">=") comparison."""
-        _write_jsonl(fake_projects / "cont-1.jsonl", [
-            _priced("claude-sonnet-5", branch="cont", input=100_000, output=0, ts="2026-08-01T10:00:00.000Z"),
-        ])
-        _write_jsonl(fake_projects / "cont-2.jsonl", [
-            # $0 pre-signal turn, then a $1.00 post-signal turn -- cont-2's
-            # own startup burn (both of its main-thread turns, since
-            # until_first_n_turns=5 is never reached) is therefore exactly
-            # $1.00, the same $1.00 dollars_after_signal below.
-            _priced(
-                "claude-sonnet-5", branch="cont", input=0, output=0, request_id="r1",
-                ts="2026-08-02T10:00:00.000Z",
-            ),
-            _handoff_advisory_attachment(),
-            _priced(
-                "claude-sonnet-5", branch="cont", input=500_000, output=0, request_id="r2",
-                ts="2026-08-02T10:01:00.000Z",
-            ),  # $1.00
-        ])
-
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=1, seed=1, output_format="json", no_redact=True)
-        )
-        out = capsys.readouterr().out
-        cards = json.loads(out[out.index("["):])
-        assert cards[0]["dollars_after_signal"] == pytest.approx(1.0)
-        assert cards[0]["exceeds_startup_burn_benchmark"] is False
-
-    def test_benchmark_unavailable_and_exceeds_flag_none_with_no_continuation_sessions(
+    def test_prefix_late_and_isolated_sidechain_invocations_count_under_the_branch_entered(
         self, fake_projects, capsys
     ):
-        """A degenerate corpus with zero continuation sessions anywhere in
-        scope -- every branch has exactly one session -- reports the
-        benchmark as unavailable rather than raising, and every row's
-        exceeds_startup_burn_benchmark is None rather than a bool."""
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        session_id = "sess-prefix"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst(_SONNET, branch="main", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
         ])
-
-        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(no_redact=True))
-        out = capsys.readouterr().out
-        assert "Startup-burn benchmark (this scope): unavailable (no continuation sessions found in scope)." in out
-        assert "Signals whose post-signal spend exceeded the benchmark" not in out
-
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=1, seed=1, output_format="json", no_redact=True)
-        )
-        out = capsys.readouterr().out
-        cards = json.loads(out[out.index("["):])
-        assert len(cards) == 1
-        assert cards[0]["exceeds_startup_burn_benchmark"] is None
-
-
-class TestCmdHandoffSignalResponseOperatorLagDiagnostic:
-    """.handoff-nudge.log's operator-response-lag cross-check, wired
-    end-to-end through cmd_handoff_signal_response -- mirrors
-    TestRearmBacktestReport's own .handoff-nudge.log fixture/config_dir
-    pattern (fake_projects already monkeypatches config_dir() to tmp_path,
-    the log's own real location)."""
-
-    def test_log_diagnostic_reports_joined_count_and_median_lag(self, fake_projects, tmp_path, capsys):
-        (tmp_path / ".handoff-nudge.log").write_text(
-            "nudged session=sess est=150000 model=claude-sonnet-5 window=1000000 event=Stop\n"
-        )
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst(_SONNET, branch="main", sidechain=True, ts=_attr_ts(2),
+                  content=[_skill_use("p1", "plan-it")]),
+            _asst(_SONNET, branch="main", sidechain=True, ts=_attr_ts(8),
+                  content=[_skill_use("p2", "plan-review")]),
+            _asst(_SONNET, branch="worktree-agent-abc123", sidechain=True, ts=_attr_ts(9),
+                  content=[_skill_use("p3", "code-review")]),
         ])
-        _mod.cmd_handoff_signal_response(_handoff_signal_response_args())
-        out = capsys.readouterr().out
-        assert (
-            "Operator-response-lag cross-check (.handoff-nudge.log 'nudged' lines): 1 joined"
-            " (0 excluded -- no matching session in scope), median lag 51,000 tokens past the fire point" in out
-        )
+        out = self._run_skill_invocation(capsys, branches="feature-x")
+        for skill in ("plan-it", "plan-review", "code-review"):
+            assert re.search(rf"^{skill}\s+sidechain", out, re.MULTILINE), f"{skill} missing: {out}"
 
-
-class TestFormatHandoffSignalCardsAsMarkdown:
-    """_format_handoff_signal_cards_as_markdown's own document shape --
-    mirrors _format_samples_as_markdown's own curation-card format."""
-
-    _CARD = {
-        "session_id": "session-1",
-        "kind": _mod._HANDOFF_SIGNAL_CHECK,
-        "position": 10,
-        "context_at_turn": 200_000,
-        "threshold": 150_000,
-        "marker_active": False,
-        "handoff_followed": True,
-        "turns_after_signal": 3,
-        "dollars_after_signal": 1.23,
-        "session_total_dollars": 4.00,
-        "pct_spend_after_signal": 0.3075,
-        "exceeds_startup_burn_benchmark": True,
-        "excerpt": "Confirmed over threshold, running /handoff now.",
-    }
-
-    def test_header_names_signal_count_sample_n_and_seed(self):
-        out = _mod._format_handoff_signal_cards_as_markdown(
-            [self._CARD], sample_n=5, seed=7, benchmark_dollars=0.50,
-        )
-        assert out.startswith("# handoff-signal-response curation — 1 signal(s)")
-        assert "--sample 5" in out
-        assert "--seed 7" in out
-
-    def test_header_reports_unset_seed_as_none_placeholder(self):
-        out = _mod._format_handoff_signal_cards_as_markdown(
-            [self._CARD], sample_n=5, seed=None, benchmark_dollars=0.50,
-        )
-        assert "--seed (none)" in out
-
-    def test_header_names_the_startup_burn_benchmark_dollar_figure(self):
-        out = _mod._format_handoff_signal_cards_as_markdown(
-            [self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50,
-        )
-        assert "Startup-burn benchmark (this scope): $0.50 per continuation session." in out
-
-    def test_header_reports_benchmark_unavailable_when_none(self):
-        out = _mod._format_handoff_signal_cards_as_markdown(
-            [self._CARD], sample_n=1, seed=1, benchmark_dollars=None,
-        )
-        assert "Startup-burn benchmark (this scope): unavailable" in out
-
-    def test_one_section_header_per_card(self):
-        cards = [dict(self._CARD, session_id=f"session-{i}") for i in range(3)]
-        out = _mod._format_handoff_signal_cards_as_markdown(cards, sample_n=3, seed=1, benchmark_dollars=0.50)
-        section_headers = [line for line in out.splitlines() if line.startswith("## ")]
-        assert len(section_headers) == 3
-
-    def test_section_names_session_kind_and_position(self):
-        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
-        assert "session `session-1` — check signal at turn 10" in out
-
-    def test_excerpt_is_interpolated_into_a_blockquote(self):
-        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
-        assert "> Confirmed over threshold, running /handoff now." in out
-
-    def test_empty_excerpt_renders_the_no_eligible_text_placeholder(self):
-        card = dict(self._CARD, excerpt="")
-        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1, benchmark_dollars=0.50)
-        assert "> (no eligible assistant text turn followed the signal)" in out
-
-    def test_verdict_checklist_present_in_each_section(self):
-        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
-        assert "Verdict: [ ] cost-grounded" in out
-
-    def test_card_line_shows_pct_spend_and_exceeds_benchmark(self):
-        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
-        assert "% of session spend after signal: 30.8%  ·  exceeds startup-burn benchmark: yes" in out
-
-    def test_card_line_reports_pct_and_exceeds_as_not_applicable_when_none(self):
-        card = dict(self._CARD, pct_spend_after_signal=None, exceeds_startup_burn_benchmark=None)
-        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1, benchmark_dollars=None)
-        assert "% of session spend after signal: n/a  ·  exceeds startup-burn benchmark: n/a" in out
-
-    def test_forward_context_key_absent_renders_no_forward_context_block(self):
-        out = _mod._format_handoff_signal_cards_as_markdown([self._CARD], sample_n=1, seed=1, benchmark_dollars=0.50)
-        assert "Forward context" not in out
-
-    def test_forward_context_present_renders_a_labeled_turn_line(self):
-        card = dict(self._CARD, forward_context=[{"turn_offset": 1, "text": "wrapping up now", "thinking": ""}])
-        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1, benchmark_dollars=0.50)
-        assert "**Forward context (next 1 turn(s)):**" in out
-        assert "- turn +1: text: wrapping up now" in out
-
-    def test_forward_context_turn_with_both_fields_empty_is_skipped(self):
-        card = dict(self._CARD, forward_context=[{"turn_offset": 1, "text": "", "thinking": ""}])
-        out = _mod._format_handoff_signal_cards_as_markdown([card], sample_n=1, seed=1, benchmark_dollars=0.50)
-        assert "turn +1" not in out
-
-
-class TestCmdHandoffSignalResponseMarkdownFormat:
-    """cmd_handoff_signal_response(..., output_format='md') integration:
-    --format md produces the curation document, not the JSON array. Models
-    the sibling audit-routing-samples subcommand's own md-format test shape."""
-
-    def test_format_md_emits_curation_document_with_a_verdict_checklist(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
+    def test_sidechain_invocation_in_a_later_branch_stretch_counts_under_that_branch_whatever_its_tag(
+        self, fake_projects, capsys
+    ):
+        session_id = "sess-switch"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="feature-y", ts=_attr_ts(5)),
         ])
-        _mod.cmd_handoff_signal_response(_handoff_signal_response_args(sample=5, seed=1, output_format="md"))
-        out = capsys.readouterr().out
-        assert "# handoff-signal-response curation" in out
-        assert "Verdict: [ ] cost-grounded" in out
-
-    def test_context_turns_renders_a_forward_context_subsection(self, fake_projects, capsys):
-        _write_jsonl(fake_projects / "sess.jsonl", [
-            _check_call_turn(input=200_000, output=1_000, request_id="r1"),
-            _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
-            _priced("claude-sonnet-5", input=200_000, output=100, request_id="r2",
-                    content=[{"type": "text", "text": "wrapping up now"}]),
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+            _asst(_SONNET, branch="feature-x", sidechain=True, ts=_attr_ts(8),
+                  content=[_skill_use("s1", "code-review")]),
         ])
-        _mod.cmd_handoff_signal_response(
-            _handoff_signal_response_args(sample=5, seed=1, output_format="md", context_turns=1)
-        )
+        under_y = self._run_skill_invocation(capsys, branches="feature-y")
+        under_x = self._run_skill_invocation(capsys, branches="feature-x")
+        assert "code-review" in under_y
+        assert "No skill invocations found." in under_x
+
+    def test_skill_pair_counts_isolated_and_foreign_tagged_sidechain_followers_under_the_branch_entered(
+        self, fake_projects, capsys
+    ):
+        leader_use = [_skill_use("l1", "plan-it")]
+        for session_id, follower_tag in (("sess-a", "worktree-agent-abc123"), ("sess-b", "unrelated-branch")):
+            _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+                _asst(_SONNET, branch="main", ts=_attr_ts(1), content=leader_use),
+                _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+            ])
+            _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
+                _asst(_SONNET, branch=follower_tag, sidechain=True, ts=_attr_ts(8),
+                      content=[_skill_use("f1", "plan-review")]),
+            ])
+        _mod.cmd_skill_pair(_skill_pair_args(branches="feature-x"))
         out = capsys.readouterr().out
-        assert "**Forward context (next 1 turn(s)):**" in out
-        assert "- turn +1: text: wrapping up now" in out
+        cols = _table_cols(out, header_contains="Lead", row_contains="2026-W20")
+        assert (cols["Lead"], cols["Main"], cols["Side"]) == ("2", "0", "2")
+
+    def test_foreign_cwd_sidechain_skill_name_counts_under_the_dispatching_branch(
+        self, fake_projects, capsys
+    ):
+        """Pins a disclosed flow: a subagent dispatched into another repo has its skill
+        names counted under the dispatching branch, so --branches X --include-subagents
+        prints them whatever the subagent's own cwd (docs/transcript-analysis.md, Limits)."""
+        session_id = "sess-cross-repo"
+        _write_jsonl(fake_projects / f"{session_id}.jsonl", [
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(1)),
+            _asst(_SONNET, branch="feature-x", ts=_attr_ts(5)),
+        ])
+        foreign_record = _asst(_SONNET, branch="other-repo-branch", sidechain=True, ts=_attr_ts(3),
+                               content=[_skill_use("f1", "privateco-plugin:internal-runbook")])
+        foreign_record["cwd"] = "/elsewhere/other-repo"
+        _write_subagent_jsonl(fake_projects, session_id, "agent-1", [foreign_record])
+        out = self._run_skill_invocation(capsys, branches="feature-x")
+        assert re.search(r"^privateco-plugin:internal-runbook\s+sidechain", out, re.MULTILINE), out

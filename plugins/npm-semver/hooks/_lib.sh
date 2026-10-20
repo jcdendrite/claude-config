@@ -1,10 +1,31 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Trimmed shared helper library for npm-semver plugin hooks.
 # Source this file (do NOT invoke it). Contains only the helper needed by
 # the PreToolUse gate hook in this plugin: _lib_jq and
 # _lib_parse_tool_input_or_deny. No git helpers, no marker helpers, no
 # worktree-enforcement helpers — require-npm-version-bump.sh is a
 # structural check, not a marker gate (see that file's header).
+
+# A plugin cannot source across the plugin boundary, so this block duplicates claude/.claude/hooks/_config.sh's.
+# test_bash_floor.py pins the copies together.
+# Everything down to this block's `return 1` must parse and run on bash 3.2.
+_BASH_FLOOR_MAJOR=5
+_BASH_FLOOR_MINOR=2
+
+# Returns 0 when MAJOR MINOR are numeric and at or above the floor, else 1.
+_bash_version_meets_floor() {
+  case "${1-}" in '' | *[!0-9]*) return 1 ;; esac
+  case "${2-}" in '' | *[!0-9]*) return 1 ;; esac
+  if [ "$1" -gt "$_BASH_FLOOR_MAJOR" ]; then
+    return 0
+  fi
+  [ "$1" -eq "$_BASH_FLOOR_MAJOR" ] && [ "$2" -ge "$_BASH_FLOOR_MINOR" ]
+}
+
+# No message: this file's only callers are gate bootstraps that discard stderr, and each gate's deny text carries the fix.
+if ! _bash_version_meets_floor "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"; then
+  return 1
+fi
 
 # Backstop against a hung jq (~5s, not a per-fire latency budget).
 # Cites guard-settings-session-keys.sh's git_capped 5s precedent.

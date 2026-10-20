@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # PreToolUse gate: block Write calls to supabase/migrations/<14digits>_*.sql
@@ -36,7 +36,7 @@ emit_deny() {
 
 # shellcheck source=./_lib.sh
 if ! . "${CLAUDE_PLUGIN_ROOT}/hooks/_lib.sh" 2>/dev/null; then
-  emit_deny "Blocked by validate-migration-filename: could not source _lib.sh."
+  emit_deny "Blocked by validate-migration-filename: could not source _lib.sh. A bash older than 5.2 first on the PATH Claude Code started with also causes this: ask the user to install bash 5.2 or newer in a separate terminal (macOS: brew install bash), put it first on that PATH, and restart Claude Code."
   exit 0
 fi
 
@@ -73,7 +73,7 @@ BASENAME=$(basename "$FILE_PATH")
 # The match requires: supabase/migrations/ in the path AND a 14-digit prefix
 # followed by underscore. Files outside this path or with a different prefix
 # length are not Claude-authored migration candidates — allow them.
-if ! printf '%s\n' "$FILE_PATH" | grep -qE 'supabase/migrations/[0-9]{14}_[^/]+\.sql$'; then
+if ! grep -qE 'supabase/migrations/[0-9]{14}_[^/]+\.sql$' <<< "$FILE_PATH"; then
   exit 0
 fi
 

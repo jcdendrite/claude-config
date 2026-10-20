@@ -767,25 +767,30 @@ class TestSessionFlushWaitThroughExecuteRun:
         _patch_inner_prompt_to_match_build_review_prompt(scenario)
         monkeypatch.setattr(runner, "SESSION_FLUSH_TIMEOUT_S", 10.0)
         session_dir = config_root / "projects" / "some-hash"
-        late_sidecar = threading.Timer(
-            0.3, shutil.copytree, args=(scenario / "session-1" / "subagents", session_dir / "session-a" / "subagents"),
-        )
+        sidecar_arrives_after_sleep_count = 2
+        sleep_count = 0
+
+        def sleep_then_land_sidecar(seconds: float) -> None:
+            nonlocal sleep_count
+            sleep_count += 1
+            if sleep_count == sidecar_arrives_after_sleep_count:
+                shutil.copytree(scenario / "session-1" / "subagents", session_dir / "session-a" / "subagents")
+
+        monkeypatch.setattr(runner.time, "sleep", sleep_then_land_sidecar)
 
         def launch(cmd, cwd, timeout_s):
             shutil.copyfile(scenario / "session-1.jsonl", session_dir / "session-a.jsonl")
-            late_sidecar.start()
             return SUCCESS_STREAM_LINES, False
 
-        try:
-            record = runner.execute_run(
-                _flush_run_context(scenario), arm="current-rule", run_index=0, session_id="session-a", launch=launch,
-            )
-        finally:
-            late_sidecar.join()
+        record = runner.execute_run(
+            _flush_run_context(scenario), arm="current-rule", run_index=0, session_id="session-a", launch=launch,
+        )
 
+        assert sleep_count > sidecar_arrives_after_sleep_count
         assert record.status == runner.STATUS_OK
         assert record.findings_text == "Finding: file:1 looks fine."
 
+    @pytest.mark.timing
     def test_a_session_that_never_appears_is_waited_for_then_recorded_not_found(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_root: Path,
     ) -> None:
@@ -802,6 +807,7 @@ class TestSessionFlushWaitThroughExecuteRun:
         assert record.missing_reason == runner.VALIDITY_FAIL_SESSION_STORE_NOT_FOUND
         assert wait_s <= elapsed < 5
 
+    @pytest.mark.timing
     def test_a_timed_out_run_is_not_waited_on(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config_root: Path,
     ) -> None:
@@ -1232,6 +1238,53 @@ class TestUnreadableTranscript:
         assert result.failure_reason == runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE
         assert result.failure_detail == "PermissionError: Permission denied"
         assert result.prompt_verbatim is True
+
+    @pytest.mark.parametrize(
+        ("tool_name", "tool_input"),
+        [
+            ("Read", {"file_path": "/repo/a\x00b.py"}),
+            ("Grep", {"pattern": "needle", "path": "/repo/a\x00b"}),
+            ("Glob", {"pattern": "/repo/a\x00b/*.py"}),
+        ],
+    )
+    def test_a_read_like_call_with_an_embedded_nul_byte_gets_its_own_reason_without_the_path(
+        self, tmp_path: Path, tool_name: str, tool_input: dict,
+    ) -> None:
+        scenario = _load_scenario(tmp_path, "normal-success")
+        subagent_jsonl = scenario / "session-1" / "subagents" / "agent-1.jsonl"
+        _replace_tool_use(subagent_jsonl, "toolu_read_1", name=tool_name, input_=tool_input)
+
+        result = _evaluate(scenario, changed_relpaths=("changed_file.py",))
+
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_TRANSCRIPT_UNREADABLE
+        assert result.failure_detail == "a read-like call carried a path that cannot be resolved"
+        assert result.prompt_verbatim is True
+
+    @pytest.mark.parametrize("nul_call_comes_first", [True, False], ids=["nul-then-leak", "leak-then-nul"])
+    def test_a_live_checkout_leak_read_wins_over_a_read_with_an_embedded_nul_byte(
+        self, tmp_path: Path, nul_call_comes_first: bool,
+    ) -> None:
+        scenario = _load_scenario(tmp_path, "live-checkout-leak")
+        subagent_jsonl = scenario / "session-1" / "subagents" / "agent-1.jsonl"
+        nul_call = {"type": "tool_use", "id": "toolu_read_nul", "name": "Read", "input": {"file_path": "/repo/a\x00b.py"}}
+
+        lines = []
+        for raw in subagent_jsonl.read_text().splitlines():
+            record = json.loads(raw)
+            if record.get("type") == "assistant":
+                content = record["message"]["content"]
+                leak_index = next(i for i, block in enumerate(content) if block.get("id") == "toolu_read_1")
+                content.insert(leak_index if nul_call_comes_first else leak_index + 1, nul_call)
+            lines.append(json.dumps(record))
+        subagent_jsonl.write_text("\n".join(lines) + "\n")
+
+        result = _evaluate(
+            scenario, live_checkout_roots=(scenario,), changed_relpaths=("fake-live-checkout/changed_file.py",),
+        )
+
+        assert result.ok is False
+        assert result.failure_reason == runner.VALIDITY_FAIL_LIVE_CHECKOUT_LEAK
 
     @pytest.mark.parametrize(
         "reader", [runner.read_dispatcher_transcript, runner.extract_read_like_calls,
@@ -2142,6 +2195,7 @@ def _build_two_commit_source_repo(repo_dir: Path, *, changed_file_content: str =
     return ConfirmedDefect(
         id="defect-1", source="szz", lens="staff-backend-engineer", base_commit=base_commit,
         head_commit=head_commit, fix_commit=head_commit, fix_date="2024-01-01", description="test defect",
+        path="app.py", file_is_markdown=False,
     )
 
 
@@ -2304,6 +2358,22 @@ class TestCountOutcomes:
         assert text == "1 ok, 2 missing (result-error x2), 2 retried"
 
 
+class TestAllRunsMissing:
+    def test_an_empty_record_list_is_not_all_missing(self) -> None:
+        assert runner.all_runs_missing([]) is False
+
+    def test_one_ok_run_among_missing_runs_is_not_all_missing(self) -> None:
+        assert runner.all_runs_missing([_outcome_record("d1", run_index=0), _missing_outcome_record("d1", 1)]) is False
+
+    def test_only_missing_runs_is_all_missing(self) -> None:
+        assert runner.all_runs_missing([_missing_outcome_record("d1", 0), _missing_outcome_record("d1", 1)]) is True
+
+    def test_a_missing_run_with_no_reason_still_counts_as_missing(self) -> None:
+        reasonless_missing = _outcome_record("d1", run_index=0, status=runner.STATUS_MISSING, missing_reason=None)
+
+        assert runner.all_runs_missing([reasonless_missing]) is True
+
+
 class TestRunCampaignSystemicFailure:
     def _campaign(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocks: dict[str, tuple[runner.RunRecord, ...]],
@@ -2408,6 +2478,7 @@ class TestPreflightDefects:
         defect = ConfirmedDefect(
             id="defect-1", source="szz", lens="staff-backend-engineer", base_commit=real.base_commit,
             head_commit="a" * 40, fix_commit="b" * 40, fix_date="2024-01-01", description="test defect",
+            path="app.py", file_is_markdown=False,
         )
         self._arm_snapshots(tmp_path / "arms", "current-rule")
 
@@ -2420,6 +2491,7 @@ class TestPreflightDefects:
         message = str(excinfo.value)
         assert "a" * 40 in message and "b" * 40 in message
         assert real.base_commit not in message
+        assert "first parent" not in message  # an unresolvable fix commit is reported once, not again as a missing parent
         assert str(tmp_path / "arms" / "function-context" / "bench-staff-backend-engineer.md") in message
         assert str(tmp_path / "arms" / "current-rule") not in message
 
@@ -2476,6 +2548,25 @@ class TestPreflightDefects:
 
         assert str(excinfo.value).count("a" * 40) == 1
         assert "project config" not in str(excinfo.value)
+
+    def test_a_fix_commit_with_no_first_parent_is_reported_with_its_defect_id_before_any_fixture_is_built(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        real = _build_two_commit_source_repo(tmp_path / "source")
+        root_commit = real.base_commit  # a root commit: the fix diff has no first parent to compare against
+        defect = dataclasses.replace(real, fix_commit=root_commit)
+        self._arm_snapshots(tmp_path / "arms", "current-rule")
+        monkeypatch.setattr(runner.msmr, "_resolved_temp_project_dir", pytest.fail)  # a fixture build would call it
+
+        with pytest.raises(runner.HarnessInvalidatedError) as excinfo:
+            runner.preflight_defects(
+                [defect], arm_names=("current-rule",), source_repo=tmp_path / "source",
+                arms_snapshot_root=tmp_path / "arms",
+            )
+
+        message = str(excinfo.value)
+        assert f"{defect.id}: fix commit {root_commit} has no resolvable first parent" in message
+        assert "does not resolve" not in message  # the root commit itself resolves
 
     def test_a_directory_that_is_not_a_repo_is_reported_rather_than_read_as_all_resolved(
         self, tmp_path: Path,
@@ -2536,6 +2627,27 @@ class TestRunStoreResume:
 
         assert len(swept) == 1
         assert not recorded_dir.exists()
+
+    def test_a_pending_entry_whose_directory_and_session_store_are_gone_is_returned_and_nothing_else_is_deleted(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A crash can leave a write-ahead entry whose targets were already
+        removed, and the sweep must still report the defect for a rerun
+        without raising or touching unrelated session files."""
+        store = runner.RunStore(tmp_path / "run-store", fixture_root=tmp_path)
+        gone_dir = tmp_path / "review-bench-gone"
+        store.record_directory("defect-1", gone_dir, runner._NO_SESSION_ID_YET)
+        store.record_directory("defect-1", gone_dir, str(uuid.uuid4()))
+        projects_root = tmp_path / "projects"
+        unrelated_session_file = projects_root / "other-project" / ".jsonl"  # what an empty session id would glob
+        unrelated_session_file.parent.mkdir(parents=True)
+        unrelated_session_file.write_text("{}\n")
+
+        swept = store.sweep_abandoned(projects_root)
+
+        assert [entry.defect_id for entry in swept] == ["defect-1", "defect-1"]
+        assert unrelated_session_file.exists()
+        assert "could not remove" not in capsys.readouterr().err
 
     def test_completed_block_is_not_swept(self, tmp_path: Path) -> None:
         store = runner.RunStore(tmp_path / "run-store", fixture_root=tmp_path)
@@ -2936,6 +3048,7 @@ class TestRunOrSmokeDefaultFillReachesRunCampaign:
         defect = ConfirmedDefect(
             id="defect-1", source="szz", lens="staff-backend-engineer", base_commit="a" * 40,
             head_commit="b" * 40, fix_commit="b" * 40, fix_date="2024-01-01", description="test defect",
+            path="app.py", file_is_markdown=False,
         )
         monkeypatch.setattr(run_review_bench, "_load_defects_for_run", lambda args: [defect])
 

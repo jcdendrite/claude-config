@@ -13,6 +13,7 @@ import pytest
 from helpers import (
     CLAUDE_DIR,
     HOOKS_DIR,
+    LARGE_MULTILINE_TAIL,
     SCRIPTS_DIR,
     build_path_without,
     run_hook,
@@ -26,6 +27,7 @@ from helpers import write_input as _write_input
 from .conftest import _review_ledger_path, _seed_session
 
 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK = HOOKS_DIR / "enforce-marker-script-shape.sh"
+MARKER_SCRIPT = SCRIPTS_DIR / "marker.sh"
 
 
 def _marker_write_realpath_budget() -> int:
@@ -74,16 +76,18 @@ edit_input = _with_agent_id(_edit_input)
 multiedit_input = _with_agent_id(_multiedit_input)
 write_input = _with_agent_id(_write_input)
 
-# The 22 single-command tilde-form shapes the hook accepts — single source of
+# The single-command tilde-form shapes the hook accepts — single source of
 # truth for both test_valid_shapes_allowed (which pins hook acceptance) and
 # TestPrescriptionAllowlistAlignment (which cross-checks permissions.allow
 # coverage over this same set), so the two can't silently drift apart.
+# review-pr has no activate/deactivate shape.
 TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh write code-review",
     "~/.claude/scripts/marker.sh write skill-review",
     "~/.claude/scripts/marker.sh write plan-review",
     "~/.claude/scripts/marker.sh write ready-for-review",
     "~/.claude/scripts/marker.sh write cumulative-review",
+    "~/.claude/scripts/marker.sh write review-pr",
     "~/.claude/scripts/marker.sh write verification",
     "~/.claude/scripts/marker.sh activate plan-review",
     "~/.claude/scripts/marker.sh activate ready-for-review",
@@ -103,16 +107,10 @@ TILDE_MARKER_SHAPES = [
     "~/.claude/scripts/marker.sh check verification",
 ]
 
-# About 320 KB in 32 lines. It must be multi-line: `grep -q` over one unbroken
-# line reads the whole line before it exits, so only a command whose first
-# line matches and whose remainder is large makes a `printf | grep -q`
-# pipeline see SIGPIPE under pipefail. Few lines keep the per-fragment scan fast.
-LARGE_MULTILINE_TAIL = "\n" + "\n".join(["x" * 10_000] * 32)
-
 
 class TestEnforceMarkerScriptShape:
     # ------------------------------------------------------------------ #
-    # Valid shapes — 22 single-command shapes, each must be allowed       #
+    # Valid shapes — single-command shapes, each must be allowed          #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize("command", TILDE_MARKER_SHAPES)
@@ -235,8 +233,7 @@ class TestEnforceMarkerScriptShape:
     # permitted for any op/target combination: the chain's end state is   #
     # identical to running each op separately, and every op is already    #
     # individually allowlisted or harmless (clear-stale). These are NOT   #
-    # single shapes and must NOT appear in the 22-shape parametrize list  #
-    # above.                                                              #
+    # single shapes and must NOT appear in TILDE_MARKER_SHAPES.           #
     # ------------------------------------------------------------------ #
 
     @pytest.mark.parametrize(
@@ -460,6 +457,18 @@ class TestEnforceMarkerScriptShape:
         cmd = "~/.claude/scripts/marker.sh activate code-review"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
+    def test_activate_verification_denied(self):
+        """verification has no activate arm -- must be denied, mirroring
+        test_mismatched_subcommand_skill_pair_denied above."""
+        cmd = "~/.claude/scripts/marker.sh activate verification"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_deactivate_verification_denied(self):
+        """verification has no deactivate arm -- must be denied, mirroring
+        test_mismatched_subcommand_skill_pair_denied above."""
+        cmd = "~/.claude/scripts/marker.sh deactivate verification"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
     def test_memory_skill_extra_arg_denied(self):
         """activate memory-skill with a trailing arg must be denied."""
         cmd = "~/.claude/scripts/marker.sh activate memory-skill extra"
@@ -475,6 +484,24 @@ class TestEnforceMarkerScriptShape:
         skill must be denied, mirroring
         test_mismatched_subcommand_skill_pair_denied above."""
         cmd = "~/.claude/scripts/marker.sh check plan-review"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_check_review_pr_denied(self):
+        """review-pr has no check arm -- must be denied, mirroring
+        test_check_mismatched_skill_denied above."""
+        cmd = "~/.claude/scripts/marker.sh check review-pr"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_activate_review_pr_denied(self):
+        """review-pr has no activate arm -- must be denied, mirroring
+        test_activate_verification_denied above."""
+        cmd = "~/.claude/scripts/marker.sh activate review-pr"
+        assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
+
+    def test_deactivate_review_pr_denied(self):
+        """review-pr has no deactivate arm -- must be denied, mirroring
+        test_deactivate_verification_denied above."""
+        cmd = "~/.claude/scripts/marker.sh deactivate review-pr"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
     def test_check_missing_skill_argument_denied(self):
@@ -630,6 +657,15 @@ class TestEnforceMarkerScriptShape:
         cmd = "~/.claude/scripts/../scripts/marker.sh activate code-review"
         assert run_hook(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd)) == "deny"
 
+    def test_traversal_on_first_line_of_large_multiline_marker_command_denied(self):
+        """Required regression test: a `..` path segment on the first line of
+        a multi-line marker command above pipe capacity is still denied. The
+        mechanism is in the LARGE_MULTILINE_TAIL comment in tests/helpers.py."""
+        cmd = "~/.claude/scripts/../scripts/marker.sh write code-review" + LARGE_MULTILINE_TAIL
+        reason = run_hook_reason(ENFORCE_MARKER_SCRIPT_SHAPE_HOOK, bash_input(cmd))
+        assert reason is not None
+        assert "path traversal" in reason
+
 
 class TestDevNullRedirectAllowed:
     """Trailing 2>/dev/null on an otherwise-valid shape is allowed.
@@ -751,9 +787,12 @@ MARKER_SPLIT_BY_QUOTES = '~/.claude/scripts/mark""er.sh'
 # reviewer, and a harness built-in.
 NO_GATE_RELEASE_AGENTS = ["code-writer", "staff-sdet", "ciso-reviewer", "Explore"]
 
-# Agent types that keep the documented delegation escape hatch: both carry the
-# full tool set, so they can genuinely run a review skill themselves.
-GATE_RELEASE_ALLOWED_AGENTS = ["general-purpose", "claude"]
+# Agent types that may release a review gate. general-purpose/claude keep the
+# documented delegation escape hatch: both carry the full tool set, so they
+# can genuinely run a review skill themselves. review-orchestrator runs the
+# review skill itself, so it is deliberately absent from
+# _LIB_NO_GATE_RELEASE_AGENTS and can write the marker for the skill it ran.
+GATE_RELEASE_ALLOWED_AGENTS = ["general-purpose", "claude", "review-orchestrator"]
 
 
 class TestGateReleaseAuthority:
@@ -767,7 +806,14 @@ class TestGateReleaseAuthority:
     @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
     @pytest.mark.parametrize(
         "skill",
-        ["code-review", "skill-review", "plan-review", "ready-for-review", "cumulative-review"],
+        [
+            "code-review",
+            "skill-review",
+            "plan-review",
+            "ready-for-review",
+            "cumulative-review",
+            "review-pr",
+        ],
     )
     def test_write_denied_for_no_release_agents(self, agent_type, skill):
         assert (
@@ -780,7 +826,14 @@ class TestGateReleaseAuthority:
 
     @pytest.mark.parametrize("agent_type", NO_GATE_RELEASE_AGENTS)
     @pytest.mark.parametrize(
-        "target", ["plan-review", "ready-for-review", "respond-pr", "memory-skill", "handoff"]
+        "target",
+        [
+            "plan-review",
+            "ready-for-review",
+            "respond-pr",
+            "memory-skill",
+            "handoff",
+        ],
     )
     def test_activate_denied_for_no_release_agents(self, agent_type, target):
         """`activate` is the more dangerous verb: the active-bypass marker holds a
@@ -908,7 +961,7 @@ class TestGateReleaseAuthority:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_full_tool_set_agents_may_still_write(self, agent_type):
+    def test_gate_release_agents_may_still_write(self, agent_type):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -1066,7 +1119,7 @@ class TestGateReleaseAuthority:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_quote_split_write_allowed_for_full_tool_set_agents(self, agent_type):
+    def test_quote_split_write_allowed_for_gate_release_agents(self, agent_type):
         """The command-word arm gates on agent authority, not just command
         shape: the same quote-split write that denies for a no-gate-release
         agent above must not deny here. (This command's overall verdict is
@@ -1353,7 +1406,7 @@ class TestGateReleaseAuthorityBashRedirectAndUtility:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_full_tool_set_agents_may_redirect_into_a_marker_path(self, agent_type):
+    def test_gate_release_agents_may_redirect_into_a_marker_path(self, agent_type):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -1750,7 +1803,7 @@ class TestGateReleaseAuthorityFileWrites:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_full_tool_set_agents_may_write_markers(self, marker_home, agent_type):
+    def test_gate_release_agents_may_write_markers(self, marker_home, agent_type):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -2242,7 +2295,7 @@ class TestGateReleaseRawDetectorOnQuotedAndLargeCommands:
         SCRIPT_NAME_SPLIT_MARKER_WRITES,
         ids=SCRIPT_NAME_SPLIT_MARKER_WRITE_IDS,
     )
-    def test_full_tool_set_agent_allowed_for_the_same_split_script_name(self, agent_type, command):
+    def test_gate_release_agent_allowed_for_the_same_split_script_name(self, agent_type, command):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -2310,7 +2363,7 @@ class TestGateReleaseRawDetectorOnQuotedAndLargeCommands:
         )
 
     @pytest.mark.parametrize("agent_type", GATE_RELEASE_ALLOWED_AGENTS)
-    def test_full_tool_set_agent_allowed_for_the_same_large_command(self, agent_type):
+    def test_gate_release_agent_allowed_for_the_same_large_command(self, agent_type):
         assert (
             run_hook(
                 ENFORCE_MARKER_SCRIPT_SHAPE_HOOK,
@@ -2342,10 +2395,16 @@ LEDGER_APPEND_ENGINEER_BACKSLASH_NEWLINE_ARGS = LEDGER_APPEND_ENGINEER_ARGS.repl
     "--engineer-quote", "--engineer-\\\nquote"
 )
 
-# Agent-type strings that sit in no roster: the two full-tool-set built-ins and
-# a plugin-shaped name. The engineer-row and ledger-state predicates apply to
-# them; the roster's `append` predicate does not.
-NON_ROSTER_AGENT_TYPES = ["general-purpose", "claude", "someplugin:agent"]
+# Agent-type strings that sit in no roster: the two full-tool-set built-ins, the
+# shipped review-orchestrator agent, and a plugin-shaped name. The engineer-row
+# and ledger-state predicates apply to them; the roster's `append` predicate
+# does not.
+NON_ROSTER_AGENT_TYPES = [
+    "general-purpose",
+    "claude",
+    "review-orchestrator",
+    "someplugin:agent",
+]
 
 # Every op of review-ledger.sh, and whether the hook denies it to the roster.
 LEDGER_SCRIPT_OPS_GATED_FOR_ROSTER = {
@@ -4207,3 +4266,55 @@ class TestPrescriptionAllowlistAlignment:
         "any excluded shape" clause would silently re-grant a future
         disqualified shape instead of failing this test."""
         assert {"clear-stale", "clear-stale --dry-run"} == self.ALLOWLIST_EXCEPTIONS
+
+
+class TestMarkerRegistryShapeCountConsistency:
+    """Derives the valid shape set from marker.sh's own registry arrays
+    and cross-checks it against TILDE_MARKER_SHAPES and the hook's denial
+    list, so the three can't independently drift."""
+
+    NON_ARRAY_SUBCOMMANDS = [
+        "clear-stale",
+        "clear-stale --dry-run",
+        "resolve-session-id",
+        "status",
+        "check code-review",
+        "check verification",
+    ]
+
+    @staticmethod
+    def _marker_sh_array(name: str) -> list[str]:
+        result = subprocess.run(
+            ["bash", "-c", f'. "{MARKER_SCRIPT}"; printf "%s\\n" "${{{name}[@]}}"'],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return [line for line in result.stdout.splitlines() if line]
+
+    def _derived_valid_shapes(self) -> set[str]:
+        write_skills = self._marker_sh_array("WRITE_SKILLS")
+        activate_skills = self._marker_sh_array("ACTIVE_BYPASS_SKILLS")
+        shapes = {f"~/.claude/scripts/marker.sh write {skill}" for skill in write_skills}
+        shapes |= {f"~/.claude/scripts/marker.sh activate {skill}" for skill in activate_skills}
+        shapes |= {f"~/.claude/scripts/marker.sh deactivate {skill}" for skill in activate_skills}
+        shapes |= {f"~/.claude/scripts/marker.sh {sub}" for sub in self.NON_ARRAY_SUBCOMMANDS}
+        return shapes
+
+    def test_derived_shape_set_matches_tilde_marker_shapes(self):
+        assert self._derived_valid_shapes() == set(TILDE_MARKER_SHAPES), (
+            "marker.sh's own WRITE_SKILLS/ACTIVE_BYPASS_SKILLS registry no "
+            "longer agrees with TILDE_MARKER_SHAPES -- update whichever "
+            "side is stale."
+        )
+
+    def test_denial_list_names_exactly_the_registry_shapes(self):
+        hook_text = ENFORCE_MARKER_SCRIPT_SHAPE_HOOK.read_text()
+        denial_block_match = re.search(r"Valid shapes:\n(.*?)\n\nChains of", hook_text, re.DOTALL)
+        assert denial_block_match, "denial list not found in enforce-marker-script-shape.sh"
+        denial_lines = [
+            line.strip() for line in denial_block_match.group(1).splitlines()
+            if line.strip().startswith("~/.claude/scripts/marker.sh")
+        ]
+        assert len(denial_lines) == len(set(denial_lines)), "a shape is listed twice in the denial text"
+        assert set(denial_lines) == set(TILDE_MARKER_SHAPES)

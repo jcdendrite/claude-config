@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # PreToolUse: deny a no-op Agent/Task dispatch -- a subagent spawned solely
@@ -124,7 +124,7 @@ COLLAPSED_PROMPT="${COLLAPSED_PROMPT% }"
 # docs/design-decisions/no-op-dispatch-hook-gate.md's Known gaps section
 # for the platform-dependence of this claim.
 
-if printf '%s' "$COLLAPSED_PROMPT" | _lib_capped grep -qiE "$NOOP_STUB_TOKEN_RE" || printf '%s' "$COLLAPSED_PROMPT" | _lib_capped grep -qiE "$NOOP_PHRASE_RE"; then
+if _lib_capped grep -qiE "$NOOP_STUB_TOKEN_RE" <<< "$COLLAPSED_PROMPT" || _lib_capped grep -qiE "$NOOP_PHRASE_RE" <<< "$COLLAPSED_PROMPT"; then
   emit_deny "this dispatch's prompt is short and instructs the agent to do no work. CLAUDE.md §Agent Briefing bars dispatching an agent — of any type — whose instructions are to report back immediately, occupy the turn, or hold while other dispatches finish. A no-op agent returns at once, so it waits for nothing, and still pays a full agent's context cost for an empty return. When pending dispatches are all that remain, end the turn without a tool call and let their completion drive the next one. If this dispatch does have real work to do, state that work in the prompt and retry — a prompt long enough to specify a task does not trip this gate. If you are a subagent, report this denial to your dispatcher rather than attempting to resolve it yourself."
   exit 0
 fi

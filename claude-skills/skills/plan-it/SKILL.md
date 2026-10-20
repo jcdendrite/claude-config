@@ -64,9 +64,7 @@ Re-dispatch from scratch, rather than repairing inline, on any of these returns:
 
 `plan-architect` is read-only and idempotent, so nothing durable is lost by retrying.
 
-Choose the approach. Always include brief rationale — what alternatives were weighed and why they were set aside. For trivial choices one sentence suffices; no separate alternatives section is needed. Consult `code-review`, `test-conventions`, `verify-sources`, and `ai-instruction-and-memory-files` if their domains are implicated.
-
-**External-pattern grounding.** When invoking an external-doc pattern, quote the literal source lines — not a paraphrase, not a summary, not the section heading. A bare pattern name risks crystallizing a wrong interpretation.
+`claude/.claude/agents/plan-architect.md` § "Design principles" governs how the approach is chosen; the rules below govern what the plan records. Consult `code-review`, `test-conventions`, `verify-sources`, and `ai-instruction-and-memory-files` if their domains are implicated.
 
 **Comment-content discipline.** When a plan prescribes a comment or docstring verbatim, prescribe the durable one-line fact only — the plan's own rationale belongs in the commit message and PR body, per CLAUDE.md §Durable text.
 
@@ -103,8 +101,6 @@ other's.
 
 See `plan-it/REFERENCES.md` for a worked example and the full grammar rationale.
 
-**Question the ticket's prescribed approach.** Acceptance criteria often prescribe *how* to implement, not only the outcome. Treat a prescribed approach as a hypothesis, not settled design: when planning it triggers the wrong-foundation tell — compounding patches accreting on one mechanism to force the prescribed approach to work — re-derive the correct design ignoring both the current code and the AC, then surface that re-scope to the user rather than planning around a wrong premise.
-
 Write the plan with these sections:
 
 1. **Context** — problem, why now, intended outcome (lead with a one-sentence goal, then Step 2's `Ask:` line)
@@ -140,17 +136,14 @@ where implementation runs, and there is none.
 
 **Sharing the plan.** This applies only on the branch where the plan file was committed above. Share the plan with the engineer by the plan file's own absolute path. Never open a PR, draft or ready, at plan time. When the plan adds a design document or defines a cross-team contract (a schema shape, enum, or API surface other teams or pipelines depend on), readers outside this session may need lead time, so offer to push the branch with no PR:
 
-- Ask the engineer through `AskUserQuestion`, not a closing chat question.
-- Resolve `gh pr view`, the visibility check, and `gh browse` against the repository that the push URL names (`--repo OWNER/REPO`).
-- Ask only when the branch is not the default branch and `gh pr view` finds no PR for it (a non-zero exit counts as no PR), since a push to a branch with a PR needs `/ready-for-review` first.
-- The question names that remote's push URL from `git remote get-url --push <remote>` with any userinfo (`user:token@`) stripped.
-- The question also names the commits that push would publish to that remote, and whether the repository is public.
-- State the visibility as unknown, and treat it as public, when the host cannot confirm it.
+- Before offering, run `python3 ~/.claude/scripts/plan-push-preflight.py <repo-relative plan path>`, passing the path as one single-quoted literal word, since double quotes still expand `$(...)`. Offer only when it exits 0 and prints both `OFFER: ask` and a `PUSH_COMMAND` line. Otherwise give its `STOP_REASON` line in the reply, or the command's error if it printed none, instead of skipping the offer silently.
+- Ask the engineer through `AskUserQuestion`, not a closing chat question. In the question, give every `FACT` line verbatim and in order, then the `PUSH_COMMAND` text as the last line.
 - No answer means no push.
-- Push only after a yes, with an explicit `git push --no-follow-tags <remote> <branch>`.
-- A yes covers only that remote, that branch, and those commits.
+- Push only after a yes, by running the `PUSH_COMMAND` text the question showed, exactly as printed, once. A yes covers only that command.
 - Autonomous shipping does not waive the question.
-- After a yes and the push, give the plan file's URL from `gh browse <repo-relative plan path> --branch <branch> --no-browser`, and give other readers that URL, not the local path.
+- After the push, run the text of its `SHARE_COMMAND` line when it printed one, and give other readers the URL that prints, not the local path.
+- If the push fails or a hook denies it, report the error or denial, give no URL, and make no further push attempt.
+- If `SHARE_COMMAND` fails or was not printed, say the push landed on the remote branch the question named, and report gh's error when there is one.
 
 Then choose the session. **Continue in this one by default.** A fresh session is not free: it re-pays for context this session already holds, and that rebuild dominates its first several turns, so handing off early costs more than it saves. Run `~/.claude/hooks/nudge-handoff-near-context-cap.sh --check`, following `handoff/SKILL.md` § "Before writing: is a handoff warranted?" for how to read its result: hand off when it says the session is past its threshold. When the check can't resolve a measurement (`"status":"cannot-resolve"` or `"status":"schema-drift"`), say the estimate is unavailable, name the `reason`, and fall back to judgment: the plan boundary is itself a natural seam, weighed against how much of the plan remains.
 

@@ -57,7 +57,7 @@ Four readings of the clause still let a fork or subagent ship:
 - "On its own" can read as "on its own initiative".
 - The audience partition is self-declared: a non-fork subagent told, or injected with text saying, "you are a fork" inherits Main session's Shipping autonomy text. The existing review-state gates bound this.
 
-Closing the first three readings needs a net-zero edit: an addition plus an equal trim in the same commit, per the ratchet constraint in the Byte margin section. The fourth reading is not closable by wording. The post-merge fork spot-check is the control.
+Closing the first three readings needs an edit that fits under the 30,720-byte limit. The fourth reading is not closable by wording. The post-merge fork spot-check is the control.
 
 ## Accepted risk: duplicate headings
 
@@ -138,7 +138,7 @@ Follow-ups for dangling phrases left by verbatim moves:
 
 ## Byte margin
 
-CLAUDE.md sits at the length gate's ceiling (200 lines and the byte ratchet, which compares each commit to HEAD). Wording growth needs an equal trim in the same commit.
+CLAUDE.md is gated by 200 lines and a 30,720-byte limit (GH-1267), and the byte ratchet compares each commit to HEAD. Wording growth must fit under the limit.
 
 Standing constraints:
 
@@ -161,7 +161,7 @@ Procedure:
 
 - Confer with the repo owner before choosing the approach.
 - Revert the whole squash commit, never individual paths, so this record and the "Partially superseded" line do not describe a contract that no longer exists.
-- A hand-restored tree committed through `git commit` grows CLAUDE.md, and the length ratchet denies it.
+- A hand-restored tree committed through `git commit` grows CLAUDE.md, and the length ratchet denies it only once the committed file passes the 30,720-byte limit.
 - Plain `git revert <sha>` is not intercepted by the length gate or the code-review gate, both of which match only the `commit` subcommand.
 - `git revert -n` followed by `git commit` passes the length gate but needs a `/code-review` marker on the reverse diff.
 - Expect a `CHANGELOG.md` conflict.

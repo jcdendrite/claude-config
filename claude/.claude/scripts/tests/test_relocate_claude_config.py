@@ -16,6 +16,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+from helpers import link_bash_into
+
 _SCRIPT = Path(__file__).resolve().parents[1] / "relocate-claude-config.sh"
 
 
@@ -539,8 +541,8 @@ class TestClaudeCliMissing:
         _stow(old_repo, home)
 
         # A PATH containing every external tool the script calls (readlink,
-        # dirname, basename, mv, mkdir, stow, install, cat, head, tr) but no
-        # claude -- so `command -v claude` fails. Mirrors
+        # dirname, basename, mv, mkdir, stow, install, cat, head, tr) and bash for
+        # its shebang, but no claude -- so `command -v claude` fails. Mirrors
         # test_cleanup_merged_branches.py's TestGhMissing technique.
         min_bin = tmp_path / "min_bin"
         min_bin.mkdir()
@@ -548,6 +550,7 @@ class TestClaudeCliMissing:
             tool_path = shutil.which(tool)
             if tool_path:
                 (min_bin / tool).symlink_to(tool_path)
+        link_bash_into(min_bin)
 
         env = dict(os.environ)
         env["HOME"] = str(home)

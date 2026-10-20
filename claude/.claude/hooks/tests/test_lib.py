@@ -20,6 +20,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
@@ -52,10 +53,19 @@ from helpers import (
     staged_diff_hash,
     staged_diff_hash_at_base,
     write_scaled_timeout_shim,
+    xargs_is_gnu,
 )
 
-from .conftest import _worktree_lock_reason
-from .test_config_lib import _isolated_hooks_dir_missing_key_row, _locale_that_widens_ascii_ranges
+from .conftest import (
+    REVIEW_WORKTREE_NAME,
+    _add_worktree_under_worktrees_dir,
+    _worktree_lock_reason,
+)
+from .test_config_lib import (
+    _installed_utf8_locale_names,
+    _isolated_hooks_dir_missing_key_row,
+    _locale_that_widens_ascii_ranges,
+)
 
 # Path to _lib.sh: test lives in hooks/tests/, _lib.sh is in hooks/.
 _LIB_SH = Path(__file__).resolve().parents[1] / "_lib.sh"
@@ -1443,6 +1453,522 @@ def test_marker_value_present_restores_nullglob_state() -> None:
     assert result.stdout.strip() == "RESTORED", repr(result.stdout)
 
 
+# --- _lib_review_pr_completion_marker_fields -------------------------------
+#
+# review-pr-post.sh's only read of the completion marker /review-pr's
+# `write review-pr` arm writes -- session-scoped (never a cross-session
+# glob, unlike _lib_marker_value_present above), since this authorizes a
+# `gh pr review` POST rather than releasing a gate for a read.
+
+
+def _review_pr_completion_marker_fields(
+    config_dir: Path, repo_hash: str, session_id: str
+) -> subprocess.CompletedProcess:
+    argv = [
+        "bash", "-c", f'. {_LIB_SH}; _lib_review_pr_completion_marker_fields "$@"', "bash",
+        str(config_dir), repo_hash, session_id,
+    ]
+    return subprocess.run(argv, capture_output=True, text=True, check=False)
+
+
+def _write_review_pr_marker(config_dir: Path, repo_hash: str, session_id: str, content: str) -> None:
+    marker_dir = config_dir / "review-pr-markers"
+    marker_dir.mkdir(parents=True, exist_ok=True)
+    (marker_dir / f"{repo_hash}.{session_id}").write_text(content)
+
+
+def test_review_pr_completion_marker_fields_returns_the_four_stored_lines(tmp_path: Path) -> None:
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout\n")
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "foo/bar#42\nabc123\ndef456\ncheckout\n"
+
+
+def test_review_pr_completion_marker_fields_tolerates_missing_trailing_newline(tmp_path: Path) -> None:
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout")
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "foo/bar#42\nabc123\ndef456\ncheckout\n"
+
+
+def test_review_pr_completion_marker_fields_absent_marker_returns_1_with_no_output(
+    tmp_path: Path,
+) -> None:
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param("foo/bar#42\nabc123\ndef456\n", id="only_three_lines"),
+        pytest.param("foo/bar#42\n\ndef456\ncheckout\n", id="empty_middle_line"),
+        pytest.param("\nabc123\ndef456\ncheckout\n", id="empty_first_line"),
+        pytest.param("foo/bar#42\nabc123\n\ncheckout\n", id="empty_third_line"),
+        pytest.param("foo/bar#42\nabc123\ndef456\n\n", id="empty_fourth_line"),
+        pytest.param("", id="empty_file"),
+    ],
+)
+def test_review_pr_completion_marker_fields_malformed_content_returns_1_with_no_output(
+    tmp_path: Path, content: str
+) -> None:
+    """A marker that doesn't parse into exactly four non-empty lines must
+    never authorize a post on partial data -- each malformed shape below
+    fails closed the same way an absent marker does."""
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", content)
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-a")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_review_pr_completion_marker_fields_wrong_session_returns_1(tmp_path: Path) -> None:
+    """Session-scoped, unlike _lib_marker_value_present's cross-session glob
+    above: a marker written under one session must not authorize a read from
+    another -- see test_other_sessions_marker_does_not_leak_bypass for the
+    equivalent property on the active-bypass marker."""
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout\n")
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "session-b")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_review_pr_completion_marker_fields_wrong_repo_hash_returns_1(tmp_path: Path) -> None:
+    _write_review_pr_marker(tmp_path, "repohash", "session-a", "foo/bar#42\nabc123\ndef456\ncheckout\n")
+    result = _review_pr_completion_marker_fields(tmp_path, "otherrepohash", "session-a")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_review_pr_completion_marker_fields_rejects_traversal_session_id(tmp_path: Path) -> None:
+    """Routed through _lib_valid_session_id_component before ever building
+    the marker path -- a '../' session id must not escape review-pr-markers/.
+    The canary is a valid marker the traversing id reaches, so only the guard
+    can produce the refusal."""
+    (tmp_path / "review-pr-markers" / "repohash.x").mkdir(parents=True)
+    (tmp_path / "canary").write_text("foo/bar#42\nabc123\ndef456\ncheckout\n")
+    result = _review_pr_completion_marker_fields(tmp_path, "repohash", "x/../../canary")
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+# --- _lib_parse_pr_identity -------------------------------------------------
+#
+# Every review-pr script that takes a PR identity calls this helper for its
+# split and validation, so none carries its own copy.
+
+
+def _parse_pr_identity(pr_identity: str) -> subprocess.CompletedProcess:
+    argv = [
+        "bash", "-c", f'. {_LIB_SH}; _lib_parse_pr_identity "$@"', "bash", pr_identity,
+    ]
+    return subprocess.run(argv, capture_output=True, text=True, check=False)
+
+
+def test_parse_pr_identity_returns_owner_repo_and_number(tmp_path: Path) -> None:
+    result = _parse_pr_identity("foo/bar#42")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "foo/bar\n42\n"
+
+
+@pytest.mark.parametrize(
+    "pr_identity",
+    [
+        pytest.param("no-hash-or-slash", id="no_hash_or_slash"),
+        pytest.param("foo/bar#NOTANUMBER", id="non_numeric_number"),
+        pytest.param("#42", id="empty_owner_repo"),
+        # A segment made entirely of '.'/'-' characters is a valid, nonempty
+        # run under a naive [A-Za-z0-9._-]+ class, and turns a
+        # `repos/$OWNER_REPO/...` gh api interpolation into a
+        # path-traversal shape.
+        pytest.param("../..#5", id="traversal_segments"),
+        pytest.param("..#5", id="single_dot_segment"),
+        # Each half independently: "../..#5" above has both halves bad, which
+        # doesn't distinguish a regex that validates each half from one that
+        # only checks the owner-side (or the whole string) loosely. A
+        # legitimate owner paired with a traversal repo, and vice versa, pin
+        # that both '/'-delimited segments are checked on their own.
+        pytest.param("foo/..#5", id="repo_half_traversal_only"),
+        pytest.param("../foo#5", id="owner_half_traversal_only"),
+        # gh's `-R HOST/OWNER/REPO` would override a pinned GH_HOST, so a
+        # host-qualified identity must never reach it.
+        pytest.param("github.com/foo/bar#5", id="host_qualified"),
+    ],
+)
+def test_parse_pr_identity_rejects_malformed_shapes(tmp_path: Path, pr_identity: str) -> None:
+    result = _parse_pr_identity(pr_identity)
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_parse_pr_identity_accepts_dot_and_hyphen_alongside_alnum(tmp_path: Path) -> None:
+    """Bounds the owner/repo regex from the other side of the
+    traversal-rejection cases above: a segment mixing '.'/'-' with at least
+    one alphanumeric character (an ordinary GitHub owner/repo shape) must
+    still pass."""
+    result = _parse_pr_identity("my-org/my.repo#5")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "my-org/my.repo\n5\n"
+
+
+# --- _lib_skill_basename ----------------------------------------------------
+#
+# Hooks that match a Skill call by name call this helper, so none carries its
+# own copy of the qualified-name split.
+
+
+@pytest.mark.parametrize(
+    ("skill_name", "expected_basename"),
+    [
+        pytest.param("code-review", "code-review", id="bare_name"),
+        pytest.param("plugin-x:code-review", "code-review", id="plugin_qualified"),
+        pytest.param(
+            ".claude/worktrees/some-branch/claude:code-review",
+            "code-review",
+            id="directory_qualified",
+        ),
+        pytest.param("/code-review", "code-review", id="leading_slash"),
+        pytest.param("plugin:", "", id="trailing_colon_empty_name"),
+        pytest.param("code-review/", "", id="trailing_slash_empty_name"),
+        pytest.param("plugin:dir/", "", id="plugin_qualified_trailing_slash_empty_name"),
+        pytest.param("", "", id="empty_string"),
+    ],
+)
+def test_skill_basename_prints_final_name_component(skill_name: str, expected_basename: str) -> None:
+    argv = [
+        "bash", "-c", f'. {_LIB_SH}; _lib_skill_basename "$@"', "bash", skill_name,
+    ]
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected_basename + "\n"
+
+
+def test_skill_basename_with_no_argument_prints_empty_line() -> None:
+    argv = ["bash", "-c", f". {_LIB_SH}; _lib_skill_basename"]
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "\n"
+
+
+def test_skill_basename_with_no_argument_under_set_u_prints_empty_line() -> None:
+    """`${1:-}` keeps the helper callable with $1 unset under a caller's `set -u`."""
+    argv = ["bash", "-c", f". {_LIB_SH}; set -u; _lib_skill_basename"]
+    # LC_ALL=C keeps bash's error text in English so the stderr assertion is meaningful.
+    env = {**os.environ, "LC_ALL": "C"}
+    result = subprocess.run(argv, capture_output=True, text=True, check=False, env=env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "\n"
+    assert "unbound variable" not in result.stderr
+
+
+# --- _lib_args_lead_word_is -------------------------------------------------
+#
+# The review-orchestrator routing gate calls this helper to read the
+# `unrouted` lead word of a Skill call's args.
+
+
+def _args_lead_word_is(args: str, word: str, *, env_overrides: dict | None = None) -> int:
+    """Return the exit code of `_lib_args_lead_word_is args word`."""
+    argv = ["bash", "-c", f'. {_LIB_SH}; _lib_args_lead_word_is "$@"', "bash", args, word]
+    env = {**os.environ, **(env_overrides or {})}
+    return subprocess.run(argv, capture_output=True, text=True, check=False, env=env).returncode
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param("unrouted", id="word_alone"),
+        pytest.param("unrouted /abs/x.diff", id="word_then_space"),
+        pytest.param("unrouted\t/abs/x.diff", id="word_then_tab"),
+        pytest.param("unrouted\n/abs/x.diff", id="word_then_newline"),
+        pytest.param("unrouted\r/abs/x.diff", id="word_then_carriage_return"),
+        pytest.param("unrouted ", id="word_then_trailing_space"),
+        pytest.param("  unrouted", id="leading_spaces"),
+        pytest.param("\tunrouted", id="leading_tab"),
+        pytest.param("\nunrouted", id="leading_newline"),
+        pytest.param("\r\n unrouted /abs/x.diff", id="leading_mixed_whitespace"),
+    ],
+)
+def test_args_lead_word_is_matches_the_word_alone_or_before_whitespace(args: str) -> None:
+    assert _args_lead_word_is(args, "unrouted") == 0
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param("unroutedly", id="word_boundary_extension"),
+        pytest.param("unrouted:", id="colon_boundary"),
+        pytest.param("unrouted,", id="comma_boundary"),
+        pytest.param("Unrouted", id="capitalized"),
+        pytest.param("UNROUTED /abs/x.diff", id="uppercase"),
+        pytest.param("please run unrouted", id="prose_before_word"),
+        pytest.param("please run unrouted /abs/x.diff", id="prose_before_word_and_path"),
+        pytest.param('"unrouted"', id="double_quoted"),
+        pytest.param("'unrouted'", id="single_quoted"),
+        pytest.param("`unrouted`", id="backtick_wrapped"),
+        pytest.param("", id="empty_args"),
+        pytest.param("   ", id="only_spaces"),
+        pytest.param("\t\n\r", id="only_other_whitespace"),
+    ],
+)
+def test_args_lead_word_is_rejects_everything_but_the_exact_lead_word(args: str) -> None:
+    assert _args_lead_word_is(args, "unrouted") == 1
+
+
+def test_args_lead_word_is_rejects_an_empty_word() -> None:
+    assert _args_lead_word_is("", "") == 1
+
+
+def _locale_where_ideographic_space_is_space() -> str:
+    """An installed UTF-8 locale under which an unpinned `[[:space:]]` matches
+    U+3000, the exposure `local LC_ALL=C` removes. `C.UTF-8` is not guaranteed
+    to match, so a test that hardcodes it cannot tell the pinned helper from an
+    unpinned one. Fails on CI and skips locally when no installed locale
+    matches, so a runner that has one cannot lose the discrimination unnoticed."""
+    for name in _installed_utf8_locale_names():
+        probe = subprocess.run(
+            ["bash", "-c", '[[ "$1" == [[:space:]] ]]', "bash", "\u3000"],
+            env={**os.environ, "LC_ALL": name}, capture_output=True, check=False,
+        )
+        if probe.returncode == 0:
+            return name
+    message = "no installed locale makes [[:space:]] match U+3000"
+    if os.environ.get("CI"):
+        pytest.fail(f"{message}; CI must provide one")
+    pytest.skip(message)
+
+
+@pytest.mark.parametrize(
+    "separator",
+    [
+        # Discriminates only on a libc that counts U+00A0 as space; glibc does not.
+        pytest.param("\u00a0", id="no_break_space"),
+        pytest.param("\u2003", id="em_space"),
+        pytest.param("\u3000", id="ideographic_space"),
+    ],
+)
+@pytest.mark.parametrize(
+    "build_args",
+    [
+        pytest.param(lambda separator: f"{separator}unrouted", id="before_word"),
+        pytest.param(lambda separator: f"unrouted{separator}/abs/x.diff", id="after_word"),
+    ],
+)
+def test_args_lead_word_is_ignores_non_ascii_whitespace_in_a_utf8_locale(separator: str, build_args) -> None:
+    locale = _locale_where_ideographic_space_is_space()
+    args = build_args(separator)
+    assert _args_lead_word_is(args, "unrouted", env_overrides={"LC_ALL": locale}) == 1
+
+
+def test_args_lead_word_is_leaves_the_caller_locale_unchanged() -> None:
+    """The helper's LC_ALL=C is function-local, so it must not leak into the
+    caller's own shell."""
+    locale = _locale_where_ideographic_space_is_space()
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'. {_LIB_SH}; export LC_ALL={locale}; '
+            '_lib_args_lead_word_is x unrouted; printf %s "$LC_ALL"; [[ "$1" == [[:space:]] ]]',
+            "bash",
+            "\u3000",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.stdout == locale
+    assert result.returncode == 0, "U+3000 no longer matches [[:space:]] in the caller after the helper ran"
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param("_lib_args_lead_word_is", id="no_arguments"),
+        pytest.param('_lib_args_lead_word_is "unrouted"', id="args_but_no_word"),
+    ],
+)
+def test_args_lead_word_is_with_missing_arguments_under_set_u_returns_one(call: str) -> None:
+    """`${n:-}` keeps the helper callable with positionals unset under a
+    caller's `set -u`, returning 1 rather than aborting on an unbound variable."""
+    argv = ["bash", "-c", f'. {_LIB_SH}; set -u; {call}; echo "status=$?"']
+    # LC_ALL=C keeps bash's error text in English so the stderr assertion is meaningful.
+    env = {**os.environ, "LC_ALL": "C"}
+    result = subprocess.run(argv, capture_output=True, text=True, check=False, env=env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "status=1"
+    assert "unbound variable" not in result.stderr
+
+
+# --- _lib_gh -----------------------------------------------------------
+
+
+def _gh_shim_dir(tmp_path: Path, call_log: Path, exit_code: int = 0) -> Path:
+    """PATH dir holding a fake `gh` that records argv and
+    GH_HOST/GH_ENTERPRISE_TOKEN to call_log (one JSON object) and exits
+    exit_code."""
+    shim_dir = tmp_path / "gh-shim"
+    shim_dir.mkdir()
+    gh_shim = shim_dir / "gh"
+    gh_shim.write_text(textwrap.dedent(f"""\
+        #!/usr/bin/env python3
+        import json
+        import os
+        import sys
+        record = {{
+            "args": sys.argv[1:],
+            "GH_HOST": os.environ.get("GH_HOST"),
+            "GH_ENTERPRISE_TOKEN": os.environ.get("GH_ENTERPRISE_TOKEN"),
+        }}
+        with open({str(call_log)!r}, "a") as f:
+            f.write(json.dumps(record) + chr(10))
+        sys.exit({exit_code})
+    """))
+    gh_shim.chmod(0o755)
+    return shim_dir
+
+
+class TestLibGh:
+    """Direct unit coverage for _lib_gh -- the one call every review-pr
+    script routes its own `gh` invocations through."""
+
+    def test_forwards_argv_and_ambient_gh_host_and_enterprise_token_unchanged(self, tmp_path: Path) -> None:
+        call_log = tmp_path / "calls.jsonl"
+        shim_dir = _gh_shim_dir(tmp_path, call_log)
+        env = {
+            **os.environ,
+            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+            "GH_HOST": "ghe.example.com",
+            "GH_ENTERPRISE_TOKEN": "enterprise-token",
+        }
+        result = _run_lib_call('_lib_gh 5 pr view 42 -R foo/bar --json headRefOid', env=env)
+        assert result.returncode == 0, result.stderr
+        record = json.loads(call_log.read_text())
+        assert record["args"] == ["pr", "view", "42", "-R", "foo/bar", "--json", "headRefOid"]
+        assert record["GH_HOST"] == "ghe.example.com"
+        assert record["GH_ENTERPRISE_TOKEN"] == "enterprise-token"
+
+    def test_propagates_gh_own_nonzero_exit_status(self, tmp_path: Path) -> None:
+        call_log = tmp_path / "calls.jsonl"
+        shim_dir = _gh_shim_dir(tmp_path, call_log, exit_code=1)
+        env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+        result = _run_lib_call('_lib_gh 5 pr view 42', env=env)
+        assert result.returncode == 1
+
+
+# --- _lib_origin_owner_repo ----------------------------------------------
+
+
+class TestLibOriginOwnerRepo:
+    """Direct unit coverage for _lib_origin_owner_repo -- the one shared
+    extraction review-pr-checkout.sh and review-pr-diff.sh (REPO_ROOT form)
+    and review-pr-post.sh and require-respond-pr.sh's own cross-repo check
+    (cwd form) all call."""
+
+    @staticmethod
+    def _origin_owner_repo(repo: Path, resolution_form: str) -> subprocess.CompletedProcess:
+        """Run the function against repo in one of its two resolution forms.
+        The ambient git config is isolated so a contributor's own `insteadOf`
+        rules cannot change either form's answer."""
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        if resolution_form == "repo_root":
+            return _run_lib_call(f'_lib_origin_owner_repo "{repo}"', env=env)
+        return subprocess.run(
+            ["bash", "-c", f'. "{_LIB_SH}"; _lib_origin_owner_repo'],
+            cwd=repo, capture_output=True, text=True, env=env,
+        )
+
+    @pytest.mark.parametrize("resolution_form", ["repo_root", "cwd"])
+    @pytest.mark.parametrize(
+        "origin_url",
+        [
+            "https://github.com/foo/bar.git",
+            "https://github.com/foo/bar",
+            "git@github.com:foo/bar.git",
+            "ssh://git@github.com:22/foo/bar.git",
+            "https://user:token@github.com/foo/bar.git",
+            "/srv/remotes/foo/bar.git",
+        ],
+        ids=["https_dot_git", "https_no_suffix", "scp_like", "ssh_with_port", "https_with_userinfo", "local_path"],
+    )
+    def test_extracts_owner_repo_from_each_url_shape_in_both_resolution_forms(
+        self, tmp_path: Path, origin_url: str, resolution_form: str
+    ) -> None:
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo)
+        subprocess.run(["git", "remote", "add", "origin", origin_url], cwd=repo, check=True)
+        result = self._origin_owner_repo(repo, resolution_form)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "foo/bar"
+
+    @pytest.mark.parametrize("resolution_form", ["repo_root", "cwd"])
+    @pytest.mark.parametrize(
+        "origin_url",
+        ["https://github.com/foo/bar/", "https://github.com/foo/bar.git/"],
+        ids=["trailing_slash", "dot_git_trailing_slash"],
+    )
+    def test_a_trailing_slash_fails_closed_in_both_resolution_forms(
+        self, tmp_path: Path, origin_url: str, resolution_form: str
+    ) -> None:
+        """A URL ending in `/` does not parse to an owner/repo shape, so a
+        caller denies rather than comparing a wrong slug."""
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo)
+        subprocess.run(["git", "remote", "add", "origin", origin_url], cwd=repo, check=True)
+        result = self._origin_owner_repo(repo, resolution_form)
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("resolution_form", ["repo_root", "cwd"])
+    def test_an_instead_of_rewrite_yields_the_same_owner_repo_in_both_resolution_forms(
+        self, tmp_path: Path, resolution_form: str
+    ) -> None:
+        """`git remote get-url` applies a `url.<base>.insteadOf` rewrite and
+        `git config --get` does not, so the two forms read different URLs here
+        and must still agree on the slug."""
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo)
+        subprocess.run(["git", "remote", "add", "origin", "alias:foo/bar.git"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "url.https://github.com/.insteadOf", "alias:"], cwd=repo, check=True)
+        result = self._origin_owner_repo(repo, resolution_form)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "foo/bar"
+
+    def test_fails_closed_with_no_origin_remote(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        init_git_repo_with_commit(repo)
+        result = _run_lib_call(f'_lib_origin_owner_repo "{repo}"', env=dict(os.environ))
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+
+class TestLibCaseInsensitiveNe:
+    """Direct unit coverage for _lib_case_insensitive_ne -- the shared
+    nocasematch comparison for owner/repo slugs, since GitHub treats them
+    case-insensitively."""
+
+    def test_exact_match_returns_false(self) -> None:
+        result = _run_lib_call('_lib_case_insensitive_ne "foo/bar" "foo/bar"', env=dict(os.environ))
+        assert result.returncode == 1
+
+    def test_case_differing_match_returns_false(self) -> None:
+        result = _run_lib_call('_lib_case_insensitive_ne "Foo/Bar" "foo/bar"', env=dict(os.environ))
+        assert result.returncode == 1
+
+    def test_genuine_mismatch_returns_true(self) -> None:
+        result = _run_lib_call('_lib_case_insensitive_ne "foo/bar" "foo/baz"', env=dict(os.environ))
+        assert result.returncode == 0
+
+    @pytest.mark.parametrize("initial_option_state", ["-s", "-u"], ids=["caller_set", "caller_unset"])
+    def test_leaves_the_callers_nocasematch_setting_as_it_found_it(self, initial_option_state: str) -> None:
+        result = _run_lib_call(
+            f'shopt {initial_option_state} nocasematch; _lib_case_insensitive_ne "foo/bar" "foo/baz"; '
+            "shopt -p nocasematch",
+            env=dict(os.environ),
+        )
+        assert result.stdout == f"shopt {initial_option_state} nocasematch\n"
+
+
 # --- _lib_is_no_gate_release_agent ---------------------------------------
 
 
@@ -1639,12 +2165,15 @@ def test_valid_session_id_component_accepts_uuid_shaped_ids(session_id: str) -> 
         "session;rm -rf /",
         ".",
         "..",
+        "abc\n",  # trailing newline: `$` must not stop matching before it
+        "\nabc",
+        "ab\ncd",
     ],
 )
 def test_valid_session_id_component_rejects_path_escaping_ids(session_id: str) -> None:
     """Each of these, concatenated into "$DIR/$SESSION_ID", would either
-    escape DIR (`../`, an absolute path) or otherwise fail to name a single
-    safe path component."""
+    escape DIR (`../`, an absolute path), carry a newline, or otherwise fail
+    to name a single safe path component."""
     assert not _valid_session_id_component(session_id)
 
 
@@ -2136,12 +2665,15 @@ def test_every_hook_that_paths_a_session_id_validates_it() -> None:
 # --- _lib_first_live_linked_worktree --------------------------------------
 
 
-def _first_live_linked_worktree(repo_root: Path) -> subprocess.CompletedProcess:
+def _first_live_linked_worktree(
+    repo_root: Path, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["bash", "-c", f'. {_LIB_SH}; _lib_first_live_linked_worktree "$1"', "bash", str(repo_root)],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
 
 
@@ -2187,6 +2719,262 @@ def test_first_live_linked_worktree_returns_not_found_with_no_worktree_at_all(
 
     assert result.returncode != 0
     assert result.stdout == ""
+
+
+def _add_review_worktree(repo: Path, name: str) -> Path:
+    return _add_worktree_under_worktrees_dir(repo, name)
+
+
+def test_first_live_linked_worktree_skips_a_review_worktree(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    _add_review_worktree(repo, REVIEW_WORKTREE_NAME)
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def _env_with_git_shim_printing_worktree_list(tmp_path: Path, porcelain_text: str) -> dict[str, str]:
+    """An environment whose `git worktree list --porcelain` prints
+    `porcelain_text` verbatim, so a test controls record order and the missing
+    trailing blank line that real git always emits."""
+    porcelain_file = tmp_path / "porcelain.txt"
+    porcelain_file.write_text(porcelain_text)
+    shim_dir = tmp_path / "bin"
+    shim_dir.mkdir()
+    git_shim = shim_dir / "git"
+    git_shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'case " $* " in\n'
+        "  *' worktree list --porcelain '*)\n"
+        f"    cat {shlex.quote(str(porcelain_file))}\n"
+        "    exit 0\n"
+        "    ;;\n"
+        "esac\n"
+        'echo "unexpected git call: $*" >&2\n'
+        "exit 1\n"
+    )
+    git_shim.chmod(0o755)
+    return {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+
+
+@pytest.mark.parametrize("review_entry_first", [True, False], ids=["review-first", "branch-first"])
+def test_first_live_linked_worktree_returns_the_branch_worktree_in_either_listing_order(
+    tmp_path: Path, review_entry_first: bool
+) -> None:
+    """`git worktree list` does not promise an order, so a skipped review entry
+    must not end the scan whichever side of the branch worktree it lands on.
+    A `git` shim prints the porcelain text in a fixed order over real
+    directories. The last record has no trailing blank line, which pins the
+    end-of-input flush."""
+    repo = tmp_path / "repo"
+    worktrees_dir = repo / ".claude" / "worktrees"
+    review_worktree = worktrees_dir / REVIEW_WORKTREE_NAME
+    branch_worktree = worktrees_dir / "feature"
+    review_worktree.mkdir(parents=True)
+    branch_worktree.mkdir()
+    main_record = f"worktree {repo}\nbranch refs/heads/main\n"
+    review_record = f"worktree {review_worktree}\ndetached\n"
+    branch_record = f"worktree {branch_worktree}\nbranch refs/heads/feature\n"
+    linked_records = [review_record, branch_record] if review_entry_first else [branch_record, review_record]
+
+    result = _first_live_linked_worktree(
+        repo, env=_env_with_git_shim_printing_worktree_list(tmp_path, "\n".join([main_record, *linked_records]))
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+    assert result.stderr == ""
+
+
+def test_first_live_linked_worktree_returns_the_whole_path_of_a_worktree_whose_directories_contain_a_space(
+    tmp_path: Path,
+) -> None:
+    """The porcelain record is one line, `worktree <path>`, so a path with a
+    space must come back whole rather than cut at the first space."""
+    repo = tmp_path / "my repo"
+    branch_worktree = repo / ".claude" / "worktrees" / "my feature"
+    branch_worktree.mkdir(parents=True)
+    main_record = f"worktree {repo}\nbranch refs/heads/main\n"
+    branch_record = f"worktree {branch_worktree}\nbranch refs/heads/feature\n"
+
+    result = _first_live_linked_worktree(
+        repo, env=_env_with_git_shim_printing_worktree_list(tmp_path, "\n".join([main_record, branch_record]))
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_skips_a_review_record_under_a_repo_path_containing_a_space_but_keeps_the_branch_record(
+    tmp_path: Path,
+) -> None:
+    """The review-shape comparison matches the entry's path against
+    `<repo>/.claude/worktrees`, so a space in the repo path must not defeat the
+    skip. The review record alone is not-found; a branch record after it is
+    returned whole."""
+    repo = tmp_path / "my repo"
+    worktrees_dir = repo / ".claude" / "worktrees"
+    review_worktree = worktrees_dir / REVIEW_WORKTREE_NAME
+    branch_worktree = worktrees_dir / "feature"
+    review_worktree.mkdir(parents=True)
+    branch_worktree.mkdir()
+    main_record = f"worktree {repo}\nbranch refs/heads/main\n"
+    review_record = f"worktree {review_worktree}\ndetached\n"
+    branch_record = f"worktree {branch_worktree}\nbranch refs/heads/feature\n"
+
+    # The shim helper owns a fixed layout under its directory, so each listing gets its own.
+    review_alone_dir, review_then_branch_dir = tmp_path / "review-alone", tmp_path / "review-then-branch"
+    review_alone_dir.mkdir()
+    review_then_branch_dir.mkdir()
+    review_alone = _first_live_linked_worktree(
+        repo,
+        env=_env_with_git_shim_printing_worktree_list(review_alone_dir, "\n".join([main_record, review_record])),
+    )
+    review_then_branch = _first_live_linked_worktree(
+        repo,
+        env=_env_with_git_shim_printing_worktree_list(
+            review_then_branch_dir, "\n".join([main_record, review_record, branch_record])
+        ),
+    )
+
+    assert review_alone.returncode != 0
+    assert review_alone.stdout == ""
+    assert review_then_branch.returncode == 0
+    assert review_then_branch.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_does_not_carry_a_detached_record_over_to_the_next_record(
+    tmp_path: Path,
+) -> None:
+    """A detached main checkout, common in CI, must not mark the record after
+    it detached: a review-shaped worktree on a branch still counts."""
+    repo = tmp_path / "repo"
+    review_named_branch_worktree = repo / ".claude" / "worktrees" / REVIEW_WORKTREE_NAME
+    review_named_branch_worktree.mkdir(parents=True)
+    detached_main_record = f"worktree {repo}\ndetached\n"
+    branch_record = f"worktree {review_named_branch_worktree}\nbranch refs/heads/feature\n"
+
+    result = _first_live_linked_worktree(
+        repo, env=_env_with_git_shim_printing_worktree_list(tmp_path, "\n".join([detached_main_record, branch_record]))
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == str(review_named_branch_worktree)
+
+
+def test_first_live_linked_worktree_counts_a_review_named_directory_outside_the_worktrees_dir(
+    tmp_path: Path,
+) -> None:
+    """Only a directory directly under .claude/worktrees is a review worktree,
+    so a detached worktree elsewhere that merely shares the name stays live."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    lookalike = tmp_path / REVIEW_WORKTREE_NAME
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(lookalike)],
+        cwd=repo, check=True, capture_output=True,
+    )
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(lookalike)
+
+
+def test_first_live_linked_worktree_returns_a_branch_worktree_directly_under_the_worktrees_dir(
+    tmp_path: Path,
+) -> None:
+    """The repo's own layout is .claude/worktrees/<branch>; that worktree is
+    the one a main-tree session should be told to enter."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    branch_worktree = _add_worktree_under_worktrees_dir(repo, "feature", branch="feature")
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_skips_a_review_sibling_but_returns_the_branch_worktree(
+    tmp_path: Path,
+) -> None:
+    """Real git porcelain output; the listing order is not pinned here (the
+    shim test above pins both orders)."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    _add_review_worktree(repo, REVIEW_WORKTREE_NAME)
+    branch_worktree = _add_worktree_under_worktrees_dir(repo, "feature", branch="feature")
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_counts_a_user_named_review_prefixed_detached_worktree(
+    tmp_path: Path,
+) -> None:
+    """A name that only starts with review-pr- is not the shape
+    review-pr-checkout.sh creates, so it stays live even when detached."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    user_worktree = _add_review_worktree(repo, "review-pr-hardening")
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(user_worktree)
+
+
+def test_first_live_linked_worktree_counts_a_review_named_directory_nested_one_level_deeper(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    nested = _add_review_worktree(repo, f"nested/{REVIEW_WORKTREE_NAME}")
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(nested)
+
+
+def test_first_live_linked_worktree_counts_a_review_shaped_worktree_that_is_on_a_branch(
+    tmp_path: Path,
+) -> None:
+    """Review checkouts are always detached, so a branch worktree with the
+    review-shaped name is someone's real work tree."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    branch_worktree = _add_worktree_under_worktrees_dir(
+        repo, REVIEW_WORKTREE_NAME, branch="review-branch"
+    )
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(branch_worktree)
+
+
+def test_first_live_linked_worktree_counts_a_review_shaped_worktree_under_another_trees_worktrees_dir(
+    tmp_path: Path,
+) -> None:
+    """Only the repo's own .claude/worktrees directory qualifies, not any
+    directory with that tail."""
+    repo = tmp_path / "repo"
+    init_git_repo_with_commit(repo)
+    elsewhere = _add_worktree_under_worktrees_dir(
+        repo, REVIEW_WORKTREE_NAME, worktrees_root=tmp_path / "other-tree"
+    )
+
+    result = _first_live_linked_worktree(repo)
+
+    assert result.returncode == 0
+    assert result.stdout == str(elsewhere)
 
 
 # --- _lib_default_branch_from_origin_head / _lib_default_branch_or_guess --
@@ -2812,6 +3600,10 @@ class TestFragmentCommandWord:
         the command."""
         assert _fragment_command_word("grep -rn black .") == "grep"
 
+    def test_venv_run_wrapper_is_the_command_word_not_a_shared_runner(self) -> None:
+        """deny-reviewer-tree-mutation.sh's header says why the wrapper stays out of the shared runner words."""
+        assert _fragment_command_word("scripts/venv-run.sh ruff format x.py") == "scripts/venv-run.sh"
+
     def test_empty_fragment_returns_empty(self) -> None:
         assert _fragment_command_word("") == ""
 
@@ -3017,6 +3809,660 @@ def test_commit_fragment_has_worktree_target_fails_safe_when_tool_missing(
     env["PATH"] = build_path_without(missing_binary, farm_dir)
     result = _run_lib_call('_lib_commit_fragment_has_worktree_target "git commit -m x"', env=env)
     assert result.returncode == 0, result.stderr
+
+
+# --- _lib_command_words and the extractors built on it -----------------
+#
+# _lib_command_words runs `xargs -n1` first and retries with
+# split-command-words.py only when xargs exits nonzero. The tokenizer's own
+# word-splitting cases live in test_split_command_words.py; these tests pin
+# the shell-side contract: the fast path, the retry stream layout, the
+# failure statuses, and the tokenizer-path resolution.
+
+_SPLITTER = HOOKS_DIR / "split-command-words.py"
+
+# Cases marked `requires_gnu_xargs` skip on any other xargs. On GNU, each asserts its xargs
+# precondition so a changed xargs fails with this message instead of a bare mismatch.
+_GNU_XARGS_ASSUMPTION = "this case assumes GNU xargs behavior, which BSD xargs does not share"
+requires_gnu_xargs = pytest.mark.skipif(not xargs_is_gnu(), reason="needs GNU xargs")
+
+# Each command makes plain `xargs -n1` fail after it has printed the early flag's path.
+_XARGS_FAILING_COMMANDS_WITH_EARLY_FLAG = {
+    "bare-opener-then-apostrophe-in-body": (
+        "git commit -F /early/msg -m x\ncat <<'EOF'\nit's\nEOF\ngit commit -F /late/msg"
+    ),
+    "escaped-double-quote-inside-double-quotes": r'git commit -F /early/msg -m "say \"hi\" now" -F /late/msg',
+    "newline-inside-double-quotes": 'git commit -F /early/msg -m "line one\nline two" -F /late/msg',
+}
+
+# One word just past GNU xargs's per-argument limit of 128 KiB (131072 bytes).
+# It is small enough for shlex to finish in well under the 5 s cap.
+_PAST_XARGS_LIMIT_COMMAND = "git commit -m " + "x" * 140_000 + " -F /late/msg"
+
+_SINGLE_LINE_BODY_COMMAND = "gh pr create --body-file /x"
+# A newline inside a quoted argument is a grammar-level xargs failure on every implementation.
+_XARGS_FAILING_BODY_COMMAND = 'gh pr create --title "a\nb" --body-file /x'
+
+# _LIB_COMMAND_WORDS_NO_WORDS_STATUS in _lib.sh: the fallback tokenizer exited 0 with no words.
+_NO_WORDS_STATUS = int(_sourced_value("_LIB_COMMAND_WORDS_NO_WORDS_STATUS"))
+
+# Every xargs-failing command the shell-side tests use; the retry-stream layout must hold for each.
+_ALL_XARGS_FAILING_COMMANDS = {
+    **_XARGS_FAILING_COMMANDS_WITH_EARLY_FLAG,
+    "newline-inside-double-quotes-gh-body": _XARGS_FAILING_BODY_COMMAND,
+    "word-past-the-xargs-limit": _PAST_XARGS_LIMIT_COMMAND,
+}
+
+
+def _write_command_file(tmp_path: Path, command: str) -> Path:
+    command_file = tmp_path / "command.txt"
+    command_file.write_text(command)
+    return command_file
+
+
+def _run_lib_helper_on_command(
+    call_prefix: str,
+    command: str,
+    tmp_path: Path,
+    env: dict | None = None,
+    lib_path: Path = _LIB_SH,
+) -> subprocess.CompletedProcess:
+    """Run `call_prefix "<command>"` after sourcing lib_path.
+
+    The command travels through a file, not the `bash -c` string, because a single
+    argv or environment string is capped at 128 KiB on Linux.
+    """
+    command_file = _write_command_file(tmp_path, command)
+    harness = f'. {shlex.quote(str(lib_path))}; {call_prefix} "$(cat {shlex.quote(str(command_file))})"'
+    return subprocess.run(
+        ["bash", "-c", harness],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=dict(os.environ) if env is None else env,
+    )
+
+
+def _run_lib_script_on_command(
+    script: str,
+    command: str,
+    tmp_path: Path,
+    env: dict | None = None,
+    lib_path: Path = _LIB_SH,
+) -> subprocess.CompletedProcess:
+    """Run `script` after sourcing lib_path, with the command text in the shell variable `command`."""
+    command_file = _write_command_file(tmp_path, command)
+    harness = f'. {shlex.quote(str(lib_path))}; command="$(cat {shlex.quote(str(command_file))})"; {script}'
+    return subprocess.run(
+        ["bash", "-c", harness],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=dict(os.environ) if env is None else env,
+    )
+
+
+def _plain_xargs(command: str) -> subprocess.CompletedProcess:
+    if shutil.which("xargs") is None:
+        pytest.skip("xargs not on PATH")
+    return subprocess.run(["xargs", "-n1"], input=command + "\n", capture_output=True, text=True, check=False)
+
+
+def _plain_xargs_stdout(command: str) -> str:
+    return _plain_xargs(command).stdout
+
+
+def _python3_shim_dir(tmp_path: Path, shim_body: str) -> Path:
+    """A directory holding a `python3` shell shim, for prepending to PATH."""
+    shim_dir = tmp_path / "stub-bin-python3-shim"
+    shim_dir.mkdir()
+    shim = shim_dir / "python3"
+    shim.write_text(f"#!/bin/bash\n{shim_body}\n")
+    shim.chmod(0o755)
+    return shim_dir
+
+
+def _env_with_path_prefix(directory: Path) -> dict:
+    env = dict(os.environ)
+    env["PATH"] = f"{directory}:{os.environ['PATH']}"
+    return env
+
+
+def _splitter_stdout(command: str) -> str:
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", str(_SPLITTER)], input=command, capture_output=True, text=True, check=True
+    )
+    return result.stdout
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit -m 'a b' --file=/x -F '/p q/r'",
+        'gh pr create --body-file /x --title "two words" --repo owner/name',
+        "git commit -F /x",
+    ],
+)
+def test_command_words_single_line_equals_plain_xargs_output(command: str, tmp_path: Path) -> None:
+    result = _run_lib_helper_on_command("_lib_command_words", command, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == _plain_xargs_stdout(command)
+
+
+def test_command_words_single_line_does_not_need_python3(tmp_path: Path) -> None:
+    """The fast path never spawns the fallback tokenizer, so a PATH without python3 changes nothing."""
+    farm_dir = tmp_path / "path-without-python3"
+    farm_dir.mkdir()
+    env = dict(os.environ)
+    env["PATH"] = build_path_without("python3", farm_dir)
+    command = "git commit -m 'a b' -F /x"
+    result = _run_lib_helper_on_command("_lib_command_words", command, tmp_path, env=env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == _plain_xargs_stdout(command)
+
+
+@requires_gnu_xargs
+@pytest.mark.parametrize("command_name", sorted(_ALL_XARGS_FAILING_COMMANDS))
+def test_command_words_after_xargs_failure_prints_xargs_words_then_blank_line_then_retry_words(
+    command_name: str, tmp_path: Path
+) -> None:
+    """Monotonicity: the retry only adds words after what xargs printed, so an extractor never finds fewer paths."""
+    command = _ALL_XARGS_FAILING_COMMANDS[command_name]
+    plain_xargs = _plain_xargs(command)
+    assert plain_xargs.returncode != 0, f"precondition: {_GNU_XARGS_ASSUMPTION}; xargs should fail on this command"
+
+    result = _run_lib_helper_on_command("_lib_command_words", command, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == plain_xargs.stdout + "\n" + _splitter_stdout(command)
+
+
+@requires_gnu_xargs
+@pytest.mark.parametrize("command_name", sorted(_XARGS_FAILING_COMMANDS_WITH_EARLY_FLAG))
+def test_command_words_after_xargs_failure_keeps_the_early_path_and_adds_the_late_path(
+    command_name: str, tmp_path: Path
+) -> None:
+    command = _XARGS_FAILING_COMMANDS_WITH_EARLY_FLAG[command_name]
+    xargs_lines = _plain_xargs_stdout(command).split("\n")
+    assert "/early/msg" in xargs_lines, f"precondition: {_GNU_XARGS_ASSUMPTION}; xargs should print the early path"
+    assert "/late/msg" not in xargs_lines, f"precondition: {_GNU_XARGS_ASSUMPTION}; xargs should drop the late path"
+
+    result = _run_lib_helper_on_command("_lib_command_words", command, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "/early/msg" in result.stdout.split("\n")
+    assert "/late/msg" in result.stdout.split("\n")
+
+
+def test_git_commit_message_source_paths_after_xargs_failure_prints_late_file_path(tmp_path: Path) -> None:
+    command = _XARGS_FAILING_COMMANDS_WITH_EARLY_FLAG["escaped-double-quote-inside-double-quotes"]
+    result = _run_lib_helper_on_command("_lib_git_commit_message_source_paths", command, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert "/late/msg" in result.stdout.split("\n")
+
+
+def test_gh_body_source_paths_after_multiline_value_prints_late_file_path(tmp_path: Path) -> None:
+    command = 'gh pr create --title "line one\nline two" --body-file /late/body.md -T=/late/template.md'
+    result = _run_lib_helper_on_command("_lib_gh_body_source_paths", command, tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split("\n") == ["/late/body.md", "/late/template.md", ""]
+
+
+@requires_gnu_xargs
+def test_xargs_failing_pending_flag_is_closed_by_a_blank_path_before_the_retry_words(tmp_path: Path) -> None:
+    """xargs's partial output ends in -F, so the blank separator is that flag's empty path."""
+    command = 'git commit -F "line one\nline two" -m x'
+    xargs_lines = _plain_xargs_stdout(command).split("\n")
+    assert xargs_lines[-2] == "-F", f"precondition: {_GNU_XARGS_ASSUMPTION}; xargs should stop right after -F"
+
+    result = _run_lib_helper_on_command("_lib_git_commit_message_source_paths", command, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "\nline one line two\n"
+
+
+@requires_gnu_xargs
+def test_unrelated_tools_flag_after_the_xargs_failure_point_reaches_the_extractor(tmp_path: Path) -> None:
+    """Documented over-deny: the retry exposes `ssh -T host` to a body-flag extractor that xargs never reached."""
+    command = 'gh pr create --title "line one\nline two" --repo r && ssh -T host'
+    assert "host" not in _plain_xargs_stdout(command).split("\n"), (
+        f"precondition: {_GNU_XARGS_ASSUMPTION}; xargs should fail before reaching host"
+    )
+
+    result = _run_lib_helper_on_command("_lib_gh_body_source_paths", command, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "host" in result.stdout.split("\n")
+
+
+@requires_gnu_xargs
+@pytest.mark.parametrize(
+    ("extractor", "source_flag"),
+    [("_lib_gh_body_source_paths", "--body-file"), ("_lib_git_commit_message_source_paths", "-F")],
+)
+def test_backslash_newline_between_a_flag_and_its_path_hides_the_path_from_the_extractor(
+    extractor: str, source_flag: str, tmp_path: Path
+) -> None:
+    """Pins the extractor's output for the gap recorded in the `_lib_command_words` header in _lib.sh.
+
+    An extractor-side fix flips this test on purpose. A caller-side fix would need its own test.
+    """
+    command = f"tool {source_flag} \\\n  /tmp/b.md --repo r"
+    plain_xargs = _plain_xargs(command)
+    assert plain_xargs.returncode == 0, f"precondition: {_GNU_XARGS_ASSUMPTION}; xargs should accept the command"
+    xargs_lines = plain_xargs.stdout.split("\n")
+    flag_index = xargs_lines.index(source_flag)
+    assert xargs_lines[flag_index + 1] == "", (
+        f"precondition: {_GNU_XARGS_ASSUMPTION}; xargs should print an empty word after {source_flag}"
+    )
+
+    result = _run_lib_helper_on_command(extractor, command, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "/tmp/b.md" not in result.stdout.split("\n")
+
+
+@requires_gnu_xargs
+def test_command_words_one_word_past_the_xargs_limit_then_flag_prints_the_flags_path(tmp_path: Path) -> None:
+    """GNU xargs rejects one argument this long, so the retry runs."""
+    plain_xargs = _plain_xargs(_PAST_XARGS_LIMIT_COMMAND)
+    assert plain_xargs.returncode != 0, f"precondition: {_GNU_XARGS_ASSUMPTION}; xargs should reject the long word"
+    assert "/late/msg" not in plain_xargs.stdout.split("\n")
+
+    result = _run_lib_helper_on_command("_lib_git_commit_message_source_paths", _PAST_XARGS_LIMIT_COMMAND, tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "/late/msg" in result.stdout.split("\n")
+
+
+def test_command_words_unsplittable_command_returns_status_3_with_empty_stdout(tmp_path: Path) -> None:
+    command = 'git commit -m "unterminated -F /x'
+    result = _run_lib_helper_on_command("_lib_command_words", command, tmp_path)
+    assert result.returncode == 3, result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("extractor", ["_lib_gh_body_source_paths", "_lib_git_commit_message_source_paths"])
+def test_extractors_return_the_command_words_status_unchanged_for_an_unsplittable_command(
+    extractor: str, tmp_path: Path
+) -> None:
+    result = _run_lib_helper_on_command(extractor, 'gh pr create --title "unterminated --body-file /x', tmp_path)
+    assert result.returncode == 3, result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("extractor", ["_lib_gh_body_source_paths", "_lib_git_commit_message_source_paths"])
+@pytest.mark.parametrize("python3_status", [3, 124], ids=["untokenizable", "cap-kill"])
+def test_extractors_return_the_tokenizers_nonzero_status_unchanged(
+    extractor: str, python3_status: int, tmp_path: Path
+) -> None:
+    shim_dir = _python3_shim_dir(tmp_path, f"exit {python3_status}")
+    result = _run_lib_helper_on_command(
+        extractor, _XARGS_FAILING_BODY_COMMAND, tmp_path, env=_env_with_path_prefix(shim_dir)
+    )
+    assert result.returncode == python3_status, result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("silent_tokenizer", ["python3-shim-exits-0", "zero-byte-tokenizer-script"])
+def test_command_words_denies_when_the_fallback_tokenizer_exits_0_with_empty_stdout(
+    silent_tokenizer: str, tmp_path: Path
+) -> None:
+    """A silent fallback gets its own status, not a command with no further words."""
+    if silent_tokenizer == "python3-shim-exits-0":
+        shim_dir = _python3_shim_dir(tmp_path, "exit 0")
+        result = _run_lib_helper_on_command(
+            "_lib_command_words", _XARGS_FAILING_BODY_COMMAND, tmp_path, env=_env_with_path_prefix(shim_dir)
+        )
+    else:
+        lib_copy = _copy_lib_with_tokenizer(tmp_path / "hooks-copy")
+        (lib_copy.parent / _SPLITTER.name).write_bytes(b"")
+        result = _run_lib_helper_on_command(
+            "_lib_command_words", _XARGS_FAILING_BODY_COMMAND, tmp_path, lib_path=lib_copy
+        )
+    assert result.returncode == _NO_WORDS_STATUS, result.stderr
+    assert result.stdout == ""
+
+
+def test_command_words_denies_a_comment_only_command_that_xargs_cannot_split(tmp_path: Path) -> None:
+    """Intended denial: the fallback drops comment lines, so nothing remains and the empty output is denied."""
+    command = "# it's"
+    assert _plain_xargs(command).returncode != 0, "precondition: xargs should fail on the unmatched apostrophe"
+
+    result = _run_lib_helper_on_command("_lib_command_words", command, tmp_path)
+
+    assert result.returncode == _NO_WORDS_STATUS, result.stderr
+    assert result.stdout == ""
+
+
+def test_command_words_runs_the_tokenizer_under_isolated_python_flags(tmp_path: Path) -> None:
+    """-I and -S keep PYTHONPATH, user-site modules, and site-packages startup code out of the gate."""
+    argv_record = tmp_path / "python3-argv.txt"
+    real_python3 = shutil.which("python3")
+    assert real_python3, "python3 not found in PATH"
+    shim_dir = _python3_shim_dir(
+        tmp_path,
+        f"printf '%s\\n' \"$@\" > {shlex.quote(str(argv_record))}\nexec {shlex.quote(real_python3)} \"$@\"",
+    )
+    result = _run_lib_helper_on_command(
+        "_lib_command_words", _XARGS_FAILING_BODY_COMMAND, tmp_path, env=_env_with_path_prefix(shim_dir)
+    )
+    assert result.returncode == 0, result.stderr
+    assert argv_record.read_text().split("\n")[:2] == ["-I", "-S"]
+
+
+def test_command_words_ignores_a_planted_shlex_on_pythonpath(tmp_path: Path) -> None:
+    planted_dir = tmp_path / "planted-modules"
+    planted_dir.mkdir()
+    (planted_dir / "shlex.py").write_text('raise RuntimeError("planted shlex imported")\n')
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(planted_dir)
+    command = _XARGS_FAILING_COMMANDS_WITH_EARLY_FLAG["newline-inside-double-quotes"]
+
+    result = _run_lib_helper_on_command("_lib_command_words", command, tmp_path, env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == _plain_xargs_stdout(command) + "\n" + _splitter_stdout(command)
+
+
+def test_command_words_ignores_a_planted_re_beside_the_tokenizer(tmp_path: Path) -> None:
+    lib_copy = _copy_lib_with_tokenizer(tmp_path / "hooks-copy")
+    (lib_copy.parent / "re.py").write_text('raise RuntimeError("planted re.py imported")\n')
+    command = _XARGS_FAILING_COMMANDS_WITH_EARLY_FLAG["newline-inside-double-quotes"]
+
+    result = _run_lib_helper_on_command("_lib_command_words", command, tmp_path, lib_path=lib_copy)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == _plain_xargs_stdout(command) + "\n" + _splitter_stdout(command)
+
+
+# Expected status per (missing tool, command shape) for _lib_gh_body_source_paths:
+#   xargs missing: the fast path fails (127) and the retry splits the command, so both shapes succeed.
+#   python3 missing: a single-line command never needs it; an xargs-failing command has no fallback (127).
+#   awk missing: the extractor itself cannot run (127), whichever tokenizer produced the words.
+
+
+@pytest.mark.parametrize(
+    ("missing_binary", "command", "expected_status"),
+    [
+        ("xargs", _SINGLE_LINE_BODY_COMMAND, 0),
+        ("xargs", _XARGS_FAILING_BODY_COMMAND, 0),
+        ("python3", _SINGLE_LINE_BODY_COMMAND, 0),
+        ("python3", _XARGS_FAILING_BODY_COMMAND, 127),
+        ("awk", _SINGLE_LINE_BODY_COMMAND, 127),
+        ("awk", _XARGS_FAILING_BODY_COMMAND, 127),
+    ],
+    ids=[
+        "xargs-missing-single-line",
+        "xargs-missing-xargs-failing",
+        "python3-missing-single-line",
+        "python3-missing-xargs-failing",
+        "awk-missing-single-line",
+        "awk-missing-xargs-failing",
+    ],
+)
+def test_gh_body_source_paths_status_when_a_tool_is_missing(
+    missing_binary: str, command: str, expected_status: int, tmp_path: Path
+) -> None:
+    farm_dir = tmp_path / f"path-without-{missing_binary}"
+    farm_dir.mkdir()
+    env = dict(os.environ)
+    env["PATH"] = build_path_without(missing_binary, farm_dir)
+    result = _run_lib_helper_on_command("_lib_gh_body_source_paths", command, tmp_path, env=env)
+    assert result.returncode == expected_status, result.stderr
+    if expected_status == 0:
+        assert result.stdout == "/x\n"
+    else:
+        assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["git commit -F /x", 'git commit -m "a\nb" -F /x'],
+    ids=["single-line", "xargs-failing"],
+)
+def test_git_commit_message_source_paths_fails_when_awk_is_missing(command: str, tmp_path: Path) -> None:
+    """A missing awk must read as a failure, not as a command with no message-source files."""
+    farm_dir = tmp_path / "path-without-awk"
+    farm_dir.mkdir()
+    env = dict(os.environ)
+    env["PATH"] = build_path_without("awk", farm_dir)
+    result = _run_lib_helper_on_command("_lib_git_commit_message_source_paths", command, tmp_path, env=env)
+    assert result.returncode == 127, result.stderr
+    assert result.stdout == ""
+
+
+def _copy_lib_without_tokenizer(destination: Path) -> Path:
+    """Copy _lib.sh and the files it sources into destination, leaving out split-command-words.py."""
+    destination.mkdir()
+    for name in ("_lib.sh", "_config.sh", "config-keys.psv"):
+        shutil.copy(HOOKS_DIR / name, destination / name)
+    return destination / "_lib.sh"
+
+
+def _copy_lib_with_tokenizer(destination: Path) -> Path:
+    """Copy _lib.sh, the files it sources, and split-command-words.py into destination."""
+    lib_copy = _copy_lib_without_tokenizer(destination)
+    shutil.copy(_SPLITTER, destination / _SPLITTER.name)
+    return lib_copy
+
+
+def _linked_hooks_dir(tmp_path: Path, *, absolute_targets: bool, target_has_tokenizer: bool) -> tuple[Path, Path]:
+    """Build a stow-style directory whose _lib.sh, _config.sh, and config-keys.psv are links with no tokenizer link.
+
+    Returns (link directory, real directory the links point into).
+    """
+    real_dir = tmp_path / "real-hooks"
+    if target_has_tokenizer:
+        _copy_lib_with_tokenizer(real_dir)
+    else:
+        _copy_lib_without_tokenizer(real_dir)
+    link_dir = tmp_path / "linked-hooks"
+    link_dir.mkdir()
+    for name in ("_lib.sh", "_config.sh", "config-keys.psv"):
+        target = real_dir / name if absolute_targets else Path("..") / real_dir.name / name
+        (link_dir / name).symlink_to(target)
+    return link_dir, real_dir
+
+
+def _tokenizer_path_printed_by(lib_path: Path) -> str:
+    result = subprocess.run(
+        ["bash", "-c", f". {shlex.quote(str(lib_path))}; _lib_command_words_tokenizer_path"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip()
+
+
+def test_failure_clause_names_install_when_lib_is_a_real_copy_without_the_tokenizer(tmp_path: Path) -> None:
+    lib_copy = _copy_lib_without_tokenizer(tmp_path / "hooks-copy")
+    clause = subprocess.run(
+        ["bash", "-c", f". {shlex.quote(str(lib_copy))}; _lib_command_words_failure_clause 2"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    assert "./install.sh" in clause
+    assert "claude-config checkout" in clause
+    assert "stop and ask" in clause
+
+
+def test_command_words_with_unlinked_tokenizer_returns_nonzero_for_an_xargs_failing_command(tmp_path: Path) -> None:
+    lib_copy = _copy_lib_without_tokenizer(tmp_path / "hooks-copy")
+    result = _run_lib_helper_on_command(
+        "_lib_command_words", 'git commit -m "a\nb" -F /x', tmp_path, lib_path=lib_copy
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_command_words_single_line_still_works_with_unlinked_tokenizer(tmp_path: Path) -> None:
+    lib_copy = _copy_lib_without_tokenizer(tmp_path / "hooks-copy")
+    result = _run_lib_helper_on_command("_lib_command_words", "git commit -F /x", tmp_path, lib_path=lib_copy)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "git\ncommit\n-F\n/x\n"
+
+
+@pytest.mark.parametrize("absolute_targets", [False, True], ids=["relative-link-target", "absolute-link-target"])
+def test_tokenizer_path_readlink_fallback_finds_the_tokenizer_beside_the_link_target(
+    absolute_targets: bool, tmp_path: Path
+) -> None:
+    """With _lib.sh a stow-style symlink and no tokenizer link beside it, the link target's directory supplies it."""
+    link_dir, real_dir = _linked_hooks_dir(tmp_path, absolute_targets=absolute_targets, target_has_tokenizer=True)
+    assert not (link_dir / _SPLITTER.name).exists(), "precondition: no tokenizer link beside the link"
+
+    result = _run_lib_helper_on_command(
+        "_lib_command_words", 'git commit -m "a\nb" -F /x', tmp_path, lib_path=link_dir / "_lib.sh"
+    )
+    printed_path = _tokenizer_path_printed_by(link_dir / "_lib.sh")
+
+    assert result.returncode == 0, result.stderr
+    assert "/x" in result.stdout.split("\n")
+    assert printed_path != str(link_dir / _SPLITTER.name)
+    assert Path(printed_path).resolve() == (real_dir / _SPLITTER.name).resolve()
+
+
+def test_tokenizer_path_is_the_unreadable_sibling_when_the_link_target_lacks_the_tokenizer(tmp_path: Path) -> None:
+    link_dir, _real_dir = _linked_hooks_dir(tmp_path, absolute_targets=True, target_has_tokenizer=False)
+
+    printed_path = _tokenizer_path_printed_by(link_dir / "_lib.sh")
+
+    assert printed_path == str(link_dir / _SPLITTER.name)
+    assert not Path(printed_path).exists()
+
+
+def test_tokenizer_path_for_the_in_tree_lib_resolves_to_the_tokenizer_in_the_hooks_directory() -> None:
+    result = _run_lib_call("_lib_command_words_tokenizer_path", env=dict(os.environ))
+    assert Path(result.stdout.strip()).resolve() == _SPLITTER.resolve()
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_fragment", "absent_fragment"),
+    [
+        ("124", "killed (exit 124)", "tool in the extraction step"),
+        ("137", "killed (exit 137)", "tool in the extraction step"),
+        ("3", "tokenizer could split it", "tool in the extraction step"),
+        ("3", "over 2 MiB", "tool in the extraction step"),
+        ("2", "tool in the extraction step failed (exit 2)", "killed"),
+        ("127", "tool in the extraction step failed (exit 127)", "killed"),
+        (str(_NO_WORDS_STATUS), "found no command words to check", "tool in the extraction step"),
+        (str(_NO_WORDS_STATUS), "holds only comments", "killed"),
+        ("1", "tool in the extraction step failed (exit 1)", "killed"),
+    ],
+)
+def test_failure_clause_wording_by_status(status: str, expected_fragment: str, absent_fragment: str) -> None:
+    result = _run_lib_call(f"_lib_command_words_failure_clause {status}", env=dict(os.environ))
+    assert expected_fragment in result.stdout
+    assert absent_fragment not in result.stdout
+
+
+def test_failure_clause_names_every_step_of_the_extraction_for_a_tool_fault() -> None:
+    result = _run_lib_call("_lib_command_words_failure_clause 127", env=dict(os.environ))
+    for step in ("python3", "awk", "temp-file creation"):
+        assert step in result.stdout
+    assert "tokenized" not in result.stdout
+
+
+def test_deny_reason_for_status_3_names_surface_flags_clause_and_workaround() -> None:
+    result = _run_lib_call(
+        "_lib_command_words_deny_reason 'gh pr create' '--body-file/-F' 3", env=dict(os.environ)
+    )
+    reason = result.stdout
+    assert "could not be tokenized" in reason
+    assert "gh pr create" in reason
+    assert "--body-file/-F" in reason
+    assert "tokenizer could split it" in reason
+    assert "earlier Bash call" in reason
+
+
+@pytest.mark.parametrize("status", ["2", "127", "124"])
+def test_deny_reason_for_a_non_tokenizer_status_does_not_claim_a_tokenizing_failure(status: str) -> None:
+    result = _run_lib_call(
+        f"_lib_command_words_deny_reason 'git commit' '-F' {status}", env=dict(os.environ)
+    )
+    assert "git commit" in result.stdout
+    assert "tokenized" not in result.stdout
+    assert "earlier Bash call" in result.stdout
+
+
+def test_deny_reason_for_the_no_words_status_does_not_blame_a_tool_or_offer_the_file_workaround() -> None:
+    result = _run_lib_call(
+        f"_lib_command_words_deny_reason 'git commit' '-F' {_NO_WORDS_STATUS}", env=dict(os.environ)
+    )
+    assert "git commit" in result.stdout
+    assert "found no command words to check" in result.stdout
+    assert "a tool in the extraction step failed" not in result.stdout
+    assert "tokenized" not in result.stdout
+    assert "earlier Bash call" not in result.stdout
+
+
+def test_deny_reason_omits_the_workaround_when_the_tokenizer_is_not_linked(tmp_path: Path) -> None:
+    lib_copy = _copy_lib_without_tokenizer(tmp_path / "hooks-copy")
+    result = subprocess.run(
+        ["bash", "-c", f". {shlex.quote(str(lib_copy))}; _lib_command_words_deny_reason 'git commit' '-F' 2"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert "./install.sh" in result.stdout
+    assert "stop and ask" in result.stdout
+    assert "earlier Bash call" not in result.stdout
+    assert "split the command" not in result.stdout
+
+
+def test_deny_reason_called_with_missing_arguments_still_produces_a_reason_under_nounset() -> None:
+    result = _run_lib_call("set -u; _lib_command_words_deny_reason", env=dict(os.environ))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout
+
+
+def test_deny_reason_and_hook_stderr_do_not_echo_the_interpreters_stderr(tmp_path: Path) -> None:
+    """The python3 shim writes a marker to stderr and fails; the marker must reach neither the reason nor the hook's stderr.
+
+    Dropping `2>/dev/null` from the tokenizer call in _lib_command_words surfaces the marker on stderr.
+    """
+    marker = "DISTINCTIVE-MARKER-9f3a"
+    shim_dir = _python3_shim_dir(tmp_path, f"echo {marker} >&2\nexit 1")
+    script = (
+        '_lib_command_words "$command" > /dev/null; status=$?; '
+        "_lib_command_words_deny_reason 'git commit' '-F' \"$status\""
+    )
+
+    result = _run_lib_script_on_command(script, _XARGS_FAILING_BODY_COMMAND, tmp_path, env=_env_with_path_prefix(shim_dir))
+
+    assert result.returncode == 0, result.stderr
+    assert "exit 1" in result.stdout, "precondition: the shim's failure reached the reason builder"
+    assert marker not in result.stdout
+    assert marker not in result.stderr
+
+
+@pytest.mark.timing
+def test_command_words_python3_hang_is_capped_and_returns_the_killed_status(tmp_path: Path) -> None:
+    """A python3 that outlasts the cap yields the cap-kill status instead of hanging the hook.
+
+    The shim sleeps past the cap and only then execs the real python3, which would print the words;
+    a working cap kills the shim first, so an uncapped call fails this on the status and the empty stdout.
+    """
+    real_python3 = shutil.which("python3")
+    assert real_python3, "python3 not found in PATH"
+    if not shutil.which("timeout") and not shutil.which("gtimeout"):
+        pytest.skip("neither timeout(1) nor gtimeout(1) available — BSD/macOS without coreutils")
+
+    stub_dir = tmp_path / "stub-bin-python3"
+    stub_dir.mkdir()
+    write_scaled_timeout_shim(stub_dir)
+    stub_python3 = stub_dir / "python3"
+    stub_python3.write_text(f'#!/bin/bash\nsleep {scaled_shim_sleep(10)}\nexec {real_python3} "$@"\n')
+    stub_python3.chmod(0o755)
+
+    env = dict(os.environ)
+    env["PATH"] = f"{stub_dir}:{os.environ['PATH']}"
+    with assert_cap_engaged(stub_dir, production_cap=5, command="python3"):
+        result = _run_lib_helper_on_command("_lib_command_words", "git commit -m it's -F /x", tmp_path, env=env)
+
+    assert result.returncode in (124, 137, 143), result.stderr
+    assert result.stdout == ""
 
 
 # --- GH-783: caller-contract quote-blindness + composition -------------
@@ -3827,27 +5273,6 @@ class TestLibNormalizePathLexically:
         subprocess timeout is only a hang guard, not a scaling bound."""
         path = "/" + "/".join(["a"] * 50000) + "/../../b"
         assert _normalize_lexically(path) == "/" + "/".join(["a"] * 49998) + "/b"
-
-    def test_matches_the_oracle_under_bash_compat_32(self) -> None:
-        """The normalizer's header claims it was checked with BASH_COMPAT=32.
-        One process normalizes every oracle input at that compatibility level,
-        which emulates bash 3.2's documented differences and is not a real 3.2
-        binary."""
-        paths = [param.values[0] for param in _LEXICAL_NORMALIZATION_INPUTS]
-        script = (
-            f". {_LIB_SH}; for path in \"$@\"; do "
-            '_lib_normalize_path_lexically "$path"; printf "%s\\0" "$_LIB_NORMALIZED_PATH"; done'
-        )
-        result = subprocess.run(
-            ["bash", "-c", script, "bash", *paths],
-            env={**os.environ, "BASH_COMPAT": "32"},
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.split("\0")[:-1] == [_lexical_normalization_oracle(path) for path in paths]
 
     def test_a_glob_segment_stays_literal(self, tmp_path: Path) -> None:
         (tmp_path / "matching-file").write_text("")
@@ -6157,6 +7582,413 @@ class TestRedactCredentialShapedStrings:
         assert "xyz_12345678" not in result.stdout
         assert result.stdout == json.dumps(f"a={_REDACTED} b={_REDACTED} c={_REDACTED}")
         assert len(counter_file.read_text().splitlines()) == 1
+
+
+class TestLibReviewPrArtifactPath:
+    """Direct unit coverage for _lib_review_pr_artifact_path -- the one
+    shared derivation of every review-pr session-scoped artifact path."""
+
+    def test_builds_the_dotted_active_dir_path(self) -> None:
+        result = _run_lib_call(
+            '_lib_review_pr_artifact_path "/home/u/.claude" "sess-1" provenance', env=dict(os.environ)
+        )
+        assert result.returncode == 0
+        assert result.stdout == "/home/u/.claude/.review-pr-active.d/sess-1.provenance"
+
+    def test_suffix_carrying_its_own_dot_is_passed_through_unmodified(self) -> None:
+        """SUFFIX carries no leading dot by convention, but "context.json"
+        (an already-dotted suffix) must still round-trip unchanged -- this
+        function does no dot-stripping or validation of its own."""
+        result = _run_lib_call(
+            '_lib_review_pr_artifact_path "/home/u/.claude" "sess-1" context.json', env=dict(os.environ)
+        )
+        assert result.returncode == 0
+        assert result.stdout == "/home/u/.claude/.review-pr-active.d/sess-1.context.json"
+
+
+class TestLibReviewPrProvenanceSchema:
+    """Direct unit coverage for _lib_write_review_pr_provenance and
+    _lib_review_pr_provenance_field -- the one writer and reader of the
+    provenance schema. marker-clear-stale.py's own "pid=" read (Python, not
+    this lib) follows the same schema."""
+
+    def test_round_trips_every_written_field(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "sess.provenance"
+        write = _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" '
+            'pr_identity=foo/bar#42 head_ref_oid=abc123 pid=999 mode=checkout',
+            env=dict(os.environ),
+        )
+        assert write.returncode == 0, write.stderr
+        assert provenance.read_text().splitlines()[0] == "schema=1"
+
+        for key, expected in (
+            ("pr_identity", "foo/bar#42"),
+            ("head_ref_oid", "abc123"),
+            ("pid", "999"),
+            ("mode", "checkout"),
+        ):
+            read = _run_lib_call(
+                f'_lib_review_pr_provenance_field "{provenance}" {key}', env=dict(os.environ)
+            )
+            assert read.returncode == 0, read.stderr
+            assert read.stdout == expected
+
+    def test_unknown_key_returns_one_with_no_output(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "sess.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" pr_identity=foo/bar#42',
+            env=dict(os.environ),
+        )
+        result = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" nonexistent_key', env=dict(os.environ)
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_a_file_with_no_schema_header_is_rejected_even_with_a_matching_key_value_line(
+        self, tmp_path: Path
+    ) -> None:
+        """A file without the `schema=1` header must fail closed rather than
+        being partially read -- even when a line happens to look like a valid
+        key=value pair."""
+        provenance = tmp_path / "sess.provenance"
+        provenance.write_text("pr_identity=foo/bar#42\nhead_ref_oid=abc123\n")
+        result = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" pr_identity', env=dict(os.environ)
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+    def test_a_field_unknown_to_this_reader_does_not_break_reading_the_known_fields(
+        self, tmp_path: Path
+    ) -> None:
+        """The schema is additive: a file carrying a key this call never asks
+        for (e.g. fetched_sha) must not disturb any other field's read."""
+        provenance = tmp_path / "sess.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" '
+            'pr_identity=foo/bar#42 head_ref_oid=abc123 pid=999 mode=checkout fetched_sha=deadbeef',
+            env=dict(os.environ),
+        )
+        result = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" mode', env=dict(os.environ)
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "checkout"
+
+    def test_a_value_containing_equals_signs_round_trips_whole(self, tmp_path: Path) -> None:
+        provenance = tmp_path / "sess.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" pr_identity=foo/bar#42 head_ref_oid=a=b=c',
+            env=dict(os.environ),
+        )
+        result = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" head_ref_oid', env=dict(os.environ)
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "a=b=c"
+
+    def test_a_key_that_is_a_prefix_of_another_key_reads_only_its_own_line(self, tmp_path: Path) -> None:
+        """`pid` must not match the `pid_extra=` line that precedes its own."""
+        provenance = tmp_path / "sess.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{provenance}" pid_extra=111 pid=999', env=dict(os.environ)
+        )
+        present = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{provenance}" pid', env=dict(os.environ)
+        )
+        assert present.returncode == 0, present.stderr
+        assert present.stdout == "999"
+
+        only_longer_key = tmp_path / "only-longer-key.provenance"
+        _run_lib_call(
+            f'_lib_write_review_pr_provenance "{only_longer_key}" pid_extra=111', env=dict(os.environ)
+        )
+        absent = _run_lib_call(
+            f'_lib_review_pr_provenance_field "{only_longer_key}" pid', env=dict(os.environ)
+        )
+        assert absent.returncode != 0
+        assert absent.stdout == ""
+
+    def test_writer_returns_non_zero_when_the_destination_cannot_be_written(self, tmp_path: Path) -> None:
+        missing_directory_destination = tmp_path / "absent-directory" / "sess.provenance"
+        result = _run_lib_call(
+            f'_lib_write_review_pr_provenance "{missing_directory_destination}" pr_identity=foo/bar#42',
+            env=dict(os.environ),
+        )
+        assert result.returncode != 0
+        assert not missing_directory_destination.exists()
+
+
+class TestLibReviewPrWorktreeTemplate:
+    """Direct unit coverage for _lib_review_pr_worktree_template -- the
+    naming convention review-pr-checkout.sh creates worktrees under and
+    _lib_review_pr_select_session_worktrees (below) discovers them by."""
+
+    def test_builds_the_mktemp_template_from_session_and_pr_number(self) -> None:
+        result = _run_lib_call(
+            '_lib_review_pr_worktree_template "/repo" "sess-1" "42"', env=dict(os.environ)
+        )
+        assert result.returncode == 0
+        assert result.stdout == "/repo/.claude/worktrees/review-pr-sess-1-42-XXXXXX"
+
+
+_PORCELAIN_HEAD = "HEAD " + "a" * 40
+
+
+def _porcelain_record(path: str, *extra_lines: str) -> str:
+    """One `git worktree list --porcelain` record: a path line, then a HEAD
+    line and `detached` unless `extra_lines` replaces them."""
+    tail = extra_lines or (_PORCELAIN_HEAD, "detached")
+    return "\n".join([f"worktree {path}", *tail]) + "\n"
+
+
+# mktemp's random suffix differs per draw, so several draws make a selector
+# class narrower than [A-Za-z0-9] fail with near certainty. A class of only
+# lowercase letters and digits passes one draw with probability (36/62)^6,
+# about 4%.
+_TEMPLATE_CONTRACT_DRAWS = 20
+
+# Every character class _lib_valid_session_id_component allows (upper, lower,
+# digit, underscore, hyphen), with a hyphen at the end so the template's
+# `-<number>-` joint follows a hyphen.
+_WIDEST_VALID_SESSION_ID = "Az09_-Zz_09-"
+_TEMPLATE_CONTRACT_SESSION_IDS = ["sess-1", _WIDEST_VALID_SESSION_ID]
+
+
+class TestLibReviewPrSelectSessionWorktrees:
+    """Direct unit coverage for _lib_review_pr_select_session_worktrees --
+    the discovery function review-pr-finish.sh's sweep relies on. Fed
+    synthetic porcelain text, so shapes real git cannot be coerced into
+    emitting (a record missing HEAD, a truncated record) stay reachable."""
+
+    MAIN = "/repo"
+    SESSION = "sess-1"
+    WORKTREES_DIR = "/repo/.claude/worktrees"
+
+    def _select(self, porcelain: str, session_id: str | None = None) -> subprocess.CompletedProcess:
+        session = self.SESSION if session_id is None else session_id
+        return subprocess.run(
+            [
+                "bash", "-c",
+                f'. {_LIB_SH}; _lib_review_pr_select_session_worktrees "$1" "$2" "$3"',
+                "select", porcelain, self.MAIN, session,
+            ],
+            capture_output=True, text=True, check=False,
+        )
+
+    def test_selects_only_this_sessions_worktrees_from_a_mixed_listing(self) -> None:
+        own_first = f"{self.WORKTREES_DIR}/review-pr-sess-1-42-aB3dE9"
+        own_second = f"{self.WORKTREES_DIR}/review-pr-sess-1-7-Zz09Qq"
+        porcelain = "\n".join([
+            _porcelain_record(self.MAIN, _PORCELAIN_HEAD, "branch refs/heads/main"),
+            _porcelain_record(own_first),
+            _porcelain_record(f"{self.WORKTREES_DIR}/review-pr-sess-2-42-aB3dE9"),
+            _porcelain_record(f"{self.WORKTREES_DIR}/review-pr-sess-1-extra-42-aB3dE9"),
+            _porcelain_record(f"{self.WORKTREES_DIR}/review-pr-sess-1-42"),
+            _porcelain_record(f"{self.WORKTREES_DIR}/feature-branch"),
+            _porcelain_record("/elsewhere/review-pr-sess-1-42-aB3dE9"),
+            _porcelain_record(f"{self.WORKTREES_DIR}/nested/review-pr-sess-1-42-aB3dE9"),
+            _porcelain_record(own_second),
+        ])
+        result = self._select(porcelain)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [own_first, own_second]
+
+    def test_no_matching_worktree_prints_nothing_and_succeeds(self) -> None:
+        result = self._select(_porcelain_record(self.MAIN, _PORCELAIN_HEAD, "branch refs/heads/main"))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_malformed_porcelain_neither_crashes_nor_hides_the_well_formed_matches(self) -> None:
+        """A record missing its HEAD/detached lines, a `worktree` line with
+        no path, a truncated `worktre` line, and a final record cut off
+        mid-line must each be skipped or tolerated without disturbing the
+        matches around them."""
+        missing_tail = f"{self.WORKTREES_DIR}/review-pr-sess-1-1-AAAAAA"
+        well_formed = f"{self.WORKTREES_DIR}/review-pr-sess-1-2-BBBBBB"
+        porcelain = (
+            f"worktree {missing_tail}\n\n"
+            "worktree \n" f"{_PORCELAIN_HEAD}\n\n"
+            f"worktre {self.WORKTREES_DIR}/review-pr-sess-1-3-CCCCCC\n\n"
+            + _porcelain_record(well_formed)
+            + "\n"
+            f"worktree {self.WORKTREES_DIR}/review-pr-sess-1-4-DD"
+        )
+        result = self._select(porcelain)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [missing_tail, well_formed]
+
+    def test_a_session_whose_id_extends_this_ones_with_a_digit_led_segment_is_not_selected(self) -> None:
+        """`sess-1-2`'s worktree, `review-pr-sess-1-2-42-aB3dE9`, leaves the
+        remainder `2-42-aB3dE9` after `sess-1`'s prefix. Only the strict
+        six-alphanumeric tail stops that reading as digits `2`, then a
+        suffix."""
+        extended_session_worktree = f"{self.WORKTREES_DIR}/review-pr-sess-1-2-42-aB3dE9"
+        porcelain = _porcelain_record(extended_session_worktree)
+
+        for_sess_1 = self._select(porcelain, "sess-1")
+        for_sess_1_2 = self._select(porcelain, "sess-1-2")
+
+        assert for_sess_1.returncode == 0, for_sess_1.stderr
+        assert for_sess_1.stdout == ""
+        assert for_sess_1_2.returncode == 0, for_sess_1_2.stderr
+        assert for_sess_1_2.stdout.splitlines() == [extended_session_worktree]
+
+    @pytest.mark.parametrize(
+        "worktree_name",
+        [
+            "review-pr-sess-1-42-aB3dE",
+            "review-pr-sess-1-42-aB3dE9x",
+            "review-pr-sess-1-42-aB3d_9",
+            "review-pr-sess-1-42-aB3d.9",
+            "review-pr-sess-1-42-aB3d 9",
+            "review-pr-sess-1--aB3dE9",
+        ],
+        ids=["suffix-5", "suffix-7", "underscore-in-suffix", "dot-in-suffix", "space-in-suffix", "empty-number"],
+    )
+    def test_a_name_outside_the_strict_tail_shape_is_not_selected(self, worktree_name: str) -> None:
+        result = self._select(_porcelain_record(f"{self.WORKTREES_DIR}/{worktree_name}"))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/repo/.claude/worktrees/../review-pr-sess-1-42-aB3dE9",
+            "/repo/.claude/worktrees/review-pr-sess-1-42-aB3dE9/..",
+            "/repo/.claude/worktrees/review-pr-sess-1-42-aB3dE9/../review-pr-sess-1-42-Zz09Qq",
+        ],
+        ids=["parent-first", "trailing-dotdot", "sibling-via-dotdot"],
+    )
+    def test_a_path_with_a_dotdot_segment_is_not_selected(self, path: str) -> None:
+        result = self._select(_porcelain_record(path))
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    @pytest.mark.parametrize("session_id", _TEMPLATE_CONTRACT_SESSION_IDS)
+    def test_every_directory_the_checkout_template_creates_is_selected(
+        self, tmp_path: Path, session_id: str
+    ) -> None:
+        """Creator/discoverer contract: a real `mktemp -d` expansion of
+        _lib_review_pr_worktree_template must match the selector's tail
+        shape, so changing one side alone cannot orphan review worktrees."""
+        main_root = tmp_path / "main"
+        (main_root / ".claude" / "worktrees").mkdir(parents=True)
+        script = textwrap.dedent(f"""\
+            . {shlex.quote(str(_LIB_SH))}
+            _lib_valid_session_id_component "$2" || exit 9
+            draws=0
+            for attempt in {{1..{_TEMPLATE_CONTRACT_DRAWS}}}; do
+              created=$(mktemp -d "$(_lib_review_pr_worktree_template "$1" "$2" "$3")") || exit 10
+              selected=$(_lib_review_pr_select_session_worktrees "worktree $created" "$1" "$2") || exit 11
+              if [ "$selected" != "$created" ]; then
+                printf 'created %s, selected [%s]\\n' "$created" "$selected" >&2
+                exit 12
+              fi
+              draws=$((draws + 1))
+            done
+            printf '%s' "$draws"
+        """)
+        result = subprocess.run(
+            ["bash", "-c", script, "contract", str(main_root), session_id, "42"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == str(_TEMPLATE_CONTRACT_DRAWS), "the loop must run every draw, not vacuously"
+
+    @pytest.mark.parametrize("session_id", ["", "../evil", "a/b", "has space"])
+    def test_invalid_session_id_fails_without_output(self, session_id: str) -> None:
+        result = self._select(
+            _porcelain_record(f"{self.WORKTREES_DIR}/review-pr-sess-1-42-aB3dE9"), session_id
+        )
+        assert result.returncode != 0
+        assert result.stdout == ""
+
+
+class TestLibReviewPrWorktreeNameIsReviewShaped:
+    """_lib_review_pr_worktree_name_is_review_shaped decides which worktree
+    directory names _lib_first_live_linked_worktree may skip, so it must accept
+    every name the checkout template creates and nothing looser."""
+
+    @staticmethod
+    def _is_review_shaped(name: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_review_pr_worktree_name_is_review_shaped "$1"', "bash", name],
+            capture_output=True, text=True, check=False,
+        )
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "review-pr-sess-1-42-abc123",
+            "review-pr-0b5e0f6a-0a0d-4a39-9d7e-1f2f3a4b5c6d-7-aB3dE9",
+            "review-pr-sess_1-1234-ABCDEF",
+        ],
+    )
+    def test_accepts_a_name_the_checkout_template_can_create(self, name: str) -> None:
+        assert self._is_review_shaped(name).returncode == 0
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "review-pr-hardening",
+            "review-pr-sess-1-42",
+            "review-pr-sess-1-42-abc12",
+            "review-pr-sess-1-42-abc1234",
+            "review-pr-sess-1-x-abc123",
+            "review-pr--42-abc123",
+            "review-pr-sess-1-42-abc12!",
+            "review-pr-sess.x-123-AbC123",  # '.' is outside the session-id class
+            "xreview-pr-sess-1-42-abc123",
+            "review-pr-sess-1-42-abc123-extra",
+            "feature",
+            "",
+        ],
+    )
+    def test_rejects_a_name_the_checkout_template_never_creates(self, name: str) -> None:
+        assert self._is_review_shaped(name).returncode != 0
+
+    def test_rejects_a_non_ascii_letter_in_the_session_id_under_a_widening_locale(self) -> None:
+        """Mirrors the session-id validator's locale test: a bracket range in
+        the shared character class would accept `sess<e-acute>` where the
+        collation puts accented letters inside `[A-Za-z]`."""
+        result = subprocess.run(
+            ["bash", "-c", f'. {_LIB_SH}; _lib_review_pr_worktree_name_is_review_shaped "$1"', "bash",
+             "review-pr-sessé-42-abc123"],
+            env={**os.environ, "LC_ALL": _locale_that_widens_ascii_ranges()},
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode != 0
+
+    @pytest.mark.parametrize("session_id", _TEMPLATE_CONTRACT_SESSION_IDS)
+    def test_accepts_every_directory_the_checkout_template_creates(
+        self, tmp_path: Path, session_id: str
+    ) -> None:
+        """Creator/skip contract: a real `mktemp -d` expansion of
+        _lib_review_pr_worktree_template satisfies the predicate, for the
+        widest session id _lib_valid_session_id_component accepts as well as
+        a typical one."""
+        main_root = tmp_path / "main"
+        (main_root / ".claude" / "worktrees").mkdir(parents=True)
+        script = textwrap.dedent(f"""\
+            . {shlex.quote(str(_LIB_SH))}
+            _lib_valid_session_id_component "$2" || exit 9
+            draws=0
+            for attempt in {{1..{_TEMPLATE_CONTRACT_DRAWS}}}; do
+              created=$(mktemp -d "$(_lib_review_pr_worktree_template "$1" "$2" "$3")") || exit 10
+              _lib_review_pr_worktree_name_is_review_shaped "${{created##*/}}" || {{ printf '%s\\n' "$created" >&2; exit 12; }}
+              draws=$((draws + 1))
+            done
+            printf '%s' "$draws"
+        """)
+        result = subprocess.run(
+            ["bash", "-c", script, "contract", str(main_root), session_id, "42"],
+            capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == str(_TEMPLATE_CONTRACT_DRAWS), "the loop must run every draw, not vacuously"
 
 
 # --- _lib_config_lines -------------------------------------------------

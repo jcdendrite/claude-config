@@ -7,6 +7,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/hooks/require-plugin-version-bump.sh",
+            "onFailure": "block",
             "if": "Bash(git commit *)",
             "statusMessage": "Checking plugin-version-bump gate..."
           }

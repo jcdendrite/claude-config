@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Reports the current branch's divergence from origin/<default branch> in plain text to
 # stdout -- always, even when fully in sync. Detection primitive matches
 # check-branch-divergence.sh's SessionStart hook (default-branch resolution, bounded fetch,

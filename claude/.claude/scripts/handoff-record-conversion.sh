@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Records a handoff-file write against nudge-handoff-near-context-cap.sh's own
 # log. No args.
 # See claude-skills/skills/handoff/SKILL.md's "record the conversion signal"

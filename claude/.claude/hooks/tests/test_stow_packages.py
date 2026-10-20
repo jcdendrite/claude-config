@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import REPO_ROOT, SCRIPTS_DIR
+from helpers import REPO_ROOT, SCRIPTS_DIR, link_bash_into
 
 _INSTALL_SH = REPO_ROOT / "install.sh"
 _STOW_PACKAGES_SH = SCRIPTS_DIR / "stow-packages.sh"
@@ -500,6 +500,7 @@ def _bin_dir_with_readlink_returning_garbage_on_failure(tmp_path: Path) -> Path:
     stub = bin_dir / "readlink"
     stub.write_text('#!/bin/sh\nprintf "%s" "/garbage-partial-path"\nexit 1\n')
     stub.chmod(0o755)
+    link_bash_into(bin_dir)
     for real_bin_dir in (Path("/bin"), Path("/usr/bin")):
         if not real_bin_dir.is_dir():
             continue

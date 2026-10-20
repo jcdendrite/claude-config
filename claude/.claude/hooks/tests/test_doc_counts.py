@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import pytest
+import yaml
 from helpers import CLAUDE_DIR, SCRIPTS_DIR
 
 from .test_agent_roster import REVIEWER_AGENTS
@@ -144,6 +145,40 @@ def _count_name_only_skills() -> int:
         for name, value in settings.get("skillOverrides", {}).items()
         if value == "name-only" and name not in _BUILTIN_NAME_ONLY_SKILLS
     )
+
+
+def _name_only_skills_carrying_trigger_blocks() -> list[bool]:
+    """Per name-only repo skill (builtins excluded), whether its SKILL.md
+    description carries a TRIGGER block. A skill listed in skillOverrides without
+    a repo SKILL.md raises, so the roster cannot drift silently."""
+    settings = json.loads((CLAUDE_DIR / "settings.base.json").read_text())
+    names = [
+        name
+        for name, value in settings.get("skillOverrides", {}).items()
+        if value == "name-only" and name not in _BUILTIN_NAME_ONLY_SKILLS
+    ]
+    flags = []
+    for name in names:
+        skill_md = REPO_ROOT / "claude-skills" / "skills" / name / "SKILL.md"
+        flags.append(_description_carries_trigger_block(skill_md))
+    return flags
+
+
+def _description_carries_trigger_block(skill_md: Path) -> bool:
+    """Whether the frontmatter `description` field holds a `TRIGGER when:` block.
+    A `DO NOT TRIGGER when:` block alone does not count."""
+    frontmatter_match = re.match(r"---\n(.*?)\n---\n", skill_md.read_text(), re.DOTALL)
+    assert frontmatter_match, f"{skill_md} has no frontmatter block"
+    description = yaml.safe_load(frontmatter_match.group(1)).get("description", "")
+    return re.search(r"(?<!NOT )TRIGGER when:", description) is not None
+
+
+def _count_name_only_skills_without_trigger_blocks() -> int:
+    return _name_only_skills_carrying_trigger_blocks().count(False)
+
+
+def _count_name_only_skills_with_trigger_blocks() -> int:
+    return _name_only_skills_carrying_trigger_blocks().count(True)
 
 
 _GROUND_EVERY_CHOICE_BULLET = "- **Ground every choice.**"
@@ -487,6 +522,28 @@ _REGISTERED_FACTS: list[DocCountFact] = [
         ],
     ),
     DocCountFact(
+        ground_truth_fn=_count_name_only_skills_without_trigger_blocks,
+        label="count of name-only repo skills whose SKILL.md frontmatter has no TRIGGER text",
+        occurrences=[
+            Occurrence(
+                rel_path="docs/skills.md",
+                pattern=r"(\w+) skills carry no TRIGGER blocks",
+                description="docs/skills.md: N skills carry no TRIGGER blocks",
+            ),
+        ],
+    ),
+    DocCountFact(
+        ground_truth_fn=_count_name_only_skills_with_trigger_blocks,
+        label="count of name-only repo skills whose SKILL.md frontmatter has TRIGGER text",
+        occurrences=[
+            Occurrence(
+                rel_path="docs/skills.md",
+                pattern=r"The other (\w+) carry TRIGGER blocks",
+                description="docs/skills.md: the other N carry TRIGGER blocks",
+            ),
+        ],
+    ),
+    DocCountFact(
         ground_truth_fn=_count_claude_md_length_hook_limit,
         label=f"limit_for()'s wildcard-arm default in {_CLAUDE_MD_LENGTH_HOOK_REL_PATH}",
         occurrences=[
@@ -657,6 +714,64 @@ class TestDocCounts:
             _assert_exactly_one_match(matches, occurrence)
             claimed = _parse_count_token(matches[0])
             _assert_claimed_matches_actual(claimed, actual, occurrence, fact.label)
+
+
+_CONFIG_FILE_DOC_REL_PATH = "docs/config-file.md"
+_CONFIG_SCHEMA_AUDIT_REL_PATH = "claude/.claude/hooks/tests/config-schema-audit.md"
+_DOCS_ANCHOR_SECTION_SEPARATOR = " \u00a7 "
+
+
+class TestConfigKeyDocumentationCoverage:
+    """Every key in config-keys.psv is documented where the docs promise it is."""
+
+    @pytest.mark.parametrize("key", list(schema()))
+    def test_key_has_a_config_file_doc_table_row(self, key: str) -> None:
+        doc_lines = (REPO_ROOT / _CONFIG_FILE_DOC_REL_PATH).read_text().splitlines()
+        assert any(line.startswith(f"| `{key}` |") for line in doc_lines), (
+            f"{_CONFIG_FILE_DOC_REL_PATH}: no table row for schema key {key!r}"
+        )
+
+    @pytest.mark.parametrize("key", list(schema()))
+    def test_config_file_doc_table_row_matches_schema_type_default_and_resolution(
+        self, key: str
+    ) -> None:
+        """The user-facing per-key table must not contradict config-keys.psv.
+
+        Cells are compared after stripping the markdown backticks the table puts
+        around some types and every default; the Promptable and Docs cells are
+        not compared."""
+        doc_lines = (REPO_ROOT / _CONFIG_FILE_DOC_REL_PATH).read_text().splitlines()
+        row_line = next(
+            (line for line in doc_lines if line.startswith(f"| `{key}` |")), None
+        )
+        assert row_line is not None, (
+            f"{_CONFIG_FILE_DOC_REL_PATH}: no table row for schema key {key!r}"
+        )
+        # A row is `| key | type | default | resolution | promptable | docs |`; the
+        # leading and trailing pipes yield empty first and last split cells.
+        _, _, type_cell, default_cell, resolution_cell, *_ = (
+            cell.strip().strip("`") for cell in row_line.split("|")
+        )
+        schema_row = schema()[key]
+        assert (type_cell, default_cell, resolution_cell) == (
+            schema_row.type,
+            schema_row.default,
+            schema_row.resolution,
+        ), f"{_CONFIG_FILE_DOC_REL_PATH}: row for {key!r} disagrees with config-keys.psv"
+
+    @pytest.mark.parametrize("key", list(schema()))
+    def test_key_has_a_config_schema_audit_section(self, key: str) -> None:
+        audit_lines = (REPO_ROOT / _CONFIG_SCHEMA_AUDIT_REL_PATH).read_text().splitlines()
+        assert f"### `{key}`" in audit_lines, (
+            f"{_CONFIG_SCHEMA_AUDIT_REL_PATH}: no `### `{key}`` section for schema key {key!r}"
+        )
+
+    @pytest.mark.parametrize("key", list(schema()))
+    def test_key_docs_anchor_path_exists(self, key: str) -> None:
+        anchor_path = schema()[key].docs_anchor.split(_DOCS_ANCHOR_SECTION_SEPARATOR)[0]
+        assert (REPO_ROOT / anchor_path).is_file(), (
+            f"config-keys.psv: docs-anchor path {anchor_path!r} for {key!r} does not exist"
+        )
 
 
 class TestParseCountToken:

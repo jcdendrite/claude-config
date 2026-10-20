@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Canonical source for ~/.claude/scripts/relocate-claude-config.sh (stowed)
 # and for ~/.local/bin/relocate-claude-config (installed as a REAL FILE COPY
 # by install.sh, not a stow-managed symlink like every other ~/.local/bin/*

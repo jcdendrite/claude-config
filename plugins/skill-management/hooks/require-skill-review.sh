@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # Gate: require /skill-review before a commit-concluding command (git commit,
@@ -74,8 +74,8 @@
 #     index is corrupt, git still lists its name C-quoted, or its name does
 #     not survive argv normalization.
 # - Known gap: with neither timeout nor gtimeout on PATH, every _lib_capped
-#   site runs uncapped and a stalled git releases the commit at the harness
-#   timeout; see "Latency" in
+#   site runs uncapped and a stalled git holds the commit until the harness
+#   timeout; see `_lib_capped_for`'s header in this plugin's _lib.sh and "Latency" in
 #   docs/design-decisions/skill-review-gate-disarms-on-empty-base-relative-diff.md.
 # - Known gap: the validator reads each listed path's blob by re-resolving its
 #   name, so a hand-built index with aliased entry names leaves an invalid entry
@@ -118,7 +118,7 @@ emit_deny() {
 }
 
 if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
-  emit_deny "Blocked by skill-review gate: could not source _lib.sh."
+  emit_deny "Blocked by skill-review gate: could not source _lib.sh. A bash older than 5.2 first on the PATH Claude Code started with also causes this: ask the user to install bash 5.2 or newer in a separate terminal (macOS: brew install bash), put it first on that PATH, and restart Claude Code."
   exit 0
 fi
 
@@ -433,3 +433,5 @@ elif [ "$BASE_STATUS" -eq 2 ]; then
   DENY_REASON="${DENY_REASON} Note: this commit was gated against HEAD, not a novel-content base (the base could not be computed), so a mismatch mid-merge/cherry-pick/rebase is expected here rather than a review gap."
 fi
 emit_deny "$DENY_REASON"
+
+exit 0

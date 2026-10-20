@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, irreversible
 # Gate: reject `git commit`, `gh pr create`, `gh pr edit`, `gh issue
@@ -24,12 +24,19 @@
 # does.
 #
 # Scope and limits:
+# - Runs its content scans only in claude-config (origin URL contains
+#   `claude-config`) or in a repo with `.claude/private-projects-optin` at its
+#   toplevel. Those scans are silent in every other repo.
+# - Its fail-closed infrastructure denies (a failed `_lib.sh` source,
+#   unparseable tool input, a failed command-text quote-strip, fragment split, or
+#   commit-conclusion check) run before the
+#   scope test, so they apply in every repo.
 # - Catches the mechanical category (tracker IDs shaped like [A-Z]{2,}-\d+).
-# - Catches a second mechanical category when the user opts in via
+# - Catches a second mechanical category when the user creates
 #   ~/.claude/private-projects.md: a literal, case-insensitive
-#   substring scan against entries in that user-local file. See the
+#   whole-word scan against entries in that user-local file. See the
 #   "Deliberate scope" section below for the full design.
-# - Catches six structural shapes, always on (not gated by
+# - Catches six structural shapes, wherever its content scans run (not gated by
 #   private-projects.md): an IPv4 literal, an SSH config-directory or
 #   id_<algorithm> key path reference, a /Users/ or /home/ home-rooted
 #   filesystem path, a 32+ hex-char or UUID-shaped identifier, an
@@ -73,6 +80,17 @@
 #   Read-only `gh api` calls (default GET, no body-bearing flags) are
 #   intentionally not gated — they don't carry user-authored content
 #   into a body GitHub re-publishes.
+# - Fails closed when `_lib_command_words` returns nonzero for a command that
+#   needs a source-file lookup, because a source-file flag after the
+#   unsplittable value cannot be located. The conditions are in that
+#   function's header in _lib.sh. A commit whose staged diff is empty never
+#   reaches that lookup. The fallback tokenizer is uncapped without timeout
+#   or gtimeout; see split-command-words.py's docstring.
+# - A deny reason that concerns one source file names its path. That path is a
+#   command argument already in the Bash tool call, so naming it discloses
+#   nothing new (the rationale deny-pii-in-commits.sh's header states for its
+#   -F deny messages). The tokenizer deny names no path and echoes none of the
+#   command, because an unsplittable value is unbounded.
 #
 # Known gaps (documented, not closed by this hook):
 # - `gh pr create --fill|-f|--fill-first|--fill-verbose` sources the PR
@@ -126,13 +144,19 @@
 #   that reading it terminates. This guarantee holds only when timeout(1)
 #   or gtimeout(1) is on PATH — see _lib_capped_for's own "neither binary
 #   present" fallback caveat in _lib.sh, which still applies here.
-# - The pseudo-file guard (_lib_is_pseudo_file_path) matches literal
-#   spellings only (`-`, `/dev/stdin`, `/dev/fd/*`, `/proc/*/fd/*`). Alias
-#   spellings such as `//dev/fd/N` or `/dev/./fd/N` are not recognised and
-#   can evade the scan of a body/message source. Accepted debt shared with
-#   deny-pii-in-commits.sh and deny-escaped-backticks-in-pr-body.sh.
-# - When xargs fails to tokenize a command (an unbalanced quote, say),
-#   body-source paths after the unparseable token are never read.
+# - The pseudo-file guard's alias-spelling gap and its unconfirmed over-64-KiB
+#   path-list residual are in `_lib_is_pseudo_file_path`'s header in _lib.sh.
+#   The alias spellings were tested only at the `git commit -F` site, one of
+#   this gate's five pseudo-file check sites.
+# - The `xargs -n1` fast path's miss is listed in `_lib_command_words`'s header
+#   in _lib.sh.
+#   The fallback tokenizer's residual over-denies and misses are listed in
+#   split-command-words.py's module docstring.
+# - A body, message, or input source file whose content changes after the hook
+#   fires is not re-read, such as when another command in the same call rewrites
+#   an already-existing path.
+#   deny-pii-in-commits.sh's Known gaps bullet on a `-F <path>` message file
+#   holds the example shape.
 # - The gate's scope comes from the hook process's cwd, so a chained `cd`
 #   or a `-R`/`--repo` aimed at the checkout from outside it escapes the scan.
 # - The Slack-channel shape accepts digits, `s`, then end of line or any
@@ -143,6 +167,63 @@
 # - A possessive issue reference still denies when the quote-strip joins a
 #   name character onto its `s`, such as an escape like `\n` or a hyphen
 #   or underscore continuation.
+# - In a repo armed only by `.claude/private-projects-optin`, the gate is
+#   armed only while that file is present at that exact path in the current
+#   worktree's checked-out tree at hook time.
+# - Each of these leaves a marker-armed repo ungated:
+#     - a branch, detached HEAD, bisect step, or rebase stop at a commit
+#       that predates the marker
+#     - a sparse checkout that omits `.claude/`
+#     - a clone the marker never reached because `.claude/` is gitignored
+#     - an uncommitted marker removed by `git stash -u` or `git clean`
+#     - a miscased marker name on a case-sensitive filesystem
+# - A filesystem error on the marker's `-f` test reads as an absent marker,
+#   which fails open.
+# - The staged diff is read without a size cap, so a diff large enough to
+#   outrun the harness hook timeout commits unscanned.
+# - A file git classifies as binary, including one a `.gitattributes` rule
+#   marks `-diff` or `binary`, renders without added lines, so its content is
+#   never scanned.
+# - The staged-diff scan reads with `--no-textconv`, so a binary file that a
+#   textconv driver maps to text is unscanned.
+# - The `^\+\+\+` file-header filter also drops an added content line that
+#   begins with `++`, so a token on such a line is unscanned.
+# - A commit whose staged diff is empty (`--amend -m`, `--allow-empty -m`, or
+#   nothing staged) leaves its message unscanned.
+# - In claude-config the staged diff also reads as empty when only files under
+#   `claude/.claude/hooks/tests/` are staged, because that path is excluded.
+# - An added line that contains a byte invalid in the active locale may be
+#   dropped by grep, depending on the grep implementation and locale.
+# - GNU grep 3.11 drops an added line that contains a byte invalid in the
+#   active locale, as `deny-pii-in-commits.sh` records.
+# - BSD grep drops an added line whose first content byte is invalid, and this
+#   is unverified on other BSD greps.
+# - `deny-pii-in-commits.sh` shares this hook's added-line extraction.
+# - On macOS, BSD sed aborts the quote-strip on scanned text holding a byte
+#   invalid in the active UTF-8 locale, such as a staged added line whose
+#   invalid byte is not its first content byte.
+# - The hook then fails closed with a "could not quote-strip the scanned
+#   content" deny that lists a missing, killed, or errored tool as the cause.
+# - On that deny, re-encode the file, or stop and ask the human.
+# - GNU grep 3.11 drops such a staged line before the quote-strip, so on Linux
+#   that line goes unscanned instead of denied.
+# - Closing this belongs in an `LC_ALL=C` change to the grep extraction and the
+#   quote-strip, in this hook and `deny-pii-in-commits.sh`.
+# - The hook never scans the path of a staged file, because the added-line
+#   filter drops path headers.
+# - The hook never reads the current branch name, which `git push` and a
+#   `gh pr create` without `--head` publish.
+# - Surfaces this hook never scans (such as `gh pr comment` and writing files)
+#   are listed in
+#   `docs/private-project-redaction.md` § "Opting in another repository".
+# - The blocklist deny echoes an entry, with up to three matched lines, whenever
+#   the entry whole-word matches the gated content, so any repo that commits
+#   the marker can make a session surface entries.
+# - The gated content includes the staged diff and any referenced body,
+#   message, --input or @file source that the session may never have read.
+# - A referenced file that holds the list itself can therefore echo every entry.
+# - A match found only in the quote-stripped copy of the command echoes the
+#   joined form.
 #
 # Deliberate scope: user-local private-projects blocklist.
 # ---------------------------------------------------------
@@ -171,9 +252,9 @@
 # and quotes the offending line(s) from the scanned content (capped at
 # 3 lines per entry, each truncated to 200 chars). The matched token is
 # the user's own private-project name, already in the staged content
-# and in ~/.claude/private-projects.md; naming it in the deny
-# discloses it to no new party while letting the agent remove it in
-# one pass rather than bisecting the diff manually.
+# and in ~/.claude/private-projects.md; naming it lets the agent remove it in
+# one pass rather than bisecting the diff manually. The disclosure the echo
+# creates is described in the Known gaps bullets on the blocklist echo.
 #
 # Allowlist extension: append to OSS_ALLOWLIST below if a legitimate
 # open-source prefix is blocked. Do NOT add private-project-specific
@@ -270,9 +351,9 @@ fi
 # can leave `create)` from a paren group).
 #
 # Known gaps, specific to this function (distinct from the file-header
-# Known gaps list above). This list is the canonical home for this hook's
-# gaps; docs/private-project-redaction.md defers to it rather than
-# restating it.
+# Known gaps list above). This list is the canonical home for this
+# function's gaps; docs/private-project-redaction.md defers to it rather
+# than restating it.
 # - A gh flag with no value placeholder, registered at `gh`/`gh pr`/`gh
 #   issue` scope, has its following word consumed by
 #   _lib_tool_argv_from_subcmd, dropping a real surface word. See
@@ -355,11 +436,9 @@ while IFS= read -r fragment; do
       # fail-toward-scan: a false positive costs one redundant scan, a
       # false negative ships a leak. `[^A-Za-z]` is the trailing method
       # boundary (grep-portable substitute for `\b`).
-      if printf '%s\n' "$COMMAND_UNQUOTED" \
-          | grep -qiE '((-X|--method)(=|[[:space:]]+)|-X)(POST|PATCH|PUT|DELETE)([^A-Za-z]|$)'; then
+      if grep -qiE '((-X|--method)(=|[[:space:]]+)|-X)(POST|PATCH|PUT|DELETE)([^A-Za-z]|$)' <<< "$COMMAND_UNQUOTED"; then
         IS_GH_API=1
-      elif printf '%s\n' "$COMMAND_UNQUOTED" \
-          | grep -qE '(^|[[:space:]])(-f|-F|--field|--raw-field|--input)(=|[[:space:]]+)'; then
+      elif grep -qE '(^|[[:space:]])(-f|-F|--field|--raw-field|--input)(=|[[:space:]]+)' <<< "$COMMAND_UNQUOTED"; then
         IS_GH_API=1
       fi
       ;;
@@ -391,15 +470,20 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
-# Scope: this redaction gate exists to protect the claude-config repo,
-# where accidental references to private projects would leak publicly.
-# Other repos legitimately reference their own tracker IDs. Short-circuit
-# unless origin.url looks like claude-config. `git config --get` returns
-# empty (not an error exit) when the remote is missing, so the substring
-# check safely handles the no-remote case too.
+# Scope: claude-config (an origin URL containing `claude-config`, forks included) plus any repo with .claude/private-projects-optin at its toplevel.
+# Repos with neither legitimately reference their own tracker IDs, so the gate stays silent there.
+# `git config --get` prints nothing for a missing remote, so a no-remote repo falls through to the marker test.
+# The marker is read from the working tree, not a committed ref, because it can only add restriction.
+# See `docs/private-project-redaction.md` § "Opting in another repository"
+OPTIN_DENY_NOTE=""
+TRACKER_REMEDY_LEAD="If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite"
+STAGED_DIFF_PATHSPEC=':(top,exclude)claude/.claude/hooks/tests/**'
 REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null)
 if [[ "$REMOTE_URL" != *claude-config* ]]; then
-  exit 0
+  [[ -f "$REPO_ROOT/.claude/private-projects-optin" ]] || exit 0
+  OPTIN_DENY_NOTE=" This repo opted in to this gate via .claude/private-projects-optin, so content that matches here (its own tracker IDs, structural shapes, and names on the user's private-projects.md blocklist) denies by design. Reword the content; if it cannot be reworded, stop and ask the human. Do not delete or edit the marker, retarget the command with git -C, edit the user's private-projects.md blocklist, or add this repo's own tracker prefix to OSS_ALLOWLIST in deny-private-project-refs.sh, which ships in the public claude-config repo."
+  TRACKER_REMEDY_LEAD="Rewrite"
+  STAGED_DIFF_PATHSPEC=':(top)'
 fi
 
 # Allowlist: prefixes that are NEVER private-project tracker IDs.
@@ -423,74 +507,37 @@ fi
 #                                 content" for the rationale.
 OSS_ALLOWLIST='^(CVE|CWE|RFC|PEP|ISO|IETF|IEEE|W3C|NIST|ECMA|ANSI|OSC|AIP|GH|BUG|JEP|JDK|LLVM|GCC|GPT|SHA|MD|HTTP|HTTPS|TLS|SSL|UTF|AGPL|BSD|PROJ|TICKET)-'
 
-# Extract paths passed to any gh-pr or gh-issue body-source flag. Covers:
-#   --body-file <path>    --body-file=<path>
-#   -F <path>             -F=<path>
-#   --template <path>     --template=<path>
-#   -T <path>             -T=<path>
-# gh issue create/comment has no --template/-T flag, but shares the same
-# --body-file/-F shape as gh pr, so both surfaces reuse this extractor.
-# One path per output line. Uses xargs tokenization so flag-like text
-# inside a quoted argument value (e.g. a PR title containing "-F") is
-# part of a multi-word token and is never matched as a standalone flag.
-# xargs strips outer quotes from real file-path arguments, so quoted
-# paths (e.g. --body-file "/path/body.md") are extracted correctly.
-# Paths containing whitespace are not supported — xargs emits them as
-# multiple tokens; the resulting path fails the readability check below
-# and the hook fail-closes with a clear message. xargs failure is
-# suppressed; paths before the failing token are still emitted and later
-# ones are not (fail-open for unparseable input, consistent with the
-# documented shell-expansion gap).
-extract_body_source_paths() {
-  local cmd="$1"
-  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
-    BEGIN { cap = 0 }
-    cap { print; cap = 0; next }
-    /^(--body-file|--template|-F|-T)$/ { cap = 1; next }
-    /^(--body-file=|--template=|-F=|-T=)/ { sub(/^[^=]*=/, ""); print }
-  '
-}
+# The gh-pr, gh-issue, and git-commit source-path extractors are
+# _lib_gh_body_source_paths and _lib_git_commit_message_source_paths in
+# _lib.sh. Every extractor tokenizes through _lib_command_words, so flag-like
+# text inside a quoted argument value (a PR title containing "-F") is part of
+# a multi-word token and never matches as a standalone flag. In a chained
+# command the same path can come back from two extractors and get scanned
+# twice, which is harmless.
 
-# Extract paths passed to any git-commit message-source flag. Covers:
-#   -F <path>             -F=<path>
-#   --file <path>         --file=<path>
-# Same tokenization behavior as extract_body_source_paths. Note that
-# `git commit -F` and `gh pr create -F` both use the `-F` short form
-# for "file with text" — they refer to different files, but the union
-# of both flag sets is what each scan path needs to read; in a chained
-# command the same path may appear via both extractors and get scanned
-# twice (cheap, harmless).
-extract_commit_message_source_paths() {
-  local cmd="$1"
-  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
-    BEGIN { cap = 0 }
-    cap { print; cap = 0; next }
-    /^(--file|-F)$/ { cap = 1; next }
-    /^(--file=|-F=)/ { sub(/^[^=]*=/, ""); print }
-  '
-}
-
-# Extract paths passed to gh-api request-body-source flag. Covers:
+# Extract paths passed to gh-api request-body-source flag from the words
+# _lib_command_words printed for the command. Covers:
 #   --input <path>        --input=<path>
 # Inline `-f body="..."` / `-F body="..."` literal content already
 # lives in the command string and is scanned via the SCAN_TARGET +=
 # COMMAND step in the gh-api branch. The separate `@<path>` form
 # (`-f body=@<path>` / `-F body=@<path>`) is a different surface — gh
 # resolves the file at invocation time — and is extracted by
-# extract_gh_api_field_at_paths below. Same xargs tokenization behavior
-# as extract_body_source_paths.
+# extract_gh_api_field_at_paths below.
+# Returns awk's status, so a missing awk denies instead of reading as no paths.
 extract_gh_api_input_paths() {
-  local cmd="$1"
-  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
+  local tokenized_words="$1"
+  awk '
     BEGIN { cap = 0 }
     cap { print; cap = 0; next }
     /^--input$/ { cap = 1; next }
     /^--input=/ { sub(/^--input=/, ""); print }
-  '
+  ' <<< "$tokenized_words"
 }
 
 # Extract paths passed via the `@<path>` field-value form on gh-api
-# field flags. Covers:
+# field flags, from the words _lib_command_words printed for the command.
+# Covers:
 #   -f key=@<path>        -f=key=@<path>
 #   -F key=@<path>        -F=key=@<path>
 #   --field key=@<path>   --field=key=@<path>
@@ -499,13 +546,12 @@ extract_gh_api_input_paths() {
 # field value, so a tracker token in the file ships in the request
 # body identically to inline `-f key="..."`. The pseudo-file form
 # `@-` reads stdin (rejected by _lib_is_pseudo_file_path).
-# Field key must start with letter or underscore; whitespace inside
-# the path truncates the same way as the other extractors. Same
-# xargs tokenization behavior as extract_body_source_paths prevents
-# false positives from `key=@`-shaped text inside quoted field values.
+# Field key must start with letter or underscore. Tokenized words keep
+# `key=@`-shaped text inside a quoted field value from matching.
+# Returns awk's status, so a missing awk denies instead of reading as no paths.
 extract_gh_api_field_at_paths() {
-  local cmd="$1"
-  printf '%s\n' "$cmd" | xargs -n1 2>/dev/null | awk '
+  local tokenized_words="$1"
+  awk '
     BEGIN { cap = 0 }
     cap {
       if ($0 ~ /^[A-Za-z_][A-Za-z0-9_]*=@/) { sub(/^[^@]*@/, ""); print }
@@ -516,7 +562,7 @@ extract_gh_api_field_at_paths() {
       val = $0; sub(/^[^=]*=/, "", val)
       if (val ~ /^[A-Za-z_][A-Za-z0-9_]*=@/) { sub(/^[^@]*@/, "", val); print val }
     }
-  '
+  ' <<< "$tokenized_words"
 }
 
 # Detect && / || chain operators in the command and append a corrective
@@ -526,7 +572,7 @@ extract_gh_api_field_at_paths() {
 # inside a string-quoted region (e.g. --body "use && to chain") would
 # still trigger the hint (known false positive).
 chain_split_hint_if_chained() {
-  if printf '%s' "$1" | grep -qE '&&|\|\|'; then
+  if grep -qE '&&|\|\|' <<< "$1"; then
     # $1 is used as a grep predicate only — its text is not echoed in
     # the hint because the command content is not needed for the split
     # guidance.
@@ -558,7 +604,19 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
   # hook under test.
   # The `:(top,exclude)` pathspec magic is relative to the repo root so
   # this works regardless of the caller's cwd within the repo.
-  STAGED_DIFF=$(git diff --cached -- ':(top,exclude)claude/.claude/hooks/tests/**' 2>/dev/null)
+  # `:(top)` alone matches every path, which is what a marker-armed repo scans.
+  # Repo or user diff config (color, external diff, textconv, diff.relative) can change the output at exit 0 so the `^\+` filter below drops added lines.
+  # `-c diff.relative=false` outranks that config and keeps the diff repo-wide from a subdirectory cwd.
+  # `-U0` drops context lines, which the `^\+` filter below discards anyway.
+  # An inherited pathspec variable such as GIT_LITERAL_PATHSPECS reads `:(top)` as a literal name and empties the diff at exit 0.
+  # The unset runs inside the command substitution's subshell, so the parent environment is unchanged.
+  STAGED_DIFF=$(unset GIT_LITERAL_PATHSPECS GIT_GLOB_PATHSPECS GIT_NOGLOB_PATHSPECS GIT_ICASE_PATHSPECS
+    git -c diff.relative=false diff --cached -U0 --no-color --no-ext-diff --no-textconv -- "$STAGED_DIFF_PATHSPEC" 2>/dev/null)
+  STAGED_DIFF_STATUS=$?
+  if [ "$STAGED_DIFF_STATUS" -ne 0 ]; then
+    emit_deny "Commit — git diff --cached failed (exit ${STAGED_DIFF_STATUS}), so the redaction gate cannot read the staged diff. The hook hides git's own error, so run \`git diff --cached >/dev/null\` to see only git's error (exit status 128 or higher means git was killed or hit a fatal error). Fail-closed because unscanned content is exactly the leak vector this hook guards against. See repo CLAUDE.md section 'Redact private-project-identifying content'."
+    exit 0
+  fi
   if [ -n "$STAGED_DIFF" ]; then
     # Scan ONLY added lines in the diff, not removed ones. Without this,
     # a commit that *removes* a tracker ID (legitimate cleanup) would be
@@ -578,7 +636,12 @@ if [ "$IS_GIT_COMMIT" -eq 1 ]; then
     # nothing staged) preserve their historical "let git decide" pass —
     # sound for the shapes deny-invisible-commit-content.sh denies. See
     # its header's "Known gaps" list for what still isn't.
-    COMMIT_MSG_SOURCES=$(extract_commit_message_source_paths "$COMMAND")
+    COMMIT_MSG_SOURCES=$(_lib_git_commit_message_source_paths "$COMMAND")
+    COMMIT_MSG_SOURCES_STATUS=$?
+    if [ "$COMMIT_MSG_SOURCES_STATUS" -ne 0 ]; then
+      emit_deny "$(_lib_command_words_deny_reason 'git commit' '-F/--file' "$COMMIT_MSG_SOURCES_STATUS")"
+      exit 0
+    fi
     if [ -n "$COMMIT_MSG_SOURCES" ]; then
       while IFS= read -r commit_msg_path; do
         [ -z "$commit_msg_path" ] && continue
@@ -619,7 +682,12 @@ if [ "$IS_GH_PR" -eq 1 ]; then
   # files whose contents are NOT in the command string. Read each
   # referenced file and append its contents. Fail-closed if any
   # referenced path is unreadable or is a pseudo-file.
-  BODY_SOURCES=$(extract_body_source_paths "$COMMAND")
+  BODY_SOURCES=$(_lib_gh_body_source_paths "$COMMAND")
+  BODY_SOURCES_STATUS=$?
+  if [ "$BODY_SOURCES_STATUS" -ne 0 ]; then
+    emit_deny "$(_lib_command_words_deny_reason 'gh pr' '--body-file/--template/-F/-T' "$BODY_SOURCES_STATUS")"
+    exit 0
+  fi
   if [ -n "$BODY_SOURCES" ]; then
     while IFS= read -r body_source_path; do
       [ -z "$body_source_path" ] && continue
@@ -649,12 +717,17 @@ if [ "$IS_GH_ISSUE" -eq 1 ]; then
   SCAN_TARGET+=$'\n'"$COMMAND"
 
   # `--body-file` (short form `-F`) references an external file whose
-  # contents are NOT in the command string. Reuses extract_body_source_
+  # contents are NOT in the command string. Reuses _lib_gh_body_source_
   # paths — gh issue has no --template/-T flag, but that pattern simply
   # never matches an issue command, so sharing the extractor is safe.
   # Read each referenced file and append its contents. Fail-closed if
   # any referenced path is unreadable or is a pseudo-file.
-  ISSUE_BODY_SOURCES=$(extract_body_source_paths "$COMMAND")
+  ISSUE_BODY_SOURCES=$(_lib_gh_body_source_paths "$COMMAND")
+  ISSUE_BODY_SOURCES_STATUS=$?
+  if [ "$ISSUE_BODY_SOURCES_STATUS" -ne 0 ]; then
+    emit_deny "$(_lib_command_words_deny_reason 'gh issue' '--body-file/-F' "$ISSUE_BODY_SOURCES_STATUS")"
+    exit 0
+  fi
   if [ -n "$ISSUE_BODY_SOURCES" ]; then
     while IFS= read -r issue_body_source_path; do
       [ -z "$issue_body_source_path" ] && continue
@@ -689,7 +762,20 @@ if [ "$IS_GH_API" -eq 1 ]; then
   # contents are NOT in the command string. Read each referenced file
   # and append its contents. Fail-closed if any referenced path is
   # unreadable or is a pseudo-file.
-  GH_API_INPUT_SOURCES=$(extract_gh_api_input_paths "$COMMAND")
+  # Both gh-api extractors read the same words, so the command is tokenized once.
+  GH_API_SOURCE_FLAGS='--input and -f/-F/--field/--raw-field key=@PATH'
+  GH_API_WORDS=$(_lib_command_words "$COMMAND")
+  GH_API_WORDS_STATUS=$?
+  if [ "$GH_API_WORDS_STATUS" -ne 0 ]; then
+    emit_deny "$(_lib_command_words_deny_reason 'gh api' "$GH_API_SOURCE_FLAGS" "$GH_API_WORDS_STATUS")"
+    exit 0
+  fi
+  GH_API_INPUT_SOURCES=$(extract_gh_api_input_paths "$GH_API_WORDS")
+  GH_API_INPUT_SOURCES_STATUS=$?
+  if [ "$GH_API_INPUT_SOURCES_STATUS" -ne 0 ]; then
+    emit_deny "$(_lib_command_words_deny_reason 'gh api' "$GH_API_SOURCE_FLAGS" "$GH_API_INPUT_SOURCES_STATUS")"
+    exit 0
+  fi
   if [ -n "$GH_API_INPUT_SOURCES" ]; then
     while IFS= read -r gh_api_input_path; do
       [ -z "$gh_api_input_path" ] && continue
@@ -717,7 +803,12 @@ if [ "$IS_GH_API" -eq 1 ]; then
   # passes the tracker-ID scan trivially (no tracker shape there);
   # the file content does not. Read each referenced file and append
   # its contents. Same fail-closed posture as --input.
-  GH_API_FIELD_AT_SOURCES=$(extract_gh_api_field_at_paths "$COMMAND")
+  GH_API_FIELD_AT_SOURCES=$(extract_gh_api_field_at_paths "$GH_API_WORDS")
+  GH_API_FIELD_AT_SOURCES_STATUS=$?
+  if [ "$GH_API_FIELD_AT_SOURCES_STATUS" -ne 0 ]; then
+    emit_deny "$(_lib_command_words_deny_reason 'gh api' "$GH_API_SOURCE_FLAGS" "$GH_API_FIELD_AT_SOURCES_STATUS")"
+    exit 0
+  fi
   if [ -n "$GH_API_FIELD_AT_SOURCES" ]; then
     while IFS= read -r gh_api_field_at_path; do
       [ -z "$gh_api_field_at_path" ] && continue
@@ -767,7 +858,7 @@ HITS=$(printf '%s' "$SCAN_TARGET_BOTH" \
 if [ -n "$HITS" ]; then
   # Report the first few offenders to keep the message short.
   HIT_LIST=$(printf '%s' "$HITS" | head -5 | tr '\n' ' ' | sed 's/ $//')
-  emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. If the match is an open-source reference or technical constant not on the allowlist, add the prefix to the OSS_ALLOWLIST variable in ~/.claude/hooks/deny-private-project-refs.sh. Otherwise rewrite the commit message / staged content / PR body / issue body / gh api body without the tracker ID before retrying.$(chain_split_hint_if_chained "$COMMAND")"
+  emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file contains tracker-ID tokens that may reveal a private project: ${HIT_LIST}. See repo CLAUDE.md section 'Redact private-project-identifying content'. ${TRACKER_REMEDY_LEAD} the commit message / staged content / PR body / issue body / gh api body without the tracker ID before retrying.${OPTIN_DENY_NOTE}$(chain_split_hint_if_chained "$COMMAND")"
   exit 0
 fi
 
@@ -786,11 +877,7 @@ fi
 # data — echoing either here would persist it into this session's transcript,
 # same reasoning deny-pii-in-commits.sh states for its own label-only rule.
 #
-# Here-string (`<<<`), not `printf | grep`: under this file's `set -uo
-# pipefail`, piping a large SCAN_TARGET into `grep -Eq` risks the first match
-# SIGPIPE-ing the printf side, and pipefail would then report the pipeline's
-# rightmost exit status — misreporting a clean match as a grep error. A
-# here-string has no pipe to SIGPIPE.
+# grep -q reads a here-string, never a pipe: see test_no_pipe_into_early_exit_grep in hooks/tests/test_hook_alignment.py.
 #
 # Fail closed on rc>=2 (a real grep engine error). This is stricter than the
 # tracker-ID scan above, whose `|| true` swallows any grep error and so fails
@@ -834,7 +921,7 @@ if [ "$structural_fastpath_rc" -eq 0 ]; then
     detector_rc=0
     grep -Eq -- "$detector_pattern" <<< "$SCAN_TARGET_BOTH" || detector_rc=$?
     if [ "$detector_rc" -eq 0 ]; then
-      emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
+      emit_deny "Commit — the staged diff, commit message, referenced commit-message file, PR title, PR body, issue title, issue body, referenced body-source file, gh api request body, or referenced --input file matches the '${detector_label}' pattern — a shape that can identify a specific machine, person, or private project without naming it directly. The matched text is not shown here: it may itself be sensitive (e.g. a live session ID or a real hostname), and echoing it would persist it into this session's transcript. Remove the offending content before retrying. See repo CLAUDE.md section 'Redact private-project-identifying content'.${OPTIN_DENY_NOTE}$(chain_split_hint_if_chained "$COMMAND")"
       exit 0
     elif [ "$detector_rc" -ge 2 ]; then
       emit_deny "the '${detector_label}' detector failed to scan the gated content (grep exit ${detector_rc}) — failing closed. Unscanned content is exactly the leak vector this hook guards against."
@@ -889,7 +976,9 @@ if [ -r "$PRIVATE_PROJECTS_FILE" ]; then
   if [ -n "$blocklist_report" ]; then
     emit_deny "staged/committed content matches entries from your ~/.claude/private-projects.md blocklist. Remove these references before retrying:${blocklist_report}
 
-See repo CLAUDE.md section 'Redact private-project-identifying content'.$(chain_split_hint_if_chained "$COMMAND")"
+See repo CLAUDE.md section 'Redact private-project-identifying content'.${OPTIN_DENY_NOTE}$(chain_split_hint_if_chained "$COMMAND")"
     exit 0
   fi
 fi
+
+exit 0

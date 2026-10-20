@@ -138,7 +138,8 @@ _EXPECTED_COST_BLOCK_COMBINED_ZERO_STATE = (
     "ARGS: cost-counts --this-repo --branches main\n"
     "### Review rounds\n"
     "\n"
-    "Each invocation of a review skill is one round, whether or not it produced findings."
+    "Each invocation of a review skill, and each main-thread `review-orchestrator` dispatch, is one"
+    " round, whether or not it produced findings."
     " Counts reflect this section's last render; a review round that ran afterward may not"
     " be included yet.\n"
     "\n"
@@ -313,9 +314,10 @@ def _fake_transcript_analysis_source_combined_zero_state() -> str:
             print("### Review rounds")
             print()
             print(
-                "Each invocation of a review skill is one round, whether or not it produced"
-                " findings. Counts reflect this section's last render; a review round that ran"
-                " afterward may not be included yet."
+                "Each invocation of a review skill, and each main-thread `review-orchestrator`"
+                " dispatch, is one round, whether or not it produced findings. Counts reflect"
+                " this section's last render; a review round that ran afterward may not be"
+                " included yet."
             )
             print()
             print("| Skill | Rounds |")
@@ -802,9 +804,10 @@ class TestCostBodyEndsWithTableRowBothSeams:
 class TestCombinedZeroState:
     """The one table-to-non-table seam: the rounds table's fixed zero-count
     rows immediately followed by the spawns section's bare sentence with no
-    table at all. At the Python level, test_transcript_cost_counts.py's
-    test_zero_spawns_renders_the_sentence_not_a_table pins only the spawns
-    side, never the two as one rendered body."""
+    table at all. test_transcript_cost_counts.py's
+    test_all_zero_state_renders_zero_round_rows_and_the_no_spawns_sentence
+    pins the same state from real cmd_cost_counts; this test pins
+    pr-cost-section.sh's handling of it."""
 
     def test_stdout_matches_combined_zero_rendering(
         self, tmp_path, combined_zero_state_script_fixture,

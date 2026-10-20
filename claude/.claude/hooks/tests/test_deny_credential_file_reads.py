@@ -5,7 +5,16 @@ import json
 import subprocess
 
 import pytest
-from helpers import HOOKS_DIR, bash_input, edit_input, read_input, run_hook, run_hook_reason, write_input
+from helpers import (
+    HOOKS_DIR,
+    LARGE_MULTILINE_TAIL,
+    bash_input,
+    edit_input,
+    read_input,
+    run_hook,
+    run_hook_reason,
+    write_input,
+)
 
 DENY_CREDENTIAL_FILE_READS_HOOK = HOOKS_DIR / "deny-credential-file-reads.sh"
 
@@ -40,6 +49,19 @@ class TestDenyCredentialFileReads:
     )
     def test_credential_path_denied(self, isolated_home, path):
         assert run_hook(DENY_CREDENTIAL_FILE_READS_HOOK, read_input(path), home=isolated_home) == "deny"
+
+    def test_credential_path_on_first_line_of_large_multiline_file_path_denied(self, isolated_home):
+        """Required regression test: a credential path on the first line of a
+        multi-line path above pipe capacity is still denied. The mechanism
+        is in the LARGE_MULTILINE_TAIL comment in tests/helpers.py. A real
+        Read path is bounded by PATH_MAX, so this input is synthetic."""
+        reason = run_hook_reason(
+            DENY_CREDENTIAL_FILE_READS_HOOK,
+            read_input("/foo/.netrc" + LARGE_MULTILINE_TAIL),
+            home=isolated_home,
+        )
+        assert reason is not None
+        assert "the path is credential-shaped" in reason
 
     @pytest.mark.parametrize(
         "path",
@@ -328,6 +350,14 @@ class TestDenyCredentialFileReads:
         )
         assert reason is not None
         assert "/home/user/.ssh/id_rsa" in reason
+
+    def test_deny_message_routes_inspection_to_separate_terminal(self, isolated_home):
+        reason = run_hook_reason(
+            DENY_CREDENTIAL_FILE_READS_HOOK, read_input("/home/user/.ssh/id_rsa"), home=isolated_home
+        )
+        assert reason is not None
+        assert "ask them to run a command" in reason
+        assert "separate terminal" in reason
 
     # ------------------------------------------------------------------ #
     # Defense-in-depth: non-Read tool names pass through                  #

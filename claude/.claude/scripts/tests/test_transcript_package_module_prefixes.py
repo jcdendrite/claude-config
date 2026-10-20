@@ -17,7 +17,20 @@ SCRIPTS_DIR = REPO_ROOT / "claude" / ".claude" / "scripts"
 PACKAGE_DIR = SCRIPTS_DIR / "transcript_analysis"
 TESTS_DIR = SCRIPTS_DIR / "tests"
 
-PRODUCTION_MODULES = ("cost_ledger.py", "workstream_cost.py", "subagents.py", "subagent_mix.py")
+PRODUCTION_MODULES = (
+    "cost_ledger.py",
+    "workstream_cost.py",
+    "subagents.py",
+    "subagent_mix.py",
+    "handoff_nudge.py",
+    "rearm_backtest.py",
+    "spend_over_threshold.py",
+    "plan_boundary.py",
+    "handoff_signal_response.py",
+    "judgment_pair.py",
+    "skill_invocation.py",
+    "skill_pair.py",
+)
 TEST_FILES = (
     "test_transcript_cost_ledger.py",
     "test_transcript_cost_ledger_record_gates.py",
@@ -26,6 +39,13 @@ TEST_FILES = (
     "test_transcript_subagent_mix.py",
     "test_transcript_subagent_mix_dollars.py",
     "test_transcript_cost_counts.py",
+    "test_transcript_handoff_nudge.py",
+    "test_transcript_rearm_backtest.py",
+    "test_transcript_rearm_backtest_nudge_log.py",
+    "test_transcript_spend_over_threshold.py",
+    "test_transcript_plan_boundary.py",
+    "test_transcript_handoff_signal_response_detection.py",
+    "test_transcript_handoff_signal_response.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --
@@ -49,13 +69,41 @@ def _assign_target_names(target: ast.expr) -> set[str]:
     return set()
 
 
+def _lazy_module_attrs(tree: ast.Module) -> set[str]:
+    """String literals a module-level `__getattr__` compares its own name parameter against.
+
+    Assumes the allow-list shape (`if name != "X": raise AttributeError`), the
+    one scope.py uses: only `!=` comparisons count, so a deny-list shape
+    (`if name == "X": raise AttributeError`) never adds "X"."""
+    lazy_names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or node.name != "__getattr__":
+            continue
+        parameters = node.args.posonlyargs + node.args.args
+        if not parameters:
+            continue
+        for compare in ast.walk(node):
+            if not isinstance(compare, ast.Compare):
+                continue
+            if not all(isinstance(op, ast.NotEq) for op in compare.ops):
+                continue
+            operands = [compare.left, *compare.comparators]
+            if any(isinstance(operand, ast.Name) and operand.id == parameters[0].arg for operand in operands):
+                lazy_names.update(
+                    operand.value for operand in operands if isinstance(operand, ast.Constant) and isinstance(operand.value, str)
+                )
+    return lazy_names
+
+
 def _top_level_names(module_path: Path) -> set[str]:
     """Every name module_path binds at module level: function/class defs,
     assignment targets (plain, tuple-unpacked, or annotated), and import
     aliases -- the full set a `module.<name>` attribute access from outside
-    the module could legitimately resolve, plus IMPLICIT_MODULE_ATTRS."""
+    the module could legitimately resolve, plus IMPLICIT_MODULE_ATTRS, plus
+    each name a module-level PEP 562 `__getattr__` resolves (the string
+    literals it compares its own parameter against)."""
     tree = ast.parse(module_path.read_text())
-    names: set[str] = set(IMPLICIT_MODULE_ATTRS)
+    names: set[str] = set(IMPLICIT_MODULE_ATTRS) | _lazy_module_attrs(tree)
     for node in tree.body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             names.add(node.name)
@@ -67,6 +115,62 @@ def _top_level_names(module_path: Path) -> set[str]:
         elif isinstance(node, ast.Import | ast.ImportFrom):
             names.update((alias.asname or alias.name) for alias in node.names)
     return names
+
+
+def _import_aliases(node: ast.ImportFrom) -> str:
+    return ", ".join(alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in node.names)
+
+
+def _unresolvable_sibling_imports(tree: ast.Module, package_names: set[str]) -> list[str]:
+    """Import statements that bind a sibling package module in a shape the attribute check cannot resolve.
+
+    Flagged shapes, one per line:
+    - `from transcript_analysis import <m> as <a>` for any <m> in package_names
+    - every `import transcript_analysis` and `import transcript_analysis.<m>`, with or without `as`
+    - every relative `from` import (`level > 0`), e.g. `from . import scope` or `from .scope import X`
+
+    All three are flagged because the attribute check resolves only absolute
+    `from transcript_analysis import <m>` bindings.
+
+    The no-op spelling `from transcript_analysis import scope as scope` is flagged too, since forbidding every
+    `as` on a sibling binding is a simpler rule than telling the no-op spelling apart."""
+    unresolvable: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level > 0:
+            unresolvable.append(f"from {'.' * node.level}{node.module or ''} import {_import_aliases(node)}")
+        elif isinstance(node, ast.ImportFrom) and node.module == "transcript_analysis":
+            unresolvable.extend(
+                f"from transcript_analysis import {alias.name} as {alias.asname}"
+                for alias in node.names
+                if alias.asname is not None and alias.name in package_names
+            )
+        elif isinstance(node, ast.Import):
+            unresolvable.extend(
+                f"import {alias.name}" + (f" as {alias.asname}" if alias.asname else "")
+                for alias in node.names
+                if alias.name == "transcript_analysis" or alias.name.startswith("transcript_analysis.")
+            )
+    return unresolvable
+
+
+def test_scope_lazy_module_attrs_are_exactly_projects_dir():
+    """scope.py's `__getattr__` resolves PROJECTS_DIR and nothing else, so
+    _lazy_module_attrs derives exactly that -- pins against over-derivation
+    that would let a typo'd `scope.<name>` read pass."""
+    tree = ast.parse((PACKAGE_DIR / "scope.py").read_text())
+    assert _lazy_module_attrs(tree) == {"PROJECTS_DIR"}
+
+
+def test_lazy_module_attrs_ignores_deny_list_shaped_getattr():
+    """A `__getattr__` that raises AttributeError for the name it compares
+    against denies that name rather than resolving it, so it adds nothing."""
+    deny_list_source = (
+        "def __getattr__(name):\n"
+        "    if name == 'DENIED':\n"
+        "        raise AttributeError(name)\n"
+        "    return 1\n"
+    )
+    assert _lazy_module_attrs(ast.parse(deny_list_source)) == set()
 
 
 def test_production_modules_import_package_siblings_by_module_only():
@@ -86,6 +190,45 @@ def test_production_modules_import_package_siblings_by_module_only():
             f"{filename} imports {submodule_imports} via `from transcript_analysis.<m> import ...` -- "
             f"read the sibling module's name by attribute instead"
         )
+
+
+def test_production_modules_bind_siblings_only_by_unaliased_from_import():
+    """test_production_modules_reference_only_real_sibling_attributes resolves only unaliased absolute
+    `from transcript_analysis import <m>` bindings, so no module in PRODUCTION_MODULES may bind a sibling
+    in any shape `_unresolvable_sibling_imports` flags."""
+    package_names = _package_module_names()
+    for filename in PRODUCTION_MODULES:
+        tree = ast.parse((PACKAGE_DIR / filename).read_text())
+        unresolvable = _unresolvable_sibling_imports(tree, package_names)
+        assert not unresolvable, (
+            f"{filename} binds a sibling package module via {unresolvable} -- "
+            f"use an unaliased `from transcript_analysis import <m>` so the attribute check can resolve it"
+        )
+
+
+def test_unresolvable_sibling_imports_flags_aliased_and_plain_import_shapes():
+    """The aliased `from` shape, every `ast.Import` shape of the package, and every relative `from` import
+    are flagged; the unaliased absolute `from` shape, an aliased non-module name from the package, and
+    unrelated aliased imports are not."""
+    package_names = {"scope"}
+
+    def flagged(source: str) -> list[str]:
+        return _unresolvable_sibling_imports(ast.parse(source), package_names)
+
+    assert flagged("from transcript_analysis import scope as s") == ["from transcript_analysis import scope as s"]
+    assert flagged("from transcript_analysis import scope as scope") == [
+        "from transcript_analysis import scope as scope"
+    ]
+    assert flagged("import transcript_analysis.scope as s") == ["import transcript_analysis.scope as s"]
+    assert flagged("import transcript_analysis.scope") == ["import transcript_analysis.scope"]
+    assert flagged("import transcript_analysis") == ["import transcript_analysis"]
+    assert flagged("from . import scope as s") == ["from . import scope as s"]
+    assert flagged("from . import scope") == ["from . import scope"]
+    assert flagged("from .scope import X") == ["from .scope import X"]
+    assert flagged("from transcript_analysis import scope") == []
+    assert flagged("from transcript_analysis import not_a_module as x") == []
+    assert flagged("import os as o") == []
+    assert flagged("from collections import defaultdict as dd") == []
 
 
 def test_production_modules_reference_only_real_sibling_attributes():

@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR
+from helpers import HOOKS_DIR, link_bash_into
 
 _PLUGINS_DIR = HOOKS_DIR.parent.parent.parent / "plugins"
 PROVISION_SCRIPT = (
@@ -31,14 +31,24 @@ def _write_stub_python(bin_dir: Path, body: str) -> Path:
     return stub
 
 
+def _bash_only_dir(plugin_data: Path) -> Path:
+    """A directory holding only bash, so `#!/usr/bin/env bash` resolves while python3 does not."""
+    bash_only = plugin_data.parent / "bash-only"
+    bash_only.mkdir(exist_ok=True)
+    link_bash_into(bash_only)
+    return bash_only
+
+
 def _run(plugin_data: Path, plugin_root: Path, extra_path: Path | None = None):
+    if extra_path is not None:
+        link_bash_into(extra_path)
     env = {
         "CLAUDE_PLUGIN_DATA": str(plugin_data),
         "CLAUDE_PLUGIN_ROOT": str(plugin_root),
         # Minimal PATH — explicitly omit the system PATH so a stubbed python3
         # is the only one visible (or no python3 at all when we want to test
         # the "python3 not found" path).
-        "PATH": f"{extra_path}:/usr/bin:/bin" if extra_path else "/nonexistent",
+        "PATH": f"{extra_path}:/usr/bin:/bin" if extra_path else str(_bash_only_dir(plugin_data)),
     }
     return subprocess.run(
         [str(PROVISION_SCRIPT)],

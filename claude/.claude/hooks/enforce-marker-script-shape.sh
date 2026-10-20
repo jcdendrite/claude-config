@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: guard review-marker and review-ledger state. Two jobs:
@@ -147,11 +147,6 @@
 #       targets only. The per-candidate pre-filter drops
 #       `$CLAUDE_CONFIG_DIR/<kind>-markers/...` before the expansion runs when
 #       it carries neither `.claude` nor `review-narrative-ledger`.
-#     - The quoted-pattern join `${var//"$BACKSLASH_NEWLINE"/...}` is unverified
-#       on bash 3.2, and no test exercises that version. If 3.2 ignores the
-#       quoting, the pattern matches every newline, so both copies lose or
-#       space every newline instead of only escaped ones, and a name split
-#       across a continuation goes unmatched.
 #     - The `append` Bash arm is text-only, with no path arm, no Stage 2
 #       backstop and no `permissions.allow` entry.
 #     - Variable and function indirection, brace expansion, `$'\x..'`
@@ -223,9 +218,10 @@
 # gate. The "if" field is a hint only.
 #
 # Commands that start directly with the marker.sh path (~/ or absolute) must
-# match one of the 22 single-command shapes, the marker.sh write chain to a
-# commit-concluding git command, or a chain of two-or-more valid marker.sh
-# shapes joined by `&&` (any op/target combination) — equivalent to running each op separately,
+# match one of the single-command shapes in MARKER_SHAPE, the marker.sh write
+# chain to a commit-concluding git command, or a chain of two-or-more valid
+# marker.sh shapes joined by `&&` (any op/target combination) — equivalent to
+# running each op separately,
 # since every marker operation is independently allowlisted or harmless. No
 # redirects (except trailing `2>/dev/null`), no extra args. Wrapped forms
 # (env-var prefix, bash wrapper, relative path, subshell) are not gated here —
@@ -808,8 +804,8 @@ _script_op_scan() {
 # two calls per candidate with CLAUDE_CONFIG_DIR set (280 s, or 420 s with
 # `grealpath`).
 # settings.json sets no `timeout` on this hook. A total above the harness
-# timeout fails open, because a timed-out command hook does not block the tool
-# call (see `_lib_capped_for`'s Bound list in _lib.sh).
+# timeout is handled as `_lib_capped_for`'s Bound list in _lib.sh describes,
+# including the effect of `onFailure`.
 # The ledger Bash arm costs none on the common path (no subagent, or no
 # `review-ledger.sh` in the command), since both of its predicates gate their
 # detectors behind pure-bash `case` matches. The Write/Edit/MultiEdit arm
@@ -1002,7 +998,7 @@ TRIMMED=$(printf '%s' "$COMMAND" | sed -E 's/^[[:space:]]+//')
 # before Stage 2 so that tilde-form traversal paths (e.g.
 # ~/.claude/scripts/../scripts/marker.sh) are caught even though Stage 2's
 # anchored regex does not match them.
-if printf '%s' "$TRIMMED" | grep -qE '(^|/)\.\.(/|$)'; then
+if grep -qE '(^|/)\.\.(/|$)' <<< "$TRIMMED"; then
   TRUNCATED=$(printf '%s' "$TRIMMED" | cut -c1-80)
   emit_deny "marker.sh invocation denied (path traversal '..' detected). Command (truncated): $TRUNCATED"
   exit 0
@@ -1023,7 +1019,7 @@ fi
 # Path prefix + one valid (op, target) shape — no anchors, no trailing
 # suffix. Shared building block for VALID_PATTERN and the marker-chain
 # pattern below, so the path-prefix regex fragment has one authoritative copy.
-MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review|cumulative-review|verification)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill|handoff)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id|status|check[[:space:]]+(code-review|verification))'
+MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review|cumulative-review|review-pr|verification)|(activate|deactivate)[[:space:]]+(plan-review|ready-for-review|respond-pr|memory-skill|handoff)|clear-stale([[:space:]]+--dry-run)?|resolve-session-id|status|check[[:space:]]+(code-review|verification))'
 
 # Strict allowlist. Tilde form (~/.claude/scripts/marker.sh) and absolute
 # path form (/home/<user>/.claude/scripts/marker.sh) are both accepted.
@@ -1031,7 +1027,7 @@ MARKER_SHAPE='(~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+(writ
 # trailing `2>/dev/null`), no extra args after the skill name.
 VALID_PATTERN="^${MARKER_SHAPE}([[:space:]]+2>/dev/null)?[[:space:]]*\$"
 
-if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_PATTERN"; then
+if [[ "$TRIMMED" != *$'\n'* ]] && grep -qE "$VALID_PATTERN" <<< "$TRIMMED"; then
   exit 0
 fi
 
@@ -1061,15 +1057,16 @@ fi
 # class with no observed agent friction on the commit-chain form to justify it.
 VALID_CHAINED_COMMIT_PATTERN='^((~|/[A-Za-z0-9_./-]+)/\.claude/scripts/marker\.sh[[:space:]]+write[[:space:]]+(code-review|skill-review|plan-review|ready-for-review)[[:space:]]*&&[[:space:]]*)+git[[:space:]]+(commit|(merge|rebase|cherry-pick|revert)[[:space:]]+--continue)([[:space:]]+[^&|;<>]*)?$'
 
-if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_CHAINED_COMMIT_PATTERN"; then
+if [[ "$TRIMMED" != *$'\n'* ]] && grep -qE "$VALID_CHAINED_COMMIT_PATTERN" <<< "$TRIMMED"; then
   exit 0
 fi
 
 # Marker-chain allowance. A chain of two-or-more valid marker.sh shapes
 # joined by `&&`, any op/target combination, is permitted — the chain's end
 # state is identical to running each op separately, and every op is already
-# individually allowlisted (the 20 shapes in permissions.allow) or harmless
-# (clear-stale only evicts dead-PID bypass markers). No new capability is
+# individually allowlisted in permissions.allow (every shape except the two
+# clear-stale forms) or harmless (clear-stale only evicts orphaned entries
+# under the `.*-active.d` directories). No new capability is
 # reachable through the chain that isn't already reachable by running the
 # calls one at a time.
 #
@@ -1079,7 +1076,7 @@ fi
 # this block above the traversal guard.
 VALID_MARKER_CHAIN_PATTERN="^${MARKER_SHAPE}([[:space:]]*&&[[:space:]]*${MARKER_SHAPE})+([[:space:]]+2>/dev/null)?[[:space:]]*\$"
 
-if [[ "$TRIMMED" != *$'\n'* ]] && printf '%s' "$TRIMMED" | grep -qE "$VALID_MARKER_CHAIN_PATTERN"; then
+if [[ "$TRIMMED" != *$'\n'* ]] && grep -qE "$VALID_MARKER_CHAIN_PATTERN" <<< "$TRIMMED"; then
   exit 0
 fi
 
@@ -1093,6 +1090,7 @@ Valid shapes:
   ~/.claude/scripts/marker.sh write plan-review
   ~/.claude/scripts/marker.sh write ready-for-review
   ~/.claude/scripts/marker.sh write cumulative-review
+  ~/.claude/scripts/marker.sh write review-pr
   ~/.claude/scripts/marker.sh write verification
   ~/.claude/scripts/marker.sh activate plan-review
   ~/.claude/scripts/marker.sh activate ready-for-review
@@ -1122,3 +1120,5 @@ code already carry the verdict. For a multi-line commit message, write it to
 a file with the Write tool and chain 'git commit -F' on that file. Never use a
 heredoc or -m \"\$(cat ...)\" (code-review's SKILL.md, \"Authoring the commit
 message\", gives why)."
+
+exit 0
