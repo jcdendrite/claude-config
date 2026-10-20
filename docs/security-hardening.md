@@ -764,7 +764,7 @@ to hold PII/PHI or live credentials:
   above, not the "could happen by accident" case the normalization above was
   built to close. Accepted residual, not a gap this repo is chasing
   regex-by-regex.
-- The fragment-word-matcher family inherits the identical residual above,
+- The fragment-word-matcher family inherits the residual above,
   using the same `_lib_strip_shell_quotes`-before-split idiom as the
   credential gates:
   - `deny-private-project-refs.sh`, `require-ready-for-review.sh`,
@@ -776,9 +776,18 @@ to hold PII/PHI or live credentials:
     tokenizer — pre-stripping there would misread a multi-word `-m`
     message as a bare pathspec and widen the scan to `git diff HEAD` on
     an ordinary commit.
-  - None of the five closes a multi-character ANSI-C escape or a
-    backslash-newline line continuation in a gated word — same boundary,
-    same reasoning, inherited rather than re-derived.
+  - None of the five closes a multi-character ANSI-C escape in a gated word.
+  - All but `deny-reviewer-tree-mutation.sh` also leave a backslash-newline
+    line continuation open. The mid-token reasoning above covers only a split
+    inside a word. `_lib_split_fragments` makes each line its own fragment, so
+    in these four a continuation between words can also separate a command
+    word from the flag or operand its matcher needs. Ordinary multi-line
+    formatting produces that shape, such as `mv \` with its operands on the
+    next line. This between-words gap is accepted permanent debt.
+  - `deny-reviewer-tree-mutation.sh` also scans a copy with every
+    backslash-newline pair deleted, so it catches a gated word, write flag, or
+    write target split across a continuation, such as `ru\` then `ff`,
+    `sed \` then `-i`, or `ruff check \` then `--fix`.
 - `deny-private-project-refs.sh`'s `SCAN_TARGET_BOTH` scans the raw+stripped
   union of `$SCAN_TARGET` across all three of its scan tiers (tracker-ID,
   structural, blocklist):
@@ -866,6 +875,21 @@ to hold PII/PHI or live credentials:
   attacker able to substitute `basename`/`dirname` on PATH can substitute
   `timeout` too. The defense here has to come from PATH and filesystem
   integrity outside this repo's hooks.
+- Every hook's shebang resolves `bash` through `env` on PATH, so a PATH-resolved
+  `bash` is trusted too. One executable `bash` file placed in the directory
+  holding the intended `bash`, or in any directory ahead of it on the PATH
+  Claude Code starts with, replaces the interpreter for every hook at once,
+  including every gate, the credential redactor and the floor check. That file
+  can return any verdict or output for any hook, and it receives every hook's
+  input, including tool output before redaction. It runs before the bash floor
+  check and before `onFailure`, and neither can detect it. No gate exists to
+  protect user-writable PATH directories such as `~/.local/bin` or Homebrew's
+  bin directory. `deny-reviewer-tree-mutation.sh`, a tree-mutation guard, also
+  denies its review-only roster some writes there, but only in the shapes its
+  header lists. Its Known gaps name shapes it leaves open, such as `ln`. Where
+  Homebrew installed the intended `bash`, it sits in that bin directory itself.
+  `install.sh`'s `ensure_local_bin_on_path` can add a shell rc line that
+  prepends `~/.local/bin` to PATH.
 
 The airtight control is machine segmentation: developer machines do not
 hold patient data or long-lived credentials. That is policy, not

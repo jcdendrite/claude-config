@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Usage: new-migration <slug>
 # Example: new-migration "add co-parent index" → 20260612191215_add-co-parent-index.sql
 #

@@ -28,7 +28,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo
+from helpers import HOOKS_DIR, SCRIPTS_DIR, SKILLS_DIR, head_sha, init_git_repo, install_shell_exec_guard
 from transcript_analysis import cost_ledger, ledger_common, pr_cost_ledger, pricing, scope
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
@@ -76,6 +76,26 @@ def _base_test_env() -> dict:
         for key, value in os.environ.items()
         if not key.startswith("DIRENV_") and key not in _SENSITIVE_ENV_VARS
     }
+
+
+_INHERITED_GIT_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+
+
+def _clean_env(**overrides: str | None) -> dict[str, str]:
+    """The base test env without inherited repository-selection variables; a None override removes the key."""
+    env = {key: value for key, value in _base_test_env().items() if key not in _INHERITED_GIT_VARIABLES}
+    for key, value in overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    return env
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, env=_clean_env(), capture_output=True, text=True, check=True
+    ).stdout
 
 
 # Tools the scripts under test (cleanup-merged-branches.sh, ci-watch.sh) and
@@ -1488,6 +1508,14 @@ def cost_ledger_enabled(tmp_path, monkeypatch, fake_projects):
     monkeypatch.setattr(cost_ledger, "config_dir", lambda: cfg_dir)
     monkeypatch.setattr(ledger_common, "config_dir", lambda: cfg_dir)
     return cfg_dir
+
+
+@pytest.fixture(autouse=True)
+def _guard_shell_exec(monkeypatch):
+    """Fail a test that execs a shell file in a way that can pass without the file running.
+    The wrapper lives in helpers.install_shell_exec_guard; each test tree defines its own
+    fixture because importing one into a conftest trips ruff F401."""
+    install_shell_exec_guard(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

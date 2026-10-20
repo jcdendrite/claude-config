@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # UserPromptSubmit hook: injects a one-shot nudge to run /error-mode-analysis
 # when the current session's friction signals (hook denials + failed test

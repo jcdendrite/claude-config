@@ -92,16 +92,16 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 ## Requirements
 
 - **Operating system:** Linux, macOS, or WSL2. Native Windows (PowerShell / cmd.exe) is not supported — every hook is a bash script and `install.sh` uses GNU `stow` with symlinks. If you're on Windows, install inside [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) instead.
-- **Shell:** `bash`. Hooks and `install.sh` use `#!/bin/bash`.
+- **Shell:** bash 5.2 or newer, first on the PATH Claude Code starts with. Every hook, script, and `install.sh` uses `#!/usr/bin/env bash`. On macOS, `/bin/bash` is 3.2, so run `brew install bash` and put Homebrew's bin directory before `/bin` on PATH. Elsewhere, install bash 5.2 or newer by any means that puts it first on PATH: a distro package, Homebrew on Linux, or a source build. Below the floor, `install.sh` exits naming the bash it found, and every gate denies with "could not source _lib.sh"; `docs/hooks.md` § "Bash version" describes the rest. CI runs bash 5.2.
 - **Tools:** `stow`, `git`, `gh`, `jq`, `sha256sum`, `python3`, and the `claude` CLI. `install.sh` verifies they exist and exits early if any are missing.
 - **`git` version:** `git` >= 2.31, because the worktree hooks, `marker.sh`, and the `review-pr-*` scripts resolve the main tree with `git rev-parse --path-format=absolute`, an option added in git 2.31.0 (its release notes). `install.sh` does not check this.
 - **`jq` version:** `review-pr-checkout.sh`'s stacked-base audit needs a `jq` whose `jq -R -s` keeps NUL bytes in raw input. That behavior was verified on jq 1.8.2 only. A `jq` that truncates raw input at NUL makes every stacked PR with a non-empty delta exit 2 there.
 - **`timeout` version:** `timeout` (or `gtimeout`) must accept `-k` (GNU coreutils, or BusyBox 1.35.0 or newer; other implementations are unverified), because a `timeout` that rejects `-k` makes every gate hook deny its tool calls, as `docs/hooks.md` § "Gate deadlock recovery" describes.
 - **Python:** `python3` >= 3.11. Stock macOS `/usr/bin/python3` is 3.9.6, Ubuntu 22.04 LTS ships 3.10, and Debian 11 ships 3.9 — all below this floor. Install a newer interpreter (e.g. via Homebrew or pyenv on macOS; your distro's `python3.11+` package or pyenv on Linux) so it resolves first on PATH. `install.sh` checks this and exits early if it isn't met.
 - **Optional:** `pytest` for running the test suite (see the Tests section below for the command; add `-n0` to run serially for `-s` / `--pdb` / `-x` debugging).
-- **Claude Code CLI:** `>= 2.1.218` for `transcript-narrative` and `error-mode-analysis`, this repo's two `context: fork` skills. An earlier version honors `context: fork` without honoring `background: false`. That produces a background fork whose narrowed tool set may omit `Bash`. Below that floor, each skill's first step stops and names the version requirement once it detects `Bash` is unavailable, rather than failing silently or half-run. Not enforced by `install.sh`, since it would block installation for every consumer who never invokes either skill.
+- **Claude Code CLI:** 2.1.295 or newer, because every gate registration sets `onFailure: "block"`, which older versions may ignore or reject (unverified). `install.sh` warns when the `claude` on its PATH reports an older version, or when it cannot read a version from `claude --version`. It does not run on `git pull`, so update Claude Code before pulling. If you pulled first, update Claude Code, restart it, and confirm `/hooks` lists the gates and `/permissions` shows the deny rules.
 
-**macOS:** `sha256sum` ships in GNU `coreutils`. Install with `brew install coreutils`, then add the gnubin directory to PATH so the unprefixed name resolves: `export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"`.
+**macOS:** `bash` 5.2 or newer and `sha256sum` come from Homebrew. `sha256sum` ships in GNU `coreutils`. Install with `brew install bash coreutils`, put Homebrew's bin directory before `/bin` on PATH (`export PATH="$(brew --prefix)/bin:$PATH"`), then add the gnubin directory to PATH so the unprefixed `sha256sum` resolves: `export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"`.
 
 **PATH setup for script wrappers:** The user-facing scripts are installed as wrappers under `~/.local/bin/`. That directory needs to be on your PATH:
 
@@ -111,6 +111,8 @@ This symlinks `claude/.claude/` into `$HOME/.claude/`.
 Verify: `command -v cleanup-merged-branches` should print the wrapper path.
 
 **Existing users:** `git pull` does not materialize new wrappers automatically, nor does it apply the owner-only permissions on `~/.claude` and `~/.claude.json` — both happen only when `./install.sh` runs. Re-run it once after pulling. After re-stowing, run `git status` in the repo: if any file under `claude/.local/bin/` shows as modified, stow's `--adopt` flag adopted a same-named local file. Revert with `git checkout claude/.local/bin/<name>` and rename the conflicting local script.
+
+Before pulling a change that raises the bash or Claude Code floor, update both from a terminal, restart any running Claude Code session, and pull from a separate terminal. `docs/hooks.md` § "Gate deadlock recovery" gives the full procedure, including what to do if gates deny after a pull.
 
 ## What this installs
 
@@ -212,6 +214,8 @@ This repo exposes a marketplace via `.claude-plugin/marketplace.json`. Each plug
 
 Marketplace registration and user-scope `enabledPlugins` install are also available standalone via `register-marketplace` — `install.sh` calls it once for its own profile, but a machine running multiple Claude Code config profiles (each pointed at its own config directory via `CLAUDE_CONFIG_DIR`) can re-run it per profile: `CLAUDE_CONFIG_DIR=<profile-dir> register-marketplace`. See [`docs/scripts.md`](docs/scripts.md) for the full description.
 
+`skill-management`, `plugin-semver`, `npm-semver` and `lovable-cloud` ship gates that need the bash and Claude Code versions in [Requirements](#requirements). Each plugin takes a raised floor on `claude plugin install` or `claude plugin update`, so raise bash and Claude Code before installing or updating it. Below the bash floor, each gate denies every call its registration covers, not only the guarded action: every `Bash` call for `skill-management`, every `Write` call for `lovable-cloud`, and only `git commit` calls for `plugin-semver` and `npm-semver`. Below the Claude Code minimum, how that version treats the `onFailure` field is unverified, so a gate that crashes or times out may not block.
+
 - **`lovable-cloud`** — Skills for Lovable Cloud projects: Project/Workspace Knowledge fields, edge-function auth model (ES256 gateway constraint, two-tier auth), and migration-sync workflow. `claude plugin install lovable-cloud@claude-config --scope project`
 - **`skill-management`** — Authoring guardrails for SKILL.md files: a commit-time structural validator (catches frontmatter that would silently truncate from the harness's skill listing or fail strict-YAML parsing) plus a behavioral-equivalence audit via `/skill-review`. `claude plugin install skill-management@claude-config --scope project`
 
@@ -251,7 +255,7 @@ For guidance on extending, splitting, or spawning personas, see [design-decision
 ### Configuration files
 
 - **`CLAUDE.md`** — baseline engineering instructions (judgment heuristics, working style, safety rules).
-- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, test-tree packaging, and this repo's bash unit-test-seam mechanics.
+- **`.claude/rules/`** — path-scoped instructions, loaded automatically only when a matching file is opened; used here for skill/agent self-review discipline, per-file-type review-pipeline dispatch, test-tree packaging, this repo's bash unit-test-seam mechanics, and the shell floor.
 - **`claude/.claude/rules/`** — the stowed, user-scope sibling (installs to `~/.claude/rules/`); holds CI/infra, SQL/DDL, Python environment, settings.json conventions, and CLAUDE.md/AGENTS.md loading conventions that apply across every repo the user opens, not just this one.
 - **`settings.json`** — global settings wiring up the hooks, statusline, and a `permissions.deny` hard floor for `sudo`, secret-file reads, and tool-availability entries (see [Auto mode](#auto-mode)). Configured with **sonnet** as the default model. The escalation path for Opus judgment is `plan-architect`, dispatched automatically by `/plan-it` Step 5 or on the user's explicit ask for an ad hoc consult (Model & Effort Routing section of `CLAUDE.md`). Session-only overrides (model, effortLevel) are intentionally not tracked — use the `ANTHROPIC_MODEL` and `CLAUDE_CODE_EFFORT_LEVEL` env vars, or `/effort max` mid-session.
 
@@ -511,16 +515,16 @@ Claude Code compresses conversation history when the context window fills up. Th
 Pytest suite covering hooks (allow, deny, and ask paths) and skill description contracts. Pins live in [`requirements-dev.txt`](./requirements-dev.txt) (single source for CI + contributors):
 
 ```bash
-./install-dev.sh   # creates .venv, installs requirements-dev.txt, offers the pyright-lsp plugin (contributor only)
-.venv/bin/pytest claude/.claude/ claude-skills/ plugins/ evals/
-.venv/bin/ruff check claude/.claude/ claude-skills/ plugins/ evals/  # Python
-scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck         # shell
+./install-dev.sh   # from the main checkout's root: creates .venv, installs requirements-dev.txt, offers the pyright-lsp plugin (contributor only)
+scripts/venv-run.sh pytest claude/.claude/ claude-skills/ plugins/ evals/
+scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/  # Python
+scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck          # shell
 ```
 
 ShellCheck takes no flags on the command line — they live in the repo-root
 `.shellcheckrc`, so CI, the command above, and any editor integration agree.
 
-The `.venv` lives only in the main worktree root. Linked worktrees live at `.claude/worktrees/<branch>/` — exactly three levels deep — so from inside a worktree invoke `../../../.venv/bin/pytest` and `../../../.venv/bin/ruff` instead.
+The `.venv` lives only in the main checkout's root, and linked worktrees never inherit it. `scripts/venv-run.sh <tool> [args...]` finds that `.venv` through git and runs `<tool>` from its `bin/` directory, so the `scripts/venv-run.sh` commands above work unchanged at any depth. Run them from the root of the main checkout or of a linked worktree, since they are cwd-relative.
 
 `./install-dev.sh` also offers to install `pyright-lsp@claude-plugins-official` at local scope, giving Claude Code sessions in this checkout Python diagnostics and navigation. Local scope records the plugin only in this checkout's gitignored `.claude/settings.local.json`. The install runs only when `claude-plugins-official` is already registered and you answer `y` at the prompt. If the marketplace is not registered, the script prints the `claude plugin marketplace add anthropics/claude-plugins-official` command instead. That registration applies to every project on your profile. A non-interactive run prints the `claude plugin install` command to run from this checkout instead of prompting. A local-scope install made from the main checkout root is active in Claude Code sessions anchored in a linked worktree under `.claude/worktrees/` too. See [`docs/design-decisions/pyright-lsp-installed-per-contributor.md`](./docs/design-decisions/pyright-lsp-installed-per-contributor.md) for why the plugin reaches contributors only, and only from an interactive terminal. The `pyright-langserver` binary needs to be on the PATH of the shell that launches Claude Code, and `./install-dev.sh` checks for it but does not install it:
 
@@ -533,11 +537,11 @@ The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run se
 
 Test trees under `claude/.claude/` that carry their own `conftest.py` are Python packages, so each tree's conftest resolves to a distinct module name. [`.claude/rules/test-tree-packaging.md`](./.claude/rules/test-tree-packaging.md) states what a new tree must add; [`claude/.claude/tests/test_pytest_collection_config.py`](./claude/.claude/tests/test_pytest_collection_config.py) enforces it.
 
-`-n auto` resolves to the machine's logical CPU count. `select-tests.py` sizes `PYTEST_XDIST_AUTO_NUM_WORKERS` itself from the current 1-minute load average, never exceeding what `-n auto` would have picked. A run starting on an already-busy machine takes only the idle headroom instead of a full machine's worth. Check its stderr line for the count it picked. The bare `.venv/bin/pytest` command above has no such sizing; cap it manually:
+`-n auto` resolves to the machine's logical CPU count. `select-tests.py` sizes `PYTEST_XDIST_AUTO_NUM_WORKERS` itself from the current 1-minute load average, never exceeding what `-n auto` would have picked. A run starting on an already-busy machine takes only the idle headroom instead of a full machine's worth. Check its stderr line for the count it picked. Running `scripts/venv-run.sh pytest claude/.claude/ claude-skills/ plugins/ evals/` directly has no such sizing; cap it manually:
 
 - Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment.
   - Checks ahead of xdist's own core-count detection.
-  - Applies to both the bare `pytest` command and `select-tests.py`.
+  - Applies to both a direct `scripts/venv-run.sh pytest` run and `select-tests.py`.
   - Wins over `select-tests.py`'s own sizing, which defers whenever the variable is already set.
 - Or pass `-n <N>` on the command line for a single run. It wins over both. `select-tests.py` forwards it through to pytest.
 - When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value.
@@ -548,10 +552,10 @@ CI runs the same pin set on every PR and main push via `.github/workflows/tests.
 For a faster local dev loop, `select-tests.py` runs pytest against just the test domains implicated by what you changed, instead of the whole suite. It computes the changed-file set as the merge-base diff against `origin/main` unioned with your dirty working tree. It then maps each changed path to its test domain. Any change it can't map with confidence fails open to running the full suite:
 
 ```bash
-.venv/bin/python3 claude/.claude/scripts/select-tests.py
+scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py
 ```
 
-Same worktree-relative substitution as above (`../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`). This is the required local command for agents, including in `/ready-for-review`. CI still runs the whole suite on every PR and main push — a deliberate choice, see [`docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md`](docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md).
+This is the required local command for agents, including in `/ready-for-review`. CI still runs the whole suite on every PR and main push — a deliberate choice, see [`docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md`](docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md).
 
 Set `test_selection_tracking = true` in `<config-dir>/claude-config.toml` (off by default) to log every `select-tests.py` invocation's selection outcome to `<config-dir>/.test-selection-log.jsonl`, one JSON line per invocation. Each line always records the selection reason. For a full-suite fallback, it also records which changed path triggered it. When that invocation computed a load-aware worker count, it also records the worker count and the 1-minute load average. This makes fallback-to-full-suite frequency measurable instead of a stderr line that scrolls away. Like [`.permission-prompt-log.jsonl`](docs/permission-prompt-tracking.md#known-limitations), the log is append-only with no automatic rotation; trim it manually if disk space or data age is a concern. Its invocation frequency is structurally higher than that log's, since it appends on every `select-tests.py` run rather than only on an interactive permission dialog.
 

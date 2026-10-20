@@ -7518,6 +7518,7 @@ _REVIEW_ORCHESTRATOR_RETURN_ITEMS = ("Fix paths:", "Marker:", "HALT:")
 _REVIEW_ORCHESTRATOR_DESIGN_RECORD = (
     "docs/design-decisions/review-orchestrator-gate-release-decoupling.md"
 )
+_ROUTING_GATE_DESIGN_RECORD = "docs/design-decisions/review-orchestrator-routing-gate.md"
 _CODE_REVIEW_STEP_0_1_HEADING = "## Step 0.1 — Short-circuit already-reviewed diff"
 _CODE_REVIEW_OUTPUT_FORMAT_HEADING = "## Output format"
 
@@ -7581,8 +7582,26 @@ def test_review_orchestrator_protocol_marker_check_is_the_whole_allowlisted_comm
         pytest.param(
             "only when the user explicitly asks",
             "the agent is used only on an explicit user request until the "
-            "post-merge dogfood passes",
+            "post-merge dogfood passes, and a routing-gate denial on a key-on "
+            "account counts as that request",
             id="agent-used-only-on-explicit-request",
+        ),
+        pytest.param(
+            "a denial from the review-orchestrator routing gate is that request",
+            "the explicit-request sentence names the gate whose denial counts "
+            "as that request",
+            id="request-sentence-names-the-routing-gate",
+        ),
+        pytest.param(
+            'at once, invoking the skill with args "unrouted" without the quotation '
+            "marks, and run the rest of "
+            "this review loop the same way until a clean round writes the marker",
+            "the HALT fallback must pass the escape word the routing gate lets "
+            "through, and must carry it through the rest of that loop, or a "
+            "key-on fallback's fix re-run is denied and routed to the agent that "
+            "just HALTed. The span also pins the bound, so a later trim cannot "
+            "leave the carry without an end, which would run every later loop inline",
+            id="halt-fallback-passes-unrouted-for-the-rest-of-the-loop",
         ),
         pytest.param(
             "Review-findings persistence",
@@ -7599,6 +7618,73 @@ def test_review_orchestrator_protocol_section_carries_phrase(
         f"subagent-delegation/SKILL.md {_SUBAGENT_DELEGATION_GATE_LOOP_HEADING!r} "
         f"no longer contains {phrase!r}: {invariant}. "
         f"See {_REVIEW_ORCHESTRATOR_DESIGN_RECORD}."
+    )
+
+
+_REVIEW_PR_STEP5_HEADING = "## Step 5 — Line-level pass"
+
+
+@pytest.mark.parametrize(
+    "skill, heading, phrase, invariant",
+    [
+        pytest.param(
+            "review-pr",
+            _REVIEW_PR_STEP5_HEADING,
+            'with args "unrouted <path>" naming that file',
+            "the line-level pass must lead its args with the word the routing "
+            "gate lets through, or it is denied once and retried inline",
+            id="review-pr-line-level-pass-passes-unrouted",
+        ),
+        pytest.param(
+            "code-review",
+            "## Ripple effect triage",
+            "the path is what follows that word",
+            "the skill must take the diff-file path after the leading word, or "
+            "every diff-file pass hands comment-discipline-reviewer the word "
+            "instead of the path",
+            id="code-review-reads-the-path-after-the-unrouted-word",
+        ),
+    ],
+)
+def test_code_review_args_carry_unrouted_before_path(
+    skill: str, heading: str, phrase: str, invariant: str
+) -> None:
+    """The review-pr row pins a span unique to the line-level-pass sentence,
+    which keeps a dropped word from becoming routine cost. The code-review row
+    pins that the skill reads the diff-file path after the leading word."""
+    assert phrase in _heading_section_text(_skill_file(skill), heading), (
+        f"{skill}/SKILL.md {heading!r} no longer contains {phrase!r}: {invariant}. "
+        f"See {_ROUTING_GATE_DESIGN_RECORD}."
+    )
+
+
+_CUMULATIVE_PASS_SENTENCE = re.compile(
+    r"Run `/code-review` against that diff.*?\(`unrouted` keeps this pass in this session\)"
+)
+
+
+def test_ready_for_review_unrouted_args_are_scoped_to_the_cumulative_pass_sentence() -> None:
+    """Only the cumulative pass carries the word. A fix commit's staged-diff
+    round stays routed, so `unrouted` anywhere else in the skill would make
+    every routine round run inline."""
+    skill_text = " ".join(_skill_file("ready-for-review").read_text(encoding="utf-8").split())
+    cumulative_pass_sentence = _CUMULATIVE_PASS_SENTENCE.search(skill_text)
+    assert cumulative_pass_sentence, (
+        "ready-for-review/SKILL.md no longer contains the cumulative-pass sentence "
+        "from 'Run `/code-review` against that diff' to "
+        "'(`unrouted` keeps this pass in this session)'. "
+        f"See {_ROUTING_GATE_DESIGN_RECORD}."
+    )
+    assert 'args "unrouted <path>"' in cumulative_pass_sentence.group(0), (
+        "the cumulative pass must lead its args with the word the routing gate "
+        "lets through, or it is denied once and retried inline. "
+        f"See {_ROUTING_GATE_DESIGN_RECORD}."
+    )
+    remainder = _CUMULATIVE_PASS_SENTENCE.sub("", skill_text)
+    assert "unrouted" not in remainder, (
+        "ready-for-review/SKILL.md carries `unrouted` outside the "
+        "cumulative-pass sentence, so a routine fix-commit round would run "
+        f"inline. See {_ROUTING_GATE_DESIGN_RECORD}."
     )
 
 

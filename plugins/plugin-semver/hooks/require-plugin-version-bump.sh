@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
 # Gate: require a plugin's .claude-plugin/plugin.json `version` to be
@@ -73,7 +73,7 @@ emit_deny() {
 }
 
 if ! . "${0%/*}/_lib.sh" 2>/dev/null; then
-  emit_deny "Blocked by plugin-version-bump gate: could not source _lib.sh."
+  emit_deny "Blocked by plugin-version-bump gate: could not source _lib.sh. A bash older than 5.2 first on the PATH Claude Code started with also causes this: ask the user to install bash 5.2 or newer in a separate terminal (macOS: brew install bash), put it first on that PATH, and restart Claude Code."
   exit 0
 fi
 
@@ -174,7 +174,6 @@ while IFS= read -r CHANGED_FILE; do
   ROOT=$(find_plugin_root "$CHANGED_FILE") || continue
   [ -z "$ROOT" ] && continue
   ALREADY_SEEN=0
-  # Guard on non-empty: bash <4.4 (incl. macOS's stock bash 3.2) throws unbound-variable under set -u when iterating an empty array -- same guard as npm-semver's sibling hook.
   if [ "${#PLUGIN_ROOTS[@]}" -gt 0 ]; then
     for EXISTING_ROOT in "${PLUGIN_ROOTS[@]}"; do
       if [ "$EXISTING_ROOT" = "$ROOT" ]; then
@@ -267,3 +266,5 @@ done
 REASON="$REASON"$'\n'"Bump the affected plugin's .claude-plugin/plugin.json 'version' — see the plugin-semver skill for choosing patch/minor/major."
 
 emit_deny "$REASON"
+
+exit 0

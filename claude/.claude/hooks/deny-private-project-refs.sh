@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, irreversible
 # Gate: reject `git commit`, `gh pr create`, `gh pr edit`, `gh issue
@@ -144,11 +144,10 @@
 #   that reading it terminates. This guarantee holds only when timeout(1)
 #   or gtimeout(1) is on PATH — see _lib_capped_for's own "neither binary
 #   present" fallback caveat in _lib.sh, which still applies here.
-# - The pseudo-file guard (_lib_is_pseudo_file_path) matches literal
-#   spellings only (`-`, `/dev/stdin`, `/dev/fd/*`, `/proc/*/fd/*`). Alias
-#   spellings such as `//dev/fd/N` or `/dev/./fd/N` are not recognised and
-#   can evade the scan of a body/message source. Accepted debt shared with
-#   deny-pii-in-commits.sh and deny-escaped-backticks-in-pr-body.sh.
+# - The pseudo-file guard's alias-spelling gap and its unconfirmed over-64-KiB
+#   path-list residual are in `_lib_is_pseudo_file_path`'s header in _lib.sh.
+#   The alias spellings were tested only at the `git commit -F` site, one of
+#   this gate's five pseudo-file check sites.
 # - The `xargs -n1` fast path's miss is listed in `_lib_command_words`'s header
 #   in _lib.sh.
 #   The fallback tokenizer's residual over-denies and misses are listed in
@@ -981,3 +980,5 @@ See repo CLAUDE.md section 'Redact private-project-identifying content'.${OPTIN_
     exit 0
   fi
 fi
+
+exit 0

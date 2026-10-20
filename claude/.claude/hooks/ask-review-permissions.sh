@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # Gate: ask before editing .claude/settings*.json.
 #

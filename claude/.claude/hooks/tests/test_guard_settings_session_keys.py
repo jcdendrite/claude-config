@@ -12,6 +12,7 @@ from helpers import (
     bash_input,
     build_path_without,
     edit_input,
+    link_bash_into,
     run_hook,
     run_hook_reason,
     stage_settings,
@@ -976,6 +977,7 @@ class TestGuardSettingsSessionKeys:
             if not real_path:
                 pytest.skip(f"{tool} not found in PATH")
             (stub_bin / tool).symlink_to(real_path)
+        link_bash_into(stub_bin)
         return stub_bin
 
     def test_guarded_key_change_denies_when_neither_timeout_nor_gtimeout_present(

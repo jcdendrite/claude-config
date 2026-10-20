@@ -72,6 +72,8 @@ _lib_parse_tool_input_or_deny "Blocked by <gate-name> gate: could not parse tool
 
 Exit code is `0` for both allowing (no output) and the normal deny case (JSON payload on stdout, jq available to encode the reason). See §4's fail-open/fail-closed discussion for `emit_deny`'s `2`-exit fallback when it cannot encode the reason as JSON.
 
+A `hook-class: gate` registration needs `"onFailure": "block"` (Claude Code 2.1.295 or later; older versions may ignore or reject the field, unverified), so a gate that cannot start or times out blocks the call. The script must end with an unconditional `exit 0` as its last command, because a status other than 0 or 2 counts as a hook failure.
+
 Two non-obvious constraints for new gates:
 - `"permissionDecision"` must be exactly `"deny"` (lowercase) — the runtime is case-sensitive; `"Deny"`, `"block"`, or any variant silently allows.
 - After `_lib_parse_tool_input_or_deny`, `COMMAND` may still be empty: `jq -r '... // empty'` exits **0** on missing fields (empty string, not non-zero). For allow-list-style gates (deny anything outside a known set), guard on `[ -z "$COMMAND" ]`. For deny-list-style gates (deny specific operations, allow all else), empty `COMMAND` correctly falls through.
@@ -154,6 +156,7 @@ Flag these on a hook PR:
 - Tests cover new code paths; synthetic prefixes only, no real project names. For `turn-gate` hooks specifically, since `GATE_HOOKS` excludes them from `test_hook_alignment.py`'s auto-parametrization: hand-written jq-absent and required-external-tool-absent cases are present, and — the reversed posture from `gate` — both must assert **silent-allow** (exit 0, empty stdout), not a hard block. A `turn-gate` hook that hard-blocks on a missing dependency turns an infrastructure gap into a stuck turn, which is the opposite of a `gate` hook's correct fail-closed jq-absent behavior (Section 4).
 - No unbounded loops, no network calls, no unbounded file I/O.
 - Header lists known gaps the hook does not close.
+- Only `hook-class: gate` registrations set `"onFailure": "block"`; no other class carries it. Gate scripts end with an unconditional `exit 0`; Section 3 gives the version caveat.
 - Each fact within a header category (each known gap, each scope exclusion, etc.) is one sentence — a category with multiple facts stays a multi-line bulleted list, one sentence per bullet (wrapping a long sentence across physical lines for width is fine; splicing in a second fact or its rationale is not); elaboration beyond the fact goes in docs/, cited by path, not inlined.
 - **`command` path resolution**: every `command` starts with `"$CLAUDE_PROJECT_DIR"`, `${CLAUDE_PLUGIN_ROOT}`, or a stable user-level prefix (`~`, `$HOME`, literal `/`). Bare `./` or unprefixed names fail review — see Section 2.
 

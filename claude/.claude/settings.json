@@ -242,105 +242,125 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/require-code-review.sh",
+            "onFailure": "block",
             "statusMessage": "Checking code review..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/guard-settings-session-keys.sh",
+            "onFailure": "block",
             "statusMessage": "Checking settings.json session keys..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-private-project-refs.sh",
+            "onFailure": "block",
             "statusMessage": "Scanning for private-project refs..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/require-stow-reminder.sh",
+            "onFailure": "block",
             "if": "Bash(gh pr create *)",
             "statusMessage": "Checking stow reminder..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/require-stow-reminder.sh",
+            "onFailure": "block",
             "if": "Bash(gh pr edit *)",
             "statusMessage": "Checking stow reminder..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-escaped-backticks-in-pr-body.sh",
+            "onFailure": "block",
             "if": "Bash(gh pr create *)",
             "statusMessage": "Checking PR body backticks..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-escaped-backticks-in-pr-body.sh",
+            "onFailure": "block",
             "if": "Bash(gh pr edit *)",
             "statusMessage": "Checking PR body backticks..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/block-gh-pr-merge.sh",
+            "onFailure": "block",
             "statusMessage": "Checking gh-pr-merge block..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/require-respond-pr.sh",
+            "onFailure": "block",
             "statusMessage": "Checking respond-pr gate..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/check-skill-length.sh",
+            "onFailure": "block",
             "statusMessage": "Checking skill length..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/check-claude-md-length.sh",
+            "onFailure": "block",
             "statusMessage": "Checking CLAUDE.md/AGENTS.md length..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/require-ready-for-review.sh",
+            "onFailure": "block",
             "statusMessage": "Checking ready-for-review gate..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-pii-in-commits.sh",
+            "onFailure": "block",
             "statusMessage": "Scanning for PII/PHI..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-invisible-commit-content.sh",
+            "onFailure": "block",
             "statusMessage": "Checking commit-content visibility..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-credential-bash-reads.sh",
+            "onFailure": "block",
             "statusMessage": "Checking credential-path Bash gate..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/enforce-marker-script-shape.sh",
+            "onFailure": "block",
             "statusMessage": "Checking marker.sh invocation shape..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/require-worktree-for-git-writes.sh",
+            "onFailure": "block",
             "statusMessage": "Checking worktree enforcement..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-reviewer-tree-mutation.sh",
+            "onFailure": "block",
             "statusMessage": "Checking reviewer read-only gate..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-repo-relocation.sh",
+            "onFailure": "block",
             "statusMessage": "Checking repo-relocation guard..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-network-installs.sh",
+            "onFailure": "block",
             "statusMessage": "Checking network-install guard..."
           }
         ]
@@ -356,26 +376,31 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/require-plan-review.sh",
+            "onFailure": "block",
             "statusMessage": "Checking plan-review gate..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/require-worktree-for-file-writes.sh",
+            "onFailure": "block",
             "statusMessage": "Checking worktree enforcement..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/require-memory-skill.sh",
+            "onFailure": "block",
             "statusMessage": "Checking memory-skill gate..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-reviewer-tree-mutation.sh",
+            "onFailure": "block",
             "statusMessage": "Checking reviewer read-only gate..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/enforce-marker-script-shape.sh",
+            "onFailure": "block",
             "statusMessage": "Checking gate-release authority..."
           },
           {
@@ -391,6 +416,7 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/require-plan-review.sh",
+            "onFailure": "block",
             "statusMessage": "Checking plan-review gate before plan presentation..."
           }
         ]
@@ -401,6 +427,7 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/require-routing-read.sh",
+            "onFailure": "block",
             "statusMessage": "Checking routing-read gate..."
           }
         ]
@@ -411,11 +438,13 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/require-architect-consult.sh",
+            "onFailure": "block",
             "statusMessage": "Checking architect-consult gate..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-no-op-dispatch.sh",
+            "onFailure": "block",
             "statusMessage": "Checking no-op-dispatch gate..."
           }
         ]
@@ -426,17 +455,31 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-env-reads.sh",
+            "onFailure": "block",
             "statusMessage": "Checking env-file read gate..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-data-file-reads.sh",
+            "onFailure": "block",
             "statusMessage": "Checking data-file read gate..."
           },
           {
             "type": "command",
             "command": "~/.claude/hooks/deny-credential-file-reads.sh",
+            "onFailure": "block",
             "statusMessage": "Checking credential-file read gate..."
+          }
+        ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/require-review-orchestrator-routing.sh",
+            "onFailure": "block",
+            "statusMessage": "Checking review-orchestrator-routing gate..."
           }
         ]
       }

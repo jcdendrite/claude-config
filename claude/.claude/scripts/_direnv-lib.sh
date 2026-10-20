@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # _direnv-lib.sh — shared direnv-export helper.
 #
 # Sourced by cleanup-merged-branches.sh and ci-watch.sh. Not executable on

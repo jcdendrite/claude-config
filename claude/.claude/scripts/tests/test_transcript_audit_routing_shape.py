@@ -1,10 +1,10 @@
 """Tests for transcript_analysis/audit_routing.py (cmd_audit_routing_shape): D1/D2/D3
 code-read turn-shape distributions."""
-import importlib.util
-import sys
-from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    audit_routing,
+)
 
 from ._audit_routing_helpers import (
     _audit_routing_shape_args,
@@ -21,15 +21,6 @@ from .conftest import (
     _user_msg,
     _write_jsonl,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _grep_use(tool_id: str) -> dict:
@@ -132,7 +123,7 @@ class TestAuditRoutingShape:
             # 9 Reads → bucket "8+"
             _opus([_read_use(f"r{i}", f"/f{i}.txt") for i in range(20, 29)], out=50),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         assert _extract_shape_d1(out, "0") == (1, 10)
         assert _extract_shape_d1(out, "1") == (1, 20)
@@ -146,7 +137,7 @@ class TestAuditRoutingShape:
             _opus([_grep_use("g1")], out=77),
             _opus([_glob_use("gl1")], out=88),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         turns_0, tokens_0 = _extract_shape_d1(out, "0")
         assert turns_0 == 2
@@ -169,7 +160,7 @@ class TestAuditRoutingShape:
             _opus([_read_use("r2", "/b.txt")], out=60),
             _opus([{"type": "tool_use", "id": "e4", "name": "Edit", "input": {}}], out=100),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         streak_count, streak_out = _extract_shape_d2(out, "1")
         assert streak_count == 2
@@ -182,7 +173,7 @@ class TestAuditRoutingShape:
             _opus([_read_use("r2", "/b.txt")], out=40),
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=100),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         streak_count, streak_out = _extract_shape_d2(out, "2")
         assert streak_count == 1
@@ -193,7 +184,7 @@ class TestAuditRoutingShape:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _opus([_read_use(f"r{i}", f"/f{i}.txt")], out=25) for i in range(4)
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         streak_count, streak_out = _extract_shape_d2(out, "3-5")
         assert streak_count == 1
@@ -204,7 +195,7 @@ class TestAuditRoutingShape:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _opus([_read_use(f"r{i}", f"/f{i}.txt")], out=10) for i in range(7)
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         streak_count, streak_out = _extract_shape_d2(out, "6-10")
         assert streak_count == 1
@@ -215,7 +206,7 @@ class TestAuditRoutingShape:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _opus([_read_use(f"r{i}", f"/f{i}.txt")], out=10) for i in range(12)
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         streak_count, streak_out = _extract_shape_d2(out, "11+")
         assert streak_count == 1
@@ -229,7 +220,7 @@ class TestAuditRoutingShape:
             _user_msg("continue", branch="main"),
             _opus([_read_use("r2", "/b.txt")], out=10),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         # User turn breaks the streak — two separate streaks of length 1, not one streak of 2
         streak_1_count, _ = _extract_shape_d2(out, "1")
@@ -245,7 +236,7 @@ class TestAuditRoutingShape:
             _opus([_read_use("r1", "/a.txt")], out=100),
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=200),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         turns, tokens = _extract_shape_d3(out, "inline-edit")
         assert turns == 1
@@ -257,7 +248,7 @@ class TestAuditRoutingShape:
             _opus([_read_use("r1", "/a.txt")], out=100),
             _opus([_agent_use("a1", "code-writer")], out=200),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         turns, tokens = _extract_shape_d3(out, "dispatched")
         assert turns == 1
@@ -274,7 +265,7 @@ class TestAuditRoutingShape:
             # code-write beyond the 3-turn window — must not affect classification
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=200),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         turns, tokens = _extract_shape_d3(out, "neither")
         assert turns == 1
@@ -290,7 +281,7 @@ class TestAuditRoutingShape:
             _opus([], out=10),  # lookahead 2: other
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=200),  # lookahead 3
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         turns, tokens = _extract_shape_d3(out, "inline-edit")
         assert turns == 1
@@ -305,7 +296,7 @@ class TestAuditRoutingShape:
             _user_msg("continue", branch="main"),
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=200),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         turns, tokens = _extract_shape_d3(out, "inline-edit")
         assert turns == 1
@@ -318,7 +309,7 @@ class TestAuditRoutingShape:
             _opus([_read_use("r1", "/a.txt"), _read_use("r2", "/b.txt")], out=100),
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=200),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         turns, tokens = _extract_shape_d3_xtab(out, "inline-edit", "2-3")
         assert turns == 1
@@ -333,7 +324,7 @@ class TestAuditRoutingShape:
             _opus([_read_use("r3", "/c.txt")], out=100),
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=200),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         streak_count, streak_out = _extract_shape_d2(out, "3-5")
         assert streak_count == 1
@@ -360,14 +351,14 @@ class TestAuditRoutingShape:
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=200),
         ])
         # Run audit-routing and capture code-read corpus total
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         routing_out = capsys.readouterr().out
         routing_code_read = _extract_corpus_class_tokens(routing_out, "code-read")
 
         # Run audit-routing-shape and sum D1 output tokens across all buckets
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         shape_out = capsys.readouterr().out
-        d1_total = sum(_extract_shape_d1(shape_out, bkt)[1] for bkt in _mod.audit_routing._D1_BUCKETS)
+        d1_total = sum(_extract_shape_d1(shape_out, bkt)[1] for bkt in audit_routing._D1_BUCKETS)
 
         assert d1_total == routing_code_read  # both should be 300 (judgment-span Read excluded from both)
 
@@ -383,14 +374,14 @@ class TestAuditRoutingShape:
             # Read after span closed — must appear in D1
             _opus([_read_use("r2", "/b.txt")], out=77),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         # Only the post-span Read (77 tokens, 1 Read → bucket "1") should appear
         turns_1, tokens_1 = _extract_shape_d1(out, "1")
         assert turns_1 == 1
         assert tokens_1 == 77
         # Total D1 output tokens across all buckets must be 77 (not 176)
-        d1_total = sum(_extract_shape_d1(out, bkt)[1] for bkt in _mod.audit_routing._D1_BUCKETS)
+        d1_total = sum(_extract_shape_d1(out, bkt)[1] for bkt in audit_routing._D1_BUCKETS)
         assert d1_total == 77
 
     def test_dispatchable_share_summary_value(self, fake_projects, capsys):
@@ -411,7 +402,7 @@ class TestAuditRoutingShape:
             # Turn D: 1 Read → D1="1". No code-write or orchestration within 3 turns.
             _opus([_read_use("d1", "/d1.txt")], out=400),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         assert "Dispatchable share: 80%" in out
 
@@ -420,14 +411,14 @@ class TestAuditRoutingShape:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=100),
         ])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         assert "Dispatchable share: —" in out
 
     def test_since_malformed_value_exits_nonzero_with_subcommand_in_message(self, capsys):
         """A malformed --since value fails closed with the audit-routing-shape-specific error prefix."""
         with pytest.raises(SystemExit):
-            _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args(since="not-a-window"))
+            audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args(since="not-a-window"))
         assert "audit-routing-shape: --since: expected Nd like '35d'" in capsys.readouterr().err
 
     def test_request_id_group_reads_split_across_records_bucketed_by_union(self, fake_projects, capsys):
@@ -438,7 +429,7 @@ class TestAuditRoutingShape:
         rec_a = _opus([_read_use("r1", "/a.txt")], out=20, request_id="req-1")
         rec_b = _opus([_read_use("r2", "/b.txt")], out=20, request_id="req-1")
         _write_jsonl(fake_projects / "sess.jsonl", [rec_a, rec_b])
-        _mod.audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
+        audit_routing.cmd_audit_routing_shape(_audit_routing_shape_args())
         out = capsys.readouterr().out
         assert _extract_shape_d1(out, "2-3") == (1, 20)
         assert _extract_shape_d1(out, "1") == (0, 0)

@@ -755,8 +755,10 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
     project_repr_label: dict[tuple[int | None, str], redaction._RedactMapKey] = {}
 
     for jsonl, records in session_iter:
-        records = pricing.dedup_turns_by_request_id(records)
-        total_spawns += pricing._count_subagent_spawns(records)
+        deduped_session = pricing._dedup_session(records)
+        records = deduped_session.turns
+        total_spawns += deduped_session.subagent_spawns
+        total_sidechain_turns += deduped_session.sidechain_assistant_turns
         raw_proj_label = redaction._derive_proj_label(jsonl)
         session_id = jsonl.stem[:12]
         if redact and not summary_mode:
@@ -780,12 +782,6 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
         for rec in records:
             if rec.get("type") != "assistant":
                 continue
-            # Counted before the usage/since/branch filters below, mirroring
-            # cmd_subagents' corpus_sidechain_turns -- the drift canary needs
-            # every isSidechain turn read, not just the ones this report ends
-            # up pricing or displaying.
-            if bool(rec.get("isSidechain")):
-                total_sidechain_turns += 1
             msg = rec.get("message") or {}
             usage = msg.get("usage")
             if not usage:
@@ -824,7 +820,7 @@ def _cost_report(args: argparse.Namespace, today: date, roots: Sequence[Path] | 
                 unpriced_tokens[model] += turn_unpriced_tokens
                 continue
 
-            if today > pricing._MODEL_RATE_EXPIRES[model]:
+            if pricing._rate_expired(model, today):
                 stale_models.add(model)
 
             token_counts = pricing._token_counts(usage)

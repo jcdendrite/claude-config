@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: guard review-marker and review-ledger state. Two jobs:
@@ -147,11 +147,6 @@
 #       targets only. The per-candidate pre-filter drops
 #       `$CLAUDE_CONFIG_DIR/<kind>-markers/...` before the expansion runs when
 #       it carries neither `.claude` nor `review-narrative-ledger`.
-#     - The quoted-pattern join `${var//"$BACKSLASH_NEWLINE"/...}` is unverified
-#       on bash 3.2, and no test exercises that version. If 3.2 ignores the
-#       quoting, the pattern matches every newline, so both copies lose or
-#       space every newline instead of only escaped ones, and a name split
-#       across a continuation goes unmatched.
 #     - The `append` Bash arm is text-only, with no path arm, no Stage 2
 #       backstop and no `permissions.allow` entry.
 #     - Variable and function indirection, brace expansion, `$'\x..'`
@@ -809,8 +804,8 @@ _script_op_scan() {
 # two calls per candidate with CLAUDE_CONFIG_DIR set (280 s, or 420 s with
 # `grealpath`).
 # settings.json sets no `timeout` on this hook. A total above the harness
-# timeout fails open, because a timed-out command hook does not block the tool
-# call (see `_lib_capped_for`'s Bound list in _lib.sh).
+# timeout is handled as `_lib_capped_for`'s Bound list in _lib.sh describes,
+# including the effect of `onFailure`.
 # The ledger Bash arm costs none on the common path (no subagent, or no
 # `review-ledger.sh` in the command), since both of its predicates gate their
 # detectors behind pure-bash `case` matches. The Write/Edit/MultiEdit arm
@@ -1125,3 +1120,5 @@ code already carry the verdict. For a multi-line commit message, write it to
 a file with the Write tool and chain 'git commit -F' on that file. Never use a
 heredoc or -m \"\$(cat ...)\" (code-review's SKILL.md, \"Authoring the commit
 message\", gives why)."
+
+exit 0

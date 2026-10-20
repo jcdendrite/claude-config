@@ -1,23 +1,15 @@
 """Tests for transcript_analysis/denials.py (hook-denial detection and classification)."""
-import importlib.util
 import json
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
-from helpers import HOOKS_DIR, bash_input, build_path_without, run_hook_reason
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
+from helpers import HOOKS_DIR, bash_input, build_path_without, run_hook_reason, skill_input
+from transcript_analysis import (
+    denials,
+)
 
 
 class TestDropDenialCommandFlagValues:
@@ -26,35 +18,35 @@ class TestDropDenialCommandFlagValues:
     through the full JSONL-fixture-to-stdout path."""
 
     def test_empty_tokens_returns_empty_list(self):
-        assert _mod.denials._drop_denial_command_flag_values([]) == []
+        assert denials._drop_denial_command_flag_values([]) == []
 
     def test_no_flags_returns_tokens_unchanged(self):
-        assert _mod.denials._drop_denial_command_flag_values(["git", "commit", "-m", "x"]) == [
+        assert denials._drop_denial_command_flag_values(["git", "commit", "-m", "x"]) == [
             "git", "commit", "-m", "x",
         ]
 
     def test_separate_token_flag_drops_flag_and_its_value(self):
-        assert _mod.denials._drop_denial_command_flag_values(["git", "-C", "/path", "commit"]) == [
+        assert denials._drop_denial_command_flag_values(["git", "-C", "/path", "commit"]) == [
             "git", "commit",
         ]
 
     def test_double_separate_token_flags_both_dropped(self):
-        assert _mod.denials._drop_denial_command_flag_values(
+        assert denials._drop_denial_command_flag_values(
             ["git", "-C", "/path", "-c", "user.name=x", "commit"]
         ) == ["git", "commit"]
 
     def test_attached_equals_flag_drops_only_the_one_token(self):
-        assert _mod.denials._drop_denial_command_flag_values(["git", "--git-dir=/path", "status"]) == [
+        assert denials._drop_denial_command_flag_values(["git", "--git-dir=/path", "status"]) == [
             "git", "status",
         ]
 
     def test_all_four_named_flag_forms_drop_their_value(self):
-        assert _mod.denials._drop_denial_command_flag_values(["git", "-C", "/a", "commit"]) == ["git", "commit"]
-        assert _mod.denials._drop_denial_command_flag_values(["git", "-c", "x=y", "commit"]) == ["git", "commit"]
-        assert _mod.denials._drop_denial_command_flag_values(["git", "--git-dir", "/a", "commit"]) == [
+        assert denials._drop_denial_command_flag_values(["git", "-C", "/a", "commit"]) == ["git", "commit"]
+        assert denials._drop_denial_command_flag_values(["git", "-c", "x=y", "commit"]) == ["git", "commit"]
+        assert denials._drop_denial_command_flag_values(["git", "--git-dir", "/a", "commit"]) == [
             "git", "commit",
         ]
-        assert _mod.denials._drop_denial_command_flag_values(["git", "--work-tree", "/a", "commit"]) == [
+        assert denials._drop_denial_command_flag_values(["git", "--work-tree", "/a", "commit"]) == [
             "git", "commit",
         ]
 
@@ -62,7 +54,7 @@ class TestDropDenialCommandFlagValues:
         """A value-taking flag as the last token, with nothing after it, still
         drops the flag itself — the unconditional i += 2 skip doesn't require
         a following token to exist."""
-        assert _mod.denials._drop_denial_command_flag_values(["git", "commit", "-C"]) == ["git", "commit"]
+        assert denials._drop_denial_command_flag_values(["git", "commit", "-C"]) == ["git", "commit"]
 
 
 class TestIsNongateFrictionKind:
@@ -71,26 +63,26 @@ class TestIsNongateFrictionKind:
     indirectly through the full JSONL-fixture-to-stdout path."""
 
     def test_already_gate_denied_returns_false_even_with_nongate_kind(self):
-        assert _mod.denials._is_nongate_friction_kind("interrupted", already_gate_denied=True) is False
+        assert denials._is_nongate_friction_kind("interrupted", already_gate_denied=True) is False
 
     def test_falsy_kind_returns_false(self):
-        assert _mod.denials._is_nongate_friction_kind("", already_gate_denied=False) is False
+        assert denials._is_nongate_friction_kind("", already_gate_denied=False) is False
 
     def test_gate_kind_returns_false(self):
-        assert _mod.denials._is_nongate_friction_kind(_mod.denials._GATE_TOOL_DENIAL_KIND, already_gate_denied=False) is False
+        assert denials._is_nongate_friction_kind(denials._GATE_TOOL_DENIAL_KIND, already_gate_denied=False) is False
 
     @pytest.mark.parametrize(
         "kind", ["user-rejected", "automode-blocked", "automode-unavailable", "interrupted"]
     )
     def test_nongate_kind_returns_true(self, kind):
-        assert _mod.denials._is_nongate_friction_kind(kind, already_gate_denied=False) is True
+        assert denials._is_nongate_friction_kind(kind, already_gate_denied=False) is True
 
     def test_unenumerated_future_kind_still_returns_true(self):
         """A toolDenialKind value outside the four named kinds is still
         non-gate friction as long as it isn't the gate kind — the label
         printed for it is _friction_kind_label's concern, not this
         predicate's."""
-        assert _mod.denials._is_nongate_friction_kind("some-future-kind", already_gate_denied=False) is True
+        assert denials._is_nongate_friction_kind("some-future-kind", already_gate_denied=False) is True
 
 
 class TestFrictionKindLabel:
@@ -102,10 +94,10 @@ class TestFrictionKindLabel:
         "kind", ["user-rejected", "automode-blocked", "automode-unavailable", "interrupted"]
     )
     def test_enumerated_kind_returns_itself(self, kind):
-        assert _mod.denials._friction_kind_label(kind) == kind
+        assert denials._friction_kind_label(kind) == kind
 
     def test_unenumerated_kind_returns_other_kind_sentinel(self):
-        assert _mod.denials._friction_kind_label("some-future-kind") == _mod.denials._FRICTION_KIND_OTHER
+        assert denials._friction_kind_label("some-future-kind") == denials._FRICTION_KIND_OTHER
 
 
 # ---------------------------------------------------------------------------
@@ -232,14 +224,14 @@ class TestDenialHookLabelEnumeration:
          "Skill length"),
     ])
     def test_hook_wording_produces_enumerated_label(self, hook_file, message, expected_label):
-        got = _mod.denials._denial_hook_label("", message)
+        got = denials._denial_hook_label("", message)
         assert got == expected_label, (
             f"{hook_file}'s wording produced {got!r}, expected the enumerated "
             f"label {expected_label!r} — either the hook's wording drifted or "
             f"_DENIAL_HOOK_LABELS is stale"
         )
-        assert got in _mod.denials._DENIAL_HOOK_LABELS
-        assert got != _mod.denials._DENY_SUMMARY_UNMATCHED_HOOK
+        assert got in denials._DENIAL_HOOK_LABELS
+        assert got != denials._DENY_SUMMARY_UNMATCHED_HOOK
 
 
 # Every gate hook bootstraps identically: `set -uo pipefail`, define a raw
@@ -316,6 +308,7 @@ _BOOTSTRAP_FALLBACK_HOOKS: tuple[tuple[str, str], ...] = (
     ("require-architect-consult.sh", "architect-consult"),
     ("deny-invisible-commit-content.sh", "invisible-commit-content"),
     ("deny-no-op-dispatch.sh", "no-op-dispatch"),
+    ("require-review-orchestrator-routing.sh", "review-orchestrator routing"),
 )
 
 
@@ -390,14 +383,14 @@ class TestDenialHookLabelEnumerationRealHooks:
     def test_bootstrap_lib_sh_failure_produces_enumerated_label(self, tmp_path, hook_name, expected_label):
         dest = _isolated_hook_copy(tmp_path, hook_name)
         message = _run_hook_raw_stderr(dest, bash_input("echo hi"))
-        got = _mod.denials._denial_hook_label("", message)
+        got = denials._denial_hook_label("", message)
         assert got == expected_label, (
             f"{hook_name}'s real bootstrap-failure wording {message!r} produced "
             f"{got!r}, expected the enumerated label {expected_label!r}"
         )
         # Same real stderr, second axis: this is the strongest available
         # evidence that the bootstrap-failure wording classifies lib-source.
-        assert _mod.denials._denial_cause_kind(message) == "lib-source"
+        assert denials._denial_cause_kind(message) == "lib-source"
 
     def test_marker_sh_path_traversal_produces_enumerated_label(self):
         """enforce-marker-script-shape.sh's own path-traversal deny path —
@@ -409,8 +402,8 @@ class TestDenialHookLabelEnumerationRealHooks:
         cmd = "../../.claude/scripts/marker.sh write code-review"
         message = run_hook_reason(HOOKS_DIR / "enforce-marker-script-shape.sh", bash_input(cmd))
         assert message is not None
-        assert _mod.denials._denial_hook_label("", message) == "marker-script-shape"
-        assert _mod.denials._denial_cause_kind(message) == "behavioral"
+        assert denials._denial_hook_label("", message) == "marker-script-shape"
+        assert denials._denial_cause_kind(message) == "behavioral"
 
     def test_marker_sh_unknown_subcommand_produces_enumerated_label(self):
         """enforce-marker-script-shape.sh's general 'invocation denied'
@@ -420,8 +413,8 @@ class TestDenialHookLabelEnumerationRealHooks:
         cmd = "~/.claude/scripts/marker.sh forge code-review"
         message = run_hook_reason(HOOKS_DIR / "enforce-marker-script-shape.sh", bash_input(cmd))
         assert message is not None
-        assert _mod.denials._denial_hook_label("", message) == "marker-script-shape"
-        assert _mod.denials._denial_cause_kind(message) == "behavioral"
+        assert denials._denial_hook_label("", message) == "marker-script-shape"
+        assert denials._denial_cause_kind(message) == "behavioral"
 
     def test_agents_md_over_limit_produces_enumerated_label(self, tmp_path):
         """check-claude-md-length.sh's real 'grew past the 200-line limit'
@@ -442,7 +435,7 @@ class TestDenialHookLabelEnumerationRealHooks:
             HOOKS_DIR / "check-claude-md-length.sh", bash_input("git commit -m foo"), cwd=repo,
         )
         assert message is not None
-        assert _mod.denials._denial_hook_label("", message) == "CLAUDE.md length"
+        assert denials._denial_hook_label("", message) == "CLAUDE.md length"
 
     def test_skill_md_over_limit_produces_enumerated_label(self, tmp_path):
         """check-skill-length.sh's real 'grew past their per-skill limit' deny
@@ -465,7 +458,7 @@ class TestDenialHookLabelEnumerationRealHooks:
             HOOKS_DIR / "check-skill-length.sh", bash_input("git commit -m foo"), cwd=repo,
         )
         assert message is not None
-        assert _mod.denials._denial_hook_label("", message) == "skill length"
+        assert denials._denial_hook_label("", message) == "skill length"
 
     def test_claude_md_commit_detection_fail_closed_produces_enumerated_label(self, tmp_path):
         """check-claude-md-length.sh's commit-detection fail-closed path (sed
@@ -484,7 +477,7 @@ class TestDenialHookLabelEnumerationRealHooks:
             extra_env={"PATH": restricted_path},
         )
         assert message is not None
-        assert _mod.denials._denial_hook_label("", message) == "CLAUDE.md length"
+        assert denials._denial_hook_label("", message) == "CLAUDE.md length"
 
     def test_skill_commit_detection_fail_closed_produces_enumerated_label(self, tmp_path):
         """check-skill-length.sh's commit-detection fail-closed path (sed
@@ -503,7 +496,24 @@ class TestDenialHookLabelEnumerationRealHooks:
             extra_env={"PATH": restricted_path},
         )
         assert message is not None
-        assert _mod.denials._denial_hook_label("", message) == "skill length"
+        assert denials._denial_hook_label("", message) == "skill length"
+
+    def test_routing_gate_deny_produces_enumerated_label(self, tmp_path):
+        """require-review-orchestrator-routing.sh's real behavioral deny, run
+        against a key-on config dir, attributes to its own label rather than
+        falling to 'unmatched'."""
+        config_dir = tmp_path / "config-dir"
+        config_dir.mkdir()
+        (config_dir / "claude-config.toml").write_text("review_orchestrator_routing = true\n")
+        message = run_hook_reason(
+            HOOKS_DIR / "require-review-orchestrator-routing.sh",
+            skill_input("code-review"),
+            home=tmp_path,
+            extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+        )
+        assert message is not None
+        assert denials._denial_hook_label("", message) == "review-orchestrator routing"
+        assert denials._denial_cause_kind(message) == "behavioral"
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +605,7 @@ def _marker_kinds_present(text: str) -> list[str]:
     """Every _DENIAL_CAUSE_MARKERS family whose literal marker substring
     appears in `text`, case-insensitively, in cascade-precedence order."""
     lowered = text.lower()
-    return [kind for marker, kind in _mod.denials._DENIAL_CAUSE_MARKERS if marker in lowered]
+    return [kind for marker, kind in denials._DENIAL_CAUSE_MARKERS if marker in lowered]
 
 
 class TestDenyGateLabelConformance:
@@ -616,7 +626,7 @@ class TestDenyGateLabelConformance:
     @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
     def test_clause_b_every_declared_label_is_an_enumerated_member(self, hook_name, _expected_label):
         label = _declared_deny_gate_label(hook_name)
-        assert label in _mod.denials._DENIAL_HOOK_LABELS, (
+        assert label in denials._DENIAL_HOOK_LABELS, (
             f"{hook_name} declares DENY_GATE_LABEL={label!r}, which is not a _DENIAL_HOOK_LABELS "
             f"member — either the label is a typo or the set is stale"
         )
@@ -636,7 +646,7 @@ class TestDenyGateLabelConformance:
         scratch.write_text(mutated)
         declarations = _DENY_GATE_LABEL_DECLARATION_RE.findall(scratch.read_text())
         assert declarations == ["not-a-real-enumerated-label"]
-        assert declarations[0] not in _mod.denials._DENIAL_HOOK_LABELS
+        assert declarations[0] not in denials._DENIAL_HOOK_LABELS
 
     @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
     def test_clause_c_every_declared_label_matches_the_name_shape(self, hook_name, _expected_label):
@@ -644,7 +654,7 @@ class TestDenyGateLabelConformance:
         assert _DENIAL_HOOK_NAME_SHAPE_RE.fullmatch(label), (
             f"{hook_name}'s DENY_GATE_LABEL {label!r} doesn't match the name-shaped [\\w .-]+ class"
         )
-        assert len(label) <= _mod.denials._DENIAL_HOOK_NAME_MAX_CHARS, (
+        assert len(label) <= denials._DENIAL_HOOK_NAME_MAX_CHARS, (
             f"{hook_name}'s DENY_GATE_LABEL {label!r} exceeds _DENIAL_HOOK_NAME_MAX_CHARS"
         )
 
@@ -669,7 +679,7 @@ class TestDenyGateLabelConformance:
                 f"which defeats _denial_cause_kind's substring cascade"
             )
             if present:
-                assert _mod.denials._denial_cause_kind(literal) == present[0]
+                assert denials._denial_cause_kind(literal) == present[0]
 
     def test_clause_d_negative_marker_collision_is_detected(self, tmp_path):
         """Permanent negative case: a scratch copy of block-gh-pr-merge.sh
@@ -700,7 +710,7 @@ class TestDenyGateLabelConformance:
         # The cascade's first-match-wins order silently masks the literal's
         # own "failing closed" marker — the exact miscategorization clause
         # (d) exists to keep out of a real hook's source.
-        assert _mod.denials._denial_cause_kind(collision_literal) == "input-parse"
+        assert denials._denial_cause_kind(collision_literal) == "input-parse"
 
     @pytest.mark.parametrize("hook_name,_expected_label", _BOOTSTRAP_FALLBACK_HOOKS)
     def test_clause_e_no_deny_literal_reintroduces_a_hand_written_blocked_by_prefix(
@@ -1128,13 +1138,13 @@ class TestDenialCauseKind:
 
     @pytest.mark.parametrize("hook_name,message", _LIB_SOURCE_FIXTURES)
     def test_bootstrap_wording_classifies_lib_source(self, hook_name, message):
-        assert _mod.denials._denial_cause_kind(message) == "lib-source", (
+        assert denials._denial_cause_kind(message) == "lib-source", (
             f"{hook_name}'s bootstrap wording {message!r} did not classify lib-source"
         )
 
     @pytest.mark.parametrize("hook_name,message", _INPUT_PARSE_FIXTURES)
     def test_parse_failure_wording_classifies_input_parse(self, hook_name, message):
-        assert _mod.denials._denial_cause_kind(message) == "input-parse", (
+        assert denials._denial_cause_kind(message) == "input-parse", (
             f"{hook_name}'s parse-failure wording {message!r} did not classify input-parse"
         )
 
@@ -1148,11 +1158,11 @@ class TestDenialCauseKind:
         matches somewhere."""
         got = run_hook_reason(HOOKS_DIR / hook_name, {"tool_name": "Bash", "tool_input": "a string"})
         assert got == message
-        assert _mod.denials._denial_cause_kind(got) == "input-parse"
+        assert denials._denial_cause_kind(got) == "input-parse"
 
     @pytest.mark.parametrize("hook_name,message", _HELPER_PROC_FIXTURES)
     def test_helper_proc_wording_classifies_helper_proc(self, hook_name, message):
-        assert _mod.denials._denial_cause_kind(message) == "helper-proc", (
+        assert denials._denial_cause_kind(message) == "helper-proc", (
             f"{hook_name}'s failing-closed wording {message!r} did not classify helper-proc"
         )
 
@@ -1171,12 +1181,12 @@ class TestDenialCauseKind:
 
     @pytest.mark.parametrize("hook_name,message", _HELPER_PROC_CURRENT_WORDING_FIXTURES)
     def test_current_helper_proc_wording_classifies_helper_proc(self, hook_name, message):
-        assert _mod.denials._denial_cause_kind(message) == "helper-proc", (
+        assert denials._denial_cause_kind(message) == "helper-proc", (
             f"{hook_name}'s current failing-closed wording {message!r} did not classify helper-proc"
         )
 
     def test_deny_encode_preamble_classifies_deny_encode(self):
-        assert _mod.denials._denial_cause_kind(_DENY_ENCODE_FIXTURE) == "deny-encode"
+        assert denials._denial_cause_kind(_DENY_ENCODE_FIXTURE) == "deny-encode"
 
     def test_deny_encode_precedes_input_parse_when_both_markers_present(self):
         """The deny-encode preamble wraps the underlying reason verbatim, so
@@ -1184,14 +1194,14 @@ class TestDenialCauseKind:
         message; deny-encode must win because the outage that broke jq's
         deny-envelope encoding is also what broke the input parse."""
         assert "could not parse tool-input json" in _DENY_ENCODE_FIXTURE.lower()
-        assert _mod.denials._denial_cause_kind(_DENY_ENCODE_FIXTURE) == "deny-encode"
+        assert denials._denial_cause_kind(_DENY_ENCODE_FIXTURE) == "deny-encode"
 
     def test_current_deny_encode_preamble_classifies_deny_encode(self):
         """The deny-encode preamble's cascade precedence holds when the
         underlying wrapped reason is today's on-disk wording too, not only
         the older shape _DENY_ENCODE_FIXTURE wraps."""
         assert "could not parse tool-input json" in _DENY_ENCODE_CURRENT_WORDING_FIXTURE.lower()
-        assert _mod.denials._denial_cause_kind(_DENY_ENCODE_CURRENT_WORDING_FIXTURE) == "deny-encode"
+        assert denials._denial_cause_kind(_DENY_ENCODE_CURRENT_WORDING_FIXTURE) == "deny-encode"
 
     def test_real_subprocess_input_parse_classifies_input_parse(self):
         """A real .tool_input-is-a-string payload, which _lib.sh's own
@@ -1202,11 +1212,11 @@ class TestDenialCauseKind:
             {"tool_name": "Bash", "tool_input": "a string"},
         )
         assert message is not None
-        assert _mod.denials._denial_cause_kind(message) == "input-parse"
+        assert denials._denial_cause_kind(message) == "input-parse"
 
     @pytest.mark.parametrize("hook_file,message", _BEHAVIORAL_FIXTURES)
     def test_behavioral_wording_classifies_behavioral(self, hook_file, message):
-        assert _mod.denials._denial_cause_kind(message) == "behavioral", (
+        assert denials._denial_cause_kind(message) == "behavioral", (
             f"{hook_file}'s wording {message!r} did not classify behavioral"
         )
 
@@ -1216,7 +1226,7 @@ class TestDenialCauseKind:
         strongest available signal that the agent tripped a gate rather
         than encountering harness noise. Guards against a later edit
         accidentally giving it an infra marker."""
-        assert _mod.denials._denial_cause_kind(_FIELD_SHIFT_DENY_MESSAGE) == "behavioral"
+        assert denials._denial_cause_kind(_FIELD_SHIFT_DENY_MESSAGE) == "behavioral"
 
     def test_agent_authored_path_with_cause_fragment_misclassifies_helper_proc(self, tmp_path):
         """Recorded limitation, adversarial case: an agent-controlled Read
@@ -1234,7 +1244,7 @@ class TestDenialCauseKind:
             {"tool_name": "Read", "tool_input": {"file_path": str(control_path)}},
         )
         assert control_message is not None
-        assert _mod.denials._denial_cause_kind(control_message) == "behavioral"
+        assert denials._denial_cause_kind(control_message) == "behavioral"
         file_path = tmp_path / "failing closed" / ".env"
         message = run_hook_reason(
             HOOKS_DIR / "deny-env-reads.sh",
@@ -1242,5 +1252,5 @@ class TestDenialCauseKind:
         )
         assert message is not None
         assert "failing closed" in message
-        assert _mod.denials._denial_cause_kind(message) == "helper-proc"
+        assert denials._denial_cause_kind(message) == "helper-proc"
 

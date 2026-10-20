@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # Notification hook (matcher permission_prompt): appends the raw hook
 # payload -- redacted for credential-shaped strings, with one added

@@ -212,11 +212,25 @@ def iter_sessions(
             yield jsonl, records
 
 
-def _parse_ts(ts_str: str | None) -> float | None:
+def _parse_iso_datetime(ts_str: str | None) -> datetime | None:
+    """Parse an ISO-8601 string (Z is UTC).
+
+    Return None if missing, empty, or unparseable. Raise AttributeError on a truthy non-string.
+    """
     if not ts_str:
         return None
     try:
-        return datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+        return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_ts(ts_str: str | None) -> float | None:
+    parsed = _parse_iso_datetime(ts_str)
+    if parsed is None:
+        return None
+    try:
+        return parsed.timestamp()
     except (ValueError, TypeError):
         return None
 

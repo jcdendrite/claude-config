@@ -1,13 +1,16 @@
 """Tests for transcript_analysis/pr_cost_export.py's per-account gating, ordinals, and
 provenance: opt-in/opt-out, empty-ledger accounts, legacy (no-host) headers, and the
 provenance line's corpus digest and override flag."""
-import importlib.util
 import os
 import subprocess
-import sys
-from pathlib import Path
 
+import _config
 import pytest
+from transcript_analysis import (
+    pr_cost_export,
+    pr_cost_ledger,
+    scope,
+)
 
 from ._pr_cost_helpers import (
     _PRE_HOST_HEADER_LINE,
@@ -24,14 +27,7 @@ from ._pr_cost_helpers import (
 )
 from .conftest import _two_declared_roots
 
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
+
 class TestPrCostExportOrdinalsAndOrder:
     def test_row_order_is_identical_regardless_of_which_account_is_active(
         self, tmp_path, monkeypatch,
@@ -45,26 +41,26 @@ class TestPrCostExportOrdinalsAndOrder:
         acct_a = tmp_path / "acct-a"
         (acct_a / "projects").mkdir(parents=True)
         (acct_a / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
+        pr_cost_ledger._write_pr_cost_ledger_file(acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
         acct_b = tmp_path / "acct-b"
         (acct_b / "projects").mkdir(parents=True)
         (acct_b / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2)])
+        pr_cost_ledger._write_pr_cost_ledger_file(acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2)])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         roots_file = tmp_path / "roots"
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
         roots_file.write_text(f"{acct_b}\n")
         out_a_active = tmp_path / "out-a-active.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_a_active)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_a_active)))
 
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_b))
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_b / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", acct_b / "projects")
         roots_file.write_text(f"{acct_a}\n")
         out_b_active = tmp_path / "out-b-active.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_b_active)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_b_active)))
 
         def account_cells(path):
             return [_parse_pr_cost_export_row(line)["account"] for line in path.read_text().splitlines()[2:]]
@@ -86,31 +82,31 @@ class TestPrCostExportOptIn:
         acct_a = tmp_path / "acct-a"
         (acct_a / "projects").mkdir(parents=True)
         (acct_a / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
+        pr_cost_ledger._write_pr_cost_ledger_file(acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
         acct_b = tmp_path / "acct-b"
         (acct_b / "projects").mkdir(parents=True)
         (acct_b / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2)])
+        pr_cost_ledger._write_pr_cost_ledger_file(acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2)])
         acct_c = tmp_path / "acct-c"
         (acct_c / "projects").mkdir(parents=True)
         (acct_c / ".pr-cost-enabled").touch()
         # acct_c: opted in, but a header-only (never captured) ledger --
         # must count toward opted_in without contributing a row.
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(acct_c / "pr-cost-ledger.tsv", [])
+        pr_cost_ledger._write_pr_cost_ledger_file(acct_c / "pr-cost-ledger.tsv", [])
         acct_d = tmp_path / "acct-d"
         (acct_d / "projects").mkdir(parents=True)
         # acct_d: no sentinel, but a ledger present -- must still contribute
         # zero rows and must not renumber any other account's own ordinal.
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(acct_d / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=4)])
+        pr_cost_ledger._write_pr_cost_ledger_file(acct_d / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=4)])
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
         roots_file = tmp_path / "roots"
         roots_file.write_text(f"{acct_b}\n{acct_c}\n{acct_d}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         text = out_path.read_text()
         rows = text.splitlines()[2:]
@@ -142,11 +138,11 @@ class TestPrCostExportOptIn:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         text = out_path.read_text()
         lines = text.splitlines()
-        assert lines[1] == _mod.pr_cost_export._PR_COST_EXPORT_HEADER_LINE
+        assert lines[1] == pr_cost_export._PR_COST_EXPORT_HEADER_LINE
         assert lines[2:] == []
         # Same parse-into-dict pattern as
         # TestPrCostExportProvenanceLine.test_provenance_line_present_above_header_and_parses_as_key_value_tokens,
@@ -168,12 +164,12 @@ class TestPrCostExportOptIn:
         acct_a, acct_b = roots[0].parent, roots[1].parent
         (acct_a / ".pr-cost-enabled").touch()
         os.symlink(acct_a / ".pr-cost-enabled", acct_b / ".pr-cost-enabled")
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2)])
+        pr_cost_ledger._write_pr_cost_ledger_file(acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
+        pr_cost_ledger._write_pr_cost_ledger_file(acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2)])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         text = out_path.read_text()
         lines = text.splitlines()
@@ -190,7 +186,7 @@ class TestPrCostExportOptIn:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         parsed = _parse_pr_cost_export_provenance_line(out_path.read_text().splitlines()[0])
         assert parsed["opted_in"] == "0"
@@ -203,11 +199,11 @@ class TestPrCostExportOptIn:
         already treats this account as fully opted in via the identical
         _config.config_enabled call."""
         (tmp_path / "claude-config.toml").write_text("pr_cost_recording = true\n")
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(tmp_path / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
+        pr_cost_ledger._write_pr_cost_ledger_file(tmp_path / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         text = out_path.read_text()
         assert len(text.splitlines()[2:]) == 1
@@ -226,11 +222,11 @@ class TestPrCostExportOptIn:
         included this account despite the explicit revocation."""
         (tmp_path / "claude-config.toml").write_text("pr_cost_recording = false\n")
         (tmp_path / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(tmp_path / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
+        pr_cost_ledger._write_pr_cost_ledger_file(tmp_path / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1)])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         text = out_path.read_text()
         assert text.splitlines()[2:] == []
@@ -250,18 +246,18 @@ class TestPrCostExportOptIn:
         TestPrCostRecordingConfigDirUnresolvable's identical coverage of
         --record's own sibling branch."""
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
-        real_config_enabled = _mod._config.config_enabled
+        real_config_enabled = _config.config_enabled
 
         def _fake_config_enabled(key, config_dir_override=None):
             if key == "pr_cost_recording":
                 return None
             return real_config_enabled(key, config_dir_override=config_dir_override)
 
-        monkeypatch.setattr(_mod._config, "config_enabled", _fake_config_enabled)
+        monkeypatch.setattr(_config, "config_enabled", _fake_config_enabled)
         out_path = tmp_path / "export.tsv"
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 1
         assert not out_path.exists()
@@ -281,13 +277,13 @@ class TestPrCostExportConfigSchemaErrors:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
 
         def _raise_schema_empty(key, config_dir_override=None):
-            raise _mod._config.ConfigSchemaEmptyError(key)
+            raise _config.ConfigSchemaEmptyError(key)
 
-        monkeypatch.setattr(_mod._config, "config_enabled", _raise_schema_empty)
+        monkeypatch.setattr(_config, "config_enabled", _raise_schema_empty)
         out_path = tmp_path / "export.tsv"
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 1
         assert not out_path.exists()
@@ -299,13 +295,13 @@ class TestPrCostExportConfigSchemaErrors:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
 
         def _raise_schema_truncated(key, config_dir_override=None):
-            raise _mod._config.ConfigSchemaRowTruncatedError(key)
+            raise _config.ConfigSchemaRowTruncatedError(key)
 
-        monkeypatch.setattr(_mod._config, "config_enabled", _raise_schema_truncated)
+        monkeypatch.setattr(_config, "config_enabled", _raise_schema_truncated)
         out_path = tmp_path / "export.tsv"
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 1
         assert not out_path.exists()
@@ -321,12 +317,12 @@ class TestPrCostExportConfigSchemaErrors:
         def _raise_key_error(key, config_dir_override=None):
             raise KeyError(key)
 
-        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
-        monkeypatch.setattr(_mod._config, "schema", lambda: {"worktree_required": object()})
+        monkeypatch.setattr(_config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_config, "schema", lambda: {"worktree_required": object()})
         out_path = tmp_path / "export.tsv"
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 1
         assert not out_path.exists()
@@ -342,12 +338,12 @@ class TestPrCostExportConfigSchemaErrors:
         def _raise_key_error(key, config_dir_override=None):
             raise KeyError(key)
 
-        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
-        monkeypatch.setattr(_mod._config, "schema", lambda: {})
+        monkeypatch.setattr(_config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_config, "schema", lambda: {})
         out_path = tmp_path / "export.tsv"
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+            pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         assert exc_info.value.code == 1
         assert not out_path.exists()
@@ -366,11 +362,11 @@ class TestPrCostExportEmptyLedger:
         acct_a = tmp_path / "acct-a"
         (acct_a / "projects").mkdir(parents=True)
         (acct_a / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(acct_a / "pr-cost-ledger.tsv", [])  # header only, zero rows
+        pr_cost_ledger._write_pr_cost_ledger_file(acct_a / "pr-cost-ledger.tsv", [])  # header only, zero rows
         acct_b = tmp_path / "acct-b"
         (acct_b / "projects").mkdir(parents=True)
         (acct_b / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+        pr_cost_ledger._write_pr_cost_ledger_file(
             acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(captured_at="2026-01-01T00:00:00Z", machine="ci1")],
         )
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
@@ -380,11 +376,11 @@ class TestPrCostExportEmptyLedger:
             return _parse_pr_cost_export_provenance_line(path.read_text().splitlines()[0])["corpus"]
 
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
         roots_file.write_text(f"{acct_b}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
         out_both = tmp_path / "out-both.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_both)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_both)))
 
         text = out_both.read_text()
         provenance = text.splitlines()[0]
@@ -397,10 +393,10 @@ class TestPrCostExportEmptyLedger:
         # acct_a's empty ledger must not be counted in corpus_identities: an
         # export scoped to acct_b alone produces the identical corpus digest.
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_b))
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_b / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", acct_b / "projects")
         roots_file.write_text("")
         out_solo = tmp_path / "out-solo.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_solo)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_solo)))
         assert digest_of(out_both) == digest_of(out_solo)
 
     def test_opted_in_account_with_no_ledger_file_contributes_zero_rows_and_is_excluded_from_corpus_identities(
@@ -419,7 +415,7 @@ class TestPrCostExportEmptyLedger:
         acct_b = tmp_path / "acct-b"
         (acct_b / "projects").mkdir(parents=True)
         (acct_b / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+        pr_cost_ledger._write_pr_cost_ledger_file(
             acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(captured_at="2026-01-01T00:00:00Z", machine="ci1")],
         )
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
@@ -429,11 +425,11 @@ class TestPrCostExportEmptyLedger:
             return _parse_pr_cost_export_provenance_line(path.read_text().splitlines()[0])["corpus"]
 
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
         roots_file.write_text(f"{acct_b}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
         out_both = tmp_path / "out-both.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_both)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_both)))
 
         text = out_both.read_text()
         provenance = text.splitlines()[0]
@@ -446,10 +442,10 @@ class TestPrCostExportEmptyLedger:
         # acct_a's missing ledger must not be counted in corpus_identities: an
         # export scoped to acct_b alone produces the identical corpus digest.
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_b))
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_b / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", acct_b / "projects")
         roots_file.write_text("")
         out_solo = tmp_path / "out-solo.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_solo)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_solo)))
         assert digest_of(out_both) == digest_of(out_solo)
 
 
@@ -462,24 +458,24 @@ class TestPrCostExportLegacyHeader:
         format, so this can't be shown by comparing two accounts (their
         tokens are account-namespaced and never equal). Called directly
         instead, twice with the same ordinal and host_map."""
-        legacy_text = _mod.pr_cost_ledger._PR_COST_LEDGER_LEGACY_HEADER_LINE + "\n" + _legacy_row_line() + "\n"
-        legacy_row = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(legacy_text)[0]
+        legacy_text = pr_cost_ledger._PR_COST_LEDGER_LEGACY_HEADER_LINE + "\n" + _legacy_row_line() + "\n"
+        legacy_row = pr_cost_ledger._parse_pr_cost_ledger_file_text(legacy_text)[0]
         current_row = _sample_pr_cost_row(host="github.com")
 
         host_map: dict = {}
-        legacy_token = _mod.pr_cost_export._redact_pr_cost_row_for_export(legacy_row, 1, 0, host_map, {}, {}, {}, {})["host"]
-        current_token = _mod.pr_cost_export._redact_pr_cost_row_for_export(current_row, 1, 0, host_map, {}, {}, {}, {})["host"]
+        legacy_token = pr_cost_export._redact_pr_cost_row_for_export(legacy_row, 1, 0, host_map, {}, {}, {}, {})["host"]
+        current_token = pr_cost_export._redact_pr_cost_row_for_export(current_row, 1, 0, host_map, {}, {}, {}, {})["host"]
         assert legacy_token == current_token
 
     def test_legacy_header_account_is_counted_in_the_provenance_line(self, tmp_path, fake_projects, monkeypatch):
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        ledger_path.write_text(_mod.pr_cost_ledger._PR_COST_LEDGER_LEGACY_HEADER_LINE + "\n" + _legacy_row_line() + "\n")
+        ledger_path.write_text(pr_cost_ledger._PR_COST_LEDGER_LEGACY_HEADER_LINE + "\n" + _legacy_row_line() + "\n")
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         lines = out_path.read_text().splitlines()
         assert "legacy_header_accounts=1" in lines[0]
@@ -505,19 +501,19 @@ class TestPrCostExportMixedSchemaAccounts:
             _PRE_MODEL_HEADER_LINE + "\n" + _pre_model_row_line(pr_number=2) + "\n"
         )
         source_breakdown = _sample_model_breakdown("claude-test-literal")
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+        pr_cost_ledger._write_pr_cost_ledger_file(
             acct_c / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=3, model_breakdown=source_breakdown)],
         )
         source_cell = (acct_c / "pr-cost-ledger.tsv").read_text().splitlines()[1].split("\t")[-1]
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
         roots_file = tmp_path / "roots"
         roots_file.write_text(f"{acct_b}\n{acct_c}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         lines = out_path.read_text().splitlines()
         assert _parse_pr_cost_export_provenance_line(lines[0])["legacy_header_accounts"] == "1"
@@ -533,11 +529,11 @@ class TestPrCostExportProvenanceLine:
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         lines = out_path.read_text().splitlines()
         provenance = lines[0]
@@ -550,7 +546,7 @@ class TestPrCostExportProvenanceLine:
             "exported_at", "declared", "opted_in", "skipped_not_opted_in", "legacy_header_accounts",
             "legacy_machine_value_rows", "corpus", "corpus_override",
         }
-        assert lines[1] == _mod.pr_cost_export._PR_COST_EXPORT_HEADER_LINE
+        assert lines[1] == pr_cost_export._PR_COST_EXPORT_HEADER_LINE
 
     def test_legacy_machine_value_row_is_counted_but_hex_identity_row_is_not(
         self, tmp_path, fake_projects, monkeypatch,
@@ -564,7 +560,7 @@ class TestPrCostExportProvenanceLine:
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
             _sample_pr_cost_row(pr_number=1, machine="acme1"),
             _sample_pr_cost_row(pr_number=2, machine="1a2b3c4d"),
             _sample_pr_cost_row(pr_number=3, machine="laptop2"),
@@ -572,7 +568,7 @@ class TestPrCostExportProvenanceLine:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         provenance = out_path.read_text().splitlines()[0]
         assert "legacy_machine_value_rows=2" in provenance
@@ -588,14 +584,14 @@ class TestPrCostExportProvenanceLine:
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
             _sample_pr_cost_row(pr_number=1, machine="legacy1", captured_at="2026-01-01T00:00:00Z"),
             _sample_pr_cost_row(pr_number=1, machine="legacy1", captured_at="2026-01-02T00:00:00Z"),
         ])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         provenance = out_path.read_text().splitlines()[0]
         assert "legacy_machine_value_rows=1" in provenance
@@ -612,14 +608,14 @@ class TestPrCostExportProvenanceLine:
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
             _sample_pr_cost_row(pr_number=42, machine="acme1", captured_at="2026-01-01T00:00:00Z"),
             _sample_pr_cost_row(pr_number=42, machine="1a2b3c4d", captured_at="2026-02-01T00:00:00Z"),
         ])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         lines = out_path.read_text().splitlines()
         assert "legacy_machine_value_rows=1" in lines[0]
@@ -642,16 +638,16 @@ class TestPrCostExportProvenanceLine:
         acct_a, acct_b = roots[0].parent, roots[1].parent
         (acct_a / ".pr-cost-enabled").touch()
         (acct_b / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+        pr_cost_ledger._write_pr_cost_ledger_file(
             acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=1, machine="same1")],
         )
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+        pr_cost_ledger._write_pr_cost_ledger_file(
             acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(pr_number=2, machine="same1")],
         )
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         rows = [_parse_pr_cost_export_row(line) for line in out_path.read_text().splitlines()[2:]]
         assert len(rows) == 2
@@ -675,7 +671,7 @@ class TestPrCostExportProvenanceLine:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         provenance = out_path.read_text().splitlines()[0]
         assert "corpus_override=1" in provenance
@@ -700,7 +696,7 @@ class TestPrCostExportProvenanceLine:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         provenance = out_path.read_text().splitlines()[0]
         assert "corpus_override=0" in provenance
@@ -711,24 +707,24 @@ class TestPrCostExportProvenanceLine:
         acct_a = tmp_path / "acct-a"
         (acct_a / "projects").mkdir(parents=True)
         (acct_a / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+        pr_cost_ledger._write_pr_cost_ledger_file(
             acct_a / "pr-cost-ledger.tsv", [_sample_pr_cost_row(captured_at="2026-01-01T00:00:00Z", machine="ci1")],
         )
         acct_b = tmp_path / "acct-b"
         (acct_b / "projects").mkdir(parents=True)
         (acct_b / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+        pr_cost_ledger._write_pr_cost_ledger_file(
             acct_b / "pr-cost-ledger.tsv", [_sample_pr_cost_row(captured_at="2026-02-01T00:00:00Z", machine="ci2")],
         )
         acct_c = tmp_path / "acct-c"
         (acct_c / "projects").mkdir(parents=True)
         (acct_c / ".pr-cost-enabled").touch()
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+        pr_cost_ledger._write_pr_cost_ledger_file(
             acct_c / "pr-cost-ledger.tsv", [_sample_pr_cost_row(captured_at="2026-03-01T00:00:00Z", machine="ci3")],
         )
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(acct_a))
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", acct_a / "projects")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", acct_a / "projects")
         roots_file = tmp_path / "roots"
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
@@ -737,14 +733,14 @@ class TestPrCostExportProvenanceLine:
 
         roots_file.write_text(f"{acct_b}\n")
         out1 = tmp_path / "out1.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out1)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out1)))
         out2 = tmp_path / "out2.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out2)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out2)))
         assert digest_of(out1) == digest_of(out2)
 
         roots_file.write_text(f"{acct_c}\n")
         out3 = tmp_path / "out3.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out3)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out3)))
         assert digest_of(out3) != digest_of(out1)
 
     def test_corpus_digest_is_unchanged_when_a_second_row_is_appended_to_the_ledger(
@@ -762,14 +758,14 @@ class TestPrCostExportProvenanceLine:
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
         first_row = _sample_pr_cost_row(pr_number=1, captured_at="2026-01-01T00:00:00Z", machine="ci1")
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [first_row])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [first_row])
         out1 = tmp_path / "out1.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out1)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out1)))
 
         second_row = _sample_pr_cost_row(pr_number=2, captured_at="2026-02-01T00:00:00Z", machine="ci2")
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [first_row, second_row])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [first_row, second_row])
         out2 = tmp_path / "out2.tsv"
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out2)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out2)))
 
         def digest_of(path):
             return _parse_pr_cost_export_provenance_line(path.read_text().splitlines()[0])["corpus"]

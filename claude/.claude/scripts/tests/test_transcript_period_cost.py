@@ -605,9 +605,9 @@ class TestAcquireIdentity:
 
 # Reads hex-encoded identity arguments so control characters and non-ASCII bytes survive argv; prints one 1 or 0 per line.
 # The trailing "." keeps command substitution from stripping a final newline.
-# printf -v is avoided because bash 3.2 reuses the previous printf -v result when a %b output is empty.
 _BASH_IDENTITY_VERDICTS_SCRIPT = (
-    '. "$1/_lib.sh"; shift; '
+    '. "$1/_lib.sh" || { echo "_lib.sh did not load" >&2; exit 1; }; shift; '
+    'declare -F _lib_parse_pr_identity >/dev/null || { echo "_lib_parse_pr_identity undefined" >&2; exit 1; }; '
     'for encoded in "$@"; do '
     'decoded=$(printf "%b." "$encoded"); identity=${decoded%.}; '
     'if _lib_parse_pr_identity "$identity" >/dev/null; then echo 1; else echo 0; fi; '
@@ -624,8 +624,8 @@ def _bash_identity_verdicts(identities: list[str]) -> list[bool]:
         env={"PATH": os.environ.get("PATH", os.defpath), "LC_ALL": "C"},
         capture_output=True,
         text=True,
-        check=True,
     )
+    assert result.returncode == 0, f"bash exited {result.returncode}; stderr: {result.stderr!r}"
     verdicts = [line == "1" for line in result.stdout.splitlines()]
     assert len(verdicts) == len(
         identities

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: block every shape of `gh pr merge` issued by the AI agent.

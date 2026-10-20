@@ -21,6 +21,7 @@ import pytest
 from helpers import (
     git_toplevel,
     init_git_repo_with_commit,
+    install_shell_exec_guard,
     scaled_shim_sleep,
     symlink_hooks_lib_chain,
     write_scaled_timeout_shim,
@@ -444,6 +445,14 @@ def gh_timeout_shim(tmp_path):
         return {"PATH": f"{tmp_path}:{os.environ['PATH']}"}
 
     return install
+
+
+@pytest.fixture(autouse=True)
+def _guard_shell_exec(monkeypatch):
+    """Fail a test that execs a shell file in a way that can pass without the file running.
+    The wrapper lives in helpers.install_shell_exec_guard; each test tree defines its own
+    fixture because importing one into a conftest trips ruff F401."""
+    install_shell_exec_guard(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

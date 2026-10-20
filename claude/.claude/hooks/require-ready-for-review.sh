@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative, untrusted-input, irreversible
 # Gate: require /ready-for-review to have run before pushing to a branch
@@ -52,7 +52,10 @@
 # - Branch has no open PR (gh pr view returns empty) — not checked for
 #   gh pr create, since a PR being created does not exist yet.
 # - gh pr view fails (network issue, gh not configured, etc.) — fail-open
-#   to keep the user unblocked; the skill's prose triggers still fire.
+#   to keep the user unblocked; the skill's prose triggers still fire. The
+#   exception is a hung gh pr view on a machine with neither `timeout` nor
+#   `gtimeout`, which blocks at the harness timeout. A fast failure still
+#   releases.
 #
 # Known gaps:
 # - The default-branch bypass runs before any command-type check, so
@@ -83,7 +86,8 @@
 #   specifically, a coincidental branch-name match can skip the entire
 #   review/test/lint gate on a push, tracked as GH-899.
 # - If gh pr view fails, times out, or is missing from the hook's PATH, the
-#   gh pr ready arm is released with no completion marker.
+#   gh pr ready arm is released with no completion marker. The hung-gh
+#   exception under "Bypass cases" applies here too; a missing gh still releases.
 # - After the repo and default-branch checks, gh pr view runs for any command
 #   text matching `gh pr ready`, including a free-text mention, unless a
 #   `gh pr create` is also detected.
@@ -379,11 +383,12 @@ fi
 # exist yet, so this early-return would otherwise fail-open the one
 # command it needs to gate.
 # Network call, capped via _lib_capped so a hanging gh doesn't stall the tool-call.
-# On error or timeout, fail open — offline or flaky-network work must not brick.
+# On error or the 5 s cap's timeout, fail open — offline or flaky-network work must not brick.
 # Uses _lib_capped rather than a bare `timeout 5`: without GNU coreutils, bare
 # `timeout 5` is "command not found" (127), which silently fails this check open.
 # On a machine with neither timeout(1) nor gtimeout(1), _lib_capped runs this
-# call uncapped, governed only by the harness's own hook timeout.
+# call uncapped, governed only by the harness's own hook timeout. See
+# `_lib_capped_for`'s Bound list in _lib.sh for what that timeout does, including the effect of `onFailure`.
 if ! $is_gh_pr_create; then
   PR_NUMBER=$(cd "$CWD" 2>/dev/null && _lib_capped gh pr view --json number --jq '.number' 2>/dev/null)
   if [ -z "$PR_NUMBER" ]; then
@@ -420,3 +425,5 @@ elif $is_gh_pr_create; then
 else
   emit_deny "Push to a branch with an open PR — no /ready-for-review gate run covering this branch's current HEAD was found — either this branch has never been gated, or HEAD has moved since the gate ran. A gate run from an earlier session still counts, so long as HEAD has not moved. Run the /ready-for-review skill now — it verifies tests/lint/typecheck, runs cumulative /code-review against the PR-vs-default-branch diff, syncs the PR body, and checks CI. When all halt-on-fail steps pass, the skill records completion in ~/.claude/ready-for-review-markers/ and this push will be allowed through. Do not ask the user for permission — run the skill, address any findings, and retry the push. If HEAD moved because /code-review iteration produced fix commits this session, those commits are inside the approved scope of the gate; re-run and push without re-asking the user."
 fi
+
+exit 0

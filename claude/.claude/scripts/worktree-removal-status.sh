@@ -19,13 +19,17 @@
 # Exit codes:
 #   0  scan completed, including the "no linked worktrees" and
 #      "no worktrees matched" cases
-#   1  not inside a git repository, or the worktree scan itself failed
+#   1  not inside a git repository, the worktree scan itself failed, or the
+#      bash floor check in `_config.sh` failed
 #
 # This 0/1 contract assumes a non-bare main worktree; a bare-repository-as-
 # main-worktree layout can make the internal `git rev-parse --show-toplevel`
 # call exit with git's own code instead.
 
 set -euo pipefail
+
+# shellcheck source=../hooks/_config.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../hooks/_config.sh"
 
 SCRIPT_NAME="worktree-removal-status.sh"
 
@@ -207,7 +211,7 @@ report_worktree() {
   [ "$IS_LOCKED" -eq 1 ] && reasons+=("locked")
   [ "$has_submodules" -eq 1 ] && reasons+=("has submodules")
   local reason_text="" _reason
-  for _reason in "${reasons[@]+"${reasons[@]}"}"; do
+  for _reason in "${reasons[@]}"; do
     if [ -z "$reason_text" ]; then
       reason_text="$_reason"
     else
@@ -244,7 +248,7 @@ PRUNABLE_COUNT=0
 IN_USE_COUNT=0
 UNVERIFIABLE_COUNT=0
 
-for _i in "${REPORT_INDICES[@]+"${REPORT_INDICES[@]}"}"; do
+for _i in "${REPORT_INDICES[@]}"; do
   report_worktree "$_i"
   [ "$IS_REMOVABLE" -eq 1 ] && REMOVABLE_COUNT=$(( REMOVABLE_COUNT + 1 ))
   [ "$IS_DIRTY" -eq 1 ] && DIRTY_COUNT=$(( DIRTY_COUNT + 1 ))

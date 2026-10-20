@@ -63,7 +63,7 @@ def _extract_migration_block() -> str:
 
 
 def _config_sh_prelude() -> str:
-    """install.sh:421's own `. "$REPO_DIR/claude/.claude/hooks/_config.sh"`
+    """install.sh's bash-floor-check block's own `. "$REPO_DIR/claude/.claude/hooks/_config.sh"`
     line, sourced the real (not extracted) file at its absolute test-time
     path -- every test below that touches configure_machine_level_opt_ins
     or report_sentinel_inventory needs this, since both now read
@@ -116,8 +116,8 @@ class TestBlockOrderingDependency:
     def test_config_sh_sourced_before_configure_call_site_in_file_order(self) -> None:
         """configure_machine_level_opt_ins's body reads $_CONFIG_SCHEMA_FILE
         and calls _config_value/_config_set, all defined only by sourcing
-        _config.sh -- install.sh:421 does that once, near the top of the
-        file, well before either function is even defined. Unlike a bash
+        _config.sh -- install.sh does that once, in its bash-floor-check block at the top of
+        the file, well before either function is even defined. Unlike a bash
         array (populated at the point its own assignment runs) a function
         body defers evaluation to call time, so the real risk this test
         pins is a future edit moving the source line below the real

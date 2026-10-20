@@ -1,24 +1,16 @@
 """Tests for transcript_analysis/handoff_signal_response.py's per-record extraction: the Bash and tool_use signal
 classifiers, the excerpt and forward-context windows, and _handoff_signal_response_session_rows' single-pass
 signal detection."""
-import importlib.util
 import json
-import sys
-from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    handoff_signal_response,
+    pricing,
+)
 
 from ._handoff_nudge_helpers import _check_call_turn, _check_result_json, _handoff_advisory_attachment
 from .conftest import _bash_use, _priced, _skill_use, _thinking_block, _tool_result, _user_msg, _write_use
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _handoff_hard_block_attachment() -> dict:
@@ -47,55 +39,55 @@ class TestHandoffSignalDetectorHelpers:
 
     def test_bash_check_call_detected_in_plain_invocation(self):
         block = _bash_use("t1", "~/.claude/hooks/nudge-handoff-near-context-cap.sh --check")
-        assert _mod.handoff_signal_response._handoff_signal_bash_check_call(block) is True
+        assert handoff_signal_response._handoff_signal_bash_check_call(block) is True
 
     def test_bash_check_call_detected_inside_chained_segment(self):
         block = _bash_use("t1", "cd /tmp && ~/.claude/hooks/nudge-handoff-near-context-cap.sh --check")
-        assert _mod.handoff_signal_response._handoff_signal_bash_check_call(block) is True
+        assert handoff_signal_response._handoff_signal_bash_check_call(block) is True
 
     def test_bash_call_without_check_flag_is_not_a_check_call(self):
         block = _bash_use("t1", "~/.claude/hooks/nudge-handoff-near-context-cap.sh")
-        assert _mod.handoff_signal_response._handoff_signal_bash_check_call(block) is False
+        assert handoff_signal_response._handoff_signal_bash_check_call(block) is False
 
     def test_non_bash_tool_use_is_not_a_check_call(self):
         block = _skill_use("t1", "handoff")
-        assert _mod.handoff_signal_response._handoff_signal_bash_check_call(block) is False
+        assert handoff_signal_response._handoff_signal_bash_check_call(block) is False
 
     def test_marker_activate_ready_for_review_detected(self):
         block = _bash_use("m1", "~/.claude/scripts/marker.sh activate ready-for-review")
-        assert _mod.handoff_signal_response._handoff_signal_marker_transition(block) == "activate"
+        assert handoff_signal_response._handoff_signal_marker_transition(block) == "activate"
 
     def test_marker_deactivate_ready_for_review_detected(self):
         block = _bash_use("m1", "~/.claude/scripts/marker.sh deactivate ready-for-review")
-        assert _mod.handoff_signal_response._handoff_signal_marker_transition(block) == "deactivate"
+        assert handoff_signal_response._handoff_signal_marker_transition(block) == "deactivate"
 
     def test_marker_transition_for_a_different_skill_is_ignored(self):
         """A marker.sh call for a DIFFERENT skill (e.g. handoff's own) must
         not be misread as a ready-for-review transition."""
         block = _bash_use("m1", "~/.claude/scripts/marker.sh activate handoff")
-        assert _mod.handoff_signal_response._handoff_signal_marker_transition(block) is None
+        assert handoff_signal_response._handoff_signal_marker_transition(block) is None
 
     def test_marker_activate_detected_inside_an_and_chained_segment(self):
         block = _bash_use("m1", "cd /tmp && ~/.claude/scripts/marker.sh activate ready-for-review")
-        assert _mod.handoff_signal_response._handoff_signal_marker_transition(block) == "activate"
+        assert handoff_signal_response._handoff_signal_marker_transition(block) == "activate"
 
     def test_marker_deactivate_detected_inside_a_semicolon_chained_segment(self):
         block = _bash_use("m1", "cd /tmp ; ~/.claude/scripts/marker.sh deactivate ready-for-review")
-        assert _mod.handoff_signal_response._handoff_signal_marker_transition(block) == "deactivate"
+        assert handoff_signal_response._handoff_signal_marker_transition(block) == "deactivate"
 
     def test_skill_handoff_invocation_is_a_handoff_event(self):
-        assert _mod.handoff_signal_response._handoff_signal_is_handoff_event(_skill_use("h1", "handoff")) is True
+        assert handoff_signal_response._handoff_signal_is_handoff_event(_skill_use("h1", "handoff")) is True
 
     def test_skill_invocation_for_a_different_skill_is_not_a_handoff_event(self):
-        assert _mod.handoff_signal_response._handoff_signal_is_handoff_event(_skill_use("h1", "plan-review")) is False
+        assert handoff_signal_response._handoff_signal_is_handoff_event(_skill_use("h1", "plan-review")) is False
 
     def test_write_to_handoffs_file_is_a_handoff_event(self):
         block = _write_use("w1", "body", path="/repo/.claude/handoffs/my-task-handoff.md")
-        assert _mod.handoff_signal_response._handoff_signal_is_handoff_event(block) is True
+        assert handoff_signal_response._handoff_signal_is_handoff_event(block) is True
 
     def test_write_to_an_unrelated_path_is_not_a_handoff_event(self):
         block = _write_use("w1", "body", path="/repo/scratch/notes.md")
-        assert _mod.handoff_signal_response._handoff_signal_is_handoff_event(block) is False
+        assert handoff_signal_response._handoff_signal_is_handoff_event(block) is False
 
 
 class TestHandoffSignalExcerptEligibility:
@@ -109,26 +101,26 @@ class TestHandoffSignalExcerptEligibility:
         filtered at the block level (type=="text" only), not merely by the
         record's own top-level type."""
         rec = _priced("claude-sonnet-5", content=[_bash_use("t1", f"echo '{self._RATIONALIZATION_TEXT}'")])
-        assert _mod.handoff_signal_response._handoff_signal_excerpt_eligible_text(rec) == ""
+        assert handoff_signal_response._handoff_signal_excerpt_eligible_text(rec) == ""
 
     def test_tool_result_record_is_never_excerpt_eligible(self):
         rec = _user_msg([_tool_result("t1", self._RATIONALIZATION_TEXT)])
-        assert _mod.handoff_signal_response._handoff_signal_excerpt_eligible_text(rec) == ""
+        assert handoff_signal_response._handoff_signal_excerpt_eligible_text(rec) == ""
 
     def test_plain_user_turn_record_is_never_excerpt_eligible(self):
         rec = _user_msg(self._RATIONALIZATION_TEXT)
-        assert _mod.handoff_signal_response._handoff_signal_excerpt_eligible_text(rec) == ""
+        assert handoff_signal_response._handoff_signal_excerpt_eligible_text(rec) == ""
 
     def test_sidechain_assistant_text_is_not_excerpt_eligible(self):
         """A subagent's own text turn: the nudge never fires inside a
         subagent, so this isn't the orchestrating session's own rationalization."""
         rec = _priced("claude-sonnet-5", content=[{"type": "text", "text": self._RATIONALIZATION_TEXT}])
         rec["isSidechain"] = True
-        assert _mod.handoff_signal_response._handoff_signal_excerpt_eligible_text(rec) == ""
+        assert handoff_signal_response._handoff_signal_excerpt_eligible_text(rec) == ""
 
     def test_plain_main_thread_assistant_text_is_excerpt_eligible(self):
         rec = _priced("claude-sonnet-5", content=[{"type": "text", "text": self._RATIONALIZATION_TEXT}])
-        assert _mod.handoff_signal_response._handoff_signal_excerpt_eligible_text(rec) == self._RATIONALIZATION_TEXT
+        assert handoff_signal_response._handoff_signal_excerpt_eligible_text(rec) == self._RATIONALIZATION_TEXT
 
     def test_excerpt_skips_ineligible_records_and_finds_next_eligible_assistant_text(self):
         deduped = [
@@ -139,18 +131,18 @@ class TestHandoffSignalExcerptEligibility:
                 content=[{"type": "text", "text": "Continuing because remaining steps are few."}],
             ),
         ]
-        assert _mod.handoff_signal_response._handoff_signal_excerpt(deduped, after_record_index=0) == (
+        assert handoff_signal_response._handoff_signal_excerpt(deduped, after_record_index=0) == (
             "Continuing because remaining steps are few."
         )
 
     def test_excerpt_truncates_eligible_text_to_max_chars(self):
         # Sequential digits, not a repeated character: a wrong-window slice
         # (e.g. text[50:450]) is byte-distinguishable from the correct prefix.
-        long_text = "".join(str(i % 10) for i in range(_mod.handoff_signal_response._HANDOFF_SIGNAL_EXCERPT_MAX_CHARS + 50))
+        long_text = "".join(str(i % 10) for i in range(handoff_signal_response._HANDOFF_SIGNAL_EXCERPT_MAX_CHARS + 50))
         turn = _priced("claude-sonnet-5", content=[{"type": "text", "text": long_text}], request_id="r1")
         deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
-        assert _mod.handoff_signal_response._handoff_signal_excerpt(deduped, after_record_index=0) == (
-            long_text[:_mod.handoff_signal_response._HANDOFF_SIGNAL_EXCERPT_MAX_CHARS]
+        assert handoff_signal_response._handoff_signal_excerpt(deduped, after_record_index=0) == (
+            long_text[:handoff_signal_response._HANDOFF_SIGNAL_EXCERPT_MAX_CHARS]
         )
 
     def test_tool_use_block_content_never_leaks_into_the_base_excerpt(self):
@@ -166,8 +158,8 @@ class TestHandoffSignalExcerptEligibility:
             "claude-sonnet-5",
             content=[_bash_use("t1", identifiable_command), {"type": "text", "text": "wrapping up now"}],
         )
-        assert _mod.handoff_signal_response._handoff_signal_excerpt_eligible_text(rec) == "wrapping up now"
-        assert identifiable_command not in _mod.handoff_signal_response._handoff_signal_excerpt_eligible_text(rec)
+        assert handoff_signal_response._handoff_signal_excerpt_eligible_text(rec) == "wrapping up now"
+        assert identifiable_command not in handoff_signal_response._handoff_signal_excerpt_eligible_text(rec)
 
 
 class TestHandoffSignalForwardContext:
@@ -184,7 +176,7 @@ class TestHandoffSignalForwardContext:
             _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn two"}], request_id="r2"),
             _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn three"}], request_id="r3"),
         ]
-        contexts = _mod.handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=2)
+        contexts = handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=2)
         assert [(c["turn_offset"], c["text"]) for c in contexts] == [(1, "turn one"), (2, "turn two")]
 
     def test_returns_fewer_than_n_turns_when_the_transcript_runs_out(self):
@@ -192,7 +184,7 @@ class TestHandoffSignalForwardContext:
             _priced("claude-sonnet-5", request_id="r0"),
             _priced("claude-sonnet-5", content=[{"type": "text", "text": "only turn"}], request_id="r1"),
         ]
-        contexts = _mod.handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=5)
+        contexts = handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=5)
         assert len(contexts) == 1
         assert contexts[0]["turn_offset"] == 1
 
@@ -201,22 +193,22 @@ class TestHandoffSignalForwardContext:
         spot: a turn with a thinking block and no text block is invisible to
         _handoff_signal_excerpt_eligible_text, but must still appear here."""
         turn = _priced("claude-sonnet-5", content=[_thinking_block()], request_id="r1")
-        assert _mod.handoff_signal_response._handoff_signal_excerpt_eligible_text(turn) == ""
+        assert handoff_signal_response._handoff_signal_excerpt_eligible_text(turn) == ""
         deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
-        contexts = _mod.handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
+        contexts = handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
         assert contexts == [{"turn_offset": 1, "text": "", "thinking": "some thought"}]
 
     def test_truncates_text_and_thinking_independently_to_max_chars(self):
-        long_text = "t" * (_mod.handoff_signal_response._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS + 50)
-        long_thinking = "k" * (_mod.handoff_signal_response._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS + 50)
+        long_text = "t" * (handoff_signal_response._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS + 50)
+        long_thinking = "k" * (handoff_signal_response._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS + 50)
         turn = _priced(
             "claude-sonnet-5", request_id="r1",
             content=[{"type": "text", "text": long_text}, {"type": "thinking", "thinking": long_thinking}],
         )
         deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
-        contexts = _mod.handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
-        assert contexts[0]["text"] == long_text[:_mod.handoff_signal_response._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS]
-        assert contexts[0]["thinking"] == long_thinking[:_mod.handoff_signal_response._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS]
+        contexts = handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
+        assert contexts[0]["text"] == long_text[:handoff_signal_response._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS]
+        assert contexts[0]["thinking"] == long_thinking[:handoff_signal_response._HANDOFF_SIGNAL_FORWARD_CONTEXT_MAX_CHARS]
 
     def test_sidechain_and_non_assistant_records_are_never_counted_as_turns(self):
         sidechain = _priced("claude-sonnet-5", content=[{"type": "text", "text": "subagent text"}], request_id="r1")
@@ -227,7 +219,7 @@ class TestHandoffSignalForwardContext:
             sidechain,
             _priced("claude-sonnet-5", content=[{"type": "text", "text": "real turn"}], request_id="r2"),
         ]
-        contexts = _mod.handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=5)
+        contexts = handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=5)
         assert len(contexts) == 1
         assert contexts[0]["text"] == "real turn"
 
@@ -236,7 +228,7 @@ class TestHandoffSignalForwardContext:
             _priced("claude-sonnet-5", request_id="r0"),
             _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn"}], request_id="r1"),
         ]
-        contexts = _mod.handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
+        contexts = handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
         assert set(contexts[0]) == {"turn_offset", "text", "thinking"}
 
     def test_n_turns_zero_or_negative_returns_empty_list(self):
@@ -247,8 +239,8 @@ class TestHandoffSignalForwardContext:
             _priced("claude-sonnet-5", request_id="r0"),
             _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn one"}], request_id="r1"),
         ]
-        assert _mod.handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=0) == []
-        assert _mod.handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=-1) == []
+        assert handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=0) == []
+        assert handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=-1) == []
 
     def test_interior_turn_with_only_tool_use_content_still_consumes_a_turn_slot(self):
         """A turn with no text/thinking content (only a tool_use block) must
@@ -261,7 +253,7 @@ class TestHandoffSignalForwardContext:
             empty_turn,
             _priced("claude-sonnet-5", content=[{"type": "text", "text": "turn two"}], request_id="r2"),
         ]
-        contexts = _mod.handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=2)
+        contexts = handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=2)
         assert contexts[0] == {"turn_offset": 1, "text": "", "thinking": ""}
         assert contexts[1]["turn_offset"] == 2
         assert contexts[1]["text"] == "turn two"
@@ -280,7 +272,7 @@ class TestHandoffSignalForwardContext:
             content=[_bash_use("t1", identifiable_command), {"type": "text", "text": "wrapping up now"}],
         )
         deduped = [_priced("claude-sonnet-5", request_id="r0"), turn]
-        contexts = _mod.handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
+        contexts = handoff_signal_response._handoff_signal_forward_context(deduped, after_record_index=0, n_turns=1)
         assert contexts[0]["text"] == "wrapping up now"
         assert identifiable_command not in contexts[0]["text"]
         assert identifiable_command not in contexts[0]["thinking"]
@@ -296,25 +288,25 @@ class TestHandoffSignalResponseSessionRows:
             _check_call_turn(input=200_000, output=1_000, request_id="r1"),
             _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True, already_fired=False))]),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert len(rows) == 1
-        assert rows[0]["kind"] == _mod.handoff_signal_response._HANDOFF_SIGNAL_CHECK
+        assert rows[0]["kind"] == handoff_signal_response._HANDOFF_SIGNAL_CHECK
 
     def test_over_threshold_false_already_fired_true_emits_one_check_signal(self):
         records = [
             _check_call_turn(input=200_000, output=1_000, request_id="r1"),
             _user_msg([_tool_result("chk1", _check_result_json(over_threshold=False, already_fired=True))]),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert len(rows) == 1
-        assert rows[0]["kind"] == _mod.handoff_signal_response._HANDOFF_SIGNAL_CHECK
+        assert rows[0]["kind"] == handoff_signal_response._HANDOFF_SIGNAL_CHECK
 
     def test_over_threshold_and_already_fired_both_true_is_still_one_row_not_two(self):
         records = [
             _check_call_turn(input=200_000, output=1_000, request_id="r1"),
             _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True, already_fired=True))]),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert len(rows) == 1
 
     def test_neither_over_threshold_nor_already_fired_emits_no_signal(self):
@@ -322,7 +314,7 @@ class TestHandoffSignalResponseSessionRows:
             _check_call_turn(input=50_000, output=1_000, request_id="r1"),
             _user_msg([_tool_result("chk1", _check_result_json(over_threshold=False, already_fired=False))]),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert rows == []
 
     def test_cannot_resolve_status_emits_no_signal(self):
@@ -332,7 +324,7 @@ class TestHandoffSignalResponseSessionRows:
             _check_call_turn(input=200_000, output=1_000, request_id="r1"),
             _user_msg([_tool_result("chk1", json.dumps({"status": "cannot-resolve", "reason": "transcript-not-found"}))]),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert rows == []
 
     def test_session_with_check_and_advisory_signals_emits_two_distinct_rows(self):
@@ -341,10 +333,10 @@ class TestHandoffSignalResponseSessionRows:
             _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
             _handoff_advisory_attachment(),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert [r["kind"] for r in rows] == [
-            _mod.handoff_signal_response._HANDOFF_SIGNAL_CHECK,
-            _mod.handoff_signal_response._HANDOFF_SIGNAL_ADVISORY,
+            handoff_signal_response._HANDOFF_SIGNAL_CHECK,
+            handoff_signal_response._HANDOFF_SIGNAL_ADVISORY,
         ]
 
     def test_advisory_then_later_hard_block_emits_two_distinct_rows_not_collapsed(self):
@@ -358,10 +350,10 @@ class TestHandoffSignalResponseSessionRows:
             _priced("claude-sonnet-5", input=480_000, output=1_000, request_id="r2"),
             _handoff_hard_block_attachment(),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert [r["kind"] for r in rows] == [
-            _mod.handoff_signal_response._HANDOFF_SIGNAL_ADVISORY,
-            _mod.handoff_signal_response._HANDOFF_SIGNAL_HARD_BLOCK,
+            handoff_signal_response._HANDOFF_SIGNAL_ADVISORY,
+            handoff_signal_response._HANDOFF_SIGNAL_HARD_BLOCK,
         ]
         assert rows[0]["record_index"] < rows[1]["record_index"]
 
@@ -372,9 +364,9 @@ class TestHandoffSignalResponseSessionRows:
             _priced("claude-sonnet-5", input=480_000, output=1_000, request_id="r1"),
             _handoff_hard_block_attachment(),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert len(rows) == 1
-        assert rows[0]["kind"] == _mod.handoff_signal_response._HANDOFF_SIGNAL_HARD_BLOCK
+        assert rows[0]["kind"] == handoff_signal_response._HANDOFF_SIGNAL_HARD_BLOCK
 
     def test_marker_active_state_reflects_the_most_recent_transition_at_signal_time(self):
         records = [
@@ -389,7 +381,7 @@ class TestHandoffSignalResponseSessionRows:
             ),
             _handoff_hard_block_attachment(),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert rows[0]["marker_active"] is True
         assert rows[1]["marker_active"] is False
 
@@ -399,7 +391,7 @@ class TestHandoffSignalResponseSessionRows:
             _handoff_advisory_attachment(),
             _priced("claude-sonnet-5", input=170_000, output=1_000, request_id="r2", content=[_skill_use("h1", "handoff")]),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert rows[0]["handoff_followed"] is True
 
     def test_handoff_followed_false_when_no_handoff_event_this_session(self):
@@ -408,7 +400,7 @@ class TestHandoffSignalResponseSessionRows:
             _handoff_advisory_attachment(),
             _priced("claude-sonnet-5", input=170_000, output=1_000, request_id="r2"),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert rows[0]["handoff_followed"] is False
 
     def test_handoff_followed_true_via_write_to_handoffs_file(self):
@@ -420,7 +412,7 @@ class TestHandoffSignalResponseSessionRows:
                 content=[_write_use("w1", "body", path="/repo/.claude/handoffs/task-handoff.md")],
             ),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert rows[0]["handoff_followed"] is True
 
     def test_turns_and_dollars_after_signal_count_only_turns_strictly_after_the_signal(self):
@@ -429,10 +421,10 @@ class TestHandoffSignalResponseSessionRows:
         rec_after_2 = _priced("claude-sonnet-5", input=180_000, output=2_000, request_id="r3")
         records = [rec_before, _handoff_advisory_attachment(), rec_after_1, rec_after_2]
 
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
 
-        dollars_after_1, _ctx1, _u1 = _mod._price_turn("claude-sonnet-5", rec_after_1["message"]["usage"])
-        dollars_after_2, _ctx2, _u2 = _mod._price_turn("claude-sonnet-5", rec_after_2["message"]["usage"])
+        dollars_after_1, _ctx1, _u1 = pricing._price_turn("claude-sonnet-5", rec_after_1["message"]["usage"])
+        dollars_after_2, _ctx2, _u2 = pricing._price_turn("claude-sonnet-5", rec_after_2["message"]["usage"])
         expected_dollars = sum(dollars_after_1.values()) + sum(dollars_after_2.values())
 
         assert rows[0]["turns_after_signal"] == 2
@@ -455,13 +447,13 @@ class TestHandoffSignalResponseSessionRows:
             rec3,
         ]
 
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert len(rows) == 2
         row_a, row_b = rows
 
-        d1 = sum(_mod._price_turn("claude-sonnet-5", rec1["message"]["usage"])[0].values())
-        d2 = sum(_mod._price_turn("claude-sonnet-5", rec2["message"]["usage"])[0].values())
-        d3 = sum(_mod._price_turn("claude-sonnet-5", rec3["message"]["usage"])[0].values())
+        d1 = sum(pricing._price_turn("claude-sonnet-5", rec1["message"]["usage"])[0].values())
+        d2 = sum(pricing._price_turn("claude-sonnet-5", rec2["message"]["usage"])[0].values())
+        d3 = sum(pricing._price_turn("claude-sonnet-5", rec3["message"]["usage"])[0].values())
         total = d1 + d2 + d3
 
         assert row_a["session_total_dollars"] == pytest.approx(total)
@@ -480,7 +472,7 @@ class TestHandoffSignalResponseSessionRows:
             _check_call_turn(input=0, output=0, request_id="r1"),
             _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert len(rows) == 1
         assert rows[0]["session_total_dollars"] == 0.0
         assert rows[0]["pct_spend_after_signal"] is None
@@ -495,7 +487,7 @@ class TestHandoffSignalResponseSessionRows:
             _check_call_turn(input=200_000, output=1_000, request_id="r2"),
             _user_msg([_tool_result("chk1", _check_result_json(over_threshold=True))]),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert len(rows) == 1
         assert rows[0]["turns_after_signal"] == 0
         assert rows[0]["dollars_after_signal"] == 0.0
@@ -509,7 +501,7 @@ class TestHandoffSignalResponseSessionRows:
             _check_call_turn(input=200_000, output=1_000, request_id="r1"),
             _user_msg([_tool_result("chk1", "not valid json{")]),
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert rows == []
 
     def test_malformed_json_in_advisory_attachment_stdout_emits_no_signal(self):
@@ -529,5 +521,5 @@ class TestHandoffSignalResponseSessionRows:
                 },
             },
         ]
-        rows, _deduped, _trace = _mod.handoff_signal_response._handoff_signal_response_session_rows(records)
+        rows, _deduped, _trace = handoff_signal_response._handoff_signal_response_session_rows(records)
         assert rows == []

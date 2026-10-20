@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Creates the active account's handoffs/ or briefs/ directory. Exactly one
 # argument, "handoffs" or "briefs" -- anything else, including empty, exits
 # non-zero without touching the filesystem.
