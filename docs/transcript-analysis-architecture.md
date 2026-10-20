@@ -177,9 +177,10 @@ path cannot be passed to the operating system (it contains a NUL byte or does no
 filesystem encoding), and `TypeError` for a wrongly typed argument, before it reads any session.
 It raises `SessionPricingError` for the first session it cannot read, deduplicate, validate or price,
 and reads no later session. An assistant turn with a non-empty usage object and a truthy non-string
-timestamp fails its session this way. A missing or unreadable main file is not an error: it comes back
-as `main_file_readable=False`. That error does not say whether the session's content is malformed,
-claude-config failed while processing it, or the environment failed. `__cause__` holds the original
+timestamp fails its session this way. A malformed usage object fails its session even on a turn
+outside `[start, end]`. A missing or unreadable main file is not an error: it comes back
+as `main_file_readable=False`. A `SessionPricingError` does not say whether the session's content is
+malformed, claude-config failed while processing it, or the environment failed. `__cause__` holds the original
 exception for diagnosis; its type and text are outside the promise. Any other exception signals a
 claude-config defect or a failing environment.
 

@@ -873,6 +873,17 @@ class TestRequestIdCollisions:
 
         assert _price(sessions).request_id_collision_count == 1
 
+    def test_collision_counts_assistant_records_with_empty_usage(self, tmp_path):
+        sessions = [
+            _write_session(tmp_path, index, [_with_usage(_priced(_PRICED_MODEL, input=1, request_id="req-shared"), {})])
+            for index in range(2)
+        ]
+
+        result = _price(sessions)
+
+        assert result.request_id_collision_count == 1
+        assert result.total_micro_dollars == 0
+
     def test_request_id_repeated_inside_one_session_is_not_a_collision(self, tmp_path):
         session = _write_session(
             tmp_path,
@@ -1117,6 +1128,10 @@ class _BytesPathLike:
 
 
 class TestErrors:
+    """Cause types and text are asserted to prove which stage failed, because `except Exception` also wraps coding bugs.
+    They are not part of the stability promise.
+    """
+
     @pytest.mark.parametrize(("usage", "named_text"), _MALFORMED_USAGE_CASES)
     def test_malformed_usage_in_the_second_session_raises_with_its_index_and_a_value_error_cause(
         self, tmp_path, usage, named_text

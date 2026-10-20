@@ -51,7 +51,7 @@ class SessionSpend:
     undated_turn_count: turns with nonzero priced spend or unpriced tokens whose timestamp is missing,
         unparseable, has no UTC offset, or falls outside the representable UTC date range. They enter no
         day map and no run-level model list. A truthy non-string timestamp on an assistant turn with a
-        non-empty usage object is not undated: it fails the session with SessionPricingError.
+        non-empty usage object is not undated. The architecture doc's error contract covers that case.
     """
 
     main_file_readable: bool
