@@ -11,7 +11,7 @@ This false deny is accepted. Gates keep reading command text, and no bash-grade 
 - A hook sees the command before it runs, not what the command writes while it runs. A script a command launches can write somewhere the command text never names ([the sandbox case study](../case-studies/claude-code-sandbox-write-boundary.md) states this in its opening paragraph).
 - A gate denies a write shape it recognizes, such as a redirect, `cp`, or `tee`, even when it cannot see what the write contains. Preventing a write of unseen content is worth a false deny.
 - A write shape a gate does not recognize is an accepted gap, listed in that gate's header. For this gate that is the Known gaps section of `claude/.claude/hooks/deny-reviewer-tree-mutation.sh`.
-- The reviewer gate's `irreversible` tier is not the ground for keeping this false deny. `docs/hooks.md` § "Threat-model tiers" keeps the repair of a mis-parse of an ordinary shape in scope for every tier. The acceptance rests on the tokenizer argument below.
+- The acceptance rests on the tokenizer argument below.
 
 ## Why not a quote-aware tokenizer
 
@@ -32,12 +32,18 @@ This false deny is accepted. Gates keep reading command text, and no bash-grade 
 
 Every measurement below comes from one Linux spike pinned to `claude` 2.1.283, run against vendor docs fetched 2026-09-25 and 2026-09-26, using only cooperative-agent-shaped trials. macOS is untested. See `docs/case-studies/claude-code-sandbox-write-boundary.md` § "Limits".
 
-- Blocked in the trials, measured with the escape hatch off (Run A, described in `docs/case-studies/claude-code-sandbox-write-boundary.md` § "Method"): Bash writes through a symlink to a path outside the write set, including a write from inside a running script, which no command-text hook can see. The symlink-at-literal-`/tmp` trial never ran, because literal `/tmp` was not writable, so that shape is untested. One Write-tool trial was refused by the tool itself, not by the sandbox, which does not cover the Write tool. See `docs/case-studies/claude-code-sandbox-write-boundary.md` § "Q1 — symlink and hard-link writes outside the allowed set".
-- Not closed, measured: a write through a hard link created before the sandboxed command ran. Same section.
+- Blocked in the trials, measured with the escape hatch off (Run A, described in `docs/case-studies/claude-code-sandbox-write-boundary.md` § "Method"): Bash writes through a symlink to a path outside the write set, including a write from inside a running script, which no command-text hook can see. See `docs/case-studies/claude-code-sandbox-write-boundary.md` § "Q1 — symlink and hard-link writes outside the allowed set".
+- Untested: the symlink-at-literal-`/tmp` trial never ran, because literal `/tmp` was not writable. Same section.
+- Not covered by the sandbox: one Write-tool trial was refused by the tool itself, not by the sandbox, which does not cover the Write tool. Same section.
+- Not blocked, measured: a write through a hard link created before the sandboxed command ran. Same section.
 - Escape hatch, measured in one trial: bare `Bash` was granted, `sandbox.allowUnsandboxedCommands` stayed at its default, and a retry the prompt instructed succeeded silently. The setting can be turned off, and no trial retried with it off. See `docs/case-studies/claude-code-sandbox-write-boundary.md` § "Q3 — a subagent's policy" and `docs/case-studies/claude-code-sandbox-write-boundary.md` § "Method".
 - Session-wide scope, cited: subagents use the parent session's sandbox configuration, so enabling the sandbox for reviewers enables it for every agent. See `docs/case-studies/claude-code-sandbox-write-boundary.md` § "Q3 — a subagent's policy".
 - Fail-open when the sandbox cannot start, cited and not exercised: commands run unsandboxed with only a warning unless `sandbox.failIfUnavailable` is set. See `docs/case-studies/claude-code-sandbox-write-boundary.md` § "Q2 — what breaks session-wide".
-- Compatibility cost, measured on a bounded sample: `git worktree add <sibling>` failed when run from inside a linked worktree, and a literal `/tmp` write was denied, which breaks the personas' `mktemp -d /tmp/…` scratch convention. The case study's remedy for the `/tmp` denial is pointing that convention at `$TMPDIR`, which is already writable. It names no remedy for the `git worktree add` failure. Its `permissions.additionalDirectories` companion covers scripts that write to the config directory, a separate compatibility cost. See `docs/case-studies/claude-code-sandbox-write-boundary.md` § "Q2 — what breaks session-wide".
+- Compatibility cost, measured on a bounded sample: `git worktree add <sibling>` failed when run from inside a linked worktree. See `docs/case-studies/claude-code-sandbox-write-boundary.md` § "Q2 — what breaks session-wide".
+- Compatibility cost, measured on a bounded sample: a literal `/tmp` write was denied, which breaks the personas' `mktemp -d /tmp/…` scratch convention. Same section.
+- The case study's remedy for the `/tmp` denial is pointing that convention at `$TMPDIR`, which is already writable. Same section.
+- The case study names no remedy for the `git worktree add` failure. Same section.
+- Its `permissions.additionalDirectories` companion covers scripts that write to the config directory, a separate compatibility cost. Same section.
 
 Adopting the sandbox is its own decision with its own companions: the escape hatch off, a control for pre-created hard links, and compatibility settings. It is not a swap for these gates, and its assessment stays open.
 
@@ -51,4 +57,4 @@ Reopen if any of these holds:
 
 - Claude Code passes PreToolUse hooks a parsed form of the Bash command.
 - The sandbox gains a per-subagent policy, or its assessment finds that a filesystem write set can carry the write invariant of this gate's Bash arm for review-only agents.
-- This gate's denials show reviewers repeatedly hitting this false deny. `transcript-analysis.py review-trace --deny-summary` groups every denial of this gate under the shared `reviewer-tree-mutation` label, so isolating these false denies needs a filter on the deny reason text. Any figure cited from that output follows `docs/private-project-redaction.md` § "Publishing a tooling measurement".
+- This gate's denials show reviewers repeatedly hitting this false deny. Counting them is a manual transcript read with no tooling support: `transcript-analysis.py review-trace --deny-summary` groups false and true denies under the shared `reviewer-tree-mutation` label, and both share one deny template with no field marking the cause. Any figure cited from that output follows `docs/private-project-redaction.md` § "Publishing a tooling measurement".

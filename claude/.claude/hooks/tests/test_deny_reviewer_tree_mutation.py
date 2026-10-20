@@ -711,7 +711,8 @@ class TestRawWriteTargetGap:
         ids=["stderr-to-stdout", "stderr-to-dev-null"],
     )
     def test_reviewer_git_redirect_of_stderr_allowed(self, command):
-        # Passes with or without the git-fragment fall-through; guards a future fix of the fd-numbered-redirect gap.
+        # Pins that an fd-numbered redirect (`2>&1`, `2>/dev/null`) stays allowed,
+        # so a future fix of that header gap must not start denying it.
         assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
 
     @pytest.mark.parametrize(
@@ -893,6 +894,9 @@ class TestCommandWordResolution:
     def test_reviewer_git_log_grep_toolname_allowed(self):
         assert run_hook(HOOK, bash_input("git log --grep black", agent_type="staff-sdet")) == "allow"
 
+    def test_reviewer_git_grep_case_insensitive_flag_allowed(self):
+        assert run_hook(HOOK, bash_input("git grep -i sed", agent_type="staff-sdet")) == "allow"
+
     # Runner-wrapped invocations that MUST still be caught.
     def test_reviewer_python_dash_m_black_denied(self):
         assert run_hook(HOOK, bash_input("python -m black src/x.py", agent_type="staff-backend-engineer")) == "deny"
@@ -996,6 +1000,34 @@ class TestKnownGapBypass:
         # Same documented gap: GNU sed's `--in-place` long form starts `--i`,
         # not `-i`, so it is not caught. Pin the accepted allow.
         assert run_hook(HOOK, bash_input("sed --in-place s/a/b/ x.txt", agent_type="staff-sdet")) == "allow"
+
+    # The cases below pin the CURRENT (imperfect) allow verdicts for the git
+    # write shapes that the header's known-gaps list, or the docstring it points
+    # to for fd-numbered and `&>` redirects, names. When a fix lands, flip the
+    # matching case to "deny" instead of silently accepting the change.
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git show HEAD:f>src/x",
+            "git show HEAD:f >| src/x",
+            "git show HEAD:f > $(printf src/x)",
+            "git show HEAD:f > `printf src/x`",
+            "git diff --output=src/x",
+            "git show HEAD:f 2>src/x",
+            "git show HEAD:f &>src/x",
+        ],
+        ids=[
+            "glued-redirect",
+            "clobber-redirect",
+            "substitution-target",
+            "backtick-target",
+            "output-flag",
+            "fd-numbered-redirect",
+            "ampersand-redirect",
+        ],
+    )
+    def test_reviewer_git_write_shape_not_inspected_allowed(self, command):
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
 
     # GH-1103: the three tests below pin the CURRENT (imperfect) allow verdicts
     # for the /tmp link gap in the header's known-gaps list. The hook matches

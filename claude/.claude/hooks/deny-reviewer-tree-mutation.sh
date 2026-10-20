@@ -25,10 +25,13 @@
 # work and returns immediately for every non-review-only caller (a main
 # session started without a review-only `--agent`, code-writer,
 # general-purpose, or any agent not in the closed set) — this keeps it off the
-# latency budget for the overwhelmingly common call. `.agent_type` names a
-# subagent's type, or the `--agent` name of a main session started with one.
+# latency budget for the overwhelmingly common call.
+# `.agent_type` names a subagent's type, or the `--agent` name of a main
+# session started with one.
 # It is a documented PreToolUse field (code.claude.com/docs/en/hooks) already
 # consumed by nudge-error-mode-analysis.sh / nudge-handoff-near-context-cap.sh.
+# A review-only agent's command of several fragments can exceed the
+# claude-hook-review per-fire budget.
 #
 # Grounding — the in-place-edit family splits into two tiers:
 #
@@ -65,8 +68,8 @@
 # Known gaps (what this model does NOT close):
 #   - The Bash arm denies only the shapes this header names, so any other
 #     write verb or form (`rm`, `ln`, the source side of `mv`, an inline
-#     interpreter write such as `python3 -c`, a tool's own output flag) is
-#     not inspected.
+#     interpreter write such as `python3 -c`, a tool's own output flag, such
+#     as `git diff --output=<path>`) is not inspected.
 #     GH-1103 tracks the structural fix for this closed enumeration.
 #   - GH-751 is only partly closed: _fragment_raw_write_targets below
 #     catches a `cp`/`mv`/`tee`/`>`/`>>` write target only when it is the
@@ -81,6 +84,15 @@
 #     residual gaps (relative paths, symlinks, fd-numbered redirects,
 #     `&>`, `cp -t DIR`, and `tee -`/`tee -- -file`).
 #     Its symlinks entry is the /tmp link gap below.
+#   - These write shapes are not inspected on any fragment, and the hook
+#     allows each:
+#       - A redirect glued to the word before it (`echo x>src/y`), because
+#         only a word that starts with `>` reads as a redirect.
+#       - A `>|` clobber redirect (`echo x >| src/y`), because
+#         _lib_split_fragments splits at the `|`.
+#       - A redirect target built by command substitution, `$(...)` or
+#         backticks (`echo x > $(printf src/y)`), because _lib_split_fragments
+#         splits at both spellings.
 #   - A symlink or hard link under /tmp launders the /tmp exemption.
 #     GH-1103 tracks the structural fix. The facts of this one gap:
 #       - Both arms match the literal `/tmp/*` text without resolving links.
@@ -381,8 +393,7 @@ case "$TOOL_NAME" in
     # writes NO git state anywhere — so those mode-dependent subcommands
     # (git branch -D, git tag -d, git worktree remove/prune, git remote set-url,
     # git fetch, git fsck --lost-found, git reflog expire,
-    # git symbolic-ref HEAD <ref>) are NOT read-only here. Subtract them: a
-    # reviewer may run only git subcommands that cannot write under any flag.
+    # git symbolic-ref HEAD <ref>) are NOT read-only here. Subtract them.
     # This over-denies their bare list/check forms (a plain `git branch`, a
     # plain `git fsck`), the same accepted false-positive the in-place-edit
     # family already makes for `black --check`/`isort --diff` above.
@@ -422,7 +433,7 @@ case "$TOOL_NAME" in
         # a reviewer never has a legitimate git-write target anywhere, so
         # any non-read-only subcommand denies regardless of where it runs.
         if ! [[ "$subcmd" =~ ^($ALLOWED_RE)$ ]]; then
-          emit_deny "'git $subcmd' is not a read-only git subcommand for a review-only agent (subcommands that can write git state with a flag — branch, tag, worktree, remote, fetch, fsck, reflog, symbolic-ref — are excluded, so a reviewer gets only subcommands that never write), and review-only agents never write git state anywhere (worktree or main tree). $SANCTIONED_ALTERNATIVE"
+          emit_deny "'git $subcmd' is not a read-only git subcommand for a review-only agent, and review-only agents never write git state anywhere (worktree or main tree). $SANCTIONED_ALTERNATIVE"
           exit 0
         fi
         # An allowed git fragment falls through to the in-place-edit and
