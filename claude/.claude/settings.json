@@ -476,7 +476,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/require-review-orchestrator-routing.sh"
+            "command": "~/.claude/hooks/require-review-orchestrator-routing.sh",
+            "onFailure": "block",
+            "statusMessage": "Checking review-orchestrator-routing gate..."
           }
         ]
       }
