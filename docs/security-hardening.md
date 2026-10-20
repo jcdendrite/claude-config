@@ -764,7 +764,7 @@ to hold PII/PHI or live credentials:
   above, not the "could happen by accident" case the normalization above was
   built to close. Accepted residual, not a gap this repo is chasing
   regex-by-regex.
-- The fragment-word-matcher family inherits the identical residual above,
+- The fragment-word-matcher family inherits the residual above,
   using the same `_lib_strip_shell_quotes`-before-split idiom as the
   credential gates:
   - `deny-private-project-refs.sh`, `require-ready-for-review.sh`,
@@ -776,9 +776,18 @@ to hold PII/PHI or live credentials:
     tokenizer — pre-stripping there would misread a multi-word `-m`
     message as a bare pathspec and widen the scan to `git diff HEAD` on
     an ordinary commit.
-  - None of the five closes a multi-character ANSI-C escape or a
-    backslash-newline line continuation in a gated word — same boundary,
-    same reasoning, inherited rather than re-derived.
+  - None of the five closes a multi-character ANSI-C escape in a gated word.
+  - All but `deny-reviewer-tree-mutation.sh` also leave a backslash-newline
+    line continuation open. The mid-token reasoning above covers only a split
+    inside a word. `_lib_split_fragments` makes each line its own fragment, so
+    in these four a continuation between words can also separate a command
+    word from the flag or operand its matcher needs. Ordinary multi-line
+    formatting produces that shape, such as `mv \` with its operands on the
+    next line. This between-words gap is accepted permanent debt.
+  - `deny-reviewer-tree-mutation.sh` also scans a copy with every
+    backslash-newline pair deleted, so it catches a gated word, write flag, or
+    write target split across a continuation, such as `ru\` then `ff`,
+    `sed \` then `-i`, or `ruff check \` then `--fix`.
 - `deny-private-project-refs.sh`'s `SCAN_TARGET_BOTH` scans the raw+stripped
   union of `$SCAN_TARGET` across all three of its scan tiers (tracker-ID,
   structural, blocklist):

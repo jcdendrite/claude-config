@@ -1,13 +1,17 @@
 """Tests for transcript_analysis/cost.py's _compute_workstream_dollars and
 transcript_analysis/workstream_cost.py's workstream-cost subcommand
 (cmd_workstream_cost)."""
-import importlib.util
 import json
 import subprocess
-import sys
-from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    corpus,
+    cost,
+    gh_cli,
+    scope,
+    workstream_cost,
+)
 
 from .conftest import (
     _priced,
@@ -15,15 +19,6 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_jsonl,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _workstream_cost_args(*, projects: str = "*", this_repo: bool = False, check_pr_status: bool = False) -> object:
@@ -37,7 +32,7 @@ def _workstream_cost_args(*, projects: str = "*", this_repo: bool = False, check
 def _session_iter(fake_projects, *, roots=None):
     args = _workstream_cost_args()
     roots = roots if roots is not None else [fake_projects.parent]
-    session_iter, _scope = _mod._resolve_project_scope(args, "workstream-cost", include_subagents=True, roots=roots)
+    session_iter, _scope = scope._resolve_project_scope(args, "workstream-cost", include_subagents=True, roots=roots)
     return session_iter
 
 
@@ -54,7 +49,7 @@ class TestComputeWorkstreamDollars:
             _priced("claude-sonnet-5", input=1_000_000, branch="feature-a", ts="2026-08-01T10:00:00.000Z"),
         ])  # $2.00
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         agg = workstream["feature-a"]
         assert agg["session_count"] == 1
         assert agg["total_dollars"] == pytest.approx(2.00)
@@ -77,7 +72,7 @@ class TestComputeWorkstreamDollars:
             _priced("claude-sonnet-5", input=500_000, branch="feature-b", ts="2026-08-01T10:00:00.000Z"),
         ])  # $1.00, earliest (the true first session) -- iterated last
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         agg = workstream["feature-b"]
         assert agg["session_count"] == 3
         assert agg["total_dollars"] == pytest.approx(7.00)
@@ -98,7 +93,7 @@ class TestComputeWorkstreamDollars:
             _priced("claude-sonnet-5", input=1_500_000, branch="feature-c", ts="2026-08-02T10:01:00.000Z"),
         ])  # $2.00 + $3.00, non-first session, exactly 2 main-thread turns
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         agg = workstream["feature-c"]
         assert agg["session_count"] == 2
         assert agg["total_dollars"] == pytest.approx(6.00)
@@ -121,7 +116,7 @@ class TestComputeWorkstreamDollars:
         ]
         _write_jsonl(fake_projects / "sess-2.jsonl", six_turns)  # non-first session, 6 main-thread turns
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         agg = workstream["feature-g"]
         assert agg["session_count"] == 2
         assert agg["total_dollars"] == pytest.approx(7.00)  # 1.00 + 6 x 1.00
@@ -144,7 +139,7 @@ class TestComputeWorkstreamDollars:
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [main_rec])
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         assert "worktree-agent-abc123" not in workstream
         agg = workstream["feature-d"]
         assert agg["session_count"] == 1
@@ -170,7 +165,7 @@ class TestComputeWorkstreamDollars:
         ])
         _write_subagent_jsonl(fake_projects, "sess-2", "agent-1", [subagent_rec])
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         agg = workstream["feature-k"]
         assert agg["session_count"] == 2
         assert agg["total_dollars"] == pytest.approx(3.00)
@@ -190,7 +185,7 @@ class TestComputeWorkstreamDollars:
         _write_jsonl(fake_projects / "sess-2.jsonl", [])
         _write_subagent_jsonl(fake_projects, "sess-2", "agent-1", [subagent_rec])
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         agg = workstream["feature-k"]
         assert agg["session_count"] == 1
         assert agg["total_dollars"] == pytest.approx(1.00)
@@ -209,7 +204,7 @@ class TestComputeWorkstreamDollars:
             _priced("claude-sonnet-5", input=250_000, branch="feature-p", ts="2026-08-02T10:02:00.000Z"),  # $0.50
         ])
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         agg = workstream["feature-p"]
         assert agg["session_count"] == 2
         assert agg["total_dollars"] == pytest.approx(4.50)
@@ -229,7 +224,7 @@ class TestComputeWorkstreamDollars:
             _priced("claude-sonnet-5", input=2_000_000, branch="feature-p", ts="2026-08-02T10:00:00.000Z"),  # $4.00
         ])
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         agg = workstream["feature-p"]
         assert agg["session_count"] == 2
         assert agg["total_dollars"] == pytest.approx(7.00)
@@ -257,7 +252,7 @@ class TestComputeWorkstreamDollars:
             _priced("claude-sonnet-5", input=2_500_000, branch="feature-z", ts="2026-08-02T10:05:00.000Z"),  # $5.00
         ])
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         agg = workstream["feature-z"]
         assert agg["session_count"] == 2
         assert agg["total_dollars"] == pytest.approx(11.00)  # 1.00 + (1.00 + 0 + 2.00 + 1.00 + 1.00 + 5.00)
@@ -268,7 +263,7 @@ class TestComputeWorkstreamDollars:
     def test_empty_corpus_returns_empty_dict(self, fake_projects):
         """No session files at all -- no branch to report, not a KeyError
         or a spurious zero-valued entry."""
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         assert workstream == {}
 
     def test_unbranched_session_excluded_from_workstream_result_entirely(self, fake_projects):
@@ -284,7 +279,7 @@ class TestComputeWorkstreamDollars:
         del unbranched_rec["gitBranch"]
         _write_jsonl(fake_projects / "sess-2.jsonl", [unbranched_rec])
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         assert "" not in workstream
         assert None not in workstream
         assert set(workstream) == {"feature-x"}
@@ -311,7 +306,7 @@ class TestComputeWorkstreamDollars:
             _priced("claude-sonnet-5", input=300_000, branch="feature-f", ts="2026-08-02T10:00:00.000Z"),
         ])
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         assert len(workstream) == 2
         for branch, agg in workstream.items():
             assert agg["startup_burn_dollars"] <= agg["total_dollars"], (
@@ -333,7 +328,7 @@ class TestComputeWorkstreamDollars:
             _priced("claude-sonnet-5", input=100_000, branch="branch-a", ts="2026-07-31T09:00:00.000Z"),
         ])  # $0.20, branch-a's true first session by time
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         branch_a = workstream["branch-a"]
         # switch-sess is branch-a's non-first session, but only its one
         # branch-a-attributed turn ($0.002) counts toward branch-a's startup
@@ -352,7 +347,7 @@ class TestComputeWorkstreamDollars:
             _priced("claude-sonnet-5", input=500_000, branch="feature-h", ts="2026-08-01T10:00:00.000Z"),
         ])
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         assert workstream["feature-h"]["session_count"] == 1
 
     def test_all_unparseable_timestamps_in_session_report_zero_session_count(self, fake_projects):
@@ -365,10 +360,10 @@ class TestComputeWorkstreamDollars:
             _priced("claude-sonnet-5", input=500_000, branch="feature-i", ts=""),
         ])
 
-        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(_session_iter(fake_projects))
+        branch_totals, _unbranched = cost._compute_pr_cost_branch_totals(_session_iter(fake_projects))
         assert branch_totals["feature-i"]["turn_count"] == 2
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
         assert workstream["feature-i"]["session_count"] == 0
 
     def test_last_activity_ts_reflects_the_latest_turn_even_when_iterated_first(self, fake_projects):
@@ -384,8 +379,8 @@ class TestComputeWorkstreamDollars:
             _priced("claude-sonnet-5", input=500_000, branch="feature-j", ts="2026-08-01T10:00:00.000Z"),
         ])  # earliest -- iterated second
 
-        workstream = _mod._compute_workstream_dollars(_session_iter(fake_projects))
-        assert workstream["feature-j"]["last_activity_ts"] == _mod._parse_ts("2026-08-03T10:00:00.000Z")
+        workstream = cost._compute_workstream_dollars(_session_iter(fake_projects))
+        assert workstream["feature-j"]["last_activity_ts"] == corpus._parse_ts("2026-08-03T10:00:00.000Z")
 
 
 def _fake_workstream_cost_subprocess_run(
@@ -442,7 +437,7 @@ class TestPrintWorkstreamSessionStats:
             "branch-b": {"session_count": 2, "total_dollars": 3.00, "startup_burn_dollars": 2.00},
             "branch-c": {"session_count": 4, "total_dollars": 4.00, "startup_burn_dollars": 3.00},
         }
-        _mod.workstream_cost._print_workstream_session_stats(workstream)
+        workstream_cost._print_workstream_session_stats(workstream)
         out = capsys.readouterr().out
         assert out == (
             "Sessions per branch -- mean: 2.33, median: 2.00\n"
@@ -461,7 +456,7 @@ class TestPrintWorkstreamSessionStats:
             "branch-zero": {"session_count": 1, "total_dollars": 0.0, "startup_burn_dollars": 0.0},
             "branch-a": {"session_count": 3, "total_dollars": 5.00, "startup_burn_dollars": 2.00},
         }
-        _mod.workstream_cost._print_workstream_session_stats(workstream)
+        workstream_cost._print_workstream_session_stats(workstream)
         out = capsys.readouterr().out
         assert out == (
             "Sessions per branch -- mean: 2.00, median: 2.00\n"
@@ -480,7 +475,7 @@ class TestCmdWorkstreamCostDefaultMode:
             _priced("claude-sonnet-5", input=500_000, branch="branch-a", ts="2026-08-01T10:00:00.000Z"),
         ])
 
-        _mod.workstream_cost.cmd_workstream_cost(_workstream_cost_args())
+        workstream_cost.cmd_workstream_cost(_workstream_cost_args())
         out = capsys.readouterr().out
 
         assert "Branches: 1" in out
@@ -489,7 +484,7 @@ class TestCmdWorkstreamCostDefaultMode:
         """Zero session files in scope -- cmd_workstream_cost's own
         `if not workstream` branch prints the exact message and returns,
         with no traceback."""
-        _mod.workstream_cost.cmd_workstream_cost(_workstream_cost_args())
+        workstream_cost.cmd_workstream_cost(_workstream_cost_args())
         out = capsys.readouterr().out
 
         assert out.rstrip("\n").splitlines()[-1] == "No branches with corpus activity were found."
@@ -517,7 +512,7 @@ class TestCmdWorkstreamCostCheckPrStatus:
             closed_unmerged_prs=[{"headRefName": "closed-branch"}],
         ))
 
-        _mod.workstream_cost.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
+        workstream_cost.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
         out = capsys.readouterr().out
 
         assert "Branches: 3" in out
@@ -550,10 +545,10 @@ class TestCmdWorkstreamCostCheckPrStatus:
             return fake_run(cmd, *args, **kwargs)
 
         monkeypatch.setattr(subprocess, "run", logging_fake_run)
-        monkeypatch.setattr(_mod.gh_cli, "_gh_auth_preflight_ok", lambda hostname: False)
+        monkeypatch.setattr(gh_cli, "_gh_auth_preflight_ok", lambda hostname: False)
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.workstream_cost.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
+            workstream_cost.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
 
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
@@ -577,7 +572,7 @@ class TestCmdWorkstreamCostCheckPrStatus:
         ])
         monkeypatch.setattr(subprocess, "run", _fake_workstream_cost_subprocess_run())
 
-        _mod.workstream_cost.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
+        workstream_cost.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
         out = capsys.readouterr().out
 
         header = "Branches with no PR match at all (merged or closed-unmerged), by last-activity age (days), oldest first:"
@@ -601,7 +596,7 @@ class TestCmdWorkstreamCostCheckPrStatus:
         ])
         monkeypatch.setattr(subprocess, "run", _fake_workstream_cost_subprocess_run())
 
-        _mod.workstream_cost.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
+        workstream_cost.cmd_workstream_cost(_workstream_cost_args(check_pr_status=True))
         out = capsys.readouterr().out
 
         assert "Branches: 1" in out

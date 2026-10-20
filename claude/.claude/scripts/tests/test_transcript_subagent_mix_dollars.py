@@ -1,11 +1,14 @@
 """Tests for subagent_mix.py's Actual $ and Counterfactual $ columns and _dispatch_usage_summary."""
-import importlib.util
 import json
-import sys
 from datetime import date, timedelta
-from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    corpus,
+    cost,
+    pricing,
+    subagent_mix,
+)
 
 from ._subagent_helpers import (
     _subagent_mix_args,
@@ -22,15 +25,6 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_dispatch,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 class TestSubagentMixDollars:
@@ -51,14 +45,14 @@ class TestSubagentMixDollars:
             [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Actual$"] == "$3.00"
 
     def test_past_rate_expiry_prints_stale_pricing_banner(self, fake_projects, capsys, monkeypatch):
         """A priced model whose re-verify-by date is already past prints the STALE PRICING banner naming that model."""
-        monkeypatch.setitem(_mod.subagent_mix.pricing._MODEL_RATE_EXPIRES, "claude-sonnet-4-6", date(2000, 1, 1))
+        monkeypatch.setitem(subagent_mix.pricing._MODEL_RATE_EXPIRES, "claude-sonnet-4-6", date(2000, 1, 1))
         session_id = "sess-stale"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
@@ -68,14 +62,14 @@ class TestSubagentMixDollars:
             [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         assert "STALE PRICING — today is past the re-verify-by date for: claude-sonnet-4-6." in out
 
     def test_future_rate_expiry_prints_no_stale_pricing_banner(self, fake_projects, capsys, monkeypatch):
         """A priced model whose re-verify-by date is still ahead leaves the STALE PRICING banner out. The date is
         pinned far ahead so the outcome never flips on the real expiry date."""
-        monkeypatch.setitem(_mod.subagent_mix.pricing._MODEL_RATE_EXPIRES, "claude-sonnet-4-6", date(2999, 1, 1))
+        monkeypatch.setitem(subagent_mix.pricing._MODEL_RATE_EXPIRES, "claude-sonnet-4-6", date(2999, 1, 1))
         session_id = "sess-fresh"
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
@@ -85,7 +79,7 @@ class TestSubagentMixDollars:
             [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Actual$"] == "$3.00"  # priced row present, so banner absence is not an empty-corpus artifact
@@ -104,7 +98,7 @@ class TestSubagentMixDollars:
             [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(reprice_as="claude-haiku-4-5-20251001"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(reprice_as="claude-haiku-4-5-20251001"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=7)
         assert cols["Actual$"] == "$3.00"
@@ -125,7 +119,7 @@ class TestSubagentMixDollars:
             [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000, output_tokens=500)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(reprice_as="claude-sonnet-4-6"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(reprice_as="claude-sonnet-4-6"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=7)
         assert cols["Actual$"] == cols["Counterfactual$"]
@@ -133,7 +127,7 @@ class TestSubagentMixDollars:
 
     def test_invalid_reprice_as_value_exits_nonzero_listing_valid_ids(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc_info:
-            _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(reprice_as="not-a-real-model"))
+            subagent_mix.cmd_subagent_mix(_subagent_mix_args(reprice_as="not-a-real-model"))
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert "subagent-mix: --reprice-as" in err
@@ -155,7 +149,7 @@ class TestSubagentMixDollars:
             )],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(since_date="2026-07-01"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(since_date="2026-07-01"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Actual$"] == "$3.00"
@@ -176,7 +170,7 @@ class TestSubagentMixDollars:
             )],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(until_date="2026-07-01"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(until_date="2026-07-01"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Runs"] == "1"
@@ -205,7 +199,7 @@ class TestSubagentMixDollars:
             ],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(until_date="2026-07-01"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(until_date="2026-07-01"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Actual$"] == "$3.00"
@@ -223,7 +217,7 @@ class TestSubagentMixDollars:
             [_asst("<synthetic>", branch="main", sidechain=True)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())  # must not raise
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())  # must not raise
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Actual$"] == "$0.00"
@@ -256,7 +250,7 @@ class TestSubagentMixDollars:
             [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=2_000_000)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
         out = capsys.readouterr().out
         # _redaction_ordinals sorts by resolved path, not scan/insertion order,
         # so which physical root lands on account-1 vs account-2 isn't asserted
@@ -288,7 +282,7 @@ class TestSubagentMixDollars:
             [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=1_000_000)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(reprice_as="claude-opus-5"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(reprice_as="claude-opus-5"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=7)
         assert cols["Actual$"] == "$3.00"
@@ -316,7 +310,7 @@ class TestSubagentMixDollars:
             [_priced_sidechain_asst("claude-sonnet-4-6", input_tokens=2_000_000)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Runs"] == "2"
@@ -344,7 +338,7 @@ class TestSubagentMixDollars:
             [_priced_sidechain_asst("claude-opus-4-8", input_tokens=1_000_000)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Runs"] == "2"
@@ -370,7 +364,7 @@ class TestSubagentMixDollars:
             )],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5)
         assert cols["Actual$"] == "$0.00"
@@ -424,13 +418,13 @@ class TestDispatchUsageSummaryDedupBeforePricing:
             fake_projects, session_id, "agent-1", "a1",
             self._two_block_run("claude-sonnet-4-6"), agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         cols = _table_cols(
             capsys.readouterr().out, header_contains="Actual$", row_contains="staff-sdet", max_labels=5,
         )
         dispatch_dollars = float(cols["Actual$"].lstrip("$").replace(",", ""))
 
-        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
         cost_total = _extract_grand_total(capsys.readouterr().out)
         # abs= accounts for both figures' own 2-decimal-place rounding,
         # not slack in the expected computation itself.
@@ -448,8 +442,8 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         jsonl_2 = tmp_path / "dispatch-2.jsonl"
         _write_jsonl(jsonl_1, self._two_block_run("claude-sonnet-4-6", request_id="req-1"))
         _write_jsonl(jsonl_2, self._two_block_run("claude-sonnet-4-6", request_id="req-2"))
-        _, dollars_1, _, _, _, _, _ = _mod.subagent_mix._dispatch_usage_summary(jsonl_1, None, None, None, date(2026, 8, 2))
-        _, dollars_2, _, _, _, _, _ = _mod.subagent_mix._dispatch_usage_summary(jsonl_2, None, None, None, date(2026, 8, 2))
+        _, dollars_1, _, _, _, _, _ = subagent_mix._dispatch_usage_summary(jsonl_1, None, None, None, date(2026, 8, 2))
+        _, dollars_2, _, _, _, _, _ = subagent_mix._dispatch_usage_summary(jsonl_2, None, None, None, date(2026, 8, 2))
         # claude-sonnet-4-6: $3.00/MTok input, $15.00/MTok output (5x
         # multiplier). Each deduped turn prices only its last record's usage
         # (1,000,000 input + 50 output); two dispatches double that.
@@ -482,7 +476,7 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         }
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, [rec1, rec2])
-        _, _, dollars_by_class, _, _, _, _ = _mod.subagent_mix._dispatch_usage_summary(
+        _, _, dollars_by_class, _, _, _, _ = subagent_mix._dispatch_usage_summary(
             jsonl_path, None, None, None, date(2026, 8, 2)
         )
         # claude-sonnet-4-6: cache_read $0.30/MTok, cache_write_5m $3.75/MTok.
@@ -514,7 +508,7 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         }
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, [rec1, rec2])
-        _, _, dollars_by_class, _, _, _, _ = _mod.subagent_mix._dispatch_usage_summary(
+        _, _, dollars_by_class, _, _, _, _ = subagent_mix._dispatch_usage_summary(
             jsonl_path, None, None, None, date(2026, 8, 2)
         )
         # claude-sonnet-4-6: cache_read $0.30/MTok, cache_write_5m $3.75/MTok,
@@ -527,7 +521,7 @@ class TestDispatchUsageSummaryDedupBeforePricing:
     def test_missing_path_returns_empty_summary(self, tmp_path):
         """A path that is not a readable file returns the documented empty
         tuple, the caller's dangling-dispatch exclusion signal."""
-        result = _mod.subagent_mix._dispatch_usage_summary(
+        result = subagent_mix._dispatch_usage_summary(
             tmp_path / "absent.jsonl", None, None, None, date(2026, 8, 2)
         )
         assert result == (None, 0.0, {}, None, 0, 0, set())
@@ -544,8 +538,8 @@ class TestDispatchUsageSummaryDedupBeforePricing:
             raise PermissionError("denied")
 
         # Shadows the builtin only inside corpus, which opens the transcript.
-        monkeypatch.setattr(_mod.subagent_mix.corpus, "open", _open_failing, raising=False)
-        result = _mod.subagent_mix._dispatch_usage_summary(jsonl_path, None, None, None, date(2026, 8, 2))
+        monkeypatch.setattr(subagent_mix.corpus, "open", _open_failing, raising=False)
+        result = subagent_mix._dispatch_usage_summary(jsonl_path, None, None, None, date(2026, 8, 2))
         assert result == (None, 0.0, {}, None, 0, 0, set())
 
     def test_priced_model_past_rate_expiry_lands_in_stale_models(self, tmp_path):
@@ -554,9 +548,9 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         model = "claude-sonnet-4-6"
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, self._two_block_run(model))
-        expiry = _mod.pricing._MODEL_RATE_EXPIRES[model]
-        *_, stale_on_expiry_day = _mod.subagent_mix._dispatch_usage_summary(jsonl_path, None, None, None, expiry)
-        *_, stale_day_after_expiry = _mod.subagent_mix._dispatch_usage_summary(
+        expiry = pricing._MODEL_RATE_EXPIRES[model]
+        *_, stale_on_expiry_day = subagent_mix._dispatch_usage_summary(jsonl_path, None, None, None, expiry)
+        *_, stale_day_after_expiry = subagent_mix._dispatch_usage_summary(
             jsonl_path, None, None, None, expiry + timedelta(days=1)
         )
         assert stale_on_expiry_day == set()
@@ -569,7 +563,7 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         a dedup applied to only one arm would skew the pair."""
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, self._two_block_run("claude-sonnet-4-6"))
-        _, actual_dollars, _, counterfactual_dollars, _, _, _ = _mod.subagent_mix._dispatch_usage_summary(
+        _, actual_dollars, _, counterfactual_dollars, _, _, _ = subagent_mix._dispatch_usage_summary(
             jsonl_path, None, None, "claude-opus-4-8", date(2026, 8, 2)
         )
         # Merged usage is the run's last record (1,000,000 input + 50 output).
@@ -601,7 +595,7 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         }
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, [sonnet_turn, opus_turn])
-        observed_bucket, actual_dollars, _, _, _, _, _ = _mod.subagent_mix._dispatch_usage_summary(
+        observed_bucket, actual_dollars, _, _, _, _, _ = subagent_mix._dispatch_usage_summary(
             jsonl_path, None, None, None, date(2026, 8, 2)
         )
         # claude-sonnet-4-6: 1,000,000 input at $3.00/MTok + 50 output at $15.00/MTok.
@@ -635,7 +629,7 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         }
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, [rec1, _tool_result("t1", "hi\n"), rec2])
-        _, actual_dollars, _, _, _, _, _ = _mod.subagent_mix._dispatch_usage_summary(
+        _, actual_dollars, _, _, _, _, _ = subagent_mix._dispatch_usage_summary(
             jsonl_path, None, None, None, date(2026, 8, 2)
         )
         # A merge prices this once (1,000,000 input + 50 output = $3.00075);
@@ -653,7 +647,7 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         rec1, rec2 = self._two_block_run("claude-sonnet-4-6", request_id="req-corrupt")
         jsonl_path = tmp_path / "dispatch.jsonl"
         jsonl_path.write_text(f"{json.dumps(rec1)}\nTHIS IS NOT JSON\n{json.dumps(rec2)}\n")
-        _, actual_dollars, _, _, _, _, _ = _mod.subagent_mix._dispatch_usage_summary(
+        _, actual_dollars, _, _, _, _, _ = subagent_mix._dispatch_usage_summary(
             jsonl_path, None, None, None, date(2026, 8, 2)
         )
         # A merge prices this once (1,000,000 input + 50 output = $3.00075);
@@ -667,7 +661,7 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         totals tokens for) the merged turn's final usage only."""
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, self._two_block_run("claude-unreleased-model"))
-        _, actual_dollars, _, _, unpriced_turns, unpriced_tokens, _ = _mod.subagent_mix._dispatch_usage_summary(
+        _, actual_dollars, _, _, unpriced_turns, unpriced_tokens, _ = subagent_mix._dispatch_usage_summary(
             jsonl_path, None, None, None, date(2026, 8, 2)
         )
         assert actual_dollars == 0.0
@@ -701,9 +695,9 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         }
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, [rec1, rec2])
-        since_ts = _mod._parse_ts("2026-07-01T00:00:00.000Z")
-        until_ts = _mod._parse_ts("2026-07-02T00:00:00.000Z")
-        _, actual_dollars, _, _, _, _, _ = _mod.subagent_mix._dispatch_usage_summary(
+        since_ts = corpus._parse_ts("2026-07-01T00:00:00.000Z")
+        until_ts = corpus._parse_ts("2026-07-02T00:00:00.000Z")
+        _, actual_dollars, _, _, _, _, _ = subagent_mix._dispatch_usage_summary(
             jsonl_path, since_ts, until_ts, None, date(2026, 8, 2)
         )
         assert actual_dollars == 0.0
@@ -736,9 +730,9 @@ class TestDispatchUsageSummaryDedupBeforePricing:
         }
         jsonl_path = tmp_path / "dispatch.jsonl"
         _write_jsonl(jsonl_path, [rec1, rec2])
-        since_ts = _mod._parse_ts("2026-07-01T00:00:00.000Z")
-        until_ts = _mod._parse_ts("2026-07-02T00:00:00.000Z")
-        _, actual_dollars, _, _, _, _, _ = _mod.subagent_mix._dispatch_usage_summary(
+        since_ts = corpus._parse_ts("2026-07-01T00:00:00.000Z")
+        until_ts = corpus._parse_ts("2026-07-02T00:00:00.000Z")
+        _, actual_dollars, _, _, _, _, _ = subagent_mix._dispatch_usage_summary(
             jsonl_path, since_ts, until_ts, None, date(2026, 8, 2)
         )
         # Merged usage is the run's last record (1,000,000 input + 50
@@ -769,10 +763,10 @@ class TestDispatchUsageSummaryUndecodableLines:
         without_bad_line = tmp_path / "without-bad-line.jsonl"
         _write_jsonl(without_bad_line, first_run + second_run)
 
-        summary_with_bad_line = _mod.subagent_mix._dispatch_usage_summary(
+        summary_with_bad_line = subagent_mix._dispatch_usage_summary(
             with_bad_line, None, None, None, date(2026, 8, 2)
         )
-        summary_without_bad_line = _mod.subagent_mix._dispatch_usage_summary(
+        summary_without_bad_line = subagent_mix._dispatch_usage_summary(
             without_bad_line, None, None, None, date(2026, 8, 2)
         )
 
@@ -789,7 +783,7 @@ class TestDispatchUsageSummaryUndecodableLines:
         jsonl_path = tmp_path / "dispatch.jsonl"
         jsonl_path.write_bytes(b"\xff\xfe\x00\x01\n")
 
-        summary = _mod.subagent_mix._dispatch_usage_summary(
+        summary = subagent_mix._dispatch_usage_summary(
             jsonl_path, None, None, None, date(2026, 8, 2)
         )
 

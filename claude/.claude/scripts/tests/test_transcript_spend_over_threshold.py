@@ -1,11 +1,15 @@
 """Tests for transcript_analysis/spend_over_threshold.py's cmd_spend_over_threshold, including its
 nudge-log diagnostic footer."""
-import importlib.util
 import os
-import sys
 from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    handoff_nudge,
+    pricing,
+    scope,
+    spend_over_threshold,
+)
 
 from ._handoff_nudge_helpers import _spend_over_threshold_args
 from .conftest import (
@@ -14,15 +18,6 @@ from .conftest import (
     _table_cols,
     _write_jsonl,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 class TestSpendOverThreshold:
@@ -34,7 +29,7 @@ class TestSpendOverThreshold:
             _priced("claude-sonnet-5", input=50_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
             _priced("claude-sonnet-5", input=60_000, output=1_000, ts="2026-05-19T10:01:00.000Z"),
         ])
-        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
         assert int(cols["Sessions"]) == 1
@@ -47,7 +42,7 @@ class TestSpendOverThreshold:
             _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
             _priced("claude-sonnet-5", input=450_000, output=1_000, ts="2026-05-19T10:01:00.000Z"),
         ])
-        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
         assert cols["Share"] == "100.0%"
@@ -60,10 +55,10 @@ class TestSpendOverThreshold:
         under = _priced("claude-sonnet-5", input=50_000, output=1_000, ts="2026-05-19T10:00:00.000Z")
         over = _priced("claude-sonnet-5", input=400_000, output=2_000, ts="2026-05-19T10:01:00.000Z")
         _write_jsonl(fake_projects / "sess.jsonl", [under, over])
-        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
 
-        rates = _mod._model_rates("claude-sonnet-5")
+        rates = pricing._model_rates("claude-sonnet-5")
         under_dollars = 50_000 / 1_000_000 * rates["input"] + 1_000 / 1_000_000 * rates["output"]
         over_dollars = 400_000 / 1_000_000 * rates["input"] + 2_000 / 1_000_000 * rates["output"]
         expected_share = 100.0 * over_dollars / (under_dollars + over_dollars)
@@ -78,7 +73,7 @@ class TestSpendOverThreshold:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-sonnet-5", branch="main", ts="2026-05-19T10:00:00.000Z"),  # usage={}
         ])
-        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
         assert "No sessions with a resolvable handoff-nudge threshold" in out
 
@@ -91,7 +86,7 @@ class TestSpendOverThreshold:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-opus-4-7", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])
-        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
         assert "No sessions with a resolvable handoff-nudge threshold" in out
 
@@ -108,10 +103,10 @@ class TestSpendOverThreshold:
         over = _priced("claude-sonnet-5", input=400_000, output=2_000, ts="2026-05-21T10:00:00.000Z")
         _write_jsonl(fake_projects / "sess_a.jsonl", [under])
         _write_jsonl(fake_projects / "sess_b.jsonl", [over])
-        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
 
-        rates = _mod._model_rates("claude-sonnet-5")
+        rates = pricing._model_rates("claude-sonnet-5")
         under_dollars = 50_000 / 1_000_000 * rates["input"] + 1_000 / 1_000_000 * rates["output"]
         over_dollars = 400_000 / 1_000_000 * rates["input"] + 2_000 / 1_000_000 * rates["output"]
         expected_total = under_dollars + over_dollars
@@ -135,12 +130,12 @@ class TestSpendOverThreshold:
         (`>` written instead of `>=`) would silently misclassify this turn as
         under, since no other test in this class exercises the exact
         boundary (all use values far below or far above it)."""
-        threshold = _mod.handoff_nudge._hook_effective_fire_threshold("claude-sonnet-5")
+        threshold = handoff_nudge._hook_effective_fire_threshold("claude-sonnet-5")
         exactly_at_threshold = _priced(
             "claude-sonnet-5", input=threshold, output=1_000, ts="2026-05-19T10:00:00.000Z"
         )
         _write_jsonl(fake_projects / "sess.jsonl", [exactly_at_threshold])
-        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
         assert cols["Share"] == "100.0%"
@@ -155,7 +150,7 @@ class TestSpendOverThreshold:
         _write_jsonl(fake_projects / "new.jsonl", [
             _priced("claude-sonnet-5", input=400_000, output=1_000, ts="2026-05-19T10:00:00.000Z"),
         ])
-        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args(since="2026-05-01"))
+        spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args(since="2026-05-01"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
         assert int(cols["Sessions"]) == 1
@@ -173,8 +168,8 @@ class TestSpendOverThreshold:
         def _raise_value_error():
             raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
 
-        monkeypatch.setattr(_mod.scope, "config_dir", _raise_value_error)
-        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        monkeypatch.setattr(scope, "config_dir", _raise_value_error)
+        spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
         assert cols["Share"] == "100.0%"
@@ -202,7 +197,7 @@ class TestSpendOverThresholdDiagnosticFooter:
             "schema-drift session=drift-c event=Stop\n"
             "nudged session=drift-a est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
         )
-        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
         assert f"Diagnostic: 3 schema-drift line(s) in {tmp_path / '.handoff-nudge.log'}" in out
 
@@ -216,7 +211,7 @@ class TestSpendOverThresholdDiagnosticFooter:
             "schema-drift session=drift-a event=Stop\n"
             "schema-drift session=drift-b event=Stop\n"
         )
-        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
         assert "No sessions with a resolvable handoff-nudge threshold" in out
         assert "Diagnostic: 2 schema-drift line(s)" in out
@@ -231,7 +226,7 @@ class TestSpendOverThresholdDiagnosticFooter:
             "nudged session=nudged-a est=100000 model=claude-sonnet-5 window=1000000 event=Stop\n"
             "nudged session=nudged-b est=120000 model=claude-sonnet-5 window=1000000 event=Stop\n"
         )
-        _mod.spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
+        spend_over_threshold.cmd_spend_over_threshold(_spend_over_threshold_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Sessions", row_contains="Total")
         assert cols["Share"] == "100.0%"

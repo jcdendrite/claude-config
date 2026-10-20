@@ -496,6 +496,14 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is True
         assert result.reason == "unmatched-path"
 
+    def test_root_scripts_dir_sibling_sharing_prefix_does_not_match(self):
+        """scripts-old/ shares ROOT_SCRIPTS_DIR's string prefix but is a distinct
+        sibling directory -- _is_under's directory-boundary check must not
+        treat it as under scripts/."""
+        result = _mod.select_pytest_targets(["scripts-old/x.sh"])
+        assert result.is_full_suite is True
+        assert result.reason == "unmatched-path"
+
     def test_skill_md_change_selects_skills_tests_transcript_analysis_and_doc_counts(self):
         """test_doc_counts.py reads every name-only skill's SKILL.md frontmatter
         (_name_only_skills_carrying_trigger_blocks), so any SKILL.md edit selects it."""
@@ -1155,6 +1163,19 @@ class TestSelectPytestTargets:
         test_install_sh_contributor_intent_prompt.py (both HOOKS_TESTS_DIR)
         each reference it."""
         result = _mod.select_pytest_targets([_mod.INSTALL_DEV_SH])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR}
+
+    def test_root_scripts_dir_script_selects_hooks_and_scripts_tests(self):
+        """test_shellcheck.py and test_shell_lib_function_liveness.py
+        (HOOKS_TESTS_DIR) lint or scan every tracked shell file under scripts/;
+        test_venv_run.py (SCRIPTS_TESTS_DIR) runs scripts/venv-run.sh by path."""
+        result = _mod.select_pytest_targets(["scripts/venv-run.sh"])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR}
+
+    def test_nested_root_scripts_dir_script_selects_hooks_and_scripts_tests(self):
+        result = _mod.select_pytest_targets(["scripts/dev/fork-topology-probe.sh"])
         assert result.is_full_suite is False
         assert set(result.target_paths) == {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR}
 
@@ -2219,6 +2240,9 @@ class TestRuleTablePathFidelity:
     def test_review_bench_directory_constants_exist_on_disk(self):
         for constant in (_mod.REVIEW_BENCH_DIR, _mod.REVIEW_BENCH_FIXTURES_DIR):
             assert (_REPO_ROOT / constant).is_dir(), f"{constant} does not exist as a directory"
+
+    def test_root_scripts_dir_constant_exists_on_disk(self):
+        assert (_REPO_ROOT / _mod.ROOT_SCRIPTS_DIR).is_dir(), f"{_mod.ROOT_SCRIPTS_DIR} does not exist as a directory"
 
     def test_every_global_trigger_path_exists_on_disk(self):
         for path in _mod.GLOBAL_TRIGGER_PATHS:

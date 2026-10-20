@@ -1,12 +1,16 @@
 """Tests for transcript_analysis/reviewer_yield.py (cmd_reviewer_yield)."""
-import importlib.util
+import hashlib
 import json
 import signal
-import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    corpus,
+    reviewer_yield,
+    scope,
+)
 
 from .conftest import (
     _agent_use,
@@ -20,16 +24,6 @@ from .conftest import (
     _write_subagent_dispatch,
     _write_use,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
-
 
 # ---------------------------------------------------------------------------
 # reviewer-yield
@@ -72,11 +66,11 @@ class TestIsReviewerSubagentType:
     def test_recognizes_prefix_and_all_exact_names(self):
         """staff- prefix, plus each of the three exact-name reviewers sharing
         _REVIEWER_EXACT_NAMES with review-trace's own detection."""
-        assert _mod._is_reviewer_subagent_type("staff-backend-engineer")
-        assert _mod._is_reviewer_subagent_type("ciso-reviewer")
-        assert _mod._is_reviewer_subagent_type("comment-discipline-reviewer")
-        assert _mod._is_reviewer_subagent_type("skill-fidelity-reviewer")
-        assert not _mod._is_reviewer_subagent_type("general-purpose")
+        assert reviewer_yield._is_reviewer_subagent_type("staff-backend-engineer")
+        assert reviewer_yield._is_reviewer_subagent_type("ciso-reviewer")
+        assert reviewer_yield._is_reviewer_subagent_type("comment-discipline-reviewer")
+        assert reviewer_yield._is_reviewer_subagent_type("skill-fidelity-reviewer")
+        assert not reviewer_yield._is_reviewer_subagent_type("general-purpose")
 
     def test_plan_architect_excluded(self):
         """plan-architect is deliberately never added to _REVIEWER_EXACT_NAMES:
@@ -84,7 +78,7 @@ class TestIsReviewerSubagentType:
         subagent-mix's per-agentType rows, and it can't distinguish a
         MODE=plan-sections dispatch from a MODE=consult one, so every
         /plan-it Step 5 dispatch would register as a reviewer round."""
-        assert not _mod._is_reviewer_subagent_type("plan-architect")
+        assert not reviewer_yield._is_reviewer_subagent_type("plan-architect")
 
 
 class TestReviewerYield:
@@ -104,7 +98,7 @@ class TestReviewerYield:
             )],
             agent_type="comment-discipline-reviewer",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains="comment-discipline-reviewer",
@@ -126,7 +120,7 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No CISO concerns**"}])],
             agent_type="ciso-reviewer",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="AgentType", row_contains="ciso-reviewer", row_startswith=True, occurrence=1)
         assert cols["Dispatches"] == "1"
@@ -145,7 +139,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1)
         assert cols["Found"] == "1"
@@ -165,7 +159,7 @@ class TestReviewerYield:
             ])],
             agent_type="ciso-reviewer",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="AgentType", row_contains="ciso-reviewer", row_startswith=True, occurrence=1)
         assert cols["Found"] == "1"
@@ -187,7 +181,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-backend-engineer",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains="staff-backend-engineer",
@@ -208,7 +202,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1)
         assert cols["Found"] == "1"
@@ -230,7 +224,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-platform-engineer",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains="staff-platform-engineer",
@@ -250,7 +244,7 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "Found 5 issues."}])],
             agent_type="general-purpose",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         assert "general-purpose" not in out
         assert "No reviewer-agent dispatches found." in out
@@ -262,7 +256,7 @@ class TestReviewerYield:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
         ])
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         assert "No reviewer-agent dispatches found." in out
         assert "staff-sdet" not in out
@@ -279,7 +273,7 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1)
         assert cols["Dispatches"] == "1"
@@ -297,7 +291,7 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No CISO concerns**"}])],
             agent_type="ciso-reviewer",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         assert "distinctive-session-id" not in out
         assert "testrepo" not in out
@@ -314,9 +308,9 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No CISO concerns**"}])],
             agent_type="ciso-reviewer",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(redact=False))
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args(redact=False))
         default_out = capsys.readouterr().out
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(redact=True))
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args(redact=True))
         redacted_out = capsys.readouterr().out
         assert default_out == redacted_out
 
@@ -339,7 +333,7 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No testing concerns**"}])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(since="1d"))
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args(since="1d"))
         out = capsys.readouterr().out
         assert "ciso-reviewer" not in out
         cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1)
@@ -363,7 +357,7 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(until="2026-06-15"))
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args(until="2026-06-15"))
         out = capsys.readouterr().out
         assert "staff-sdet" not in out
         cols = _table_cols(out, header_contains="AgentType", row_contains="ciso-reviewer", row_startswith=True, occurrence=1)
@@ -375,7 +369,7 @@ class TestReviewerYield:
         the unbounded dispatch count exactly -- the additivity invariant an
         inclusive-day boundary must satisfy with no gap or overlap."""
         boundary_date = "2026-06-15"
-        until_epoch = _mod._parse_ts(f"{boundary_date}T00:00:00Z") + 86400
+        until_epoch = corpus._parse_ts(f"{boundary_date}T00:00:00Z") + 86400
         timestamps = [
             "2026-06-14T12:00:00.000Z",  # before the boundary day
             "2026-06-15T00:00:00.000Z",  # first moment of the boundary day
@@ -394,19 +388,19 @@ class TestReviewerYield:
             )
         _write_jsonl(fake_projects / "sess.jsonl", records)
 
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(until=boundary_date))
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args(until=boundary_date))
         until_out = capsys.readouterr().out
         until_cols = _table_cols(
             until_out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1,
         )
         until_count = int(until_cols["Dispatches"])
 
-        roots = _mod._resolve_scan_roots(_reviewer_yield_args())
-        rest_iter, _scope_label = _mod._resolve_project_scope(_reviewer_yield_args(), "reviewer-yield", roots=roots)
-        rest_data = _mod.reviewer_yield.compute_reviewer_yield_data(rest_iter, since_ts=until_epoch)
+        roots = scope.resolve_scan_roots(_reviewer_yield_args())
+        rest_iter, _scope_label = scope._resolve_project_scope(_reviewer_yield_args(), "reviewer-yield", roots=roots)
+        rest_data = reviewer_yield.compute_reviewer_yield_data(rest_iter, since_ts=until_epoch)
         rest_count = rest_data["agg"]["staff-sdet"]["dispatches"]
 
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         unbounded_out = capsys.readouterr().out
         unbounded_cols = _table_cols(
             unbounded_out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1,
@@ -424,7 +418,7 @@ class TestReviewerYield:
         its since-epoch complement -- a known delta, not additivity, since it
         belongs to neither half once any bound is applied."""
         boundary_date = "2026-06-15"
-        until_epoch = _mod._parse_ts(f"{boundary_date}T00:00:00Z") + 86400
+        until_epoch = corpus._parse_ts(f"{boundary_date}T00:00:00Z") + 86400
         dated_ts = "2026-06-10T00:00:00.000Z"  # before the boundary
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", ts=dated_ts, content=[_agent_use("c1", "staff-sdet")]),
@@ -441,7 +435,7 @@ class TestReviewerYield:
             agent_type="staff-sdet",
         )
 
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         unbounded_out = capsys.readouterr().out
         unbounded_cols = _table_cols(
             unbounded_out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1,
@@ -449,7 +443,7 @@ class TestReviewerYield:
         unbounded_count = int(unbounded_cols["Dispatches"])
         assert unbounded_count == 2  # both counted -- no bound means no timestamp check at all
 
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(until=boundary_date))
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args(until=boundary_date))
         until_out = capsys.readouterr().out
         until_cols = _table_cols(
             until_out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1,
@@ -457,9 +451,9 @@ class TestReviewerYield:
         until_count = int(until_cols["Dispatches"])
         assert until_count == 1  # only the dated dispatch -- the untimestamped one is dropped
 
-        roots = _mod._resolve_scan_roots(_reviewer_yield_args())
-        rest_iter, _scope_label = _mod._resolve_project_scope(_reviewer_yield_args(), "reviewer-yield", roots=roots)
-        rest_data = _mod.reviewer_yield.compute_reviewer_yield_data(rest_iter, since_ts=until_epoch)
+        roots = scope.resolve_scan_roots(_reviewer_yield_args())
+        rest_iter, _scope_label = scope._resolve_project_scope(_reviewer_yield_args(), "reviewer-yield", roots=roots)
+        rest_data = reviewer_yield.compute_reviewer_yield_data(rest_iter, since_ts=until_epoch)
         rest_count = rest_data["agg"].get("staff-sdet", {}).get("dispatches", 0)
         assert rest_count == 0  # the dated dispatch is before the boundary; the untimestamped one is dropped here too
 
@@ -487,7 +481,7 @@ class TestReviewerYield:
                 agent_type=agent_type,
             )
 
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(since="35d", until=until_date))
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args(since="35d", until=until_date))
         out = capsys.readouterr().out
         assert "staff-sdet" in out
         assert "ciso-reviewer" not in out
@@ -512,7 +506,7 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "**No testing concerns**"}])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(until=boundary_date))
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args(until=boundary_date))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1)
         assert cols["Dispatches"] == "1"
@@ -524,7 +518,7 @@ class TestReviewerYield:
         """--until against a corpus with zero sessions doesn't crash and
         prints the same no-dispatches message as the unbounded empty-corpus
         case."""
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(until="2026-06-15"))
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args(until="2026-06-15"))
         out = capsys.readouterr().out
         assert "No reviewer-agent dispatches found." in out
 
@@ -540,12 +534,12 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", content=[{"type": "text", "text": "Found 1 issue. Details."}])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(until="2026-06-15"))
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args(until="2026-06-15"))
         until_out = capsys.readouterr().out
         assert ", through 2026-06-15" in until_out
         assert "does not bound this table" in until_out
 
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         unbounded_out = capsys.readouterr().out
         assert ", through" not in unbounded_out
         assert "does not bound this table" not in unbounded_out
@@ -569,7 +563,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(until=boundary_date))
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args(until=boundary_date))
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -594,7 +588,7 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "Found 3 issues. Leaked token."}])],
             agent_type="ciso-reviewer",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="AgentType", row_contains="ciso-reviewer", row_startswith=True, occurrence=1)
         assert cols["Dispatches"] == "2"
@@ -609,13 +603,13 @@ class TestReviewerYield:
             _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
             _asst("claude-opus-4-7", ts="2026-05-19T11:00:00.000Z", content=[_agent_use("a2", "staff-sdet")]),
         ])
-        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / "sess" / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         (subdir / "agent-a1.meta.json").write_text("{not valid json")
         (subdir / "agent-a2.meta.json").write_text(
             json.dumps({"agentType": "staff-sdet", "description": "review", "spawnDepth": 1})
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         assert "No reviewer-agent dispatches found." in out
         assert "(2 meta.json files failed to parse, excluded)" in out
@@ -633,9 +627,9 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No testing concerns**"}])],
             agent_type="staff-sdet",
         )
-        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / "sess" / corpus.SUBAGENT_SUBDIR
         (subdir / "agent-a2.meta.json").write_text("{not valid json")
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1)
         assert cols["Dispatches"] == "1"
@@ -652,7 +646,7 @@ class TestReviewerYield:
             _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
             _asst("claude-opus-4-7", ts="2026-05-19T11:00:00.000Z", content=[_agent_use("a2", "staff-sdet")]),
         ])
-        subdir = fake_projects / "sess" / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / "sess" / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         (subdir / "agent-a1.meta.json").write_text(
             json.dumps({"agentType": "staff-sdet", "description": "d", "toolUseId": 12345, "spawnDepth": 1})
@@ -661,7 +655,7 @@ class TestReviewerYield:
             "agentType": "staff-sdet", "description": "d", "toolUseId": "a2",
             "model": ["opus"], "spawnDepth": 1,
         }))
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         assert "No reviewer-agent dispatches found." in out
         assert "(2 meta.json files failed to parse, excluded)" in out
@@ -685,7 +679,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -707,7 +701,7 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No testing concerns**"}])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols1 = _table_cols(
             out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1,
@@ -740,7 +734,7 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No testing concerns**"}])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         lines = out.splitlines()
         found_idx = next(i for i, ln in enumerate(lines) if "staff-sdet" in ln and "findings-found" in ln)
@@ -760,7 +754,7 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "Reviewed the code."}])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "unclassified"), occurrence=2,
@@ -778,7 +772,7 @@ class TestReviewerYield:
             _asst("claude-opus-4-7", ts="2026-05-19T11:00:00.000Z", content=[_edit_use("e1", path="src/foo.py")])
         )
         _write_jsonl(fake_projects / "sess.jsonl", records)
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -795,7 +789,7 @@ class TestReviewerYield:
             _asst("claude-opus-4-7", ts="2026-05-19T11:00:00.000Z", content=[_edit_use("e1", path="src/foo.py")])
         )
         _write_jsonl(fake_projects / "sess.jsonl", records)
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -822,7 +816,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -846,7 +840,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -868,7 +862,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -892,7 +886,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -915,7 +909,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -941,8 +935,8 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        (fake_projects / "sess" / _mod.SUBAGENT_SUBDIR / "agent-a1.jsonl").unlink()
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        (fake_projects / "sess" / corpus.SUBAGENT_SUBDIR / "agent-a1.jsonl").unlink()
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols1 = _table_cols(
             out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1,
@@ -967,7 +961,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -994,7 +988,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -1021,7 +1015,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -1054,7 +1048,7 @@ class TestReviewerYield:
             )],
             agent_type="code-writer",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -1089,7 +1083,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("ciso-reviewer", "zero-finding"), occurrence=2,
@@ -1128,7 +1122,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         assert "staff-sdet" not in out  # nested dispatch never detected as its own row
         cols = _table_cols(
@@ -1170,7 +1164,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args(since="1d"))
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args(since="1d"))
         out = capsys.readouterr().out
         assert "staff-sdet" not in out  # a2's own dispatch record falls outside --since
         cols = _table_cols(
@@ -1201,7 +1195,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        (fake_projects / "sess" / _mod.SUBAGENT_SUBDIR / "agent-a1.jsonl").unlink()
+        (fake_projects / "sess" / corpus.SUBAGENT_SUBDIR / "agent-a1.jsonl").unlink()
         _write_subagent_dispatch(
             fake_projects, "sess", "agent-a2", "a2",
             [_asst("claude-sonnet-4-6", sidechain=True, content=[
@@ -1209,7 +1203,7 @@ class TestReviewerYield:
             ])],
             agent_type="ciso-reviewer",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols1 = _table_cols(
             out, header_contains="AgentType", row_contains="staff-sdet", row_startswith=True, occurrence=1,
@@ -1241,7 +1235,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "zero-finding"), occurrence=2,
@@ -1272,7 +1266,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -1300,7 +1294,7 @@ class TestReviewerYield:
              ]), "cwd": "/repo"}],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -1324,7 +1318,7 @@ class TestReviewerYield:
             }])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "zero-finding"), occurrence=2,
@@ -1347,7 +1341,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -1372,7 +1366,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "zero-finding"), occurrence=2,
@@ -1397,7 +1391,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         out = capsys.readouterr().out
         cols = _table_cols(
             out, header_contains="AgentType", row_contains=("staff-sdet", "findings-found"), occurrence=2,
@@ -1428,9 +1422,9 @@ class TestReviewerYield:
             [_asst("claude-sonnet-4-6", sidechain=True, content=[{"type": "text", "text": "**No CISO concerns**"}])],
             agent_type="ciso-reviewer",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         first_out = capsys.readouterr().out
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         second_out = capsys.readouterr().out
         assert first_out == second_out
 
@@ -1455,7 +1449,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         captured = capsys.readouterr()
         assert sentinel_path not in captured.out
         assert sentinel_path not in captured.err
@@ -1482,7 +1476,7 @@ class TestReviewerYield:
             ])],
             agent_type="staff-sdet",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         captured = capsys.readouterr()
         assert sentinel_path not in captured.out
         assert sentinel_path not in captured.err
@@ -1496,7 +1490,7 @@ class TestReviewerYield:
                 _agent_use("a1", "staff-backend-engineer"),
             ]),
         ])
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         assert "WARNING" in capsys.readouterr().err
 
     def test_subagent_sourced_edit_does_not_leak_a_client_named_path(self, fake_projects, capsys):
@@ -1525,7 +1519,7 @@ class TestReviewerYield:
             )],
             agent_type="code-writer",
         )
-        _mod.cmd_reviewer_yield(_reviewer_yield_args())
+        reviewer_yield.cmd_reviewer_yield(_reviewer_yield_args())
         captured = capsys.readouterr()
         assert sentinel_path not in captured.out
         assert sentinel_path not in captured.err
@@ -1544,43 +1538,43 @@ class TestExtractCitedPaths:
     """
 
     def test_extracts_a_slash_containing_candidate_verbatim(self):
-        result = _mod._extract_cited_paths("claude/.claude/scripts/transcript-analysis.py:2549")
+        result = reviewer_yield._extract_cited_paths("claude/.claude/scripts/transcript-analysis.py:2549")
         assert result == {"claude/.claude/scripts/transcript-analysis.py:2549"}
 
     def test_extracts_a_tilde_path_without_expanding_it(self):
         """Extraction is purely lexical tokenization — ~-expansion is
         _normalize_cited_path's job, not this function's."""
-        result = _mod._extract_cited_paths("~/.claude/plans/x.md")
+        result = reviewer_yield._extract_cited_paths("~/.claude/plans/x.md")
         assert result == {"~/.claude/plans/x.md"}
 
     def test_bare_prose_words_are_extracted_too(self):
         """No `/` or `.` is required by the regex — separator filtering
         happens downstream in _normalize_cited_path's step 2, not here."""
-        result = _mod._extract_cited_paths("no findings here")
+        result = reviewer_yield._extract_cited_paths("no findings here")
         assert result == {"no", "findings", "here"}
 
     def test_real_path_recovered_from_surrounding_prose(self):
         text = "Reviewed the diff; see claude/.claude/scripts/transcript-analysis.py:2455 for the join."
-        result = _mod._extract_cited_paths(text)
+        result = reviewer_yield._extract_cited_paths(text)
         assert "claude/.claude/scripts/transcript-analysis.py:2455" in result
 
     def test_non_ascii_path_extracted_verbatim(self):
         """_CITED_PATH_CANDIDATE_RE's \\w is Unicode-by-default (no re.ASCII
         flag), relied on deliberately so a non-ASCII path segment is not
         split at the boundary of its non-ASCII characters."""
-        result = _mod._extract_cited_paths("see café/日本語/foo.py for the fix")
+        result = reviewer_yield._extract_cited_paths("see café/日本語/foo.py for the fix")
         assert "café/日本語/foo.py" in result
 
     def test_empty_text_returns_empty_set(self):
-        assert _mod._extract_cited_paths("") == set()
+        assert reviewer_yield._extract_cited_paths("") == set()
 
     def test_candidate_longer_than_the_cap_splits_into_bounded_chunks(self):
         """A single unbroken run longer than _CITED_PATH_CANDIDATE_MAX_CHARS
         is not dropped or truncated silently — the greedy bounded quantifier
         emits consecutive capped matches that together cover the whole run."""
-        max_chars = _mod._CITED_PATH_CANDIDATE_MAX_CHARS
+        max_chars = reviewer_yield._CITED_PATH_CANDIDATE_MAX_CHARS
         run = "a" * (max_chars + 50)
-        result = _mod._extract_cited_paths(run)
+        result = reviewer_yield._extract_cited_paths(run)
         assert result == {"a" * max_chars, "a" * 50}
 
     def test_adversarial_slash_run_completes_under_one_second(self):
@@ -1602,7 +1596,7 @@ class TestExtractCitedPaths:
         previous_handler = signal.signal(signal.SIGALRM, _raise_timeout)
         signal.alarm(1)
         try:
-            _mod._extract_cited_paths(adversarial_input)
+            reviewer_yield._extract_cited_paths(adversarial_input)
         finally:
             signal.alarm(0)
             signal.signal(signal.SIGALRM, previous_handler)
@@ -1616,7 +1610,7 @@ class TestNormalizeCitedPath:
     def _key(self, path: str) -> str:
         """The same digest _normalize_cited_path computes, for expected-value
         construction — not a re-implementation of any normalization step."""
-        return _mod.hashlib.sha256(path.encode()).hexdigest()[:16]
+        return hashlib.sha256(path.encode()).hexdigest()[:16]
 
     def test_tilde_path_expands_against_home_before_relative_resolution(self, monkeypatch, tmp_path):
         """Pins step 3 (~-expansion) running before step 4 (relative-path
@@ -1624,7 +1618,7 @@ class TestNormalizeCitedPath:
         joined onto `cwd` unexpanded rather than resolved against $HOME."""
         home = tmp_path / "home" / "reviewer"
         monkeypatch.setenv("HOME", str(home))
-        result = _mod._normalize_cited_path("~/.claude/plans/x.md", cwd="/repo/unrelated/cwd")
+        result = reviewer_yield._normalize_cited_path("~/.claude/plans/x.md", cwd="/repo/unrelated/cwd")
         assert result == self._key(f"{home}/.claude/plans/x.md")
 
     def test_unexpandable_other_user_tilde_is_discarded(self, monkeypatch, tmp_path):
@@ -1632,38 +1626,38 @@ class TestNormalizeCitedPath:
         via a pwd.getpwnam directory-service lookup — expanduser leaves it
         starting with '~' when the user doesn't exist locally."""
         monkeypatch.setenv("HOME", str(tmp_path / "home" / "reviewer"))
-        result = _mod._normalize_cited_path(
+        result = reviewer_yield._normalize_cited_path(
             "~definitely-not-a-real-account-xyz/notes.md", cwd="/repo"
         )
         assert result is None
 
     def test_private_tmp_collapses_to_tmp(self):
-        result = _mod._normalize_cited_path("/private/tmp/scratch/report.md", cwd="/repo")
+        result = reviewer_yield._normalize_cited_path("/private/tmp/scratch/report.md", cwd="/repo")
         assert result == self._key("/tmp/scratch/report.md")
 
     def test_trailing_line_suffix_stripped(self):
-        with_line = _mod._normalize_cited_path("src/foo.py:42", cwd="/repo")
-        without_line = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
+        with_line = reviewer_yield._normalize_cited_path("src/foo.py:42", cwd="/repo")
+        without_line = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")
         assert with_line == without_line == self._key("/repo/src/foo.py")
 
     def test_trailing_line_col_suffix_stripped(self):
-        with_line_col = _mod._normalize_cited_path("src/foo.py:42:7", cwd="/repo")
-        without_suffix = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
+        with_line_col = reviewer_yield._normalize_cited_path("src/foo.py:42:7", cwd="/repo")
+        without_suffix = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")
         assert with_line_col == without_suffix == self._key("/repo/src/foo.py")
 
     def test_relative_and_absolute_citations_of_the_same_file_match(self):
-        relative = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
-        absolute = _mod._normalize_cited_path("/repo/src/foo.py", cwd="/anywhere")
+        relative = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")
+        absolute = reviewer_yield._normalize_cited_path("/repo/src/foo.py", cwd="/anywhere")
         assert relative == absolute == self._key("/repo/src/foo.py")
 
     def test_worktree_rooted_absolute_path_matches_plain_repo_relative(self):
         """A worktree-rooted absolute citation normalizes to the same key as
         a plain repo-relative one once the worktree-prefix segment is
         stripped — that's the join key's whole purpose."""
-        worktree_rooted = _mod._normalize_cited_path(
+        worktree_rooted = reviewer_yield._normalize_cited_path(
             "/repo/.claude/worktrees/gh558-branch/src/foo.py", cwd="/irrelevant"
         )
-        plain_relative = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
+        plain_relative = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")
         assert worktree_rooted == plain_relative == self._key("/repo/src/foo.py")
 
     def test_absolute_citation_matches_worktree_rooted_edit_on_a_different_branch(self):
@@ -1672,22 +1666,22 @@ class TestNormalizeCitedPath:
         edit made in a different branch's worktree of the *same* repo
         normalizes to the same key as a plain absolute citation of that
         repo's file — the join key carries no branch identity."""
-        absolute_citation = _mod._normalize_cited_path("/repo/src/foo.py", cwd="/repo")
-        worktree_edit = _mod._normalize_cited_path(
+        absolute_citation = reviewer_yield._normalize_cited_path("/repo/src/foo.py", cwd="/repo")
+        worktree_edit = reviewer_yield._normalize_cited_path(
             "src/foo.py", cwd="/repo/.claude/worktrees/some-other-branch"
         )
         assert absolute_citation == worktree_edit == self._key("/repo/src/foo.py")
 
     def test_two_repos_sharing_a_relative_suffix_do_not_match(self):
-        repo_a = _mod._normalize_cited_path("src/foo.py", cwd="/projects/repo-a")
-        repo_b = _mod._normalize_cited_path("src/foo.py", cwd="/projects/repo-b")
+        repo_a = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/projects/repo-a")
+        repo_b = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/projects/repo-b")
         assert repo_a != repo_b
 
     def test_nested_worktree_stripped_to_fixpoint(self):
         """An isolation:worktree agent spawned under a worktree-anchored
         parent leaves two '.claude/worktrees/<branch>/' segments in the
         path; both must be stripped, not just the first."""
-        nested = _mod._normalize_cited_path(
+        nested = reviewer_yield._normalize_cited_path(
             "/repo/.claude/worktrees/outer-branch/.claude/worktrees/inner-agent/src/foo.py",
             cwd="/irrelevant",
         )
@@ -1699,7 +1693,7 @@ class TestNormalizeCitedPath:
         from the path alone with zero filesystem access — the normalizer
         takes only the first segment ('docs') as the branch, leaving 'x/'
         as an unstripped leftover. Documents the bias; does not crash."""
-        result = _mod._normalize_cited_path(
+        result = reviewer_yield._normalize_cited_path(
             "/repo/.claude/worktrees/docs/x/src/foo.py", cwd="/irrelevant"
         )
         assert result == self._key("/repo/x/src/foo.py")
@@ -1708,19 +1702,19 @@ class TestNormalizeCitedPath:
         """'../../../.venv/bin/pytest' (this repo's own CLAUDE.md idiom) means
         three levels above the *worktree* — resolving it against the
         unstripped `cwd` (not a pre-stripped one) is what makes that true."""
-        result = _mod._normalize_cited_path(
+        result = reviewer_yield._normalize_cited_path(
             "../../../.venv/bin/pytest", cwd="/repo/.claude/worktrees/gh558-branch"
         )
         assert result == self._key("/repo/.venv/bin/pytest")
 
     def test_bare_filename_with_no_directory_separator_is_rejected(self):
-        assert _mod._normalize_cited_path("SKILL.md", cwd="/repo") is None
+        assert reviewer_yield._normalize_cited_path("SKILL.md", cwd="/repo") is None
 
     def test_no_resolvable_repo_still_normalizes(self):
         """A cwd with no .claude/worktrees marker at all (a plain, non-worktree
         checkout) is not an error case — the function needs no repo
         detection, only lexical joining."""
-        result = _mod._normalize_cited_path("src/foo.py", cwd="/srv/plain-checkout")
+        result = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/srv/plain-checkout")
         assert result == self._key("/srv/plain-checkout/src/foo.py")
 
     def test_non_ascii_path_round_trips_through_extraction_and_normalization(self):
@@ -1728,9 +1722,9 @@ class TestNormalizeCitedPath:
         normalization to a stable key — pins that a future 'safety' narrowing
         of _CITED_PATH_CANDIDATE_RE to ASCII-only would silently break
         non-ASCII paths with no test catching it."""
-        candidates = _mod._extract_cited_paths("see café/日本語/foo.py for the fix")
+        candidates = reviewer_yield._extract_cited_paths("see café/日本語/foo.py for the fix")
         candidate = next(c for c in candidates if "/" in c)
-        result = _mod._normalize_cited_path(candidate, cwd="/repo")
+        result = reviewer_yield._normalize_cited_path(candidate, cwd="/repo")
         assert result == self._key("/repo/café/日本語/foo.py")
 
 
@@ -1741,8 +1735,8 @@ class TestBuildToolResultTsMap:
     def test_tool_result_on_user_type_record_maps_to_its_own_timestamp(self):
         ts = "2026-05-19T10:00:30.000Z"
         records = [_user_msg([_tool_result("a1", "ok")], ts=ts)]
-        result = _mod._build_tool_result_ts_map(records, since_ts=None)
-        assert result == {"a1": _mod._parse_ts(ts)}
+        result = reviewer_yield._build_tool_result_ts_map(records, since_ts=None)
+        assert result == {"a1": corpus._parse_ts(ts)}
 
     def test_since_excludes_out_of_window_tool_result(self):
         old_ts = "2020-01-01T00:00:00.000Z"
@@ -1751,13 +1745,13 @@ class TestBuildToolResultTsMap:
             _user_msg([_tool_result("old", "ok")], ts=old_ts),
             _user_msg([_tool_result("new", "ok")], ts=new_ts),
         ]
-        since_ts = _mod._parse_ts("2050-01-01T00:00:00.000Z")
-        result = _mod._build_tool_result_ts_map(records, since_ts)
-        assert result == {"new": _mod._parse_ts(new_ts)}
+        since_ts = corpus._parse_ts("2050-01-01T00:00:00.000Z")
+        result = reviewer_yield._build_tool_result_ts_map(records, since_ts)
+        assert result == {"new": corpus._parse_ts(new_ts)}
 
     def test_unparseable_timestamp_omitted(self):
         records = [_user_msg([_tool_result("a1", "ok")], ts="not-a-timestamp")]
-        result = _mod._build_tool_result_ts_map(records, since_ts=None)
+        result = reviewer_yield._build_tool_result_ts_map(records, since_ts=None)
         assert result == {}
 
 
@@ -1778,10 +1772,10 @@ class TestScanReviewerTranscripts:
         records = [
             _asst("claude-opus-4-7", ts="2026-05-19T10:00:00.000Z", content=[_agent_use("a1", "staff-sdet")]),
         ]
-        scans = _mod.reviewer_yield._scan_reviewer_transcripts(records, dispatch_index)
+        scans = reviewer_yield._scan_reviewer_transcripts(records, dispatch_index)
         assert scans["a1"].read_error is True
         assert scans["a1"].code_write_tool_use_ids == frozenset()
-        assert _mod.reviewer_yield._reviewer_write_tool_use_ids(scans) == frozenset()
+        assert reviewer_yield._reviewer_write_tool_use_ids(scans) == frozenset()
 
     def test_non_utf8_line_is_skipped_and_the_scan_continues_past_it(self, tmp_path):
         """A non-UTF-8 line between two valid assistant records drops only
@@ -1800,7 +1794,7 @@ class TestScanReviewerTranscripts:
             + json.dumps(second_record).encode("utf-8")
             + b"\n"
         )
-        scan = _mod.reviewer_yield._scan_reviewer_transcript(transcript_path)
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
         assert scan.read_error is False
         assert scan.last_assistant_text == "text after the bad line"
 
@@ -1809,8 +1803,8 @@ class TestScanReviewerTranscripts:
         read error, so it is not counted in the "failed to read" line."""
         transcript_path = tmp_path / "agent-a1.jsonl"
         transcript_path.write_bytes(b"\xff\xfe\x00\x01")
-        scan = _mod.reviewer_yield._scan_reviewer_transcript(transcript_path)
-        assert scan == _mod.reviewer_yield._ReviewerTranscriptScan("", [], [], "", False, frozenset())
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
+        assert scan == reviewer_yield._ReviewerTranscriptScan("", [], [], "", False, frozenset())
 
     def test_record_with_a_truncated_multibyte_character_inside_its_text_is_dropped_whole(self, tmp_path):
         """A final record whose JSON string holds a truncated multibyte
@@ -1832,7 +1826,7 @@ class TestScanReviewerTranscripts:
             )
             + b"\n"
         )
-        scan = _mod.reviewer_yield._scan_reviewer_transcript(transcript_path)
+        scan = reviewer_yield._scan_reviewer_transcript(transcript_path)
         assert scan.read_error is False
         assert scan.last_assistant_text == "text before the corrupted record"
 
@@ -1849,18 +1843,18 @@ class TestIndexSessionEdits:
             {**_asst("claude-opus-4-7", ts=ts, content=[_write_use("w1", "content", path="src/foo.py")]),
              "cwd": "/repo"},
         ]
-        result = _mod._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
-        key = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
-        assert result == {key: _mod._parse_ts(ts)}
+        result = reviewer_yield._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
+        key = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")
+        assert result == {key: corpus._parse_ts(ts)}
 
     def test_edit_tool_use_produces_keyed_entry(self):
         ts = "2026-05-19T11:00:00.000Z"
         records = [
             {**_asst("claude-opus-4-7", ts=ts, content=[_edit_use("e1", path="src/foo.py")]), "cwd": "/repo"},
         ]
-        result = _mod._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
-        key = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
-        assert result == {key: _mod._parse_ts(ts)}
+        result = reviewer_yield._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
+        key = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")
+        assert result == {key: corpus._parse_ts(ts)}
 
     def test_multiedit_tool_use_produces_keyed_entry(self):
         ts = "2026-05-19T11:00:00.000Z"
@@ -1868,9 +1862,9 @@ class TestIndexSessionEdits:
             "file_path": "src/foo.py", "edits": [{"old_string": "a", "new_string": "b"}],
         }}
         records = [{**_asst("claude-opus-4-7", ts=ts, content=[multiedit]), "cwd": "/repo"}]
-        result = _mod._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
-        key = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
-        assert result == {key: _mod._parse_ts(ts)}
+        result = reviewer_yield._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
+        key = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")
+        assert result == {key: corpus._parse_ts(ts)}
 
     def test_notebook_edit_tool_use_produces_keyed_entry(self):
         """NotebookEdit carries notebook_path, not file_path — the index's
@@ -1880,9 +1874,9 @@ class TestIndexSessionEdits:
             "notebook_path": "nb/analysis.ipynb",
         }}
         records = [{**_asst("claude-opus-4-7", ts=ts, content=[notebook_edit]), "cwd": "/repo"}]
-        result = _mod._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
-        key = _mod._normalize_cited_path("nb/analysis.ipynb", cwd="/repo")
-        assert result == {key: _mod._parse_ts(ts)}
+        result = reviewer_yield._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset())
+        key = reviewer_yield._normalize_cited_path("nb/analysis.ipynb", cwd="/repo")
+        assert result == {key: corpus._parse_ts(ts)}
 
     def test_since_excludes_out_of_window_edit(self):
         old_ts = "2020-01-01T00:00:00.000Z"
@@ -1891,9 +1885,9 @@ class TestIndexSessionEdits:
             {**_asst("claude-opus-4-7", ts=old_ts, content=[_edit_use("e1", path="src/old.py")]), "cwd": "/repo"},
             {**_asst("claude-opus-4-7", ts=new_ts, content=[_edit_use("e2", path="src/new.py")]), "cwd": "/repo"},
         ]
-        since_ts = _mod._parse_ts("2050-01-01T00:00:00.000Z")
-        result = _mod._index_session_edits(records, since_ts, reviewer_write_tool_use_ids=frozenset())
-        assert list(result) == [_mod._normalize_cited_path("src/new.py", cwd="/repo")]
+        since_ts = corpus._parse_ts("2050-01-01T00:00:00.000Z")
+        result = reviewer_yield._index_session_edits(records, since_ts, reviewer_write_tool_use_ids=frozenset())
+        assert list(result) == [reviewer_yield._normalize_cited_path("src/new.py", cwd="/repo")]
 
     def test_reviewer_write_id_skipped_other_id_on_same_record_indexed(self):
         """A code-write block whose id is in reviewer_write_tool_use_ids is
@@ -1906,8 +1900,8 @@ class TestIndexSessionEdits:
         records = [
             {**_asst("claude-opus-4-7", ts=ts, content=[excluded_write, other_write]), "cwd": "/repo"},
         ]
-        result = _mod._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset({"w1"}))
-        assert list(result) == [_mod._normalize_cited_path("src/bar.py", cwd="/repo")]
+        result = reviewer_yield._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset({"w1"}))
+        assert list(result) == [reviewer_yield._normalize_cited_path("src/bar.py", cwd="/repo")]
 
     def test_excluded_write_does_not_erase_code_writer_edit_at_the_same_path_key(self):
         """A reviewer-write id excluded via reviewer_write_tool_use_ids and a
@@ -1925,9 +1919,9 @@ class TestIndexSessionEdits:
             {**_asst("claude-opus-4-7", ts=code_writer_ts, content=[code_writer_edit]), "cwd": "/repo"},
             {**_asst("claude-opus-4-7", ts=excluded_write_ts, content=[excluded_write]), "cwd": "/repo"},
         ]
-        result = _mod._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset({"w1"}))
-        key = _mod._normalize_cited_path("src/foo.py", cwd="/repo")
-        assert result == {key: _mod._parse_ts(code_writer_ts)}
+        result = reviewer_yield._index_session_edits(records, since_ts=None, reviewer_write_tool_use_ids=frozenset({"w1"}))
+        key = reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")
+        assert result == {key: corpus._parse_ts(code_writer_ts)}
 
 
 class TestReviewerYieldCitedKeys:
@@ -1936,37 +1930,37 @@ class TestReviewerYieldCitedKeys:
     reviewer dispatch."""
 
     def test_text_channel_candidate_surfaces(self):
-        result = _mod._reviewer_yield_cited_keys(
+        result = reviewer_yield._reviewer_yield_cited_keys(
             "Found 1 issue in src/foo.py needing a fix", [], cwd="/repo", self_ref_keys=set(),
         )
-        assert result == {_mod._normalize_cited_path("src/foo.py", cwd="/repo")}
+        assert result == {reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")}
 
     def test_blob_channel_candidate_surfaces(self):
-        result = _mod._reviewer_yield_cited_keys(
+        result = reviewer_yield._reviewer_yield_cited_keys(
             "", ["Reviewed src/foo.py, no issues found."], cwd="/repo", self_ref_keys=set(),
         )
-        assert result == {_mod._normalize_cited_path("src/foo.py", cwd="/repo")}
+        assert result == {reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")}
 
     def test_self_ref_key_excluded(self):
-        self_ref_key = _mod._normalize_cited_path("/scratch/findings.md", cwd="/repo")
-        result = _mod._reviewer_yield_cited_keys(
+        self_ref_key = reviewer_yield._normalize_cited_path("/scratch/findings.md", cwd="/repo")
+        result = reviewer_yield._reviewer_yield_cited_keys(
             "Findings written to /scratch/findings.md", [], cwd="/repo", self_ref_keys={self_ref_key},
         )
         assert result == set()
 
     def test_plan_file_candidate_excluded(self):
-        result = _mod._reviewer_yield_cited_keys(
+        result = reviewer_yield._reviewer_yield_cited_keys(
             "See .claude/plans/foo.md for context", [], cwd="/repo", self_ref_keys=set(),
         )
         assert result == set()
 
     def test_same_path_in_both_channels_dedupes_to_one_key(self):
-        result = _mod._reviewer_yield_cited_keys(
+        result = reviewer_yield._reviewer_yield_cited_keys(
             "Found 1 issue in src/foo.py needing a fix",
             ["Reviewed src/foo.py, confirmed the issue."],
             cwd="/repo", self_ref_keys=set(),
         )
-        assert result == {_mod._normalize_cited_path("src/foo.py", cwd="/repo")}
+        assert result == {reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo")}
 
 
 class TestDispatchSelfReferenceKeys:
@@ -1974,15 +1968,15 @@ class TestDispatchSelfReferenceKeys:
     set[key]: the reviewer's own Write-target self-reference exclusion set."""
 
     def test_normalizes_each_write_target_path(self):
-        result = _mod._dispatch_self_reference_keys(
+        result = reviewer_yield._dispatch_self_reference_keys(
             ["/scratch/findings.md", "src/foo.py"], transcript_cwd="/repo",
         )
         assert result == {
-            _mod._normalize_cited_path("/scratch/findings.md", cwd="/repo"),
-            _mod._normalize_cited_path("src/foo.py", cwd="/repo"),
+            reviewer_yield._normalize_cited_path("/scratch/findings.md", cwd="/repo"),
+            reviewer_yield._normalize_cited_path("src/foo.py", cwd="/repo"),
         }
 
     def test_empty_write_target_paths_returns_empty_set(self):
-        assert _mod._dispatch_self_reference_keys([], transcript_cwd="/repo") == set()
+        assert reviewer_yield._dispatch_self_reference_keys([], transcript_cwd="/repo") == set()
 
 

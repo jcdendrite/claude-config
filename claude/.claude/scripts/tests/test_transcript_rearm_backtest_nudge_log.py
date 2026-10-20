@@ -1,17 +1,11 @@
 """Tests for transcript_analysis/rearm_backtest.py's nudge-to-handoff conversion classifier and per-
 root log-size disclosure line."""
-import importlib.util
-import sys
 from pathlib import Path
 
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
+from transcript_analysis import (
+    handoff_nudge,
+    rearm_backtest,
+)
 
 
 class TestNudgeConversionFromLog:
@@ -27,7 +21,7 @@ class TestNudgeConversionFromLog:
             {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
             {"kind": "handoff", "session": "s"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         assert result["voluntary"] == 1
         assert result["forced"] == 0
         assert result["blocked_no_handoff"] == 0
@@ -42,7 +36,7 @@ class TestNudgeConversionFromLog:
              "event": "PostToolBatch", "action": "block"},
             {"kind": "handoff", "session": "s"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         assert result["forced"] == 1
         assert result["voluntary"] == 0
 
@@ -58,7 +52,7 @@ class TestNudgeConversionFromLog:
             {"kind": "nudged", "session": "s", "est": 200, "model": "x", "window": 1,
              "event": "PostToolBatch", "action": "block"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         assert result["voluntary"] == 1
         assert result["forced"] == 0
 
@@ -74,7 +68,7 @@ class TestNudgeConversionFromLog:
              "event": "PostToolBatch", "action": "block"},
             {"kind": "handoff", "session": "s"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         assert result["voluntary"] == 1
         assert result["forced"] == 0
 
@@ -84,7 +78,7 @@ class TestNudgeConversionFromLog:
             {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1,
              "event": "PostToolBatch", "action": "block"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         assert result["blocked_no_handoff"] == 1
         assert result["forced"] == 0
         assert result["voluntary"] == 0
@@ -94,7 +88,7 @@ class TestNudgeConversionFromLog:
         log_entries_by_root = {"root": [
             {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         assert result["no_compliance"] == 1
 
     def test_handoff_session_without_in_scope_trace_is_dropped(self):
@@ -107,7 +101,7 @@ class TestNudgeConversionFromLog:
             {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
             {"kind": "handoff", "session": "s"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         assert result["dropped"] == 1
         assert result["voluntary"] == 0
 
@@ -118,7 +112,7 @@ class TestNudgeConversionFromLog:
         log_entries_by_root = {"root": [
             {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         assert result["dropped"] == 1
         assert result["no_compliance"] == 0
 
@@ -131,7 +125,7 @@ class TestNudgeConversionFromLog:
             {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
             {"kind": "handoff", "session": "s"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         total_classified = (
             result["voluntary"] + result["forced"] + result["blocked_no_handoff"]
             + result["no_compliance"] + result["dropped"]
@@ -145,7 +139,7 @@ class TestNudgeConversionFromLog:
             {"kind": "nudged", "session": "s", "est": 100, "model": "x", "window": 1, "event": "Stop"},
             {"kind": "handoff", "session": "s"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         assert result["voluntary"] == 1
         assert result["no_ignored_field"] == 1
         assert result["ignored_values"] == []
@@ -160,7 +154,7 @@ class TestNudgeConversionFromLog:
              "event": "Stop", "ignored": 0},
             {"kind": "handoff", "session": "s"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         assert result["ignored_values"] == [0]
         assert result["no_ignored_field"] == 0
 
@@ -177,7 +171,7 @@ class TestNudgeConversionFromLog:
              "event": "Stop", "ignored": 4},
             {"kind": "handoff", "session": "s"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         assert result["ignored_values"] == [4]
         assert result["no_ignored_field"] == 0
 
@@ -195,7 +189,7 @@ class TestNudgeConversionFromLog:
             {"kind": "nudged", "session": "hookid-A", "est": 100, "model": "x", "window": 1, "event": "Stop"},
             {"kind": "handoff", "session": "pidwalk-B"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
         assert result["join_validity"] == 0
         assert result["no_compliance"] == 1
         assert result["dropped"] == 0
@@ -247,7 +241,7 @@ class TestNudgeConversionFromLog:
             ],
             {"kind": "nudged", "session": "dropped-1", "est": 100, "model": "x", "window": 1, "event": "Stop"},
         ]}
-        result = _mod.rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
+        result = rearm_backtest._nudge_conversion_from_log(session_traces, log_entries_by_root)
 
         total = (
             result["voluntary"] + result["forced"] + result["blocked_no_handoff"]
@@ -285,13 +279,13 @@ class TestNudgeConversionFromLog:
              "event": "PostToolBatch", "action": "block"},
         ]
 
-        handoff_scanned_first = _mod.rearm_backtest._nudge_conversion_from_log(
+        handoff_scanned_first = rearm_backtest._nudge_conversion_from_log(
             session_traces, {"root-a": entries_root_a, "root-b": entries_root_b}
         )
         assert handoff_scanned_first["voluntary"] == 1
         assert handoff_scanned_first["forced"] == 0
 
-        block_scanned_first = _mod.rearm_backtest._nudge_conversion_from_log(
+        block_scanned_first = rearm_backtest._nudge_conversion_from_log(
             session_traces, {"root-b": entries_root_b, "root-a": entries_root_a}
         )
         assert block_scanned_first["forced"] == 1
@@ -305,7 +299,7 @@ class TestRearmBacktestLogSizeLines:
 
     def test_single_root_prints_account_n_label_and_byte_count(self):
         root = Path("/fake/config-dir/projects")
-        lines = _mod.rearm_backtest._rearm_backtest_log_size_lines(
+        lines = rearm_backtest._rearm_backtest_log_size_lines(
             [(root, 12_345)], multi_root=False, redact=True,
             redact_ordinals={root.resolve(): 1},
         )
@@ -313,7 +307,7 @@ class TestRearmBacktestLogSizeLines:
 
     def test_single_root_no_redact_prints_raw_path(self):
         root = Path("/fake/config-dir/projects")
-        lines = _mod.rearm_backtest._rearm_backtest_log_size_lines(
+        lines = rearm_backtest._rearm_backtest_log_size_lines(
             [(root, 100)], multi_root=False, redact=False,
             redact_ordinals={root.resolve(): 1},
         )
@@ -321,8 +315,8 @@ class TestRearmBacktestLogSizeLines:
 
     def test_single_root_over_cap_flags_truncated(self):
         root = Path("/fake/config-dir/projects")
-        oversized = _mod.handoff_nudge._NUDGE_LOG_MAX_READ + 1
-        lines = _mod.rearm_backtest._rearm_backtest_log_size_lines(
+        oversized = handoff_nudge._NUDGE_LOG_MAX_READ + 1
+        lines = rearm_backtest._rearm_backtest_log_size_lines(
             [(root, oversized)], multi_root=False, redact=True,
             redact_ordinals={root.resolve(): 1},
         )
@@ -332,15 +326,15 @@ class TestRearmBacktestLogSizeLines:
 
     def test_single_root_at_exactly_the_cap_is_not_flagged_truncated(self):
         root = Path("/fake/config-dir/projects")
-        lines = _mod.rearm_backtest._rearm_backtest_log_size_lines(
-            [(root, _mod.handoff_nudge._NUDGE_LOG_MAX_READ)], multi_root=False, redact=True,
+        lines = rearm_backtest._rearm_backtest_log_size_lines(
+            [(root, handoff_nudge._NUDGE_LOG_MAX_READ)], multi_root=False, redact=True,
             redact_ordinals={root.resolve(): 1},
         )
-        assert lines == [f"  account-1 nudge log: {_mod.handoff_nudge._NUDGE_LOG_MAX_READ:,} bytes"]
+        assert lines == [f"  account-1 nudge log: {handoff_nudge._NUDGE_LOG_MAX_READ:,} bytes"]
 
     def test_single_root_unreadable_prints_no_byte_count(self):
         root = Path("/fake/config-dir/projects")
-        lines = _mod.rearm_backtest._rearm_backtest_log_size_lines(
+        lines = rearm_backtest._rearm_backtest_log_size_lines(
             [(root, None)], multi_root=False, redact=True,
             redact_ordinals={root.resolve(): 1},
         )
@@ -348,7 +342,7 @@ class TestRearmBacktestLogSizeLines:
 
     def test_multi_root_pools_bytes_with_no_per_root_breakdown(self):
         root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
-        lines = _mod.rearm_backtest._rearm_backtest_log_size_lines(
+        lines = rearm_backtest._rearm_backtest_log_size_lines(
             [(root_a, 100), (root_b, 200)], multi_root=True, redact=True,
             redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
         )
@@ -357,16 +351,16 @@ class TestRearmBacktestLogSizeLines:
 
     def test_multi_root_at_exactly_the_cap_is_not_flagged_truncated(self):
         root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
-        lines = _mod.rearm_backtest._rearm_backtest_log_size_lines(
-            [(root_a, _mod.handoff_nudge._NUDGE_LOG_MAX_READ), (root_b, 10)], multi_root=True, redact=True,
+        lines = rearm_backtest._rearm_backtest_log_size_lines(
+            [(root_a, handoff_nudge._NUDGE_LOG_MAX_READ), (root_b, 10)], multi_root=True, redact=True,
             redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
         )
-        assert lines == [f"  nudge logs across every resolved root: {_mod.handoff_nudge._NUDGE_LOG_MAX_READ + 10:,} bytes"]
+        assert lines == [f"  nudge logs across every resolved root: {handoff_nudge._NUDGE_LOG_MAX_READ + 10:,} bytes"]
 
     def test_multi_root_flags_truncated_without_a_count_or_naming_the_root(self):
         root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
-        oversized = _mod.handoff_nudge._NUDGE_LOG_MAX_READ + 1
-        lines = _mod.rearm_backtest._rearm_backtest_log_size_lines(
+        oversized = handoff_nudge._NUDGE_LOG_MAX_READ + 1
+        lines = rearm_backtest._rearm_backtest_log_size_lines(
             [(root_a, oversized), (root_b, 10)], multi_root=True, redact=True,
             redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
         )
@@ -377,7 +371,7 @@ class TestRearmBacktestLogSizeLines:
 
     def test_multi_root_flags_unreadable_without_a_count_and_excludes_it_from_the_total(self):
         root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
-        lines = _mod.rearm_backtest._rearm_backtest_log_size_lines(
+        lines = rearm_backtest._rearm_backtest_log_size_lines(
             [(root_a, None), (root_b, 500)], multi_root=True, redact=True,
             redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
         )
@@ -385,8 +379,8 @@ class TestRearmBacktestLogSizeLines:
 
     def test_multi_root_combines_truncated_and_unreadable_in_expected_order(self):
         root_a, root_b = Path("/fake/a/projects"), Path("/fake/b/projects")
-        oversized = _mod.handoff_nudge._NUDGE_LOG_MAX_READ + 1
-        lines = _mod.rearm_backtest._rearm_backtest_log_size_lines(
+        oversized = handoff_nudge._NUDGE_LOG_MAX_READ + 1
+        lines = rearm_backtest._rearm_backtest_log_size_lines(
             [(root_a, oversized), (root_b, None)], multi_root=True, redact=True,
             redact_ordinals={root_a.resolve(): 1, root_b.resolve(): 2},
         )
@@ -404,14 +398,14 @@ class TestRearmBacktestLogSizeLines:
         truncated root and one fixed unreadable root) and asserts the note
         text itself (after the pooled byte total, which does legitimately
         vary) contains no digit and is identical across both sweep sizes."""
-        oversized = _mod.handoff_nudge._NUDGE_LOG_MAX_READ + 1
+        oversized = handoff_nudge._NUDGE_LOG_MAX_READ + 1
 
         def note_for(root_count: int) -> str:
             roots = [Path(f"/fake/{n}/projects") for n in range(root_count)]
             per_root_sizes = [(roots[0], oversized), (roots[1], None)] + [
                 (r, 10) for r in roots[2:]
             ]
-            lines = _mod.rearm_backtest._rearm_backtest_log_size_lines(
+            lines = rearm_backtest._rearm_backtest_log_size_lines(
                 per_root_sizes, multi_root=True, redact=True,
                 redact_ordinals={r.resolve(): i + 1 for i, r in enumerate(roots)},
             )
@@ -423,7 +417,7 @@ class TestRearmBacktestLogSizeLines:
 
     def test_multi_root_at_three_roots_still_prints_exactly_one_line(self):
         roots = [Path(f"/fake/{n}/projects") for n in "abc"]
-        lines = _mod.rearm_backtest._rearm_backtest_log_size_lines(
+        lines = rearm_backtest._rearm_backtest_log_size_lines(
             [(roots[0], 10), (roots[1], 20), (roots[2], 30)], multi_root=True, redact=True,
             redact_ordinals={r.resolve(): i + 1 for i, r in enumerate(roots)},
         )

@@ -1,10 +1,15 @@
 """Pins each module in PRODUCTION_MODULES to the by-module-attribute import
-discipline scope.py's own top-of-file comment documents, and pins every
-`_mod.<module>.<name>` read in the test files in TEST_FILES to a name that
-module actually binds. Committed as a permanent test rather than run once by
-hand, so a later edit that reintroduces a stale reference still fails CI.
-Scope stays those modules and test files; no earlier package module carries an
-equivalent check yet.
+discipline scope.py's own top-of-file comment documents, and pins every test
+file in TEST_FILES two ways. First, every `<module>.<name>` read it makes --
+directly through an unaliased `from transcript_analysis import <module>`
+binding, or through a shim copy's `_mod.<module>.<name>` -- names a binding
+the target module actually has. Second, no test_*.py file that imports from
+transcript_analysis and loads no shim copy may be missing from TEST_FILES, so
+a newly converted file keeps the coverage above instead of going unchecked
+silently. Committed as a permanent test rather than run once by hand, so a
+later edit that reintroduces a stale reference, or drops a converted file off
+the list, still fails CI. Scope stays those modules and test files; no
+earlier package module carries an equivalent check yet.
 """
 from __future__ import annotations
 
@@ -46,6 +51,25 @@ TEST_FILES = (
     "test_transcript_plan_boundary.py",
     "test_transcript_handoff_signal_response_detection.py",
     "test_transcript_handoff_signal_response.py",
+    "test_transcript_audit_routing.py",
+    "test_transcript_audit_routing_samples.py",
+    "test_transcript_audit_routing_shape.py",
+    "test_transcript_cache_rebuild_attribution.py",
+    "test_transcript_cache_rebuild_switch_delta.py",
+    "test_transcript_cache_rebuild_ttl_accumulation.py",
+    "test_transcript_cache_rebuild_ttl_footing.py",
+    "test_transcript_denials.py",
+    "test_transcript_gh_cli.py",
+    "test_transcript_pr_cost.py",
+    "test_transcript_pr_cost_export_accounts.py",
+    "test_transcript_pr_cost_ledger.py",
+    "test_transcript_read_scope.py",
+    "test_transcript_review_trace.py",
+    "test_transcript_reviewer_yield.py",
+    "test_transcript_shared_fixtures.py",
+    "test_transcript_judgment_pair.py",
+    "test_transcript_skill_invocation.py",
+    "test_transcript_skill_pair.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --
@@ -104,6 +128,9 @@ def _top_level_names(module_path: Path) -> set[str]:
     literals it compares its own parameter against)."""
     tree = ast.parse(module_path.read_text())
     names: set[str] = set(IMPLICIT_MODULE_ATTRS) | _lazy_module_attrs(tree)
+    # Walks tree.body only, so a name bound inside a module-level if/try block
+    # (e.g. a platform-gated def, or a try/except ImportError fallback) is missed.
+    # That only makes this guard stricter, never laxer, for a module using that shape.
     for node in tree.body:
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             names.add(node.name)
@@ -121,24 +148,22 @@ def _import_aliases(node: ast.ImportFrom) -> str:
     return ", ".join(alias.name + (f" as {alias.asname}" if alias.asname else "") for alias in node.names)
 
 
-def _unresolvable_sibling_imports(tree: ast.Module, package_names: set[str]) -> list[str]:
-    """Import statements that bind a sibling package module in a shape the attribute check cannot resolve.
+def _unresolvable_absolute_package_imports(tree: ast.Module, package_names: set[str]) -> list[str]:
+    """Absolute import statements that bind a sibling package module in a shape the attribute check
+    cannot resolve.
 
     Flagged shapes, one per line:
     - `from transcript_analysis import <m> as <a>` for any <m> in package_names
     - every `import transcript_analysis` and `import transcript_analysis.<m>`, with or without `as`
-    - every relative `from` import (`level > 0`), e.g. `from . import scope` or `from .scope import X`
 
-    All three are flagged because the attribute check resolves only absolute
+    Both are flagged because the attribute check resolves only absolute, unaliased
     `from transcript_analysis import <m>` bindings.
 
     The no-op spelling `from transcript_analysis import scope as scope` is flagged too, since forbidding every
     `as` on a sibling binding is a simpler rule than telling the no-op spelling apart."""
     unresolvable: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level > 0:
-            unresolvable.append(f"from {'.' * node.level}{node.module or ''} import {_import_aliases(node)}")
-        elif isinstance(node, ast.ImportFrom) and node.module == "transcript_analysis":
+        if isinstance(node, ast.ImportFrom) and node.module == "transcript_analysis":
             unresolvable.extend(
                 f"from transcript_analysis import {alias.name} as {alias.asname}"
                 for alias in node.names
@@ -150,6 +175,26 @@ def _unresolvable_sibling_imports(tree: ast.Module, package_names: set[str]) -> 
                 for alias in node.names
                 if alias.name == "transcript_analysis" or alias.name.startswith("transcript_analysis.")
             )
+    return unresolvable
+
+
+def _unresolvable_sibling_imports(tree: ast.Module, package_names: set[str]) -> list[str]:
+    """Import statements that bind a sibling package module in a shape the attribute check cannot resolve.
+
+    Flagged shapes, one per line:
+    - every relative `from` import (`level > 0`), e.g. `from . import scope` or `from .scope import X`
+    - every shape `_unresolvable_absolute_package_imports` flags
+
+    All are flagged because the attribute check resolves only absolute, unaliased
+    `from transcript_analysis import <m>` bindings. `_unresolvable_absolute_package_imports` omits the
+    relative-import arm on purpose, so a test file's `from .conftest import ...` line still passes a
+    check built on that narrower helper alone."""
+    unresolvable: list[str] = [
+        f"from {'.' * node.level}{node.module or ''} import {_import_aliases(node)}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level > 0
+    ]
+    unresolvable.extend(_unresolvable_absolute_package_imports(tree, package_names))
     return unresolvable
 
 
@@ -231,6 +276,55 @@ def test_unresolvable_sibling_imports_flags_aliased_and_plain_import_shapes():
     assert flagged("from collections import defaultdict as dd") == []
 
 
+def test_unresolvable_absolute_package_imports_flags_only_absolute_shapes():
+    """`_unresolvable_absolute_package_imports` ignores relative imports -- including the test tree's
+    `from .conftest import ...` shape -- and the unaliased absolute `from transcript_analysis import <m>`
+    shape, but flags an aliased absolute `from` import and any `ast.Import` of the package."""
+    package_names = {"scope"}
+
+    def flagged(source: str) -> list[str]:
+        return _unresolvable_absolute_package_imports(ast.parse(source), package_names)
+
+    assert flagged("from .conftest import x") == []
+    assert flagged("from . import scope") == []
+    assert flagged("from transcript_analysis import scope") == []
+    assert flagged("from transcript_analysis import scope as s") == ["from transcript_analysis import scope as s"]
+    assert flagged("import transcript_analysis.scope") == ["import transcript_analysis.scope"]
+
+
+def _package_module_attribute_reads(tree: ast.Module, package_names: set[str]) -> list[tuple[str, ast.Attribute]]:
+    """Every `<module>.<attr>` Attribute node in tree whose base Name is bound by an unaliased
+    `from transcript_analysis import <module>` line, paired with the module name. Returns every such
+    node regardless of Store/Load context -- a caller that needs to forbid rebinding filters ctx itself."""
+    imported_modules = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "transcript_analysis"
+        for alias in node.names
+    } & package_names
+    return [
+        (node.value.id, node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in imported_modules
+    ]
+
+
+def _mod_prefixed_module_attribute_reads(tree: ast.Module, package_names: set[str]) -> list[tuple[str, ast.Attribute]]:
+    """Every `_mod.<module>.<name>` Attribute node in tree, paired with the module name -- the read shape
+    a test file still loading a shim copy uses instead of a direct package import."""
+    reads: list[tuple[str, ast.Attribute]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute) or not isinstance(node.value, ast.Attribute):
+            continue
+        inner = node.value
+        if not isinstance(inner.value, ast.Name) or inner.value.id != "_mod":
+            continue
+        if inner.attr not in package_names:
+            continue
+        reads.append((inner.attr, node))
+    return reads
+
+
 def test_production_modules_reference_only_real_sibling_attributes():
     """Every `<module>.<name>` attribute a module in PRODUCTION_MODULES reads
     on an imported sibling package module names something that module
@@ -239,51 +333,129 @@ def test_production_modules_reference_only_real_sibling_attributes():
     attribute (`mod.x = ...`, `mod.x += ...`)."""
     package_names = _package_module_names()
     for filename in PRODUCTION_MODULES:
-        module_path = PACKAGE_DIR / filename
-        tree = ast.parse(module_path.read_text())
-        imported_modules = {
-            alias.asname or alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module == "transcript_analysis"
-            for alias in node.names
-        } & package_names
-        sibling_names = {m: _top_level_names(PACKAGE_DIR / f"{m}.py") for m in imported_modules}
+        tree = ast.parse((PACKAGE_DIR / filename).read_text())
+        reads = _package_module_attribute_reads(tree, package_names)
+        sibling_names = {module: _top_level_names(PACKAGE_DIR / f"{module}.py") for module in {m for m, _ in reads}}
 
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Attribute) or not isinstance(node.value, ast.Name):
-                continue
-            if node.value.id not in imported_modules:
-                continue
+        for module_name, node in reads:
             assert not isinstance(node.ctx, ast.Store), (
-                f"{filename} assigns through {node.value.id}.{node.attr} -- "
+                f"{filename} assigns through {module_name}.{node.attr} -- "
                 f"no module in PRODUCTION_MODULES should rebind a sibling module's attribute"
             )
-            assert node.attr in sibling_names[node.value.id], (
-                f"{filename} reads {node.value.id}.{node.attr}, which {node.value.id}.py does not bind "
+            assert node.attr in sibling_names[module_name], (
+                f"{filename} reads {module_name}.{node.attr}, which {module_name}.py does not bind "
                 f"at module level -- stale rename or typo"
             )
 
 
-def test_test_files_reference_only_real_module_attributes_through_mod():
-    """Every `_mod.<module>.<name>` read in the migrated test files names a
-    binding the target module actually has -- catches a stale rename or typo
-    that a passing-but-wrong monkeypatch/assert would otherwise hide silently,
-    since a typo'd attribute on a real module raises AttributeError at
-    collection or call time, never merely fails an assertion."""
+def test_test_files_reference_only_real_module_attributes():
+    """Every `<module>.<name>` read in a TEST_FILES file names a binding the target module
+    actually has, whether read directly through an unaliased package import or through a
+    shim copy's `_mod.<module>.<name>`. This catches a stale rename or typo that a
+    passing-but-wrong monkeypatch/assert would otherwise hide silently. A typo'd attribute
+    on a real module raises AttributeError at collection or call time, not merely a failed
+    assertion."""
     package_names = _package_module_names()
     for filename in TEST_FILES:
         tree = ast.parse((TESTS_DIR / filename).read_text())
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Attribute) or not isinstance(node.value, ast.Attribute):
-                continue
-            inner = node.value
-            if not isinstance(inner.value, ast.Name) or inner.value.id != "_mod":
-                continue
-            module_name = inner.attr
-            if module_name not in package_names:
-                continue
+        reads = _package_module_attribute_reads(tree, package_names) + _mod_prefixed_module_attribute_reads(
+            tree, package_names
+        )
+        for module_name, node in reads:
             names = _top_level_names(PACKAGE_DIR / f"{module_name}.py")
             assert node.attr in names, (
-                f"{filename} reads _mod.{module_name}.{node.attr}, which {module_name}.py does not bind "
+                f"{filename} reads {module_name}.{node.attr}, which {module_name}.py does not bind "
                 f"at module level -- stale rename or typo"
             )
+
+
+def test_test_files_bind_package_modules_only_by_unaliased_from_import():
+    """test_test_files_reference_only_real_module_attributes resolves a direct read only through an
+    unaliased absolute `from transcript_analysis import <m>` binding, so no file in TEST_FILES may bind a
+    package module in any shape `_unresolvable_absolute_package_imports` flags."""
+    package_names = _package_module_names()
+    for filename in TEST_FILES:
+        tree = ast.parse((TESTS_DIR / filename).read_text())
+        unresolvable = _unresolvable_absolute_package_imports(tree, package_names)
+        assert not unresolvable, (
+            f"{filename} binds a package module via {unresolvable} -- "
+            f"use an unaliased `from transcript_analysis import <m>` so the attribute check can resolve it"
+        )
+
+
+def test_test_files_import_package_modules_by_module_only():
+    """No file in TEST_FILES has a `from transcript_analysis.<m> import ...` line -- each reads a
+    package module's names by attribute (e.g. `cost.compute_cost_trend_data`, not a bare
+    `compute_cost_trend_data` bound at import time)."""
+    for filename in TEST_FILES:
+        tree = ast.parse((TESTS_DIR / filename).read_text())
+        submodule_imports = [
+            node.module
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("transcript_analysis.")
+        ]
+        assert not submodule_imports, (
+            f"{filename} imports {submodule_imports} via `from transcript_analysis.<m> import ...` -- "
+            f"read the package module's name by attribute instead"
+        )
+
+
+def test_test_files_each_have_a_resolvable_module_attribute_read():
+    """Every file in TEST_FILES yields at least one read the attribute check above can see (direct
+    `<module>.<name>` or shim `_mod.<module>.<name>`) -- a file with neither would pass that check
+    vacuously, leaving it silently uncovered."""
+    package_names = _package_module_names()
+    for filename in TEST_FILES:
+        tree = ast.parse((TESTS_DIR / filename).read_text())
+        reads = _package_module_attribute_reads(tree, package_names) + _mod_prefixed_module_attribute_reads(
+            tree, package_names
+        )
+        assert reads, f"{filename} has no `<module>.<name>` or `_mod.<module>.<name>` read for the guard to check"
+
+
+def _imports_package(tree: ast.Module) -> bool:
+    """True if tree has an `import transcript_analysis[.<module>]`, or an absolute
+    `from transcript_analysis[.<module>] import ...` (a relative import never counts)."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(
+                alias.name == "transcript_analysis" or alias.name.startswith("transcript_analysis.")
+                for alias in node.names
+            ):
+                return True
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module
+            and (node.module == "transcript_analysis" or node.module.startswith("transcript_analysis."))
+        ):
+            return True
+    return False
+
+
+def _calls_spec_from_file_location(tree: ast.Module) -> bool:
+    """True if tree calls spec_from_file_location, as a bare name or as an attribute (e.g.
+    `importlib.util.spec_from_file_location(...)`, the shim loader's own call shape)."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "spec_from_file_location":
+            return True
+        if isinstance(func, ast.Attribute) and func.attr == "spec_from_file_location":
+            return True
+    return False
+
+
+def test_loader_free_package_importing_test_files_are_in_test_files():
+    """Every test_*.py file that imports from transcript_analysis and loads no shim copy of it (through
+    spec_from_file_location) must be listed in TEST_FILES -- otherwise a newly converted file's reads go
+    unchecked silently."""
+    package_importing_loader_free: set[str] = set()
+    for path in TESTS_DIR.glob("test_*.py"):
+        tree = ast.parse(path.read_text())
+        if _imports_package(tree) and not _calls_spec_from_file_location(tree):
+            package_importing_loader_free.add(path.name)
+    assert package_importing_loader_free, "expected at least one loader-free package-importing test file"
+    missing = sorted(package_importing_loader_free - set(TEST_FILES))
+    assert not missing, f"{missing} import transcript_analysis without loading the shim but are missing from TEST_FILES"
