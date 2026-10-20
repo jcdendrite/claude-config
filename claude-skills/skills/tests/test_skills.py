@@ -1121,7 +1121,7 @@ class TestSkillFidelityReviewerUndecidableDismissal:
         together, so an edit that keeps placement but re-imposes an exact
         string (or vice versa) fails here rather than passing silently."""
         body = self._body()
-        assert "between the per-finding H2s and" in body
+        assert "after the per-finding H2s" in body
         assert (
             "the exact wording is not required: nothing downstream parses "
             "it mechanically" in body
@@ -7298,7 +7298,8 @@ class TestStowedScriptPathContract:
 #
 # Four tests:
 # 1. Recipe-sync tripwire: code-review/SKILL.md and ROUTING.md must match
-#    verbatim on the two surviving contract tokens.
+#    verbatim on the surviving contract tokens (path template, background-spawn
+#    rule, whole-file read-back).
 # 2. Reviewer-contract coverage backstop: only contract-carrying reviewers
 #    may receive a findings_path.
 # 3. Script-invocation presence check across the three dispatchers.
@@ -7315,14 +7316,17 @@ _ROUTING_MD_PATH = _skill_file("plan-review").parent / "ROUTING.md"
 # used ("not `run_in_background`"), not the bare `run_in_background` token —
 # a future edit permitting background spawn would still contain the bare
 # substring and pass while re-introducing the same-turn read-back race the
-# rule exists to prevent. ready-for-review/SKILL.md is deliberately excluded
-# here: it spawns one named reviewer (`agent-reviews/skill-fidelity-reviewer-
-# <suffix>.md`, not the `<agent-name>` placeholder) and says "synchronously"
-# rather than carrying the `not run_in_background` phrase, so its contract
-# statement is not a verbatim match for these two tokens.
+# rule exists to prevent. The read-back token guards removal of the
+# whole-file-read sentence, not a scope qualifier appended to it later.
+# ready-for-review/SKILL.md is deliberately excluded here: it spawns one named
+# reviewer (`agent-reviews/skill-fidelity-reviewer-<suffix>.md`, not the
+# `<agent-name>` placeholder) and says "synchronously" rather than carrying the
+# `not run_in_background` phrase, and its read-back sentence carries no scope
+# qualifier, so its contract statement is not a verbatim match for these tokens.
 _FINDINGS_PATH_RECIPE_TOKENS = (
     "agent-reviews/<agent-name>-<suffix>.md",
     "not `run_in_background`",
+    "`Read` the whole findings file, whatever its finding count",
 )
 
 
