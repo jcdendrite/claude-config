@@ -130,6 +130,94 @@ values a `--this-repo` report may disclose versus fold into a withheld row.
 Rate tables, per-turn dollar pricing (`_price_turn`), token counts, context-window sizing, and
 `dedup_turns_by_request_id` (collapsing Claude Code's one-record-per-content-block write pattern
 into one record per API call). Self-contained: no dependency on `scope.py` or `redaction.py`.
+`_dedup_session` is the per-session step that `cost.py`'s report loop and `session_pricing.py` share:
+it deduplicates one session's records and returns its subagent-spawn count, its sidechain
+assistant-turn count, and whether any merged run's usage drifted during that call. `_rate_expired` is
+the re-verify-by staleness rule both apply.
+
+### `session_pricing.py`
+
+Per-session, per-UTC-day pricing for importers outside this repository: `price_sessions_by_utc_day`,
+its frozen result dataclasses `SessionSpend` and `SessionPricingResult`, and `SessionPricingError`.
+Each field's meaning is in its dataclass's docstring. It reads each session with
+`corpus._read_session_file_partitioned`, deduplicates it and collects its drift-canary inputs with
+`pricing._dedup_session` (the step `cost.py`'s report loop also calls), checks usage with its own
+strict token-field validator, and prices each turn with `pricing._price_turn`. It imports only
+`corpus` and `pricing` from the package, by module (attribute access), plus the standard library.
+
+**Import path.** Append `<config-dir>/scripts` to the end of `sys.path`, where `<config-dir>` is the
+Claude Code config directory this repo is stowed into. Then run
+`from transcript_analysis import session_pricing`. Do not insert the directory at the front: it also
+holds top-level modules and packages such as `tests`, `_config` and `_config_dir`, which would then
+shadow an importer's own modules of the same name. The module needs only the standard library and the
+Python version `README.md` requires.
+
+**Stability promise.** This is the only module in `transcript_analysis` with a stability promise.
+Every other module, and every underscore-prefixed name anywhere in the package, may change without
+notice. The promise covers:
+
+- the names in `session_pricing.__all__`;
+- the parameters of `price_sessions_by_utc_day`;
+- every field of `SessionSpend` and `SessionPricingResult`, with its type and documented meaning;
+- the `SessionPricingResult.format_drift_detected` property;
+- `SessionPricingError`, its `session_index` attribute, and its index-only message;
+- the error contract and the stderr contract below.
+
+The promise covers reading named fields. Constructing these types, relying on field order, hashing a
+result, mutating its day maps, and comparing or serializing whole results (for example with
+`dataclasses.asdict` or `repr`) are outside it.
+
+A new public name, a new result field, or a new keyword-only parameter with a default is an additive
+change. Any other change to the list above is a breaking change, and so is removing this module. A
+breaking change updates the pins in `tests/test_transcript_session_pricing.py` and states the break in
+this section.
+
+**Error contract.** `price_sessions_by_utc_day` raises `ValueError` when `start` is after `end` or a
+path cannot be passed to the operating system (it contains a NUL byte or does not encode in the
+filesystem encoding), and `TypeError` for a wrongly typed argument, before it reads any session.
+It raises `SessionPricingError` for the first session it cannot read, deduplicate, validate or price,
+and reads no later session. An assistant turn with a non-empty usage object and a truthy non-string
+timestamp fails its session this way. A malformed usage object fails its session even on a turn
+outside `[start, end]`. A missing or unreadable main file is not an error: it comes back
+as `main_file_readable=False`. A `SessionPricingError` does not say whether the session's content is
+malformed, claude-config failed while processing it, or the environment failed. `__cause__` holds the original
+exception for diagnosis; its type and text are outside the promise. Any other exception signals a
+claude-config defect or a failing environment.
+
+**Stderr contract.** `price_sessions_by_utc_day` writes nothing to stdout or stderr itself. The
+`pricing.py` functions it calls may write four lines to stderr:
+
+- a usage-drift warning starting `WARNING: requestId `, at most once per process;
+- a merge notice starting `NOTICE: non-contiguous requestId run merged -- `, at most once per process;
+- a merge notice starting `NOTICE: non-contiguous requestId run rejected -- `, at most once per process;
+- a subagent-format warning starting `WARNING: subagent spawns detected in main thread`, at most once per call.
+
+Each of the first three names one requestId, copied from the transcript with control characters
+escaped and no limit on its length. Only these prefixes are stable; the rest of each line may change.
+After a process has printed the usage-drift warning it prints it no more, but each call's
+`usage_drift_detected` still reports that call's own sessions.
+
+**What the output can disclose.**
+
+- The fixed text of the four stderr lines names no transcript path, session ID, project slug, config
+  directory, or model ID.
+- The requestId in the first three lines, described in the stderr contract, is the one
+  transcript-supplied substring on stderr, so treat those lines as carrying untrusted text.
+- `str()` of a `SessionPricingError` names only `session_index`.
+- `__cause__`, `__context__` and tracebacks are outside this guarantee and may carry a path or
+  transcript content. Record only `session_index` and the exception class in output you share.
+- `unpriced_models` is the only result field whose strings come from transcript content.
+  Its entries are `message.model` values, verbatim.
+  They are untrusted transcript text of any length.
+  A model ID can carry an account-identifying pre-announcement name, so do not publish the list.
+  Also escape entries before rendering.
+
+**Trust in inputs and results.** `session_paths` are not confined to a root, and symlinks are followed.
+`main_file_readable` and the results reveal whether a path is readable. A FIFO blocks the read, and an
+endless device file such as `/dev/zero` grows memory without bound, which a timeout does not stop. Pass only
+paths whose directories nobody else can write. The call also reads each path's `<stem>/subagents/*.jsonl`, so
+checking `session_paths` alone is not enough. Every result derives from unauthenticated transcript text, and its integers are
+unbounded.
 
 ### `render.py`
 
@@ -486,9 +574,12 @@ scope`, etc.) instead of loading the entire `transcript-analysis.py` CLI via
 
 ## Tests
 
-Each of `corpus.py`, `scope.py`, `redaction.py`, `pricing.py`, and `render.py` is exercised only
-through `transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`), which
-calls into the shim. Every other package module has its own per-command-group (or, for `denials.py`,
+Each of `corpus.py`, `scope.py`, `redaction.py`, `pricing.py`, and `render.py` is exercised through
+`transcript-analysis.py`'s existing test suite (`tests/test_transcript_analysis.py`), which calls into
+the shim. `pricing.py`'s shared per-session step, staleness rule, and canary return values, and
+`cost.py`'s accumulation of that step's counts, also have direct tests in
+`tests/test_transcript_pricing_session_helpers.py`. `session_pricing.py`'s tests, including the pins
+its stability promise relies on, live in `tests/test_transcript_session_pricing.py`. Every other package module has its own per-command-group (or, for `denials.py`,
 per-leaf) test file: `cost.py`'s in `tests/test_transcript_cost.py`, `denials.py`'s in
 `tests/test_transcript_denials.py`, `review_trace.py`'s in
 `tests/test_transcript_review_trace.py`, `read_scope.py`'s in
