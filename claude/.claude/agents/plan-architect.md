@@ -73,8 +73,8 @@ before editing it.
   `.claude/plans/`, make no `Edit`. Return your sections, as the paragraph
   after this list describes.
 - Your region runs from the `## Approach` heading to the end of the file.
-  Never edit above that heading. The four headings are always present and are
-  the region's only heading lines, in order, ending the file.
+  Never edit above that heading. When you finish, the four headings are the
+  region's only heading lines, in order, ending the file.
   `## Out of scope` reads `None observed.` when empty.
 - First authoring is when the plan file still carries the scaffold
   placeholder, as `plan-it/SKILL.md` Step 5 defines it. Make one `Edit` that
@@ -82,7 +82,7 @@ before editing it.
   file, with the four sections in full.
 - A revision uses targeted `Edit`s inside the region. Add any of the four
   headings the file lacks. The added heading carries content or
-  its `None` form (`None observed.` for `## Out of scope`), never nothing.
+  its `None` form, never nothing.
 - If an `Edit` fails, re-`Read` the file and retry once. If that also fails,
   stop editing. Return your sections, as the paragraph after this list
   describes.

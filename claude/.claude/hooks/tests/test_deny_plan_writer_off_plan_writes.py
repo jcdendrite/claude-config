@@ -329,7 +329,7 @@ class TestPlanWriterDenied:
         _assert_denied(_run_gate(payload))
 
     def test_source_path_with_empty_cwd_emits_one_denial(self, linked_worktree_with_plan):
-        """An absolute path, so only the empty-.cwd guard can deny first. `git -C ""` is a
+        """An absolute path, so only the absolute-cwd guard can deny first. `git -C ""` is a
         no-op, so the repository root would come from the hook process's cwd if the guard
         did not exit."""
         fixture = linked_worktree_with_plan
@@ -582,20 +582,30 @@ class TestPlanWriterDenied:
         )
 
     def test_empty_cwd_denied(self, linked_worktree_with_plan):
-        """cwd is passed to the hook process so only the empty-.cwd guard can deny."""
+        """cwd is passed to the hook process so only the absolute-cwd guard can deny."""
         fixture = linked_worktree_with_plan
         payload = edit_input(str(fixture["plan"]), agent_type=PLAN_WRITER, cwd="")
         _assert_denied(_run_gate(payload, hook_process_cwd=fixture["worktree"]))
 
+    def test_relative_cwd_denied(self, linked_worktree_with_plan):
+        """The hook process sits in the repo holding the plan, so only the
+        absolute-cwd guard can deny a `.` cwd."""
+        fixture = linked_worktree_with_plan
+        payload = edit_input(str(fixture["plan"]), agent_type=PLAN_WRITER, cwd=".")
+        _assert_denied(_run_gate(payload, hook_process_cwd=fixture["worktree"]))
+
     def test_cwd_outside_any_repository_denied(self, linked_worktree_with_plan, tmp_path):
+        """The hook process cwd sits in the repo holding the plan, so only the
+        repo-root-unresolved guard can deny here."""
+        fixture = linked_worktree_with_plan
         outside_repo = tmp_path / "outside-any-repo"
         outside_repo.mkdir()
         payload = edit_input(
-            str(linked_worktree_with_plan["plan"]),
+            str(fixture["plan"]),
             agent_type=PLAN_WRITER,
             cwd=str(outside_repo),
         )
-        _assert_denied(_run_gate(payload))
+        _assert_denied(_run_gate(payload, hook_process_cwd=fixture["worktree"]))
 
     def test_relative_path_denied(self, linked_worktree_with_plan):
         """The hook process and .cwd both sit at the worktree root, so the

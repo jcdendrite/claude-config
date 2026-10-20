@@ -11,7 +11,7 @@
 #   - an empty or relative path
 #   - a path containing a newline
 #   - a path with a `.`, `..`, or empty segment
-#   - an empty cwd
+#   - an empty or relative cwd
 #   - a failed git or realpath call
 #   - a missing target
 #   - a target that is not a plan file directly under .claude/plans/
@@ -41,7 +41,7 @@
 #   - A payload without `.agent_type` reads as a non-plan-writer and passes.
 #     enforce-marker-script-shape.sh's header records the same dependency on
 #     the harness's identity fields.
-#   - Where this hook's file is not linked into the config directory, its
+#   - Where this hook's file is not linked into ~/.claude/hooks, its
 #     registration blocks every Edit, Write and MultiEdit call, for every
 #     caller, on Claude Code 2.1.295 or later.
 #   - On a Claude Code older than 2.1.295, an unlinked hook file does not run,
@@ -119,8 +119,8 @@ if [[ "${_LIB_NORMALIZED_PATH%/}" != "$FILE_PATH" ]]; then
   exit 0
 fi
 
-if [ -z "$CWD" ]; then
-  emit_deny "$PLAN_WRITER_SCOPE_RULE The payload carries no .cwd to resolve the repository from."
+if [[ "$CWD" != /* ]]; then
+  emit_deny "$PLAN_WRITER_SCOPE_RULE The payload carries no absolute .cwd to resolve the repository from."
   exit 0
 fi
 

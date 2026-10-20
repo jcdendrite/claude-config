@@ -5824,15 +5824,7 @@ _EMPTY_INPUT_SHA256_PREFIX = "e3b0c442"
 
 class TestPlanItStep5ContextCheckAndGrammarLiterals:
     """Wiring-presence tripwires for plan-it/SKILL.md Step 5 and plan-architect.md,
-    which are LLM-consumed prose, plus an execution test of Step 5's hash command.
-
-    The literal pin covers Step 5's Context-change check and the plan-grammar
-    literals Step 5 holds. The charter pins cover the consult
-    charter's never-call-`Edit` sentence and the plan-sections charter's
-    landed-edits return sentence and line-2 plan-path sentence. A future edit
-    that drops one fails here instead of silently loosening the check, the
-    consult boundary, or the splice contract.
-    """
+    which are LLM-consumed prose, plus an execution test of Step 5's hash command."""
 
     @staticmethod
     def _step5_context_hash_command() -> str:
