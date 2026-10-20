@@ -8714,8 +8714,8 @@ class TestLengthRatchetExceeded:
 #
 # Shared by the roster-membership predicates (_lib_is_review_only_agent,
 # _lib_is_no_gate_release_agent, _lib_is_reviewer_persona,
-# _lib_is_plan_writer_agent), collapsed to one helper following
-# _lib_words_start_with's flatten-as-positional-args idiom.
+# _lib_is_plan_writer_agent); the helper uses _lib_words_start_with's
+# flatten-as-positional-args idiom.
 
 
 def _list_contains(value: str, items: tuple[str, ...]) -> bool:
