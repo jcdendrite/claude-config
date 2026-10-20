@@ -70,6 +70,8 @@ TEST_FILES = (
     "test_transcript_judgment_pair.py",
     "test_transcript_skill_invocation.py",
     "test_transcript_skill_pair.py",
+    "test_transcript_pricing_session_helpers.py",
+    "test_transcript_session_pricing.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --
