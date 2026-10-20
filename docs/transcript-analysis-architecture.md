@@ -601,7 +601,7 @@ initial, follow-up, or explicit correction, the prompt-classification helpers on
 `_attribute_model_to_prompt`, `_truncate_prompt_text`), and the `_add_user_input_subparser`
 registration. Imports `corpus`, `redaction`, `render`, `scope`, and `struggle` all by module
 (attribute access), matching `cost.py`'s convention; `_classify_prompt` reads
-`struggle.STRUGGLE_PHRASES`. It scans `scope.PROJECTS_DIR` only, ignoring declared roots, and its
+`struggle.STRUGGLE_PHRASES`. It scans `scope.PROJECTS_DIR` only, ignoring declared roots. Its
 `--redact` map comes from `redaction._build_redact_map`'s default root. `_add_user_input_subparser`
 is the one name `build_parser()` reaches bare.
 
