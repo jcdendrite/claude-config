@@ -10,6 +10,7 @@ from helpers import HOOKS_DIR
 from transcript_analysis import (
     corpus,
     handoff_nudge,
+    handoff_signal_response,
     pricing,
 )
 
@@ -277,7 +278,7 @@ class TestParseNudgeLogEntriesRealHookLineContract:
         blocked = self._fire(tmp_path, transcript, env)
 
         assert blocked.returncode == 2
-        assert _mod.handoff_signal_response._HANDOFF_SIGNAL_HARD_BLOCK_TEXT in blocked.stderr
+        assert handoff_signal_response._HANDOFF_SIGNAL_HARD_BLOCK_TEXT in blocked.stderr
 
 
 class TestOperatorResponseLagFromLog:
