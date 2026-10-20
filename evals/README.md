@@ -515,6 +515,10 @@ Run them in this order:
   `mine-pr-comments` run, because every completed run rewrites that file.
 - **`mine-szz`** (source `szz`) blames the removed or modified non-markdown
   lines of each `fix|bug|regression` commit on first-parent `origin/main`.
+  It drops a candidate whose path does not exist at the introducing commit,
+  for example a file renamed after that commit or lines copied in through
+  `-C`, and prints that count as `path_absent_at_introducing_commit` on
+  stderr.
 
 Markdown files (skills, rules, `CLAUDE.md`, docs) are eligible through
 `review-round` and `pr-comment`. `defects.is_markdown_path` is the one

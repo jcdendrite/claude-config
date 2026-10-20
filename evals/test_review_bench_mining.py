@@ -4565,11 +4565,13 @@ class TestConfirmCli:
         defects.save_candidates(local_dir / "szz_candidates.json", pair if undescribed_first else pair[::-1])
         return repo, local_dir, tmp_path / "defects.json", fix_sha
 
-    def test_confirm_skips_one_unresolvable_candidate_but_processes_the_rest(self, tmp_path, monkeypatch):
+    def test_confirm_skips_one_unresolvable_candidate_but_processes_the_rest(self, tmp_path, monkeypatch, capsys):
         """One candidate whose commits are unreachable (rewritten history, a stale
         .local/ shortlist) must not crash confirmation for every other candidate
         in the same run, since public_git_text's `git show` (check=True) can raise
-        at its cmd_confirm call site."""
+        at its cmd_confirm call site. The unreachable head is reported as an
+        unreadable public git text, not an absent path, because the public-text
+        read runs before the path check."""
         repo, introducing_sha, fix_sha = _repo_whose_head_holds(tmp_path)
         monkeypatch.setattr(run_review_bench, "REPO_ROOT", repo)
 
@@ -4589,6 +4591,9 @@ class TestConfirmCli:
         run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
 
         assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-good"]
+        stderr = capsys.readouterr().err
+        assert "rejected c-bad -- could not read its public git text" in stderr
+        assert "does not exist at its introducing commit" not in stderr
 
     def test_confirm_aborts_without_overwriting_when_defects_file_changed_concurrently(self, tmp_path, monkeypatch):
         """cmd_confirm's read-modify-write of the committed defects.json must abort
