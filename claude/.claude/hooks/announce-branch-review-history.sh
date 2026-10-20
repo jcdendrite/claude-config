@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # hook-class: informational
 # SubagentStart hook: gives each plan-architect dispatch the branch's review-ledger
 # history, so a consult asked whether a foundation is wrong or a review loop is
@@ -12,7 +12,9 @@
 # The settings.json registration matches agent type `plan-architect`, and this hook re-checks
 # hook_event_name and agent_type itself.
 #
-# Fail-open: exit 0 on every path. A failed step emits the "unavailable" line or nothing,
+# Fail-open: once the script starts, every path exits 0.
+# A bash missing from PATH makes `env` exit 127 before the script starts (`docs/hooks.md` § "Bash version").
+# A failed step emits the "unavailable" line or nothing,
 # and plan-architect.md's guard tells the agent to report either as unverified.
 #
 # Known gaps are listed in the docs/hooks.md bullet for this hook.

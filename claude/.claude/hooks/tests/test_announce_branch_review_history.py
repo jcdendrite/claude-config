@@ -23,6 +23,7 @@ from helpers import (
 from validate_skill_structure import parse_frontmatter
 
 from .conftest import _seed_session
+from .test_bash_floor import SUB_FLOOR_BASH, requires_sub_floor_bash
 
 ANNOUNCE_HOOK = HOOKS_DIR / "announce-branch-review-history.sh"
 REGISTERED_COMMAND = "~/.claude/hooks/announce-branch-review-history.sh"
@@ -82,10 +83,12 @@ def _subagent_start_payload(cwd: Path, agent_type: str | None = None) -> str:
 
 
 def _run_hook_process(
-    stdin_text: str, home: Path, process_cwd: Path
+    stdin_text: str, home: Path, process_cwd: Path, *, path_prefix: Path | None = None
 ) -> subprocess.CompletedProcess:
     env = {**os.environ, "HOME": str(home)}
     env.pop("CLAUDE_CONFIG_DIR", None)
+    if path_prefix is not None:
+        env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
     return subprocess.run(
         [str(ANNOUNCE_HOOK)],
         input=stdin_text,
@@ -270,6 +273,25 @@ class TestAnnounceBranchReviewHistory:
         assert result.stdout == ""
         if worktree is not None:
             assert not (worktree / "agent-reviews").exists()
+
+    @requires_sub_floor_bash
+    def test_stays_silent_and_exits_zero_when_the_first_bash_on_path_is_below_the_floor(
+        self, isolated_home, tmp_path, outside_cwd
+    ):
+        worktree = _build_checkout(isolated_home, tmp_path / "checkouts", seed_row=False)
+        payload = _subagent_start_payload(worktree)
+        # Liveness control: the same payload announces under the ambient bash, so silence below comes from the below-floor bash.
+        control = _run_hook_process(payload, isolated_home, outside_cwd)
+        assert control.returncode == 0 and control.stdout, control.stderr
+        assert json.loads(control.stdout)["hookSpecificOutput"]["additionalContext"] == NOROWS_CONTEXT
+        sub_floor_bin = tmp_path / "sub-floor-bin"
+        sub_floor_bin.mkdir()
+        (sub_floor_bin / "bash").symlink_to(SUB_FLOOR_BASH)
+
+        result = _run_hook_process(payload, isolated_home, outside_cwd, path_prefix=sub_floor_bin)
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
 
     def test_plan_architect_guard_names_the_lead_phrase_the_hook_emits(
         self, isolated_home, tmp_path, outside_cwd
