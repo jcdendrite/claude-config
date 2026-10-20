@@ -627,14 +627,14 @@ class TestPathExistsAtCommit:
             seen_calls.append((argv, kwargs["cwd"]))
             return subprocess.CompletedProcess(argv, 0)
 
-        assert defects.path_exists_at_commit(tmp_path, _SHA_A, "src/app.py", run=cat_file_succeeds) is True
+        assert defects.path_exists_at_commit(tmp_path, _SHA_A, "src/app.py", run=cat_file_succeeds, env=None) is True
         assert seen_calls == [(["git", "cat-file", "-e", f"{_SHA_A}:src/app.py"], tmp_path)]
 
     def test_a_failed_cat_file_means_the_path_is_absent(self, tmp_path):
         def cat_file_fails(argv, **kwargs):
             raise subprocess.CalledProcessError(128, argv)
 
-        assert defects.path_exists_at_commit(tmp_path, _SHA_A, "src/app.py", run=cat_file_fails) is False
+        assert defects.path_exists_at_commit(tmp_path, _SHA_A, "src/app.py", run=cat_file_fails, env=None) is False
 
     @pytest.mark.parametrize(
         "failure",
@@ -646,7 +646,7 @@ class TestPathExistsAtCommit:
             raise failure
 
         with pytest.raises(type(failure)):
-            defects.path_exists_at_commit(tmp_path, _SHA_A, "src/app.py", run=git_fails)
+            defects.path_exists_at_commit(tmp_path, _SHA_A, "src/app.py", run=git_fails, env=None)
 
 
 class TestCheckDescriptionProvenance:
@@ -1256,7 +1256,7 @@ class TestMineSzzDegradesInsteadOfRaising:
         fix_sha = _commit(repo, "fix wrong value")
         _set_origin_main(repo, fix_sha)
 
-        def path_check_timing_out(repo_dir, commit, path):
+        def path_check_timing_out(repo_dir, commit, path, *, env):
             raise subprocess.TimeoutExpired(cmd="git cat-file", timeout=1.0)
 
         monkeypatch.setattr(mine_szz, "path_exists_at_commit", path_check_timing_out)
@@ -3969,6 +3969,22 @@ def _feed_answers(monkeypatch, *answers: str, terminal: bool = True) -> None:
     monkeypatch.setattr(sys, "stdin", io.StringIO("".join(f"{answer}\n" for answer in answers)))
 
 
+def _feed_answers_then_interrupt(monkeypatch, *answers: str) -> None:
+    """Like `_feed_answers`, but stdin raises KeyboardInterrupt, instead of reaching end of input, once the
+    answers run out."""
+    _feed_answers(monkeypatch, *answers)
+    remaining_answers = sys.stdin
+
+    class InterruptsOnceAnswersRunOut:
+        def readline(self):
+            line = remaining_answers.readline()
+            if not line:
+                raise KeyboardInterrupt
+            return line
+
+    monkeypatch.setattr(sys, "stdin", InterruptsOnceAnswersRunOut())
+
+
 def _pin_refs(repo: Path) -> list[str]:
     return _git(repo, "for-each-ref", "--format=%(refname)", "refs/review-bench/").split()
 
@@ -4224,8 +4240,9 @@ class TestConfirmCli:
         assert defects.load_confirmed_defects(defects_path) == []
         assert "rejected c-1 -- path must be a non-empty string" in capsys.readouterr().err
 
+    @pytest.mark.parametrize("source", sorted(defects.KNOWN_SOURCES))
     def test_confirm_rejects_a_candidate_whose_path_is_absent_at_its_head_before_any_prompt(
-        self, tmp_path, monkeypatch, capsys,
+        self, tmp_path, monkeypatch, capsys, source,
     ):
         """`added_by_the_fix.py` exists at the fix commit but not at the introducing commit."""
         repo, introducing_sha, fix_sha = _repo_whose_head_holds(tmp_path)
@@ -4235,7 +4252,7 @@ class TestConfirmCli:
         monkeypatch.setattr(run_review_bench, "REPO_ROOT", repo)
         local_dir = tmp_path / "local"
         defects.save_candidates(local_dir / "szz_candidates.json", [Candidate(**_candidate_kwargs(
-            id="c-1", base_commit=base_sha, head_commit=introducing_sha, fix_commit=fix_sha,
+            id="c-1", source=source, base_commit=base_sha, head_commit=introducing_sha, fix_commit=fix_sha,
             description="y was added late.", evidence={"path": "added_by_the_fix.py"},
         ))])
         defects_path = tmp_path / "defects.json"
@@ -4259,7 +4276,7 @@ class TestConfirmCli:
         )
         (candidate,) = defects.load_candidates(local_dir / "szz_candidates.json")
         assert candidate.base_commit != candidate.head_commit
-        assert not defects.path_exists_at_commit(repo, candidate.base_commit, "added_by_introducing.py")
+        assert not defects.path_exists_at_commit(repo, candidate.base_commit, "added_by_introducing.py", env=None)
         _feed_answers(monkeypatch, "y", "")
 
         assert run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path)) == 0
@@ -4275,10 +4292,10 @@ class TestConfirmCli:
         )
         path_exists_unpatched = defects.path_exists_at_commit
 
-        def path_check_timing_out_for_slow_py(repo_dir, commit, path):
+        def path_check_timing_out_for_slow_py(repo_dir, commit, path, **kwargs):
             if path == "slow.py":
                 raise subprocess.TimeoutExpired(["git", "cat-file"], 10.0)
-            return path_exists_unpatched(repo_dir, commit, path)
+            return path_exists_unpatched(repo_dir, commit, path, **kwargs)
 
         monkeypatch.setattr(defects, "path_exists_at_commit", path_check_timing_out_for_slow_py)
         _feed_answers(monkeypatch, "y", "")
@@ -4402,19 +4419,7 @@ class TestConfirmCli:
         repo, local_dir, defects_path, _fix_sha = self._undescribed_then_described_candidates(
             tmp_path, monkeypatch, undescribed_first=False,
         )
-        _feed_answers(monkeypatch, "y", "", "y")
-
-        class InterruptedAtTheDescription:
-            def __init__(self, answers: io.StringIO):
-                self.answers = answers
-
-            def readline(self):
-                line = self.answers.readline()
-                if not line:
-                    raise KeyboardInterrupt
-                return line
-
-        monkeypatch.setattr(sys, "stdin", InterruptedAtTheDescription(sys.stdin))
+        _feed_answers_then_interrupt(monkeypatch, "y", "", "y")
 
         assert run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path)) == 130
 
@@ -4733,19 +4738,7 @@ class TestConfirmCli:
 
     def test_ctrl_c_writes_and_pins_nothing_even_after_an_accepted_candidate(self, tmp_path, monkeypatch, capsys):
         repo, local_dir, defects_path, _fix_sha = self._two_passing_candidates(tmp_path, monkeypatch)
-        _feed_answers(monkeypatch, "y", "")
-
-        class InterruptedAfterFirstAnswer:
-            def __init__(self, first_answer: io.StringIO):
-                self.first_answer = first_answer
-
-            def readline(self):
-                line = self.first_answer.readline()
-                if not line:
-                    raise KeyboardInterrupt
-                return line
-
-        monkeypatch.setattr(sys, "stdin", InterruptedAfterFirstAnswer(sys.stdin))
+        _feed_answers_then_interrupt(monkeypatch, "y", "")
 
         exit_code = run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
 
@@ -4904,6 +4897,45 @@ class TestConfirmCli:
         assert exit_code == 2
         assert "1 candidate(s) awaiting the engineer at a terminal, 0 rejected" in capsys.readouterr().err
         assert not defects_path.exists()
+
+    def test_without_a_terminal_an_inherited_git_dir_does_not_make_a_present_path_read_as_absent(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        _repo, local_dir, defects_path, _fix_sha = _confirm_workspace(tmp_path, monkeypatch, {})
+        decoy_repo = _init_repo(tmp_path / "decoy")
+        _write(decoy_repo, "unrelated.py", "z = 1\n")
+        _commit(decoy_repo, "decoy commit")
+        monkeypatch.setenv("GIT_DIR", str(decoy_repo / ".git"))
+        _feed_answers(monkeypatch, terminal=False)
+
+        exit_code = run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
+
+        stderr = capsys.readouterr().err
+        assert exit_code == 2
+        assert "1 candidate(s) awaiting the engineer at a terminal, 0 rejected" in stderr
+        assert "does not exist at its introducing commit" not in stderr
+
+    def test_at_a_terminal_an_inherited_git_dir_does_not_redirect_the_subject_read_or_the_pin(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        repo, local_dir, defects_path, _fix_sha = _confirm_workspace(tmp_path, monkeypatch, {})
+        decoy_repo = _init_repo(tmp_path / "decoy")
+        _write(decoy_repo, "unrelated.py", "z = 1\n")
+        _commit(decoy_repo, "decoy commit")
+        monkeypatch.setenv("GIT_DIR", str(decoy_repo / ".git"))
+        _feed_answers(monkeypatch, "y", "")
+
+        exit_code = run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
+
+        # `_git` runs ambient, so the refs are read once GIT_DIR is gone.
+        monkeypatch.delenv("GIT_DIR")
+        stderr = capsys.readouterr().err
+        assert exit_code == 0
+        assert "could not read its commit subjects" not in stderr
+        assert "could not pin its fix commit" not in stderr
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-1"]
+        assert _pin_refs(repo) == [defects.defect_pin_ref("c-1")]
+        assert _pin_refs(decoy_repo) == []
 
     # --- terminal-unsafe text -----------------------------------------------
 

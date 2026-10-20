@@ -549,9 +549,9 @@ check against every `.local/` excerpt. It then prompts `[y/N/q]`. The prompt sho
 
 A candidate that shares its head, fix, and path with a candidate from another
 source is annotated with that candidate's ID, source, and status (confirmed,
-accepted this run, skipped this run, rejected by checks, or pending). The
-annotation never suppresses either candidate, and the engineer's `y` or `N`
-decides.
+accepted this run, skipped this run, rejected by checks, declined in an earlier
+run, or pending). The annotation never suppresses either candidate, and the
+engineer's `y` or `N` decides.
 
 A candidate with no description is triaged first and described after `y`: `y`
 prompts for a one-line description, which runs through the same provenance
@@ -609,10 +609,10 @@ prints model-derived text with control characters as backslash escapes.
 
 `confirm` needs a terminal on stdin. Without one it runs every check that
 needs no typed input, prints the rejections, writes and pins nothing, prints
-how many candidates await the engineer at a terminal, and exits 2 when any do.
-A candidate with no description that passes the schema checks counts as
-awaiting. No flag or environment variable supplies an answer in place of a
-terminal.
+how many candidates await the engineer at a terminal after `--source` and the
+declined IDs narrow them, and exits 2 when any do. A candidate with no
+description that passes the schema checks counts as awaiting. No flag or
+environment variable supplies an answer in place of a terminal.
 
 ### Fixtures and judge input
 
@@ -626,15 +626,17 @@ terminal.
   `--no-ext-diff --no-textconv --no-color`:
   - every local git call in `review_bench/fixture_repo.py`;
   - the recall judge's `git show` and `git diff`;
-  - the `git show` that `confirm`'s provenance check runs.
+  - every git call `confirm` makes: the provenance check's `git show`, the
+    path check's `git cat-file -e`, the commit-subject `git log`, and the
+    pin's `git update-ref`.
 
   Calls that run in your own checkout, such as the recall judge's `git show`
-  and `git diff` and the provenance check's `git show`, still read that
+  and `git diff` and each of `confirm`'s git calls, still read that
   checkout's local config and attributes.
 
-  The miners' git calls, the environment and preflight reads in
-  `review_bench/runner.py`, and `defects.py`'s `pin_defect_commits` and
-  `commit_subjects` read the engineer's setup. `review_bench/local_git.py`
+  The miners' git calls (including `review_bench/mine_szz.py`'s own path
+  check) and the environment and preflight reads in `review_bench/runner.py`
+  read the engineer's setup. `review_bench/local_git.py`
   holds the mechanism.
 - **Recall judge's fix diff.** One fix commit can hold fixes for many
   comments, so the recall judge's input shows the fix diff limited to the

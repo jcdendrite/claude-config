@@ -286,11 +286,12 @@ def _build_candidate(
     fix_date = canonical_fix_date(author_date)
     # The path comes from the fix commit's parent. A file renamed after the
     # introducing commit, or blamed in through `-C` from another file, has no
-    # such path at head_commit, and a defect must name a path the reviewer
-    # can open there. The parent lookup above resolved the commit, so any
-    # failed `cat-file -e` from here on counts as an absent path.
+    # such path at head_commit.
+    # A defect must name a path the reviewer can open there.
+    # The parent lookup above resolved the commit, so any failed `cat-file -e`
+    # from here on counts as an absent path.
     try:
-        path_is_present = path_exists_at_commit(repo_dir, introducing_sha, path)
+        path_is_present = path_exists_at_commit(repo_dir, introducing_sha, path, env=None)
     except _GIT_CALL_ERRORS:
         if stats is not None:
             stats.git_call_failures += 1

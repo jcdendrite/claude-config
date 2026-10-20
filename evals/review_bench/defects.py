@@ -478,7 +478,7 @@ def pin_defect_commits(repo_dir: Path, defect: ConfirmedDefect, *, run=subproces
     ref = defect_pin_ref(defect.id)
     run(
         ["git", "update-ref", ref, defect.fix_commit], cwd=repo_dir, capture_output=True, encoding="utf-8", errors="replace",
-        timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
+        timeout=_LOCAL_GIT_TIMEOUT_S, check=True, env=isolated_git_environment(),
     )
     return ref
 
@@ -493,7 +493,7 @@ def commit_subjects(repo_dir: Path, commits: Sequence[str], *, run=subprocess.ru
         _validate_sha("commit", commit)
     result = run(
         ["git", "log", "-z", "--no-walk=unsorted", "--format=%H %s", *dict.fromkeys(commits)], cwd=repo_dir,
-        capture_output=True, timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
+        capture_output=True, timeout=_LOCAL_GIT_TIMEOUT_S, check=True, env=isolated_git_environment(),
     )
     subjects = []
     for entry in result.stdout.decode("utf-8", errors="replace").split("\0"):
@@ -503,15 +503,18 @@ def commit_subjects(repo_dir: Path, commits: Sequence[str], *, run=subprocess.ru
     return subjects
 
 
-def path_exists_at_commit(repo_dir: Path, commit: str, path: str, *, run=subprocess.run) -> bool:
+def path_exists_at_commit(
+    repo_dir: Path, commit: str, path: str, *, run=subprocess.run, env: Mapping[str, str] | None,
+) -> bool:
     """Whether `path` exists in `commit`'s tree, from `git cat-file -e`.
-    The caller must pass a commit it has already resolved, because `cat-file -e`
+    The caller must pass a commit it has already resolved under the same
+    environment `env` names (None keeps the ambient one), because `cat-file -e`
     fails the same way for a missing commit as for a missing path. A timeout or
     an OS-level failure raises rather than reading as absent."""
     try:
         run(
             ["git", "cat-file", "-e", f"{commit}:{path}"], cwd=repo_dir, capture_output=True,
-            timeout=_LOCAL_GIT_TIMEOUT_S, check=True,
+            timeout=_LOCAL_GIT_TIMEOUT_S, check=True, env=env,
         )
     except subprocess.CalledProcessError:
         return False

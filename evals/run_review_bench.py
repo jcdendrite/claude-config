@@ -257,6 +257,7 @@ def _defect_passing_confirm_checks(candidate, excerpts_by_id: dict[str, str]):
     why it is rejected. Every printed field passes through
     `_escape_control_characters`."""
     from review_bench import defects
+    from review_bench.local_git import isolated_git_environment
 
     escaped_id = _escape_control_characters(candidate.id)
     try:
@@ -293,9 +294,11 @@ def _defect_passing_confirm_checks(candidate, excerpts_by_id: dict[str, str]):
         return None
 
     # Runs after the schema check, so the path is a validated string. The head commit's
-    # public text was read above, so a failed lookup here means the path is absent.
+    # public text was read above and resolved under the same environment, so a failed lookup here means the path is absent.
     try:
-        path_is_present = defects.path_exists_at_commit(REPO_ROOT, defect.head_commit, defect.path)
+        path_is_present = defects.path_exists_at_commit(
+            REPO_ROOT, defect.head_commit, defect.path, env=isolated_git_environment(),
+        )
     except subprocess.TimeoutExpired as exc:
         _print_git_failure_rejection(escaped_id, "check whether its path exists at its introducing commit", exc)
         return None
@@ -409,7 +412,7 @@ def _read_promotion_decision() -> str:
 
 def _confirmation_status(
     candidate_id: str, existing_ids: set[str], accepted_ids: set[str], declined_ids: set[str],
-    rejected_ids: set[str],
+    rejected_ids: set[str], previously_declined_ids: set[str],
 ) -> str:
     if candidate_id in existing_ids:
         return "confirmed"
@@ -419,6 +422,8 @@ def _confirmation_status(
         return "skipped this run"
     if candidate_id in rejected_ids:
         return "rejected by checks"
+    if candidate_id in previously_declined_ids:
+        return "declined in an earlier run"
     return "pending"
 
 
@@ -478,17 +483,36 @@ def _read_lens_choice(current_lens: str) -> str:
 
 def _load_declined_ids(declined_ids_path: Path) -> set[str]:
     """The candidate IDs a past `confirm` run recorded as declined, empty when
-    the file is absent. Raises ValueError when the file is not a JSON list of
-    strings."""
-    if not declined_ids_path.exists():
-        return set()
+    the file is absent. Raises ValueError when the file cannot be read or is not
+    a JSON list of strings."""
     try:
         recorded = json.loads(declined_ids_path.read_text())
-    except (OSError, ValueError) as exc:  # JSONDecodeError and UnicodeDecodeError are ValueErrors
+    except FileNotFoundError:
+        return set()
+    except OSError as exc:
+        raise ValueError(f"could not be read ({exc})") from exc
+    except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError are ValueErrors
         raise ValueError(f"could not be read as JSON ({exc})") from exc
     if not isinstance(recorded, list) or not all(isinstance(candidate_id, str) for candidate_id in recorded):
         raise ValueError("is not a JSON list of candidate IDs")
     return set(recorded)
+
+
+def _source_names(sources: Sequence[str]) -> str:
+    return ", ".join(sorted(set(sources)))
+
+
+def _from_sources_clause(sources: Sequence[str] | None) -> str:
+    return f" from source(s) {_source_names(sources)}" if sources else ""
+
+
+def _print_declined_skip_note(skipped_as_declined: int) -> None:
+    if skipped_as_declined:
+        print(
+            f"confirm: {skipped_as_declined} candidate(s) skipped as previously declined "
+            "-- pass --include-declined to be asked about them again",
+            file=sys.stderr,
+        )
 
 
 def _confirm_source_rank(candidate) -> int:
@@ -524,6 +548,17 @@ def cmd_confirm(args: argparse.Namespace) -> int:
     existing = defects.load_confirmed_defects(defects_path)
     existing_ids = {d.id for d in existing}
 
+    declined_ids_path = local_dir / _CONFIRM_DECLINED_IDS_FILENAME
+    try:
+        previously_declined_ids = _load_declined_ids(declined_ids_path)
+    except ValueError as exc:
+        print(
+            f"confirm: {_escape_control_characters(str(declined_ids_path))} "
+            f"{_escape_control_characters(str(exc))} -- fix or delete it and rerun; nothing prompted",
+            file=sys.stderr,
+        )
+        return 2
+
     passing: list[tuple[defects.Candidate, defects.ConfirmedDefect]] = []
     rejected = 0
     rejected_ids: set[str] = set()
@@ -540,27 +575,6 @@ def cmd_confirm(args: argparse.Namespace) -> int:
         else:
             passing.append((candidate, defect))
 
-    # No override: a rejected entry is never written, on this or any later run,
-    # until the engineer edits its own .local/ description and reruns confirm.
-    if not _stdin_is_terminal():
-        print(
-            f"confirm: {len(passing)} candidate(s) awaiting the engineer at a terminal, {rejected} rejected -- "
-            "nothing written or pinned; rerun confirm from an interactive terminal to approve",
-            file=sys.stderr,
-        )
-        return 2 if passing else 0
-
-    declined_ids_path = local_dir / _CONFIRM_DECLINED_IDS_FILENAME
-    try:
-        previously_declined_ids = _load_declined_ids(declined_ids_path)
-    except ValueError as exc:
-        print(
-            f"confirm: {_escape_control_characters(str(declined_ids_path))} "
-            f"{_escape_control_characters(str(exc))} -- fix or delete it and rerun; nothing prompted",
-            file=sys.stderr,
-        )
-        return 2
-
     # The sources, and the declined IDs, narrow only what is prompted. Every candidate above
     # still loaded, passed the checks, and fed `excerpts_by_id`.
     from_selected_sources = [(c, d) for c, d in passing if not args.source or c.source in args.source]
@@ -568,19 +582,26 @@ def cmd_confirm(args: argparse.Namespace) -> int:
         (c, d) for c, d in from_selected_sources
         if args.include_declined or c.id not in previously_declined_ids
     ]
+    # No override: a rejected entry is never written, on this or any later run,
+    # until the engineer edits its own .local/ description and reruns confirm.
+    if not _stdin_is_terminal():
+        _print_declined_skip_note(len(from_selected_sources) - len(to_prompt))
+        print(
+            f"confirm: {len(to_prompt)} candidate(s){_from_sources_clause(args.source)} awaiting the engineer at a terminal, "
+            f"{rejected} rejected -- "
+            "nothing written or pinned; rerun confirm from an interactive terminal to approve",
+            file=sys.stderr,
+        )
+        return 2 if to_prompt else 0
+
     approved: list[defects.ConfirmedDefect] = []
     accepted_ids: set[str] = set()
     declined_ids: set[str] = set()
     skipped = 0
     print(_CONFIRM_HEADER.format(count=len(to_prompt)), file=sys.stderr)
     if args.source:
-        print(f"confirm: prompting only for source(s) {', '.join(sorted(set(args.source)))}", file=sys.stderr)
-    if len(to_prompt) < len(from_selected_sources):
-        print(
-            f"confirm: {len(from_selected_sources) - len(to_prompt)} candidate(s) skipped as previously declined "
-            "-- pass --include-declined to be asked about them again",
-            file=sys.stderr,
-        )
+        print(f"confirm: prompting only for source(s) {_source_names(args.source)}", file=sys.stderr)
+    _print_declined_skip_note(len(from_selected_sources) - len(to_prompt))
     try:
         for candidate, defect in to_prompt:
             try:
@@ -597,7 +618,12 @@ def cmd_confirm(args: argparse.Namespace) -> int:
                 rejected_ids.add(candidate.id)
                 continue
             same_location_candidates = [
-                (other, _confirmation_status(other.id, existing_ids, accepted_ids, declined_ids, rejected_ids))
+                (
+                    other,
+                    _confirmation_status(
+                        other.id, existing_ids, accepted_ids, declined_ids, rejected_ids, previously_declined_ids,
+                    ),
+                )
                 for other in candidates_by_location[_cross_source_location(candidate)]
                 if other.source != candidate.source
             ]
@@ -1689,8 +1715,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_confirm.add_argument("--defects-path", default=str(DEFAULT_DEFECTS_PATH), help="The committed defect-set file.")
     p_confirm.add_argument(
         "--source", action="append", choices=_CONFIRM_SOURCE_ORDER,
-        help="Prompt only for candidates of this source (repeatable); default: every source. Every candidate "
-        "is still checked, and every excerpt still feeds the provenance check.",
+        help="Prompt only for candidates of this source (repeatable); default: every source.",
     )
     p_confirm.add_argument(
         "--include-declined", action="store_true",

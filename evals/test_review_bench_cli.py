@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import hashlib
-import io
 import json
 import math
 import os
@@ -35,6 +34,7 @@ from test_review_bench_mining import (
     _confirm_args,
     _confirm_workspace,
     _feed_answers,
+    _feed_answers_then_interrupt,
     _init_repo,
     _pin_refs,
     _write,
@@ -4348,25 +4348,31 @@ def _recorded_declined_ids(local_dir: Path) -> list[str]:
     return json.loads(_declined_ids_path(local_dir).read_text())
 
 
-def _lens_answers(monkeypatch: pytest.MonkeyPatch, *answers: str) -> None:
-    monkeypatch.setattr(sys, "stdin", io.StringIO("".join(f"{answer}\n" for answer in answers)))
-
-
 class TestReadLensChoice:
     def test_an_empty_line_keeps_the_current_lens(self, monkeypatch, capsys) -> None:
-        _lens_answers(monkeypatch, "")
+        _feed_answers(monkeypatch, "")
 
         assert run_review_bench._read_lens_choice("staff-sdet") == "staff-sdet"
 
         assert "lens [staff-sdet]: " in capsys.readouterr().err
 
+    def test_a_whitespace_only_line_keeps_the_current_lens(self, monkeypatch) -> None:
+        _feed_answers(monkeypatch, "   \t ")
+
+        assert run_review_bench._read_lens_choice("staff-sdet") == "staff-sdet"
+
     def test_a_valid_typed_lens_wins_over_the_current_lens(self, monkeypatch) -> None:
-        _lens_answers(monkeypatch, "ciso-reviewer")
+        _feed_answers(monkeypatch, "ciso-reviewer")
+
+        assert run_review_bench._read_lens_choice("staff-sdet") == "ciso-reviewer"
+
+    def test_whitespace_around_a_typed_lens_is_stripped(self, monkeypatch) -> None:
+        _feed_answers(monkeypatch, "  ciso-reviewer  ")
 
         assert run_review_bench._read_lens_choice("staff-sdet") == "ciso-reviewer"
 
     def test_an_invalid_entry_prints_the_allowed_lenses_and_asks_again(self, monkeypatch, capsys) -> None:
-        _lens_answers(monkeypatch, "not-a-lens", "ciso-reviewer")
+        _feed_answers(monkeypatch, "not-a-lens", "ciso-reviewer")
 
         assert run_review_bench._read_lens_choice("staff-sdet") == "ciso-reviewer"
 
@@ -4377,14 +4383,14 @@ class TestReadLensChoice:
         assert stderr.count("lens [staff-sdet]: ") == 2
 
     def test_three_invalid_entries_give_up_without_reading_a_fourth(self, monkeypatch) -> None:
-        _lens_answers(monkeypatch, "bad-1", "bad-2", "bad-3", "ciso-reviewer")
+        _feed_answers(monkeypatch, "bad-1", "bad-2", "bad-3", "ciso-reviewer")
 
         assert run_review_bench._read_lens_choice("staff-sdet") == run_review_bench._LENS_GAVE_UP
 
         assert sys.stdin.read() == "ciso-reviewer\n"
 
     def test_end_of_input_is_reported_as_such(self, monkeypatch) -> None:
-        _lens_answers(monkeypatch)
+        _feed_answers(monkeypatch)
 
         assert run_review_bench._read_lens_choice("staff-sdet") == run_review_bench._LENS_END_OF_INPUT
 
@@ -4415,6 +4421,33 @@ class TestLoadDeclinedIds:
 
         with pytest.raises(ValueError):
             run_review_bench._load_declined_ids(declined_ids_path)
+
+
+class TestConfirmationStatus:
+    @pytest.mark.parametrize(
+        ("id_sets_holding_the_candidate", "expected_status"),
+        [
+            pytest.param({"existing_ids"}, "confirmed", id="existing"),
+            pytest.param({"accepted_ids"}, "accepted this run", id="accepted"),
+            pytest.param({"declined_ids"}, "skipped this run", id="declined"),
+            pytest.param({"rejected_ids"}, "rejected by checks", id="rejected"),
+            pytest.param(set(), "declined in an earlier run", id="previously-declined-alone"),
+        ],
+    )
+    def test_an_earlier_run_decline_reads_as_such_only_when_no_other_outcome_is_recorded(
+        self, id_sets_holding_the_candidate: set[str], expected_status: str,
+    ) -> None:
+        candidate_id = "candidate-1"
+        id_sets = {
+            name: {candidate_id} if name in id_sets_holding_the_candidate else set()
+            for name in ("existing_ids", "accepted_ids", "declined_ids", "rejected_ids")
+        }
+
+        status = run_review_bench._confirmation_status(
+            candidate_id, **id_sets, previously_declined_ids={candidate_id},
+        )
+
+        assert status == expected_status
 
 
 class TestConfirmRemembersDeclinedCandidates:
@@ -4468,17 +4501,7 @@ class TestConfirmRemembersDeclinedCandidates:
 
     def test_ctrl_c_records_nothing_even_after_an_n(self, tmp_path: Path, monkeypatch) -> None:
         _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
-        _feed_answers(monkeypatch, "n")
-        answers = sys.stdin
-
-        class InterruptedAfterTheFirstAnswer:
-            def readline(self) -> str:
-                line = answers.readline()
-                if not line:
-                    raise KeyboardInterrupt
-                return line
-
-        monkeypatch.setattr(sys, "stdin", InterruptedAfterTheFirstAnswer())
+        _feed_answers_then_interrupt(monkeypatch, "n")
 
         assert _run_confirm(local_dir, defects_path) == 130
 
@@ -4557,6 +4580,94 @@ class TestConfirmRemembersDeclinedCandidates:
         _feed_answers(monkeypatch)  # a rerun loads every shortlist, and would crash on a mis-matched glob
         assert _run_confirm(local_dir, defects_path) == 0
 
+    def test_a_sibling_in_the_declined_file_reads_declined_in_an_earlier_run_and_one_outside_it_reads_pending(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "pr-comment"}, {"source": "review-round"},
+        )
+        _declined_ids_path(local_dir).write_text('["c-2"]')
+        _feed_answers(monkeypatch, "n")
+
+        _run_confirm(local_dir, defects_path, "--source", "szz")
+
+        stderr = capsys.readouterr().err
+        assert "c-2 (pr-comment): declined in an earlier run" in stderr
+        assert "c-3 (review-round): pending" in stderr
+
+    def test_without_a_terminal_every_candidate_declined_or_outside_source_exits_0_with_none_awaiting(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "pr-comment"},
+        )
+        _declined_ids_path(local_dir).write_text('["c-1"]')
+        _feed_answers(monkeypatch, terminal=False)
+
+        assert _run_confirm(local_dir, defects_path, "--source", "szz") == 0
+
+        stderr = capsys.readouterr().err
+        assert "0 candidate(s) from source(s) szz awaiting the engineer at a terminal" in stderr
+        assert "1 candidate(s) skipped as previously declined" in stderr
+
+    def test_without_a_terminal_a_candidate_left_after_the_narrowing_counts_and_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "szz"}, {"source": "szz"}, {"source": "pr-comment"},
+        )
+        _declined_ids_path(local_dir).write_text('["c-1"]')
+        _feed_answers(monkeypatch, terminal=False)
+
+        assert _run_confirm(local_dir, defects_path, "--source", "szz") == 2
+
+        stderr = capsys.readouterr().err
+        assert "1 candidate(s) from source(s) szz awaiting the engineer at a terminal" in stderr
+        assert "1 candidate(s) skipped as previously declined" in stderr
+
+    def test_without_a_terminal_include_declined_counts_a_recorded_candidate_as_awaiting_and_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _declined_ids_path(local_dir).write_text('["c-1"]')
+        _feed_answers(monkeypatch, terminal=False)
+
+        assert _run_confirm(local_dir, defects_path, "--include-declined") == 2
+
+        stderr = capsys.readouterr().err
+        assert "1 candidate(s) awaiting the engineer at a terminal" in stderr
+        assert "previously declined" not in stderr
+
+    def test_a_sibling_skipped_this_run_reads_skipped_this_run_not_declined_in_an_earlier_run(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(
+            tmp_path, monkeypatch, {"source": "review-round"}, {"source": "pr-comment"},
+        )
+        _declined_ids_path(local_dir).write_text('["c-1"]')
+        _feed_answers(monkeypatch, "n", "n")
+        # c-1 is answered before c-2 is shown, so c-2 lists c-1 as skipped this run.
+        monkeypatch.setattr(run_review_bench, "_CONFIRM_SOURCE_ORDER", ("review-round", "pr-comment"))
+
+        assert _run_confirm(local_dir, defects_path, "--include-declined") == 0
+
+        stderr = capsys.readouterr().err
+        assert "c-1 (review-round): skipped this run" in stderr
+        assert "declined in an earlier run" not in stderr
+
+    def test_without_a_terminal_an_unreadable_declined_file_exits_2_with_the_fix_or_delete_line(
+        self, tmp_path: Path, monkeypatch, capsys,
+    ) -> None:
+        _, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {})
+        _declined_ids_path(local_dir).write_text("{not json")
+        _feed_answers(monkeypatch, terminal=False)
+
+        assert _run_confirm(local_dir, defects_path) == 2
+
+        stderr = capsys.readouterr().err
+        assert "fix or delete it" in stderr
+        assert "awaiting the engineer" not in stderr
+
 
 class TestConfirmLensPrompt:
     def test_a_typed_lens_reaches_the_written_defect(self, tmp_path: Path, monkeypatch, capsys) -> None:
@@ -4597,17 +4708,7 @@ class TestConfirmLensPrompt:
 
     def test_ctrl_c_at_the_lens_prompt_persists_and_approves_nothing(self, tmp_path: Path, monkeypatch) -> None:
         repo, local_dir, defects_path, _ = _confirm_workspace(tmp_path, monkeypatch, {}, {})
-        _feed_answers(monkeypatch, "n", "y")
-        answers = sys.stdin
-
-        class InterruptedAtTheLensPrompt:
-            def readline(self) -> str:
-                line = answers.readline()
-                if not line:
-                    raise KeyboardInterrupt
-                return line
-
-        monkeypatch.setattr(sys, "stdin", InterruptedAtTheLensPrompt())
+        _feed_answers_then_interrupt(monkeypatch, "n", "y")
 
         assert _run_confirm(local_dir, defects_path) == 130
 
