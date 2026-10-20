@@ -4,14 +4,20 @@ fidelity, auto-create, idempotence, degenerate corpora, concurrency, and CLI
 wiring -- see test_transcript_cost_ledger_record_gates.py for the --record
 refusal-gate seam this file does not cover.
 """
-import importlib.util
 import stat
-import sys
 import threading
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    cost,
+    cost_ledger,
+    render,
+    review_trace,
+    reviewer_yield,
+    scope,
+)
 
 from .conftest import (
     _agent_use,
@@ -29,15 +35,6 @@ from .conftest import (
     _write_subagent_dispatch,
     _write_subagent_jsonl,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _reviewer_dispatch_records(
@@ -65,12 +62,12 @@ class TestCostLedgerPathResolution:
     def test_override_absolute_honored(self, monkeypatch, tmp_path):
         override = tmp_path / "custom-ledger-location" / "cost-ledger.md"
         monkeypatch.setenv("COST_LEDGER_PATH", str(override))
-        assert _mod.cost_ledger._cost_ledger_path() == override
+        assert cost_ledger._cost_ledger_path() == override
 
     def test_override_relative_raises_value_error(self, monkeypatch):
         monkeypatch.setenv("COST_LEDGER_PATH", "relative/cost-ledger.md")
         with pytest.raises(ValueError, match="must be an absolute path"):
-            _mod.cost_ledger._cost_ledger_path()
+            cost_ledger._cost_ledger_path()
 
     def test_record_with_relative_override_exits_1_with_no_raw_value(
         self, fake_projects, monkeypatch, capsys,
@@ -83,7 +80,7 @@ class TestCostLedgerPathResolution:
         monkeypatch.setenv("COST_LEDGER_PATH", "relative/cost-ledger.md")
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
 
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
@@ -96,7 +93,7 @@ class TestCostLedgerPathResolution:
         monkeypatch.delenv("COST_LEDGER_PATH", raising=False)
         cfg_dir = tmp_path / "isolated-claude-config"
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
-        assert _mod.cost_ledger._cost_ledger_path() == cfg_dir / "cost-ledger.md"
+        assert cost_ledger._cost_ledger_path() == cfg_dir / "cost-ledger.md"
 
 
 class TestCostLedgerReadMode:
@@ -107,12 +104,12 @@ class TestCostLedgerReadMode:
         row for any machine, as a recording gap."""
         existing = _cost_ledger_row(week="2026-W20", machine="m1")
         cost_ledger_file.write_text(
-            cost_ledger_file.read_text() + _mod.cost_ledger._format_cost_ledger_row(existing) + "\n"
+            cost_ledger_file.read_text() + cost_ledger._format_cost_ledger_row(existing) + "\n"
         )
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),  # 2026-W23
         ])
-        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
+        cost_ledger._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
         out = capsys.readouterr().out
         assert "2026-W20" in out
         assert "m1" in out
@@ -122,9 +119,9 @@ class TestCostLedgerReadMode:
     def test_read_mode_missing_ledger_file_refuses(self, fake_projects, tmp_path, monkeypatch):
         """A missing docs/cost-ledger.md refuses rather than silently
         reporting an empty ledger — the file is never lazily created."""
-        monkeypatch.setattr(_mod.cost_ledger, "_cost_ledger_path", lambda: tmp_path / "absent-cost-ledger.md")
+        monkeypatch.setattr(cost_ledger, "_cost_ledger_path", lambda: tmp_path / "absent-cost-ledger.md")
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
         assert exc_info.value.code != 0
 
     def test_read_mode_missing_ledger_file_prints_never_recorded_wording(
@@ -134,9 +131,9 @@ class TestCostLedgerReadMode:
         actually reached and printed on this code path, not just present
         somewhere in source — see the source-grep tripwire below for the
         companion check that the old wording doesn't silently return."""
-        monkeypatch.setattr(_mod.cost_ledger, "_cost_ledger_path", lambda: tmp_path / "absent-cost-ledger.md")
+        monkeypatch.setattr(cost_ledger, "_cost_ledger_path", lambda: tmp_path / "absent-cost-ledger.md")
         with pytest.raises(SystemExit):
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
         err = capsys.readouterr().err
         assert "no ledger recorded here yet" in err
 
@@ -144,7 +141,7 @@ class TestCostLedgerReadMode:
         """Source-grep tripwire, not a behavioral guarantee (see the
         behavioral test above): pins against the literal old message text
         silently reappearing."""
-        assert "ledger file not found" not in Path(_mod.cost_ledger.__file__).read_text()
+        assert "ledger file not found" not in Path(cost_ledger.__file__).read_text()
 
     def test_format_read_row_renders_exact_fixed_width_columns(self):
         """_format_cost_ledger_read_row's fixed-width terminal line, checked
@@ -155,7 +152,7 @@ class TestCostLedgerReadMode:
             week="2026-W20", machine="m1", usd=1234.56, context_pct=12.3, opus_pct=45.6,
             ge200k_pct=12.3, denials=7, reviewer_gap_pp=-3.2, note="rolled out F3 fix",
         )
-        assert _mod.cost_ledger._format_cost_ledger_read_row(row) == (
+        assert cost_ledger._format_cost_ledger_read_row(row) == (
             "2026-W20   m1        2026-08-02      1,234.56     12.3%   45.6%    12.3%"
             "        7       -3.2pp  rolled out F3 fix"
         )
@@ -165,10 +162,10 @@ class TestCostLedgerReadMode:
         as a single whitespace-delimited token, same as a numeric gap."""
         row = _cost_ledger_row(
             week="2026-W20", machine="m1", usd=1234.56, context_pct=12.3, opus_pct=45.6,
-            ge200k_pct=12.3, denials=7, reviewer_gap_pp=_mod.reviewer_yield._REVIEWER_YIELD_INSUFFICIENT,
+            ge200k_pct=12.3, denials=7, reviewer_gap_pp=reviewer_yield._REVIEWER_YIELD_INSUFFICIENT,
             note="rolled out F3 fix",
         )
-        assert _mod.cost_ledger._format_cost_ledger_read_row(row) == (
+        assert cost_ledger._format_cost_ledger_read_row(row) == (
             "2026-W20   m1        2026-08-02      1,234.56     12.3%   45.6%    12.3%"
             "        7 insufficient  rolled out F3 fix"
         )
@@ -189,7 +186,7 @@ class TestCostLedgerReadMode:
         roots_file.write_text(f"{other}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
-        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
+        cost_ledger._cost_ledger_report(_cost_ledger_args(), date(2026, 6, 3))
         out = capsys.readouterr().out
         assert "COST LEDGER SOURCES (" in out
         assert "2 roots" in out
@@ -199,8 +196,8 @@ class TestCostLedgerSerializationRoundTrip:
     @staticmethod
     def _table(row_line: str) -> str:
         return (
-            _mod.cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
-            + _mod.cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
+            cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
+            + cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
             + row_line + "\n"
         )
 
@@ -212,8 +209,8 @@ class TestCostLedgerSerializationRoundTrip:
             week="2026-W20", machine="m1", usd=1234.56, context_pct=12.3, opus_pct=45.6,
             ge200k_pct=12.3, denials=7, reviewer_gap_pp=-3.2, note="rolled out F3 fix",
         )
-        line = _mod.cost_ledger._format_cost_ledger_row(row)
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(self._table(line))
+        line = cost_ledger._format_cost_ledger_row(row)
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(self._table(line))
         assert rows == [row]
 
     def test_unmeasured_gap_and_empty_note_round_trip(self):
@@ -221,8 +218,8 @@ class TestCostLedgerSerializationRoundTrip:
         round-trip through the markdown line format unchanged."""
         row = _cost_ledger_row(usd=0.0, context_pct=0.0, opus_pct=0.0, ge200k_pct=0.0,
                                 denials=0, reviewer_gap_pp=None, note="")
-        line = _mod.cost_ledger._format_cost_ledger_row(row)
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(self._table(line))
+        line = cost_ledger._format_cost_ledger_row(row)
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(self._table(line))
         assert rows == [row]
 
     def test_insufficient_gap_sentinel_round_trips(self):
@@ -230,9 +227,9 @@ class TestCostLedgerSerializationRoundTrip:
         markdown line format unchanged, distinct from an unmeasured (None)
         gap -- both are non-numeric, but only one has a nonzero Active
         denominator on either side."""
-        row = _cost_ledger_row(reviewer_gap_pp=_mod.reviewer_yield._REVIEWER_YIELD_INSUFFICIENT)
-        line = _mod.cost_ledger._format_cost_ledger_row(row)
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(self._table(line))
+        row = _cost_ledger_row(reviewer_gap_pp=reviewer_yield._REVIEWER_YIELD_INSUFFICIENT)
+        line = cost_ledger._format_cost_ledger_row(row)
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(self._table(line))
         assert rows == [row]
 
     def test_note_with_isolated_brackets_round_trips(self):
@@ -241,8 +238,8 @@ class TestCostLedgerSerializationRoundTrip:
         markdown-link regex's negative boundary, not just its positive
         matches."""
         row = _cost_ledger_row(note="fix [WIP] rollout")
-        line = _mod.cost_ledger._format_cost_ledger_row(row)
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(self._table(line))
+        line = cost_ledger._format_cost_ledger_row(row)
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(self._table(line))
         assert rows == [row]
 
 
@@ -250,29 +247,29 @@ class TestCostLedgerParserHostility:
     @staticmethod
     def _table(row_line: str) -> str:
         return (
-            _mod.cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
-            + _mod.cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
+            cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
+            + cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
             + row_line + "\n"
         )
 
     def test_wrong_column_count_rejected(self):
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="expected 10 columns"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(self._table("| 2026-W20 | m1 | too | few |"))
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="expected 10 columns"):
+            cost_ledger._parse_cost_ledger_file_text(self._table("| 2026-W20 | m1 | too | few |"))
 
     def test_non_iso_week_label_rejected(self):
-        row = _mod.cost_ledger._format_cost_ledger_row(_cost_ledger_row(week="2026-W99"))
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="malformed week label"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(self._table(row))
+        row = cost_ledger._format_cost_ledger_row(_cost_ledger_row(week="2026-W99"))
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="malformed week label"):
+            cost_ledger._parse_cost_ledger_file_text(self._table(row))
 
     def test_non_numeric_percentage_rejected(self):
         row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 12.x% | 1.0% | 1.0% | 0 |  |  |"
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="non-numeric context_pct"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(self._table(row))
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="non-numeric context_pct"):
+            cost_ledger._parse_cost_ledger_file_text(self._table(row))
 
     def test_percentage_missing_trailing_percent_sign_rejected(self):
         row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | not-a-pct | 1.0% | 1.0% | 0 |  |  |"
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="malformed context_pct"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(self._table(row))
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="malformed context_pct"):
+            cost_ledger._parse_cost_ledger_file_text(self._table(row))
 
     def test_pipe_inside_a_cell_rejected_as_wrong_column_count(self):
         """A raw, unescaped '|' inside note (never a supported escape) splits
@@ -280,70 +277,70 @@ class TestCostLedgerParserHostility:
         as any other malformed row — no separate pipe-detection code path
         is needed."""
         row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 |  | rolled out | oops |"
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="expected 10 columns"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(self._table(row))
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="expected 10 columns"):
+            cost_ledger._parse_cost_ledger_file_text(self._table(row))
 
     def test_note_with_ansi_escape_byte_rejected(self):
         """A non-printable-ASCII byte in note (e.g. an ANSI/OSC terminal
         escape sequence) is rejected by the canonical parser itself, not
         only by --record-time validation -- a hand-edited or PR-introduced
         row must be held to the same contract."""
-        row = _mod.cost_ledger._format_cost_ledger_row(_cost_ledger_row(note="\x1b]0;PWNED\x07\x1b[2J\x1b[H"))
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="malformed note"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(self._table(row))
+        row = cost_ledger._format_cost_ledger_row(_cost_ledger_row(note="\x1b]0;PWNED\x07\x1b[2J\x1b[H"))
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="malformed note"):
+            cost_ledger._parse_cost_ledger_file_text(self._table(row))
 
     def test_note_with_markdown_image_syntax_rejected(self):
         """A markdown image reference in note is rejected by the canonical
         parser -- docs/cost-ledger.md is rendered by GitHub, so an image
         reference would beacon an external server on every view."""
-        row = _mod.cost_ledger._format_cost_ledger_row(_cost_ledger_row(note="![](https://example.com/t.png)"))
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="malformed note"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(self._table(row))
+        row = cost_ledger._format_cost_ledger_row(_cost_ledger_row(note="![](https://example.com/t.png)"))
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="malformed note"):
+            cost_ledger._parse_cost_ledger_file_text(self._table(row))
 
     def test_note_with_markdown_link_syntax_rejected(self):
         """A plain markdown link (no leading '!') in note is rejected by the
         canonical parser -- docs/cost-ledger.md is rendered by GitHub, so a
         link would beacon an external server on every view just as an image
         reference would."""
-        row = _mod.cost_ledger._format_cost_ledger_row(_cost_ledger_row(note="[click here](https://example.com/t)"))
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="malformed note"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(self._table(row))
+        row = cost_ledger._format_cost_ledger_row(_cost_ledger_row(note="[click here](https://example.com/t)"))
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="malformed note"):
+            cost_ledger._parse_cost_ledger_file_text(self._table(row))
 
     def test_gap_sentinel_case_variant_rejected(self):
         """A case-variant near-miss of the "insufficient" sentinel doesn't
         silently match it -- it falls through to the trailing-'pp' check and
         is rejected like any other malformed value."""
         row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | Insufficient |  |"
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="expected a trailing 'pp'"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(self._table(row))
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="expected a trailing 'pp'"):
+            cost_ledger._parse_cost_ledger_file_text(self._table(row))
 
     def test_gap_missing_trailing_pp_suffix_rejected(self):
         row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | 5.0 |  |"
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="expected a trailing 'pp'"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(self._table(row))
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="expected a trailing 'pp'"):
+            cost_ledger._parse_cost_ledger_file_text(self._table(row))
 
     def test_gap_non_finite_after_pp_suffix_rejected(self):
         row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | nanpp |  |"
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="non-finite reviewer_gap_pp"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(self._table(row))
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="non-finite reviewer_gap_pp"):
+            cost_ledger._parse_cost_ledger_file_text(self._table(row))
 
     def test_gap_empty_prefix_before_pp_suffix_rejected(self):
         row = "| 2026-W20 | m1 | 2026-08-02 | 1.00 | 1.0% | 1.0% | 1.0% | 0 | pp |  |"
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="non-numeric reviewer_gap_pp"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(self._table(row))
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="non-numeric reviewer_gap_pp"):
+            cost_ledger._parse_cost_ledger_file_text(self._table(row))
 
     def test_unresolved_merge_conflict_marker_rejected(self):
         text = (
-            _mod.cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
-            + _mod.cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
+            cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
+            + cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
             + "<<<<<<< HEAD\n"
-            + _mod.cost_ledger._format_cost_ledger_row(_cost_ledger_row(machine="m1")) + "\n"
+            + cost_ledger._format_cost_ledger_row(_cost_ledger_row(machine="m1")) + "\n"
             + "=======\n"
-            + _mod.cost_ledger._format_cost_ledger_row(_cost_ledger_row(machine="m2")) + "\n"
+            + cost_ledger._format_cost_ledger_row(_cost_ledger_row(machine="m2")) + "\n"
             + ">>>>>>> branch\n"
         )
-        with pytest.raises(_mod.cost_ledger._CostLedgerParseError, match="merge-conflict marker"):
-            _mod.cost_ledger._parse_cost_ledger_file_text(text)
+        with pytest.raises(cost_ledger._CostLedgerParseError, match="merge-conflict marker"):
+            cost_ledger._parse_cost_ledger_file_text(text)
 
 
 class TestReviewerGapPPFloor:
@@ -353,37 +350,37 @@ class TestReviewerGapPPFloor:
     @staticmethod
     def _agg2(*, findings_active: int, findings_edited: int, zero_active: int, zero_edited: int) -> dict:
         return {
-            ("staff-backend-engineer", _mod.reviewer_yield._REVIEWER_VERDICT_FINDINGS_FOUND): {
+            ("staff-backend-engineer", reviewer_yield._REVIEWER_VERDICT_FINDINGS_FOUND): {
                 "cited": findings_active, "active": findings_active, "edited": findings_edited,
             },
-            ("staff-backend-engineer", _mod.reviewer_yield._REVIEWER_VERDICT_ZERO_FINDING): {
+            ("staff-backend-engineer", reviewer_yield._REVIEWER_VERDICT_ZERO_FINDING): {
                 "cited": zero_active, "active": zero_active, "edited": zero_edited,
             },
         }
 
     def test_both_arms_below_floor_returns_insufficient(self):
         agg2 = self._agg2(findings_active=9, findings_edited=9, zero_active=9, zero_edited=0)
-        assert _mod.cost_ledger._reviewer_gap_pp(agg2) == _mod.reviewer_yield._REVIEWER_YIELD_INSUFFICIENT
+        assert cost_ledger._reviewer_gap_pp(agg2) == reviewer_yield._REVIEWER_YIELD_INSUFFICIENT
 
     def test_both_arms_at_floor_returns_a_numeric_gap(self):
         agg2 = self._agg2(findings_active=10, findings_edited=10, zero_active=10, zero_edited=0)
-        assert _mod.cost_ledger._reviewer_gap_pp(agg2) == pytest.approx(100.0)
+        assert cost_ledger._reviewer_gap_pp(agg2) == pytest.approx(100.0)
 
     def test_zero_finding_arm_under_floor_returns_insufficient_even_when_findings_arm_clears_it(self):
         agg2 = self._agg2(findings_active=10, findings_edited=10, zero_active=9, zero_edited=0)
-        assert _mod.cost_ledger._reviewer_gap_pp(agg2) == _mod.reviewer_yield._REVIEWER_YIELD_INSUFFICIENT
+        assert cost_ledger._reviewer_gap_pp(agg2) == reviewer_yield._REVIEWER_YIELD_INSUFFICIENT
 
     def test_findings_arm_under_floor_returns_insufficient_even_when_zero_arm_clears_it(self):
         agg2 = self._agg2(findings_active=9, findings_edited=9, zero_active=10, zero_edited=0)
-        assert _mod.cost_ledger._reviewer_gap_pp(agg2) == _mod.reviewer_yield._REVIEWER_YIELD_INSUFFICIENT
+        assert cost_ledger._reviewer_gap_pp(agg2) == reviewer_yield._REVIEWER_YIELD_INSUFFICIENT
 
     def test_zero_finding_arm_at_zero_active_returns_none_even_when_findings_arm_is_above_floor(self):
         agg2 = self._agg2(findings_active=20, findings_edited=10, zero_active=0, zero_edited=0)
-        assert _mod.cost_ledger._reviewer_gap_pp(agg2) is None
+        assert cost_ledger._reviewer_gap_pp(agg2) is None
 
     def test_zero_finding_arm_at_zero_active_returns_none_even_when_findings_arm_is_below_floor(self):
         agg2 = self._agg2(findings_active=5, findings_edited=2, zero_active=0, zero_edited=0)
-        assert _mod.cost_ledger._reviewer_gap_pp(agg2) is None
+        assert cost_ledger._reviewer_gap_pp(agg2) is None
 
 
 class TestCostLedgerRecordParity:
@@ -435,16 +432,16 @@ class TestCostLedgerRecordParity:
         subagent_denial["isSidechain"] = True
         _write_subagent_jsonl(proj, session_id, "denial-agent", [subagent_denial])
 
-        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         capsys.readouterr()
 
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 1
         row = rows[0]
         assert row["week"] == "2026-W23"
 
-        cost_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
-        cost_weeks, _u, _t = _mod.cost.compute_cost_trend_data(cost_iter)
+        cost_iter, _scope = scope._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
+        cost_weeks, _u, _t = cost.compute_cost_trend_data(cost_iter)
         week_data = cost_weeks["2026-W23"]
         assert row["usd"] == pytest.approx(week_data["total"])
         # context_pct (context-class dollar share, GH-554 F1) and ge200k_pct
@@ -455,23 +452,23 @@ class TestCostLedgerRecordParity:
         # a regression that swaps or re-aliases the two would be caught by
         # either assertion failing, not just one.
         assert row["context_pct"] == pytest.approx(
-            _mod.render._pct_value(week_data["context_class_dollars"], week_data["total"])
+            render._pct_value(week_data["context_class_dollars"], week_data["total"])
         )
-        assert row["ge200k_pct"] == pytest.approx(_mod.render._pct_value(week_data["context_over"], week_data["total"]))
+        assert row["ge200k_pct"] == pytest.approx(render._pct_value(week_data["context_over"], week_data["total"]))
         assert row["context_pct"] == pytest.approx(0.0)
         assert row["ge200k_pct"] == pytest.approx(100.0)
-        assert row["opus_pct"] == pytest.approx(_mod.render._pct_value(week_data["opus"], week_data["total"]))
+        assert row["opus_pct"] == pytest.approx(render._pct_value(week_data["opus"], week_data["total"]))
 
-        week_start = _mod.datetime(2026, 6, 1, tzinfo=_mod.UTC).timestamp()
+        week_start = datetime(2026, 6, 1, tzinfo=UTC).timestamp()
         week_end = week_start + 7 * 86400
-        deny_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
-        deny_data = _mod.review_trace.compute_deny_summary_data(deny_iter, since_ts=week_start, until_ts=week_end)
+        deny_iter, _scope = scope._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
+        deny_data = review_trace.compute_deny_summary_data(deny_iter, since_ts=week_start, until_ts=week_end)
         assert row["denials"] == sum(deny_data["hook_counts"].values())
         assert row["denials"] == 2
 
-        reviewer_iter, _scope = _mod._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
-        reviewer_data = _mod.reviewer_yield.compute_reviewer_yield_data(reviewer_iter, since_ts=week_start, until_ts=week_end)
-        assert row["reviewer_gap_pp"] == pytest.approx(_mod.cost_ledger._reviewer_gap_pp(reviewer_data["agg2"]))
+        reviewer_iter, _scope = scope._resolve_project_scope(_cost_ledger_args(), "cost-ledger", include_subagents=True)
+        reviewer_data = reviewer_yield.compute_reviewer_yield_data(reviewer_iter, since_ts=week_start, until_ts=week_end)
+        assert row["reviewer_gap_pp"] == pytest.approx(cost_ledger._reviewer_gap_pp(reviewer_data["agg2"]))
         assert row["reviewer_gap_pp"] == pytest.approx(100.0)  # findings-found 100% edited vs. zero-finding 0%
 
     def test_record_row_carries_insufficient_sentinel_under_the_active_floor(
@@ -499,12 +496,12 @@ class TestCostLedgerRecordParity:
                               content=[_edit_use("ez1", path="src/unrelated.py")]))
         _write_jsonl(proj / f"{session_id}.jsonl", records)
 
-        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         capsys.readouterr()
 
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 1
-        assert rows[0]["reviewer_gap_pp"] == _mod.reviewer_yield._REVIEWER_YIELD_INSUFFICIENT
+        assert rows[0]["reviewer_gap_pp"] == reviewer_yield._REVIEWER_YIELD_INSUFFICIENT
 
     def test_denial_at_next_weeks_monday_boundary_excluded_from_this_weeks_row(
         self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
@@ -519,10 +516,10 @@ class TestCostLedgerRecordParity:
             _hook_deny("require-code-review", ts="2026-06-01T00:00:00.000Z"),  # week_start_ts: included
             _hook_deny("require-code-review", ts="2026-06-08T00:00:00.000Z"),  # week_end_ts: excluded
         ])
-        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         capsys.readouterr()
 
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 1
         assert rows[0]["week"] == "2026-W23"
         assert rows[0]["denials"] == 1
@@ -547,8 +544,8 @@ class TestCostLedgerWriteFidelity:
             _priced("claude-sonnet-5", input=333_333, ts="2026-06-01T10:00:00.000Z"),
             _priced_opus([], out=100, ts="2026-06-01T11:00:00.000Z"),
         ])
-        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 1
         assert 0 < rows[0]["opus_pct"] < 100
 
@@ -558,8 +555,8 @@ class TestCostLedgerWriteFidelity:
         permissions -- it should leave tempfile.mkstemp's own 0600 default
         in place instead."""
         ledger_path = tmp_path / "cost-ledger.md"
-        preamble = _mod.cost_ledger._COST_LEDGER_HEADER_LINE + "\n" + _mod.cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
-        _mod.cost_ledger._write_cost_ledger_file(ledger_path, preamble, [])
+        preamble = cost_ledger._COST_LEDGER_HEADER_LINE + "\n" + cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
+        cost_ledger._write_cost_ledger_file(ledger_path, preamble, [])
         assert stat.S_IMODE(ledger_path.stat().st_mode) == 0o600
 
     def test_write_to_existing_ledger_path_preserves_its_mode(self, tmp_path):
@@ -567,10 +564,10 @@ class TestCostLedgerWriteFidelity:
         -- is unaffected by the ledger_path.exists() guard added for the
         nonexistent-path case above."""
         ledger_path = tmp_path / "cost-ledger.md"
-        preamble = _mod.cost_ledger._COST_LEDGER_HEADER_LINE + "\n" + _mod.cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
+        preamble = cost_ledger._COST_LEDGER_HEADER_LINE + "\n" + cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
         ledger_path.write_text(preamble)
         ledger_path.chmod(0o640)
-        _mod.cost_ledger._write_cost_ledger_file(ledger_path, preamble, [])
+        cost_ledger._write_cost_ledger_file(ledger_path, preamble, [])
         assert stat.S_IMODE(ledger_path.stat().st_mode) == 0o640
 
 
@@ -583,14 +580,14 @@ class TestCostLedgerAutoCreate:
         round-trips through the canonical parser exactly like an
         already-canonical file."""
         ledger_path = tmp_path / "cost-ledger.md"
-        monkeypatch.setattr(_mod.cost_ledger, "_cost_ledger_path", lambda: ledger_path)
+        monkeypatch.setattr(cost_ledger, "_cost_ledger_path", lambda: ledger_path)
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
 
-        preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(ledger_path.read_text())
-        assert preamble == _mod.cost_ledger._default_cost_ledger_preamble()
+        preamble, rows = cost_ledger._parse_cost_ledger_file_text(ledger_path.read_text())
+        assert preamble == cost_ledger._default_cost_ledger_preamble()
         assert len(rows) == 1
         assert rows[0]["week"] == "2026-W23"
 
@@ -602,14 +599,14 @@ class TestCostLedgerAutoCreate:
         the directory and the file -- a non-recursive mkdir() would pass
         the previous test while still crashing here."""
         ledger_path = tmp_path / "fresh-config-dir" / "cost-ledger.md"
-        monkeypatch.setattr(_mod.cost_ledger, "_cost_ledger_path", lambda: ledger_path)
+        monkeypatch.setattr(cost_ledger, "_cost_ledger_path", lambda: ledger_path)
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
 
         assert ledger_path.parent.is_dir()
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(ledger_path.read_text())
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 1
 
     def test_record_refused_before_sentinel_check_leaves_no_directory_behind(
@@ -623,15 +620,15 @@ class TestCostLedgerAutoCreate:
         hoisted the mkdir above a guard would pass every other test in this
         file unchanged while still failing this one."""
         ledger_path = tmp_path / "never-created-config-dir" / "cost-ledger.md"
-        monkeypatch.setattr(_mod.cost_ledger, "_cost_ledger_path", lambda: ledger_path)
+        monkeypatch.setattr(cost_ledger, "_cost_ledger_path", lambda: ledger_path)
         cfg_dir_no_sentinel = tmp_path / "isolated-claude-config-no-sentinel"
         cfg_dir_no_sentinel.mkdir()
-        monkeypatch.setattr(_mod.cost_ledger, "config_dir", lambda: cfg_dir_no_sentinel)
+        monkeypatch.setattr(cost_ledger, "config_dir", lambda: cfg_dir_no_sentinel)
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
         assert not ledger_path.parent.exists()
 
@@ -643,10 +640,10 @@ class TestCostLedgerRecordIdempotence:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
         assert cost_ledger_file.read_text() == before
 
@@ -655,22 +652,22 @@ class TestCostLedgerRecordIdempotence:
     ):
         other_row = _cost_ledger_row(week="2026-W23", machine="other1", note="unrelated machine")
         cost_ledger_file.write_text(
-            cost_ledger_file.read_text() + _mod.cost_ledger._format_cost_ledger_row(other_row) + "\n"
+            cost_ledger_file.read_text() + cost_ledger._format_cost_ledger_row(other_row) + "\n"
         )
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod.cost_ledger._cost_ledger_report(
+        cost_ledger._cost_ledger_report(
             _cost_ledger_args(record=True, note="first"), date(2026, 6, 3)
         )
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-02T10:00:00.000Z"),
         ])
-        _mod.cost_ledger._cost_ledger_report(
+        cost_ledger._cost_ledger_report(
             _cost_ledger_args(record=True, force=True, note="second"), date(2026, 6, 3)
         )
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 2
         assert rows[0] == other_row
         this_machine_row = next(r for r in rows if r["machine"] == "7e57c0de")
@@ -682,7 +679,7 @@ class TestCostLedgerDegenerateCorpora:
     def test_empty_corpus_refuses_and_writes_nothing(self, fake_projects, cost_ledger_file, cost_ledger_enabled):
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
         assert cost_ledger_file.read_text() == before
 
@@ -695,7 +692,7 @@ class TestCostLedgerDegenerateCorpora:
         ])
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
         assert cost_ledger_file.read_text() == before
 
@@ -710,7 +707,7 @@ class TestCostLedgerDegenerateCorpora:
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-15T10:00:00.000Z"),  # 2026-W25
         ])
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(
+            cost_ledger._cost_ledger_report(
                 _cost_ledger_args(record=True), date(2026, 6, 3)  # resolves to 2026-W23
             )
         assert exc_info.value.code != 0
@@ -734,7 +731,7 @@ class TestCostLedgerConcurrency:
 
         def _run(i: int) -> None:
             try:
-                _mod.cost_ledger._cost_ledger_report(args, today)
+                cost_ledger._cost_ledger_report(args, today)
                 exit_codes[i] = 0
             except SystemExit as exc:
                 exit_codes[i] = exc.code
@@ -745,7 +742,7 @@ class TestCostLedgerConcurrency:
         for t in threads:
             t.join()
 
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 1
         assert sorted(exit_codes) == [0, 1]
 
@@ -760,7 +757,7 @@ class TestCostLedgerConcurrency:
         creation, and this pins that property for this specific code path
         rather than relying on it being true elsewhere."""
         ledger_path = tmp_path / "fresh-config-dir" / "cost-ledger.md"
-        monkeypatch.setattr(_mod.cost_ledger, "_cost_ledger_path", lambda: ledger_path)
+        monkeypatch.setattr(cost_ledger, "_cost_ledger_path", lambda: ledger_path)
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
@@ -770,7 +767,7 @@ class TestCostLedgerConcurrency:
 
         def _run(i: int) -> None:
             try:
-                _mod.cost_ledger._cost_ledger_report(args, today)
+                cost_ledger._cost_ledger_report(args, today)
                 exit_codes[i] = 0
             except SystemExit as exc:
                 exit_codes[i] = exc.code
@@ -781,7 +778,7 @@ class TestCostLedgerConcurrency:
         for t in threads:
             t.join()
 
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(ledger_path.read_text())
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 1
         assert sorted(exit_codes) == [0, 1]
 
@@ -803,13 +800,13 @@ class TestCostLedgerDefaultPathCliWiring:
         (cfg_dir / ".cost-ledger-enabled").touch()
         expected_path = cfg_dir / "cost-ledger.md"
         expected_path.write_text(
-            _mod.cost_ledger._COST_LEDGER_HEADER_LINE + "\n" + _mod.cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
+            cost_ledger._COST_LEDGER_HEADER_LINE + "\n" + cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
         )
 
         projects = tmp_path / "projects"
         proj = projects / "-home-user-testrepo"
         proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(proj / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
@@ -819,11 +816,11 @@ class TestCostLedgerDefaultPathCliWiring:
             def now(cls, tz=None):
                 return cls(2026, 6, 3, 12, 0, tzinfo=tz)
 
-        monkeypatch.setattr(_mod.cost_ledger, "datetime", _FixedDatetime)
+        monkeypatch.setattr(cost_ledger, "datetime", _FixedDatetime)
 
-        _mod.cost_ledger.cmd_cost_ledger(_cost_ledger_args(record=True))
+        cost_ledger.cmd_cost_ledger(_cost_ledger_args(record=True))
 
-        assert _mod.cost_ledger._cost_ledger_path() == expected_path
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(expected_path.read_text())
+        assert cost_ledger._cost_ledger_path() == expected_path
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(expected_path.read_text())
         assert len(rows) == 1
         assert rows[0]["week"] == "2026-W23"

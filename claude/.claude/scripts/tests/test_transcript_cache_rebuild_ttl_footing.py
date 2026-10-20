@@ -1,12 +1,12 @@
 """Tests for transcript_analysis/cache_rebuild.py (cmd_cache_rebuild): pure-1h idle-band reads, rate-multiplier
 footing, the unpriced and cache-miss-reason disclosures, and the default-path regression."""
-import importlib.util
 import re
-import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    cache_rebuild,
+)
 
 from ._cache_rebuild_helpers import (
     _cache_rebuild_args,
@@ -21,15 +21,6 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_jsonl,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _ttl_verdict_ts(seconds_after_start: float) -> str:
@@ -77,7 +68,7 @@ class TestCacheRebuildTtlVerdictPure1hWriteInIdleBand:
 
     def test_in_band_read_beside_a_pure_1h_write_counts_toward_z(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", _pure_1h_write_plus_read_records(360))
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
@@ -87,7 +78,7 @@ class TestCacheRebuildTtlVerdictPure1hWriteInIdleBand:
 
     def test_in_band_read_beside_a_pure_1h_write_restores_the_expiry_cost_in_net(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", _pure_1h_write_plus_read_records(360))
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
@@ -99,7 +90,7 @@ class TestCacheRebuildTtlVerdictPure1hWriteInIdleBand:
         """The band's lower bound is inclusive, so the same shape at exactly
         300s counts its reads."""
         _write_jsonl(fake_projects / "sess.jsonl", _pure_1h_write_plus_read_records(300))
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
@@ -120,7 +111,7 @@ class TestCacheRebuildTtlVerdictPure1hWriteInIdleBand:
         _write_jsonl(
             fake_projects / "sess.jsonl", _pure_1h_write_plus_read_records(200, read_tokens=660_000)
         )
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
@@ -131,7 +122,7 @@ class TestCacheRebuildTtlVerdictPure1hWriteInIdleBand:
     @pytest.mark.parametrize("gap_seconds", [3600, 3601], ids=["at-3600s-exclusive-upper-bound", "above-3600s"])
     def test_read_at_or_above_the_upper_bound_contributes_nothing_to_z(self, fake_projects, capsys, gap_seconds):
         _write_jsonl(fake_projects / "sess.jsonl", _pure_1h_write_plus_read_records(gap_seconds))
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
@@ -145,7 +136,7 @@ class TestCacheRebuildTtlVerdictPure1hWriteInIdleBand:
                 ts=_ttl_verdict_ts(0), request_id="f1",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
@@ -166,7 +157,7 @@ class TestCacheRebuildTtlVerdictPure1hWriteInIdleBand:
                 ts=_ttl_verdict_ts(360), request_id="c2",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=ttl_verdict), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=ttl_verdict), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         assert _extract_cache_rebuild_row(out, "idle 5m-1h")[0] == 0
@@ -186,7 +177,7 @@ class TestCacheRebuildTtlVerdictPure1hWriteInIdleBand:
                 ts=_ttl_verdict_ts(0), request_id="n2",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(
+        cache_rebuild._cache_rebuild_report(
             _cache_rebuild_args(ttl_verdict=True, since="36500d"), roots=[fake_projects.parent]
         )
         out = capsys.readouterr().out
@@ -208,7 +199,7 @@ class TestCacheRebuildTtlVerdictPure1hWriteInIdleBand:
                 ts="not-a-timestamp", request_id="u2",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
@@ -227,7 +218,7 @@ class TestCacheRebuildTtlVerdictPure1hWriteInIdleBand:
             "cache_miss_reason": {"type": "model_changed", "cache_missed_input_tokens": 100_000},
         }
         _write_jsonl(fake_projects / "sess.jsonl", records)
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         assert "cache-miss-reason cross-tab" not in out
@@ -259,7 +250,7 @@ class TestCacheRebuildTtlVerdictTierSplitInBandPure1hRead:
                 ts=_ttl_verdict_ts(360), request_id="t2",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         tier_split = _extract_ttl_verdict_tier_split_line(out, "account-1")
@@ -324,7 +315,7 @@ def _run_ttl_verdict_on_origin(fake_projects, capsys, origin: str, records: list
         _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
     else:
         _write_jsonl(fake_projects / "sess.jsonl", records)
-    _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+    cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
     out = capsys.readouterr().out
     return (
         _extract_ttl_verdict_root_row(out, origin, "account-1"),
@@ -495,7 +486,7 @@ class TestCacheRebuildTtlVerdictUnpricedDisclosure:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-unknown-model", ephemeral_5m=250_000, ts="2026-08-01T10:00:00.000Z", request_id="u1"),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         match = re.search(
@@ -516,7 +507,7 @@ class TestCacheRebuildTtlVerdictUnpricedDisclosure:
                 ts="2026-08-01T10:00:00.000Z", request_id="u2",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         match = re.search(
@@ -544,7 +535,7 @@ class TestCacheRebuildTtlVerdictCacheMissReasonValidator:
             "cache_miss_reason": {"type": "excessive_gap", "cache_missed_input_tokens": 200_000},
         }
         _write_jsonl(fake_projects / "sess.jsonl", records)
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         assert "cache-miss-reason cross-tab" not in out
@@ -565,7 +556,7 @@ class TestCacheRebuildTtlVerdictCacheMissReasonValidator:
             "cache_miss_reason": {"type": "model_changed", "cache_missed_input_tokens": 200_000},
         }
         _write_jsonl(fake_projects / "sess.jsonl", records)
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         match = re.search(r"cache-miss-reason cross-tab: (\d+) of (\d+)", out)
@@ -600,7 +591,7 @@ class TestCacheRebuildTtlVerdictDefaultPathRegression:
         _write_jsonl(fake_projects / "sess.jsonl", [])
         _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
