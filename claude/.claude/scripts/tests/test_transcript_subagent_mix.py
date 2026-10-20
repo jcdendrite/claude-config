@@ -1,14 +1,18 @@
 """Tests for transcript_analysis/subagent_mix.py's cmd_subagent_mix, minus its dollar columns."""
-import importlib.util
 import json
 import re
 import subprocess
-import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    corpus,
+    redaction,
+    scope,
+    subagent_mix,
+)
 
 from ._subagent_helpers import (
     _subagent_mix_args,
@@ -22,15 +26,6 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_dispatch,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _column_values_for_matching_rows(
@@ -65,7 +60,7 @@ class TestSubagentMix:
             ]),
         ])
         args = _subagent_mix_args()
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "feat" in out
         assert "staff-backend-engineer(2)" in out
@@ -82,7 +77,7 @@ class TestSubagentMix:
             ]),
         ])
         args = _subagent_mix_args()
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         # CR=2, PR=1, RR=1; max_labels=6 excludes the trailing multi-word "Top subagent types" column
         cols = _table_cols(out, header_contains="Spawns", row_contains="feat", max_labels=6)
@@ -98,7 +93,7 @@ class TestSubagentMix:
             ]),
         ])
         args = _subagent_mix_args()
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "staff-frontend-engineer(1)" in out
 
@@ -111,7 +106,7 @@ class TestSubagentMix:
             ]),
         ])
         args = _subagent_mix_args()
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "staff-backend-engineer(1)" in out
         assert "ciso-reviewer" not in out
@@ -122,7 +117,7 @@ class TestSubagentMix:
             _asst("claude-opus-4-7", branch="feat-b", content=[_agent_use("a2", "staff-backend-engineer")]),
         ])
         args = _subagent_mix_args(branches="feat-a")
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "feat-a" in out
         assert "feat-b" not in out
@@ -140,11 +135,11 @@ class TestSubagentMix:
             _asst("claude-opus-4-7", branch="feat-x", ts="2026-08-01T10:02:00.000Z"),
         ])
 
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(branches="feat-x"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(branches="feat-x"))
         out = capsys.readouterr().out
         assert "feat-x" in out
         assert "staff-backend-engineer(1)" in out
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(branches="main"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(branches="main"))
         assert "staff-backend-engineer" not in capsys.readouterr().out
 
     def test_this_repo_prints_only_the_main_thread_successor_for_prefix_and_sidechain_dispatches(
@@ -167,7 +162,7 @@ class TestSubagentMix:
         args = _subagent_mix_args(this_repo=True)
         args._this_repo_slugs = ["-home-user-testrepo"]
 
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         lines = out.splitlines()
         data_rows = [ln for ln in lines[lines.index("-" * 120) + 1:] if ln.strip()]
@@ -199,9 +194,9 @@ class TestSubagentMix:
             _asst("claude-opus-4-7", branch="feat-y", ts=days_ago(5)),
         ])
 
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(branches="main", since="10d"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(branches="main", since="10d"))
         assert "staff-backend-engineer(1)" in capsys.readouterr().out
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(branches="feat-y", since="10d"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(branches="feat-y", since="10d"))
         assert "staff-backend-engineer" not in capsys.readouterr().out
 
     def test_per_session_splits_aggregate(self, fake_projects, capsys):
@@ -212,7 +207,7 @@ class TestSubagentMix:
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a2", "staff-backend-engineer")]),
         ])
         args = _subagent_mix_args(per_session=True)
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         # Both sessions should appear with stem prefixes; aggregate "feat" alone should not be present as a row.
         assert "abcd1234" in out
@@ -220,7 +215,7 @@ class TestSubagentMix:
 
     def test_no_data_prints_message(self, fake_projects, capsys):
         args = _subagent_mix_args()
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "No data found." in out
 
@@ -236,7 +231,7 @@ class TestSubagentMix:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch=branch_payload, content=[_agent_use("a1", stype_payload)]),
         ])
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         assert "]0;PWNED-BRANCH" in out
         assert "[31mPWNED-TYPE[0m(1)" in out
@@ -254,7 +249,7 @@ class TestSubagentMix:
         _write_jsonl(fake_projects / "sess-b.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
         ])
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         sess_values = _column_values_for_matching_rows(
             out, header_contains="Sess", label="Sess", row_prefix="feat "
@@ -303,7 +298,7 @@ class TestSubagentMixModelMix:
             [_asst("claude-sonnet-4-6", branch="main", sidechain=True)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Runs", row_contains="staff-sdet", max_labels=4)
         assert cols["Runs"] == "3"
@@ -326,7 +321,7 @@ class TestSubagentMixModelMix:
             ],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         assert "mixed(1)" in out
 
@@ -344,7 +339,7 @@ class TestSubagentMixModelMix:
             [_asst("<synthetic>", branch="main", sidechain=True)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         assert "other(1)" in out
         assert "opus(1)" not in out
@@ -356,12 +351,12 @@ class TestSubagentMixModelMix:
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
         ])
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / session_id / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         meta = {"agentType": "staff-sdet", "description": "d", "toolUseId": "a1", "spawnDepth": 1}
         (subdir / "agent-1.meta.json").write_text(json.dumps(meta))
         # Deliberately no agent-1.jsonl written — the dangling case.
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Runs", row_contains="staff-sdet", max_labels=3)
         assert cols["Runs"] == "0"
@@ -387,10 +382,10 @@ class TestSubagentMixModelMix:
             [_asst("claude-sonnet-4-6", branch="main", sidechain=True)],
             agent_type="staff-sdet",  # no requested_model -> key absent
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         assert "sonnet(1)" in out
-        assert f"{_mod.subagent_mix._UNREQUESTED_MODEL_LABEL}(1)" in out
+        assert f"{subagent_mix._UNREQUESTED_MODEL_LABEL}(1)" in out
 
     def test_undefined_agent_type_renders_built_in_declared_pin(self, fake_projects, capsys):
         """An agentType with no on-disk agent file (e.g. general-purpose)
@@ -404,10 +399,10 @@ class TestSubagentMixModelMix:
             [_asst("claude-opus-4-7", branch="main", sidechain=True)],
             agent_type="general-purpose",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Runs", row_contains="general-purpose", max_labels=4)
-        assert cols["Declared"] == _mod.subagent_mix._DECLARED_PIN_BUILT_IN
+        assert cols["Declared"] == subagent_mix._DECLARED_PIN_BUILT_IN
 
     def test_requested_and_observed_columns_are_directionally_distinct(self, fake_projects, capsys):
         """Requested and Observed must land under their own header, not just
@@ -425,7 +420,7 @@ class TestSubagentMixModelMix:
             [_asst("claude-opus-4-7", branch="main", sidechain=True)],
             agent_type="staff-sdet", requested_model="haiku",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         header_line = next(ln for ln in out.splitlines() if "Requested" in ln and "Observed" in ln)
         row_line = next(ln for ln in out.splitlines() if ln.startswith("staff-sdet"))
@@ -445,14 +440,14 @@ class TestSubagentMixModelMix:
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
         ])
-        subdir = fake_projects / session_id / _mod.SUBAGENT_SUBDIR
+        subdir = fake_projects / session_id / corpus.SUBAGENT_SUBDIR
         subdir.mkdir(parents=True, exist_ok=True)
         meta = {
             "agentType": "staff-sdet", "description": "d", "toolUseId": "a1",
             "model": ["opus"], "spawnDepth": 1,
         }
         (subdir / "agent-1.meta.json").write_text(json.dumps(meta))
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())  # must not raise TypeError
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())  # must not raise TypeError
         out = capsys.readouterr().out
         assert "(1 meta.json files failed to parse, excluded)" in out
 
@@ -481,7 +476,7 @@ class TestSubagentMixModelMix:
             [_asst("claude-opus-4-7", branch="main", sidechain=True)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         out = capsys.readouterr().out
         runs_values = _column_values_for_matching_rows(
             out, header_contains="Runs", label="Runs", row_prefix="staff-sdet "
@@ -500,8 +495,8 @@ class TestDeclaredPinPathSafety:
         secret_file = tmp_path / "outside-agents-dir.md"
         secret_file.write_text("---\nmodel: SECRET-LEAKED-VALUE\n---\nbody\n")
         assert (
-            _mod.subagent_mix._declared_pin("../outside-agents-dir", agents_dir, {})
-            == _mod.subagent_mix._DECLARED_PIN_BUILT_IN
+            subagent_mix._declared_pin("../outside-agents-dir", agents_dir, {})
+            == subagent_mix._DECLARED_PIN_BUILT_IN
         )
 
     def test_absolute_path_agent_type_does_not_escape_agents_dir(self, tmp_path):
@@ -510,7 +505,7 @@ class TestDeclaredPinPathSafety:
         secret_file = tmp_path / "outside-agents-dir.md"
         secret_file.write_text("---\nmodel: SECRET-LEAKED-VALUE\n---\nbody\n")
         absolute_agent_type = str(secret_file.with_suffix(""))
-        assert _mod.subagent_mix._declared_pin(absolute_agent_type, agents_dir, {}) == _mod.subagent_mix._DECLARED_PIN_BUILT_IN
+        assert subagent_mix._declared_pin(absolute_agent_type, agents_dir, {}) == subagent_mix._DECLARED_PIN_BUILT_IN
 
     def test_ordinary_agent_type_name_is_unaffected(self, tmp_path):
         """The allowlist must not reject real subagent_type shapes (kebab-case
@@ -519,7 +514,7 @@ class TestDeclaredPinPathSafety:
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
         (agents_dir / "staff-sdet.md").write_text("---\nmodel: sonnet\n---\nbody\n")
-        assert _mod.subagent_mix._declared_pin("staff-sdet", agents_dir, {}) == "sonnet"
+        assert subagent_mix._declared_pin("staff-sdet", agents_dir, {}) == "sonnet"
 
 
 class TestSubagentMixSince:
@@ -528,13 +523,13 @@ class TestSubagentMixSince:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="main", ts=old_ts, content=[_agent_use("a1", "staff-sdet")]),
         ])
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(since="1d"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(since="1d"))
         out = capsys.readouterr().out
         assert "No data found." in out
 
     def test_malformed_since_exits_nonzero_naming_subagent_mix(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc_info:
-            _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(since="not-a-window"))
+            subagent_mix.cmd_subagent_mix(_subagent_mix_args(since="not-a-window"))
         assert exc_info.value.code == 1
         assert "subagent-mix: --since" in capsys.readouterr().err
 
@@ -550,7 +545,7 @@ class TestSubagentMixSince:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="main", ts=boundary_ts, content=[_agent_use("a1", "staff-sdet")]),
         ])
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(since="1d"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(since="1d"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Spawns", row_contains="main", max_labels=6)
         assert cols["Spawns"] == "1"
@@ -558,7 +553,7 @@ class TestSubagentMixSince:
     def test_since_excludes_dispatches_missing_timestamp(self, fake_projects, capsys):
         rec = _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")])  # no ts=
         _write_jsonl(fake_projects / "sess.jsonl", [rec])
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(since="1d"))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(since="1d"))
         out = capsys.readouterr().out
         assert "No data found." in out
 
@@ -578,10 +573,10 @@ class TestSubagentMixMultiRoot:
         subprocess.run(["git", "init", "-q"], cwd=agents_dir, check=True)
         (agents_dir / "staff-sdet.md").write_text("---\nname: x\n---\n")
         subprocess.run(["git", "add", "--", "staff-sdet.md"], cwd=agents_dir, check=True)
-        monkeypatch.setattr(_mod.redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
-        _mod.redaction._repo_tracked_agent_type_names.cache_clear()
+        monkeypatch.setattr(redaction, "_REPO_AGENT_DEFINITIONS_DIR", agents_dir)
+        redaction._repo_tracked_agent_type_names.cache_clear()
         yield
-        _mod.redaction._repo_tracked_agent_type_names.cache_clear()
+        redaction._repo_tracked_agent_type_names.cache_clear()
 
     def test_two_roots_yield_strictly_more_spawns_than_either_alone(
         self, fake_projects, fake_config_dir_factory, capsys
@@ -589,7 +584,7 @@ class TestSubagentMixMultiRoot:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
         ])
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         single_root_out = capsys.readouterr().out
         single_root_cols = _table_cols(single_root_out, header_contains="Spawns", row_contains="feat", max_labels=6)
         assert single_root_cols["Spawns"] == "1"
@@ -600,7 +595,7 @@ class TestSubagentMixMultiRoot:
         _write_jsonl(proj_b / "sess-b.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("b1", "staff-sdet")]),
         ])
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
         multi_root_out = capsys.readouterr().out
         total_spawns = _sum_column_across_rows(
             multi_root_out, header_contains="Spawns", label="Spawns", row_prefix="account-"
@@ -624,7 +619,7 @@ class TestSubagentMixMultiRoot:
         _write_jsonl(proj_b / "sess-b.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[_agent_use("b1", "staff-backend-engineer")]),
         ])
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
         out = capsys.readouterr().out
         assert "account-1/branch-1" in out
         assert "account-2/branch-1" in out
@@ -633,7 +628,7 @@ class TestSubagentMixMultiRoot:
     def test_per_session_refused_under_multi_root(self, fake_projects, fake_config_dir_factory, capsys):
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
-            _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)], per_session=True))
+            subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)], per_session=True))
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert "--per-session" in err
@@ -646,10 +641,10 @@ class TestSubagentMixMultiRoot:
             _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
         ])
         acct_b = fake_config_dir_factory("acct-b")
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
         captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.out
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.err
 
     def test_single_root_omits_do_not_publish_banner(self, fake_projects, capsys):
         """The allow-path counterpart to the fire test above -- mirrors
@@ -659,10 +654,10 @@ class TestSubagentMixMultiRoot:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[_agent_use("a1", "staff-sdet")]),
         ])
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())
         captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.err
+        assert scope._DO_NOT_PUBLISH_BANNER not in captured.out
+        assert scope._DO_NOT_PUBLISH_BANNER not in captured.err
 
     def test_subagent_type_redacted_under_multi_root_in_both_tables(
         self, fake_projects, fake_config_dir_factory, capsys
@@ -684,7 +679,7 @@ class TestSubagentMixMultiRoot:
         _write_jsonl(proj_b / "sess-b.jsonl", [
             _asst("claude-opus-4-7", branch="main", content=[_agent_use("b1", distinctive_type)]),
         ])
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
         out = capsys.readouterr().out
         assert distinctive_type not in out
         assert "account-2/agent-type-1" in out
@@ -718,7 +713,7 @@ class TestSubagentMixMultiRoot:
             [_asst("claude-sonnet-4-6", branch="main", sidechain=True)],
             agent_type="staff-sdet",
         )
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(acct_b)]))
         out = capsys.readouterr().out
         row_a = _table_cols(out, header_contains="Runs", row_contains="account-1/agent-type-1", max_labels=4)
         row_b = _table_cols(out, header_contains="Runs", row_contains="account-2/agent-type-1", max_labels=4)
@@ -739,11 +734,11 @@ class TestSubagentMixMultiRoot:
         therefore always sorts first regardless — that shared setup cannot
         catch this regression class, the same blind spot PR #603's own
         pre-fix edit-format test had."""
-        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
+        monkeypatch.setattr(scope, "declared_transcript_roots", lambda: [])
         active = tmp_path / "zzz-active"
         active_proj = active / "projects" / "-home-user-active-repo"
         active_proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: active)
+        monkeypatch.setattr(scope, "config_dir", lambda: active)
         _write_jsonl(active_proj / "sess-active.jsonl", [
             _asst("claude-opus-4-7", branch="feat", content=[_agent_use("a1", "staff-sdet")]),
         ])
@@ -757,7 +752,7 @@ class TestSubagentMixMultiRoot:
             ]),
         ])
 
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(extra)]))
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args(extra_config_dirs=[str(extra)]))
         out = capsys.readouterr().out
         account_1 = _table_cols(out, header_contains="Spawns", row_contains="account-1/branch-1", max_labels=6)
         account_2 = _table_cols(out, header_contains="Spawns", row_contains="account-2/branch-1", max_labels=6)
@@ -787,7 +782,7 @@ class TestSubagentMixMultiRoot:
         ])
         args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagent_mix.cmd_subagent_mix(args)  # no SystemExit
+        subagent_mix.cmd_subagent_mix(args)  # no SystemExit
         out = capsys.readouterr().out
         # Substring-on-combined-stdout, not a per-table _table_cols extract:
         # _mix_branch_label/_stype_label are idempotent per (root_idx, value)
@@ -818,7 +813,7 @@ class TestSubagentMixMultiRoot:
         ])
         args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert re.search(r"account-\d+/staff-sdet", out)
         assert re.search(r"account-\d+/agent-type-1\b", out)
@@ -843,7 +838,7 @@ class TestSubagentMixMultiRoot:
         ])
         args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "Staff-Sdet" not in out
         assert re.search(r"account-\d+/agent-type-1\b", out)
@@ -866,7 +861,7 @@ class TestSubagentMixMultiRoot:
         ])
         args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "account-1/main" in out
         assert "account-2/main" in out
@@ -877,10 +872,10 @@ class TestSubagentMixMultiRoot:
         acct_b = fake_config_dir_factory("acct-b")
         args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.out
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.err
 
     def test_this_repo_per_session_still_refused_under_multi_root(
         self, fake_projects, fake_config_dir_factory, capsys
@@ -889,7 +884,7 @@ class TestSubagentMixMultiRoot:
         args = _subagent_mix_args(this_repo=True, extra_config_dirs=[str(acct_b)], per_session=True)
         args._this_repo_slugs = ["-home-user-testrepo"]
         with pytest.raises(SystemExit) as exc_info:
-            _mod.subagent_mix.cmd_subagent_mix(args)
+            subagent_mix.cmd_subagent_mix(args)
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
         assert "--per-session" in err
@@ -908,7 +903,7 @@ class TestSubagentMixMultiRoot:
         ])
         args = _subagent_mix_args(this_repo=True)
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "feat" in out
         assert "acme-corp-internal-tool" in out

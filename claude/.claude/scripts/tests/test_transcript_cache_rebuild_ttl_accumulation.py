@@ -1,8 +1,9 @@
 """Tests for transcript_analysis/cache_rebuild.py (cmd_cache_rebuild): --ttl-verdict per-root accumulation and
 dominance reduction."""
-import importlib.util
-import sys
-from pathlib import Path
+
+from transcript_analysis import (
+    cache_rebuild,
+)
 
 from ._cache_rebuild_helpers import (
     _cache_rebuild_args,
@@ -22,15 +23,6 @@ from .conftest import (
     _write_subagent_jsonl,
 )
 
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
-
 
 class TestCacheRebuildTtlVerdictPerRootAccumulation:
     """Full-report coverage of --ttl-verdict's own per-(origin, root_ordinal)
@@ -47,7 +39,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         test_main_bucket_5m_tier_root_reaches_adopt_despite_z_w1h_wash
         below for the same root reaching 'adopt' with no read at all)."""
         _write_jsonl(fake_projects / "sess.jsonl", _ttl_verdict_5m_tier_adopt_records())
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
@@ -75,7 +67,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
                 ts="2026-08-01T10:06:00.000Z", request_id="w2",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
@@ -98,7 +90,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         _write_jsonl(fake_projects / "sess.jsonl", [])
         _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "subagent")
@@ -127,7 +119,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
             rec["isSidechain"] = True
         _write_subagent_jsonl(fake_projects, "sess", "agent-1", subagent_records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         main_summary = _extract_ttl_verdict_summary(out, "main")
@@ -172,7 +164,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
             rec["isSidechain"] = True
         _write_subagent_jsonl(root_y / proj_slug, session_id, "agent-y", records_y)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_x, root_y])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_x, root_y])
         out = capsys.readouterr().out
 
         pooled_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
@@ -208,7 +200,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
             tmp_path, "acct-b", "-home-user-repo-b", "sess-b",
             _ttl_verdict_1h_tier_non_wash_disagreement_records(),
         )
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
@@ -255,7 +247,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
                 ts="2026-08-01T10:12:00.000Z", request_id="w3",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
@@ -279,7 +271,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
                 ts="2026-08-01T10:06:00.000Z", request_id="mix-2",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
@@ -308,7 +300,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
                 ts="2026-08-01T10:06:00.000Z", request_id="tie-2",
             ),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         root_row = _extract_ttl_verdict_root_row(out, "main", "account-1")
@@ -328,7 +320,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=100, output=50, ts="2026-08-01T10:00:00.000Z", request_id="z1"),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         for origin in ("main", "subagent"):
@@ -347,7 +339,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", ephemeral_5m=500_000, ts="2026-08-01T10:00:00.000Z", request_id="nr1"),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(
+        cache_rebuild._cache_rebuild_report(
             _cache_rebuild_args(no_redact=True, ttl_verdict=True), roots=[fake_projects.parent],
         )
         out = capsys.readouterr().out
@@ -364,7 +356,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         zero-data root still gets its own excluded(no-data) row rather than
         vanishing from the table."""
         _write_jsonl(fake_projects / "sess.jsonl", [])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         for origin in ("main", "subagent"):
@@ -390,7 +382,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
             tmp_path, "acct-a", "-home-user-repo-a", "sess-a", _ttl_verdict_5m_tier_adopt_records(),
         )
         root_b = _write_cost_root(tmp_path, "acct-b", "-home-user-repo-b", "sess-b", [])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root_a, root_b])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
@@ -424,7 +416,7 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
             tmp_path, "acct-b", "-home-user-repo-near-tie", "sess-near-tie",
             _ttl_verdict_near_tie_mixed_root_records(),
         )
-        _mod.cache_rebuild._cache_rebuild_report(
+        cache_rebuild._cache_rebuild_report(
             _cache_rebuild_args(ttl_verdict=True), roots=[no_data_root, near_tie_root],
         )
         out = capsys.readouterr().out
@@ -456,9 +448,9 @@ class TestCacheRebuildTtlVerdictPerRootAccumulation:
         mixed_root = _write_cost_root(tmp_path, "acct-mixed", "-home-user-repo-mixed", "sess-mixed", mixed_records)
         pure_root = _write_cost_root(tmp_path, "acct-pure", "-home-user-repo-pure", "sess-pure", pure_1h_records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[mixed_root])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[mixed_root])
         mixed_out = capsys.readouterr().out
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[pure_root])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[pure_root])
         pure_out = capsys.readouterr().out
 
         mixed_row = _extract_ttl_verdict_root_row(mixed_out, "main", "account-1")
@@ -503,9 +495,9 @@ class TestCacheRebuildTtlVerdictDominanceReduction:
         pure_root = _write_cost_root(tmp_path, "acct-pure", "-home-user-repo-pure", "sess-pure", pure_records)
         mixed_root = _write_cost_root(tmp_path, "acct-mixed", "-home-user-repo-mixed", "sess-mixed", mixed_records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[pure_root])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[pure_root])
         pure_out = capsys.readouterr().out
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[mixed_root])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[mixed_root])
         mixed_out = capsys.readouterr().out
 
         pure_row = _extract_ttl_verdict_root_row(pure_out, "main", "account-1")
@@ -547,9 +539,9 @@ class TestCacheRebuildTtlVerdictDominanceReduction:
             tmp_path, "acct-inflated", "-home-user-repo-inflated", "sess-inflated", inflated_records,
         )
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[control_root])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[control_root])
         control_out = capsys.readouterr().out
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[inflated_root])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[inflated_root])
         inflated_out = capsys.readouterr().out
 
         control_row = _extract_ttl_verdict_root_row(control_out, "main", "account-1")
@@ -579,7 +571,7 @@ class TestCacheRebuildTtlVerdictDominanceReduction:
             _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="u3"),
         ]
         root = _write_cost_root(tmp_path, "acct", "-home-user-repo", "sess", records)
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[root])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "main")
@@ -602,7 +594,7 @@ class TestCacheRebuildTtlVerdictDominanceReduction:
             rec["isSidechain"] = True
         _write_jsonl(fake_projects / "sess.jsonl", [])
         _write_subagent_jsonl(fake_projects, "sess", "agent-1", subagent_records)
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_ttl_verdict_summary(out, "subagent")
@@ -629,9 +621,9 @@ class TestCacheRebuildTtlVerdictDominanceReduction:
             _priced("claude-sonnet-5", ephemeral_5m=30_000, ts="2026-08-01T10:07:40.000Z", request_id="f3"),
         ])
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[dominant_5m_root])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[dominant_5m_root])
         dominant_5m_out = capsys.readouterr().out
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[dominant_1h_root])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(ttl_verdict=True), roots=[dominant_1h_root])
         dominant_1h_out = capsys.readouterr().out
 
         dominant_5m_row = _extract_ttl_verdict_root_row(dominant_5m_out, "main", "account-1")
@@ -670,7 +662,7 @@ class TestCacheRebuildTtlVerdictDominanceReduction:
         dominant_1h_root = _write_cost_root(
             tmp_path, "acct-dom1h", "-home-user-repo-dom1h", "sess-dom1h", dominant_1h_records,
         )
-        _mod.cache_rebuild._cache_rebuild_report(
+        cache_rebuild._cache_rebuild_report(
             _cache_rebuild_args(ttl_verdict=True), roots=[pure_5m_root, dominant_1h_root],
         )
         out = capsys.readouterr().out

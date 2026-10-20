@@ -1,18 +1,26 @@
 """Tests for transcript_analysis/pr_cost.py (cmd_pr_cost) -- local-mechanics coverage only
 (attribution, ledger I/O, correction contract, mechanical proxies, join logic that doesn't
 require faking gh). gh-integration scenarios live in test_transcript_pr_cost_gh.py."""
-import importlib.util
 import json
+import os
 import random
 import re
 import stat
 import subprocess
-import sys
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import _config
 import pytest
+from transcript_analysis import (
+    cost,
+    pr_cost,
+    pr_cost_export,
+    pr_cost_ledger,
+    pricing,
+    scope,
+)
 
 from ._pr_cost_helpers import (
     _COUNT_LINE_STEM,
@@ -33,14 +41,7 @@ from ._pr_cost_helpers import (
 )
 from .conftest import _cost_args, _extract_grand_total, _priced, _two_declared_roots, _write_jsonl, _write_subagent_jsonl
 
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
+
 class TestComputePrCostBranchTotals:
     """_compute_pr_cost_branch_totals: pr-cost's own single-pass per-branch
     aggregation, exercised through the function itself (not just its reused
@@ -63,10 +64,10 @@ class TestComputePrCostBranchTotals:
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [main_rec])
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
 
-        session_iter, _scope = _mod._resolve_project_scope(
+        session_iter, _scope = scope._resolve_project_scope(
             _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
         )
-        branch_totals, unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        branch_totals, unbranched = cost._compute_pr_cost_branch_totals(session_iter)
         assert "worktree-agent-abc123" not in branch_totals
         assert sum(branch_totals["feature-a"]["dollars"].values()) == pytest.approx(3.00)
         assert branch_totals["feature-a"]["turn_count"] == 2
@@ -85,10 +86,10 @@ class TestComputePrCostBranchTotals:
         )  # $2.00
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [first_main, second_main])
 
-        session_iter, _scope = _mod._resolve_project_scope(
+        session_iter, _scope = scope._resolve_project_scope(
             _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
         )
-        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        branch_totals, _unbranched = cost._compute_pr_cost_branch_totals(session_iter)
         assert sum(branch_totals["feature-a"]["dollars"].values()) == pytest.approx(2.00)
         assert sum(branch_totals["main"]["dollars"].values()) == pytest.approx(2.00)
         assert branch_totals["feature-a"]["turn_count"] == 1
@@ -114,10 +115,10 @@ class TestComputePrCostBranchTotals:
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [main_rec])
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [agent_rec])
 
-        session_iter, _scope = _mod._resolve_project_scope(
+        session_iter, _scope = scope._resolve_project_scope(
             _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
         )
-        branch_totals, unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        branch_totals, unbranched = cost._compute_pr_cost_branch_totals(session_iter)
         assert "worktree-agent-abc123" not in branch_totals
         assert sum(branch_totals["feature-a"]["dollars"].values()) == pytest.approx(3.00)
         assert unbranched["turn_count"] == 0
@@ -133,10 +134,10 @@ class TestComputePrCostBranchTotals:
             _priced("claude-sonnet-5", input=500_000, branch="feature-a"),  # $1.00
         ])
 
-        session_iter, _scope = _mod._resolve_project_scope(
+        session_iter, _scope = scope._resolve_project_scope(
             _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
         )
-        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        branch_totals, _unbranched = cost._compute_pr_cost_branch_totals(session_iter)
         agg = branch_totals["feature-a"]
         assert sum(agg["dollars"].values()) == pytest.approx(3.00)
         assert agg["turn_count"] == 2
@@ -149,10 +150,10 @@ class TestComputePrCostBranchTotals:
         rec["gitBranch"] = None
         _write_jsonl(fake_projects / "sess.jsonl", [rec])
 
-        session_iter, _scope = _mod._resolve_project_scope(
+        session_iter, _scope = scope._resolve_project_scope(
             _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
         )
-        branch_totals, unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        branch_totals, unbranched = cost._compute_pr_cost_branch_totals(session_iter)
         assert branch_totals == {}
         assert unbranched["turn_count"] == 1
         assert sum(unbranched["dollars"].values()) == pytest.approx(2.00)
@@ -163,10 +164,10 @@ class TestComputePrCostBranchTotals:
         rec = _priced("<synthetic>", input=1_000_000, branch="feature-a")
         _write_jsonl(fake_projects / "sess.jsonl", [rec])
 
-        session_iter, _scope = _mod._resolve_project_scope(
+        session_iter, _scope = scope._resolve_project_scope(
             _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
         )
-        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        branch_totals, _unbranched = cost._compute_pr_cost_branch_totals(session_iter)
         agg = branch_totals["feature-a"]
         assert agg["unpriced_turns"] == 1
         assert agg["unpriced_tokens"] == 1_000_000
@@ -185,10 +186,10 @@ class TestComputePrCostBranchTotals:
         )
         _write_jsonl(fake_projects / "sess.jsonl", [rec])
 
-        session_iter, _scope = _mod._resolve_project_scope(
+        session_iter, _scope = scope._resolve_project_scope(
             _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
         )
-        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        branch_totals, _unbranched = cost._compute_pr_cost_branch_totals(session_iter)
         tokens = branch_totals["feature-a"]["tokens"]
         assert tokens["input"] == 1_000_000
         assert tokens["output"] == 200_000
@@ -206,10 +207,10 @@ class TestPrCostPreBranchAndSubagentAttribution:
     TODAY = date(2026, 8, 2)
 
     def _branch_totals(self, fake_projects) -> tuple[dict, dict]:
-        session_iter, _scope = _mod._resolve_project_scope(
+        session_iter, _scope = scope._resolve_project_scope(
             _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
         )
-        return _mod._compute_pr_cost_branch_totals(session_iter)
+        return cost._compute_pr_cost_branch_totals(session_iter)
 
     def _write_prefix_and_divergent_sidechain_sessions(self, project_dir) -> float:
         """Write a prefix session with divergent sidechain tags plus a session
@@ -270,8 +271,8 @@ class TestPrCostPreBranchAndSubagentAttribution:
         projects = tmp_path / "projects"
         mine = projects / "-repo-main"
         mine.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
-        monkeypatch.setattr(_mod.os, "getcwd", lambda: "/repo/main")
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(os, "getcwd", lambda: "/repo/main")
 
         def fake_run(cmd, *a, **k):
             if cmd[:3] == ["git", "worktree", "list"]:
@@ -282,14 +283,14 @@ class TestPrCostPreBranchAndSubagentAttribution:
         monkeypatch.setattr(subprocess, "run", fake_run)
         self._write_prefix_and_divergent_sidechain_sessions(mine)
 
-        _mod._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
+        cost._cost_report(_cost_args(summary=True, this_repo=True, branches="feature-x"), self.TODAY)
         summary_out = capsys.readouterr().out
         total_match = re.search(r"^\|\s*\*\*total\*\*\s*\|\s*\*\*([\d,]+\.\d\d)\*\*\s*\|", summary_out, re.MULTILINE)
         assert total_match is not None, "markdown grand total row not found in --summary output"
-        session_iter, _scope = _mod._resolve_project_scope(
+        session_iter, _scope = scope._resolve_project_scope(
             _pr_cost_args(), "pr-cost", include_subagents=True, roots=[projects],
         )
-        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        branch_totals, _unbranched = cost._compute_pr_cost_branch_totals(session_iter)
         assert float(total_match.group(1)) == pytest.approx(sum(branch_totals["feature-x"]["dollars"].values()))
 
 
@@ -314,14 +315,14 @@ class TestPrCostDedupBeforePricing:
         )
         _write_jsonl(fake_projects / f"{session_id}.jsonl", [rec1, rec2])
 
-        session_iter, _scope = _mod._resolve_project_scope(
+        session_iter, _scope = scope._resolve_project_scope(
             _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
         )
-        branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+        branch_totals, _unbranched = cost._compute_pr_cost_branch_totals(session_iter)
         assert branch_totals["feature-a"]["turn_count"] == 1  # the two records collapse into one priced turn
         pr_cost_total = sum(branch_totals["feature-a"]["dollars"].values())
 
-        _mod._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
+        cost._cost_report(_cost_args(branches="feature-a"), date(2026, 8, 2))
         cost_total = _extract_grand_total(capsys.readouterr().out)
         # abs= accounts for the printed table's own 2-decimal-place rounding,
         # not slack in the expected computation itself.
@@ -344,8 +345,8 @@ class TestResolveBranchPrTieBreak:
             2: {"commits": [{"oid": "b" * 40}, {"oid": "c" * 40}], "files": []},
         }
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(local_git_shas={"b" * 40, "c" * 40}))
-        resolved, confidence = _mod.pr_cost._resolve_branch_pr(
-            "shared-branch", matches, enrichment_by_pr_number, _mod.pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB,
+        resolved, confidence = pr_cost._resolve_branch_pr(
+            "shared-branch", matches, enrichment_by_pr_number, pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB,
         )
         assert resolved["number"] == 2
         assert confidence == "low"
@@ -360,8 +361,8 @@ class TestResolveBranchPrTieBreak:
             2: {"commits": [{"oid": "b" * 40}], "files": []},
         }
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(local_git_shas={"a" * 40, "b" * 40}))
-        resolved, confidence = _mod.pr_cost._resolve_branch_pr(
-            "shared-branch", matches, enrichment_by_pr_number, _mod.pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB,
+        resolved, confidence = pr_cost._resolve_branch_pr(
+            "shared-branch", matches, enrichment_by_pr_number, pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB,
         )
         assert resolved["number"] == 2
         assert confidence == "low"
@@ -375,8 +376,8 @@ class TestResolveBranchPrTieBreak:
             1: {"commits": [], "files": []},
             2: {"commits": [], "files": []},
         }
-        resolved, confidence = _mod.pr_cost._resolve_branch_pr(
-            "shared-branch", matches, enrichment_by_pr_number, _mod.pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB,
+        resolved, confidence = pr_cost._resolve_branch_pr(
+            "shared-branch", matches, enrichment_by_pr_number, pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB,
         )
         assert resolved is None
         assert confidence == "low"
@@ -389,20 +390,20 @@ class TestPrCostJoinCorroborated:
 
     def test_true_via_plan_slug_alone(self):
         enrichment = {"files": [{"path": ".claude/plans/feat-x.md"}], "commits": []}
-        assert _mod.pr_cost._pr_cost_join_corroborated("feat-x", enrichment, ".claude/plans/*.md") is True
+        assert pr_cost._pr_cost_join_corroborated("feat-x", enrichment, ".claude/plans/*.md") is True
 
     def test_true_via_sha_overlap_alone(self, monkeypatch):
         sha = "e" * 40
         enrichment = {"files": [], "commits": [{"oid": sha}]}
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(local_git_shas={sha}))
-        assert _mod.pr_cost._pr_cost_join_corroborated("feat-x", enrichment, ".claude/plans/*.md") is True
+        assert pr_cost._pr_cost_join_corroborated("feat-x", enrichment, ".claude/plans/*.md") is True
 
     def test_false_when_neither_present(self):
         enrichment = {"files": [], "commits": []}
-        assert _mod.pr_cost._pr_cost_join_corroborated("feat-x", enrichment, ".claude/plans/*.md") is False
+        assert pr_cost._pr_cost_join_corroborated("feat-x", enrichment, ".claude/plans/*.md") is False
 
     def test_false_when_enrichment_is_none(self):
-        assert _mod.pr_cost._pr_cost_join_corroborated("feat-x", None, ".claude/plans/*.md") is False
+        assert pr_cost._pr_cost_join_corroborated("feat-x", None, ".claude/plans/*.md") is False
 
 
 class TestResolveBranchPrJoinConfidence:
@@ -412,7 +413,7 @@ class TestResolveBranchPrJoinConfidence:
     def test_plan_slug_corroboration_yields_high_confidence(self):
         matches = [{"number": 1, "headRefName": "feat-x", "mergedAt": "2026-01-01T00:00:00Z"}]
         enrichment_by_pr_number = {1: {"files": [{"path": ".claude/plans/feat-x.md"}], "commits": []}}
-        resolved, confidence = _mod.pr_cost._resolve_branch_pr(
+        resolved, confidence = pr_cost._resolve_branch_pr(
             "feat-x", matches, enrichment_by_pr_number, ".claude/plans/*.md",
         )
         assert resolved["number"] == 1
@@ -423,7 +424,7 @@ class TestResolveBranchPrJoinConfidence:
         sha = "d" * 40
         enrichment_by_pr_number = {1: {"files": [], "commits": [{"oid": sha}]}}
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(local_git_shas={sha}))
-        resolved, confidence = _mod.pr_cost._resolve_branch_pr(
+        resolved, confidence = pr_cost._resolve_branch_pr(
             "feat-x", matches, enrichment_by_pr_number, ".claude/plans/*.md",
         )
         assert resolved["number"] == 1
@@ -432,7 +433,7 @@ class TestResolveBranchPrJoinConfidence:
     def test_no_corroboration_yields_medium_confidence(self):
         matches = [{"number": 1, "headRefName": "feat-x", "mergedAt": "2026-01-01T00:00:00Z"}]
         enrichment_by_pr_number = {1: {"files": [], "commits": []}}
-        resolved, confidence = _mod.pr_cost._resolve_branch_pr(
+        resolved, confidence = pr_cost._resolve_branch_pr(
             "feat-x", matches, enrichment_by_pr_number, ".claude/plans/*.md",
         )
         assert resolved["number"] == 1
@@ -457,10 +458,10 @@ class TestPrCostBranchRedactionJoinIntegrity:
         on the raw branch value -- it is never pre-scrubbed before the join
         runs."""
         merged_prs = [{"number": 9, "headRefName": self._HEXISH_BRANCH, "mergedAt": "2026-01-01T00:00:00Z"}]
-        matches = _mod.pr_cost._direct_headref_matches(self._HEXISH_BRANCH, merged_prs)
+        matches = pr_cost._direct_headref_matches(self._HEXISH_BRANCH, merged_prs)
         assert len(matches) == 1
-        resolved, confidence = _mod.pr_cost._resolve_branch_pr(
-            self._HEXISH_BRANCH, matches, {}, _mod.pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB,
+        resolved, confidence = pr_cost._resolve_branch_pr(
+            self._HEXISH_BRANCH, matches, {}, pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB,
         )
         assert resolved["number"] == 9
         assert confidence == "medium"
@@ -470,12 +471,12 @@ class TestPrCostBranchRedactionJoinIntegrity:
         -- the ledger's own write boundary for branch data, distinct from
         the join above which never sees it."""
         pr = {"number": 9, "mergedAt": "2026-01-01T00:00:00Z", "additions": 1, "deletions": 1, "changedFiles": 1}
-        row = _mod.pr_cost._new_pr_cost_row(
+        row = pr_cost._new_pr_cost_row(
             host="github.com", pinned_repo="owner/repo", pr=pr, branch=self._HEXISH_BRANCH,
-            agg=_mod.cost._new_pr_cost_agg(),
-            enrichment=None, join_confidence="medium", status=_mod.pr_cost_ledger._PR_COST_STATUS_OK, machine="ci1",
+            agg=cost._new_pr_cost_agg(),
+            enrichment=None, join_confidence="medium", status=pr_cost_ledger._PR_COST_STATUS_OK, machine="ci1",
             captured_at="2026-01-01T00:00:00Z", supersedes="",
-            plan_glob=_mod.pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB, risk_globs=_mod.pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
+            plan_glob=pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB, risk_globs=pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
             ordinal=1, branch_map={},
         )
         assert row["head_branch"] != self._HEXISH_BRANCH
@@ -507,9 +508,9 @@ class TestPrCostReportOrchestration:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
         args = _pr_cost_args(record=True, pr=42)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
-        rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 1
         row = rows[0]
         assert row["turn_count"] == 0
@@ -544,7 +545,7 @@ class TestPrCostReportOrchestration:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
         args = _pr_cost_args(record=True, pr=99)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         err = capsys.readouterr().err
         assert "has no matching local corpus activity" in err
@@ -552,7 +553,7 @@ class TestPrCostReportOrchestration:
         assert "old-name" not in err
         assert "new-name" not in err
 
-        rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 1
         row = rows[0]
         assert row["turn_count"] == 0
@@ -579,9 +580,9 @@ class TestPrCostReportOrchestration:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
         args = _pr_cost_args(record=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
-        rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 1
         row = rows[0]
         assert row["input_tokens"] == 1_000_000
@@ -602,7 +603,7 @@ class TestPrCostReportOrchestration:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[]))
 
         args = _pr_cost_args(record=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         err = capsys.readouterr().err
         assert "no merged PR found for this branch -- skipped" in err
@@ -626,7 +627,7 @@ class TestPrCostReportOrchestration:
 
         args = _pr_cost_args(record=True, pr=1)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         assert exc_info.value.code == 1
         assert "refusing" in capsys.readouterr().err
@@ -651,7 +652,7 @@ class TestPrCostReportOrchestration:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
         args = _pr_cost_args(record=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         err = capsys.readouterr().err
         assert "merged too recently" in err
@@ -662,7 +663,7 @@ class TestPrCostReportOrchestration:
         other_root = tmp_path / "other-account" / "projects"
         other_root.mkdir(parents=True)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(
+            pr_cost._pr_cost_report(
                 _pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent, other_root],
             )
         assert exc_info.value.code == 2
@@ -695,16 +696,16 @@ class TestPrCostReportOrchestration:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
         calls: list[object] = []
-        real_resolve = _mod.scope._resolve_project_scope
+        real_resolve = scope._resolve_project_scope
 
         def counting_resolve(*a, **kw):
             calls.append(1)
             return real_resolve(*a, **kw)
 
-        monkeypatch.setattr(_mod.scope, "_resolve_project_scope", counting_resolve)
+        monkeypatch.setattr(scope, "_resolve_project_scope", counting_resolve)
 
         args = _pr_cost_args(record=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         assert len(calls) == 1
 
@@ -721,18 +722,18 @@ class TestPrCostRecordingConfigDirUnresolvable:
         self, fake_projects, monkeypatch, capsys,
     ):
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run())
-        real_config_enabled = _mod._config.config_enabled
+        real_config_enabled = _config.config_enabled
 
         def _fake_config_enabled(key, config_dir_override=None):
             if key == "pr_cost_recording":
                 return None
             return real_config_enabled(key, config_dir_override=config_dir_override)
 
-        monkeypatch.setattr(_mod._config, "config_enabled", _fake_config_enabled)
+        monkeypatch.setattr(_config, "config_enabled", _fake_config_enabled)
 
         args = _pr_cost_args(record=True)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
         assert "could not resolve the Claude Code config directory" in capsys.readouterr().err
 
@@ -757,19 +758,19 @@ class TestPrCostRecordingConfigDirUnresolvable:
         }]
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=merged_prs))
 
-        real_config_enabled = _mod._config.config_enabled
+        real_config_enabled = _config.config_enabled
 
         def _fake_config_enabled(key, config_dir_override=None):
             if key == "pr_cost_recording" and config_dir_override == acct_a:
                 return None
             return real_config_enabled(key, config_dir_override=config_dir_override)
 
-        monkeypatch.setattr(_mod._config, "config_enabled", _fake_config_enabled)
+        monkeypatch.setattr(_config, "config_enabled", _fake_config_enabled)
 
         args = _pr_cost_args(record=True, all_accounts=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), roots)  # must not raise SystemExit
 
-        rows_b = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_b / "pr-cost-ledger.tsv").read_text())
+        rows_b = pr_cost_ledger._parse_pr_cost_ledger_file_text((acct_b / "pr-cost-ledger.tsv").read_text())
         assert len(rows_b) == 1
         assert not (acct_a / "pr-cost-ledger.tsv").exists()
         captured = capsys.readouterr()
@@ -791,12 +792,12 @@ class TestPrCostRecordingKeyError:
         def _raise_key_error(key, config_dir_override=None):
             raise KeyError(key)
 
-        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
-        monkeypatch.setattr(_mod._config, "schema", lambda: {})
+        monkeypatch.setattr(_config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_config, "schema", lambda: {})
 
         args = _pr_cost_args(record=True)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
         assert "could not read config-keys.psv" in capsys.readouterr().err
 
@@ -808,12 +809,12 @@ class TestPrCostRecordingKeyError:
         def _raise_key_error(key, config_dir_override=None):
             raise KeyError(key)
 
-        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
-        monkeypatch.setattr(_mod._config, "schema", lambda: {"worktree_required": object()})
+        monkeypatch.setattr(_config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_config, "schema", lambda: {"worktree_required": object()})
 
         args = _pr_cost_args(record=True)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert "unknown config key" in err
@@ -834,7 +835,7 @@ class TestPrCostArgValidationBranchesFailBeforeAnySubprocessCall:
         monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
         args = _pr_cost_args(force=True)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
 
     def test_malformed_machine_label_in_read_mode_exits_1(self, fake_projects, monkeypatch):
@@ -844,7 +845,7 @@ class TestPrCostArgValidationBranchesFailBeforeAnySubprocessCall:
         monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
         args = _pr_cost_args(machine_label="Not-Valid!")
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
 
     def test_record_with_well_formed_machine_label_exits_1_naming_the_read_mode_only_role(
@@ -853,7 +854,7 @@ class TestPrCostArgValidationBranchesFailBeforeAnySubprocessCall:
         monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
         args = _pr_cost_args(record=True, machine_label="ci1")
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
         assert "not accepted with --record" in capsys.readouterr().err
 
@@ -869,7 +870,7 @@ class TestPrCostArgValidationBranchesFailBeforeAnySubprocessCall:
         monkeypatch.setattr(subprocess, "run", self._no_subprocess_calls_fake)
         args = _pr_cost_args(record=True, machine_label="Not-Valid!")
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert "not accepted with --record" in err
@@ -891,7 +892,7 @@ class TestPrCostRecordRefusesGitTrackedLedgerUnconditionally:
 
         args = _pr_cost_args(record=True)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         assert exc_info.value.code == 2
         assert "inside a git working tree" in capsys.readouterr().err
@@ -912,7 +913,7 @@ class TestPrCostRecordRelativeLedgerPathExitsWithNoRawValue:
 
         args = _pr_cost_args(record=True)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
@@ -929,8 +930,8 @@ class TestPrCostMechanicalProxies:
             ".claude/plans/token-cost-per-pr-study.md",
             "README.md",
         ]
-        proxies = _mod.pr_cost._pr_cost_mechanical_proxies(
-            paths, plan_glob=".claude/plans/*.md", risk_globs=_mod.pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
+        proxies = pr_cost._pr_cost_mechanical_proxies(
+            paths, plan_glob=".claude/plans/*.md", risk_globs=pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
         )
         assert proxies["distinct_top_level_dirs"] == 4  # claude, docs, .claude, README.md (no "/")
         assert proxies["distinct_file_extensions"] == 2  # .py, .md
@@ -940,8 +941,8 @@ class TestPrCostMechanicalProxies:
 
     def test_no_tests_no_plan_no_risk_surface(self):
         paths = ["src/app.py", "src/util.py"]
-        proxies = _mod.pr_cost._pr_cost_mechanical_proxies(
-            paths, plan_glob=".claude/plans/*.md", risk_globs=_mod.pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
+        proxies = pr_cost._pr_cost_mechanical_proxies(
+            paths, plan_glob=".claude/plans/*.md", risk_globs=pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
         )
         assert proxies["tests_changed"] is False
         assert proxies["plan_file_added"] is False
@@ -952,7 +953,7 @@ class TestPrCostMechanicalProxies:
     def test_plan_file_glob_requires_exact_configured_pattern(self):
         """A near-miss plan-shaped path (wrong extension) must not set
         plan_file_added -- only an exact configured-glob match does."""
-        proxies = _mod.pr_cost._pr_cost_mechanical_proxies(
+        proxies = pr_cost._pr_cost_mechanical_proxies(
             [".claude/plans/foo.txt"], plan_glob=".claude/plans/*.md", risk_globs=(),
         )
         assert proxies["plan_file_added"] is False
@@ -961,8 +962,8 @@ class TestPrCostMechanicalProxies:
         """A PR with zero changed files (the enrichment call never returned
         `files`, or the list is genuinely empty) must not crash any of the
         set/any() computations."""
-        proxies = _mod.pr_cost._pr_cost_mechanical_proxies(
-            [], plan_glob=".claude/plans/*.md", risk_globs=_mod.pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
+        proxies = pr_cost._pr_cost_mechanical_proxies(
+            [], plan_glob=".claude/plans/*.md", risk_globs=pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
         )
         assert proxies["distinct_top_level_dirs"] == 0
         assert proxies["distinct_file_extensions"] == 0
@@ -971,7 +972,7 @@ class TestPrCostMechanicalProxies:
         assert proxies["risk_surface_flag"] is False
 
     def test_risk_surface_flag_true_for_any_configured_glob_match(self):
-        proxies = _mod.pr_cost._pr_cost_mechanical_proxies(
+        proxies = pr_cost._pr_cost_mechanical_proxies(
             ["install.sh"], plan_glob=".claude/plans/*.md", risk_globs=("install*.sh",),
         )
         assert proxies["risk_surface_flag"] is True
@@ -980,20 +981,20 @@ class TestPrCostMechanicalProxies:
 class TestPrCostAsofWindowOk:
     def test_inside_window_returns_false(self):
         now = datetime(2026, 8, 10, tzinfo=UTC)
-        assert _mod.pr_cost._pr_cost_asof_window_ok("2026-08-09T00:00:00Z", 3.0, now) is False
+        assert pr_cost._pr_cost_asof_window_ok("2026-08-09T00:00:00Z", 3.0, now) is False
 
     def test_exactly_at_window_boundary_returns_true(self):
         """>= , not >: the window boundary instant itself is eligible."""
         now = datetime(2026, 8, 10, tzinfo=UTC)
-        assert _mod.pr_cost._pr_cost_asof_window_ok("2026-08-07T00:00:00Z", 3.0, now) is True
+        assert pr_cost._pr_cost_asof_window_ok("2026-08-07T00:00:00Z", 3.0, now) is True
 
     def test_past_window_returns_true(self):
         now = datetime(2026, 8, 10, tzinfo=UTC)
-        assert _mod.pr_cost._pr_cost_asof_window_ok("2026-08-01T00:00:00Z", 3.0, now) is True
+        assert pr_cost._pr_cost_asof_window_ok("2026-08-01T00:00:00Z", 3.0, now) is True
 
     def test_unparseable_merged_at_returns_false(self):
         now = datetime(2026, 8, 10, tzinfo=UTC)
-        assert _mod.pr_cost._pr_cost_asof_window_ok("not-a-timestamp", 3.0, now) is False
+        assert pr_cost._pr_cost_asof_window_ok("not-a-timestamp", 3.0, now) is False
 
 
 _NOW = datetime(2026, 8, 10, tzinfo=UTC)
@@ -1026,20 +1027,20 @@ def _zero_scalar_row(**overrides) -> dict:
 
 def _branch_agg(fake_projects, records: list[dict], branch: str = "feature-a") -> dict:
     _write_jsonl(fake_projects / "sess.jsonl", records)
-    session_iter, _scope = _mod._resolve_project_scope(
+    session_iter, _scope = scope._resolve_project_scope(
         _pr_cost_args(), "pr-cost", include_subagents=True, roots=[fake_projects.parent],
     )
-    branch_totals, _unbranched = _mod._compute_pr_cost_branch_totals(session_iter)
+    branch_totals, _unbranched = cost._compute_pr_cost_branch_totals(session_iter)
     return branch_totals[branch]
 
 
 def _row_from_agg(agg: dict) -> dict:
-    return _mod.pr_cost._new_pr_cost_row(
+    return pr_cost._new_pr_cost_row(
         host="github.com", pinned_repo="owner/repo",
         pr={"number": 9, "mergedAt": "2026-01-01T00:00:00Z", "additions": 1, "deletions": 1, "changedFiles": 1},
         branch="feature-a", agg=agg, enrichment=None, join_confidence="medium",
-        status=_mod.pr_cost_ledger._PR_COST_STATUS_OK, machine="ci1", captured_at="2026-01-01T00:00:00Z", supersedes="",
-        plan_glob=_mod.pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB, risk_globs=_mod.pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
+        status=pr_cost_ledger._PR_COST_STATUS_OK, machine="ci1", captured_at="2026-01-01T00:00:00Z", supersedes="",
+        plan_glob=pr_cost._DEFAULT_PR_COST_PLAN_FILE_GLOB, risk_globs=pr_cost._DEFAULT_PR_COST_RISK_SURFACE_GLOBS,
         ordinal=1, branch_map={},
     )
 
@@ -1048,10 +1049,10 @@ def _row_from_agg(agg: dict) -> dict:
 def _assume_hand_computed_dollar_rates():
     """Fails with the assumption named, not an opaque micro-dollar mismatch, when a rate-table refresh moves
     a rate or multiplier the hand-computed literals in the tests that request this fixture rest on."""
-    assert _mod.pricing._model_rates("claude-sonnet-5")["input"] == 2.0, "the literals assume this rate"
-    assert _mod.pricing._model_rates("claude-opus-5")["output"] == 25.0, "the literals assume this rate"
-    assert _mod.pricing._FAST_MODE_RATE_MULTIPLIER == 2, "the literals assume this multiplier"
-    assert _mod.pricing._INFERENCE_GEO_US_RATE_MULTIPLIER == 1.1, "the literals assume this multiplier"
+    assert pricing._model_rates("claude-sonnet-5")["input"] == 2.0, "the literals assume this rate"
+    assert pricing._model_rates("claude-opus-5")["output"] == 25.0, "the literals assume this rate"
+    assert pricing._FAST_MODE_RATE_MULTIPLIER == 2, "the literals assume this multiplier"
+    assert pricing._INFERENCE_GEO_US_RATE_MULTIPLIER == 1.1, "the literals assume this multiplier"
 
 
 class TestPrCostBranchTotalsByModel:
@@ -1089,7 +1090,7 @@ class TestPrCostBranchTotalsByModel:
                 "us_geo": group(input_tokens=1_000_000, input_micros=2_200_000),
             },
         }
-        _mod.pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)  # the zero-valued group passes too
+        pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)  # the zero-valued group passes too
 
     def test_unpriced_model_is_absent_from_the_cell_and_its_tokens_land_in_unpriced_tokens(self, fake_projects):
         agg = _branch_agg(fake_projects, [
@@ -1108,10 +1109,10 @@ class TestPrCostBranchTotalsByModel:
         row = _row_from_agg(agg)
 
         assert row["model_breakdown"] == {}
-        _mod.pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
+        pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
 
     def test_zero_activity_default_agg_yields_an_empty_cell(self):
-        assert _row_from_agg(_mod.cost._new_pr_cost_agg())["model_breakdown"] == {}
+        assert _row_from_agg(cost._new_pr_cost_agg())["model_breakdown"] == {}
 
     def test_opus_dollars_equals_the_opus_family_float_leaf_sum_and_excludes_fable(self, fake_projects):
         agg = _branch_agg(fake_projects, [
@@ -1141,8 +1142,8 @@ class TestModelBreakdownUsdMicros:
 
     @pytest.fixture(autouse=True)
     def _assume_cache_read_rates(self):
-        assert _mod.pricing._model_rates("claude-opus-5-5")["cache_read"] == 0.2, "the literals assume this rate"
-        assert _mod.pricing._model_rates("claude-opus-5")["cache_read"] == 0.5, "the literals assume this rate"
+        assert pricing._model_rates("claude-opus-5-5")["cache_read"] == 0.2, "the literals assume this rate"
+        assert pricing._model_rates("claude-opus-5")["cache_read"] == 0.5, "the literals assume this rate"
 
     @pytest.mark.parametrize(
         "model,tokens_per_turn,turn_count,expected_micros,builtin_round_micros",
@@ -1171,8 +1172,8 @@ class TestModelBreakdownUsdMicros:
 
         leaf = row["model_breakdown"][model]["standard"]["cache_read"]
         assert leaf == {"tokens": tokens_per_turn * turn_count, "usd_micros": expected_micros}
-        scalar_cell = _mod.pr_cost_ledger._format_pr_cost_ledger_row(row).split("\t")[
-            _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index("cache_read_usd")
+        scalar_cell = pr_cost_ledger._format_pr_cost_ledger_row(row).split("\t")[
+            pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index("cache_read_usd")
         ]
         assert Decimal(scalar_cell).scaleb(6) == leaf["usd_micros"]
 
@@ -1202,7 +1203,7 @@ class TestUsdToMicros:
         ],
     )
     def test_micros_denote_the_six_decimal_rendering_of_the_dollars(self, dollars, expected_micros):
-        assert _mod.pr_cost._usd_to_micros(dollars) == expected_micros
+        assert pr_cost._usd_to_micros(dollars) == expected_micros
 
     def test_the_above_2_to_the_53_case_exceeds_what_float_multiplication_can_hold_exactly(self):
         assert _MICROS_ABOVE_2_TO_THE_53 > 2**53
@@ -1259,10 +1260,10 @@ class TestCheckModelBreakdownCell:
         cell = self._cell_with_class_micros(groups, token_class, scalar_micros + gap_sign * gap_micros)
 
         if is_accepted:
-            _mod.pr_cost._check_model_breakdown_cell(cell, row)
+            pr_cost._check_model_breakdown_cell(cell, row)
         else:
-            with pytest.raises(_mod.pr_cost._ModelBreakdownCheckError) as exc_info:
-                _mod.pr_cost._check_model_breakdown_cell(cell, row)
+            with pytest.raises(pr_cost._ModelBreakdownCheckError) as exc_info:
+                pr_cost._check_model_breakdown_cell(cell, row)
             assert exc_info.value.rule == "dollars"
 
     @pytest.mark.parametrize("token_class", _TOKEN_CLASS_NAMES)
@@ -1271,13 +1272,13 @@ class TestCheckModelBreakdownCell:
         exact_cell = {"claude-sonnet-5": {variant: _zero_group() for variant in ("standard", "fast", "us_geo")}}
         for variant, tokens in zip(("standard", "fast", "us_geo"), (1, 1, 3), strict=True):
             exact_cell["claude-sonnet-5"][variant][token_class]["tokens"] = tokens
-        _mod.pr_cost._check_model_breakdown_cell(exact_cell, row)
+        pr_cost._check_model_breakdown_cell(exact_cell, row)
 
         off_by_one_cell = json.loads(json.dumps(exact_cell))
         off_by_one_cell["claude-sonnet-5"]["us_geo"][token_class]["tokens"] = 4
 
-        with pytest.raises(_mod.pr_cost._ModelBreakdownCheckError) as exc_info:
-            _mod.pr_cost._check_model_breakdown_cell(off_by_one_cell, row)
+        with pytest.raises(pr_cost._ModelBreakdownCheckError) as exc_info:
+            pr_cost._check_model_breakdown_cell(off_by_one_cell, row)
         assert exc_info.value.rule == "tokens"
 
     @pytest.mark.parametrize(
@@ -1298,8 +1299,8 @@ class TestCheckModelBreakdownCell:
         cell["claude-sonnet-5"]["standard"]["cache_read"][leaf_field] = 6
         cell["claude-sonnet-5"]["standard"]["output"][leaf_field] = 4
 
-        with pytest.raises(_mod.pr_cost._ModelBreakdownCheckError) as exc_info:
-            _mod.pr_cost._check_model_breakdown_cell(cell, row)
+        with pytest.raises(pr_cost._ModelBreakdownCheckError) as exc_info:
+            pr_cost._check_model_breakdown_cell(cell, row)
         assert exc_info.value.rule == rule
 
     def test_token_counts_so_large_that_float_summation_order_moves_a_class_total_fail_the_dollars_rule(
@@ -1308,7 +1309,7 @@ class TestCheckModelBreakdownCell:
         """Three output turns interleaved across two variants: the class scalar sums them in arrival order while
         each variant leaf sums its own, and at this magnitude the two float sums land more than the two-group
         rounding tolerance apart. Only an absurd token count gets here."""
-        assert _mod.pricing._model_rates("claude-sonnet-5")["output"] == 10.0, "the token counts assume this rate"
+        assert pricing._model_rates("claude-sonnet-5")["output"] == 10.0, "the token counts assume this rate"
         records = [
             _priced("claude-sonnet-5", output=10**15 + 1, branch="feature-a"),
             _priced("claude-sonnet-5", output=10**15 + 3, speed="fast", branch="feature-a"),
@@ -1317,8 +1318,8 @@ class TestCheckModelBreakdownCell:
 
         row = _row_from_agg(_branch_agg(fake_projects, records))
 
-        with pytest.raises(_mod.pr_cost._ModelBreakdownCheckError) as exc_info:
-            _mod.pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
+        with pytest.raises(pr_cost._ModelBreakdownCheckError) as exc_info:
+            pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
         assert exc_info.value.rule == "dollars"
         assert exc_info.value.cause == _TRANSCRIPT_OR_DEFECT
 
@@ -1340,10 +1341,10 @@ class TestCheckModelBreakdownCell:
             for leaves_by_class in row["model_breakdown"]["claude-opus-5-5"].values()
         ]
         assert leaves == [expected_leaf_micros, expected_leaf_micros]
-        _mod.pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
+        pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
 
     def test_three_hand_built_leaves_with_a_gap_of_two_pass_through_the_row_builder(self):
-        agg = _mod.cost._new_pr_cost_agg()
+        agg = cost._new_pr_cost_agg()
         agg["dollars"]["cache_read"] = 0.0234375  # three leaves of 0.0078125, summed
         for variant in ("standard", "fast", "us_geo"):
             agg["by_model"].setdefault("claude-sonnet-5", {})[variant] = {
@@ -1357,15 +1358,15 @@ class TestCheckModelBreakdownCell:
             leaves_by_class["cache_read"]["usd_micros"] for leaves_by_class in row["model_breakdown"]["claude-sonnet-5"].values()
         )
         assert leaf_micros == 3 * 7812
-        assert _mod.pr_cost._usd_to_micros(row["cache_read_usd"]) == 23438
-        _mod.pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
+        assert pr_cost._usd_to_micros(row["cache_read_usd"]) == 23438
+        pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
 
     def test_none_cell_skips_every_check(self):
-        _mod.pr_cost._check_model_breakdown_cell(None, _zero_scalar_row(cache_read_tokens=999, cache_read_usd=9.0))
+        pr_cost._check_model_breakdown_cell(None, _zero_scalar_row(cache_read_tokens=999, cache_read_usd=9.0))
 
     def _assert_rule(self, cell, row, expected_rule):
-        with pytest.raises(_mod.pr_cost._ModelBreakdownCheckError) as exc_info:
-            _mod.pr_cost._check_model_breakdown_cell(cell, row)
+        with pytest.raises(pr_cost._ModelBreakdownCheckError) as exc_info:
+            pr_cost._check_model_breakdown_cell(cell, row)
         assert exc_info.value.rule == expected_rule
         assert str(exc_info.value) == expected_rule
 
@@ -1403,7 +1404,7 @@ class TestCheckModelBreakdownCell:
 
     def test_leaf_tokens_at_int64_max_pass_the_check(self):
         cell, row = self._cell_and_row_with_cache_read_tokens(_INT64_MAX)
-        _mod.pr_cost._check_model_breakdown_cell(cell, row)
+        pr_cost._check_model_breakdown_cell(cell, row)
 
     def test_leaf_tokens_one_above_int64_max_fail_the_shape_rule(self):
         cell, row = self._cell_and_row_with_cache_read_tokens(_INT64_MAX + 1)
@@ -1481,8 +1482,8 @@ class TestCheckModelBreakdownCell:
             group[_REJECTED_MARKER] = {"tokens": 0, "usd_micros": 0}
             cell = {"claude-sonnet-5": {"standard": group}}
 
-        with pytest.raises(_mod.pr_cost._ModelBreakdownCheckError) as exc_info:
-            _mod.pr_cost._check_model_breakdown_cell(cell, _zero_scalar_row())
+        with pytest.raises(pr_cost._ModelBreakdownCheckError) as exc_info:
+            pr_cost._check_model_breakdown_cell(cell, _zero_scalar_row())
 
         assert exc_info.value.rule == expected_rule
         assert _REJECTED_MARKER not in str(exc_info.value)
@@ -1490,21 +1491,21 @@ class TestCheckModelBreakdownCell:
         assert exc_info.value.__context__ is None
 
     def test_rule_tuple_and_cause_table_are_closed_and_match_the_hand_written_causes(self):
-        assert _mod.pr_cost._MODEL_BREAKDOWN_CHECK_RULES == (
+        assert pr_cost._MODEL_BREAKDOWN_CHECK_RULES == (
             "shape", "model-membership", "label-membership", "tokens", "dollars",
         )
-        assert _mod.pr_cost._MODEL_BREAKDOWN_CHECK_CAUSES == _CAUSE_BY_RULE
+        assert pr_cost._MODEL_BREAKDOWN_CHECK_CAUSES == _CAUSE_BY_RULE
 
     @pytest.mark.parametrize("rule", sorted(_CAUSE_BY_RULE))
     def test_check_error_carries_the_cause_for_its_rule(self, rule):
-        error = _mod.pr_cost._ModelBreakdownCheckError(rule)
+        error = pr_cost._ModelBreakdownCheckError(rule)
 
         assert error.rule == rule
         assert error.cause == _CAUSE_BY_RULE[rule]
 
     def test_unknown_rule_fails_when_the_error_is_constructed_not_when_the_cause_is_printed(self):
         with pytest.raises(KeyError):
-            _mod.pr_cost._ModelBreakdownCheckError("no-such-rule")
+            pr_cost._ModelBreakdownCheckError("no-such-rule")
 
 
 class TestSeededBreakdownSweep:
@@ -1537,14 +1538,14 @@ class TestSeededBreakdownSweep:
 
         row = _row_from_agg(_branch_agg(fake_projects, records))
 
-        _mod.pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
+        pr_cost._check_model_breakdown_cell(row["model_breakdown"], row)
         for model, variant in groups:
             for token_class in _TOKEN_CLASS_NAMES:
                 leaf = row["model_breakdown"][model][variant][token_class]
                 assert leaf["tokens"] == expected_tokens[(model, variant, token_class)], (model, variant, token_class)
         ledger_path = tmp_path / "sweep-ledger.tsv"
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [row])
-        written_row = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())[0]
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [row])
+        written_row = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())[0]
         assert written_row["model_breakdown"] == row["model_breakdown"]
 
 
@@ -1567,17 +1568,17 @@ def _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature
 def _fail_check_on_calls(monkeypatch, failing_call_numbers: set[int], rule: str = "dollars") -> None:
     """Make _check_model_breakdown_cell raise _ModelBreakdownCheckError(rule) on the listed 1-based calls and
     run the real check on every other call."""
-    real_check = _mod.pr_cost._check_model_breakdown_cell
+    real_check = pr_cost._check_model_breakdown_cell
     call_count = 0
 
     def check(cell, row):
         nonlocal call_count
         call_count += 1
         if call_count in failing_call_numbers:
-            raise _mod.pr_cost._ModelBreakdownCheckError(rule)
+            raise pr_cost._ModelBreakdownCheckError(rule)
         real_check(cell, row)
 
-    monkeypatch.setattr(_mod.pr_cost, "_check_model_breakdown_cell", check)
+    monkeypatch.setattr(pr_cost, "_check_model_breakdown_cell", check)
 
 
 def _per_pr_degrade_line(pr_number: int, rule: str = "dollars") -> str:
@@ -1601,7 +1602,7 @@ def _assert_no_markers(captured) -> None:
 
 
 def _ledger_rows(ledger_path: Path) -> list[dict]:
-    return _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+    return pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
 
 
 class TestPrCostRecordDegradesOnBreakdownCheckFailure:
@@ -1609,13 +1610,13 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+        pr_cost_ledger._write_pr_cost_ledger_file(
             ledger_path, [_sample_pr_cost_row(pr_number=50, head_branch=_PRIOR_ROW_MARKER)],
         )
         _fail_check_on_calls(monkeypatch, {1})
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         assert exc_info.value.code == 1
         rows = _ledger_rows(ledger_path)
@@ -1632,12 +1633,12 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         monkeypatch.setattr(
-            _mod.pr_cost, "_build_model_breakdown_cell",
+            pr_cost, "_build_model_breakdown_cell",
             lambda by_model: {_REJECTED_MARKER: {"standard": _zero_group()}},
         )
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         assert exc_info.value.code == 1
         assert _ledger_rows(ledger_path)[0]["model_breakdown"] is None
@@ -1655,7 +1656,7 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         ])
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         assert exc_info.value.code == 1
         rows = _ledger_rows(ledger_path)
@@ -1668,7 +1669,7 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         self, fake_projects, tmp_path, monkeypatch,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch)
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=50)])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=50)])
         before_bytes = ledger_path.read_bytes()
         build_call_count = 0
 
@@ -1677,10 +1678,10 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
             build_call_count += 1
             raise RuntimeError("cell construction defect")
 
-        monkeypatch.setattr(_mod.pr_cost, "_build_model_breakdown_cell", build_raising_on_first_call)
+        monkeypatch.setattr(pr_cost, "_build_model_breakdown_cell", build_raising_on_first_call)
 
         with pytest.raises(RuntimeError, match="cell construction defect"):
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         assert build_call_count == 1
         assert ledger_path.read_bytes() == before_bytes
@@ -1699,7 +1700,7 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         _fail_check_on_calls(monkeypatch, {1})
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
+            pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
 
         assert exc_info.value.code == 1
         first_account_rows = _ledger_rows(roots[0].parent / "pr-cost-ledger.tsv")
@@ -1714,14 +1715,14 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         self, fake_projects, tmp_path, monkeypatch,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(
             pr_number=1, machine=_SEEDED_MACHINE_IDENTITY, captured_at=_EARLIER_CAPTURED_AT,
             model_breakdown=_sample_model_breakdown(),
         )])
         _fail_check_on_calls(monkeypatch, {1})
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True, pr=1, force=True), _NOW, [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(record=True, pr=1, force=True), _NOW, [fake_projects.parent])
 
         assert exc_info.value.code == 1
         populated_row, degraded_row = _ledger_rows(ledger_path)
@@ -1734,11 +1735,11 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         self, fake_projects, tmp_path, monkeypatch,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(
             pr_number=1, machine=_SEEDED_MACHINE_IDENTITY, captured_at=_EARLIER_CAPTURED_AT, model_breakdown=None,
         )])
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True, pr=1, force=True), _NOW, [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(record=True, pr=1, force=True), _NOW, [fake_projects.parent])
 
         degraded_row, recaptured_row = _ledger_rows(ledger_path)
         assert degraded_row["model_breakdown"] is None
@@ -1750,14 +1751,14 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
-        real_check = _mod.pr_cost._check_model_breakdown_cell
+        real_check = pr_cost._check_model_breakdown_cell
         _fail_check_on_calls(monkeypatch, {1})
         with pytest.raises(SystemExit):
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
-        monkeypatch.setattr(_mod.pr_cost, "_check_model_breakdown_cell", real_check)
+            pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+        monkeypatch.setattr(pr_cost, "_check_model_breakdown_cell", real_check)
         capsys.readouterr()
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         err = capsys.readouterr().err
         assert "is already captured" in err
@@ -1771,22 +1772,22 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
             fake_projects, tmp_path, monkeypatch, branches=("feature-a", "feature-b", "feature-c"),
         )
         _fail_check_on_calls(monkeypatch, {1})
-        real_write = _mod.pr_cost_ledger._write_pr_cost_ledger_file
+        real_write = pr_cost_ledger._write_pr_cost_ledger_file
         write_call_count = 0
 
         def write_refusing_on_second_call(path, rows):
             nonlocal write_call_count
             write_call_count += 1
             if write_call_count == 2:
-                raise _mod.pr_cost_ledger._PrCostLedgerParseError(
+                raise pr_cost_ledger._PrCostLedgerParseError(
                     "refusing to write the ledger (ledger unchanged): test double"
                 )
             return real_write(path, rows)
 
-        monkeypatch.setattr(_mod.pr_cost_ledger, "_write_pr_cost_ledger_file", write_refusing_on_second_call)
+        monkeypatch.setattr(pr_cost_ledger, "_write_pr_cost_ledger_file", write_refusing_on_second_call)
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         assert exc_info.value.code == 1
         assert write_call_count == 2
@@ -1803,20 +1804,20 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+        pr_cost_ledger._write_pr_cost_ledger_file(
             ledger_path, [_sample_pr_cost_row(pr_number=50, head_branch=_PRIOR_ROW_MARKER)],
         )
         _fail_check_on_calls(monkeypatch, {1})
 
         def refuse_every_write(path, rows):
-            raise _mod.pr_cost_ledger._PrCostLedgerParseError(
+            raise pr_cost_ledger._PrCostLedgerParseError(
                 "refusing to write the ledger (ledger unchanged): test double"
             )
 
-        monkeypatch.setattr(_mod.pr_cost_ledger, "_write_pr_cost_ledger_file", refuse_every_write)
+        monkeypatch.setattr(pr_cost_ledger, "_write_pr_cost_ledger_file", refuse_every_write)
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
@@ -1833,7 +1834,7 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         _fail_check_on_calls(monkeypatch, {1, 2})
 
         with pytest.raises(SystemExit):
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         err_lines = capsys.readouterr().err.splitlines()
         assert _count_line(2, "PR #1, PR #2") in err_lines
@@ -1854,7 +1855,7 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         _fail_check_on_calls(monkeypatch, {1, 2})
 
         with pytest.raises(SystemExit):
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
+            pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
 
         assert capsys.readouterr().err.strip().splitlines()[-1] == _count_line(2, "account-1 PR #1, account-2 PR #2")
 
@@ -1862,13 +1863,13 @@ class TestPrCostRecordDegradesOnBreakdownCheckFailure:
         self, fake_projects, tmp_path, monkeypatch, capsys,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
             _sample_pr_cost_row(pr_number=50, model_breakdown=_sample_model_breakdown()),
             _sample_pr_cost_row(pr_number=51, model_breakdown=_sample_model_breakdown("claude-opus-5")),
         ])
-        monkeypatch.setattr(_mod.pr_cost, "_build_model_breakdown_cell", lambda by_model: None)
+        monkeypatch.setattr(pr_cost, "_build_model_breakdown_cell", lambda by_model: None)
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         rows = _ledger_rows(ledger_path)
         assert [r["pr_number"] for r in rows] == [50, 51, 1]
@@ -1888,7 +1889,7 @@ class TestPrCostRecordWritesAndReportsTheBreakdown:
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         ledger_path.write_text(_PRE_MODEL_HEADER_LINE + "\n" + _pre_model_row_line(pr_number=50) + "\n")
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         new_row = _ledger_rows(ledger_path)[-1]
         zero_group = _zero_group()
@@ -1908,7 +1909,7 @@ class TestPrCostRecordWritesAndReportsTheBreakdown:
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         assert not ledger_path.exists()
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         assert stat.S_IMODE(ledger_path.stat().st_mode) == 0o600
 
@@ -1918,7 +1919,7 @@ class TestPrCostRecordWritesAndReportsTheBreakdown:
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         _write_jsonl(fake_projects / "sess-0.jsonl", [_priced("claude-test-unpriced", input=500, branch="feature-a")])
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         assert ledger_path.read_text().splitlines()[1].split("\t")[-1] == "{}"
         recorded_row = _ledger_rows(ledger_path)[0]
@@ -1935,7 +1936,7 @@ class TestPrCostRecordWritesAndReportsTheBreakdown:
             _priced("claude-test-unpriced", input=777, branch="feature-a"),
         ])
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         assert "claude-test-unpriced" not in ledger_path.read_text()
         captured = capsys.readouterr()
@@ -1949,11 +1950,11 @@ class TestPrCostReadModeAndExportOutputScope:
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         distinctive_model_key = "claude-test-keymarkzz"
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
             _sample_pr_cost_row(model_breakdown=_sample_model_breakdown(distinctive_model_key)),
         ])
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(), _NOW, [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(), _NOW, [fake_projects.parent])
 
         captured = capsys.readouterr()
         assert "No rows recorded yet" not in captured.out
@@ -1964,12 +1965,12 @@ class TestPrCostReadModeAndExportOutputScope:
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         distinctive_model_key = "claude-test-keymarkzz"
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
             _sample_pr_cost_row(model_breakdown=_sample_model_breakdown(distinctive_model_key)),
         ])
         out_path = tmp_path / "export.tsv"
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(out_path)))
 
         captured = capsys.readouterr()
         assert distinctive_model_key not in captured.out + captured.err
@@ -1984,9 +1985,9 @@ def _run_read_record_and_export(fake_projects, tmp_path, capsys, export_name: st
         exit_code = None
         try:
             if mode == "export":
-                _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(tmp_path / export_name)))
+                pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(tmp_path / export_name)))
             else:
-                _mod.pr_cost._pr_cost_report(_pr_cost_args(record=(mode == "record")), _NOW, [fake_projects.parent])
+                pr_cost._pr_cost_report(_pr_cost_args(record=(mode == "record")), _NOW, [fake_projects.parent])
         except SystemExit as exc:
             exit_code = exc.code
         outcomes.append((mode, exit_code, capsys.readouterr().err))
@@ -1996,7 +1997,7 @@ def _run_read_record_and_export(fake_projects, tmp_path, capsys, export_name: st
 class TestPrCostPrescribedHandEdits:
     @staticmethod
     def _current_line_with_cell(cell: str) -> str:
-        cells = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(pr_number=50)).split("\t")
+        cells = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(pr_number=50)).split("\t")
         cells[-1] = cell
         return "\t".join(cells)
 
@@ -2011,7 +2012,7 @@ class TestPrCostPrescribedHandEdits:
         self, fake_projects, tmp_path, monkeypatch, capsys, broken_cell_or_tail, expected_fragments,
     ):
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
-        header = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
+        header = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
         if broken_cell_or_tail is None:
             broken_line = self._current_line_with_cell("")[:-1]  # the editor stripped the trailing tab
             fixed_line = broken_line + "\t"
@@ -2056,7 +2057,7 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         before_bytes = self._seed_pre_model_ledger(ledger_path)
 
         with pytest.raises(SystemExit):
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         self._assert_untouched(ledger_path, before_bytes, capsys.readouterr())
 
@@ -2066,7 +2067,7 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         before_bytes = self._seed_pre_model_ledger(ledger_path, pr_number=1, machine="c0ffee01")
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         captured = capsys.readouterr()
         assert "is already captured" in captured.err
@@ -2078,7 +2079,7 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         before_bytes = self._seed_pre_model_ledger(ledger_path, pr_number=4217)
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(), _NOW, [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(), _NOW, [fake_projects.parent])
 
         captured = capsys.readouterr()
         self._assert_untouched(ledger_path, before_bytes, captured)
@@ -2089,7 +2090,7 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         ledger_path = _arrange_record_run(fake_projects, tmp_path, monkeypatch, branches=("feature-a",))
         before_bytes = self._seed_pre_model_ledger(ledger_path)
 
-        _mod.pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(tmp_path / "export.tsv")))
+        pr_cost_export.cmd_pr_cost_export(_pr_cost_export_args(out=str(tmp_path / "export.tsv")))
 
         self._assert_untouched(ledger_path, before_bytes, capsys.readouterr())
 
@@ -2103,7 +2104,7 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         ))
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(record=True), _NOW, [fake_projects.parent])
 
         assert exc_info.value.code == 2
         self._assert_untouched(ledger_path, before_bytes, capsys.readouterr())
@@ -2122,7 +2123,7 @@ class TestPrCostOlderLedgerIsNotTouchedOutsideAConsentedWrite:
         not_opted_in_ledger = not_opted_in_root.parent / "pr-cost-ledger.tsv"
         before_bytes = self._seed_pre_model_ledger(not_opted_in_ledger)
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
+        pr_cost._pr_cost_report(_pr_cost_args(record=True, all_accounts=True), _NOW, roots)
 
         captured = capsys.readouterr()
         assert "account-2 is not opted in" in captured.err

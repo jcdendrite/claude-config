@@ -1,25 +1,19 @@
 """Tests for transcript_analysis/gh_cli.py (gh stderr classification, rate-limit backoff, auth
 preflight, effective-repo pinning, and merged/closed PR discovery)."""
-import importlib.util
 import json
 import subprocess
-import sys
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    gh_cli,
+    pr_cost,
+    pr_cost_ledger,
+    scope,
+)
 
 from ._pr_cost_helpers import _enable_pr_cost, _fake_pr_cost_subprocess_run, _pr_cost_args
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 # ---------------------------------------------------------------------------
@@ -39,12 +33,12 @@ class TestGhDiscoverMergedPrsPagination:
             return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        _mod.gh_cli._gh_discover_merged_prs("github.com", "owner/repo")
+        gh_cli._gh_discover_merged_prs("github.com", "owner/repo")
 
         argv = captured["cmd"]
         assert "--limit" in argv
         limit_value = int(argv[argv.index("--limit") + 1])
-        assert limit_value == _mod.gh_cli._PR_COST_GH_PR_LIST_LIMIT
+        assert limit_value == gh_cli._PR_COST_GH_PR_LIST_LIMIT
         assert limit_value > 30  # gh pr list's own truncating default
 
 
@@ -61,12 +55,12 @@ class TestGhDiscoverClosedUnmergedPrBranches:
             return type("R", (), {"returncode": 0, "stdout": "[]", "stderr": ""})()
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+        gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
 
         argv = captured["cmd"]
         assert argv[argv.index("--state") + 1] == "closed"
         assert "--limit" in argv
-        assert int(argv[argv.index("--limit") + 1]) == _mod.gh_cli._PR_COST_GH_PR_LIST_LIMIT
+        assert int(argv[argv.index("--limit") + 1]) == gh_cli._PR_COST_GH_PR_LIST_LIMIT
 
     def test_returns_headref_name_set_from_closed_prs(self, monkeypatch):
         """Returns a set of branch names (headRefName), not the raw PR dict
@@ -80,7 +74,7 @@ class TestGhDiscoverClosedUnmergedPrBranches:
             subprocess, "run",
             lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""})(),
         )
-        result = _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+        result = gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
         assert result == {"abandoned-a", "abandoned-b"}
 
     def test_entry_with_no_headref_name_filtered_out_of_result(self, monkeypatch):
@@ -96,7 +90,7 @@ class TestGhDiscoverClosedUnmergedPrBranches:
             subprocess, "run",
             lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": json.dumps(payload), "stderr": ""})(),
         )
-        result = _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+        result = gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
         assert result == {"abandoned-a"}
 
     def test_gh_call_failure_aborts_with_exit_1_not_a_partial_result(self, monkeypatch, capsys):
@@ -111,7 +105,7 @@ class TestGhDiscoverClosedUnmergedPrBranches:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+            gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
 
         assert exc_info.value.code == 1
         assert "gh pr list (closed) failed" in capsys.readouterr().err
@@ -125,7 +119,7 @@ class TestGhDiscoverClosedUnmergedPrBranches:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
+            gh_cli._gh_discover_closed_unmerged_pr_branches("github.com", "owner/repo")
 
         assert exc_info.value.code == 1
         assert "unparseable JSON" in capsys.readouterr().err
@@ -138,7 +132,7 @@ class TestClassifyGhError:
         "HTTP 401: Bad credentials\n",
     ])
     def test_auth_shaped_stderr_classified_as_auth(self, stderr):
-        assert _mod.gh_cli._classify_gh_error(stderr) == _mod.gh_cli._GH_ERROR_KIND_AUTH
+        assert gh_cli._classify_gh_error(stderr) == gh_cli._GH_ERROR_KIND_AUTH
 
     @pytest.mark.parametrize("stderr", [
         # Verified against gh 2.97.0's own stderr for an ambient GH_HOST that
@@ -148,7 +142,7 @@ class TestClassifyGhError:
         " the variable\n",
     ])
     def test_gh_host_mismatch_stderr_classified_as_host_mismatch(self, stderr):
-        assert _mod.gh_cli._classify_gh_error(stderr) == _mod.gh_cli._GH_ERROR_KIND_HOST_MISMATCH
+        assert gh_cli._classify_gh_error(stderr) == gh_cli._GH_ERROR_KIND_HOST_MISMATCH
 
     @pytest.mark.parametrize("stderr", [
         "API rate limit exceeded for user ID 123.\n",
@@ -156,7 +150,7 @@ class TestClassifyGhError:
         "HTTP 403: Forbidden\n",
     ])
     def test_rate_limit_shaped_stderr_classified_as_rate_limit(self, stderr):
-        assert _mod.gh_cli._classify_gh_error(stderr) == _mod.gh_cli._GH_ERROR_KIND_RATE_LIMIT
+        assert gh_cli._classify_gh_error(stderr) == gh_cli._GH_ERROR_KIND_RATE_LIMIT
 
     @pytest.mark.parametrize("stderr", [
         "curl: (6) Could not resolve host: api.github.com\n",
@@ -164,7 +158,7 @@ class TestClassifyGhError:
         "\n",  # unrecognized/empty stderr falls back to network, not a crash
     ])
     def test_unrecognized_stderr_falls_back_to_network(self, stderr):
-        assert _mod.gh_cli._classify_gh_error(stderr) == _mod.gh_cli._GH_ERROR_KIND_NETWORK
+        assert gh_cli._classify_gh_error(stderr) == gh_cli._GH_ERROR_KIND_NETWORK
 
 
 class TestGitRemoteOriginHostAndOwnerRepoRegex:
@@ -186,7 +180,7 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
             subprocess, "run",
             lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": remote_url + "\n", "stderr": ""})(),
         )
-        assert _mod.gh_cli._git_remote_origin_host_and_owner_repo() == expected
+        assert gh_cli._git_remote_origin_host_and_owner_repo() == expected
 
     def test_default_args_prefix_failure_with_pr_cost_and_no_repo_hint(self, monkeypatch, capsys):
         """Calls _git_remote_origin_host_and_owner_repo with no arguments --
@@ -198,7 +192,7 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
             lambda cmd, *a, **kw: type("R", (), {"returncode": 0, "stdout": "not a remote\n", "stderr": ""})(),
         )
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._git_remote_origin_host_and_owner_repo()
+            gh_cli._git_remote_origin_host_and_owner_repo()
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert err.startswith("pr-cost:")
@@ -216,7 +210,7 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._git_remote_origin_host_and_owner_repo()
+            gh_cli._git_remote_origin_host_and_owner_repo()
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert err.startswith("pr-cost:")
@@ -236,7 +230,7 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
             })(),
         )
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._git_remote_origin_host_and_owner_repo()
+            gh_cli._git_remote_origin_host_and_owner_repo()
         assert exc_info.value.code == 1
         assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
 
@@ -254,7 +248,7 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
             })(),
         )
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._git_remote_origin_host_and_owner_repo()
+            gh_cli._git_remote_origin_host_and_owner_repo()
         assert exc_info.value.code == 1
         assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
 
@@ -269,7 +263,7 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
             })(),
         )
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._git_remote_origin_host_and_owner_repo()
+            gh_cli._git_remote_origin_host_and_owner_repo()
         assert exc_info.value.code == 1
         assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
 
@@ -285,7 +279,7 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
             })(),
         )
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._git_remote_origin_host_and_owner_repo()
+            gh_cli._git_remote_origin_host_and_owner_repo()
         assert exc_info.value.code == 1
         assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
 
@@ -303,7 +297,7 @@ class TestGitRemoteOriginHostAndOwnerRepoRegex:
             })(),
         )
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._git_remote_origin_host_and_owner_repo()
+            gh_cli._git_remote_origin_host_and_owner_repo()
         assert exc_info.value.code == 1
         assert "not a recognizable host/owner/repo URL" in capsys.readouterr().err
 
@@ -323,7 +317,7 @@ class TestGhAuthPreflightOkHostnameScoping:
             return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        assert _mod.gh_cli._gh_auth_preflight_ok("acme-corp.ghe.com") is True
+        assert gh_cli._gh_auth_preflight_ok("acme-corp.ghe.com") is True
         assert call_log == [["gh", "auth", "status", "--hostname", "acme-corp.ghe.com"]]
 
     def test_nonzero_exit_returns_false(self, monkeypatch):
@@ -331,7 +325,7 @@ class TestGhAuthPreflightOkHostnameScoping:
             subprocess, "run",
             lambda cmd, *a, **kw: type("R", (), {"returncode": 1, "stdout": "", "stderr": "error\n"})(),
         )
-        assert _mod.gh_cli._gh_auth_preflight_ok("github.com") is False
+        assert gh_cli._gh_auth_preflight_ok("github.com") is False
 
     @pytest.mark.parametrize("raised", [
         subprocess.TimeoutExpired(cmd=["gh", "auth", "status"], timeout=1),
@@ -342,7 +336,7 @@ class TestGhAuthPreflightOkHostnameScoping:
             raise raised
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        assert _mod.gh_cli._gh_auth_preflight_ok("github.com") is False
+        assert gh_cli._gh_auth_preflight_ok("github.com") is False
 
 
 class TestGhCallWithBackoffFailureClassBehavior:
@@ -364,10 +358,10 @@ class TestGhCallWithBackoffFailureClassBehavior:
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
 
-        proc, degraded = _mod.gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+        proc, degraded = gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
 
         assert proc is None
-        assert degraded == _mod.gh_cli._GH_CALL_DEGRADED_AUTH
+        assert degraded == gh_cli._GH_CALL_DEGRADED_AUTH
         assert call_count == 1
         assert sleep_calls == []
 
@@ -393,10 +387,10 @@ class TestGhCallWithBackoffFailureClassBehavior:
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
 
-        proc, degraded = _mod.gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+        proc, degraded = gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
 
         assert proc is None
-        assert degraded == _mod.gh_cli._GH_CALL_DEGRADED_HOST_MISMATCH
+        assert degraded == gh_cli._GH_CALL_DEGRADED_HOST_MISMATCH
         assert call_count == 1
         assert sleep_calls == []
         err = capsys.readouterr().err
@@ -418,11 +412,11 @@ class TestGhCallWithBackoffFailureClassBehavior:
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
 
-        proc, degraded = _mod.gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+        proc, degraded = gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
 
         assert proc is None
-        assert degraded == _mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT
-        assert call_count == _mod.gh_cli._PR_COST_RATE_LIMIT_MAX_ATTEMPTS
+        assert degraded == pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT
+        assert call_count == gh_cli._PR_COST_RATE_LIMIT_MAX_ATTEMPTS
         assert sleep_calls  # retried at least once before exhausting
 
     def test_network_shaped_exception_retries_before_returning_degraded(self, monkeypatch):
@@ -434,17 +428,17 @@ class TestGhCallWithBackoffFailureClassBehavior:
         def fake_run(cmd, *a, **kw):
             nonlocal call_count
             call_count += 1
-            raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod.gh_cli._GH_CALL_TIMEOUT_S)
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=gh_cli._GH_CALL_TIMEOUT_S)
 
         sleep_calls: list[float] = []
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
 
-        proc, degraded = _mod.gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+        proc, degraded = gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
 
         assert proc is None
-        assert degraded == _mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK
-        assert call_count == _mod.gh_cli._PR_COST_RATE_LIMIT_MAX_ATTEMPTS
+        assert degraded == pr_cost_ledger._PR_COST_STATUS_DEGRADED_NETWORK
+        assert call_count == gh_cli._PR_COST_RATE_LIMIT_MAX_ATTEMPTS
         assert sleep_calls
 
     def test_network_shaped_failure_succeeds_after_two_retries(self, monkeypatch):
@@ -457,14 +451,14 @@ class TestGhCallWithBackoffFailureClassBehavior:
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
-                raise subprocess.TimeoutExpired(cmd=cmd, timeout=_mod.gh_cli._GH_CALL_TIMEOUT_S)
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=gh_cli._GH_CALL_TIMEOUT_S)
             return type("R", (), {"returncode": 0, "stdout": '{"ok": true}', "stderr": ""})()
 
         sleep_calls: list[float] = []
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
 
-        proc, degraded = _mod.gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
+        proc, degraded = gh_cli._gh_call_with_backoff(["gh", "repo", "view"], label="repo view")
 
         assert degraded == ""
         assert proc is not None
@@ -490,12 +484,12 @@ class TestGhCallWithBackoffElapsedBudgetCap:
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
 
-        proc, degraded = _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "view", "1"], label="pr view 1")
+        proc, degraded = gh_cli._gh_call_with_backoff(["gh", "pr", "view", "1"], label="pr view 1")
 
         assert proc is None
-        assert degraded == _mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT
+        assert degraded == pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT
         assert sleep_calls == [60.0, 120.0, 240.0, 480.0]
-        assert sum(sleep_calls) == _mod.gh_cli._PR_COST_RATE_LIMIT_MAX_ELAPSED_S
+        assert sum(sleep_calls) == gh_cli._PR_COST_RATE_LIMIT_MAX_ELAPSED_S
 
     def test_malformed_huge_retry_after_hint_caps_sleep_to_remaining_elapsed_budget(self, monkeypatch):
         """A huge "retry after" hint from gh's own stderr is capped to the
@@ -515,12 +509,12 @@ class TestGhCallWithBackoffElapsedBudgetCap:
         monkeypatch.setattr(subprocess, "run", fake_run)
         monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
 
-        proc, degraded = _mod.gh_cli._gh_call_with_backoff(["gh", "pr", "view", "1"], label="pr view 1")
+        proc, degraded = gh_cli._gh_call_with_backoff(["gh", "pr", "view", "1"], label="pr view 1")
 
         assert proc is None
-        assert degraded == _mod.pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT
+        assert degraded == pr_cost_ledger._PR_COST_STATUS_DEGRADED_RATE_LIMIT
         assert call_count == 2
-        assert sleep_calls == [_mod.gh_cli._PR_COST_RATE_LIMIT_MAX_ELAPSED_S]  # capped, not the raw 999999 value
+        assert sleep_calls == [gh_cli._PR_COST_RATE_LIMIT_MAX_ELAPSED_S]  # capped, not the raw 999999 value
 
 
 class TestResolvePinnedGhRepoIdentity:
@@ -548,7 +542,7 @@ class TestResolvePinnedGhRepoIdentity:
         monkeypatch.setattr(subprocess, "run", boom)
 
         with pytest.raises(ValueError, match="non-empty corpus_host and corpus_repo"):
-            _mod.gh_cli._resolve_pinned_gh_repo(corpus_host, corpus_repo, ordinal=1)
+            gh_cli._resolve_pinned_gh_repo(corpus_host, corpus_repo, ordinal=1)
 
     def test_mismatch_exits_2_with_neither_raw_value_in_output(self, monkeypatch, capsys):
         """The two capsys assertions below confirm the refusal message
@@ -561,7 +555,7 @@ class TestResolvePinnedGhRepoIdentity:
         )
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._resolve_pinned_gh_repo("github.com", corpus_repo, ordinal=1)
+            gh_cli._resolve_pinned_gh_repo("github.com", corpus_repo, ordinal=1)
 
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
@@ -589,7 +583,7 @@ class TestResolvePinnedGhRepoIdentity:
         )
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._resolve_pinned_gh_repo("acme-corp.ghe.com", same_owner_repo, ordinal=1)
+            gh_cli._resolve_pinned_gh_repo("acme-corp.ghe.com", same_owner_repo, ordinal=1)
 
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
@@ -612,7 +606,7 @@ class TestResolvePinnedGhRepoIdentity:
         )
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._resolve_pinned_gh_repo("github.com", "owner/repo", ordinal=1)
+            gh_cli._resolve_pinned_gh_repo("github.com", "owner/repo", ordinal=1)
 
         assert exc_info.value.code == 2
         assert "owner/repo" not in capsys.readouterr().err
@@ -638,7 +632,7 @@ class TestResolvePinnedGhRepoIdentity:
         )
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._resolve_pinned_gh_repo("github.com", "owner/repo", ordinal=1)
+            gh_cli._resolve_pinned_gh_repo("github.com", "owner/repo", ordinal=1)
 
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
@@ -661,7 +655,7 @@ class TestResolvePinnedGhRepoIdentity:
         )
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._resolve_pinned_gh_repo("github.com", "owner/repo", ordinal=1)
+            gh_cli._resolve_pinned_gh_repo("github.com", "owner/repo", ordinal=1)
 
         assert exc_info.value.code == 1
         assert "unparseable JSON" in capsys.readouterr().err
@@ -683,7 +677,7 @@ class TestResolvePinnedGhRepoIdentity:
             ),
         )
 
-        gh_repo, _ = _mod.gh_cli._resolve_pinned_gh_repo("acme-corp.ghe.com", "owner/repo", ordinal=1)
+        gh_repo, _ = gh_cli._resolve_pinned_gh_repo("acme-corp.ghe.com", "owner/repo", ordinal=1)
 
         assert gh_repo == "owner/repo"
 
@@ -701,7 +695,7 @@ class TestResolvePinnedGhRepoIdentity:
         )
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.gh_cli._resolve_pinned_gh_repo("github.com", corpus_repo, ordinal=2)
+            gh_cli._resolve_pinned_gh_repo("github.com", corpus_repo, ordinal=2)
 
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
@@ -723,10 +717,10 @@ class TestResolvePinnedGhRepoIdentity:
         test_mismatch_with_non_default_ordinal_labels_output_account_two
         only proves the literal ordinal=2 case, not _pr_cost_report's own
         computation of which ordinal to pass."""
-        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
+        monkeypatch.setattr(scope, "declared_transcript_roots", lambda: [])
         active = tmp_path / "zzz-active"
         (active / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: active)
+        monkeypatch.setattr(scope, "config_dir", lambda: active)
         extra = tmp_path / "aaa-extra"  # resolved-path-sorts before "zzz-active" despite being scanned second
         (extra / "projects").mkdir(parents=True)
         monkeypatch.setattr(
@@ -736,7 +730,7 @@ class TestResolvePinnedGhRepoIdentity:
         )
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost.cmd_pr_cost(_pr_cost_args(extra_config_dirs=[str(extra)], all_accounts=True))
+            pr_cost.cmd_pr_cost(_pr_cost_args(extra_config_dirs=[str(extra)], all_accounts=True))
 
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
@@ -771,9 +765,9 @@ class TestResolvePinnedGhRepoIdentity:
         )
 
         args = _pr_cost_args(record=True, pr=42)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
-        rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert len(rows) == 1
         assert rows[0]["repo"] == "owner/repo"
 
@@ -803,12 +797,12 @@ class TestResolvePinnedGhRepoRetryExhaustion:
         monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1  # exhaustion, not the mismatch path's exit(2)
 
         gh_repo_view_calls = [c for c in call_log if c[:3] == ["gh", "repo", "view"]]
-        assert len(gh_repo_view_calls) == _mod.gh_cli._PR_COST_RATE_LIMIT_MAX_ATTEMPTS
-        assert len(sleep_calls) == _mod.gh_cli._PR_COST_RATE_LIMIT_MAX_ATTEMPTS - 1
+        assert len(gh_repo_view_calls) == gh_cli._PR_COST_RATE_LIMIT_MAX_ATTEMPTS
+        assert len(sleep_calls) == gh_cli._PR_COST_RATE_LIMIT_MAX_ATTEMPTS - 1
 
         err = capsys.readouterr().err
         assert gh_repo not in err
@@ -848,7 +842,7 @@ class TestResolvePinnedGhRepoHostMismatchAbort:
         monkeypatch.setattr(time, "sleep", lambda s: sleep_calls.append(s))
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+            pr_cost._pr_cost_report(_pr_cost_args(), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
         assert exc_info.value.code == 1  # abort, not the identity-mismatch path's exit(2)
 
         gh_repo_view_calls = [c for c in call_log if c[:3] == ["gh", "repo", "view"]]
@@ -864,5 +858,5 @@ class TestResolvePinnedGhRepoHostMismatchAbort:
 
 class TestGhHostQualifiedRepo:
     def test_returns_host_slash_owner_repo(self):
-        assert _mod.gh_cli._gh_host_qualified_repo("acme-corp.ghe.com", "owner/repo") == "acme-corp.ghe.com/owner/repo"
-        assert _mod.gh_cli._gh_host_qualified_repo("github.com", "owner/repo") == "github.com/owner/repo"
+        assert gh_cli._gh_host_qualified_repo("acme-corp.ghe.com", "owner/repo") == "acme-corp.ghe.com/owner/repo"
+        assert gh_cli._gh_host_qualified_repo("github.com", "owner/repo") == "github.com/owner/repo"
