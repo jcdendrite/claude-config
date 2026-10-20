@@ -515,16 +515,16 @@ Claude Code compresses conversation history when the context window fills up. Th
 Pytest suite covering hooks (allow, deny, and ask paths) and skill description contracts. Pins live in [`requirements-dev.txt`](./requirements-dev.txt) (single source for CI + contributors):
 
 ```bash
-./install-dev.sh   # creates .venv, installs requirements-dev.txt, offers the pyright-lsp plugin (contributor only)
-.venv/bin/pytest claude/.claude/ claude-skills/ plugins/ evals/
-.venv/bin/ruff check claude/.claude/ claude-skills/ plugins/ evals/  # Python
-scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck         # shell
+./install-dev.sh   # from the main checkout's root: creates .venv, installs requirements-dev.txt, offers the pyright-lsp plugin (contributor only)
+scripts/venv-run.sh pytest claude/.claude/ claude-skills/ plugins/ evals/
+scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/  # Python
+scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck          # shell
 ```
 
 ShellCheck takes no flags on the command line — they live in the repo-root
 `.shellcheckrc`, so CI, the command above, and any editor integration agree.
 
-The `.venv` lives only in the main worktree root. Linked worktrees live at `.claude/worktrees/<branch>/` — exactly three levels deep — so from inside a worktree invoke `../../../.venv/bin/pytest` and `../../../.venv/bin/ruff` instead.
+The `.venv` lives only in the main checkout's root, and linked worktrees never inherit it. `scripts/venv-run.sh <tool> [args...]` finds that `.venv` through git and runs `<tool>` from its `bin/` directory, so the `scripts/venv-run.sh` commands above work unchanged at any depth. Run them from the root of the main checkout or of a linked worktree, since they are cwd-relative.
 
 `./install-dev.sh` also offers to install `pyright-lsp@claude-plugins-official` at local scope, giving Claude Code sessions in this checkout Python diagnostics and navigation. Local scope records the plugin only in this checkout's gitignored `.claude/settings.local.json`. The install runs only when `claude-plugins-official` is already registered and you answer `y` at the prompt. If the marketplace is not registered, the script prints the `claude plugin marketplace add anthropics/claude-plugins-official` command instead. That registration applies to every project on your profile. A non-interactive run prints the `claude plugin install` command to run from this checkout instead of prompting. A local-scope install made from the main checkout root is active in Claude Code sessions anchored in a linked worktree under `.claude/worktrees/` too. See [`docs/design-decisions/pyright-lsp-installed-per-contributor.md`](./docs/design-decisions/pyright-lsp-installed-per-contributor.md) for why the plugin reaches contributors only, and only from an interactive terminal. The `pyright-langserver` binary needs to be on the PATH of the shell that launches Claude Code, and `./install-dev.sh` checks for it but does not install it:
 
@@ -537,11 +537,11 @@ The suite runs under `pytest-xdist` (`-n auto`) by default; pass `-n0` to run se
 
 Test trees under `claude/.claude/` that carry their own `conftest.py` are Python packages, so each tree's conftest resolves to a distinct module name. [`.claude/rules/test-tree-packaging.md`](./.claude/rules/test-tree-packaging.md) states what a new tree must add; [`claude/.claude/tests/test_pytest_collection_config.py`](./claude/.claude/tests/test_pytest_collection_config.py) enforces it.
 
-`-n auto` resolves to the machine's logical CPU count. `select-tests.py` sizes `PYTEST_XDIST_AUTO_NUM_WORKERS` itself from the current 1-minute load average, never exceeding what `-n auto` would have picked. A run starting on an already-busy machine takes only the idle headroom instead of a full machine's worth. Check its stderr line for the count it picked. The bare `.venv/bin/pytest` command above has no such sizing; cap it manually:
+`-n auto` resolves to the machine's logical CPU count. `select-tests.py` sizes `PYTEST_XDIST_AUTO_NUM_WORKERS` itself from the current 1-minute load average, never exceeding what `-n auto` would have picked. A run starting on an already-busy machine takes only the idle headroom instead of a full machine's worth. Check its stderr line for the count it picked. Running `scripts/venv-run.sh pytest claude/.claude/ claude-skills/ plugins/ evals/` directly has no such sizing; cap it manually:
 
 - Set `PYTEST_XDIST_AUTO_NUM_WORKERS=<N>` in the environment.
   - Checks ahead of xdist's own core-count detection.
-  - Applies to both the bare `pytest` command and `select-tests.py`.
+  - Applies to both a direct `scripts/venv-run.sh pytest` run and `select-tests.py`.
   - Wins over `select-tests.py`'s own sizing, which defers whenever the variable is already set.
 - Or pass `-n <N>` on the command line for a single run. It wins over both. `select-tests.py` forwards it through to pytest.
 - When running several suites at once, size it as logical cores divided by the number of concurrent runs you expect (e.g. a 16-core machine expecting four concurrent runs → `-n 4`). Check xdist's startup banner to confirm a run picked up the value.
@@ -552,10 +552,10 @@ CI runs the same pin set on every PR and main push via `.github/workflows/tests.
 For a faster local dev loop, `select-tests.py` runs pytest against just the test domains implicated by what you changed, instead of the whole suite. It computes the changed-file set as the merge-base diff against `origin/main` unioned with your dirty working tree. It then maps each changed path to its test domain. Any change it can't map with confidence fails open to running the full suite:
 
 ```bash
-.venv/bin/python3 claude/.claude/scripts/select-tests.py
+scripts/venv-run.sh python3 claude/.claude/scripts/select-tests.py
 ```
 
-Same worktree-relative substitution as above (`../../../.venv/bin/python3 claude/.claude/scripts/select-tests.py`). This is the required local command for agents, including in `/ready-for-review`. CI still runs the whole suite on every PR and main push — a deliberate choice, see [`docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md`](docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md).
+This is the required local command for agents, including in `/ready-for-review`. CI still runs the whole suite on every PR and main push — a deliberate choice, see [`docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md`](docs/design-decisions/ci-stays-an-unconditional-full-suite-backstop.md).
 
 Set `test_selection_tracking = true` in `<config-dir>/claude-config.toml` (off by default) to log every `select-tests.py` invocation's selection outcome to `<config-dir>/.test-selection-log.jsonl`, one JSON line per invocation. Each line always records the selection reason. For a full-suite fallback, it also records which changed path triggered it. When that invocation computed a load-aware worker count, it also records the worker count and the 1-minute load average. This makes fallback-to-full-suite frequency measurable instead of a stderr line that scrolls away. Like [`.permission-prompt-log.jsonl`](docs/permission-prompt-tracking.md#known-limitations), the log is append-only with no automatic rotation; trim it manually if disk space or data age is a concern. Its invocation frequency is structurally higher than that log's, since it appends on every `select-tests.py` run rather than only on an interactive permission dialog.
 

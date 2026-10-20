@@ -12,10 +12,11 @@ Fixture defaults, applied by `_make_fixture`:
 - The main checkout's `.git/info/exclude` lists `.claude/worktrees/`, which
   `_make_repo_with_remote` does not ignore.
 
-Isolation: `_clean_env` removes the four repository-selection variables
+Isolation: conftest's `_clean_env` removes the four repository-selection variables
 (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`) and the
-DIRENV and gh-credential variables, for the calls made in this file. It does not
-cover the conftest builders, which call git with the inherited environment.
+DIRENV and gh-credential variables, for the calls made in this file.
+The conftest repo builders (`_make_repo_with_remote`, `_make_feature_branch`, `_make_worktree`)
+call git with the inherited environment.
 Nothing isolates the contributor's global or system git config beyond the two
 keys above, so keys such as `commit.gpgsign` still apply to the second-clone
 commits.
@@ -52,15 +53,14 @@ from typing import NamedTuple
 import pytest
 
 from .conftest import (
-    _base_test_env,
+    _clean_env,
+    _git,
     _make_feature_branch,
     _make_repo_with_remote,
     _make_worktree,
 )
 
 _SCRIPT = Path(__file__).parent.parent / "worktree-ensure.sh"
-
-_INHERITED_GIT_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
 
 _CURRENT_NEXT_LINE = (
     "next: none; the working directory is this worktree, "
@@ -77,23 +77,6 @@ class _Fixture(NamedTuple):
     main: Path
     bare: Path
     default_branch: str
-
-
-def _clean_env(**overrides: str | None) -> dict[str, str]:
-    """The base test env without inherited repository-selection variables; a None override removes the key."""
-    env = {key: value for key, value in _base_test_env().items() if key not in _INHERITED_GIT_VARIABLES}
-    for key, value in overrides.items():
-        if value is None:
-            env.pop(key, None)
-        else:
-            env[key] = value
-    return env
-
-
-def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", *args], cwd=repo, env=_clean_env(), capture_output=True, text=True, check=True
-    ).stdout
 
 
 def _make_fixture(tmp_path: Path, default_branch: str = "main", base_name: str = "dir with space") -> _Fixture:
