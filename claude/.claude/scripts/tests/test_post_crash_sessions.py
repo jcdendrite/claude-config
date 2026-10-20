@@ -963,6 +963,40 @@ def test_find_scheduled_task_locks_reports_timeout_when_find_cannot_be_started(t
     assert timed_out is True
 
 
+def test_find_scheduled_task_locks_prunes_library_trash_movies(tmp_path):
+    """Regression guard for the TCC "Operation not permitted" noise this sweep
+    hit under ~/Library, ~/.Trash, and ~/Movies during crash recovery (measured 2026-10-19)."""
+    pruned_lock = tmp_path / "Library" / "proj" / ".claude" / "scheduled_tasks.lock"
+    _write_lock(pruned_lock)
+    _write_lock(tmp_path / ".Trash" / "proj" / ".claude" / "scheduled_tasks.lock")
+    _write_lock(tmp_path / "Movies" / "proj" / ".claude" / "scheduled_tasks.lock")
+    real_lock = tmp_path / "proj" / ".claude" / "scheduled_tasks.lock"
+    _write_lock(real_lock)
+
+    found, timed_out, elapsed = _mod._find_scheduled_task_locks(tmp_path)
+
+    assert timed_out is False
+    assert real_lock.resolve() in [p.resolve() for p in found]
+    assert pruned_lock.resolve() not in [p.resolve() for p in found]
+    assert len(found) == 1
+
+
+def test_find_scheduled_task_locks_prune_does_not_match_by_basename_alone(tmp_path):
+    """Regression guard: the -prune exclusion matches only the exact root-level
+    Library/.Trash/Movies paths, not any directory sharing their basename elsewhere."""
+    near_miss_lock = tmp_path / "LibraryBackup" / "proj" / ".claude" / "scheduled_tasks.lock"
+    _write_lock(near_miss_lock)
+    nested_lock = tmp_path / "proj" / "Library" / ".claude" / "scheduled_tasks.lock"
+    _write_lock(nested_lock)
+
+    found, timed_out, elapsed = _mod._find_scheduled_task_locks(tmp_path)
+
+    assert timed_out is False
+    resolved_found = [p.resolve() for p in found]
+    assert near_miss_lock.resolve() in resolved_found
+    assert nested_lock.resolve() in resolved_found
+
+
 def test_build_report_union_discovers_lock_missed_by_either_method_alone(tmp_path):
     """A harvest-only lock (reachable only because its cwd was seen in a
     transcript) and a find-only lock (never mentioned in any transcript)
