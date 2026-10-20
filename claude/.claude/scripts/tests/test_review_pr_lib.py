@@ -2675,7 +2675,7 @@ class TestWalkStackFailures:
 
         assert result.status == 1
         assert 'head branch "feat/a": PR numbers 31, 32' in result.stderr
-        assert "until all but one of them are closed or retargeted" in result.stderr
+        assert "until all but one of them are closed or merged, or this PR is retargeted onto a different branch" in result.stderr
         assert result.stderr.endswith(_shell_constant("REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE") + "\n")
 
 

@@ -615,7 +615,7 @@ review_pr_walk_stack() {
         if [[ ! "$candidate_numbers" =~ ^[0-9]+(,[0-9]+)+$ ]]; then
           _review_pr_stack_walk_unreadable_reply "$script_name" "$target" "$branch" || return 1
         fi
-        _review_pr_stack_walk_failure "$script_name" "$target" "more than one open PR has head branch $(_review_pr_stack_branch_echo "$branch"): PR numbers ${candidate_numbers//,/, }. This PR stays unreviewable through the skill until all but one of them are closed or retargeted. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1 ;;
+        _review_pr_stack_walk_failure "$script_name" "$target" "more than one open PR has head branch $(_review_pr_stack_branch_echo "$branch"): PR numbers ${candidate_numbers//,/, }. This PR stays unreviewable through the skill until all but one of them are closed or merged, or this PR is retargeted onto a different branch. $REVIEW_PR_STACK_PERSISTENT_CAUSE_NOTE" || return 1 ;;
       ancestor$'\t'*)
         verdict_rest=${verdict#ancestor$'\t'}
         ancestor_number=${verdict_rest%%$'\t'*}

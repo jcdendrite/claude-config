@@ -247,7 +247,8 @@ reading, computed by the script.
   reviewed through this skill.** A GitFlow release branch, which heads one PR
   into the default branch and another into the development branch, is the usual
   case. The verdict is `ambiguous`, so acquire, checkout, and diff all exit 2 and stay
-  refused until all but one of those PRs are closed or retargeted.
+  refused until all but one of those PRs are closed or merged, or this PR is
+  retargeted onto a different branch.
 
 **What the gate is.** A Step 2 time-of-check and a process guard against a
 missed review, not an adversarial control. A retarget after Step 2 is not
@@ -447,10 +448,12 @@ left implicit:
     one-way retarget between the reads cannot skip the stacked delta audit. The
     attacker left in that window is the one the "Known gaps and operator
     choices" section accepts.
-  - `review-pr-diff.sh` reads the base branch name from the same `gh pr view`
-    response as `baseRefOid`, and only the default branch name from the REST
-    payload. No later read that a PR retarget can change feeds the token, so it
-    has no recheck after the file list. The diff file is not bound to the base
+  - `review-pr-diff.sh` reads the base branch name from the REST payload and
+    cross-checks it against `gh pr view`'s `baseRefName` before the stacked
+    gate. It exits 2 when either name is unreadable or the two differ. It
+    prints the token only when the agreed name equals the default branch. No
+    later read that a PR retarget can change feeds the token, so it has no
+    recheck after the file list. The diff file is not bound to the base
     the token describes: `gh pr diff` renders against the base the PR has when
     it runs. That GitHub serves the two fields of one response
     consistently is unverified, and `review-pr-checkout.sh` relies on the same.
