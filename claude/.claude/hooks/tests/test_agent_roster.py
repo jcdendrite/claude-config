@@ -406,17 +406,15 @@ class TestFileBasedOutputBlockConsistency:
         )
 
     def test_block_has_no_recommendations_section(self):
-        """The findings file has no separate severity-summary section.
+        """Severity lives in each finding's heading; the block names no separate severity-summary section.
 
-        Each finding's heading already carries its severity, so a summary would
-        only repeat it. This pins one heading name; a summary under another
-        name would pass.
+        This pins one heading name; a summary under another name would pass.
         """
         block = self._extract_file_based_output_block(AGENTS_DIR / CANARY_AGENTS[0])
         assert "## Recommendations" not in block, (
             f"{CANARY_AGENTS[0]}: ### File-based output block still names a "
-            "'## Recommendations' section; each finding's heading carries its "
-            "severity tag instead."
+            "'## Recommendations' section; severity lives in each finding's "
+            "heading."
         )
 
 

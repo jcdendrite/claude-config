@@ -7318,11 +7318,12 @@ _ROUTING_MD_PATH = _skill_file("plan-review").parent / "ROUTING.md"
 # substring and pass while re-introducing the same-turn read-back race the
 # rule exists to prevent. The read-back token guards removal of the
 # whole-file-read sentence, not a scope qualifier appended to it later.
-# ready-for-review/SKILL.md is deliberately excluded here: it spawns one named
-# reviewer (`agent-reviews/skill-fidelity-reviewer-<suffix>.md`, not the
-# `<agent-name>` placeholder) and says "synchronously" rather than carrying the
-# `not run_in_background` phrase, and its read-back sentence carries no scope
-# qualifier, so its contract statement is not a verbatim match for these tokens.
+# ready-for-review/SKILL.md is deliberately excluded here, because its contract
+# statement is not a verbatim match for these tokens.
+# It spawns one named reviewer (`agent-reviews/skill-fidelity-reviewer-<suffix>.md`,
+# not the `<agent-name>` placeholder).
+# It says "synchronously" rather than carrying the `not run_in_background` phrase.
+# Its read-back sentence carries no scope qualifier.
 _FINDINGS_PATH_RECIPE_TOKENS = (
     "agent-reviews/<agent-name>-<suffix>.md",
     "not `run_in_background`",
