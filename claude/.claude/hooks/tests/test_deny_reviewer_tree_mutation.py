@@ -723,6 +723,20 @@ class TestRawWriteTargetGap:
         assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
 
     @pytest.mark.parametrize(
+        "command",
+        [
+            "git rev-parse --verify HEAD >/dev/null 2>&1",
+            "git diff --quiet >/dev/null",
+            "git log -n 1 >/tmp/scratch/f",
+        ],
+        ids=["attached-dev-null-with-stderr", "attached-dev-null", "attached-tmp"],
+    )
+    def test_reviewer_git_attached_redirect_to_exempt_target_allowed(self, command):
+        # Pins the attached (no-space) `>target` word-walk path for the exempt
+        # `/dev/null` and `/tmp/*` targets, which the spaced cases above do not reach.
+        assert run_hook(HOOK, bash_input(command, agent_type="staff-sdet")) == "allow"
+
+    @pytest.mark.parametrize(
         ("command", "target"),
         [
             ("git diff >&2", "&2"),
