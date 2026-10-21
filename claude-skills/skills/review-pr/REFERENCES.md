@@ -402,7 +402,9 @@ The session still reads each findings file in full, whatever its count, so files
 
 The design assumes one user per machine. Another reviewer of the same round, or another session of the same user, can read and write the directory.
 
-Neither dispatcher handles a reviewer that reports a write whose file cannot be read. A reviewer whose reported file the session cannot `Read`, or whose reported path differs from the handed-out one, is re-dispatched once with no `findings_path`. The session `Read`s only the path it handed out, so a path a reviewer reports never moves that `Read`. The handed path sits in a directory reviewers can write, so a link planted there can still redirect the `Read`.
+Neither dispatcher handles a reviewer that reports a write whose file cannot be read. A reviewer whose reported file the session cannot `Read`, or whose reported path names a different file than the handed-out one, is re-dispatched once with no `findings_path`. The session `Read`s only the path it handed out, so a path a reviewer reports never moves that `Read`. The handed path sits in a directory reviewers can write, so a link planted there can still redirect the `Read`.
+
+If the script fails, the session leaves each dispatcher's relative `findings_path` in place. From the main tree of a repo with worktree discipline on, that `Write` is denied and the reviewer returns inline. From a linked worktree, or in a repo without worktree discipline, the file lands in that tree's ignored `agent-reviews/`, which `review-pr-finish.sh` does not remove. Handing reviewers no `findings_path` instead would force every reviewer inline, including where the relative path works.
 
 Two other designs fail here:
 
