@@ -3,8 +3,8 @@ directory /review-pr's reviewers write their findings files into, and prints
 its path.
 
 Every test that succeeds in creating the directory needs a writable,
-unsandboxed literal /tmp: the reviewer write gate's /tmp allow matches the
-literal /tmp/ prefix as written, so a $TMPDIR root elsewhere falls outside it.
+unsandboxed literal /tmp. See the comment on _lib_review_pr_reviewer_findings_dir
+in _lib.sh for why the root is never $TMPDIR.
 """
 from __future__ import annotations
 
@@ -73,8 +73,8 @@ class TestCreatesTheDirectory:
         assert (findings_dir / "staff-sdet-1700000000-branch.md").exists(), "a re-run must not clear the directory"
 
     def test_tmpdir_does_not_move_the_directory(self, isolated_home, reviewer_findings_session, tmp_path):
-        """The reviewer write gate's /tmp allow matches the literal /tmp/ prefix
-        as written, so a $TMPDIR root elsewhere falls outside it."""
+        """The printed directory stays under the literal /tmp when TMPDIR points
+        elsewhere."""
         session_id, findings_dir = reviewer_findings_session
         _seed_session(isolated_home, session_id)
 
@@ -106,7 +106,7 @@ class TestFailuresExitOneWithNothingOnStdout:
 
         assert result.returncode == 1
         assert result.stdout == ""
-        assert "session" in result.stderr
+        assert "could not resolve this session's id" in result.stderr
 
     def test_marker_sh_rejects_a_session_id_that_is_not_a_path_component(self, isolated_home):
         _seed_session(isolated_home, "a.b")

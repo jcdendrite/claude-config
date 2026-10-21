@@ -8082,8 +8082,8 @@ def test_review_pr_skill_carries_retained_control(
 
 def test_review_pr_skill_mentions_findings_path_only_in_the_standing_override() -> None:
     """The standing override is the only place review-pr/SKILL.md sets a
-    reviewer's `findings_path`. A mention on any other line is step 3 or 5
-    carrying its own instruction again, such as "pass no `findings_path`"."""
+    reviewer's `findings_path`. A mention on any other line is a step-level
+    instruction that can contradict the override's reviewer findings directory."""
     skill_lines = _skill_file("review-pr").read_text().splitlines()
     findings_path_lines = [line for line in skill_lines if "findings_path" in line]
     assert findings_path_lines, (
@@ -8093,8 +8093,8 @@ def test_review_pr_skill_mentions_findings_path_only_in_the_standing_override() 
     stray_lines = [line for line in findings_path_lines if not line.startswith("**Standing override.**")]
     assert not stray_lines, (
         "review-pr/SKILL.md mentions `findings_path` outside the standing override "
-        f"line: {stray_lines!r}. Steps 3 or 5 reverting to \"pass no `findings_path`\" "
-        "hands reviewers no file path and reverts the findings-directory design."
+        f"line: {stray_lines!r}. A step-level `findings_path` instruction can "
+        "contradict the override's reviewer findings directory."
     )
 
 

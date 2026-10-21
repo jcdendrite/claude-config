@@ -398,7 +398,7 @@ The path starts with a literal `/tmp/`. `deny-reviewer-tree-mutation.sh` allows 
 
 `/plan-review` does not hold a reviewer given a `findings_path` to its 2K-token inline budget. Whether `/code-review` caps its reviewers the same way is not established.
 
-The session still reads a findings file in full when its count is non-zero, so files do not shrink context for reviewers that found something. Files do persist through context compaction.
+The session still reads each findings file in full, whatever its count, so files do not shrink context for reviewers that found something. Files do persist through context compaction.
 
 The design assumes one user per machine. Another reviewer of the same round, or another session of the same user, can read and write the directory.
 

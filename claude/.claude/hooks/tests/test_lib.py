@@ -8551,9 +8551,9 @@ class TestLibReviewPrReviewerFindingsDir:
         )
 
     def test_prints_the_literal_tmp_path_even_when_tmpdir_points_elsewhere(self, tmp_path: Path) -> None:
-        """The /tmp allow in deny-reviewer-tree-mutation.sh matches the literal
-        /tmp/ prefix as written, so a TMPDIR-derived root would leave the
-        reviewers' findings_path outside it."""
+        """A TMPDIR-derived root would leave the reviewers' findings_path outside
+        the reviewer gate's /tmp allow; see the comment on
+        _lib_review_pr_reviewer_findings_dir in _lib.sh."""
         result = self._findings_dir("sess-1", {"TMPDIR": str(tmp_path)})
         assert result.returncode == 0, result.stderr
         assert result.stdout == "/tmp/review-pr-reviewer-findings-sess-1\n"

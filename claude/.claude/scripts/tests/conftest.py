@@ -505,7 +505,7 @@ def reviewer_findings_session() -> Iterator[tuple[str, Path]]:
     review-pr-reviewer-findings-dir.sh derives for it, removed on teardown.
 
     The directory sits under the literal /tmp, never tmp_path, because the
-    helper hard-codes that root; the uuid keeps parallel workers sharing the
+    helper hard-codes that root. The uuid keeps parallel workers sharing the
     real /tmp apart. Fails with a message naming the precondition when a
     throwaway directory cannot be created and removed under /tmp (for example
     under a sandbox)."""

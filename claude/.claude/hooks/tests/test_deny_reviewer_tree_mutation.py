@@ -93,10 +93,9 @@ class TestFileWriteTools:
         assert run_hook(HOOK, write_input("/tmp/scratch/copy.py", agent_type="staff-sdet")) == "allow"
 
     def test_reviewer_write_to_review_pr_findings_directory_under_tmp_allowed(self):
-        """/review-pr hands each reviewer a findings_path under
-        /tmp/review-pr-reviewer-findings-<session id>/, so this allow is the
-        only thing letting those reviewers write their findings. Narrowing
-        the /tmp arm (GH-1103) must fail here."""
+        """A narrowing of the /tmp arm (GH-1103) that stops admitting this path
+        string fails here. The path does not exist on disk, so a check of link
+        or ownership state is not exercised."""
         path = "/tmp/review-pr-reviewer-findings-0b5e0f6a-0a0d-4a39-9d7e-1f2f3a4b5c6d/staff-sdet-1700000000-branch.md"
         assert run_hook(HOOK, write_input(path, agent_type="staff-sdet")) == "allow"
 
