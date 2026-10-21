@@ -17,7 +17,9 @@ Run with: pytest claude/.claude/
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -204,9 +206,9 @@ def _tests_job_steps() -> list[dict]:
     return workflow["jobs"]["tests"]["steps"]
 
 
-def _pytest_step_matching(steps: list[dict], *required_substrings: str) -> dict | None:
-    """Finds a step with a `run:` line that invokes pytest and contains every
-    one of `required_substrings` as a whitespace-bounded phrase. Scoped to
+def _matching_pytest_line(step: dict, *required_phrases: str) -> str | None:
+    """Returns the first `run:` line of `step` that invokes pytest and contains
+    every one of `required_phrases` as a whitespace-bounded phrase. Scoped to
     lines starting with `pytest` (not the whole `run:` block) and anchored
     with non-whitespace boundaries, so a comment/echo elsewhere in the step
     or a future marker sharing a prefix (e.g. `timingslow` containing
@@ -214,12 +216,16 @@ def _pytest_step_matching(steps: list[dict], *required_substrings: str) -> dict 
     timing/not-timing split, not on the collected paths (e.g. `claude/.claude/`
     vs `claude/.claude/ plugins/`) — the path list is a separate concern this
     test doesn't own."""
-    for step in steps:
-        pytest_lines = [line for line in step.get("run", "").splitlines() if line.strip().startswith("pytest")]
-        for line in pytest_lines:
-            if all(re.search(rf"(?<!\S){re.escape(s)}(?!\S)", line) for s in required_substrings):
-                return step
+    pytest_lines = [line for line in step.get("run", "").splitlines() if line.strip().startswith("pytest")]
+    for line in pytest_lines:
+        if all(re.search(rf"(?<!\S){re.escape(phrase)}(?!\S)", line) for phrase in required_phrases):
+            return line
     return None
+
+
+def _pytest_step_matching(steps: list[dict], *required_phrases: str) -> dict | None:
+    """Returns the first step with a line `_matching_pytest_line` accepts."""
+    return next((step for step in steps if _matching_pytest_line(step, *required_phrases) is not None), None)
 
 
 class TestPytestTwoPassSplit:
@@ -252,4 +258,51 @@ class TestPytestTwoPassSplit:
         assert "!cancelled()" in timing_step.get("if", ""), (
             "the timing pass step's if: must use !cancelled() (not a bare condition) so a "
             f"parallel-pass failure doesn't suppress this step's own report; step: {timing_step}"
+        )
+
+
+def _parallel_pytest_argv() -> list[str]:
+    steps = _tests_job_steps()
+    pytest_line = next(
+        (line for step in steps if (line := _matching_pytest_line(step, '-m "not timing"')) is not None),
+        None,
+    )
+    assert pytest_line is not None, (
+        "the probe needs the parallel invocation on one line that starts with `pytest` "
+        f'and carries -m "not timing"; steps: {steps}'
+    )
+    try:
+        return shlex.split(pytest_line)
+    except ValueError as error:
+        raise AssertionError(f"cannot shell-split the workflow's parallel pytest line {pytest_line!r}: {error}") from error
+
+
+class TestParallelPassCollectsTheLint:
+    """`test_shellcheck.py::TestRepoIsClean` is the repo shell lint's only CI home, so collecting
+    the workflow's parallel pytest invocation and checking the lint is among the items judges every
+    selection route: options, PYTEST_ADDOPTS, addopts, ini files and conftest hooks. A skip marker
+    on the lint test itself is not caught, since skipped items still collect. The step's existence
+    and collected roots are pinned by `TestPytestTwoPassSplit` and `test_select_tests.py`. The probe
+    inherits its own process env rather than reading the workflow's `env:` blocks, so a PYTEST_ADDOPTS
+    set there is judged only when this test runs in CI. select-tests.py does not select this file for
+    a conftest.py edit outside this directory, so a collection hook added to such a conftest is judged
+    only by CI's full suite."""
+
+    def test_parallel_invocation_collects_the_repo_lint(self):
+        lint_node_id = (
+            "claude/.claude/hooks/tests/test_shellcheck.py::TestRepoIsClean::test_all_discovered_files_pass_shellcheck"
+        )
+        # `--verbosity=-1` overrides the workflow line's `-v`, so collect-only prints one node id per line.
+        argv = [sys.executable, "-m", "pytest", *_parallel_pytest_argv()[1:], "--collect-only", "--verbosity=-1"]
+
+        completed = subprocess.run(argv, cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
+
+        assert completed.returncode == 0, (
+            f"collect-only of the parallel pytest invocation failed ({completed.returncode}); "
+            f"stdout tail: {completed.stdout[-2000:]!r}; stderr tail: {completed.stderr[-2000:]!r}"
+        )
+        collected_node_ids = [line.strip() for line in completed.stdout.splitlines() if "::" in line]
+        assert lint_node_id in collected_node_ids, (
+            f"the parallel pytest invocation no longer collects {lint_node_id}, the repo shell lint's only CI home; "
+            f"{len(collected_node_ids)} node ids collected"
         )
