@@ -386,24 +386,28 @@ A spawned review-only subagent carries no Write tool for this path, so requiring
 
 Passing the fixed path as a Bash argument would also put it in the command's argv, which appears in shell history and the process table. The findings-body path comes from `review-pr-findings-path.sh`, not from a value the model transcribes, so nothing needs independent verification against `$CONFIG_DIR`/`$SESSION_ID`.
 
-## Why spawned reviewers return findings inline
+## Why spawned reviewers write findings to a temporary directory
 
 `/code-review` and `/plan-review` give each reviewer a relative `findings_path` under `agent-reviews/`, which resolves in the tree the session stands in.
 
-A `/review-pr` session may stand in the main tree, where `require-worktree-for-file-writes.sh` denies that `Write` in a repo with worktree discipline on.
+A `/review-pr` session may stand in the main tree, and `diff-only` mode has no review worktree. In a repo with worktree discipline on, `require-worktree-for-file-writes.sh` denies that `Write` from the main tree.
 
-That gate's denial tells the reviewer to write the file at its worktree path. Each reviewer agent spec, and `deny-reviewer-tree-mutation.sh` when `agent-reviews/` is not ignored, tells a reviewer whose `Write` fails to return its findings inline instead.
+`review-pr-reviewer-findings-dir.sh` creates the session's directory and prints its path. A re-run prints the same path, and `review-pr-finish.sh` removes the directory. The session puts that directory in place of `agent-reviews/` in each reviewer's `findings_path`.
 
-A denied reviewer thus receives conflicting directions and might not return its findings inline. One session reported a reviewer claiming a write that never happened, after which the file was missing (reported, not reproduced).
+The path starts with a literal `/tmp/`. `deny-reviewer-tree-mutation.sh` allows a reviewer `Write` under `/tmp` as written, and `TMPDIR` can point elsewhere.
 
-With no `findings_path`, no reviewer writes a findings file, in the main tree or in a review worktree.
+`/plan-review` does not hold a reviewer given a `findings_path` to its 2K-token inline budget. Whether `/code-review` caps its reviewers the same way is not established.
 
-The cost is each reviewer's 2K-token inline budget (a reviewer over budget leaves out lower-severity findings and says so), a larger session context, and no by-path citation of a findings file in the step-7 consult. It applies to every `/review-pr` session, including one where the file write would have succeeded.
+The session still reads a findings file in full when its count is non-zero, so files do not shrink context for reviewers that found something. Files do persist through context compaction.
 
-Two other locations fail here:
+The design assumes one user per machine. Another reviewer of the same round, or another session of the same user, can read and write the directory.
 
-- A path under `/tmp` passes both write gates, but `review-pr-finish.sh` does not remove it, so a PR's findings outlive the session.
-- A path beside the session's other `<config-dir>/.review-pr-active.d/` files is denied, because `deny-reviewer-tree-mutation.sh` allows a reviewer `Write` only under `/tmp` or an ignored `agent-reviews/` directory.
+Neither dispatcher handles a reviewer that reports a write whose file cannot be read. A reviewer whose reported file the session cannot `Read`, or whose reported path differs from the handed-out one, is re-dispatched once with no `findings_path`. The session `Read`s only the path it handed out, so a path a reviewer reports never moves that `Read`. The handed path sits in a directory reviewers can write, so a link planted there can still redirect the `Read`.
+
+Two other designs fail here:
+
+- A path under `<config-dir>/.review-pr-active.d/` is denied, because `deny-reviewer-tree-mutation.sh` denies a reviewer `Write` there.
+- Exempting an ignored `agent-reviews/` directory in the main-tree write gate fails, because it would relax `require-worktree-for-file-writes.sh`, a gate tiered `irreversible`, on false-positive cost alone, which `docs/hooks.md` § "Threat-model tiers" bars.
 
 ## Known gaps and operator choices
 
@@ -452,6 +456,25 @@ Two other locations fail here:
     empty one, is kept indefinitely.
   - Remove that file by hand, and the next sweep then evicts the session's
     other artifacts.
+- **A session that ends without `review-pr-finish.sh` leaves its reviewer
+  findings directory under `/tmp`.**
+  - The stale-marker sweep never reaches `/tmp`.
+  - To remove directories older than a day, run
+    `find -H /tmp -maxdepth 1 -type d -name 'review-pr-reviewer-findings-*' -mmin +1440 -exec rm -rf -- {} +`.
+  - Run it only when no `/review-pr` session is in flight. `-mmin` reads the
+    directory's own modification time, and rewriting a findings file does not
+    change it.
+  - macOS path handling is unverified.
+- **Prompting permission modes and synchronous reviewer spawns are untested for
+  the findings `Write` and `Read` under `/tmp`.**
+  - Only one background-spawned reviewer under the `auto` permission mode has
+    exercised them.
+  - In a mode that prompts for writes outside the project, each reviewer
+    `Write` and the session's `Read` may prompt.
+  - A declined `Write` sends the reviewer to its inline fallback.
+  - A `Read` the session cannot complete triggers the standing override's
+    re-dispatch.
+  - Both dispatchers spawn reviewers synchronously.
 - **The standing override's no-marker clause is prose only.** Nothing
   mechanical stops a completion-marker write for a skill other than
   `review-pr` while a review-pr session is in flight, because the main-tree

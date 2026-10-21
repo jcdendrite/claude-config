@@ -125,16 +125,18 @@ def _provenance_path(home: Path, session_id: str = SID) -> Path:
     return home / ".claude" / ".review-pr-active.d" / f"{session_id}.provenance"
 
 
-def _run(cwd: Path, home: Path, *, path_prefix: Path | None = None) -> subprocess.CompletedProcess:
+def _run(
+    cwd: Path, home: Path, *, path_prefix: Path | None = None, extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     """path_prefix, when given, is prepended to a real, inherited PATH --
     needed only when a test must override one specific external tool (git,
     rm, sha256sum) the script or a helper it shells out to calls
-    internally.
+    internally. extra_env is merged into the environment after HOME and PATH.
 
     PATH is always forwarded: the script hashes with sha256sum, which on
     macOS lives in /sbin, a directory the built-in default PATH of Apple's
     /bin/bash omits."""
-    env = {"HOME": str(home), "PATH": os.environ["PATH"]}
+    env = {"HOME": str(home), "PATH": os.environ["PATH"], **(extra_env or {})}
     if path_prefix is not None:
         env["PATH"] = f"{path_prefix}{os.pathsep}{env['PATH']}"
     return subprocess.run(
@@ -228,6 +230,100 @@ class TestArtifactAndMarkerRemoval:
         result = _run(linked_worktree, isolated_home)
         assert result.returncode == 0, result.stderr
         assert not marker.exists()
+
+
+class TestReviewerFindingsDirectoryRemoval:
+    """Needs a writable, unsandboxed literal /tmp: the directory lives at the
+    root review-pr-reviewer-findings-dir.sh hard-codes. Each test mints a
+    uuid4 session id, so parallel workers sharing the real /tmp never collide."""
+
+    def test_removes_this_sessions_directory_and_leaves_another_sessions(
+        self, isolated_home, tmp_path, reviewer_findings_session
+    ):
+        session_id, findings_dir = reviewer_findings_session
+        _seed_session(isolated_home, session_id)
+        findings_dir.mkdir()
+        (findings_dir / "staff-sdet-1700000000-branch.md").write_text("findings\n")
+        other_dir = Path(f"/tmp/review-pr-reviewer-findings-{session_id}-other")
+        other_dir.mkdir()
+        try:
+            result = _run(tmp_path, isolated_home)
+
+            assert result.returncode == 0, result.stderr
+            assert not findings_dir.exists()
+            assert other_dir.is_dir(), "another session's directory must survive"
+            assert f"removed reviewer findings directory {findings_dir}" in result.stderr
+        finally:
+            shutil.rmtree(other_dir, ignore_errors=True)
+
+    def test_removal_ignores_a_tmpdir_root_elsewhere(self, isolated_home, tmp_path, reviewer_findings_session):
+        """Finish derives the path from the shared helper, so a TMPDIR root elsewhere must not move it."""
+        session_id, findings_dir = reviewer_findings_session
+        _seed_session(isolated_home, session_id)
+        findings_dir.mkdir()
+        (findings_dir / "staff-sdet-1700000000-branch.md").write_text("findings\n")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+
+        result = _run(tmp_path, isolated_home, extra_env={"TMPDIR": str(elsewhere)})
+
+        assert result.returncode == 0, result.stderr
+        assert not findings_dir.exists()
+
+    def test_a_missing_directory_is_not_an_error(self, isolated_home, tmp_path, reviewer_findings_session):
+        session_id, findings_dir = reviewer_findings_session
+        _seed_session(isolated_home, session_id)
+
+        result = _run(tmp_path, isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert not findings_dir.exists()
+        assert "reviewer findings directory" not in result.stderr
+
+    def test_an_undeletable_directory_is_reported_and_the_artifacts_and_worktree_are_still_removed(
+        self, isolated_home, tmp_path, reviewer_findings_session
+    ):
+        session_id, findings_dir = reviewer_findings_session
+        repo, sha = _build_repo(tmp_path)
+        _seed_session(isolated_home, session_id)
+        findings_dir.mkdir()
+        artifact_paths = _write_artifacts(isolated_home, session_id)
+        worktree_dir = _add_review_worktree(repo, sha, session_id=session_id)
+
+        result = _run(repo, isolated_home, path_prefix=_rm_shim_that_fails_on_recursive_delete(tmp_path))
+
+        assert result.returncode == 0, result.stderr
+        assert f"could not remove reviewer findings directory {findings_dir}" in result.stderr
+        assert findings_dir.is_dir()
+        for p in artifact_paths:
+            assert not p.exists(), "artifact cleanup must not depend on the directory removal"
+        assert not worktree_dir.exists(), "the worktree sweep must still run"
+
+    @pytest.mark.parametrize(
+        "link_target_kind",
+        [
+            pytest.param("directory-with-canary", id="symlink-to-a-directory"),
+            pytest.param("nothing", id="dangling-symlink"),
+        ],
+    )
+    def test_a_symlink_at_the_path_is_unlinked_without_following_it(
+        self, isolated_home, tmp_path, reviewer_findings_session, link_target_kind
+    ):
+        session_id, findings_dir = reviewer_findings_session
+        _seed_session(isolated_home, session_id)
+        link_target = tmp_path / "decoy"
+        canary = link_target / "canary.txt"
+        if link_target_kind == "directory-with-canary":
+            link_target.mkdir()
+            canary.write_text("canary\n")
+        findings_dir.symlink_to(link_target)
+
+        result = _run(tmp_path, isolated_home)
+
+        assert result.returncode == 0, result.stderr
+        assert not findings_dir.is_symlink(), "the link itself must be removed"
+        if link_target_kind == "directory-with-canary":
+            assert canary.read_text() == "canary\n", "removal must not follow the link into its target"
 
 
 class TestSessionWideWorktreeSweep:
@@ -327,7 +423,7 @@ class TestSessionWideWorktreeSweep:
     def test_git_removal_failure_falls_back_to_deleting_only_this_sessions_directory_and_pruning(
         self, isolated_home, tmp_path
     ):
-        """The fallback is finish's only `rm -rf`, so it runs here with
+        """The fallback is the worktree sweep's only `rm -rf`, so it runs here with
         every neighbor shape present: a widened delete would take one."""
         repo, sha = _build_repo(tmp_path)
         _seed_session(isolated_home, SID)
@@ -436,8 +532,10 @@ class TestInteriorFailureStillReachesExitZero:
     and the bash floor check in `_config.sh`, whether or not anything was in
     flight -- pinned here against each interior failure after the session is
     known that `set -e` would otherwise propagate: an uncomputable marker key,
-    an unresolvable main tree root, a failing `git worktree list`, and a
-    failing `rm -f` on the marker or an artifact. The first three are guarded by their own `if ...; then ...
+    an unresolvable main tree root, a failing `git worktree list`, a failing
+    `rm -rf` on the reviewer findings directory (pinned in
+    TestReviewerFindingsDirectoryRemoval), and a failing `rm -f` on the marker
+    or an artifact. The first four are guarded by their own `if ...; then ...
     else ...`, the last by `|| true`."""
 
     def test_repo_hash_computation_failure_skips_only_the_marker_cleanup(self, isolated_home, tmp_path):
