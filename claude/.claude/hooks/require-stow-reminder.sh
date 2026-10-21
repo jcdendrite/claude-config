@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # hook-class: gate
 # tier-threat-model: cooperative
-# Gate: when a PR being opened/edited against claude-config introduces a
-# new top-level entry under `claude/.claude/`, OR changes `install.sh`
-# (GH-465), require the PR body (or a referenced body-source file, or a
-# referenced commit message via `--fill`) to mention `install.sh` or
-# `stow`. Reason: GNU Stow links each child of `claude/.claude/`
-# individually into `~/.claude/`, but a *new* child only appears after
-# re-running stow — `git pull` alone doesn't create the symlink.
+# Gate: when a PR being opened/edited against claude-config adds any path
+# under `claude/.claude/`, OR changes `install.sh` (GH-465), require the PR
+# body (or a referenced body-source file, or a referenced commit message via
+# `--fill`) to mention `install.sh` or `stow`.
+# Reason: on a standard install, `install.sh` pre-creates `~/.claude` as a
+# real directory.
+# There, a new top-level entry under `claude/.claude/` always needs a re-run.
+# A consumer whose config dir holds a directory as a real directory picks up
+# a new file in it only after a re-stow.
 # `install.sh` itself is not stowed and only takes effect when invoked, so
 # a change to it ships on `git pull` only if it removes stowed behavior,
-# with the replacement landing only after a manual re-run. Without a
-# reminder in the PR body, whoever merges and pulls won't know to re-run
-# install.sh, and the new folder/file (or the changed installer behavior)
-# silently fails to take effect (Claude Code reads from ~/.claude/<X>,
-# which is empty until stow links it).
+# with the replacement landing only after a manual re-run.
+# The PR body is a notice the gate can enforce for those consumers.
+# `README.md` § "Updating after git pull" states the rule.
 #
 # NOTE — `if`-dispatch is advisory; the real gate is the internal
 # _lib_command_invokes_tool_subcmd check below. settings.json wires two
@@ -29,13 +29,11 @@
 #   .claude/private-projects-optin marker arm).
 # - Detects any file added under `claude/.claude/` between `main` and
 #   `HEAD` (`git diff --diff-filter=A`), regardless of whether its
-#   immediate parent directory already existed on `main`. Stow links
-#   each file individually, so a new file nested inside an
-#   already-stowed directory (e.g. a new `claude/.claude/hooks/<file>`
-#   when `hooks/` itself predates this branch) needs the identical
-#   re-stow a brand-new top-level entry (`claude/.claude/foo.md`,
-#   `claude/.claude/agents/`) does — there is no "already-stowed parent
-#   covers it" case to filter out.
+#   immediate parent directory already existed on `main`. A new file
+#   nested inside an existing directory (e.g. a new
+#   `claude/.claude/hooks/<file>` when `hooks/` itself predates this
+#   branch) trips the gate too, because a consumer whose config dir holds
+#   that directory as a real directory needs a re-stow for it.
 # - GH-465: also fires when `install.sh` itself differs between `main`
 #   and `HEAD` (any change, not only new content), independent of whether
 #   any new top-level entry exists.
@@ -69,10 +67,14 @@
 #   confused user; the cost of fail-closed in this rare case is
 #   blocking every PR until they fetch main.
 # - `ADDED_PATHS` below is hardcoded to diff against `claude/.claude/`
-#   and structurally cannot see anything added under `claude-skills/`.
+#   and structurally cannot see anything added under `claude-skills/` or
+#   `claude/.local/bin/`.
 #   A future PR that adds a second immediate child under `claude-skills/`
-#   without also touching `install.sh` gets no reminder — that is the
-#   standing, unclosed gap.
+#   without also touching `install.sh` gets no reminder.
+#   A PR that adds a wrapper under `claude/.local/bin/` without also
+#   touching `install.sh` gets no reminder either.
+#   A new wrapper needs the installer on a standard install.
+#   Both are standing, unclosed gaps.
 
 # grep -q reads a here-string, never a pipe: see test_no_pipe_into_early_exit_grep in hooks/tests/test_hook_alignment.py.
 set -uo pipefail
@@ -239,6 +241,6 @@ else
   REASON_DETAIL="changes install.sh"
 fi
 
-emit_deny "this PR $REASON_DETAIL. Stow links each file individually, and a new file — whether it's a brand-new top-level entry or added inside a directory that already exists in ~/.claude/ — only appears there after re-running install.sh; git pull alone does not create the symlink. install.sh itself is not stowed and only takes effect when invoked, so a change to it ships on git pull only if it removes stowed behavior, with the replacement landing only after a manual re-run. Without a reminder in the PR body, whoever merges won't know to re-run install.sh, and the change will silently fail to take effect. Add a line to the PR body (or a commit message if using --fill) mentioning install.sh or stow — for example: 'Post-merge: run \`./install.sh\` to pick up this change.' The gate is satisfied by a case-insensitive substring match for 'install.sh' or 'stow' in the PR body, any --body-file/--template file, or commit messages reachable from --fill."
+emit_deny "this PR $REASON_DETAIL. Whether a consumer must re-run install.sh after pulling depends on what changed and on their config dir; README.md § Updating after git pull states the rule and the check. Add a line to the PR body (or a commit message if using --fill) mentioning install.sh or stow — for example: 'Post-merge: after git pull, re-run ./install.sh if install.sh itself was modified or a new file is missing from your config dir (see README, Updating after git pull).' The gate is satisfied by a case-insensitive substring match for 'install.sh' or 'stow' in the PR body, any --body-file/--template file, or commit messages reachable from --fill."
 
 exit 0
