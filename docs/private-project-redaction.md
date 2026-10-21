@@ -127,6 +127,11 @@ re-run and check.
   a blended total when more than one resolves. `--all-accounts` opts
   into a per-account loop, whose output publishes nothing — see the
   next section.
+- `transcript-analysis.py period-cost` reads one account only, but its
+  output is never publishable. It covers every repository that account
+  worked in, so every figure is per-account and per-project, even on this
+  repository's own account. It is built for private delivery to the owner
+  of the projects that account works on.
 - A subcommand with no scope refusal of its own is not a publication
   instrument. Route it through the next section instead.
 
