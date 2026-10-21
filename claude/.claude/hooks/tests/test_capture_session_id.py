@@ -262,6 +262,42 @@ class TestCaptureSessionId:
 
         assert sidecar.read_text() == '{"pid": 1, "sessionId": "x"}\n'
 
+    def test_clear_leaves_predecessor_active_markers_under_the_old_id(self, isolated_home):
+        """After /clear the same claude PID reports a new session_id. The ending
+        session's active markers must stay byte-identical under their old id
+        and none may appear under the new one: every gate keys on the caller's
+        current id, so a carried-over bypass would silently authorize the new
+        session. The markers hold a sentinel PID that differs from the live
+        one, so a rewrite of them is visible."""
+        old_id = "predecessor-session-before-clear"
+        new_id = "successor-session-after-clear"
+        sentinel_pid = "1\n"
+        pid_lookup = isolated_home / ".claude" / "sessions" / str(os.getpid())
+
+        started = self._run_capturing_stderr(
+            json.dumps({"hook_event_name": "SessionStart", "source": "startup", "session_id": old_id})
+        )
+        assert started.returncode == 0
+        assert pid_lookup.read_text().split("\n")[0] == old_id
+
+        old_markers = [
+            isolated_home / ".claude" / ".handoff-active.d" / old_id,
+            isolated_home / ".claude" / ".ready-for-review-active.d" / old_id,
+        ]
+        for marker in old_markers:
+            marker.parent.mkdir(parents=True)
+            marker.write_text(sentinel_pid)
+
+        cleared = self._run_capturing_stderr(
+            json.dumps({"hook_event_name": "SessionStart", "source": "clear", "session_id": new_id})
+        )
+
+        assert cleared.returncode == 0
+        assert pid_lookup.read_text().split("\n")[0] == new_id
+        for marker in old_markers:
+            assert marker.read_text() == sentinel_pid
+        assert list((isolated_home / ".claude").glob(f".*-active.d/{new_id}")) == []
+
     def test_traversal_session_id_does_not_overwrite_active_marker_canary(
         self, isolated_home
     ):
