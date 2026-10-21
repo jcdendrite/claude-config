@@ -1041,6 +1041,34 @@ def _priced_sidechain_asst(
     return rec
 
 
+def _signed_priced_turn(
+    record_id: int, *, model: str, branch: str, ts: str, cwd: str | None = None, content: list | None = None,
+    sidechain: bool = False,
+) -> dict:
+    """A priced turn whose output-token count is its record id, a distinct power of two,
+    so any token or dollar total decodes back to the set of records that summed into it."""
+    rec = _priced(model, output=record_id, branch=branch, ts=ts, content=content)
+    if sidechain:
+        rec["isSidechain"] = True
+    if cwd is not None:
+        rec["cwd"] = cwd
+    return rec
+
+
+def _record_ids_in(total_output_tokens: int) -> frozenset[int]:
+    return frozenset(1 << bit for bit in range(total_output_tokens.bit_length()) if total_output_tokens >> bit & 1)
+
+
+def _dollars_per_output_token(model: str) -> float:
+    usage = _priced(model, output=1)["message"]["usage"]
+    dollars_by_class, _context, _unpriced = pricing._price_turn(model, usage)
+    return sum(dollars_by_class.values())
+
+
+def _record_ids_in_dollars(dollars: float, model: str) -> frozenset[int]:
+    return _record_ids_in(round(dollars / _dollars_per_output_token(model)))
+
+
 def _table_cols(out: str, *, header_contains: str, row_contains: str | list[str],
                 drop_leading_labels: int = 0,
                 max_labels: int | None = None,

@@ -35,6 +35,7 @@ PRODUCTION_MODULES = (
     "judgment_pair.py",
     "skill_invocation.py",
     "skill_pair.py",
+    "period_cost.py",
 )
 TEST_FILES = (
     "test_transcript_cost_ledger.py",
@@ -51,6 +52,7 @@ TEST_FILES = (
     "test_transcript_plan_boundary.py",
     "test_transcript_handoff_signal_response_detection.py",
     "test_transcript_handoff_signal_response.py",
+    "test_transcript_period_cost.py",
     "test_transcript_audit_routing.py",
     "test_transcript_audit_routing_samples.py",
     "test_transcript_audit_routing_shape.py",
@@ -70,6 +72,8 @@ TEST_FILES = (
     "test_transcript_judgment_pair.py",
     "test_transcript_skill_invocation.py",
     "test_transcript_skill_pair.py",
+    "test_transcript_pricing_session_helpers.py",
+    "test_transcript_session_pricing.py",
 )
 
 # Every module object carries these regardless of what its own source assigns --

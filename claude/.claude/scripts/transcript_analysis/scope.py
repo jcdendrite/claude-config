@@ -437,9 +437,10 @@ def _iter_glob_scoped_sessions(
 ) -> Iterator[tuple[Path, list[dict]]]:
     """Chain iter_sessions' glob match across more than one root.
 
-    Only used when len(roots) > 1 (cost's --config-dir); the single-root case
-    keeps calling iter_sessions directly so its documented flat-sort-over-
-    full-paths ordering guarantee is untouched for every other caller. Dedups
+    Used when len(roots) > 1 (cost's --config-dir), and by period-cost with a
+    single root for its scan-gap counter; every other single-root caller keeps
+    calling iter_sessions directly so its documented flat-sort-over-
+    full-paths ordering guarantee is untouched. Dedups
     matched project directories by resolved real path, spanning all roots —
     covers a --config-dir root nested inside another root's tree, not just
     two roots that resolve to the same directory (already deduped earlier at
@@ -694,15 +695,15 @@ _DO_NOT_PUBLISH_BANNER = (
 # so the flag can never validate against a different account than the one
 # the subcommand itself resolves. Most members resolve their own multi-root
 # scan via their own subcommand-level --config-dir (_resolve_cost_roots);
-# cost-counts is the one exception, constructing its single root directly
-# with no --config-dir flag of its own at all (see _resolve_cost_roots's own
-# docstring).
+# cost-counts and period-cost are the two exceptions, each constructing its
+# single root directly with no --config-dir flag of its own at all (see
+# _resolve_cost_roots's own docstring).
 _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR = (
     "cost", "context-distribution", "context-composition", "edit-format", "read-scope",
     "cache-efficiency",
     "subagents", "subagent-mix", "cost-trend", "cache-rebuild", "plan-boundary",
     "instrument-authoring", "pr-cost", "cost-counts", "rearm-backtest",
-    "pr-cost-export",
+    "pr-cost-export", "period-cost",
 )
 
 
@@ -740,8 +741,8 @@ def _resolve_cost_roots(args: argparse.Namespace, subcommand: str = "cost") -> l
     defines `--summary` today -- a bare `summary` check would silently
     narrow a future subcommand adding a same-named flag. This function is
     shared by every `_SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR` member
-    except `cost-counts`, which bypasses it and builds its own single root
-    directly.
+    except `cost-counts` and `period-cost`, which bypass it and build their
+    own single root directly.
     """
     try:
         resolved_config_dir = config_dir()

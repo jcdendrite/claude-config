@@ -80,14 +80,14 @@ Use `--corrections-only` to strip initial prompts when you only want the steerin
 
 ## Caveats
 
-- Every subcommand's default scope unions all config dirs in `~/.claude/transcript-config-dirs`, except `cost --summary` (active config dir only) — see `docs/transcript-analysis.md`'s "Corpus scope: the declared-roots file" section.
-- The resolved-scope header always prints, even at one root or zero matches, except `cost --summary` (no header) — see "Scope confirmation" above.
+- Most subcommands' default scope unions all config dirs in `~/.claude/transcript-config-dirs`; `docs/transcript-analysis.md`'s "Corpus scope: the declared-roots file" section names some that read the active account only.
+- Most subcommands print the resolved-scope header, even at one root or zero matches; `cost --summary` prints its own `Scope:` line instead — see "Scope confirmation" above.
 - Redaction covers only `cost`, `cost-trend`, `context-distribution`, `audit-routing`, and `cache-rebuild`; every other subcommand prints raw project labels, branch names, or paths.
 - `--branches` filters records by `gitBranch` string only, never by project dir or root — under a multi-root scope it pools same-named branches across every declared account into one tally, with no per-account signal.
 - The `N failed` count is a coarse proxy: it matches any `N failed` in tool output, including pre-existing failures and intentional baseline runs. Treat the sequence view as the primary read; the aggregate rate is corroborating.
 - Subagent (`isSidechain`) turns are excluded from `fail-seq` and `struggle` — reviewer, `Explore`, and `code-writer` agents are not the debugging surface these subcommands measure.
 - Durations from `duration` are wall-clock dominated by idle gaps. Look at `Active(min)`, not `Span(min)`.
-- `pr-link` requires `gh` and network access. `cost-ledger --record` writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default (override with `COST_LEDGER_PATH`) and requires `~/.claude/scripts/config-get.sh cost_ledger_recording` to exit 0 (see `docs/config-file.md`); every other subcommand, and `cost-ledger`'s own default read mode, is local-only and makes no writes.
+- `pr-link` requires `gh` and network access. `cost-ledger --record` writes to `$CLAUDE_CONFIG_DIR/cost-ledger.md` by default (override with `COST_LEDGER_PATH`) and requires `~/.claude/scripts/config-get.sh cost_ledger_recording` to exit 0 (see `docs/config-file.md`); `docs/transcript-analysis.md`'s opening lists name every subcommand that calls `gh` and every one that writes to disk.
 - A model-vs-model comparison is only meaningful when there are multiple all-Opus and all-Sonnet execution branches. One or two branches per model is directional, not a controlled A/B.
 - `review-trace` locates candidate sessions; it does not judge whether a review caught a *material* issue — that read is qualitative. Use `--since`/`--until` (inclusive day bounds) for before/after-a-date analysis, `--deny-only` to isolate sessions that hit an enforcement hook, and `--deny-summary` for a corpus-wide census by hook, by command shape, and their cross-tab, plus a friction-kind breakout — a distinct axis from denials — see `docs/transcript-analysis.md`'s `review-trace` section for the full output shape.
 - `judgment-pair` captures what the human said immediately after a review output. Tool-result turns, `isMeta` injections, and `isCompactSummary` records between the review and the user reply are automatically skipped. Use `--out` to save output to a file for offline curation.
