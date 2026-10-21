@@ -110,8 +110,8 @@ _PLACEMENTS = [
     ),
     ("respond-to-open-pr-comments", "Always respond to open PR comments", "main"),
     ("prescribed-dispatch", "**A prescribed dispatch is an authorized dispatch.**", "main"),
-    # Each relayed-text row pins one sentence's presence in the same bullet.
-    # The shared group assert is incidental, so the rows are not redundant.
+    # Each relayed-text row pins one clause's presence, so the rows are not redundant.
+    # Each row also fails if its clause moves above `# Main session`.
     (
         "relayed-text-in-dispatch-prompts",
         "**Keep relayed text apart from your own words in a dispatch prompt.**",

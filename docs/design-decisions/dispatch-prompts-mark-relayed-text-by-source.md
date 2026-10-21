@@ -56,7 +56,7 @@
     - [The gate-release record](review-orchestrator-gate-release-decoupling.md)'s accepted residuals.
     - `docs/hooks.md`'s per-hook entries.
     - For a `plan-architect` consult's return, `/code-review`'s `DISPOSITION_RULE` regions and [the pilot record](architect-authored-fix-plan-pilot.md)'s Known gaps.
-  - The convention assumes the receiving agent loads Agent Core. An agent that skips the startup load of the global `CLAUDE.md`, as the built-in `Plan` agent does ([`/plan-it` Step 5 dispatches a custom agent instead](plan-it-step5-pinned-opus-dispatch.md)), sees the lead-in and blockquote without that rule behind them.
+  - The convention assumes the receiving agent loads Agent Core. An agent that skips the startup load of the global `CLAUDE.md` sees the lead-in and blockquote without that rule behind them. The built-in `Plan` agent is one such agent. `/plan-it` Step 5 [dispatches a custom agent instead](plan-it-step5-pinned-opus-dispatch.md).
   - `/review-pr` still relays a ticket's plan inline. Its ticket read has no file backstop, so a cut-off body can look whole. As of this record's date, GH-1280 tracks passing that plan by a path that code writes.
 - **Revisit** in either of two cases:
   - A dispatched agent is seen acting on relayed text its task did not name, ignoring text its task named, or treating a skill's wording its dispatcher passed on as data.
