@@ -19,6 +19,7 @@ import pytest
 from helpers import (
     SCRIPTS_DIR,
     assert_cap_engaged,
+    run_with_open_stdin,
     scaled_shim_sleep,
     symlink_hooks_lib_chain,
     write_scaled_timeout_shim,
@@ -291,6 +292,7 @@ class TestEnsureSettingsRenderScript:
 
         assert result.returncode == 0
         assert result.stderr == ""
+        assert result.stdout == ""
 
     def test_successful_render_over_a_real_settings_json_is_silent(self, tmp_path: Path) -> None:
         """A stale prior settings.json re-rendered to changed content, with an
@@ -304,7 +306,24 @@ class TestEnsureSettingsRenderScript:
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert result.stderr == ""
+        assert result.stdout == ""
         assert json.loads((home / ".claude" / "settings.json").read_text()) == base_content
+
+
+class TestEnsureSettingsRenderOpenStdin:
+    """The rc line runs the script in every new shell, so it must not read stdin."""
+
+    def test_render_does_not_block_on_an_open_stdin_pipe(self, tmp_path: Path) -> None:
+        home = _make_home_with_base(tmp_path, {"otherKey": "base-value"})
+        env = {**os.environ, "HOME": str(home)}
+        env.pop("CLAUDE_CONFIG_DIR", None)
+
+        result = run_with_open_stdin([str(_ENSURE_SCRIPT)], env=env)
+
+        assert result.returncode == 0, f"stderr={result.stderr!r}"
+        assert result.stdout == ""
+        assert result.stderr == ""
+        assert json.loads((home / ".claude" / "settings.json").read_text()) == {"otherKey": "base-value"}
 
 
 class TestEnsureSettingsRenderTimeoutGuard:
@@ -370,6 +389,7 @@ class TestEnsureSettingsRenderWithoutTimeoutBinary:
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert result.stderr == ""
+        assert result.stdout == ""
         assert json.loads((home / ".claude" / "settings.json").read_text()) == base_content
 
     def test_failing_render_still_warns_and_exits_zero(self, tmp_path: Path) -> None:
@@ -473,6 +493,8 @@ class TestEnsureSettingsRenderRepeatRuns:
         second = _run_ensure_script(home)
 
         assert second.returncode == 0, f"stderr={second.stderr!r}"
+        assert second.stderr == ""
+        assert second.stdout == ""
         assert invocations.read_text().count("invoked\n") == 2
         assert rendered_path.stat().st_mtime_ns == 1_000_000_000, (
             "an unchanged render must leave settings.json untouched"
@@ -602,6 +624,7 @@ class TestEnsureSettingsRenderProfileResolution:
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert result.stderr == ""
+        assert result.stdout == ""
         assert not (profile_dir / "settings.json").exists()
 
     def test_default_profile_spelled_through_config_dir_still_reports_a_missing_base(

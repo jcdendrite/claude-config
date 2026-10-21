@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import textwrap
 import time
 from collections import Counter
@@ -273,6 +274,36 @@ def link_bash_into(bin_dir: Path) -> Path:
     return link
 
 
+def run_with_open_stdin(
+    argv: list[str], *, env: dict[str, str], timeout: float = 5
+) -> subprocess.CompletedProcess:
+    """Run `argv` with stdin as a pipe that is never written to or closed.
+
+    A child that reads stdin blocks on it, so it raises `subprocess.TimeoutExpired`
+    instead of exiting. `subprocess.run(stdin=PIPE)` is unsuitable because its
+    `communicate()` closes stdin and hands the child EOF.
+
+    Stdout and stderr go to temporary files, not pipes, so output larger than a
+    pipe buffer cannot stall the child and a grandchild that outlives it cannot
+    delay the return.
+    """
+    with (
+        tempfile.TemporaryFile("w+") as stdout_file,
+        tempfile.TemporaryFile("w+") as stderr_file,
+        subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=stdout_file, stderr=stderr_file, env=env) as process,
+    ):
+        try:
+            returncode = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            raise
+        stdout_file.seek(0)
+        stderr_file.seek(0)
+        completed = subprocess.CompletedProcess(argv, returncode, stdout_file.read(), stderr_file.read())
+    check_shell_exec(argv, env, None, completed)
+    return completed
+
+
 def _shell_exec_argv_strings(argv) -> list[str]:
     """`argv` as `str` elements. Accepts `str`, `bytes` and `Path` elements, or a single such value."""
     if isinstance(argv, str | bytes | os.PathLike):
@@ -428,6 +459,7 @@ def install_shell_exec_guard(monkeypatch: pytest.MonkeyPatch) -> None:
     A `shell=True` call is not inspected: its argv is one command string with no
     argv[0] to inspect, so the guard cannot tell which file the shell execs.
     `Popen`, `call` and `check_call` bypass the guard: it wraps `subprocess.run` only.
+    `run_with_open_stdin` is built on `Popen` and applies `check_shell_exec` itself.
     """
     real_run = subprocess.run
 

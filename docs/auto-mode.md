@@ -51,8 +51,6 @@ Claude API, and the cloud-provider surfaces listed above. It also plans to
 stop charging for classifier calls on those surfaces. The announcement gives
 no confirmed date. The [permission modes reference](https://code.claude.com/docs/en/permission-modes)
 still documented the Manual starting mode on these surfaces as of 2026-09-18.
-Until that reference changes, the `defaultMode` setting shown below remains
-how those accounts start in auto mode.
 
 To pick a specific model in one step, or to start auto mode explicitly where
 it isn't the built-in default, use the `claude-auto` wrapper shipped by this
@@ -71,14 +69,13 @@ auto` also works directly once your default is already a single eligible
 model.
 
 Where auto mode isn't the built-in default — Enterprise, a Claude Console API
-key account, an older Claude Code version, or another provider —
-`permissions.defaultMode` in `<config-dir>/settings.overlay.json`
-(`<config-dir>` means `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`; see
-"What to put in `settings.overlay.json`" below) is the documented way to make
-auto mode the default for your own sessions. This repo's render refuses
-`"auto"`, so the overlay cannot make auto mode your default. Start auto mode
-per session with `claude --permission-mode auto` (see "Activating" above) or
-`claude-auto`.
+key account, an older Claude Code version, or another provider — this repo's
+render refuses `"auto"` for `permissions.defaultMode` in
+`<config-dir>/settings.overlay.json` (`<config-dir>` means
+`$CLAUDE_CONFIG_DIR` when set, else `~/.claude`; see "What to put in
+`settings.overlay.json`" below), so the overlay cannot make auto mode your
+default. Start auto mode per session with `claude --permission-mode auto` (see
+"Activating" above) or `claude-auto`.
 
 The render accepts only `default` and `plan` for `defaultMode`:
 
@@ -159,6 +156,20 @@ The overlay's top-level keys are a closed set: `autoMode`, `env`,
 `permissions` object carrying any other key, is refused outright rather than
 silently dropped. Set another key such as `model` or `enabledPlugins` with
 `/config` or by editing `<config-dir>/settings.json`, where it carries forward.
+The render replaces a `settings.json` it cannot read as one JSON object, so
+after a hand edit, and before the next render (`docs/scripts.md`'s
+`ensure-settings-render.sh` entry says when one runs), confirm that
+`jq -e -s 'length == 1 and (.[0] | type) == "object"' <config-dir>/settings.json`
+exits 0.
+
+An `autoMode` value must be a JSON object and `skillListingBudgetFraction` a
+finite JSON number. The render refuses any other type, and leaves the previous
+`settings.json` in place. An overlay that is a symlink which does not resolve
+is refused the same way, rather than read as no overlay.
+
+The render checks only `autoMode`'s own type. A wrongly typed value inside it
+reaches `settings.json` unchecked, and how Claude Code handles one is
+unverified.
 
 An `env` key must be one of the exact names the render allows, each with a
 string value: `ANTHROPIC_MODEL`, `CLAUDE_CODE_EFFORT_LEVEL`, and the telemetry
@@ -178,6 +189,11 @@ What a render does with each key:
 - Every other top-level key that neither file defines carries forward from the
   live `settings.json` unchanged, so a Claude Code write such as `/config` or
   `/theme` survives.
+- Carry-forward reads the live `settings.json` only when the render can read it
+  as one JSON object. An empty, unparseable, unreadable, or non-object file is
+  replaced with base plus overlay alone, and the render prints one stderr
+  warning that names the file but none of the lost keys. A missing or dangling
+  file gets no warning.
 - A top-level key that `settings.base.json` defines, today `attribution`,
   `disableArtifact`, `disableWorkflows`, and `syncClaudeAiSkills`, takes
   base's value, so a live edit to it is reverted without a message.
@@ -196,19 +212,21 @@ What a render does with each key:
   dropped `permissions` entry prints its rule text, which lets you recover a
   dropped rule.
 - The render keeps no backup of the prior `settings.json`, so that stderr line
-  is the only record of a drop.
+  is the only record of a drop. Only the render that makes the change prints
+  it, so a drop has no record when nobody reads that render's stderr.
 
 Removing `env.CLAUDE_CODE_EFFORT_LEVEL` or `env.ANTHROPIC_MODEL` from the
 overlay does not remove either from the rendered `settings.json`:
 `render-settings.sh` re-applies whichever of those paths the prior render
-already carried, unless the overlay or base sets that path, since
-`/effort`/`/config` write them directly into the live file. Edit or delete the value directly in
+already carried, unless the overlay or base sets that path, since `/effort`
+and `/config` are assumed to write them directly into the live file
+(unverified). Edit or delete the value directly in
 `~/.claude/settings.json` (or re-run `/effort`) and re-render to actually
 clear it.
 
 A freshly created `settings.overlay.json` is only as private as the
 permissions your editor or shell redirect left it with until the next
-render — `render-settings.sh` tightens it to mode 600, but only at render
+render — `render-settings.sh` tightens it (or the file it links to) to mode 600, but only at render
 time. Create it with `umask 077` in effect, or run `chmod 600` on it
 immediately after creation, rather than relying on your editor's or shell's
 default permissions.

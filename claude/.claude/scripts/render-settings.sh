@@ -114,6 +114,9 @@ require_json_object() {
 
 # Every overlay refusal exits before any write, so the prior settings.json keeps
 # its deny rules and hooks while base changes wait on the overlay.
+# The "keeps its previous deny rules and hooks" tail assumes the prior
+# settings.json is a readable JSON object, and an empty or corrupt prior holds
+# no rules to keep.
 # $1 names the problem and the optional $2 names the way out.
 refuse_overlay() {
   echo "render-settings.sh: $1 -- refusing to render${2:+; $2}; an existing settings.json keeps its previous deny rules and hooks, and base changes are not delivered until the overlay is fixed" >&2
@@ -126,7 +129,12 @@ if ! require_json_object "$base_file"; then
 fi
 
 overlay_json='{}'
-if [[ -e "$overlay_file" ]]; then
+# -e is false for a dangling symlink, so -L keeps a link that does not resolve
+# from reading as "no overlay".
+if [[ -e "$overlay_file" || -L "$overlay_file" ]]; then
+  if [[ ! -e "$overlay_file" ]]; then
+    refuse_overlay "$overlay_file is a symlink that does not resolve"
+  fi
   if [[ ! -r "$overlay_file" ]]; then
     refuse_overlay "$overlay_file exists but is not readable"
   fi
@@ -190,6 +198,19 @@ if [[ -e "$overlay_file" ]]; then
     fi
   fi
 
+  # autoMode and skillListingBudgetFraction values reach settings.json
+  # unchanged, so their JSON types are checked here.
+  if jq -e 'has("autoMode")' -- "$overlay_file" >/dev/null 2>&1; then
+    if ! jq -e '.autoMode | type == "object"' -- "$overlay_file" >/dev/null 2>&1; then
+      refuse_overlay "$overlay_file has a non-object autoMode value"
+    fi
+  fi
+  if jq -e 'has("skillListingBudgetFraction")' -- "$overlay_file" >/dev/null 2>&1; then
+    if ! jq -e '.skillListingBudgetFraction | type == "number" and ((isnan or isinfinite) | not)' -- "$overlay_file" >/dev/null 2>&1; then
+      refuse_overlay "$overlay_file has a skillListingBudgetFraction that is not a finite number"
+    fi
+  fi
+
   overlay_json="$(jq -c '.' -- "$overlay_file")"
 fi
 
@@ -200,11 +221,14 @@ base_json="$(jq -c '.' -- "$base_file")"
 # nothing to carry forward, not a render failure.
 prev_json='{}'
 prior_is_object=false
+prior_unusable=false
 if [[ -f "$target" ]]; then
   if prior_candidate="$(jq -c -s 'if length == 1 and (.[0] | type) == "object" then .[0] else empty end' -- "$target" 2>/dev/null)" \
      && [[ -n "$prior_candidate" ]]; then
     prev_json="$prior_candidate"
     prior_is_object=true
+  else
+    prior_unusable=true
   fi
 fi
 
@@ -306,8 +330,8 @@ fi
 
 merged_json="$(jq -c '.result' <<<"$render_output")"
 
-# Disclosure on stderr, emitted only when this render's output differs from the
-# prior one. It names:
+# Disclosure on stderr, printed after the replace and only when this render's
+# output differs from the prior one. It names:
 # - the top-level keys that carried forward
 # - the prior top-level keys, permissions entries, and env keys the render
 #   dropped; a wholly dropped env or permissions object is named once, as a
@@ -319,6 +343,7 @@ merged_json="$(jq -c '.result' <<<"$render_output")"
 # credential. Dropped permissions entries print their rule text, which is what
 # lets a user recover a dropped rule.
 render_changed="$(jq -r '.changed' <<<"$render_output")"
+disclosure_line=""
 if [[ "$render_changed" == "true" ]]; then
   segments=()
 
@@ -360,7 +385,7 @@ if [[ "$render_changed" == "true" ]]; then
   if [[ ${#segments[@]} -gt 0 ]]; then
     disclosure="$(printf '%s; ' "${segments[@]}")"
     disclosure="${disclosure%; }"
-    echo "render-settings.sh: this render changed settings.json -- $disclosure" >&2
+    disclosure_line="render-settings.sh: this render changed settings.json -- $disclosure"
   fi
 fi
 
@@ -402,3 +427,15 @@ if [[ -d "$target" ]]; then
 fi
 
 mv -- "$tmp_target" "$target"
+
+# Stderr notices wait for the replace to land, so a refused or failed render
+# reports only its own error.
+# A landed replace exits 0 when stderr is closed or full, because
+# install.sh and ensure-settings-render.sh read a non-zero exit as "not rendered".
+# A broken pipe is the exception: SIGPIPE ends the script with exit 141 after the replace landed.
+if [[ "$prior_unusable" == "true" ]]; then
+  echo "render-settings.sh: warning: $target was not readable as a JSON object, so this render replaced it without carrying forward keys outside base and the overlay (such as enabledPlugins)" >&2 || true
+fi
+if [[ -n "$disclosure_line" ]]; then
+  echo "$disclosure_line" >&2 || true
+fi

@@ -47,7 +47,7 @@ _MANIFEST_START = "# INSTALL_TEST_FIXTURE: repo-relocation-manifest — start\n"
 _REAL_SETTINGS_BASE = Path(__file__).resolve().parents[2] / "settings.base.json"
 
 
-def _extract_block(start_marker: str, end_marker: str) -> str:
+def _extract_block(start_marker: str, end_marker: str, required_substring: str) -> str:
     """Same marker-delimited extraction strategy as the other
     test_install_sh_*.py files -- syntax-matching would silently pick up an
     edited invocation, or miss one, on reordering."""
@@ -56,7 +56,16 @@ def _extract_block(start_marker: str, end_marker: str) -> str:
     assert start != -1, f"{start_marker!r} not found in {_INSTALL_SH}"
     end = install_text.find(end_marker, start)
     assert end != -1, f"{end_marker!r} not found after start marker in {_INSTALL_SH}"
-    return install_text[start + len(start_marker) : end]
+    block = install_text[start + len(start_marker) : end]
+    assert required_substring in block, (
+        f"extracted block is missing {required_substring!r}; markers in "
+        f"{_INSTALL_SH} are probably misplaced. Got: {block!r}"
+    )
+    return block
+
+
+def _render_block() -> str:
+    return _extract_block(_RENDER_START, _RENDER_END, "render-settings.sh")
 
 
 def _extract_span(start_marker: str, end_marker: str) -> str:
@@ -171,8 +180,8 @@ def _run_stow_and_render(pkg_root: Path, home: Path) -> subprocess.CompletedProc
         f'. "{SCRIPTS_DIR / "_stow_migration_lib.sh"}"\n'
         "set -e\n"
         'cd "$1"\n'
-        + _extract_block(_STOW_START, _STOW_END)
-        + _extract_block(_RENDER_START, _RENDER_END)
+        + _extract_block(_STOW_START, _STOW_END, 'stow -v "${stow_ignore_args[@]}"')
+        + _render_block()
     )
     return subprocess.run(
         ["bash", "-c", script, "run_stow_and_render", str(pkg_root)],
@@ -238,7 +247,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
 
-        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+        result = _run_blocks(_render_block(), home, repo_dir)
 
         assert result.returncode != 0, (
             "a failed render-settings.sh must abort the extracted "
@@ -255,7 +264,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
 
-        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+        result = _run_blocks(_render_block(), home, repo_dir)
 
         assert result.returncode == 1
         assert "[install] error: render-settings.sh failed (exit 1)" in result.stderr
@@ -269,7 +278,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
 
-        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+        result = _run_blocks(_render_block(), home, repo_dir)
 
         assert result.returncode == 1
         assert "no deny rules or hooks are active until the render succeeds" in result.stderr
@@ -284,7 +293,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
             json.dumps({"permissions": {"deny": ["Bash(sudo *)"]}})
         )
 
-        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+        result = _run_blocks(_render_block(), home, repo_dir)
 
         assert result.returncode == 1
         assert "no deny rules or hooks are active" not in result.stderr
@@ -304,7 +313,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
 
-        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+        result = _run_blocks(_render_block(), home, repo_dir)
 
         assert result.returncode == cap_kill_status
         assert f"did not finish within its 5s cap (exit {cap_kill_status})" in result.stderr
@@ -323,7 +332,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         home = tmp_path / "home"
         (home / ".claude").mkdir(parents=True)
 
-        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+        result = _run_blocks(_render_block(), home, repo_dir)
 
         assert result.returncode == cap_kill_status
         assert "no deny rules or hooks are active until the render succeeds" in result.stderr
@@ -332,7 +341,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         repo_dir = _make_render_repo(tmp_path / "repo")
         home = _make_home(tmp_path / "home", {"otherKey": "base-value"})
 
-        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+        result = _run_blocks(_render_block(), home, repo_dir)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert f"[install] rendered {home}/.claude/settings.json" in result.stdout
@@ -348,7 +357,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         (other_profile / "settings.base.json").write_text("{}")
 
         result = _run_blocks(
-            _extract_block(_RENDER_START, _RENDER_END),
+            _render_block(),
             home,
             repo_dir,
             extra_env={"CLAUDE_CONFIG_DIR": str(other_profile)},
@@ -369,7 +378,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         (other_profile / "settings.base.json").write_text("{}")
 
         result = _run_blocks(
-            _extract_block(_RENDER_START, _RENDER_END),
+            _render_block(),
             home,
             repo_dir,
             extra_env={"CLAUDE_CONFIG_DIR": str(other_profile)},
@@ -392,7 +401,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         other_profile.mkdir()
 
         result = _run_blocks(
-            _extract_block(_RENDER_START, _RENDER_END),
+            _render_block(),
             home,
             repo_dir,
             extra_env={"CLAUDE_CONFIG_DIR": str(other_profile)},
@@ -409,7 +418,7 @@ class TestRenderInvokeBlockAbortsOnMissingBase:
         (tmp_path / "alias-of-default").symlink_to(home / ".claude")
 
         result = _run_blocks(
-            _extract_block(_RENDER_START, _RENDER_END),
+            _render_block(),
             home,
             repo_dir,
             extra_env={"CLAUDE_CONFIG_DIR": str(tmp_path / "alias-of-default")},
@@ -472,7 +481,7 @@ class TestStraySettingsJsonIsLeftInPlace:
         stray.write_text(stray_text)
         (home / ".claude" / "settings.json").symlink_to(stray)
 
-        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+        result = _run_blocks(_render_block(), home, repo_dir)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         rendered = home / ".claude" / "settings.json"
@@ -498,7 +507,7 @@ class TestFirstRenderFromADanglingSymlinkedSettingsJson:
         # The symlink targets a tracked-file path that does not exist.
         (home / ".claude" / "settings.json").symlink_to(repo_dir / "claude" / ".claude" / "settings.json")
 
-        result = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+        result = _run_blocks(_render_block(), home, repo_dir)
 
         assert result.returncode == 0, f"stderr={result.stderr!r}"
         assert "dropped" not in result.stderr
@@ -512,14 +521,14 @@ class TestFirstRenderFromADanglingSymlinkedSettingsJson:
         repo_dir = _make_render_repo(tmp_path / "repo")
         home = _make_home(tmp_path / "home")
         shutil.copy(_REAL_SETTINGS_BASE, home / ".claude" / "settings.base.json")
-        first = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+        first = _run_blocks(_render_block(), home, repo_dir)
         assert first.returncode == 0, f"stderr={first.stderr!r}"
         rendered_path = home / ".claude" / "settings.json"
         rendered = json.loads(rendered_path.read_text())
         rendered["model"] = "opus"
         rendered_path.write_text(json.dumps(rendered))
 
-        second = _run_blocks(_extract_block(_RENDER_START, _RENDER_END), home, repo_dir)
+        second = _run_blocks(_render_block(), home, repo_dir)
 
         assert second.returncode == 0, f"stderr={second.stderr!r}"
         assert json.loads(rendered_path.read_text())["model"] == "opus"

@@ -319,7 +319,7 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
 
 - **`render-settings.sh`** — generates `<config-dir>/settings.json` (`$CLAUDE_CONFIG_DIR`, else `~/.claude`) from the tracked `settings.base.json`, an optional untracked `settings.overlay.json`, and the prior `settings.json`. [`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson) states the contract: which keys base owns, which the overlay owns, what carries forward, what the stderr disclosure names, and what the overlay refuses.
 
-  - An empty, unparseable, or non-object prior file counts as no prior state.
+  - A prior `settings.json` the render cannot read as one JSON object counts as no prior state and gets a stderr warning that the render replaced it without carrying forward keys outside base and the overlay. A missing or dangling one gets none. [`docs/auto-mode.md`](auto-mode.md#what-to-put-in-settingsoverlayjson) lists the individual cases.
   - The script exits without writing when the merged result equals a prior regular, non-symlink `settings.json`.
   - Otherwise it replaces the file through a same-directory temp file, so a symlinked target is replaced rather than written through.
   - The file's mode depends on render history. An unchanged render leaves the existing mode alone. A changed render writes the mode-600 file `mktemp` creates.
@@ -341,16 +341,18 @@ Full descriptions for utility scripts in `claude/.claude/scripts/` (stowed to `~
   - A bash login shell whose profile does not source `~/.bashrc`.
   - A non-interactive launch that reads no rc file (cron, a launchd or systemd unit, or a headless `claude -p` under one).
   - A shell installed after `install.sh` ran, since `install.sh` writes no block for a shell that is absent.
-  - A shell whose first `bash` on `PATH` is older than the bash floor, because the script's `#!/usr/bin/env bash` shebang resolves that one. It prints the floor message and exits 0 without rendering.
+  - A shell whose first `bash` on `PATH` is older than the bash floor, because the script's `#!/usr/bin/env bash` shebang resolves that one. With `timeout` or `gtimeout` on `PATH`, it prints the floor message, then two `command not found` errors for the `_lib.sh` functions the floor check left unloaded, then a failed-render hint whose "re-run install.sh" advice does not apply, since the fix is a newer bash. It exits 0 without rendering.
   - A profile selected after the rc file ran, by direnv or a `CLAUDE_CONFIG_DIR=<dir> claude` prefix.
 
   In those cases run `render-settings.sh` by hand. When it changes `settings.json` it prints a line naming any key it carried forward, dropped, or applied from the overlay.
 
   - `install.sh` wires the block with the same rc-file handling as the `~/.local/bin` PATH export.
+  - The rc block carries no interactivity guard of its own. A non-interactive bash runs it when the user's `~/.bashrc` lacks an early return for non-interactive shells: `ssh host cmd` (for a bash built to source `~/.bashrc` under sshd, as Ubuntu's is; unverified for Homebrew or source builds), a `BASH_ENV` pointing at the rc file, and a `bash -lc` whose profile sources `~/.bashrc`. A distro skeleton `~/.bashrc` that returns early for non-interactive shells (Debian's does) skips the block. A non-interactive zsh reads no `~/.zshrc`, so it never runs the block. Each such run costs one render pass and can print a failed-render hint on stderr.
   - The script follows an inherited `CLAUDE_CONFIG_DIR`, and stays silent for a profile that is not `~/.claude` and holds no `settings.base.json`.
   - A failed render prints a hint on stderr that names the profile directory and the command that re-renders it, and says an existing `settings.json` keeps its previous deny rules and hooks, or that no deny rules or hooks are active when `settings.json` is missing or dangling.
   - A render killed by its cap says so instead of pointing at an error, since it printed none.
   - With neither `timeout` nor `gtimeout` on PATH the render runs uncapped and prints no note.
+  - Under a bash older than the bash floor with neither on `PATH` (stock macOS), only the floor message prints and `render-settings.sh` runs uncapped under that bash. Whether that render succeeds is unverified.
   - The profile gate compares directories, so a trailing slash or a symlink spelling of `~/.claude` still counts as the default profile.
   - The script always exits 0, so a failure never aborts shell startup.
 

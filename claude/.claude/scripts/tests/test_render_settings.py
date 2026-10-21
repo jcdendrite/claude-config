@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from helpers import link_bash_into
+from helpers import link_bash_into, run_with_open_stdin
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "render-settings.sh"
 _SETTINGS_BASE_JSON = Path(__file__).resolve().parents[2] / "settings.base.json"
@@ -53,18 +53,12 @@ def _run_script(
     config_dir: Path,
     extra_env: dict | None = None,
 ) -> subprocess.CompletedProcess:
+    """Run the script with stdin held open, as the rc line does in a new shell."""
     env = dict(os.environ)
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
     if extra_env:
         env.update(extra_env)
-    return subprocess.run(
-        [str(_SCRIPT), *args],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-        timeout=15,
-    )
+    return run_with_open_stdin([str(_SCRIPT), *args], env=env, timeout=15)
 
 
 def _sha256(path: Path) -> str:
@@ -107,13 +101,16 @@ def _env_allowed_names_from_render_settings() -> list[str]:
     return json.loads(result.stdout)
 
 
-def _offending_keys(stderr: str) -> set[str]:
-    """The key names an overlay refusal lists, read from the segment between
-    the allowed-set braces and the refusal tail."""
-    segment_start = stderr.find("}: ")
-    segment_end = stderr.find(" -- refusing", segment_start)
-    assert segment_start != -1 and segment_end != -1, f"unparseable refusal: {stderr!r}"
-    return set(stderr[segment_start + len("}: ") : segment_end].split(", "))
+def _assert_refusal_lists_only(stderr: str, *, offending: str) -> None:
+    """The refusal's offender list is exactly `offending`.
+
+    Both list-format refusals (top-level keys, env names) close the allowed set
+    with `}`, then give the offenders, then `-- refusing to render`. A valid
+    sibling listed beside the offender breaks that adjacency.
+    """
+    assert f"}}: {offending} -- refusing to render" in stderr, (
+        f"refusal does not list only {offending!r}: {stderr!r}"
+    )
 
 
 class TestNoOverlay:
@@ -413,9 +410,9 @@ class TestOverlayAllowlist:
 
         assert result.returncode != 0
         # NODE_OPTIONS sorts after the allowed name, so a check that looked
-        # only at the first key would accept this overlay. The refusal names
+        # only at the first key would accept this overlay. The refusal lists
         # it alone, not the allowed name beside it.
-        assert _offending_keys(result.stderr) == {"NODE_OPTIONS"}
+        _assert_refusal_lists_only(result.stderr, offending="NODE_OPTIONS")
         assert (config_dir / "settings.json").read_text() == prior_render
 
     def test_empty_env_object_is_accepted(self, tmp_path: Path) -> None:
@@ -534,7 +531,7 @@ class TestOverlayAllowlist:
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode != 0
-        assert _offending_keys(result.stderr) == {bad_key}
+        _assert_refusal_lists_only(result.stderr, offending=bad_key)
         assert not (config_dir / "settings.json").exists()
 
     def test_overlay_with_only_autoMode_and_skillListingBudgetFraction_is_accepted(
@@ -556,57 +553,66 @@ class TestOverlayAllowlist:
         assert rendered["skillListingBudgetFraction"] == 0.2
 
 
-class TestUnvalidatedOverlayValueShapes:
-    """autoMode and skillListingBudgetFraction get no type/shape validation,
-    unlike env and permissions above -- a deliberate scope decision, not an
-    oversight. These pin today's accept-unconditionally behavior so a future
-    tightening is a deliberate test change, not a silent behavior shift."""
+class TestOverlayValueShapes:
+    """autoMode must be a JSON object and skillListingBudgetFraction a finite
+    JSON number. A violation is refused like an env or defaultMode violation; the
+    deny arms live in _OVERLAY_REFUSAL_FIXTURES, which asserts the prior render
+    stays byte-identical."""
 
-    def test_non_numeric_skill_listing_budget_fraction_is_accepted_unconditionally(
-        self, tmp_path: Path
-    ) -> None:
+    def test_object_auto_mode_is_accepted(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        _write_json(
-            config_dir / "settings.overlay.json",
-            {"skillListingBudgetFraction": "not-a-number"},
-        )
+        _write_json(config_dir / "settings.overlay.json", {"autoMode": {}})
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode == 0, result.stderr
-        rendered = json.loads((config_dir / "settings.json").read_text())
-        assert rendered["skillListingBudgetFraction"] == "not-a-number"
+        assert json.loads((config_dir / "settings.json").read_text())["autoMode"] == {}
 
-    def test_out_of_range_skill_listing_budget_fraction_is_accepted_unconditionally(
-        self, tmp_path: Path
+    @pytest.mark.parametrize("fraction", [0, 0.2, 2.5])
+    def test_numeric_skill_listing_budget_fraction_is_accepted_without_a_range_check(
+        self, tmp_path: Path, fraction: float
     ) -> None:
         """docs/skills.md documents skillListingBudgetFraction as a fraction
-        of the context window (default 0.01). This test's 2.5 value is
-        outside the implied [0,1] range and still passes through today."""
+        of the context window (default 0.01). Only finiteness and the JSON type are
+        checked, so the out-of-range 2.5 still passes."""
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        _write_json(config_dir / "settings.overlay.json", {"skillListingBudgetFraction": 2.5})
+        _write_json(config_dir / "settings.overlay.json", {"skillListingBudgetFraction": fraction})
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode == 0, result.stderr
         rendered = json.loads((config_dir / "settings.json").read_text())
-        assert rendered["skillListingBudgetFraction"] == 2.5
+        assert rendered["skillListingBudgetFraction"] == fraction
 
-    def test_non_object_auto_mode_is_accepted_unconditionally(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        ("overlay_content", "refusal_fragment"),
+        [
+            ({"autoMode": "not-an-object"}, "non-object autoMode value"),
+            (
+                {"skillListingBudgetFraction": "not-a-number"},
+                "skillListingBudgetFraction that is not a finite number",
+            ),
+        ],
+        ids=["auto-mode-string", "skill-listing-budget-fraction-string"],
+    )
+    def test_wrongly_typed_value_is_refused_with_diagnostic_not_jq_error(
+        self, tmp_path: Path, overlay_content: dict, refusal_fragment: str
+    ) -> None:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        _write_json(config_dir / "settings.overlay.json", {"autoMode": "not-an-object"})
+        _write_json(config_dir / "settings.overlay.json", overlay_content)
 
         result = _run_script(config_dir=config_dir)
 
-        assert result.returncode == 0, result.stderr
-        rendered = json.loads((config_dir / "settings.json").read_text())
-        assert rendered["autoMode"] == "not-an-object"
+        assert result.returncode != 0
+        assert refusal_fragment in result.stderr
+        assert "jq: error" not in result.stderr
+        assert not (config_dir / "settings.json").exists()
 
 
 class TestDefaultModeNestedException:
@@ -736,6 +742,34 @@ _OVERLAY_REFUSAL_FIXTURES = {
     "env-name-outside-allowlist": ({"env": {"BASH_ENV": "x"}}, "outside the allowed set"),
     "env-credential-named": ({"env": {"ANTHROPIC_API_KEY": "sk-ant-example"}}, "outside the allowed set"),
     "env-non-string-value": ({"env": {"DISABLE_TELEMETRY": 1}}, "non-string env value(s) for: DISABLE_TELEMETRY"),
+    "auto-mode-string": ({"autoMode": "not-an-object"}, "non-object autoMode value"),
+    "auto-mode-null": ({"autoMode": None}, "non-object autoMode value"),
+    "auto-mode-array": ({"autoMode": ["$defaults"]}, "non-object autoMode value"),
+    "skill-listing-budget-fraction-string": (
+        {"skillListingBudgetFraction": "not-a-number"},
+        "skillListingBudgetFraction that is not a finite number",
+    ),
+    "skill-listing-budget-fraction-null": (
+        {"skillListingBudgetFraction": None},
+        "skillListingBudgetFraction that is not a finite number",
+    ),
+    "skill-listing-budget-fraction-bool": (
+        {"skillListingBudgetFraction": True},
+        "skillListingBudgetFraction that is not a finite number",
+    ),
+    "skill-listing-budget-fraction-array": (
+        {"skillListingBudgetFraction": [0.2]},
+        "skillListingBudgetFraction that is not a finite number",
+    ),
+    # json.dumps writes these as the bare tokens NaN and Infinity, which jq parses as numbers.
+    "skill-listing-budget-fraction-nan": (
+        {"skillListingBudgetFraction": float("nan")},
+        "skillListingBudgetFraction that is not a finite number",
+    ),
+    "skill-listing-budget-fraction-infinity": (
+        {"skillListingBudgetFraction": float("inf")},
+        "skillListingBudgetFraction that is not a finite number",
+    ),
 }
 
 
@@ -806,6 +840,26 @@ class TestRefusalPreservesPriorRender:
 
         assert result.returncode != 0
         assert "not readable" in result.stderr
+        assert target.read_text() == prior_content
+
+    def test_dangling_symlink_overlay_is_refused_and_leaves_the_prior_render_byte_identical(
+        self, tmp_path: Path
+    ) -> None:
+        """A link that does not resolve is a broken overlay, not an absent
+        one; rendering base-only would silently drop the overlay's keys."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        target = config_dir / "settings.json"
+        prior_content = json.dumps(self._PRIOR_RENDER)
+        target.write_text(prior_content)
+        (config_dir / "settings.overlay.json").symlink_to(config_dir / "no-such-overlay.json")
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode != 0
+        assert "symlink that does not resolve" in result.stderr
+        assert "an existing settings.json keeps its previous deny rules and hooks" in result.stderr
         assert target.read_text() == prior_content
 
     @pytest.mark.parametrize(
@@ -946,15 +1000,22 @@ class TestDirectoryAtTarget:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"autoMode": {"environment": ["$defaults"]}})
         target = config_dir / "settings.json"
         target.mkdir()
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode != 0
+        assert "is a directory" in result.stderr
+        assert "this render changed" not in result.stderr
         assert target.is_dir()
         assert list(target.iterdir()) == []
-        assert sorted(entry.name for entry in config_dir.iterdir()) == ["settings.base.json", "settings.json"]
+        assert sorted(entry.name for entry in config_dir.iterdir()) == [
+            "settings.base.json",
+            "settings.json",
+            "settings.overlay.json",
+        ]
 
 
 class TestWritePathFailures:
@@ -1009,6 +1070,55 @@ class TestWritePathFailures:
         assert result.returncode != 0
         assert "render-settings.sh:" in result.stderr
         assert (config_dir / "settings.json").read_text() == prior_content
+
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_failed_write_over_an_unusable_prior_prints_neither_the_warning_nor_the_disclosure(
+        self, tmp_path: Path
+    ) -> None:
+        """The prior-unusable warning and the changed-render disclosure both
+        say the render replaced settings.json, so a render that fails before
+        the replace must print neither."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"autoMode": {"environment": ["$defaults"]}})
+        unusable_prior = "{not valid json"
+        (config_dir / "settings.json").write_text(unusable_prior)
+        config_dir.chmod(0o500)
+        try:
+            result = _run_script(config_dir=config_dir)
+        finally:
+            config_dir.chmod(0o755)
+
+        assert result.returncode == 1
+        assert "could not create a temp file" in result.stderr
+        assert "was not readable as a JSON object" not in result.stderr
+        assert "this render changed" not in result.stderr
+        assert (config_dir / "settings.json").read_text() == unusable_prior
+
+    def test_landed_replace_exits_zero_when_stderr_cannot_take_the_notices(
+        self, tmp_path: Path
+    ) -> None:
+        """install.sh and ensure-settings-render.sh read a non-zero exit as
+        "not rendered", so a closed stderr must not turn a landed replace
+        into a failure. The unparseable prior and the overlay make the render
+        print both the prior-unusable warning and the disclosure."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        _write_json(config_dir / "settings.overlay.json", {"autoMode": {"environment": ["$defaults"]}})
+        (config_dir / "settings.json").write_text("{not valid json")
+        env = dict(os.environ)
+        env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+
+        result = run_with_open_stdin(["bash", "-c", '"$0" 2>&-', str(_SCRIPT)], env=env, timeout=15)
+
+        assert result.returncode == 0
+        assert json.loads((config_dir / "settings.json").read_text()) == {
+            "otherKey": "base-value",
+            "autoMode": {"environment": ["$defaults"]},
+        }
 
 
 class TestIdempotency:
@@ -1244,13 +1354,35 @@ class TestThemeTuiPreservation:
         config_dir = tmp_path / "cfg"
         config_dir.mkdir()
         _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
-        (config_dir / "settings.json").write_text("{not valid json")
+        (config_dir / "settings.json").write_text('{not valid json, "prior-content-marker"')
 
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode == 0, result.stderr
         rendered = json.loads((config_dir / "settings.json").read_text())
         assert rendered == {"otherKey": "base-value"}
+        assert "was not readable as a JSON object" in result.stderr
+        assert "prior-content-marker" not in result.stderr
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses file permission bits")
+    def test_unreadable_prior_target_warns_that_it_was_replaced_without_carry_forward(
+        self, tmp_path: Path
+    ) -> None:
+        """A prior file the render cannot read self-heals to base, and the
+        warning is the only trace that its carried keys were not preserved."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        target = config_dir / "settings.json"
+        _write_json(target, {"enabledPlugins": {"example@market": True}})
+        target.chmod(0o000)
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "was not readable as a JSON object" in result.stderr
+        assert str(target) in result.stderr
+        assert json.loads(target.read_text()) == {"otherKey": "base-value"}
 
     @pytest.mark.parametrize(
         "unusable_prior_text",
@@ -1272,6 +1404,7 @@ class TestThemeTuiPreservation:
 
         assert result.returncode == 0, result.stderr
         assert json.loads((config_dir / "settings.json").read_text()) == {"otherKey": "base-value"}
+        assert "was not readable as a JSON object" in result.stderr
 
     def test_empty_base_render_still_repairs_a_non_object_prior_target(self, tmp_path: Path) -> None:
         """With an empty-object base, the render's output equals the
@@ -1323,6 +1456,31 @@ class TestThemeTuiPreservation:
         second_hash = _sha256(config_dir / "settings.json")
 
         assert first_hash == second_hash
+
+
+class TestOverlaySymlinkIsFollowed:
+    def test_symlinked_overlay_to_a_valid_file_is_rendered_and_stays_a_symlink(
+        self, tmp_path: Path
+    ) -> None:
+        """Only an overlay link that does not resolve is refused; a link to a
+        valid overlay elsewhere renders like a regular file, and the render
+        leaves the link in place."""
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"otherKey": "base-value"})
+        real_overlay = tmp_path / "elsewhere" / "real-overlay.json"
+        real_overlay.parent.mkdir()
+        _write_json(real_overlay, {"autoMode": {"environment": ["$defaults", "linked-entry"]}})
+        overlay_link = config_dir / "settings.overlay.json"
+        overlay_link.symlink_to(real_overlay)
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        rendered = json.loads((config_dir / "settings.json").read_text())
+        assert rendered["autoMode"] == {"environment": ["$defaults", "linked-entry"]}
+        assert overlay_link.is_symlink()
+        assert overlay_link.resolve() == real_overlay.resolve()
 
 
 class TestSymlinkWriteThroughRefusal:
@@ -1543,6 +1701,7 @@ class TestRuleFourGuardedKeysCrossCheck:
     def test_rule4_dotted_paths_match_print_guarded_keys_dotted_subset(self) -> None:
         result = subprocess.run(
             [str(_GUARD_HOOK), "--print-guarded-keys"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=False,
@@ -1734,7 +1893,7 @@ class TestEnabledKeyDeletion:
         result = _run_script(config_dir=config_dir)
 
         assert result.returncode != 0
-        assert _offending_keys(result.stderr) == {"enabled"}
+        _assert_refusal_lists_only(result.stderr, offending="enabled")
         assert not (config_dir / "settings.json").exists()
 
 
@@ -2124,7 +2283,7 @@ class TestStderrDisclosure:
     ) -> None:
         """The disclosure does not look inside hooks, statusLine, or
         skillOverrides: base's value replaces the whole prior value and
-        stderr stays silent. docs/auto-mode.md and docs/scripts.md state this."""
+        stderr stays silent. docs/auto-mode.md states this."""
         base = {
             "hooks": {"PreToolUse": []},
             "statusLine": {"type": "command", "command": "base-statusline"},
@@ -2140,6 +2299,7 @@ class TestStderrDisclosure:
         assert result.returncode == 0, result.stderr
         assert json.loads((config_dir / "settings.json").read_text()) == base
         assert result.stderr == ""
+        assert result.stdout == ""
 
     @pytest.mark.parametrize("base_defined_key", sorted(BASE_KEYS_DELIBERATELY_NOT_BASE_OWNED))
     def test_live_edit_to_a_base_defined_key_is_reverted_without_a_message(
@@ -2174,6 +2334,7 @@ class TestStderrDisclosure:
 
         assert result.returncode == 0, result.stderr
         assert result.stderr == ""
+        assert result.stdout == ""
         assert not (config_dir / "settings.json").is_symlink()
 
     def test_steady_state_carry_of_an_already_carried_key_is_silent(self, tmp_path: Path) -> None:
@@ -2189,6 +2350,7 @@ class TestStderrDisclosure:
 
         assert result.returncode == 0, result.stderr
         assert result.stderr == ""
+        assert result.stdout == ""
 
     def test_carried_forward_key_value_never_appears_in_disclosure_only_the_name_does(
         self, tmp_path: Path
@@ -2206,3 +2368,29 @@ class TestStderrDisclosure:
         assert result.returncode == 0, result.stderr
         assert "carried forward top-level keys: theme" in result.stderr
         assert "should-not-leak-in-stderr" not in result.stderr
+
+
+class TestShellStartupIoContract:
+    """The script runs in every new interactive shell, so it must write nothing
+    to stdout. _run_script holds stdin open, so a render that reads it times out."""
+
+    def test_changed_render_with_overlay_writes_nothing_to_stdout(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "cfg"
+        config_dir.mkdir()
+        _write_json(config_dir / "settings.base.json", {"permissions": {"deny": ["Bash(sudo *)"]}})
+        _write_json(
+            config_dir / "settings.overlay.json",
+            {
+                "autoMode": {"environment": ["$defaults"]},
+                "env": {"DISABLE_TELEMETRY": "1"},
+                "permissions": {"defaultMode": "plan"},
+                "skillListingBudgetFraction": 0.2,
+            },
+        )
+        _write_json(config_dir / "settings.json", {"theme": "dark"})
+
+        result = _run_script(config_dir=config_dir)
+
+        assert result.returncode == 0, result.stderr
+        assert "this render changed settings.json" in result.stderr
+        assert result.stdout == ""

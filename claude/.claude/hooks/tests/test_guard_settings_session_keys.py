@@ -1436,6 +1436,7 @@ def _guarded_keys_from_hook() -> list[str]:
     """The hook's own GUARDED_KEYS_JSON, via its --print-guarded-keys mode."""
     result = subprocess.run(
         [str(GUARD_SETTINGS_SESSION_KEYS_HOOK), "--print-guarded-keys"],
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         check=True,
@@ -1637,9 +1638,11 @@ class TestPrintGuardedKeysMode:
     def test_print_guarded_keys_prints_json_and_exits_zero_with_no_stdin(self):
         result = subprocess.run(
             [str(GUARD_SETTINGS_SESSION_KEYS_HOOK), "--print-guarded-keys"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=False,
+            timeout=15,
         )
         assert result.returncode == 0, result.stderr
         guarded_keys = json.loads(result.stdout)
@@ -1659,14 +1662,7 @@ class TestBaseKeyPlacementDisjointness:
         (or any other app-written key) to settings.base.json would
         reintroduce the revert-on-every-render bug this carry-forward
         design exists to fix."""
-        result = subprocess.run(
-            [str(GUARD_SETTINGS_SESSION_KEYS_HOOK), "--print-guarded-keys"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        guarded_keys = json.loads(result.stdout)
+        guarded_keys = _guarded_keys_from_hook()
         base_settings = json.loads(SETTINGS_BASE_JSON.read_text())
         overlap = {key for key in guarded_keys if self._path_present(base_settings, key)}
         assert overlap == set(), f"settings.base.json sets guarded key(s): {overlap}"

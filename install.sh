@@ -342,16 +342,7 @@ fi
 # skipping the stow call outright: at worst stow then refuses (a loud, safe
 # failure), never a silent one.
 #
-# plans/handoffs/briefs/settings.json/settings.overlay.json are seeded
-# explicitly, not derived from stow_untracked_package_entries: that function
-# deliberately never reports these. plans, handoffs, and briefs have their own
-# dedicated migration path above. settings.json and settings.overlay.json are
-# render-settings.sh's own generated output. All of them must stay off the
-# generic un-adopt loop's reach, but a package-side leftover for one of them
-# still needs the same --ignore protection every other entry gets here, or
-# stow would walk into it and adopt it file-by-file. A stray claude/.claude/settings.json is gitignored and
-# left in place; the render below reads it only when ~/.claude/settings.json is
-# a symlink resolving to it.
+# plans/handoffs/briefs/settings.json/settings.overlay.json are seeded explicitly; see the exclusion in stow_untracked_package_entries (_stow_migration_lib.sh).
 stow_ignore_args=(--ignore='^\.claude/plans$' --ignore='^\.claude/handoffs$' --ignore='^\.claude/briefs$' --ignore='^\.claude/settings\.json$' --ignore='^\.claude/settings\.overlay\.json$')
 if untracked_entries_file="$(mktemp)" && stow_untracked_package_entries "$REPO_DIR" > "$untracked_entries_file"; then
   while IFS= read -r -d '' name; do
