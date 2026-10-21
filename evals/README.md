@@ -515,10 +515,15 @@ Run them in this order:
   `mine-pr-comments` run, because every completed run rewrites that file.
 - **`mine-szz`** (source `szz`) blames the removed or modified non-markdown
   lines of each `fix|bug|regression` commit on first-parent `origin/main`.
-  It drops a candidate whose path does not exist at the introducing commit,
-  for example a file renamed after that commit or lines copied in through
-  `-C`, and prints that count as `path_absent_at_introducing_commit` on
-  stderr.
+
+`mine-rounds` and `mine-szz` drop a candidate whose path does not exist at its
+introducing commit, for example a file renamed after that commit or lines
+`git blame -C` followed in from another file. `mine-szz` prints that count on
+stderr as `path_absent_at_introducing_commit`. `mine-rounds` counts the
+citations it skips this way in its stderr summary. The drop does not reach an
+entry a `mine-rounds` rerun keeps from the prior shortlist, so `confirm`
+rejects such an entry on every run until it is deleted from
+`review_round_candidates.json`.
 
 Markdown files (skills, rules, `CLAUDE.md`, docs) are eligible through
 `review-round` and `pr-comment`. `defects.is_markdown_path` is the one
@@ -532,10 +537,12 @@ content into a committed file or another private-project-adjacent surface.
 `confirm` is the engineer's approval step. It reads every `.local/`
 candidate that is not yet in `defects.json`, ordered by source (`review-round`,
 then `pr-comment`, then `szz`) and then by the miner's own order, so an early
-`q` never starves the source whose transcripts age out. It suppresses no
-candidate. For each one it checks the schema, that its path exists at its introducing
-commit, and, when the candidate has a description, the description-provenance
-check against every `.local/` excerpt. It then prompts `[y/N/q]`. The prompt shows:
+`q` never starves the source whose transcripts age out. For each one it checks
+the schema, that its path exists at its introducing commit, and, when the
+candidate has a description, the description-provenance check against every
+`.local/` excerpt. It then prompts `[y/N/q]` for each candidate that passes,
+except one that `--source` or the declined IDs described below leave out. The
+prompt shows:
 
 - the candidate's ID, source, short SHAs, `fix_date`, path, and commit
   subjects;

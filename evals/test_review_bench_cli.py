@@ -842,6 +842,38 @@ class TestModelEmittedPathsAreEscapedForTheTerminal:
     ) -> None:
         assert run_review_bench._escape_control_characters(raw_text) == escaped_text
 
+    @pytest.mark.parametrize(
+        ("git_stderr", "expected_detail_suffix"),
+        [
+            pytest.param("fatal: bad\nobject \x1b[31m\n", ": fatal: bad\\nobject \\x1b[31m", id="str"),
+            pytest.param(b"fatal: bad\nobject \xff\n", ": fatal: bad\\nobject \ufffd", id="bytes"),
+            pytest.param(None, "", id="none"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "git_failure_with_stderr",
+        [
+            pytest.param(
+                lambda stderr: subprocess.CalledProcessError(128, ["git", "cat-file"], stderr=stderr),
+                id="called-process-error",
+            ),
+            pytest.param(
+                lambda stderr: subprocess.TimeoutExpired(["git", "cat-file"], 10.0, stderr=stderr),
+                id="timeout",
+            ),
+        ],
+    )
+    def test_a_git_failure_rejection_appends_the_escaped_stderr_on_one_line(
+        self, capsys, git_failure_with_stderr, git_stderr: str | bytes | None, expected_detail_suffix: str,
+    ) -> None:
+        exc = git_failure_with_stderr(git_stderr)
+
+        run_review_bench._print_git_failure_rejection("d1", "read its public git text", exc)
+
+        assert capsys.readouterr().err == (
+            f"confirm: rejected d1 -- could not read its public git text ({exc}{expected_detail_suffix})\n"
+        )
+
     def test_a_recorded_path_with_an_escape_sequence_never_reaches_stderr_raw(self, capsys) -> None:
         record = _run_record(
             "d1", arms_mod.ARM_CURRENT_RULE, "run-a", "finding", out_of_session_paths=("/x\x1b]0;pwned\x07",),

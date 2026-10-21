@@ -1605,7 +1605,108 @@ class TestResolveDefectCommits:
         # branch_commits; fix_commit is None too, not just head_commit.
         assert resolution.fix_commit is None  # len(introducers) != 1
         assert resolution.head_commit is None
+        assert resolution.path_absent_at_introducing_commit is False  # ambiguous blame is not an absent path
         assert fix_sha in [c["sha"] for c in resolution.branch_commits]  # the fix commit is among the recorded commits
+
+    def _repo_with_module_renamed_before_its_fix(self, tmp_path):
+        """`renamed.py` is fixed after a pure rename, so blame follows its fixed lines back to a
+        commit where only `original.py` existed. Returns the repo, the introducing commit, and the fix commit."""
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "other.py", "x = 0\n")
+        main_sha = _commit_at(repo, "seed", "2026-01-01T00:00:00+0000")
+        _set_origin_main(repo, main_sha)
+        _git(repo, "checkout", "-q", "-b", "feat")
+        _write(repo, "original.py", "def f():\n    return bad_value\n")
+        introducing_sha = _commit_at(repo, "add f", "2026-01-02T00:00:00+0000")
+        (repo / "original.py").rename(repo / "renamed.py")
+        _commit_at(repo, "rename f's module", "2026-01-03T00:00:00+0000")
+        _write(repo, "renamed.py", "def f():\n    return good_value\n")
+        fix_sha = _commit_at(repo, "fix wrong return value", "2026-01-05T00:00:00+0000")
+        return repo, introducing_sha, fix_sha
+
+    def test_a_path_renamed_after_the_introducing_commit_is_flagged_absent_with_no_head(self, tmp_path):
+        repo, _introducing_sha, fix_sha = self._repo_with_module_renamed_before_its_fix(tmp_path)
+
+        resolution = mine_review_rounds.resolve_defect_commits(
+            repo, path="renamed.py", after_ts=_ts("2026-01-04T00:00:00Z"), branch=_open_feat_branch(repo),
+        )
+
+        assert resolution.head_commit is None
+        assert resolution.path_absent_at_introducing_commit is True
+        assert fix_sha in [c["sha"] for c in resolution.branch_commits]
+
+    def test_a_second_lookup_selecting_the_same_fix_commit_reuses_the_memoized_absent_path_flag(
+        self, tmp_path, monkeypatch,
+    ):
+        repo, _introducing_sha, fix_sha = self._repo_with_module_renamed_before_its_fix(tmp_path)
+        blame_calls: list[str] = []
+        real_blame_fix_commit = mine_review_rounds.mine_szz.blame_fix_commit
+
+        def counting_blame_fix_commit(repo_dir, fix_commit, path, **kwargs):
+            blame_calls.append(fix_commit)
+            return real_blame_fix_commit(repo_dir, fix_commit, path, **kwargs)
+
+        monkeypatch.setattr(mine_review_rounds.mine_szz, "blame_fix_commit", counting_blame_fix_commit)
+        branch = _open_feat_branch(repo)
+        mine_review_rounds.resolve_defect_commits(
+            repo, path="renamed.py", after_ts=_ts("2026-01-04T00:00:00Z"), branch=branch,
+        )
+
+        # A later round time that selects the same fix commit reuses the memoized
+        # introduction and still reports why it is absent.
+        later_round_resolution = mine_review_rounds.resolve_defect_commits(
+            repo, path="renamed.py", after_ts=_ts("2026-01-04T12:00:00Z"), branch=branch,
+        )
+
+        assert blame_calls == [fix_sha]  # the second round time selected the same fix commit
+        assert later_round_resolution.head_commit is None
+        assert later_round_resolution.path_absent_at_introducing_commit is True
+
+    @pytest.mark.parametrize(
+        "path_check_error",
+        [subprocess.TimeoutExpired(cmd="git cat-file", timeout=1.0), OSError("git cat-file could not start")],
+        ids=["timeout", "os-error"],
+    )
+    def test_a_git_error_checking_the_path_at_the_introducing_commit_is_unresolved_not_absent(
+        self, tmp_path, monkeypatch, path_check_error,
+    ):
+        repo, introducing_sha, _fix_sha = self._repo_with_module_renamed_before_its_fix(tmp_path)
+        path_check_calls: list[tuple[str, str]] = []
+
+        def path_check_failing(repo_dir, commit, path, *, env):
+            path_check_calls.append((commit, path))
+            raise path_check_error
+
+        monkeypatch.setattr(mine_review_rounds, "path_exists_at_commit", path_check_failing)
+
+        resolution = mine_review_rounds.resolve_defect_commits(
+            repo, path="renamed.py", after_ts=_ts("2026-01-04T00:00:00Z"), branch=_open_feat_branch(repo),
+        )
+
+        assert path_check_calls == [(introducing_sha, "renamed.py")]
+        assert resolution.head_commit is None
+        assert resolution.path_absent_at_introducing_commit is False
+
+    def test_a_path_first_created_by_the_introducing_commit_resolves_with_its_parent_as_base(self, tmp_path):
+        repo = _init_repo(tmp_path / "repo")
+        _write(repo, "other.py", "x = 0\n")
+        main_sha = _commit_at(repo, "seed", "2026-01-01T00:00:00+0000")
+        _set_origin_main(repo, main_sha)
+        _git(repo, "checkout", "-q", "-b", "feat")
+        _write(repo, "created_by_introducing.py", "value = bad_value\n")
+        introducing_sha = _commit_at(repo, "add module with bad value", "2026-01-02T00:00:00+0000")
+        _write(repo, "created_by_introducing.py", "value = good_value\n")
+        fix_sha = _commit_at(repo, "fix wrong value", "2026-01-04T00:00:00+0000")
+
+        resolution = mine_review_rounds.resolve_defect_commits(
+            repo, path="created_by_introducing.py", after_ts=_ts("2026-01-03T00:00:00Z"),
+            branch=_open_feat_branch(repo),
+        )
+
+        assert resolution.head_commit == introducing_sha
+        assert resolution.base_commit == main_sha
+        assert resolution.fix_commit == fix_sha
+        assert resolution.path_absent_at_introducing_commit is False
 
     def test_clean_resolution_returns_expected_commit_values(self, tmp_path):
         repo, main_sha, introducing_sha, fix_sha = self._repo_with_branch_and_bug_fix(tmp_path)
@@ -1948,6 +2049,21 @@ class TestMineReviewRoundsCandidates:
         assert candidates[0].evidence["path"] == "app.py"  # repo-relative, the only form git ever sees
         assert candidates[0].evidence["raw_citation"] == f"{self._CITED_PATH}:12"
         assert candidates[0].source == "review-round"
+
+    def test_citation_of_a_path_absent_at_the_introducing_commit_is_counted_apart_from_unresolved(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        self._build_session(tmp_path)
+        path_absent_resolution = mine_review_rounds._CommitResolution(
+            ref_status="local-branch", path_absent_at_introducing_commit=True,
+        )
+
+        candidates = self._mine(tmp_path, monkeypatch, resolution_for_after_ts=lambda after_ts: path_absent_resolution)
+
+        assert candidates == []
+        err = capsys.readouterr().err
+        assert "1 citation(s) skipped for a path absent at the introducing commit" in err
+        assert "0 citation(s) skipped for unresolved commits" in err
 
     def test_candidate_id_never_embeds_the_raw_branch_name(self, tmp_path, monkeypatch):
         """A branch name is this account's own text and can carry a private
@@ -4320,21 +4436,41 @@ class TestConfirmCli:
         assert _git(repo, "rev-parse", pin_ref).strip() == fix_sha
         assert _pin_refs(repo) == [pin_ref]
 
-    def test_confirm_rejects_an_approved_candidate_whose_fix_commit_cannot_be_pinned(
-        self, tmp_path, monkeypatch, capsys,
+    @pytest.mark.parametrize(
+        ("git_failure", "expected_detail"),
+        [
+            pytest.param(
+                subprocess.CalledProcessError(1, ["git", "update-ref"], stderr="cannot lock ref"),
+                "cannot lock ref)", id="called-process-error-keeps-its-stderr",
+            ),
+            pytest.param(
+                subprocess.TimeoutExpired(["git", "update-ref"], 10.0),
+                "timed out after 10.0 seconds)", id="timeout-that-captured-no-stderr",
+            ),
+        ],
+    )
+    def test_confirm_rejects_only_the_approved_candidate_whose_fix_commit_cannot_be_pinned(
+        self, git_failure, expected_detail, tmp_path, monkeypatch, capsys,
     ):
-        repo, local_dir, defects_path, _fix_sha = _confirm_workspace(tmp_path, monkeypatch, {})
-        _feed_answers(monkeypatch, "y", "")
+        repo, local_dir, defects_path, _fix_sha = _confirm_workspace(tmp_path, monkeypatch, {}, {})
+        _feed_answers(monkeypatch, "y", "", "y", "")
+        pin_defect_commits_unpatched = defects.pin_defect_commits
 
         def failing_pin(repo_dir, defect):
-            raise subprocess.CalledProcessError(1, ["git", "update-ref"], stderr="cannot lock ref")
+            if defect.id == "c-1":
+                raise git_failure
+            return pin_defect_commits_unpatched(repo_dir, defect)
 
         monkeypatch.setattr(defects, "pin_defect_commits", failing_pin)
 
         run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
 
-        assert defects.load_confirmed_defects(defects_path) == []
-        assert "could not pin its fix commit" in capsys.readouterr().err
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["c-2"]
+        assert _pin_refs(repo) == [defects.defect_pin_ref("c-2")]
+        stderr = capsys.readouterr().err
+        assert "rejected c-1 -- could not pin its fix commit" in stderr
+        assert expected_detail in stderr
+        assert "confirm: 1 appended, 0 skipped, 1 rejected" in stderr
 
     @pytest.mark.parametrize(
         "defect_id", ["szz:0123456789ab:cdef01234567:pkg/a~b.py", "review-round:abc:def:123", "c-1"],
@@ -5156,9 +5292,16 @@ class TestConfirmCli:
 
         self._assert_hostile_text_only_escaped(capsys.readouterr().err)
 
-    def test_hostile_text_in_the_git_error_rejection_line_is_escaped(self, monkeypatch, capsys):
+    @pytest.mark.parametrize(
+        "git_failure_for_cmd",
+        [
+            pytest.param(lambda cmd: subprocess.CalledProcessError(128, cmd), id="called-process-error"),
+            pytest.param(lambda cmd: subprocess.TimeoutExpired(cmd, 10.0), id="timeout"),
+        ],
+    )
+    def test_hostile_text_in_the_git_error_rejection_line_is_escaped(self, git_failure_for_cmd, monkeypatch, capsys):
         def unreadable_git_text(*args):
-            raise subprocess.CalledProcessError(128, self._HOSTILE)  # a str cmd prints raw in str(exc)
+            raise git_failure_for_cmd(self._HOSTILE)  # a str cmd prints raw in str(exc)
 
         monkeypatch.setattr(defects, "public_git_text", unreadable_git_text)
         candidate = Candidate(**_candidate_kwargs(id=f"c-1{self._HOSTILE}"))
@@ -5199,6 +5342,14 @@ class TestConfirmCli:
 
     def _presented_ids(self, stderr: str) -> list[str]:
         return re.findall(r"^candidate (\S+)$", stderr, flags=re.MULTILINE)
+
+    def _annotations_by_presented_id(self, stderr: str) -> dict[str, list[tuple[str, str, str]]]:
+        """Maps each presented candidate id to its (other id, source, status) cross-source annotation lines."""
+        prompts = stderr.split("\ncandidate ")[1:]
+        return {
+            prompt.split("\n", 1)[0]: re.findall(r"^    (\S+) \((\S+)\): (.+)$", prompt, flags=re.MULTILINE)
+            for prompt in prompts
+        }
 
     def test_candidates_come_out_review_round_then_pr_comment_then_szz_and_in_miner_order_within_a_source(
         self, tmp_path, monkeypatch, capsys,
@@ -5279,11 +5430,7 @@ class TestConfirmCli:
 
         run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
 
-        prompts = capsys.readouterr().err.split("\ncandidate ")[1:]
-        annotations = {
-            prompt.split("\n", 1)[0]: re.findall(r"^    (\S+) \((\S+)\): (.+)$", prompt, flags=re.MULTILINE)
-            for prompt in prompts
-        }
+        annotations = self._annotations_by_presented_id(capsys.readouterr().err)
         assert annotations["rr-1"] == [
             ("pc-1", "pr-comment", "pending"), ("pc-old", "pr-comment", "confirmed"), ("sz-1", "szz", "pending"),
         ]
@@ -5311,16 +5458,60 @@ class TestConfirmCli:
 
         run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path))
 
-        stderr = capsys.readouterr().err
-        prompts = stderr.split("\ncandidate ")[1:]
-        annotations = {
-            prompt.split("\n", 1)[0]: re.findall(r"^    (\S+) \((\S+)\): (.+)$", prompt, flags=re.MULTILINE)
-            for prompt in prompts
-        }
+        annotations = self._annotations_by_presented_id(capsys.readouterr().err)
         assert annotations["rr-1"] == [("pc-bad", "pr-comment", "rejected by checks"), ("sz-1", "szz", "pending")]
         assert annotations["sz-1"] == [
             ("rr-1", "review-round", "skipped this run"), ("pc-bad", "pr-comment", "rejected by checks"),
         ]
+
+    @pytest.mark.parametrize(
+        ("git_failure", "expected_detail"),
+        [
+            pytest.param(
+                subprocess.CalledProcessError(128, ["git", "log"], stderr=b"fatal: bad object"),
+                "fatal: bad object)", id="called-process-error-keeps-its-stderr",
+            ),
+            pytest.param(
+                subprocess.TimeoutExpired(["git", "log"], 10.0),
+                "timed out after 10.0 seconds)", id="timeout-that-captured-no-stderr",
+            ),
+        ],
+    )
+    def test_a_commit_subjects_failure_rejects_only_that_candidate_and_marks_its_sibling_rejected_by_checks(
+        self, git_failure, expected_detail, tmp_path, monkeypatch, capsys,
+    ):
+        """rr-1 is prompted first and its commit subjects cannot be read, so it is rejected before any prompt.
+        sz-1 shares its location and is still prompted."""
+        _repo, local_dir, defects_path = self._save_shortlists(tmp_path, monkeypatch, {
+            "all_candidates.json": [
+                dict(id="rr-1", source="review-round", description="review round comment."),
+                dict(id="sz-1", source="szz", description="szz comment."),
+            ],
+        })
+        commit_subjects_unpatched = defects.commit_subjects
+        commit_subjects_call_count = 0
+
+        def commit_subjects_failing_on_the_first_call(repo_dir, commits, **kwargs):
+            nonlocal commit_subjects_call_count
+            commit_subjects_call_count += 1
+            if commit_subjects_call_count == 1:
+                raise git_failure
+            return commit_subjects_unpatched(repo_dir, commits, **kwargs)
+
+        monkeypatch.setattr(defects, "commit_subjects", commit_subjects_failing_on_the_first_call)
+        _feed_answers(monkeypatch, "y", "")
+
+        assert run_review_bench.cmd_confirm(_confirm_args(local_dir, defects_path)) == 0
+
+        stderr = capsys.readouterr().err
+        assert "rejected rr-1 -- could not read its commit subjects (" in stderr
+        assert expected_detail in stderr
+        assert stderr.count("[y/N/q]") == 1
+        assert self._presented_ids(stderr) == ["sz-1"]
+        annotations = self._annotations_by_presented_id(stderr)
+        assert annotations["sz-1"] == [("rr-1", "review-round", "rejected by checks")]
+        assert [d.id for d in defects.load_confirmed_defects(defects_path)] == ["sz-1"]
+        assert "confirm: 1 appended, 0 skipped, 1 rejected" in stderr
 
     def test_hostile_text_in_a_cross_source_annotations_id_and_source_shows_escaped(self, capsys):
         shown = Candidate(**_candidate_kwargs(id="c-shown"))

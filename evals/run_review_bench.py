@@ -241,13 +241,28 @@ def _stdin_is_terminal() -> bool:
         return False
 
 
-def _print_git_failure_rejection(escaped_candidate_id: str, unreadable: str, exc: Exception) -> None:
-    # One candidate's commits being unreachable (rewritten history,
-    # a stale .local/ shortlist) must not abort every other
-    # candidate's confirmation in the same run.
+def _git_failure_stderr(exc: subprocess.CalledProcessError | subprocess.TimeoutExpired) -> str:
+    """The failed git call's stderr as text, or "" when it captured none.
+    `subprocess` attaches `str`, `bytes`, or None depending on how the call ran."""
+    raw_stderr = exc.stderr
+    if isinstance(raw_stderr, bytes):
+        raw_stderr = raw_stderr.decode("utf-8", errors="replace")
+    return (raw_stderr or "").strip()
+
+
+def _print_git_failure_rejection(
+    escaped_candidate_id: str, unreadable: str, exc: subprocess.CalledProcessError | subprocess.TimeoutExpired,
+) -> None:
+    # A git failure on one candidate (unreachable commits from rewritten
+    # history or a stale .local/ shortlist, a timeout, a ref-lock error)
+    # must not abort every other candidate's confirmation in the same run.
+    detail = str(exc)
+    git_stderr = _git_failure_stderr(exc)
+    if git_stderr:
+        detail = f"{detail}: {git_stderr}"
     print(
         f"confirm: rejected {escaped_candidate_id} -- could not {unreadable} "
-        f"({_escape_control_characters(str(exc))})",
+        f"({_escape_control_characters(detail)})",
         file=sys.stderr,
     )
 
@@ -609,11 +624,7 @@ def cmd_confirm(args: argparse.Namespace) -> int:
                     REPO_ROOT, (candidate.head_commit, candidate.fix_commit, candidate.base_commit),
                 )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-                print(
-                    f"confirm: rejected {_escape_control_characters(candidate.id)} -- "
-                    f"could not read its commit subjects ({_escape_control_characters(str(exc))})",
-                    file=sys.stderr,
-                )
+                _print_git_failure_rejection(_escape_control_characters(candidate.id), "read its commit subjects", exc)
                 rejected += 1
                 rejected_ids.add(candidate.id)
                 continue
@@ -696,11 +707,7 @@ def cmd_confirm(args: argparse.Namespace) -> int:
         try:
             defects.pin_defect_commits(REPO_ROOT, defect)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            print(
-                f"confirm: rejected {_escape_control_characters(defect.id)} -- "
-                f"could not pin its fix commit ({_escape_control_characters(str(exc))})",
-                file=sys.stderr,
-            )
+            _print_git_failure_rejection(_escape_control_characters(defect.id), "pin its fix commit", exc)
             rejected += 1
             continue
         appended.append(defect)
