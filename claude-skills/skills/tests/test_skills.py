@@ -1121,7 +1121,7 @@ class TestSkillFidelityReviewerUndecidableDismissal:
         together, so an edit that keeps placement but re-imposes an exact
         string (or vice versa) fails here rather than passing silently."""
         body = self._body()
-        assert "between the per-finding H2s and" in body
+        assert "after the per-finding H2s" in body
         assert (
             "the exact wording is not required: nothing downstream parses "
             "it mechanically" in body
@@ -5653,6 +5653,127 @@ class TestPlanItStep7PushConsent:
         )
 
 
+# Clauses of resume-context/SKILL.md that keep the skill from consuming a file it
+# cannot match to this session, or from running on its own.
+_PINNED_RESUME_CONTEXT_CLAUSES: dict[str, str] = {
+    "run_only_when_asked": (
+        "Run only when the engineer asked to resume in this session. Never run the "
+        "skill on your own, including right after writing a handoff or brief."
+    ),
+    "no_argument_rerun_guard": (
+        "If this conversation already loaded a file through this skill, run the "
+        "script again only with an explicit argument. With no argument, tell the "
+        "engineer and stop."
+    ),
+    "refuse_and_tell_on_unsafe_arguments": (
+        "If `$ARGUMENTS` starts with `-` or contains any character outside "
+        "`[A-Za-z0-9._/@+-]`, do not run the script; tell the engineer the accepted "
+        "forms: a slug, a file name, or an absolute path."
+    ),
+    "never_read_pending_path": (
+        "Never `Read` a path under `<config-dir>/handoffs/` or `<config-dir>/briefs/`, "
+        "because that `Read` consumes the file before any check runs."
+    ),
+    "session_target_comparison": (
+        "First compare `SESSION_TARGET:` with the worktree this session is anchored in: "
+        "the working directory the environment context shows, or the `EnterWorktree` "
+        "target. The script keys on the Bash `$PWD`, so an earlier `cd` into another "
+        "worktree yields a verdict for that worktree. When `SESSION_TARGET:` is `none`, "
+        "they match only if the anchored directory is not inside a linked worktree of any "
+        "repository. If they differ, say so and stop before any `Read`, without acting on "
+        "the file. Give the recovery text below."
+    ),
+    "file_target_none_check_then_stop": (
+        "Then check the target. When the script printed `FILE_TARGET: none` and the "
+        "file's §4 header (§3 in a brief) names a directory other than this session's, "
+        "say so and stop without acting on the file. Give the recovery text below."
+    ),
+    "consumed_file_recovery_text": (
+        "Recovery text: the file is already consumed, so tell the engineer to `cd` to "
+        "the directory named here and run `claude --append-system-prompt-file <LOAD path>`. "
+        "Also tell them that `~/.claude/scripts/find-consumed-continuity-file.sh <slug>` "
+        "finds the copy later. The directory is the `FILE_TARGET:` path when it is a path "
+        "(on `LOAD:` it equals `SESSION_TARGET:`), otherwise the directory the file's §4 "
+        "header (§3 in a brief) names if you read the file and it is an absolute path made "
+        "only of `[A-Za-z0-9._/@+-]`. When neither gives such a directory, "
+        "say the directory is unknown and must come from the session that wrote the file; "
+        "name none."
+    ),
+    "unreadable_file_target_relay": (
+        "When `FILE_TARGET: unknown` appears, add that the script could not resolve one "
+        "directory from the file, so the printed command has none. The engineer "
+        "should check the resume command in the file itself, outside this session because "
+        "a `Read` here consumes it, and run that command in place of the printed one."
+    ),
+    "slash_form_only_for_matching_candidates": (
+        "Suggest `/resume-context <file name>` only for a candidate whose `target` is the "
+        "same path as `SESSION_TARGET:`, or is `none` when `SESSION_TARGET: none`, and never "
+        "when either is `unknown`. Any other candidate needs the shell command on its "
+        "`CANDIDATE:` line, which you relay as a command for a new terminal."
+    ),
+    "unreadable_or_absent_candidate_target_caveat": (
+        "Add step 3's caveats: its `SESSION_TARGET: unknown` caveat once for the list when "
+        "that line appears, and, for each candidate with `target none` or `target unknown`, "
+        "the caveat for that `FILE_TARGET:` value beside its shell command."
+    ),
+    "read_only_after_session_target_matches": (
+        "Otherwise `Read` the `LOAD:` path in full. Tell the engineer which `SOURCE:` "
+        "file was consumed and its `AGE:`."
+    ),
+    "skipped_unprintable_relay": (
+        "Relay `SKIPPED_UNPRINTABLE:` whenever it appears, with or without candidates. "
+        "It means n pending files under `<config-dir>/handoffs/` or `<config-dir>/briefs/` "
+        "have names with a character outside `[A-Za-z0-9._/@+-]`, so the script does not "
+        "print them. The engineer can resume one with the shell `resume-context` and its "
+        "full path; do not list or name them yourself."
+    ),
+    "no_enter_worktree_no_section_seven": (
+        "Do not call `EnterWorktree`, and do not run the file's §7/§7.5 command. The "
+        "script already matched the file to this session."
+    ),
+    "absent_file_target_relay": (
+        "When `FILE_TARGET: none` appears, add that the file names no worktree, so the "
+        "command must be run from the directory the file was written in."
+    ),
+    "unknown_session_target_relay": (
+        "When `SESSION_TARGET: unknown` appears, add that this session's worktree "
+        "could not be determined (a path with a space or a failed git call), not that "
+        "the file names another worktree."
+    ),
+    "shell_command_relay_and_stop": (
+        "Relay the line verbatim as a command for a new terminal, not as a slash "
+        "command. The file is still pending. Stop."
+    ),
+}
+
+
+class TestResumeContextSkill:
+    """Pin the resume-context body's guards, so a reword that drops one fails here
+    instead of drifting silently. The tests check wording and the clause's right edge,
+    not behavior. On failure, re-read the guarantee and update the
+    constant only if the new wording preserves it.
+    """
+
+    @pytest.mark.parametrize("clause_key", sorted(_PINNED_RESUME_CONTEXT_CLAUSES))
+    def test_pinned_clause_matches_live_text(self, clause_key: str) -> None:
+        body = _skill_file("resume-context").read_text()
+        pinned_text = " ".join(_PINNED_RESUME_CONTEXT_CLAUSES[clause_key].split())
+        _assert_pinned_clause_right_bounded(
+            pinned_text,
+            body,
+            context=f"resume-context/SKILL.md: the {clause_key!r} clause no longer matches its pinned text.",
+        )
+
+    def test_session_target_comparison_precedes_the_read(self) -> None:
+        """The comparison must come before the `Read` clause, or a mismatched file is consumed first."""
+        body = " ".join(_skill_file("resume-context").read_text().split())
+        comparison = " ".join(_PINNED_RESUME_CONTEXT_CLAUSES["session_target_comparison"].split())
+        read = " ".join(_PINNED_RESUME_CONTEXT_CLAUSES["read_only_after_session_target_matches"].split())
+        assert 0 <= body.find(comparison) < body.find(read), (
+            "resume-context/SKILL.md: the SESSION_TARGET comparison clause no longer starts before the `Read` clause."
+        )
+
+
 _READY_FOR_REVIEW_STEP1_HEADING = "## 1. Preconditions (halt on fail)"
 
 # The condition→action bullets from ready-for-review/SKILL.md's step-1
@@ -7298,7 +7419,8 @@ class TestStowedScriptPathContract:
 #
 # Four tests:
 # 1. Recipe-sync tripwire: code-review/SKILL.md and ROUTING.md must match
-#    verbatim on the two surviving contract tokens.
+#    verbatim on the surviving contract tokens (path template, background-spawn
+#    rule, whole-file read-back).
 # 2. Reviewer-contract coverage backstop: only contract-carrying reviewers
 #    may receive a findings_path.
 # 3. Script-invocation presence check across the three dispatchers.
@@ -7315,14 +7437,18 @@ _ROUTING_MD_PATH = _skill_file("plan-review").parent / "ROUTING.md"
 # used ("not `run_in_background`"), not the bare `run_in_background` token —
 # a future edit permitting background spawn would still contain the bare
 # substring and pass while re-introducing the same-turn read-back race the
-# rule exists to prevent. ready-for-review/SKILL.md is deliberately excluded
-# here: it spawns one named reviewer (`agent-reviews/skill-fidelity-reviewer-
-# <suffix>.md`, not the `<agent-name>` placeholder) and says "synchronously"
-# rather than carrying the `not run_in_background` phrase, so its contract
-# statement is not a verbatim match for these two tokens.
+# rule exists to prevent. The read-back token guards removal of the
+# whole-file-read sentence, not a scope qualifier appended to it later.
+# ready-for-review/SKILL.md is deliberately excluded here, because its contract
+# statement is not a verbatim match for these tokens.
+# It spawns one named reviewer (`agent-reviews/skill-fidelity-reviewer-<suffix>.md`,
+# not the `<agent-name>` placeholder).
+# It says "synchronously" rather than carrying the `not run_in_background` phrase.
+# Its read-back sentence carries no scope qualifier.
 _FINDINGS_PATH_RECIPE_TOKENS = (
     "agent-reviews/<agent-name>-<suffix>.md",
     "not `run_in_background`",
+    "`Read` the whole findings file, whatever its finding count",
 )
 
 

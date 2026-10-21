@@ -3,7 +3,6 @@ canonical parser and formatter, append-only upsert, crash-safe write, and the --
 import csv
 import errno
 import fcntl
-import importlib.util
 import json
 import os
 import re
@@ -15,6 +14,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    pr_cost,
+    pr_cost_ledger,
+    pricing,
+)
 
 from ._pr_cost_helpers import (
     _FROZEN_PR_COST_HEADER_LINES,
@@ -41,21 +45,12 @@ from ._pr_cost_helpers import (
 )
 from .conftest import _priced, _two_declared_roots, _write_jsonl
 
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
-
 
 class TestAppendPrCostLedgerRow:
     def test_duplicate_key_without_force_raises(self):
         existing_row = _sample_pr_cost_row()
         with pytest.raises(ValueError, match="already exists"):
-            _mod.pr_cost_ledger._append_pr_cost_ledger_row(
+            pr_cost_ledger._append_pr_cost_ledger_row(
                 [existing_row], _sample_pr_cost_row(), already=existing_row, force=False,
             )
 
@@ -64,18 +59,18 @@ class TestAppendPrCostLedgerRow:
         existing_rows = [existing_row]
         new_row = _sample_pr_cost_row(captured_at="2026-01-02T00:00:00Z", supersedes="2026-01-01T00:00:00Z")
 
-        result = _mod.pr_cost_ledger._append_pr_cost_ledger_row(existing_rows, new_row, already=existing_row, force=True)
+        result = pr_cost_ledger._append_pr_cost_ledger_row(existing_rows, new_row, already=existing_row, force=True)
 
         assert result == [existing_row, new_row]
         assert (
-            _mod.pr_cost_ledger._format_pr_cost_ledger_row(result[0])
-            == _mod.pr_cost_ledger._format_pr_cost_ledger_row(existing_row)
+            pr_cost_ledger._format_pr_cost_ledger_row(result[0])
+            == pr_cost_ledger._format_pr_cost_ledger_row(existing_row)
         )
 
     def test_duplicate_key_without_force_error_omits_raw_repo_value(self):
         existing_row = _sample_pr_cost_row(repo="acme-corp/internal-project")
         with pytest.raises(ValueError) as exc_info:
-            _mod.pr_cost_ledger._append_pr_cost_ledger_row(
+            pr_cost_ledger._append_pr_cost_ledger_row(
                 [existing_row],
                 _sample_pr_cost_row(repo="acme-corp/internal-project"),
                 already=existing_row,
@@ -94,22 +89,22 @@ class TestPrCostLedgerConcurrentWrite:
 
         row1 = _sample_pr_cost_row(pr_number=1, captured_at="2026-01-01T00:00:00Z")
         with open(lock_path, "w") as lock_f:
-            _mod.pr_cost_ledger._acquire_pr_cost_ledger_lock(lock_f)
+            pr_cost_ledger._acquire_pr_cost_ledger_lock(lock_f)
             try:
-                _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [row1])
+                pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [row1])
             finally:
                 fcntl.flock(lock_f, fcntl.LOCK_UN)
 
         row2 = _sample_pr_cost_row(pr_number=2, captured_at="2026-01-01T00:00:00Z")
         with open(lock_path, "w") as lock_f:
-            _mod.pr_cost_ledger._acquire_pr_cost_ledger_lock(lock_f)
+            pr_cost_ledger._acquire_pr_cost_ledger_lock(lock_f)
             try:
-                current_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
-                _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [*current_rows, row2])
+                current_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+                pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [*current_rows, row2])
             finally:
                 fcntl.flock(lock_f, fcntl.LOCK_UN)
 
-        final_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        final_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert [r["pr_number"] for r in final_rows] == [1, 2]
 
     def test_racing_threads_each_persist_their_own_row_via_the_ledger_lock(self, tmp_path):
@@ -127,14 +122,14 @@ class TestPrCostLedgerConcurrentWrite:
 
         def _record(pr_number: int) -> None:
             with open(lock_path, "w") as lock_f:
-                _mod.pr_cost_ledger._acquire_pr_cost_ledger_lock(lock_f)
+                pr_cost_ledger._acquire_pr_cost_ledger_lock(lock_f)
                 try:
                     try:
-                        current_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+                        current_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
                     except FileNotFoundError:
                         current_rows = []
                     row = _sample_pr_cost_row(pr_number=pr_number, captured_at="2026-01-01T00:00:00Z")
-                    _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [*current_rows, row])
+                    pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [*current_rows, row])
                 finally:
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
 
@@ -144,54 +139,54 @@ class TestPrCostLedgerConcurrentWrite:
         for t in threads:
             t.join()
 
-        final_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        final_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert sorted(r["pr_number"] for r in final_rows) == list(range(thread_count))
 
 
 class TestPrCostLedgerRowFormatRoundTrip:
     def test_format_then_parse_round_trip_is_lossless(self):
         row = _sample_pr_cost_row()
-        line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(row)
-        parsed = _mod.pr_cost_ledger._parse_pr_cost_ledger_row_cells(line.split("\t"), line_no=2)
+        line = pr_cost_ledger._format_pr_cost_ledger_row(row)
+        parsed = pr_cost_ledger._parse_pr_cost_ledger_row_cells(line.split("\t"), line_no=2)
         assert parsed == row
 
 
 class TestParsePrCostLedgerFileTextMalformed:
     def _valid_line(self) -> str:
-        return _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row())
+        return pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row())
 
     def test_wrong_column_count_raises(self):
-        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + "owner/repo\t1\tci1\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="expected .* columns"):
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        text = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + "owner/repo\t1\tci1\n"
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="expected .* columns"):
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
 
     def test_non_numeric_pr_number_raises(self):
-        line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(pr_number="not-a-number"))
-        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="non-numeric pr_number"):
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        line = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(pr_number="not-a-number"))
+        text = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="non-numeric pr_number"):
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
 
     def test_unknown_join_confidence_raises(self):
-        line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(join_confidence="extreme"))
-        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="unknown join_confidence"):
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        line = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(join_confidence="extreme"))
+        text = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="unknown join_confidence"):
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
 
     def test_unknown_status_raises(self):
-        line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(status="degraded_mystery"))
-        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="unknown status"):
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        line = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(status="degraded_mystery"))
+        text = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="unknown status"):
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
 
     def test_malformed_repo_raises_without_leaking_raw_value(self):
         """A non-lowercase repo value fails the malformed-repo check, and --
         mirroring _append_pr_cost_ledger_row's duplicate-key error -- the
         raised message omits the raw value, since the ledger's repo column
         is never scrubbed at rest."""
-        line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(repo="Acme-Corp/Internal-Project"))
-        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="malformed repo value") as exc_info:
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        line = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(repo="Acme-Corp/Internal-Project"))
+        text = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="malformed repo value") as exc_info:
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
         assert "Acme-Corp" not in str(exc_info.value)
 
     def test_malformed_host_raises_without_leaking_raw_value(self):
@@ -199,33 +194,33 @@ class TestParsePrCostLedgerFileTextMalformed:
         a non-lowercase host fails the malformed-host check without the raw
         value reaching the raised message, since host is never scrubbed at
         rest either."""
-        line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(host="Acme-Corp.GHE.com"))
-        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="malformed host value") as exc_info:
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        line = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(host="Acme-Corp.GHE.com"))
+        text = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="malformed host value") as exc_info:
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
         assert "Acme-Corp" not in str(exc_info.value)
 
     def test_malformed_merged_at_raises(self):
-        line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(merged_at="not-a-timestamp"))
-        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="malformed merged_at"):
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        line = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(merged_at="not-a-timestamp"))
+        text = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="malformed merged_at"):
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
 
     def test_malformed_captured_at_raises(self):
         """Guards _latest_pr_cost_row's lexicographic string max() on
         captured_at, which would silently misresolve given a malformed value."""
-        line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(captured_at="2026/01/01"))
-        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="malformed captured_at"):
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        line = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(captured_at="2026/01/01"))
+        text = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + line + "\n"
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="malformed captured_at"):
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
 
     def _line_with_malformed_cell(self, column: str, malformed_value: str) -> str:
         """A valid formatted row line with `column`'s own cell replaced by
         malformed_value. This bypasses _format_pr_cost_ledger_row's own
         bool/float rendering, which would otherwise reject an arbitrary
         string before parsing is ever reached for those columns."""
-        cells = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()).split("\t")
-        cells[_mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index(column)] = malformed_value
+        cells = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()).split("\t")
+        cells[pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index(column)] = malformed_value
         return "\t".join(cells)
 
     @pytest.mark.parametrize(
@@ -250,36 +245,36 @@ class TestParsePrCostLedgerFileTextMalformed:
         special-cased to any column: every validation branch omits the raw
         cell and names only the column and line number."""
         text = (
-            _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n"
+            pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n"
             + self._line_with_malformed_cell(column, malformed_value) + "\n"
         )
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
         message = str(exc_info.value)
         assert malformed_value not in message
         assert column in message
         assert "line 2" in message
 
     def test_merge_conflict_marker_raises(self):
-        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + self._valid_line() + "\n<<<<<<< HEAD\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="merge-conflict marker"):
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        text = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + self._valid_line() + "\n<<<<<<< HEAD\n"
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="merge-conflict marker"):
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
 
     def test_unrecognized_first_line_is_named_without_echo_or_the_newer_version_hint(self):
         text = "not-the-header\n" + self._valid_line() + "\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
         assert str(exc_info.value) == "missing or mismatched pr-cost ledger header row (unrecognized first line)"
 
     def test_empty_file_is_named_without_the_newer_version_hint(self):
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text("")
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._parse_pr_cost_ledger_file_text("")
         assert str(exc_info.value) == "missing or mismatched pr-cost ledger header row (the file is empty)"
 
     def test_current_header_with_a_trailing_space_gets_no_newer_version_hint(self):
-        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + " \n" + self._valid_line() + "\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        text = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + " \n" + self._valid_line() + "\n"
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
         assert "update this checkout" not in str(exc_info.value)
 
     @pytest.mark.parametrize("trailing", [
@@ -288,18 +283,18 @@ class TestParsePrCostLedgerFileTextMalformed:
         pytest.param("\t", id="second-tab"),
     ])
     def test_current_header_followed_by_a_tab_and_no_text_gets_no_newer_version_hint(self, trailing):
-        text = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\t" + trailing + "\n" + self._valid_line() + "\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        text = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\t" + trailing + "\n" + self._valid_line() + "\n"
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
         assert str(exc_info.value) == "missing or mismatched pr-cost ledger header row (unrecognized first line)"
 
     def test_mismatched_header_raises(self):
         # Dropping a middle column (not the last) keeps this header distinct from every recognized frozen header.
-        columns = _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS
+        columns = pr_cost_ledger._PR_COST_LEDGER_COLUMNS
         bad_header = "\t".join([*columns[:5], *columns[6:]])
         text = bad_header + "\n" + self._valid_line() + "\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="missing or mismatched"):
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="missing or mismatched"):
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
 
 
 class TestPrCostLedgerLegacyHostColumnMigration:
@@ -308,9 +303,9 @@ class TestPrCostLedgerLegacyHostColumnMigration:
     GHE host-awareness, so implicitly belongs to github.com."""
 
     def test_legacy_header_row_parses_with_host_defaulted_to_github_com(self):
-        text = _mod.pr_cost_ledger._PR_COST_LEDGER_LEGACY_HEADER_LINE + "\n" + _legacy_row_line() + "\n"
+        text = pr_cost_ledger._PR_COST_LEDGER_LEGACY_HEADER_LINE + "\n" + _legacy_row_line() + "\n"
 
-        rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
 
         assert len(rows) == 1
         assert rows[0]["host"] == "github.com"
@@ -360,51 +355,51 @@ class TestPrCostLedgerLegacyHostColumnMigration:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(repo="owner/repo", merged_prs=merged_prs))
 
         args = _pr_cost_args(record=True)
-        _mod.pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(args, datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         written_lines = ledger_path.read_text().splitlines()
-        assert written_lines[0] == _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
+        assert written_lines[0] == pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
         host_prefix = "github.com\t" if expect_host_prefix else ""
         assert written_lines[1:1 + len(seeded_lines)] == [host_prefix + line + "\t" for line in seeded_lines]
         assert len(written_lines) == 1 + len(seeded_lines) + 1
-        new_row = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())[-1]
+        new_row = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())[-1]
         assert new_row["pr_number"] == 1
         assert new_row["model_breakdown"], "the check below returns early on a None cell"
-        _mod.pr_cost._check_model_breakdown_cell(new_row["model_breakdown"], new_row)  # must not raise
+        pr_cost._check_model_breakdown_cell(new_row["model_breakdown"], new_row)  # must not raise
 
 
 class TestPrCostLedgerFrozenHeaders:
     def test_production_older_headers_equal_the_hand_written_frozen_lines(self):
         pre_host_line, pre_model_line = _FROZEN_PR_COST_HEADER_LINES
-        assert pre_host_line == _mod.pr_cost_ledger._PR_COST_LEDGER_LEGACY_HEADER_LINE, (
+        assert pre_host_line == pr_cost_ledger._PR_COST_LEDGER_LEGACY_HEADER_LINE, (
             "the pre-host header is frozen; never re-derive from the live tuple"
         )
-        assert "\t".join(_mod.pr_cost_ledger._PR_COST_LEDGER_PRE_MODEL_COLUMNS) == pre_model_line, (
+        assert "\t".join(pr_cost_ledger._PR_COST_LEDGER_PRE_MODEL_COLUMNS) == pre_model_line, (
             "the pre-model header is frozen; never re-derive from the live tuple"
         )
 
     def test_current_header_is_the_newest_frozen_header_plus_model_breakdown(self):
-        assert _FROZEN_PR_COST_HEADER_LINES[-1] + "\tmodel_breakdown" == _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE, (
+        assert _FROZEN_PR_COST_HEADER_LINES[-1] + "\tmodel_breakdown" == pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE, (
             "the newest frozen header is frozen; never re-derive from the live tuple. The next column addition"
             " appends the outgoing header to _FROZEN_PR_COST_HEADER_LINES"
         )
 
     def test_every_recognized_header_is_in_the_header_table(self):
-        table = _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS_BY_HEADER_LINE
-        assert set(table) == {*_FROZEN_PR_COST_HEADER_LINES, _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE}
+        table = pr_cost_ledger._PR_COST_LEDGER_COLUMNS_BY_HEADER_LINE
+        assert set(table) == {*_FROZEN_PR_COST_HEADER_LINES, pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE}
 
     @pytest.mark.parametrize("header_line", [*_FROZEN_PR_COST_HEADER_LINES])
     def test_every_current_column_missing_from_a_recognized_header_has_a_default(self, header_line):
         header_columns = set(header_line.split("\t"))
-        missing = [c for c in _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS if c not in header_columns]
+        missing = [c for c in pr_cost_ledger._PR_COST_LEDGER_COLUMNS if c not in header_columns]
         assert missing, "a frozen header must lack at least one current column"
         for column in missing:
-            assert column in _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMN_DEFAULTS, column
+            assert column in pr_cost_ledger._PR_COST_LEDGER_COLUMN_DEFAULTS, column
 
     def test_every_column_of_every_recognized_header_exists_in_the_current_column_tuple(self):
         """A column dropped from the current tuple would be silently discarded when an older-header row is rewritten."""
-        for header_line, columns in _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS_BY_HEADER_LINE.items():
-            retired = [c for c in columns if c not in _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS]
+        for header_line, columns in pr_cost_ledger._PR_COST_LEDGER_COLUMNS_BY_HEADER_LINE.items():
+            retired = [c for c in columns if c not in pr_cost_ledger._PR_COST_LEDGER_COLUMNS]
             assert retired == [], header_line
 
     @pytest.mark.parametrize(
@@ -415,7 +410,7 @@ class TestPrCostLedgerFrozenHeaders:
         ],
     )
     def test_literal_row_parses_to_every_column_by_name_with_defaults_filled(self, header_line, row_line, expected_row):
-        parsed_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(header_line + "\n" + row_line + "\n")
+        parsed_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(header_line + "\n" + row_line + "\n")
 
         assert parsed_rows == [expected_row]
 
@@ -437,13 +432,13 @@ class TestPrCostLedgerFrozenHeaders:
     ):
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         ledger_path.write_text(header_line + "\n" + row_line + "\n")
-        prior_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        prior_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
 
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows)
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows)
 
         rewritten_lines = ledger_path.read_text().splitlines()
-        assert rewritten_lines == [_mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE, expected_line]
-        assert _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text()) == [expected_row]
+        assert rewritten_lines == [pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE, expected_line]
+        assert pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text()) == [expected_row]
 
     @pytest.mark.parametrize(
         "header_line,make_row_line",
@@ -451,8 +446,8 @@ class TestPrCostLedgerFrozenHeaders:
             pytest.param(_PRE_HOST_HEADER_LINE, _legacy_row_line, id="pre-host"),
             pytest.param(_PRE_MODEL_HEADER_LINE, _pre_model_row_line, id="pre-model"),
             pytest.param(
-                _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE,
-                lambda: _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()),
+                pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE,
+                lambda: pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()),
                 id="current",
             ),
         ],
@@ -464,23 +459,23 @@ class TestPrCostLedgerFrozenHeaders:
         wider_line = "\t".join([*valid_cells, "extra"])
         shorter_line = "\t".join(valid_cells[:-1])
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as wider_info:
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(header_line + "\n" + wider_line + "\n")
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as shorter_info:
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(header_line + "\n" + shorter_line + "\n")
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as wider_info:
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(header_line + "\n" + wider_line + "\n")
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as shorter_info:
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(header_line + "\n" + shorter_line + "\n")
 
         assert str(wider_info.value) == f"line 2: expected {width} columns, got {width + 1}"
         trim_suffix = " (if an editor trimmed trailing whitespace, append a tab to this line)"
-        if header_line == _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE:
+        if header_line == pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE:
             assert str(shorter_info.value) == f"line 2: expected {width} columns, got {width - 1}{trim_suffix}"
         else:
             assert str(shorter_info.value) == f"line 2: expected {width} columns, got {width - 1}"
 
     def test_header_equal_to_current_plus_an_extra_column_names_the_newer_version_remedy(self):
-        header_line = _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\tnewer_column"
+        header_line = pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\tnewer_column"
         text = header_line + "\n" + "x\n"
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="missing or mismatched") as exc_info:
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="missing or mismatched") as exc_info:
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(text)
         assert "update this checkout" in str(exc_info.value)
         assert "docs/pr-cost.md" in str(exc_info.value)
 
@@ -498,9 +493,9 @@ def _single_group_cell(model="claude-sonnet-5", variant="standard", token_class=
 
 
 def _current_ledger_text_with_cell(cell: str) -> str:
-    cells = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()).split("\t")
-    cells[_mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index("model_breakdown")] = cell
-    return _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + "\t".join(cells) + "\n"
+    cells = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()).split("\t")
+    cells[pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index("model_breakdown")] = cell
+    return pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + "\t".join(cells) + "\n"
 
 
 _LEAF_JSON = '{"tokens":1,"usd_micros":1}'
@@ -568,8 +563,8 @@ _CODEC_REJECT_CASES = [
 class TestDecodeModelBreakdownCell:
     @pytest.mark.parametrize("cell", _CODEC_REJECT_CASES)
     def test_malformed_cell_raises_naming_line_and_column_without_echoing_cell_text(self, cell):
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(_current_ledger_text_with_cell(cell))
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._parse_pr_cost_ledger_file_text(_current_ledger_text_with_cell(cell))
 
         message = str(exc_info.value)
         assert "line 2" in message
@@ -579,15 +574,15 @@ class TestDecodeModelBreakdownCell:
         assert exc_info.value.__context__ is None
 
     def test_message_format_is_line_then_fixed_rule(self):
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._decode_model_breakdown_cell("not json", 5)
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._decode_model_breakdown_cell("not json", 5)
         assert str(exc_info.value) == "line 5: malformed model_breakdown (not valid JSON)"
 
     def test_deeply_nested_input_maps_recursion_error_to_a_parse_error(self):
         deeply_nested_cell = '{"a":' * 100000
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="malformed model_breakdown") as exc_info:
-            _mod.pr_cost_ledger._decode_model_breakdown_cell(deeply_nested_cell, 2)
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="malformed model_breakdown") as exc_info:
+            pr_cost_ledger._decode_model_breakdown_cell(deeply_nested_cell, 2)
 
         assert exc_info.value.__cause__ is None
         assert exc_info.value.__context__ is None
@@ -600,8 +595,8 @@ class TestDecodeModelBreakdownCell:
         sys.set_int_max_str_digits(4300)
         try:
             cell = '{"claude-sonnet-5":{"standard":{"input":{"tokens":' + "1" * 5000 + ',"usd_micros":1}}}}'
-            with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="malformed model_breakdown") as exc_info:
-                _mod.pr_cost_ledger._decode_model_breakdown_cell(cell, 2)
+            with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="malformed model_breakdown") as exc_info:
+                pr_cost_ledger._decode_model_breakdown_cell(cell, 2)
         finally:
             sys.set_int_max_str_digits(previous_limit)
         assert exc_info.value.__cause__ is None
@@ -609,14 +604,14 @@ class TestDecodeModelBreakdownCell:
 
     def test_leaf_integers_at_the_int64_maximum_are_accepted(self):
         cell = _single_group_cell(leaf={"tokens": 2**63 - 1, "usd_micros": 2**63 - 1})
-        assert _mod.pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
+        assert pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
 
     def test_empty_cell_decodes_to_not_recorded_and_empty_object_to_recorded_nothing(self):
-        assert _mod.pr_cost_ledger._decode_model_breakdown_cell("", 2) is None
-        assert _mod.pr_cost_ledger._decode_model_breakdown_cell("{}", 2) == {}
+        assert pr_cost_ledger._decode_model_breakdown_cell("", 2) is None
+        assert pr_cost_ledger._decode_model_breakdown_cell("{}", 2) == {}
 
     def test_canonical_populated_cell_decodes_to_its_value(self):
-        decoded = _mod.pr_cost_ledger._decode_model_breakdown_cell(_CANONICAL_SAMPLE_BREAKDOWN_CELL, 2)
+        decoded = pr_cost_ledger._decode_model_breakdown_cell(_CANONICAL_SAMPLE_BREAKDOWN_CELL, 2)
         assert decoded == _sample_model_breakdown()
 
     def test_whitespace_and_unsorted_variant_decodes_to_the_same_value_and_reformats_canonically(self):
@@ -628,46 +623,46 @@ class TestDecodeModelBreakdownCell:
         for cell in (spaced_cell, unsorted_cell):
             text = _current_ledger_text_with_cell(cell)
 
-            row = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(text)[0]
+            row = pr_cost_ledger._parse_pr_cost_ledger_file_text(text)[0]
 
             assert row["model_breakdown"] == _sample_model_breakdown()
-            rendered_cell = _mod.pr_cost_ledger._format_pr_cost_ledger_row(row).split("\t")[-1]
+            rendered_cell = pr_cost_ledger._format_pr_cost_ledger_row(row).split("\t")[-1]
             assert rendered_cell == _CANONICAL_SAMPLE_BREAKDOWN_CELL
 
     def test_unknown_but_well_formed_variant_and_class_labels_are_accepted(self):
         cell = _single_group_cell(variant="ultra_fast", token_class="cache_write_24h")
-        assert _mod.pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
+        assert pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
 
     def test_group_missing_a_class_is_accepted(self):
         cell = _single_group_cell(token_class="output")
-        assert _mod.pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
+        assert pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
 
     def test_retired_synthetic_model_key_is_accepted(self):
         cell = _single_group_cell(model="claude-test-retired")
-        assert _mod.pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
+        assert pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
 
     def test_64_character_key_is_accepted(self):
         cell = _single_group_cell(model="a" * 64)
-        assert _mod.pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
+        assert pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
 
-    @pytest.mark.parametrize("model_id", sorted(_mod.pricing._MODEL_BASE_INPUT_RATES))
+    @pytest.mark.parametrize("model_id", sorted(pricing._MODEL_BASE_INPUT_RATES))
     def test_every_priced_model_id_satisfies_the_key_rule(self, model_id):
         cell = _single_group_cell(model=model_id)
-        assert _mod.pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
+        assert pr_cost_ledger._decode_model_breakdown_cell(cell, 2) == json.loads(cell)
 
-    @pytest.mark.parametrize("model_id", sorted(_mod.pricing._MODEL_BASE_INPUT_RATES))
+    @pytest.mark.parametrize("model_id", sorted(pricing._MODEL_BASE_INPUT_RATES))
     def test_every_priced_model_id_matches_the_vendor_model_id_grammar(self, model_id):
         """Table keys persist verbatim in ledger rows and exports, so only vendor-published IDs may be keys.
         The family list below is the review checkpoint: a new family's first key fails here until a reviewer adds it."""
         assert re.fullmatch(r"claude-(opus|sonnet|haiku|fable)(-[0-9]+)+", model_id)
 
     def test_pricing_variant_labels_equal_the_hand_written_literal(self):
-        assert _mod.pricing._PRICING_VARIANTS == ("standard", "fast", "us_geo", "fast_us_geo"), (
+        assert pricing._PRICING_VARIANTS == ("standard", "fast", "us_geo", "fast_us_geo"), (
             "labels persist in ledger rows: rename or remove none, and add a new one to this literal"
         )
 
     def test_token_class_labels_equal_the_hand_written_literal(self):
-        assert _mod.pricing._TOKEN_CLASSES == ("cache_read", "cache_write_5m", "cache_write_1h", "output", "input"), (
+        assert pricing._TOKEN_CLASSES == ("cache_read", "cache_write_5m", "cache_write_1h", "output", "input"), (
             "labels persist in ledger rows: rename or remove none, and add a new one to this literal"
         )
 
@@ -696,7 +691,7 @@ class TestDecodeModelBreakdownCell:
             golden_cell,
         ])
 
-        row = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(header_line + "\n" + row_line + "\n")[0]
+        row = pr_cost_ledger._parse_pr_cost_ledger_file_text(header_line + "\n" + row_line + "\n")[0]
 
         assert row["model_breakdown"]["claude-test-retired"]["ultra_fast"]["cache_write_24h"] == {"tokens": 3, "usd_micros": 4}
         assert row["model_breakdown"]["claude-sonnet-5"]["standard"]["input"] == {"tokens": 7, "usd_micros": 8}
@@ -707,18 +702,18 @@ class TestFormatModelBreakdownCell:
         """Pins one cell's canonical encoding at cell level, not as a whole row; every other test compares
         cells via json.loads."""
         row = _sample_pr_cost_row(model_breakdown=_sample_model_breakdown())
-        rendered_cell = _mod.pr_cost_ledger._format_pr_cost_ledger_row(row).split("\t")[-1]
+        rendered_cell = pr_cost_ledger._format_pr_cost_ledger_row(row).split("\t")[-1]
         assert rendered_cell == _CANONICAL_SAMPLE_BREAKDOWN_CELL
 
     def test_not_recorded_cell_renders_empty(self):
-        rendered_line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row())
+        rendered_line = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row())
         assert rendered_line.endswith("\tfalse\t")
 
     def test_empty_object_cell_renders_as_two_characters_and_round_trips_distinct_from_not_recorded(self):
         row = _sample_pr_cost_row(model_breakdown={})
 
-        line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(row)
-        parsed_row = _mod.pr_cost_ledger._parse_pr_cost_ledger_row_cells(line.split("\t"), 2)
+        line = pr_cost_ledger._format_pr_cost_ledger_row(row)
+        parsed_row = pr_cost_ledger._parse_pr_cost_ledger_row_cells(line.split("\t"), 2)
 
         assert line.split("\t")[-1] == "{}"
         assert parsed_row["model_breakdown"] == {}
@@ -729,27 +724,27 @@ class TestFormatModelBreakdownCell:
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         rows = [_sample_pr_cost_row(pr_number=1, model_breakdown={}), _sample_pr_cost_row(pr_number=2)]
 
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, rows)
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, rows)
 
         data_lines = ledger_path.read_text().splitlines()[1:]
         assert [line.split("\t")[-1] for line in data_lines] == ["{}", ""]
-        parsed_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        parsed_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         assert [r["model_breakdown"] for r in parsed_rows] == [{}, None]
 
     def test_two_argument_row_parser_round_trips_a_populated_row(self):
         row = _sample_pr_cost_row(model_breakdown=_sample_model_breakdown())
-        line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(row)
-        assert _mod.pr_cost_ledger._parse_pr_cost_ledger_row_cells(line.split("\t"), 2) == row
+        line = pr_cost_ledger._format_pr_cost_ledger_row(row)
+        assert pr_cost_ledger._parse_pr_cost_ledger_row_cells(line.split("\t"), 2) == row
 
     def test_pre_model_line_formats_as_its_original_cells_plus_one_empty_cell(self):
         overrides = {"pr_number": 5, "additions": 99}
-        assert _pre_model_row_line(**overrides) + "\t" == _mod.pr_cost_ledger._format_pr_cost_ledger_row(
+        assert _pre_model_row_line(**overrides) + "\t" == pr_cost_ledger._format_pr_cost_ledger_row(
             _sample_pr_cost_row(**overrides)
         )
 
     @pytest.mark.parametrize("model_breakdown", [_sample_model_breakdown(), None], ids=["populated", "empty-last-cell"])
     def test_csv_reader_and_split_yield_the_same_cells(self, model_breakdown):
-        line = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(model_breakdown=model_breakdown))
+        line = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(model_breakdown=model_breakdown))
         assert next(csv.reader([line], delimiter="\t")) == line.split("\t")
 
 
@@ -757,16 +752,16 @@ class TestWritePrCostLedgerFileMode:
     def test_fresh_file_created_with_0600_even_when_mkstemp_creates_0644(self, tmp_path, monkeypatch):
         _make_mkstemp_create_0644(monkeypatch)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [])
         assert stat.S_IMODE(ledger_path.stat().st_mode) == 0o600
 
     def test_existing_file_mode_preserved_across_write(self, tmp_path):
         """A user-loosened mode on an existing ledger file is preserved, not
         silently reset back to 0600 on a later write."""
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [])
         os.chmod(ledger_path, 0o644)
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
         assert stat.S_IMODE(ledger_path.stat().st_mode) == 0o644
 
 
@@ -782,8 +777,8 @@ class TestWritePrCostLedgerFileVerificationFailure:
             return real_read_text(self, *a, **kw) + "CORRUPTED"
 
         monkeypatch.setattr(Path, "read_text", corrupting_read_text)
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [])
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [])
         assert str(exc_info.value) == "refusing to write the ledger (ledger unchanged): write verification mismatch"
         assert not ledger_path.exists()
         assert list(tmp_path.glob(".pr-cost-ledger-*.tmp")) == []
@@ -796,11 +791,11 @@ class TestWritePrCostLedgerFileVerificationFailure:
         self, tmp_path, separator,
     ):
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=1)])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=1)])
         before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
                 _sample_pr_cost_row(pr_number=1),
                 _sample_pr_cost_row(pr_number=2, head_branch=f"separator{separator}in-branch"),
             ])
@@ -813,7 +808,7 @@ class TestWritePrCostLedgerFileVerificationFailure:
 
     def test_replace_failure_propagates_leaving_the_ledger_unchanged_and_no_temp_file(self, tmp_path, monkeypatch):
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=1)])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=1)])
         before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
 
         def replace_failing(source, destination):
@@ -822,7 +817,7 @@ class TestWritePrCostLedgerFileVerificationFailure:
         monkeypatch.setattr(os, "replace", replace_failing)
 
         with pytest.raises(OSError, match="replace failed"):
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
                 _sample_pr_cost_row(pr_number=1), _sample_pr_cost_row(pr_number=2),
             ])
 
@@ -846,13 +841,13 @@ class TestWritePrCostLedgerFileDurability:
         monkeypatch.setattr(os, "fsync", recording_fsync)
         monkeypatch.setattr(os, "replace", recording_replace)
 
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
 
         assert events == [("fsync", ledger_path.stat().st_size), ("replace", 0)]
 
     def test_fsync_failure_propagates_leaving_the_ledger_unchanged_and_no_temp_file(self, tmp_path, monkeypatch):
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=1)])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=1)])
         before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
 
         def fsync_failing(fd):
@@ -861,7 +856,7 @@ class TestWritePrCostLedgerFileDurability:
         monkeypatch.setattr(os, "fsync", fsync_failing)
 
         with pytest.raises(OSError, match="fsync failed"):
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [
                 _sample_pr_cost_row(pr_number=1), _sample_pr_cost_row(pr_number=2),
             ])
 
@@ -889,7 +884,7 @@ def _drop_refusal(first_lost_ordinal: int) -> str:
 
 
 def _ledger_cell_index(column: str) -> int:
-    return _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index(column)
+    return pr_cost_ledger._PR_COST_LEDGER_COLUMNS.index(column)
 
 
 def _assert_ledger_untouched(ledger_path: Path, before_bytes: bytes, before_mtime_ns: int) -> None:
@@ -904,8 +899,8 @@ class TestWritePrCostLedgerFileValuePostcondition:
             _sample_pr_cost_row(pr_number=1, model_breakdown=_sample_model_breakdown()),
             _sample_pr_cost_row(pr_number=2, additions=77),
         ]
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, rows)
-        return _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, rows)
+        return pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
 
     def test_encoder_that_drops_a_value_is_refused_naming_row_and_column_with_ledger_unchanged(
         self, tmp_path, monkeypatch,
@@ -913,10 +908,10 @@ class TestWritePrCostLedgerFileValuePostcondition:
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         prior_rows = self._seed_two_rows(ledger_path)
         before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
-        monkeypatch.setattr(_mod.pr_cost_ledger, "_encode_model_breakdown_cell", lambda value: "{}")
+        monkeypatch.setattr(pr_cost_ledger, "_encode_model_breakdown_cell", lambda value: "{}")
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [*prior_rows, _sample_pr_cost_row(pr_number=3)])
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [*prior_rows, _sample_pr_cost_row(pr_number=3)])
 
         assert str(exc_info.value) == _change_refusal(1, "model_breakdown")
         _assert_ledger_untouched(ledger_path, before_bytes, before_mtime_ns)
@@ -926,8 +921,8 @@ class TestWritePrCostLedgerFileValuePostcondition:
         prior_rows = self._seed_two_rows(ledger_path)
         before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows[:1])
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows[:1])
 
         assert str(exc_info.value) == _drop_refusal(2)
         _assert_ledger_untouched(ledger_path, before_bytes, before_mtime_ns)
@@ -937,8 +932,8 @@ class TestWritePrCostLedgerFileValuePostcondition:
         prior_rows = self._seed_two_rows(ledger_path)
         before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [prior_rows[1], prior_rows[0]])
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [prior_rows[1], prior_rows[0]])
 
         assert str(exc_info.value) == _change_refusal(1, "pr_number")
         _assert_ledger_untouched(ledger_path, before_bytes, before_mtime_ns)
@@ -948,17 +943,17 @@ class TestWritePrCostLedgerFileValuePostcondition:
         the parser accepts, and the write re-renders them at the ledger's six decimals / canonical encoding
         instead of refusing."""
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
-        cells = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()).split("\t")
+        cells = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()).split("\t")
         cells[_ledger_cell_index("cache_read_usd")] = "1.5"
         cells[_ledger_cell_index("opus_dollars")] = "0.1234567"
         cells[_ledger_cell_index("mean_context_at_turn")] = "-1e-7"
         cells[_ledger_cell_index("model_breakdown")] = json.dumps(_sample_model_breakdown(), separators=(" , ", " : "))
         ledger_path.write_text(
-            _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + "\t".join(cells) + "\n"
+            pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + "\t".join(cells) + "\n"
         )
-        prior_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        prior_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
 
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows)
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows)
 
         rewritten_cells = ledger_path.read_text().splitlines()[1].split("\t")
         assert rewritten_cells[_ledger_cell_index("cache_read_usd")] == "1.500000"
@@ -972,15 +967,15 @@ class TestWritePrCostLedgerFileValuePostcondition:
             "cache_read_usd": "-1e-7", "cache_write_5m_usd": "0.0078125", "cache_write_1h_usd": "2.5e-06",
             "output_usd": "5e-07", "input_usd": "1.5e-06", "opus_dollars": "1e300",
         }
-        cells = _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()).split("\t")
+        cells = pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()).split("\t")
         for column, edited_cell in edited_float_cells.items():
             cells[_ledger_cell_index(column)] = edited_cell
         ledger_path.write_text(
-            _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + "\t".join(cells) + "\n"
+            pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE + "\n" + "\t".join(cells) + "\n"
         )
-        prior_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        prior_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
 
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows)
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows)
 
         rewritten_cells = ledger_path.read_text().splitlines()[1].split("\t")
         for column, edited_cell in edited_float_cells.items():
@@ -991,8 +986,8 @@ class TestWritePrCostLedgerFileValuePostcondition:
         ledger_path.write_text("not-the-header\nsome\tbad\trow\n")
         before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()])
 
         assert str(exc_info.value).startswith(
             "refusing to write the ledger (ledger unchanged): the ledger on disk changed during this run"
@@ -1014,7 +1009,7 @@ class TestWritePrCostLedgerFileValuePostcondition:
         monkeypatch.setattr(Path, "read_text", read_text_denied_for_the_ledger_only)
 
         with pytest.raises(PermissionError):
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=9)])
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=9)])
 
         _assert_ledger_untouched(ledger_path, before_bytes, before_mtime_ns)
 
@@ -1024,8 +1019,8 @@ class TestWritePrCostLedgerFileValuePostcondition:
         before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
         invalid_cell = {_CELL_MARKER.upper(): {"standard": {"input": {"tokens": 1, "usd_micros": 1}}}}
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._write_pr_cost_ledger_file(
                 ledger_path, [*prior_rows, _sample_pr_cost_row(pr_number=3, model_breakdown=invalid_cell)],
             )
 
@@ -1041,8 +1036,8 @@ class TestWritePrCostLedgerFileValuePostcondition:
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         invalid_cell = {_CELL_MARKER.upper(): {"standard": {"input": {"tokens": 1, "usd_micros": 1}}}}
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError, match="staged rewrite failed validation"):
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError, match="staged rewrite failed validation"):
+            pr_cost_ledger._write_pr_cost_ledger_file(
                 ledger_path, [_sample_pr_cost_row(model_breakdown=invalid_cell)],
             )
 
@@ -1058,7 +1053,7 @@ class TestWritePrCostLedgerFilePostconditionOnTheUpgradingWrite:
     def _seed_two_rows_under_an_older_header(ledger_path: Path, header_line: str, make_row_line) -> list[dict]:
         seeded_lines = [make_row_line(pr_number=1, additions=71), make_row_line(pr_number=2, additions=77)]
         ledger_path.write_text(header_line + "\n" + "\n".join(seeded_lines) + "\n")
-        return _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        return pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
 
     @pytest.mark.parametrize(
         "header_line,make_row_line",
@@ -1080,22 +1075,22 @@ class TestWritePrCostLedgerFilePostconditionOnTheUpgradingWrite:
             "call-reorders-rows": ([prior_rows[1], prior_rows[0]], _change_refusal(1, "pr_number")),
         }[defect]
         if defect == "formatter-changes-a-value":
-            real_format = _mod.pr_cost_ledger._format_pr_cost_ledger_row
+            real_format = pr_cost_ledger._format_pr_cost_ledger_row
 
             def format_adding_one_to_additions(row, **kwargs):
                 return real_format({**row, "additions": row["additions"] + 1}, **kwargs)
 
-            monkeypatch.setattr(_mod.pr_cost_ledger, "_format_pr_cost_ledger_row", format_adding_one_to_additions)
+            monkeypatch.setattr(pr_cost_ledger, "_format_pr_cost_ledger_row", format_adding_one_to_additions)
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, rows_to_write)
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, rows_to_write)
 
         assert str(exc_info.value) == expected_refusal
         _assert_ledger_untouched(ledger_path, before_bytes, before_mtime_ns)
 
 
 def _current_header_row_line(**overrides) -> str:
-    return _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(**overrides))
+    return pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row(**overrides))
 
 
 class TestWritePrCostLedgerFilePostconditionCoversEveryPriorRow:
@@ -1105,7 +1100,7 @@ class TestWritePrCostLedgerFilePostconditionCoversEveryPriorRow:
     @pytest.mark.parametrize(
         "header_line,make_row_line",
         [
-            pytest.param(_mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE, _current_header_row_line, id="current"),
+            pytest.param(pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE, _current_header_row_line, id="current"),
             pytest.param(_PRE_HOST_HEADER_LINE, _legacy_row_line, id="pre-host"),
             pytest.param(_PRE_MODEL_HEADER_LINE, _pre_model_row_line, id="pre-model"),
         ],
@@ -1117,23 +1112,23 @@ class TestWritePrCostLedgerFilePostconditionCoversEveryPriorRow:
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         seeded_lines = [make_row_line(pr_number=number, additions=70 + number) for number in (1, 2, 3)]
         ledger_path.write_text(header_line + "\n" + "\n".join(seeded_lines) + "\n")
-        prior_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        prior_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
         rows_to_write = prior_rows
         if defect == "formatter-changes-the-third-row":
-            real_format = _mod.pr_cost_ledger._format_pr_cost_ledger_row
+            real_format = pr_cost_ledger._format_pr_cost_ledger_row
 
             def format_adding_one_to_additions_of_pr_3(row, **kwargs):
                 if row["pr_number"] == 3:
                     row = {**row, "additions": row["additions"] + 1}
                 return real_format(row, **kwargs)
 
-            monkeypatch.setattr(_mod.pr_cost_ledger, "_format_pr_cost_ledger_row", format_adding_one_to_additions_of_pr_3)
+            monkeypatch.setattr(pr_cost_ledger, "_format_pr_cost_ledger_row", format_adding_one_to_additions_of_pr_3)
         else:
             rows_to_write = [*prior_rows[:2], {**prior_rows[2], "additions": prior_rows[2]["additions"] + 1}]
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, rows_to_write)
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, rows_to_write)
 
         assert str(exc_info.value) == _change_refusal(3, "additions")
         _assert_ledger_untouched(ledger_path, before_bytes, before_mtime_ns)
@@ -1159,19 +1154,19 @@ def _changed_value_of_the_same_type(value):
 class TestPriorRowsPreservedComparison:
     """_refuse_if_prior_rows_not_preserved compares floats at the ledger's six decimals and every other column exactly."""
 
-    @pytest.mark.parametrize("column", _mod.pr_cost_ledger._PR_COST_LEDGER_COLUMNS)
+    @pytest.mark.parametrize("column", pr_cost_ledger._PR_COST_LEDGER_COLUMNS)
     def test_a_change_in_any_single_column_is_refused_naming_that_column(self, column):
         prior_row = _sample_pr_cost_row(model_breakdown=_sample_model_breakdown())
         changed_row = {**prior_row, column: _changed_value_of_the_same_type(prior_row[column])}
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._refuse_if_prior_rows_not_preserved([prior_row], [changed_row])
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._refuse_if_prior_rows_not_preserved([prior_row], [changed_row])
 
         assert str(exc_info.value) == _change_refusal(1, column)
 
     @staticmethod
     def _refuse_if_rows_differ_in(column: str, prior_value, staged_value) -> None:
-        _mod.pr_cost_ledger._refuse_if_prior_rows_not_preserved(
+        pr_cost_ledger._refuse_if_prior_rows_not_preserved(
             [_sample_pr_cost_row(**{column: prior_value})], [_sample_pr_cost_row(**{column: staged_value})],
         )
 
@@ -1190,7 +1185,7 @@ class TestPriorRowsPreservedComparison:
         ],
     )
     def test_value_difference_is_refused_naming_the_column(self, column, prior_value, staged_value):
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
             self._refuse_if_rows_differ_in(column, prior_value, staged_value)
 
         assert str(exc_info.value) == _change_refusal(1, column)
@@ -1223,27 +1218,27 @@ class TestPriorRowsPreservedComparison:
         if changed_staged_index is not None:
             staged_rows[changed_staged_index]["head_branch"] = "account-1/changed-branch"
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._refuse_if_prior_rows_not_preserved(prior_rows, staged_rows)
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._refuse_if_prior_rows_not_preserved(prior_rows, staged_rows)
 
         assert str(exc_info.value) == _drop_refusal(expected_ordinal)
 
     def test_writer_whose_formatter_drops_a_decimal_is_refused_with_the_ledger_unchanged(self, tmp_path, monkeypatch):
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(cache_read_usd=0.123457)])
-        prior_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(cache_read_usd=0.123457)])
+        prior_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
         before_bytes, before_mtime_ns = ledger_path.read_bytes(), ledger_path.stat().st_mtime_ns
-        real_format = _mod.pr_cost_ledger._format_pr_cost_ledger_row
+        real_format = pr_cost_ledger._format_pr_cost_ledger_row
 
         def format_with_five_decimal_cache_read(row, **kwargs):
             cells = real_format(row, **kwargs).split("\t")
             cells[_ledger_cell_index("cache_read_usd")] = f"{row['cache_read_usd']:.5f}"
             return "\t".join(cells)
 
-        monkeypatch.setattr(_mod.pr_cost_ledger, "_format_pr_cost_ledger_row", format_with_five_decimal_cache_read)
+        monkeypatch.setattr(pr_cost_ledger, "_format_pr_cost_ledger_row", format_with_five_decimal_cache_read)
 
-        with pytest.raises(_mod.pr_cost_ledger._PrCostLedgerParseError) as exc_info:
-            _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [*prior_rows, _sample_pr_cost_row(pr_number=3)])
+        with pytest.raises(pr_cost_ledger._PrCostLedgerParseError) as exc_info:
+            pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [*prior_rows, _sample_pr_cost_row(pr_number=3)])
 
         assert str(exc_info.value) == _change_refusal(1, "cache_read_usd")
         _assert_ledger_untouched(ledger_path, before_bytes, before_mtime_ns)
@@ -1260,17 +1255,17 @@ class TestWritePrCostLedgerFileReturnsWhetherItUpgraded:
     def test_returns_true_when_it_replaces_a_file_under_an_older_header(self, tmp_path, header_line, make_row_line):
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         ledger_path.write_text(header_line + "\n" + make_row_line() + "\n")
-        prior_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        prior_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
 
-        assert _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows) is True
-        assert ledger_path.read_text().splitlines()[0] == _mod.pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
+        assert pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows) is True
+        assert ledger_path.read_text().splitlines()[0] == pr_cost_ledger._PR_COST_LEDGER_HEADER_LINE
 
     def test_returns_false_for_a_current_header_write_and_for_creation(self, tmp_path):
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
 
-        assert _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()]) is False
-        prior_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
-        assert _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows) is False
+        assert pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row()]) is False
+        prior_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        assert pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows) is False
 
     @pytest.mark.parametrize("mode", [0o600, 0o644])
     @pytest.mark.parametrize(
@@ -1284,9 +1279,9 @@ class TestWritePrCostLedgerFileReturnsWhetherItUpgraded:
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         ledger_path.write_text(header_line + "\n" + make_row_line() + "\n")
         os.chmod(ledger_path, mode)
-        prior_rows = _mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
+        prior_rows = pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())
 
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows)
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, prior_rows)
 
         assert stat.S_IMODE(ledger_path.stat().st_mode) == mode
 
@@ -1309,12 +1304,12 @@ class TestRecordUpgradeNotice:
             merged_prs=[_merged_pr(1, "feature-a"), _merged_pr(2, "feature-b")],
         ))
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(record=True), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         captured = capsys.readouterr()
         assert captured.err.count(_UPGRADE_NOTICE_FRAGMENT) == 1
         assert _upgrade_notice_line("the ledger") in captured.err
-        assert len(_mod.pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())) == 3
+        assert len(pr_cost_ledger._parse_pr_cost_ledger_file_text(ledger_path.read_text())) == 3
         for marker in (_PRIOR_ROW_MARKER, _LEDGER_DIR_MARKER):
             assert marker not in captured.err
             assert marker not in captured.out
@@ -1336,7 +1331,7 @@ class TestRecordUpgradeNotice:
             merged_prs=[_merged_pr(1, "feature-a"), _merged_pr(2, "feature-b")],
         ))
 
-        _mod.pr_cost._pr_cost_report(
+        pr_cost._pr_cost_report(
             _pr_cost_args(record=True, all_accounts=True), datetime(2026, 8, 10, tzinfo=UTC), roots,
         )
 
@@ -1350,11 +1345,11 @@ class TestRecordUpgradeNotice:
         _enable_pr_cost(tmp_path)
         ledger_path = tmp_path / "pr-cost-ledger.tsv"
         monkeypatch.setenv("PR_COST_LEDGER_PATH", str(ledger_path))
-        _mod.pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=50)])
+        pr_cost_ledger._write_pr_cost_ledger_file(ledger_path, [_sample_pr_cost_row(pr_number=50)])
         _write_jsonl(fake_projects / "sess.jsonl", [_priced("claude-sonnet-5", input=1_000, branch="feature-a")])
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "feature-a")]))
 
-        _mod.pr_cost._pr_cost_report(_pr_cost_args(record=True), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
+        pr_cost._pr_cost_report(_pr_cost_args(record=True), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent])
 
         assert _UPGRADE_NOTICE_STEM not in capsys.readouterr().err
 
@@ -1373,12 +1368,12 @@ class TestRecordUpgradeNotice:
         monkeypatch.setattr(subprocess, "run", _fake_pr_cost_subprocess_run(merged_prs=[_merged_pr(1, "feature-a")]))
 
         def refuse_every_write(ledger_path_arg, rows):
-            raise _mod.pr_cost_ledger._PrCostLedgerParseError("refusing to write the ledger (ledger unchanged): test double")
+            raise pr_cost_ledger._PrCostLedgerParseError("refusing to write the ledger (ledger unchanged): test double")
 
-        monkeypatch.setattr(_mod.pr_cost_ledger, "_write_pr_cost_ledger_file", refuse_every_write)
+        monkeypatch.setattr(pr_cost_ledger, "_write_pr_cost_ledger_file", refuse_every_write)
 
         with pytest.raises(SystemExit) as exc_info:
-            _mod.pr_cost._pr_cost_report(
+            pr_cost._pr_cost_report(
                 _pr_cost_args(record=True), datetime(2026, 8, 10, tzinfo=UTC), [fake_projects.parent],
             )
 
@@ -1399,7 +1394,7 @@ class TestLatestPrCostRowTieBreakLastWins:
     def test_exact_captured_at_tie_resolves_to_the_last_appended_row(self):
         row_a = _sample_pr_cost_row(additions=1, captured_at="2026-01-01T00:00:00Z")
         row_b = _sample_pr_cost_row(additions=2, captured_at="2026-01-01T00:00:00Z")
-        result = _mod.pr_cost_ledger._latest_pr_cost_row([row_a, row_b], "github.com", "owner/repo", 42, "ci1")
+        result = pr_cost_ledger._latest_pr_cost_row([row_a, row_b], "github.com", "owner/repo", 42, "ci1")
         assert result["additions"] == 2
 
     def test_distinct_captured_at_values_pick_the_chronologically_latest_row(self):
@@ -1410,7 +1405,7 @@ class TestLatestPrCostRowTieBreakLastWins:
         row_a = _sample_pr_cost_row(additions=1, captured_at="2026-01-02T00:00:00Z")
         row_b = _sample_pr_cost_row(additions=2, captured_at="2026-01-03T00:00:00Z")
         row_c = _sample_pr_cost_row(additions=3, captured_at="2026-01-01T00:00:00Z")
-        result = _mod.pr_cost_ledger._latest_pr_cost_row([row_a, row_b, row_c], "github.com", "owner/repo", 42, "ci1")
+        result = pr_cost_ledger._latest_pr_cost_row([row_a, row_b, row_c], "github.com", "owner/repo", 42, "ci1")
         assert result["additions"] == 2
 
 
@@ -1430,4 +1425,4 @@ class TestFormatPrCostLedgerRowColumnsParameterRegression:
             "\t42\t10\t3\t4\t1\t2\t3\ttrue\ttrue\tfalse"
             "\t"
         )
-        assert _mod.pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()) == golden
+        assert pr_cost_ledger._format_pr_cost_ledger_row(_sample_pr_cost_row()) == golden

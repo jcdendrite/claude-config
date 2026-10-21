@@ -1,10 +1,12 @@
 """Tests for transcript_analysis/read_scope.py (cmd_read_scope)."""
-import importlib.util
 import re
-import sys
-from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    corpus,
+    read_scope,
+    scope,
+)
 
 from .conftest import (
     _asst,
@@ -17,16 +19,6 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_jsonl,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
-
 
 # ---------------------------------------------------------------------------
 # read-scope
@@ -115,7 +107,7 @@ class TestReadScope:
         """An empty scope (no Read calls anywhere) prints a zero census and
         0.0% shares rather than raising ZeroDivisionError."""
         _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
-        _mod.read_scope._read_scope_report(_read_scope_args())
+        read_scope._read_scope_report(_read_scope_args())
         out = capsys.readouterr().out
         assert _extract_read_total(out) == 0
         assert "targeted    0  (0.0% of Read calls)" in out
@@ -128,7 +120,7 @@ class TestReadScope:
             _opus([_read_tool_use("r2", file_path="/b.py")]),
             _read_result("r2", "y" * 400),
         ])
-        _mod.read_scope._read_scope_report(_read_scope_args())
+        read_scope._read_scope_report(_read_scope_args())
         out = capsys.readouterr().out
         assert _extract_read_total(out) == 2
         assert _extract_cohort_count(out, "targeted") == 1
@@ -145,7 +137,7 @@ class TestReadScope:
             _read_result("r2", "y" * 400),
             _opus([{"type": "tool_use", "id": "r3", "name": "Read", "input": {}}]),
         ])
-        _mod.read_scope._read_scope_report(_read_scope_args())
+        read_scope._read_scope_report(_read_scope_args())
         out = capsys.readouterr().out
         assert _extract_read_total(out) == 3
         assert "targeted    1  (33.3% of Read calls)" in out
@@ -161,7 +153,7 @@ class TestReadScope:
             _opus([{"type": "tool_use", "id": "r4", "name": "Read", "input": {"__unparsedToolInput": "x"}}]),
             _read_result("r4", "text"),
         ])
-        _mod.read_scope._read_scope_report(_read_scope_args())
+        read_scope._read_scope_report(_read_scope_args())
         out = capsys.readouterr().out
         assert _extract_read_scope_summary_count(out, "unpaired") == 1
         assert _extract_read_scope_summary_count(out, "error_result") == 1
@@ -177,7 +169,7 @@ class TestReadScope:
             _opus([_read_tool_use("r2", file_path=distinctive_path)]),
             _read_result("r2", "y" * 4000),
         ])
-        _mod.read_scope._read_scope_report(_read_scope_args())
+        read_scope._read_scope_report(_read_scope_args())
         out = capsys.readouterr().out
         assert distinctive_path not in out
         assert "secret-project-path" not in out
@@ -191,7 +183,7 @@ class TestReadScope:
             _opus([_read_tool_use("r2", file_path="/b.py", offset=0, limit=10)]),
             _read_result("r2", "y" * 40),
         ])
-        _mod.read_scope._read_scope_report(_read_scope_args(), roots=[root_a, root_b])
+        read_scope._read_scope_report(_read_scope_args(), roots=[root_a, root_b])
         out = capsys.readouterr().out
         assert "acct-alice-clientwork" not in out
         assert "acct-bob-clientwork" not in out
@@ -208,7 +200,7 @@ class TestReadScope:
         root_b = _write_cost_root(tmp_path, "acct-bob-clientwork", "-home-user-repo-b", "sess-b", [
             _user_msg("hi"),
         ])
-        _mod.read_scope._read_scope_report(_read_scope_args(), roots=[root_a, root_b])
+        read_scope._read_scope_report(_read_scope_args(), roots=[root_a, root_b])
         out = capsys.readouterr().out
         assert _extract_account_read_calls(out, "account-1") == 1
         assert "account-2  no Read calls" in out
@@ -216,10 +208,10 @@ class TestReadScope:
     def test_no_redact_refused_with_multi_root(self, tmp_path, monkeypatch, capsys, fake_config_dir_factory):
         default_dir = tmp_path / "default"
         (default_dir / "projects").mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: default_dir)
+        monkeypatch.setattr(scope, "config_dir", lambda: default_dir)
         acct_b = fake_config_dir_factory("acct-b")
         with pytest.raises(SystemExit) as exc_info:
-            _mod.read_scope.cmd_read_scope(_read_scope_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
+            read_scope.cmd_read_scope(_read_scope_args(no_redact=True, extra_config_dirs=[str(acct_b)]))
         assert exc_info.value.code == 2
         assert "--no-redact" in capsys.readouterr().err
 
@@ -228,9 +220,9 @@ class TestReadScope:
             _opus([_read_tool_use("r1", file_path="/a.py")]),
             _read_result("r1", "x" * 40),
         ])
-        _mod.read_scope._read_scope_report(_read_scope_args(no_redact=True))
+        read_scope._read_scope_report(_read_scope_args(no_redact=True))
         out = capsys.readouterr().out
-        assert _mod._DO_NOT_PUBLISH_BANNER in out
+        assert scope._DO_NOT_PUBLISH_BANNER in out
         assert _extract_read_total(out) == 1
 
     def test_no_redact_refused_by_read_scope_report_itself_even_when_called_directly(self, tmp_path, capsys):
@@ -246,7 +238,7 @@ class TestReadScope:
             _opus([_read_tool_use("r2", file_path="/b.py")]),
         ])
         with pytest.raises(SystemExit) as exc_info:
-            _mod.read_scope._read_scope_report(_read_scope_args(no_redact=True), roots=[root_a, root_b])
+            read_scope._read_scope_report(_read_scope_args(no_redact=True), roots=[root_a, root_b])
         assert exc_info.value.code == 2
         assert capsys.readouterr().out == ""
 
@@ -257,11 +249,11 @@ class TestReadScope:
             _growth_asst(ts="2026-05-19T10:02:00.000Z", context=90),
         ]
         _write_jsonl(fake_projects / "sess.jsonl", records)
-        _mod.read_scope._read_scope_report(_read_scope_args(since="9999d"))
+        read_scope._read_scope_report(_read_scope_args(since="9999d"))
         out_all_time = capsys.readouterr().out
         assert _extract_growth_tokens(out_all_time) == 80
 
-        _mod.read_scope._read_scope_report(_read_scope_args(since="1d"))
+        read_scope._read_scope_report(_read_scope_args(since="1d"))
         out_recent = capsys.readouterr().out
         assert _extract_growth_tokens(out_recent) == 0
 
@@ -291,7 +283,7 @@ class TestReadScope:
             _growth_asst(ts="2026-05-19T10:05:00.000Z", context=500, session_id="sess"),
             _growth_asst(ts="2026-05-19T10:06:00.000Z", context=620, session_id="sess"),
         ])
-        _mod.read_scope._read_scope_report(_read_scope_args())
+        read_scope._read_scope_report(_read_scope_args())
         out = capsys.readouterr().out
         assert _extract_growth_tokens(out) == 160
         assert "repeat reads: 1" in out
@@ -300,7 +292,7 @@ class TestReadScope:
         """No Grep/Glob calls in scope must print a zero locate-step line,
         not raise ZeroDivisionError computing the mean."""
         _write_jsonl(fake_projects / "sess.jsonl", [_user_msg("hi")])
-        _mod.read_scope._read_scope_report(_read_scope_args())
+        read_scope._read_scope_report(_read_scope_args())
         out = capsys.readouterr().out
         assert "0 calls, ~0 tok, mean ~0 tok/call" in out
 
@@ -313,7 +305,7 @@ class TestReadScope:
             _opus([{"type": "tool_use", "id": "gl1", "name": "Glob", "input": {"pattern": "**/*.py", "path": "."}}]),
             _user_msg([_tool_result("gl1", "y" * 12)]),  # 3 tokens
         ])
-        _mod.read_scope._read_scope_report(_read_scope_args())
+        read_scope._read_scope_report(_read_scope_args())
         out = capsys.readouterr().out
         assert "2 calls, ~7 tok, mean ~3 tok/call" in out
 
@@ -334,9 +326,9 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r1", file_path="/foo.py", offset=0, limit=50)]),
             _read_result("r1", "line1\nline2\n"),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
-        assert stats["cohort_n"][_mod.read_scope._READ_SCOPE_COHORT_TARGETED] == 1
-        assert stats["cohort_n"][_mod.read_scope._READ_SCOPE_COHORT_WHOLE_FILE] == 0
+        stats = read_scope._scan_read_scope_session(records, [records], None)
+        assert stats["cohort_n"][read_scope._READ_SCOPE_COHORT_TARGETED] == 1
+        assert stats["cohort_n"][read_scope._READ_SCOPE_COHORT_WHOLE_FILE] == 0
 
     def test_limit_zero_lands_in_targeted_not_whole_file(self):
         """limit=0 is falsy in Python but a valid present value -- pins the
@@ -347,8 +339,8 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r1", file_path="/foo.py", limit=0)]),
             _read_result("r1", ""),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
-        assert stats["cohort_n"][_mod.read_scope._READ_SCOPE_COHORT_TARGETED] == 1
+        stats = read_scope._scan_read_scope_session(records, [records], None)
+        assert stats["cohort_n"][read_scope._READ_SCOPE_COHORT_TARGETED] == 1
         assert stats["limit_n"] == 1
 
     def test_offset_only_and_limit_only_each_land_in_targeted(self):
@@ -361,9 +353,9 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r2", file_path="/b.py", limit=20)]),
             _read_result("r2", "y" * 40),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
-        assert stats["cohort_n"][_mod.read_scope._READ_SCOPE_COHORT_TARGETED] == 2
-        assert stats["cohort_n"][_mod.read_scope._READ_SCOPE_COHORT_WHOLE_FILE] == 0
+        stats = read_scope._scan_read_scope_session(records, [records], None)
+        assert stats["cohort_n"][read_scope._READ_SCOPE_COHORT_TARGETED] == 2
+        assert stats["cohort_n"][read_scope._READ_SCOPE_COHORT_WHOLE_FILE] == 0
 
     def test_subagent_merged_read_lands_in_subagent_scope_not_main(self):
         """The published 'whole-file tokens inside subagents' figure
@@ -374,12 +366,12 @@ class TestScanReadScopeSession:
             _asst("claude-sonnet-4-6", sidechain=True, content=[_read_tool_use("r2", file_path="/sub.py")]),
             _read_result("r2", "w" * 4000),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["cohort_scope_count"][
-            (_mod.read_scope._READ_SCOPE_COHORT_WHOLE_FILE, _mod.read_scope._READ_SCOPE_SCOPE_MAIN)
+            (read_scope._READ_SCOPE_COHORT_WHOLE_FILE, read_scope._READ_SCOPE_SCOPE_MAIN)
         ] == 1
         assert stats["cohort_scope_count"][
-            (_mod.read_scope._READ_SCOPE_COHORT_WHOLE_FILE, _mod.read_scope._READ_SCOPE_SCOPE_SUBAGENT)
+            (read_scope._READ_SCOPE_COHORT_WHOLE_FILE, read_scope._READ_SCOPE_SCOPE_SUBAGENT)
         ] == 1
 
     def test_size_hist_tokens_accumulates_into_same_key_as_size_hist_count(self):
@@ -393,8 +385,8 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r2", file_path="/big.py")]),
             _read_result("r2", "b" * 3000),  # 750 tokens -> bucket "500-1999"
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
-        cohort_scope = (_mod.read_scope._READ_SCOPE_COHORT_WHOLE_FILE, _mod.read_scope._READ_SCOPE_SCOPE_MAIN)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
+        cohort_scope = (read_scope._READ_SCOPE_COHORT_WHOLE_FILE, read_scope._READ_SCOPE_SCOPE_MAIN)
         assert stats["size_hist"][(*cohort_scope, "0-499")] == 1
         assert stats["size_hist_tokens"][(*cohort_scope, "0-499")] == 10
         assert stats["size_hist"][(*cohort_scope, "500-1999")] == 1
@@ -411,8 +403,8 @@ class TestScanReadScopeSession:
             _asst("claude-sonnet-4-6", sidechain=True, content=[_read_tool_use("r2", file_path="/sub.py")]),
             _read_result("r2", "b" * 3000),  # 750 tokens, whole_file/subagent
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
-        assert _mod.read_scope._read_scope_cohort_bucket_token_total(stats, _mod.read_scope._READ_SCOPE_COHORT_WHOLE_FILE) == 760
+        stats = read_scope._scan_read_scope_session(records, [records], None)
+        assert read_scope._read_scope_cohort_bucket_token_total(stats, read_scope._READ_SCOPE_COHORT_WHOLE_FILE) == 760
 
     def test_repeat_whole_file_read_not_counted_across_main_and_subagent(self):
         """A parent transcript and its subagent are separate context windows:
@@ -429,7 +421,7 @@ class TestScanReadScopeSession:
         ]
         groups = [main_group, subagent_group]
         records = main_group + subagent_group
-        stats = _mod.read_scope._scan_read_scope_session(records, groups, None)
+        stats = read_scope._scan_read_scope_session(records, groups, None)
         assert stats["repeat_whole_file_reads"] == 0
         assert stats["repeat_whole_file_tokens"] == 0
 
@@ -442,7 +434,7 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r2", file_path="/shared.py")]),
             _read_result("r2", "y" * 4000),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["repeat_whole_file_reads"] == 1
         assert stats["repeat_whole_file_tokens"] == 1000
 
@@ -455,7 +447,7 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r2", file_path="/run.log")]),
             _read_result("r2", "y" * 4000),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["repeat_whole_file_reads"] == 1
         assert stats["repeat_whole_file_output_log_reads"] == 1
 
@@ -469,7 +461,7 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r2", file_path="/shared.py")]),
             _read_result("r2", "y" * 4000),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["repeat_whole_file_reads"] == 1
         assert stats["repeat_whole_file_output_log_reads"] == 0
 
@@ -477,7 +469,7 @@ class TestScanReadScopeSession:
         records = [
             _opus([{"type": "tool_use", "id": "b1", "name": "Bash", "input": {"command": "x", "offset": 5, "limit": 10}}]),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["read_total"] == 0
         assert stats["offset_n"] == 0
         assert stats["limit_n"] == 0
@@ -493,7 +485,7 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r1", file_path="/a.py")]),
             _read_result("r1", "w" * 40),  # Read itself is never a locate call
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["locate_call_n"] == 2
         assert stats["locate_result_tokens_total"] == 30
 
@@ -508,7 +500,7 @@ class TestScanReadScopeSession:
             _opus([{"type": "tool_use", "id": "g1", "name": "Grep", "input": {"pattern": "x", "path": "."}}]),
             _user_msg([{"type": "tool_result", "tool_use_id": "g1", "content": "x" * 40, "is_error": True}]),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["locate_call_n"] == 1
         assert stats["locate_result_tokens_total"] == 10
 
@@ -520,7 +512,7 @@ class TestScanReadScopeSession:
             _opus([{"type": "tool_use", "id": "g1", "name": "Grep", "input": {"pattern": "x", "path": "."}}]),
             _user_msg([{"type": "tool_result", "tool_use_id": "g1", "content": [{"type": "text", "text": "hits"}]}]),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["locate_call_n"] == 1
         assert stats["locate_result_tokens_total"] == 0
 
@@ -529,16 +521,16 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r1", file_path="/a.py")]),
             _read_result("r1", "permission denied", is_error=True),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["error_result"] == 1
         assert stats["cohort_scope_count"][
-            (_mod.read_scope._READ_SCOPE_COHORT_WHOLE_FILE, _mod.read_scope._READ_SCOPE_SCOPE_MAIN)
+            (read_scope._READ_SCOPE_COHORT_WHOLE_FILE, read_scope._READ_SCOPE_SCOPE_MAIN)
         ] == 0
         assert stats["read_total"] == 1
 
     def test_unpaired_read_call_counted_but_call_still_in_census(self):
         records = [_opus([_read_tool_use("r1", file_path="/a.py")])]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["unpaired"] == 1
         assert stats["read_total"] == 1
 
@@ -547,10 +539,10 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r1", file_path="/a.png")]),
             _read_result("r1", [{"type": "image", "source": {"type": "base64", "data": "..."}}]),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
         assert stats["non_text_result"] == 1
         assert stats["cohort_scope_count"][
-            (_mod.read_scope._READ_SCOPE_COHORT_WHOLE_FILE, _mod.read_scope._READ_SCOPE_SCOPE_MAIN)
+            (read_scope._READ_SCOPE_COHORT_WHOLE_FILE, read_scope._READ_SCOPE_SCOPE_MAIN)
         ] == 0
         assert stats["read_total"] == 1
 
@@ -559,12 +551,12 @@ class TestScanReadScopeSession:
             _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": "/doc.pdf", "pages": "1-3"}}]),
             _read_result("r1", "page text " * 20),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
-        assert stats["cohort_n"][_mod.read_scope._READ_SCOPE_COHORT_PAGES] == 1
-        assert stats["cohort_n"][_mod.read_scope._READ_SCOPE_COHORT_TARGETED] == 0
-        assert stats["cohort_n"][_mod.read_scope._READ_SCOPE_COHORT_WHOLE_FILE] == 0
+        stats = read_scope._scan_read_scope_session(records, [records], None)
+        assert stats["cohort_n"][read_scope._READ_SCOPE_COHORT_PAGES] == 1
+        assert stats["cohort_n"][read_scope._READ_SCOPE_COHORT_TARGETED] == 0
+        assert stats["cohort_n"][read_scope._READ_SCOPE_COHORT_WHOLE_FILE] == 0
         assert stats["cohort_scope_count"][
-            (_mod.read_scope._READ_SCOPE_COHORT_WHOLE_FILE, _mod.read_scope._READ_SCOPE_SCOPE_MAIN)
+            (read_scope._READ_SCOPE_COHORT_WHOLE_FILE, read_scope._READ_SCOPE_SCOPE_MAIN)
         ] == 0
         assert stats["read_total"] == 1
 
@@ -577,16 +569,16 @@ class TestScanReadScopeSession:
             _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {"__unparsedToolInput": "garbled"}}]),
             _read_result("r1", "whatever"),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
-        assert stats["cohort_n"][_mod.read_scope._READ_SCOPE_COHORT_TARGETED] == 0
-        assert stats["cohort_n"][_mod.read_scope._READ_SCOPE_COHORT_WHOLE_FILE] == 0
-        assert stats["cohort_n"][_mod.read_scope._READ_SCOPE_COHORT_UNPARSED] == 1
+        stats = read_scope._scan_read_scope_session(records, [records], None)
+        assert stats["cohort_n"][read_scope._READ_SCOPE_COHORT_TARGETED] == 0
+        assert stats["cohort_n"][read_scope._READ_SCOPE_COHORT_WHOLE_FILE] == 0
+        assert stats["cohort_n"][read_scope._READ_SCOPE_COHORT_UNPARSED] == 1
         assert stats["read_total"] == 1
 
     def test_read_call_with_empty_input_lands_in_unparsed_input(self):
         records = [_opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}])]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
-        assert stats["cohort_n"][_mod.read_scope._READ_SCOPE_COHORT_UNPARSED] == 1
+        stats = read_scope._scan_read_scope_session(records, [records], None)
+        assert stats["cohort_n"][read_scope._READ_SCOPE_COHORT_UNPARSED] == 1
         assert stats["read_total"] == 1
 
     def test_reads_excluded_from_histogram_contribute_to_neither_size_hist_nor_tokens(self):
@@ -604,7 +596,7 @@ class TestScanReadScopeSession:
             _opus([{"type": "tool_use", "id": "r4", "name": "Read", "input": {"__unparsedToolInput": "x"}}]),
             _read_result("r4", "y" * 4000),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(records, [records], None)
+        stats = read_scope._scan_read_scope_session(records, [records], None)
         assert sum(stats["size_hist"].values()) == 0
         assert sum(stats["size_hist_tokens"].values()) == 0
 
@@ -623,7 +615,7 @@ class TestScanReadScopeSession:
             _opus([_read_tool_use("r2", file_path="/b.py")]),
             _opus([_read_tool_use("r3", file_path="/c.py")]),
         ]
-        assert _mod.corpus.read_session_file(jsonl, include_subagents=True) == expected
+        assert corpus.read_session_file(jsonl, include_subagents=True) == expected
 
     def test_read_session_file_partitioned_keeps_empty_main_group_ahead_of_subagents(self, fake_projects):
         """A readable-but-empty main file still yields its own empty group
@@ -638,13 +630,13 @@ class TestScanReadScopeSession:
             [],
             [_opus([_read_tool_use("r1", file_path="/a.py")])],
         ]
-        assert _mod._read_session_file_partitioned(jsonl, include_subagents=True) == expected
+        assert corpus._read_session_file_partitioned(jsonl, include_subagents=True) == expected
 
     # -- growth chain --
 
     def test_single_turn_sequence_yields_zero_growth(self):
         group = [_growth_asst(ts="2026-05-19T10:00:00.000Z", context=100)]
-        stats = _mod.read_scope._scan_read_scope_session(group, [group], None)
+        stats = read_scope._scan_read_scope_session(group, [group], None)
         assert stats["growth_tokens"] == 0
 
     def test_compact_boundary_resets_the_chain(self):
@@ -657,7 +649,7 @@ class TestScanReadScopeSession:
             _growth_asst(ts="2026-05-19T10:01:00.000Z", context=50),
             _growth_asst(ts="2026-05-19T10:02:00.000Z", context=70),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(group, [group], None)
+        stats = read_scope._scan_read_scope_session(group, [group], None)
         assert stats["growth_tokens"] == 20
 
     def test_two_subagent_files_do_not_produce_a_cross_file_delta(self):
@@ -666,7 +658,7 @@ class TestScanReadScopeSession:
         (context=10), counting 490 tokens of growth that never happened."""
         group_a = [_growth_asst(ts="2026-05-19T10:00:00.000Z", context=10)]
         group_b = [_growth_asst(ts="2026-05-19T10:05:00.000Z", context=500)]
-        stats = _mod.read_scope._scan_read_scope_session(group_a + group_b, [group_a, group_b], None)
+        stats = read_scope._scan_read_scope_session(group_a + group_b, [group_a, group_b], None)
         assert stats["growth_tokens"] == 0
 
     def test_foreign_session_id_mid_file_excluded_from_neighbouring_deltas(self):
@@ -680,7 +672,7 @@ class TestScanReadScopeSession:
             _growth_asst(ts="2026-05-19T10:01:00.000Z", context=9999, session_id="B"),
             _growth_asst(ts="2026-05-19T10:02:00.000Z", context=30, session_id="A"),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(group, [group], None)
+        stats = read_scope._scan_read_scope_session(group, [group], None)
         assert stats["growth_tokens"] == 20
 
     def test_growth_is_independent_of_which_session_appears_first(self):
@@ -695,7 +687,7 @@ class TestScanReadScopeSession:
             _growth_asst(ts="2026-05-19T10:01:00.000Z", context=10, session_id="A"),
             _growth_asst(ts="2026-05-19T10:02:00.000Z", context=30, session_id="A"),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(group, [group], None)
+        stats = read_scope._scan_read_scope_session(group, [group], None)
         assert stats["growth_tokens"] == 20
 
     def test_subagent_group_contributes_growth_though_its_records_carry_the_parent_session_id(self):
@@ -710,7 +702,7 @@ class TestScanReadScopeSession:
             _growth_asst(ts="2026-05-19T10:00:00.000Z", context=100, session_id="parent-session"),
             _growth_asst(ts="2026-05-19T10:01:00.000Z", context=180, session_id="parent-session"),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(group, [group], None)
+        stats = read_scope._scan_read_scope_session(group, [group], None)
         assert stats["growth_tokens"] == 80
 
     def test_absent_usage_turn_skipped_not_treated_as_zero_context(self):
@@ -721,7 +713,7 @@ class TestScanReadScopeSession:
             _asst("claude-sonnet-5", ts="2026-05-19T10:01:00.000Z", content=[]),
             _growth_asst(ts="2026-05-19T10:02:00.000Z", context=150),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(group, [group], None)
+        stats = read_scope._scan_read_scope_session(group, [group], None)
         assert stats["growth_tokens"] == 50
 
     def test_shrinking_context_yields_no_negative_contribution(self):
@@ -729,7 +721,7 @@ class TestScanReadScopeSession:
             _growth_asst(ts="2026-05-19T10:00:00.000Z", context=100),
             _growth_asst(ts="2026-05-19T10:01:00.000Z", context=40),
         ]
-        stats = _mod.read_scope._scan_read_scope_session(group, [group], None)
+        stats = read_scope._scan_read_scope_session(group, [group], None)
         assert stats["growth_tokens"] == 0
 
     def test_since_filters_completed_deltas_not_records(self):
@@ -742,8 +734,8 @@ class TestScanReadScopeSession:
             _growth_asst(ts="2026-05-19T10:01:00.000Z", context=50),
             _growth_asst(ts="2026-05-19T10:02:00.000Z", context=90),
         ]
-        since_ts = _mod._parse_ts("2026-05-19T10:01:30.000Z")
-        stats = _mod.read_scope._scan_read_scope_session(group, [group], since_ts)
+        since_ts = corpus._parse_ts("2026-05-19T10:01:30.000Z")
+        stats = read_scope._scan_read_scope_session(group, [group], since_ts)
         assert stats["growth_tokens"] == 40
 
     def test_since_active_with_unparseable_owning_timestamp_excludes_delta_and_counts_it(self):
@@ -755,7 +747,7 @@ class TestScanReadScopeSession:
             _growth_asst(ts="2026-05-19T10:00:00.000Z", context=10),
             _growth_asst(ts="not-a-timestamp", context=50),
         ]
-        since_ts = _mod._parse_ts("2026-05-19T09:00:00.000Z")
-        stats = _mod.read_scope._scan_read_scope_session(group, [group], since_ts)
+        since_ts = corpus._parse_ts("2026-05-19T09:00:00.000Z")
+        stats = read_scope._scan_read_scope_session(group, [group], since_ts)
         assert stats["growth_tokens"] == 0
         assert stats["growth_unparseable_ts_excluded"] == 1

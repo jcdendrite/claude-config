@@ -1,12 +1,13 @@
 """Tests for transcript_analysis/cache_rebuild.py (cmd_cache_rebuild): 5m-to-1h switch-delta pricing, display rounding,
 and per-dispatch dispersion."""
-import importlib.util
 import math
 import re
-import sys
-from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    cache_rebuild,
+    cache_rebuild_rules,
+)
 
 from ._cache_rebuild_helpers import (
     _cache_rebuild_args,
@@ -20,15 +21,6 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_jsonl,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 class TestCacheRebuildSwitchDeltaPricing:
@@ -45,7 +37,7 @@ class TestCacheRebuildSwitchDeltaPricing:
         read $0.40, excess $4.60 -- see TestCacheRebuildExcessPricing's own
         fast-mode case)."""
         usage = _priced("claude-sonnet-5", ephemeral_5m=1_000_000, speed="fast")["message"]["usage"]
-        delta, unpriced_tokens = _mod.cache_rebuild_rules._cache_rebuild_switch_delta_dollars(
+        delta, unpriced_tokens = cache_rebuild_rules._cache_rebuild_switch_delta_dollars(
             "claude-sonnet-5", usage, is_idle_5m_1h_cause=True
         )
         assert delta == pytest.approx(-4.60)
@@ -57,7 +49,7 @@ class TestCacheRebuildSwitchDeltaPricing:
         at zero' via the None sentinel, matching _price_turn's own
         unpriced-model contract."""
         usage = _priced("claude-unknown-model", ephemeral_5m=1_000_000, input=10, output=5)["message"]["usage"]
-        delta, unpriced_tokens = _mod.cache_rebuild_rules._cache_rebuild_switch_delta_dollars(
+        delta, unpriced_tokens = cache_rebuild_rules._cache_rebuild_switch_delta_dollars(
             "claude-unknown-model", usage, is_idle_5m_1h_cause=True
         )
         assert delta is None
@@ -71,7 +63,7 @@ class TestCacheRebuildSwitchDeltaPricing:
         rescue $19.75), giving -12.25 -- identical to that same call's own
         _cache_rebuild_excess_dollars value."""
         usage = _priced("claude-fable-5-1", ephemeral_5m=1_000_000)["message"]["usage"]
-        delta, unpriced_tokens = _mod.cache_rebuild_rules._cache_rebuild_switch_delta_dollars(
+        delta, unpriced_tokens = cache_rebuild_rules._cache_rebuild_switch_delta_dollars(
             "claude-fable-5-1", usage, is_idle_5m_1h_cause=True
         )
         assert delta == pytest.approx(-12.25)
@@ -89,7 +81,7 @@ class TestCacheRebuildNegateSwitchDeltaForDisplay:
         must not print as the misleading "-0.00" once negated: round(0.0 -
         1e-16, 2) underflows to -0.0 without the function's own + 0.0
         guard."""
-        result = _mod.cache_rebuild_rules._negate_switch_delta_for_display(1e-16)
+        result = cache_rebuild_rules._negate_switch_delta_for_display(1e-16)
         assert result == 0.0
         assert math.copysign(1.0, result) == 1.0
 
@@ -97,7 +89,7 @@ class TestCacheRebuildNegateSwitchDeltaForDisplay:
         """-4.567 mirrors the sign _cache_rebuild_switch_delta_dollars
         actually accumulates (see TestCacheRebuildSwitchDeltaPricing's own
         negative deltas); negation makes it a positive savings figure."""
-        assert _mod.cache_rebuild_rules._negate_switch_delta_for_display(-4.567) == pytest.approx(4.57)
+        assert cache_rebuild_rules._negate_switch_delta_for_display(-4.567) == pytest.approx(4.57)
 
 
 class TestCacheRebuildSwitchDeltaThresholdIndependence:
@@ -133,7 +125,7 @@ class TestCacheRebuildSwitchDeltaThresholdIndependence:
         _write_jsonl(fake_projects / "sess.jsonl", [])
         _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         summary = _extract_cache_rebuild_summary(out)
@@ -175,7 +167,7 @@ class TestCacheRebuildSwitchDeltaNumeratorBoundaries:
         _write_jsonl(fake_projects / "sess.jsonl", [])
         _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
@@ -210,7 +202,7 @@ class TestCacheRebuildSwitchDeltaArithmetic:
         _write_jsonl(fake_projects / "sess.jsonl", [])
         _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
@@ -239,7 +231,7 @@ class TestCacheRebuildSwitchDeltaArithmetic:
         _write_jsonl(fake_projects / "sess.jsonl", [])
         _write_subagent_jsonl(fake_projects, "sess", "agent-1", records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         subagent_row = _table_cols(out, header_contains="Ratio", row_contains="subagent")
@@ -263,7 +255,7 @@ class TestCacheRebuildSwitchDeltaZeroState:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", ephemeral_5m=100, ts="2026-08-01T10:00:00.000Z", request_id="main-1"),
         ])
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         assert _extract_cache_rebuild_row(out, "subagent") == (0, "0.00")
@@ -334,7 +326,7 @@ class TestCacheRebuildSubagentDispersion:
         zero_w5m_record["isSidechain"] = True
         _write_subagent_jsonl(fake_projects, session_id, "agent-zero-w5m", [zero_w5m_record])
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         dispersion = _extract_cache_rebuild_dispersion(out)
@@ -408,7 +400,7 @@ class TestCacheRebuildSubagentDispersion:
             rec["isSidechain"] = True
         _write_subagent_jsonl(fake_projects, session_id, "agent-2", other_records)
 
-        _mod.cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
+        cache_rebuild._cache_rebuild_report(_cache_rebuild_args(), roots=[fake_projects.parent])
         out = capsys.readouterr().out
 
         dispersion = _extract_cache_rebuild_dispersion(out)

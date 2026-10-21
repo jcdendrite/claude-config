@@ -111,9 +111,9 @@ if check_venv_healthy; then
   yaml_ver="$(.venv/bin/python -c "import yaml; print(yaml.__version__)")"
   shellcheck_ver="$(.venv/bin/shellcheck --version | awk '/^version:/ {print $2}')"
   echo "Done. .venv is ready (pytest=${pytest_ver}, ruff=${ruff_ver}, pyyaml=${yaml_ver}, shellcheck=${shellcheck_ver})"
-  echo "  Run tests:  .venv/bin/pytest claude/.claude/ claude-skills/ plugins/ evals/"
-  echo "  Run lint:   .venv/bin/ruff check claude/.claude/ claude-skills/ plugins/ evals/"
-  echo "  Lint shell: scripts/list-shell-files.sh | xargs -0 .venv/bin/shellcheck"
+  echo "  Run tests:  scripts/venv-run.sh pytest claude/.claude/ claude-skills/ plugins/ evals/"
+  echo "  Run lint:   scripts/venv-run.sh ruff check claude/.claude/ claude-skills/ plugins/ evals/"
+  echo "  Lint shell: scripts/list-shell-files.sh | xargs -0 scripts/venv-run.sh shellcheck"
 else
   echo "ERROR: .venv verification failed after install. Check output above." >&2
   exit 1

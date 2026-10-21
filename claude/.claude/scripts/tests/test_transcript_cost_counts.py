@@ -453,20 +453,21 @@ class TestCostCounts:
         out = capsys.readouterr().out
         assert "| staff-sdet | 1 |" in out
 
-    def test_top_level_config_dir_message_omits_flag_recommendation(self, monkeypatch, tmp_path, capsys):
-        """cost-counts registers no --config-dir flag of its own, unlike
-        every other _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR member -- the
-        shared refusal message must not recommend a flag that doesn't exist
-        on its own parser."""
+    @pytest.mark.parametrize("subcommand", ["cost-counts", "period-cost"])
+    def test_top_level_config_dir_message_omits_flag_recommendation(self, monkeypatch, tmp_path, capsys, subcommand):
+        """cost-counts and period-cost register no --config-dir flag of their
+        own, unlike every other _SUBCOMMANDS_REFUSING_TOP_LEVEL_CONFIG_DIR
+        member -- the shared refusal message must not recommend a flag that
+        doesn't exist on their own parsers."""
         other_account = tmp_path / "other-account"
         (other_account / "projects").mkdir(parents=True)
         monkeypatch.setattr(
-            sys, "argv", ["transcript-analysis.py", "--config-dir", str(other_account), "cost-counts"],
+            sys, "argv", ["transcript-analysis.py", "--config-dir", str(other_account), subcommand],
         )
         with pytest.raises(SystemExit) as exc_info:
             _mod.main()
         assert exc_info.value.code == 2
         err = capsys.readouterr().err
-        assert "cost-counts" in err
+        assert subcommand in err
         assert "use that instead" not in err
         assert "with no override" in err

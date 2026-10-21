@@ -4,25 +4,19 @@ where --record must refuse and write nothing, plus each gate's boundary
 success cases. See test_transcript_cost_ledger.py for the rest of
 cost_ledger.py's tests.
 """
-import importlib.util
 import os
 import subprocess
-import sys
 from datetime import date
-from pathlib import Path
 
+import _config
 import pytest
+from transcript_analysis import (
+    cost_ledger,
+    ledger_common,
+    scope,
+)
 
 from .conftest import _cost_ledger_args, _priced, _write_jsonl
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 class TestCostLedgerPublishSafety:
@@ -36,11 +30,11 @@ class TestCostLedgerPublishSafety:
         projects = tmp_path / "projects"
         proj = projects / "SENTINEL-PROJECT-marker"
         proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "PROJECTS_DIR", projects)
+        monkeypatch.setattr(scope, "PROJECTS_DIR", projects)
         _write_jsonl(proj / "SENTINEL-SESSION-marker.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         out = capsys.readouterr().out
         assert "SENTINEL-PROJECT-marker" not in out
         assert "SENTINEL-SESSION-marker" not in out
@@ -62,7 +56,7 @@ class TestCostLedgerPublishSafety:
         ])
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(
+            cost_ledger._cost_ledger_report(
                 _cost_ledger_args(record=True, note="acme-corp | internal rollout"),
                 date(2026, 6, 3),
             )
@@ -81,7 +75,7 @@ class TestCostLedgerPublishSafety:
         ])
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(
+            cost_ledger._cost_ledger_report(
                 _cost_ledger_args(record=True, note="\x1b]0;PWNED\x07\x1b[2J\x1b[H"),
                 date(2026, 6, 3),
             )
@@ -99,7 +93,7 @@ class TestCostLedgerPublishSafety:
         ])
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(
+            cost_ledger._cost_ledger_report(
                 _cost_ledger_args(record=True, note="![](https://example.com/t.png)"),
                 date(2026, 6, 3),
             )
@@ -117,7 +111,7 @@ class TestCostLedgerPublishSafety:
         ])
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(
+            cost_ledger._cost_ledger_report(
                 _cost_ledger_args(record=True, note="[click here](https://example.com/t)"),
                 date(2026, 6, 3),
             )
@@ -129,13 +123,13 @@ class TestCostLedgerSentinelGate:
     def test_record_refuses_without_sentinel(self, fake_projects, cost_ledger_file, tmp_path, monkeypatch):
         cfg_dir = tmp_path / "isolated-claude-config-no-sentinel"
         cfg_dir.mkdir()
-        monkeypatch.setattr(_mod.cost_ledger, "config_dir", lambda: cfg_dir)
+        monkeypatch.setattr(cost_ledger, "config_dir", lambda: cfg_dir)
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
         assert cost_ledger_file.read_text() == before
 
@@ -147,18 +141,18 @@ class TestCostLedgerSentinelGate:
         simply lacks the sentinel file (test_record_refuses_without_sentinel
         above) -- forces the condition via _config's own config_dir binding,
         the one _config.config_enabled actually reads (see cost_ledger_enabled
-        fixture's docstring for why patching _mod's binding has no effect
-        on it)."""
+        fixture's docstring for why patching `cost_ledger.config_dir` has no
+        effect on it)."""
         def _raise_value_error():
             raise ValueError("HOME is unset or empty, and CLAUDE_CONFIG_DIR is not set")
 
-        monkeypatch.setattr(_mod._config, "config_dir", _raise_value_error)
+        monkeypatch.setattr(_config, "config_dir", _raise_value_error)
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code == 1
         assert "could not resolve the Claude Code config directory" in capsys.readouterr().err
         assert cost_ledger_file.read_text() == before
@@ -172,13 +166,13 @@ class TestCostLedgerSentinelGate:
         def _raise_key_error(key, config_dir_override=None):
             raise KeyError(key)
 
-        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
-        monkeypatch.setattr(_mod._config, "schema", lambda: {})
+        monkeypatch.setattr(_config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_config, "schema", lambda: {})
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code == 1
         assert "could not read config-keys.psv" in capsys.readouterr().err
 
@@ -193,13 +187,13 @@ class TestCostLedgerSentinelGate:
         def _raise_key_error(key, config_dir_override=None):
             raise KeyError(key)
 
-        monkeypatch.setattr(_mod._config, "config_enabled", _raise_key_error)
-        monkeypatch.setattr(_mod._config, "schema", lambda: {"worktree_required": object()})
+        monkeypatch.setattr(_config, "config_enabled", _raise_key_error)
+        monkeypatch.setattr(_config, "schema", lambda: {"worktree_required": object()})
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert "unknown config key" in err
@@ -214,13 +208,13 @@ class TestCostLedgerSentinelGate:
         _MACHINE_IDENTITY_RE (exactly 8 lowercase hex chars) -- the direct
         demonstration that the narrowed class rejects a human-shaped name
         rather than silently adopting it."""
-        (cost_ledger_enabled / _mod.ledger_common._MACHINE_IDENTITY_FILENAME).write_text("tstm1")
+        (cost_ledger_enabled / ledger_common._MACHINE_IDENTITY_FILENAME).write_text("tstm1")
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
         assert cost_ledger_file.read_text() == before
         err = capsys.readouterr().err
@@ -229,12 +223,12 @@ class TestCostLedgerSentinelGate:
     def test_record_refuses_when_identity_file_content_is_overlong(
         self, fake_projects, cost_ledger_file, cost_ledger_enabled, capsys
     ):
-        (cost_ledger_enabled / _mod.ledger_common._MACHINE_IDENTITY_FILENAME).write_text("Too-Long-Label")
+        (cost_ledger_enabled / ledger_common._MACHINE_IDENTITY_FILENAME).write_text("Too-Long-Label")
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+            cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
         assert exc_info.value.code != 0
 
     def test_record_accepts_identity_file_content_with_trailing_newline(
@@ -246,12 +240,12 @@ class TestCostLedgerSentinelGate:
         in _read_machine_identity_or_refuse runs first, so a trailing
         newline in a hand-edited or tool-written identity file resolves to
         the stripped, well-formed value rather than being rejected."""
-        (cost_ledger_enabled / _mod.ledger_common._MACHINE_IDENTITY_FILENAME).write_text("7e57c0de\n")
+        (cost_ledger_enabled / ledger_common._MACHINE_IDENTITY_FILENAME).write_text("7e57c0de\n")
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod.cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        cost_ledger._cost_ledger_report(_cost_ledger_args(record=True), date(2026, 6, 3))
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert rows[0]["machine"] == "7e57c0de"
 
     def test_record_refuses_when_multi_root_and_ledger_path_git_tracked(
@@ -273,7 +267,7 @@ class TestCostLedgerSentinelGate:
 
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(
+            cost_ledger._cost_ledger_report(
                 _cost_ledger_args(record=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
@@ -295,11 +289,11 @@ class TestCostLedgerSentinelGate:
         roots_file.write_text(f"{acct_b}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
-        _mod.cost_ledger._cost_ledger_report(
+        cost_ledger._cost_ledger_report(
             _cost_ledger_args(record=True), date(2026, 6, 3)
         )
         capsys.readouterr()
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 1
 
     def test_record_succeeds_when_multi_root_and_ledger_path_in_bare_repo(
@@ -319,11 +313,11 @@ class TestCostLedgerSentinelGate:
         roots_file.write_text(f"{acct_b}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
-        _mod.cost_ledger._cost_ledger_report(
+        cost_ledger._cost_ledger_report(
             _cost_ledger_args(record=True), date(2026, 6, 3)
         )
         capsys.readouterr()
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 1
 
     def test_record_refuses_when_git_tracked_check_times_out(
@@ -333,7 +327,7 @@ class TestCostLedgerSentinelGate:
         treating a hung check as "not tracked"."""
         def _raise_timeout(*args, **kwargs):
             raise subprocess.TimeoutExpired(cmd=["git"], timeout=10)
-        monkeypatch.setattr(_mod.subprocess, "run", _raise_timeout)
+        monkeypatch.setattr(subprocess, "run", _raise_timeout)
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
@@ -345,7 +339,7 @@ class TestCostLedgerSentinelGate:
 
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(
+            cost_ledger._cost_ledger_report(
                 _cost_ledger_args(record=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
@@ -359,7 +353,7 @@ class TestCostLedgerSentinelGate:
         clauses uncaught."""
         def _raise_not_found(*args, **kwargs):
             raise FileNotFoundError("git")
-        monkeypatch.setattr(_mod.subprocess, "run", _raise_not_found)
+        monkeypatch.setattr(subprocess, "run", _raise_not_found)
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
@@ -371,7 +365,7 @@ class TestCostLedgerSentinelGate:
 
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(
+            cost_ledger._cost_ledger_report(
                 _cost_ledger_args(record=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
@@ -403,7 +397,7 @@ class TestCostLedgerSentinelGate:
 
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(
+            cost_ledger._cost_ledger_report(
                 _cost_ledger_args(record=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
@@ -417,7 +411,7 @@ class TestCostLedgerSentinelGate:
         silently flip if that stderr text ever changes."""
         def _fake_permission_denied(cmd, **kwargs):
             return subprocess.CompletedProcess(cmd, 128, "", "fatal: permission denied\n")
-        monkeypatch.setattr(_mod.subprocess, "run", _fake_permission_denied)
+        monkeypatch.setattr(subprocess, "run", _fake_permission_denied)
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
@@ -429,7 +423,7 @@ class TestCostLedgerSentinelGate:
 
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(
+            cost_ledger._cost_ledger_report(
                 _cost_ledger_args(record=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
@@ -457,10 +451,10 @@ class TestCostLedgerSentinelGate:
         ledger_path = worktree_dir / "cost-ledger.md"
         ledger_path.write_text(
             "# Cost-trend ledger\n\n"
-            + _mod.cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
-            + _mod.cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
+            + cost_ledger._COST_LEDGER_HEADER_LINE + "\n"
+            + cost_ledger._COST_LEDGER_SEPARATOR_LINE + "\n"
         )
-        monkeypatch.setattr(_mod.cost_ledger, "_cost_ledger_path", lambda: ledger_path)
+        monkeypatch.setattr(cost_ledger, "_cost_ledger_path", lambda: ledger_path)
 
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
@@ -473,7 +467,7 @@ class TestCostLedgerSentinelGate:
 
         before = ledger_path.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(
+            cost_ledger._cost_ledger_report(
                 _cost_ledger_args(record=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
@@ -498,7 +492,7 @@ class TestCostLedgerSentinelGate:
 
         before = cost_ledger_file.read_text()
         with pytest.raises(SystemExit) as exc_info:
-            _mod.cost_ledger._cost_ledger_report(
+            cost_ledger._cost_ledger_report(
                 _cost_ledger_args(record=True, force=True), date(2026, 6, 3)
             )
         assert exc_info.value.code == 2
@@ -515,10 +509,10 @@ class TestCostLedgerSentinelGate:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _priced("claude-sonnet-5", input=1_000_000, ts="2026-06-01T10:00:00.000Z"),
         ])
-        _mod.cost_ledger._cost_ledger_report(
+        cost_ledger._cost_ledger_report(
             _cost_ledger_args(record=True), date(2026, 6, 3)
         )
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 1
 
     def test_record_not_redirected_by_inherited_git_dir_env(
@@ -547,8 +541,8 @@ class TestCostLedgerSentinelGate:
         roots_file.write_text(f"{acct_b}\n")
         monkeypatch.setenv("TRANSCRIPT_CONFIG_DIRS_FILE", str(roots_file))
 
-        _mod.cost_ledger._cost_ledger_report(
+        cost_ledger._cost_ledger_report(
             _cost_ledger_args(record=True), date(2026, 6, 3)
         )
-        _preamble, rows = _mod.cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
+        _preamble, rows = cost_ledger._parse_cost_ledger_file_text(cost_ledger_file.read_text())
         assert len(rows) == 1

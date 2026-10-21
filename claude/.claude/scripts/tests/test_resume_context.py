@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import errno
 import os
+import shutil
 import stat
 import subprocess
 import time
@@ -219,6 +220,80 @@ class TestLaunchMode:
         assert len(moved) == 1
         mode = stat.S_IMODE(moved[0].stat().st_mode)
         assert mode == 0o600, f"expected 0600, got {oct(mode)}"
+
+    def test_source_is_owner_only_when_the_move_runs(self, tmp_path: Path) -> None:
+        """mv carries the source's mode into the shared temp dir, so the source
+        must already be 0600 at the moment mv runs, not only after it."""
+        stub, _ = _install_recorder(tmp_path)
+        shim_dir = tmp_path / "shims"
+        shim_dir.mkdir()
+        mode_at_move = tmp_path / "mode-at-move.txt"
+        real_mv = shutil.which("mv")
+        assert real_mv is not None
+        shim = shim_dir / "mv"
+        # Lists every non-option argument, so the source is captured wherever `--` puts it.
+        shim.write_text(
+            "#!/usr/bin/env bash\n"
+            'for argument in "$@"; do\n'
+            '  case "$argument" in -*) continue ;; esac\n'
+            f'  ls -ld -- "$argument" >> "{mode_at_move}"\n'
+            "done\n"
+            f'exec "{real_mv}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        src.chmod(0o664)
+        result = _run(
+            ["--consume-only", str(src)],
+            {
+                "RESUME_CONTEXT_LAUNCHER": str(stub),
+                "RESUME_CONTEXT_TMPDIR": str(tmp_path),
+                "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        source_listings = [line for line in mode_at_move.read_text().splitlines() if line.endswith(str(src))]
+        assert len(source_listings) == 1, mode_at_move.read_text()
+        assert source_listings[0].startswith("-rw-------"), source_listings[0]
+
+    def test_source_chmod_failure_exits_before_the_move_and_leaves_the_source_pending(
+        self, tmp_path: Path
+    ) -> None:
+        """The source is narrowed before mktemp and mv: when that chmod fails, nothing
+        may reach the shared temp dir, and the source stays where a retry can find it."""
+        stub, _ = _install_recorder(tmp_path)
+        shim_dir = tmp_path / "shims"
+        shim_dir.mkdir()
+        real_chmod = shutil.which("chmod")
+        assert real_chmod is not None
+        src = tmp_path / "foo-handoff.md"
+        src.write_text("hello handoff\n")
+        src.chmod(0o664)
+        shim = shim_dir / "chmod"
+        # Fails only when the source is an argument, wherever `--` puts it.
+        shim.write_text(
+            "#!/usr/bin/env bash\n"
+            'for argument in "$@"; do\n'
+            f'  if [ "$argument" = "{src}" ]; then exit 1; fi\n'
+            "done\n"
+            f'exec "{real_chmod}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        result = _run(
+            ["--consume-only", str(src)],
+            {
+                "RESUME_CONTEXT_LAUNCHER": str(stub),
+                "RESUME_CONTEXT_TMPDIR": str(tmp_path),
+                "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+            },
+        )
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert "failed to set permissions" in result.stderr
+        assert src.read_text() == "hello handoff\n"
+        assert stat.S_IMODE(src.stat().st_mode) == 0o664
+        assert [p for p in tmp_path.iterdir() if p.name.startswith("resume-context.")] == []
 
     def test_path_with_spaces_is_moved_and_launched(self, tmp_path: Path) -> None:
         stub, recorder = _install_recorder(tmp_path)

@@ -1,11 +1,12 @@
 """Tests for transcript_analysis/audit_routing.py (cmd_audit_routing): per-turn Opus
 routing-class breakdown, judgment spans, and --redact."""
-import importlib.util
 import re
-import sys
-from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    audit_routing,
+    redaction,
+)
 
 from ._audit_routing_helpers import _extract_corpus_class_tokens
 from .conftest import (
@@ -21,15 +22,6 @@ from .conftest import (
     _user_msg,
     _write_jsonl,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _extract_sonnet_tier_dollar_estimate(out: str) -> float:
@@ -64,7 +56,7 @@ class TestAuditRouting:
             # other: no tool_use, no thinking
             _opus([], out=600),
         ])
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         assert _extract_corpus_class_tokens(out, "orchestration") == 100
         assert _extract_corpus_class_tokens(out, "judgment") == 200
@@ -90,7 +82,7 @@ class TestAuditRouting:
             # Edit turn after span closed → code-write
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=40),
         ])
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         # judgment = skill turn (10) + read inside span (20) + write inside span (30) = 60
         assert _extract_corpus_class_tokens(out, "judgment") == 60
@@ -112,7 +104,7 @@ class TestAuditRouting:
             # Edit turn after plan-mode cleared → code-write
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=90),
         ])
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         # judgment = read (50) + ExitPlanMode (75) = 125
         assert _extract_corpus_class_tokens(out, "judgment") == 125
@@ -134,7 +126,7 @@ class TestAuditRouting:
             _opus([_agent_use("a2", "code-writer")], out=200),
         ])
         args = _audit_routing_args(redact=True)
-        _mod.audit_routing.cmd_audit_routing(args)
+        audit_routing.cmd_audit_routing(args)
         out = capsys.readouterr().out
         # claude-config must appear without redaction
         assert "claude-config" in out
@@ -153,7 +145,7 @@ class TestAuditRouting:
         ])
         # Use "1d" window: old_ts is excluded, new_ts is included
         args = _audit_routing_args(since="1d")
-        _mod.audit_routing.cmd_audit_routing(args)
+        audit_routing.cmd_audit_routing(args)
         out = capsys.readouterr().out
         # Only the new_ts turn (code-write, 222) should appear
         assert _extract_corpus_class_tokens(out, "code-write") == 222
@@ -165,7 +157,7 @@ class TestAuditRouting:
             _asst("claude-sonnet-4-6", branch="main", ts="2026-05-19T10:00:00Z",
                   content=[{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}]),
         ])
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         # Corpus aggregate section must be present but all classes are zero
         assert "Corpus aggregate" in out
@@ -177,7 +169,7 @@ class TestAuditRouting:
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=300),
             _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=400),
         ])
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         assert "Sonnet-tier estimate: 700" in out
 
@@ -188,7 +180,7 @@ class TestAuditRouting:
             _priced_opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=300),
             _priced_opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=400),
         ])
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         # Two turns, each input=50 (100 total); output 300+400=700; both code-write/code-read
         # so this is 100% of priced spend in the window.
@@ -205,7 +197,7 @@ class TestAuditRouting:
             _priced_opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=300),
             _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=400),  # unpriced
         ])
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         expected_dollars = (50 / 1_000_000 * 5.00) + (300 / 1_000_000 * 25.00)
         # abs tolerance matches the headline's own 2-decimal-place ($.NN) display rounding.
@@ -219,7 +211,7 @@ class TestAuditRouting:
 
     def test_orchestration_takes_priority_over_active_judgment_span(self):
         """orchestration is first-match: Agent turn inside an open span → orchestration, not judgment."""
-        result = _mod.audit_routing._classify_opus_turn(
+        result = audit_routing._classify_opus_turn(
             [_agent_use("a1", "code-writer")],
             in_judgment_span=True,
             plan_mode_active=False,
@@ -232,7 +224,7 @@ class TestAuditRouting:
                     content=[{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}])
         # usage is {} by default from _asst — cmd_audit_routing skips falsy usage
         _write_jsonl(fake_projects / "sess.jsonl", [rec])
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         assert _extract_corpus_class_tokens(out, "code-write") == 0
 
@@ -250,7 +242,7 @@ class TestAuditRouting:
             # Read turn after span closed → code-read
             _opus([{"type": "tool_use", "id": "r2", "name": "Read", "input": {}}], out=40),
         ])
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         # All three turns inside the span (10 + 20 + 30) → judgment
         assert _extract_corpus_class_tokens(out, "judgment") == 60
@@ -273,7 +265,7 @@ class TestAuditRouting:
             # Read turn after both flags cleared → code-read
             _opus([{"type": "tool_use", "id": "r2", "name": "Read", "input": {}}], out=40),
         ])
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         # judgment = skill-open (10) + ExitPlanMode (20) + post-exit-still-in-span read (30) = 60
         assert _extract_corpus_class_tokens(out, "judgment") == 60
@@ -291,7 +283,7 @@ class TestAuditRouting:
         assert "timestamp" not in rec_no_ts
         _write_jsonl(fake_projects / "sess.jsonl", [rec_no_ts])
         args = _audit_routing_args(since="1d")
-        _mod.audit_routing.cmd_audit_routing(args)
+        audit_routing.cmd_audit_routing(args)
         out = capsys.readouterr().out
         # Turn with no timestamp is excluded by the --since filter
         assert _extract_corpus_class_tokens(out, "code-write") == 0
@@ -312,7 +304,7 @@ class TestAuditRouting:
             # Next turn, still inside the span the merged group's Skill block opened.
             _opus([{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}], out=30),
         ])
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         # Merged group (20, byte-identical usage priced/counted once) + the
         # next turn still in-span (30) = 50 judgment output tokens. A dedup
@@ -340,7 +332,7 @@ class TestAuditRouting:
             # actually cleared by the group's (later-block) ExitPlanMode.
             _opus([{"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}], out=90),
         ])
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args())
+        audit_routing.cmd_audit_routing(_audit_routing_args())
         out = capsys.readouterr().out
         # Merged group (75, byte-identical usage priced/counted once) is
         # still judgment (plan-mode was active during its own classification).
@@ -350,7 +342,7 @@ class TestAuditRouting:
     def test_since_malformed_value_exits_nonzero_with_subcommand_in_message(self, capsys):
         """A malformed --since value fails closed with the audit-routing-specific error prefix."""
         with pytest.raises(SystemExit):
-            _mod.audit_routing.cmd_audit_routing(_audit_routing_args(since="not-a-window"))
+            audit_routing.cmd_audit_routing(_audit_routing_args(since="not-a-window"))
         assert "audit-routing: --since: expected Nd like '35d'" in capsys.readouterr().err
 
 
@@ -370,9 +362,9 @@ class TestAuditRoutingMultiRootRedaction:
             proj.mkdir(parents=True)
             _write_jsonl(proj / "sess.jsonl", [_opus([_agent_use("a1", "code-writer")], out=100)])
 
-        _mod.audit_routing.cmd_audit_routing(_audit_routing_args(redact=True))
+        audit_routing.cmd_audit_routing(_audit_routing_args(redact=True))
         out = capsys.readouterr().out
-        assert _mod._REDACT_MAP_MISS_TOKEN not in out
+        assert redaction._REDACT_MAP_MISS_TOKEN not in out
         assert "account-1/private-project-1" in out
         assert "account-2/private-project-1" in out
         assert "-home-user-repo" not in out

@@ -2,16 +2,16 @@
 requestId-run deduplication -- no dependency on any cmd_* subcommand, scope
 resolution, or redaction.
 
-Assumes a one-shot-per-process caller (the transcript-analysis CLI exits
-after one report): module-level state such as _usage_drift_warned and
-_subagent_format_drift_detected is set once and never reset except by test
-fixtures.
+Module-level flags such as _usage_drift_warned rate-limit stderr diagnostics per
+process, and only test fixtures reset them. Per-call drift results come from the
+return values of _dedup_session and the _warn_if_* functions.
 """
 from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
 from datetime import date, timedelta
+from typing import NamedTuple
 
 from transcript_analysis.corpus import SUBAGENT_SUBDIR
 
@@ -255,6 +255,11 @@ def dedup_turns_by_request_id(records: Sequence[dict]) -> list[dict]:
     bound. A merged turn's --since timestamp is its first block's, so a
     non-contiguous group's staleness window can span the entire input too.
     """
+    return _dedup_turns_reporting_usage_drift(records)[0]
+
+
+def _dedup_turns_reporting_usage_drift(records: Sequence[dict]) -> tuple[list[dict], bool]:
+    """dedup_turns_by_request_id's turns, plus whether any merged run's input or cache usage drifted."""
     groups: dict[str, list[int]] = {}
     for idx, rec in enumerate(records):
         if rec.get("type") != "assistant":
@@ -280,6 +285,7 @@ def dedup_turns_by_request_id(records: Sequence[dict]) -> list[dict]:
         skip_idx.update(idxs[1:])
 
     turns: list[dict] = []
+    usage_drift = False
     for idx, rec in enumerate(records):
         if idx in skip_idx:
             continue
@@ -287,9 +293,13 @@ def dedup_turns_by_request_id(records: Sequence[dict]) -> list[dict]:
         if request_id is None:
             turns.append(rec)
         else:
-            turns.append(_merge_assistant_run([records[i] for i in groups[request_id]]))
+            run = [records[i] for i in groups[request_id]]
+            # Called before the `or` so a short-circuit never skips the canary's print.
+            run_drifted = _warn_if_run_usage_drift(run)
+            usage_drift = usage_drift or run_drifted
+            turns.append(_merge_assistant_run(run))
 
-    return turns
+    return turns, usage_drift
 
 
 def _merge_assistant_run(run: list[dict]) -> dict:
@@ -304,7 +314,6 @@ def _merge_assistant_run(run: list[dict]) -> dict:
     only reaches its billed value on the last record (measured across 150
     transcripts / 15,653 multi-record runs -- see _warn_if_run_usage_drift).
     """
-    _warn_if_run_usage_drift(run)
     merged = dict(run[0])
     merged_message = dict(merged.get("message") or {})
     merged_content: list = []
@@ -365,7 +374,7 @@ _NON_CONTIGUOUS_MERGE_REQUIRED_MATCH_KEYS = _USAGE_DRIFT_INVARIANT_KEYS + ("outp
 _usage_drift_warned = False
 
 
-def _warn_if_run_usage_drift(run: list[dict]) -> None:
+def _warn_if_run_usage_drift(run: list[dict]) -> bool:
     """Emit one stderr warning per process when a requestId run's records
     disagree on an input/cache usage class that's measured invariant across
     a run (see _USAGE_DRIFT_INVARIANT_KEYS).
@@ -373,26 +382,29 @@ def _warn_if_run_usage_drift(run: list[dict]) -> None:
     _merge_assistant_run relies on these classes being identical across every
     record of one API call to price a merged turn correctly regardless of
     which record's value it reads; this is the runtime canary for that
-    assumption. A warning rather than a raise, so one malformed session
-    doesn't abort a whole-corpus scan.
+    assumption. Drift prints a warning rather than raising. A truthy non-dict
+    message.usage raises AttributeError when it sits on the first record or on
+    any record before the first drifting one; records after that are never read.
+
+    Returns whether this run drifted, even after the per-process warning has printed.
     """
     global _usage_drift_warned
-    if _usage_drift_warned:
-        return
     first_usage = (run[0].get("message") or {}).get("usage") or {}
     for rec in run[1:]:
         rec_usage = (rec.get("message") or {}).get("usage") or {}
         if any(rec_usage.get(key) != first_usage.get(key) for key in _USAGE_DRIFT_INVARIANT_KEYS):
-            print(
-                f"WARNING: requestId {run[0].get('requestId')!r} has non-identical "
-                "input/cache usage across its own records — _merge_assistant_run's "
-                "invariant-usage assumption may no longer hold (further occurrences "
-                "this run of the CLI are suppressed). The Claude Code transcript "
-                "format may have changed.",
-                file=sys.stderr,
-            )
-            _usage_drift_warned = True
-            return
+            if not _usage_drift_warned:
+                print(
+                    f"WARNING: requestId {run[0].get('requestId')!r} has non-identical "
+                    "input/cache usage across its own records — _merge_assistant_run's "
+                    "invariant-usage assumption may no longer hold (further occurrences "
+                    "this run of the CLI are suppressed). The Claude Code transcript "
+                    "format may have changed.",
+                    file=sys.stderr,
+                )
+                _usage_drift_warned = True
+            return True
+    return False
 
 
 def _non_contiguous_run_usage_matches(run: list[dict]) -> bool:
@@ -475,6 +487,29 @@ def _count_subagent_spawns(records: list[dict]) -> int:
     return count
 
 
+class _DedupedSession(NamedTuple):
+    """One session's deduplicated turns plus the drift-canary inputs taken from them, before any caller-side filter."""
+
+    turns: list[dict]
+    subagent_spawns: int
+    sidechain_assistant_turns: int
+    usage_drift: bool
+
+
+def _dedup_session(records: Sequence[dict]) -> _DedupedSession:
+    """Deduplicate one session's records and collect its drift-canary inputs, for callers that filter turns afterward."""
+    turns, usage_drift = _dedup_turns_reporting_usage_drift(records)
+    sidechain_assistant_turns = sum(
+        1 for turn in turns if turn.get("type") == "assistant" and bool(turn.get("isSidechain"))
+    )
+    return _DedupedSession(
+        turns=turns,
+        subagent_spawns=_count_subagent_spawns(turns),
+        sidechain_assistant_turns=sidechain_assistant_turns,
+        usage_drift=usage_drift,
+    )
+
+
 # Records that _warn_if_subagent_format_drift's drift signature fired this
 # process, mirroring _usage_drift_warned's role for the other drift canary --
 # consulted (never set) by _format_drift_detected below. Unlike
@@ -484,7 +519,7 @@ def _count_subagent_spawns(records: list[dict]) -> int:
 _subagent_format_drift_detected = False
 
 
-def _warn_if_subagent_format_drift(total_spawns: int, total_sidechain_turns: int) -> None:
+def _warn_if_subagent_format_drift(total_spawns: int, total_sidechain_turns: int) -> bool:
     """Emit a stderr warning when the drift signature is detected.
 
     Drift signature: spawns recorded in the main thread but zero isSidechain
@@ -495,6 +530,8 @@ def _warn_if_subagent_format_drift(total_spawns: int, total_sidechain_turns: int
     This is the runtime half of the two-layer guard:
       - Contract test (CI): pins what our code expects from fixtures.
       - This canary (runtime): validates expectation against live on-disk data.
+
+    Returns whether the drift signature matched.
     """
     global _subagent_format_drift_detected
     if total_spawns > 0 and total_sidechain_turns == 0:
@@ -507,6 +544,8 @@ def _warn_if_subagent_format_drift(total_spawns: int, total_sidechain_turns: int
             "and that records still carry 'isSidechain': true.",
             file=sys.stderr,
         )
+        return True
+    return False
 
 
 def _format_drift_detected() -> bool:
@@ -515,6 +554,11 @@ def _format_drift_detected() -> bool:
     _subagent_format_drift_detected (spawns recorded with no isSidechain
     turns read) -- the single flag cost.py's PRICING INTEGRITY banner reads."""
     return _usage_drift_warned or _subagent_format_drift_detected
+
+
+def _rate_expired(model: str, as_of: date) -> bool:
+    """Whether as_of is past a priced model's re-verify-by date."""
+    return as_of > _MODEL_RATE_EXPIRES[model]
 
 
 def _price_turn(model: str, usage: dict) -> tuple[dict[str, float] | None, int, int]:

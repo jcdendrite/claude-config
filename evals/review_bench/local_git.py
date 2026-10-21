@@ -1,4 +1,4 @@
-"""Isolation for the review bench's local git calls (archive, add, commit, diff, show).
+"""Isolation for the review bench's local git calls (archive, add, commit, diff, show, cat-file, log, update-ref).
 `isolated_git_environment` removes the engineer's system and global git config, system
 and global attributes, and `GIT_*` variables from those calls. The repository a call
 runs in still applies its own `.git/config`, `.git/info/attributes`, and tracked

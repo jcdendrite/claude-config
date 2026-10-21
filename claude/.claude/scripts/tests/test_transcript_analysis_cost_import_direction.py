@@ -79,8 +79,8 @@ def test_shim_back_import_from_cost_matches_sanctioned_set():
 def test_shim_still_imports_from_cost_module():
     """Non-vacuity guard for the test above: an empty SHIM_BACK_IMPORTED_COST_NAMES would pass
     it even on a module-name typo in SHIM_IMPORT_SOURCE_MODULE. Pins that the shim genuinely
-    still has at least one `from transcript_analysis.cost import ...` statement (cmd_cost,
-    cmd_cost_trend, and _compute_workstream_dollars) -- the same guard
+    still has at least one `from transcript_analysis.cost import ...` statement (cmd_cost
+    and cmd_cost_trend) -- the same guard
     test_package_directory_is_not_empty gives the architecture-doc test."""
     tree = ast.parse(SHIM_SCRIPT.read_text())
     assert any(

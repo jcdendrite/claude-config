@@ -2,7 +2,8 @@
 # _worktree-lib.sh — shared helpers for worktree scripts.
 #
 # Sourced by cleanup-merged-branches.sh, cleanup-idle-open-pr-worktrees.sh,
-# worktree-removal-status.sh, and worktree-ensure.sh.
+# worktree-removal-status.sh, worktree-ensure.sh, and
+# resume-context-same-session.sh.
 # Not executable on its own; source it, do not invoke it directly.
 #
 # Provides:

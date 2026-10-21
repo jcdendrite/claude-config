@@ -162,13 +162,29 @@ REVIEW_PR_AUDIT_SCRIPT = "claude-skills/skills/review-pr/audit-execution-surface
 
 # SCRIPTS_TESTS_DIR's test_review_pr_post.py reads this exact file by path, to
 # compare its literal script invocations against the settings allow entries,
-# and test_review_pr_lib.py reads it for the BASE_IS_DEFAULT_BRANCH token.
+# test_review_pr_lib.py reads it for the BASE_IS_DEFAULT_BRANCH token, and
+# test_transcript_period_cost.py reads it for the acquire invocation and skill name.
 REVIEW_PR_SKILL_MD = "claude-skills/skills/review-pr/SKILL.md"
+
+# SCRIPTS_TESTS_DIR's test_transcript_period_cost.py reads this exact file by
+# path, to check it names every period-cost notice tag, the report's first-line
+# prefix, and the undetermined group label, and keeps its pinned prose.
+PERIOD_COST_REPORT_SKILL_MD = "claude-skills/skills/period-cost-report/SKILL.md"
 
 # test_doc_counts.py reads the SKILL.md frontmatter of every name-only skill
 # in settings.json. The path is built in a function body, so
 # TestCrossDomainReadCompleteness cannot see it.
 DOC_COUNTS_TEST_PATH = "claude/.claude/hooks/tests/test_doc_counts.py"
+
+# nudge-error-mode-analysis.sh runs this script's friction-count subcommand by path.
+TRANSCRIPT_ANALYSIS_SCRIPT = "claude/.claude/scripts/transcript-analysis.py"
+
+# test_nudge_error_mode_analysis.py runs nudge-error-mode-analysis.sh, which runs
+# TRANSCRIPT_ANALYSIS_SCRIPT and so loads its first-party imports: the transcript_analysis
+# package, _config.py, and _config_dir.py.
+# The test builds the script's path inside a function body, so TestCrossDomainReadCompleteness
+# cannot see the read.
+NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH = "claude/.claude/hooks/tests/test_nudge_error_mode_analysis.py"
 
 # The cross-domain import declarations below (CONFIG_MODULE through
 # SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES) are enumerated by hand from a
@@ -255,8 +271,10 @@ RESPOND_PR_SKILL_MD = "claude-skills/skills/respond-pr/SKILL.md"
 ERROR_MODE_ANALYSIS_SKILL_MD = "claude-skills/skills/error-mode-analysis/SKILL.md"
 READY_FOR_REVIEW_SKILL_MD = "claude-skills/skills/ready-for-review/SKILL.md"
 SUBAGENT_DELEGATION_SKILL_MD = "claude-skills/skills/subagent-delegation/SKILL.md"
+RESUME_CONTEXT_SKILL_MD = "claude-skills/skills/resume-context/SKILL.md"
 AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD = "claude-skills/skills/ai-instruction-and-memory-files/SKILL.md"
 SKILL_REVIEW_SKILL_MD = "plugins/skill-management/skills/skill-review/SKILL.md"
+BRIEF_SKILL_MD = "claude-skills/skills/brief/SKILL.md"
 
 # Every SKILL.md a HOOKS_TESTS_DIR test reads by exact path rather than by
 # domain membership. TestCrossDomainReadCompleteness
@@ -275,6 +293,7 @@ SKILL_FILES_READ_BY_HOOK_TESTS: frozenset[str] = frozenset({
     SUBAGENT_DELEGATION_SKILL_MD,
     AI_INSTRUCTION_AND_MEMORY_FILES_SKILL_MD,
     SKILL_REVIEW_SKILL_MD,
+    BRIEF_SKILL_MD,
 })
 
 # test_ci_path_filter.py reads this exact file by path.
@@ -309,7 +328,8 @@ CHANGELOG_MD = "CHANGELOG.md"
 # this exact file by path.
 TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD = "docs/transcript-analysis-architecture.md"
 
-# test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads each of these files by path.
+# test_transcript_review_rounds.py (SCRIPTS_TESTS_DIR) reads each of these files by path,
+# and test_transcript_period_cost.py reads the first for its golden sample.
 TRANSCRIPT_ANALYSIS_DOC_MD = "docs/transcript-analysis.md"
 PRIVATE_PROJECT_REDACTION_DOC_MD = "docs/private-project-redaction.md"
 
@@ -341,6 +361,12 @@ INSTALL_SH = "install.sh"
 # test_install_sh_contributor_intent_prompt.py (HOOKS_TESTS_DIR) asserts
 # that install.sh's hint text names this filename.
 INSTALL_DEV_SH = "install-dev.sh"
+
+# test_shellcheck.py and test_shell_lib_function_liveness.py (HOOKS_TESTS_DIR)
+# execute scripts/list-shell-files.sh and read every tracked shell file it
+# enumerates, so a file added under scripts/ joins that corpus.
+# test_venv_run.py (SCRIPTS_TESTS_DIR) executes scripts/venv-run.sh by path.
+ROOT_SCRIPTS_DIR = "scripts"
 
 # test_skills.py (SKILLS_TESTS_DIR) and test_doc_counts.py (HOOKS_TESTS_DIR)
 # each read it by path. test_nudge_transcript_toolkit.py's
@@ -653,13 +679,17 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # (SCRIPTS_TESTS_DIR) also reads ready-for-review/SKILL.md by path, for its
 # own findings_path template text. Same standalone-row rationale as
 # CODE_REVIEW_SKILL_MD's second row above.
+# RESUME_CONTEXT_SKILL_MD: test_resume_context_same_session.py
+# (SCRIPTS_TESTS_DIR) reads resume-context/SKILL.md by path, to tie the keys and
+# the argument character set the skill names to the script's.
 # HANDOFF_SKILL_MD: test_check_handoff.py (SCRIPTS_TESTS_DIR) and
 # test_restore_authorization_boundary_on_compact.py (HOOKS_TESTS_DIR) each
 # read this exact file by path.
 # MARKER_CLEAR_STALE_PY: see its own comment above for citation.
-# REVIEW_PR_AUDIT_SCRIPT and REVIEW_PR_SKILL_MD: see each constant's own
-# comment above for its citation.
+# REVIEW_PR_AUDIT_SCRIPT, REVIEW_PR_SKILL_MD, and PERIOD_COST_REPORT_SKILL_MD:
+# see each constant's own comment above for its citation.
 # DOC_COUNTS_TEST_PATH: see its own comment above for citation.
+# NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH: see its own comment above for citation.
 # _is_hooks_dir_shell_script_change: test_default_branch_resolution_is_shared.py
 # (SCRIPTS_TESTS_DIR) recursively globs claude/.claude/ for *.sh files,
 # picking up claude/.claude/hooks/ in addition to its own SCRIPTS_DIR.
@@ -704,7 +734,7 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # (SCRIPTS_TESTS_DIR) reads this exact file by path, in addition to the
 # DOCS_DIR blanket below.
 # TRANSCRIPT_ANALYSIS_DOC_MD and PRIVATE_PROJECT_REDACTION_DOC_MD: see their own comment above for citation.
-# DOCS_DIR, README_MD, INSTALL_SH, INSTALL_DEV_SH, and CLAUDE_SETTINGS_JSON:
+# DOCS_DIR, README_MD, INSTALL_SH, INSTALL_DEV_SH, ROOT_SCRIPTS_DIR, and CLAUDE_SETTINGS_JSON:
 # see each constant's own comment above for its citation.
 # GLOBAL_CLAUDE_MD, ROOT_CLAUDE_MD, ROOT_RULES_DIR, ROOT_SKILLS_DIR, and
 # ROOT_SETTINGS_JSON: see each constant's own comment above for its citation.
@@ -765,6 +795,11 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
         )),
     ),
     (lambda p: _is_under(p, TRANSCRIPT_ANALYSIS_PACKAGE_DIR), tuple(sorted(HOOKS_TESTS_IMPORTING_TRANSCRIPT_ANALYSIS))),
+    (
+        lambda p: p in (TRANSCRIPT_ANALYSIS_SCRIPT, CONFIG_MODULE, CONFIG_DIR_MODULE)
+        or _is_under(p, TRANSCRIPT_ANALYSIS_PACKAGE_DIR),
+        (NUDGE_ERROR_MODE_ANALYSIS_TEST_PATH,),
+    ),
     (lambda p: p == SKILL_STRUCTURE_VALIDATOR_MODULE, tuple(sorted(HOOKS_TESTS_IMPORTING_SKILL_STRUCTURE_VALIDATOR))),
     (lambda p: p in HOOKS_TESTS_MODULES_IMPORTED_BY_SCRIPTS_TESTS, tuple(sorted(SCRIPTS_TESTS_IMPORTING_HOOKS_TESTS_MODULES))),
     (_is_plugin_manifest_change, (SKILLS_TESTS_DIR,)),
@@ -776,11 +811,13 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p in SKILL_FILES_READ_BY_HOOK_TESTS, (HOOKS_TESTS_DIR,)),
     (lambda p: p == CODE_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == READY_FOR_REVIEW_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p == RESUME_CONTEXT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == HANDOFF_SKILL_MD, (SCRIPTS_TESTS_DIR, HOOKS_TESTS_DIR)),
     (_is_skill_md_change, (DOC_COUNTS_TEST_PATH,)),
     (lambda p: p == MARKER_CLEAR_STALE_PY, (HOOKS_TESTS_DIR,)),
     (lambda p: p == REVIEW_PR_AUDIT_SCRIPT, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == REVIEW_PR_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
+    (lambda p: p == PERIOD_COST_REPORT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
     (
         lambda p: _is_under(p, AGENTS_DIR),
@@ -798,6 +835,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == README_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == INSTALL_SH, (HOOKS_TESTS_DIR,)),
     (lambda p: p == INSTALL_DEV_SH, (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
+    (lambda p: _is_under(p, ROOT_SCRIPTS_DIR), (HOOKS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: p == CLAUDE_SETTINGS_JSON, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR, SCRIPTS_TESTS_DIR)),
     (lambda p: p == GLOBAL_CLAUDE_MD, (HOOKS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (lambda p: p == ROOT_CLAUDE_MD, (HOOKS_TESTS_DIR,)),

@@ -80,6 +80,26 @@ def _base_test_env() -> dict:
     }
 
 
+_INHERITED_GIT_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
+
+
+def _clean_env(**overrides: str | None) -> dict[str, str]:
+    """The base test env without inherited repository-selection variables; a None override removes the key."""
+    env = {key: value for key, value in _base_test_env().items() if key not in _INHERITED_GIT_VARIABLES}
+    for key, value in overrides.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    return env
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=repo, env=_clean_env(), capture_output=True, text=True, check=True
+    ).stdout
+
+
 # Tools the scripts under test (cleanup-merged-branches.sh, ci-watch.sh) and
 # _worktree-lib.sh need on a normal (non-lsof, non-usage-error) run — mirrors
 # TestGhMissing's min_bin list. mktemp and rm are ci-watch.sh's own additions.
@@ -1044,6 +1064,34 @@ def _priced_sidechain_asst(
         "cache_creation_input_tokens": 0,
     }
     return rec
+
+
+def _signed_priced_turn(
+    record_id: int, *, model: str, branch: str, ts: str, cwd: str | None = None, content: list | None = None,
+    sidechain: bool = False,
+) -> dict:
+    """A priced turn whose output-token count is its record id, a distinct power of two,
+    so any token or dollar total decodes back to the set of records that summed into it."""
+    rec = _priced(model, output=record_id, branch=branch, ts=ts, content=content)
+    if sidechain:
+        rec["isSidechain"] = True
+    if cwd is not None:
+        rec["cwd"] = cwd
+    return rec
+
+
+def _record_ids_in(total_output_tokens: int) -> frozenset[int]:
+    return frozenset(1 << bit for bit in range(total_output_tokens.bit_length()) if total_output_tokens >> bit & 1)
+
+
+def _dollars_per_output_token(model: str) -> float:
+    usage = _priced(model, output=1)["message"]["usage"]
+    dollars_by_class, _context, _unpriced = pricing._price_turn(model, usage)
+    return sum(dollars_by_class.values())
+
+
+def _record_ids_in_dollars(dollars: float, model: str) -> frozenset[int]:
+    return _record_ids_in(round(dollars / _dollars_per_output_token(model)))
 
 
 def _table_cols(out: str, *, header_contains: str, row_contains: str | list[str],

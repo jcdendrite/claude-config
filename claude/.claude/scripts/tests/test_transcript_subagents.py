@@ -1,13 +1,16 @@
 """Tests for transcript_analysis/subagents.py's cmd_subagents, plus declared-roots multi-root for it and subagent-mix."""
-import importlib.util
 import os
 import re
-import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from transcript_analysis import (
+    scope,
+    subagent_mix,
+    subagents,
+)
 
 from ._subagent_helpers import (
     _subagent_mix_args,
@@ -26,15 +29,6 @@ from .conftest import (
     _write_jsonl,
     _write_subagent_jsonl,
 )
-
-_SCRIPT = Path(__file__).parent.parent / "transcript-analysis.py"
-# "transcript_analysis" below never touches sys.modules (module_from_spec + exec_module
-# alone doesn't register it), so it can't shadow the real transcript_analysis package --
-# switching to the standard importlib recipe (which does register in sys.modules) would.
-_spec = importlib.util.spec_from_file_location("transcript_analysis", _SCRIPT)
-_mod = importlib.util.module_from_spec(_spec)
-sys.path.insert(0, str(_SCRIPT.parent))
-_spec.loader.exec_module(_mod)
 
 
 def _mcp_use(tool_id: str, server: str, tool: str) -> dict:
@@ -102,7 +96,7 @@ class TestSubagents:
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
             _asst("claude-sonnet-4-6", branch="test-branch", sidechain=True),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args(branches="test-branch"))
+        subagents.cmd_subagents(_subagents_args(branches="test-branch"))
         out = capsys.readouterr().out
         assert any("main" in ln for ln in out.splitlines()), "expected a main row in output"
         assert any("sidechain" in ln for ln in out.splitlines()), "expected a sidechain row in output"
@@ -127,7 +121,7 @@ class TestSubagents:
         _write_subagent_jsonl(fake_projects, session_id, "agent-1", [
             _asst("claude-sonnet-4-6", branch="branch-a", sidechain=True),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args(branches="branch-a"))
+        subagents.cmd_subagents(_subagents_args(branches="branch-a"))
         out = capsys.readouterr().out
         assert "branch-a" in out
         assert "branch-b" not in out
@@ -146,7 +140,7 @@ class TestSubagents:
                   content=[{"type": "text", "text": "done"}], request_id="req-1"),
         ]
         _write_jsonl(fake_projects / "sess.jsonl", recs)
-        _mod.subagents.cmd_subagents(_subagents_args(branches="test-branch"))
+        subagents.cmd_subagents(_subagents_args(branches="test-branch"))
         out = capsys.readouterr().out
         main_cols = _table_cols(out, header_contains="Thread", row_contains="main")
         assert main_cols["Opus"] == "1", "three content-block records for one API call count as one turn"
@@ -158,7 +152,7 @@ class TestSubagents:
         _root_scoped_display_label's disclose path enforces under multi-root."""
         payload = "\x1b]0;PWNED\x07\x1b[2J\x1b[H\x1b[31mFAKE-ROW\x1b[0m"
         _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-opus-4-7", branch=payload)])
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         assert "]0;PWNED[2J[H[31mFAKE-ROW[0m" in out
         assert "\x1b" not in out
@@ -178,7 +172,7 @@ class TestSubagentsToolResultBytes:
             _asst("claude-opus-4-7", branch="main", content=[]),
             _user_msg([_tool_result("t1", text)], branch="main"),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Thread", row_contains="main")
         assert cols["Bytes"] == str(len(text.encode()))
@@ -196,7 +190,7 @@ class TestSubagentsToolResultBytes:
             _asst("claude-sonnet-4-6", branch="main", sidechain=True, content=[]),
             sidechain_result,
         ])
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         main_cols = _table_cols(out, header_contains="Thread", row_contains="main")
         sidechain_cols = _table_cols(
@@ -212,7 +206,7 @@ class TestSubagentsToolResultBytes:
         """Single-root mode prints the attributed branch raw, so the subagent's own tag
         must not reach either table through the user-record arm."""
         _write_sidechain_tool_result_session(fake_projects, own_tag)
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         assert own_tag not in out
         _assert_sidechain_bytes_land_under_branch(out, r"feature-x")
@@ -227,7 +221,7 @@ class TestSubagentsToolResultBytes:
             _asst("claude-opus-4-7", branch="main", content=[]),
             _user_msg("just a plain user message, no tool_result", branch="main"),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Thread", row_contains="main")
         assert cols["Bytes"] == "0"
@@ -237,7 +231,7 @@ class TestSubagentsToolResultBytes:
         (records list is empty) — cmd_subagents prints the existing
         no-data message rather than crashing on an empty session."""
         _write_jsonl(fake_projects / "sess.jsonl", [])
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         assert "No data found." in out
 
@@ -251,7 +245,7 @@ class TestSubagentsToolResultBytes:
             _asst("claude-opus-4-7", branch="branch-b", ts=_attr_ts(3), content=[_read_use("t2", "/y")]),
             _user_msg([_tool_result("t2", "x" * bytes_on_branch_b)], branch="branch-b", ts=_attr_ts(4)),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args(branches="branch-a"))
+        subagents.cmd_subagents(_subagents_args(branches="branch-a"))
         out = capsys.readouterr().out
         assert "branch-b" not in out
         cols = _table_cols(out, header_contains="Thread", row_contains="main")
@@ -272,7 +266,7 @@ class TestSubagentsToolResultBytes:
         locked.write_text('{"type": "assistant"}\n')
         os.chmod(locked, 0o000)
         try:
-            _mod.subagents.cmd_subagents(_subagents_args())
+            subagents.cmd_subagents(_subagents_args())
         finally:
             os.chmod(locked, 0o644)  # restore before tmp_path teardown
         out = capsys.readouterr().out
@@ -291,7 +285,7 @@ class TestSubagentsByteGroupingByTool:
             _asst("claude-opus-4-7", branch="main", content=[_read_use("t1", "/x")]),
             _user_msg([_tool_result("t1", text)], branch="main"),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         assert "Read" in out
         assert str(len(text.encode())) in out
@@ -306,7 +300,7 @@ class TestSubagentsByteGroupingByTool:
             _asst("claude-opus-4-7", branch="main", content=[_read_use("t1", "/x")]),
             _user_msg([_tool_result("t1", text)], branch="main"),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Tool", row_contains="Read")
         assert cols["Bytes"] == str(len(text.encode()))
@@ -322,12 +316,12 @@ class TestSubagentsByteGroupingByTool:
             ]),
             _user_msg([_tool_result("m1", "a" * 10), _tool_result("m2", "b" * 20)], branch="main"),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         assert "mcp__github" not in out
         assert "mcp__linear" not in out
-        assert _mod.subagents._MCP_TOOL_BUCKET_LABEL in out
-        cols = _table_cols(out, header_contains="Tool", row_contains=_mod.subagents._MCP_TOOL_BUCKET_LABEL)
+        assert subagents._MCP_TOOL_BUCKET_LABEL in out
+        cols = _table_cols(out, header_contains="Tool", row_contains=subagents._MCP_TOOL_BUCKET_LABEL)
         assert cols["Bytes"] == "30"
 
     def test_tool_result_with_no_matching_tool_use_buckets_as_unknown(self, fake_projects, capsys):
@@ -339,7 +333,7 @@ class TestSubagentsByteGroupingByTool:
             _asst("claude-opus-4-7", branch="main", content=[]),
             _user_msg([_tool_result("orphan", "z" * 12)], branch="main"),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         assert "unknown" in out
 
@@ -355,7 +349,7 @@ class TestSubagentsByteGroupingByTool:
             ]),
             _user_msg([_tool_result("t1", "z" * 16)], branch="main"),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         out = capsys.readouterr().out
         assert "]0;PWNED-TOOL[31mFAKE-TOOL-ROW[0m" in out
         assert "\x1b" not in out
@@ -371,7 +365,7 @@ class TestSubagentsSince:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="main", ts=old_ts),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args(since="1d"))
+        subagents.cmd_subagents(_subagents_args(since="1d"))
         out = capsys.readouterr().out
         assert "No data found." in out
 
@@ -388,7 +382,7 @@ class TestSubagentsSince:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="main", ts=boundary_ts),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args(since="1d"))
+        subagents.cmd_subagents(_subagents_args(since="1d"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Thread", row_contains="main")
         assert cols["Opus"] == "1"
@@ -396,7 +390,7 @@ class TestSubagentsSince:
     def test_since_excludes_records_missing_timestamp(self, fake_projects, capsys):
         rec = _asst("claude-opus-4-7", branch="main")  # no ts= given -> no timestamp key
         _write_jsonl(fake_projects / "sess.jsonl", [rec])
-        _mod.subagents.cmd_subagents(_subagents_args(since="1d"))
+        subagents.cmd_subagents(_subagents_args(since="1d"))
         out = capsys.readouterr().out
         assert "No data found." in out
 
@@ -420,10 +414,10 @@ class TestSubagentsSince:
             _asst("claude-opus-4-7", branch="feat-y", ts=days_ago(5)),
         ])
 
-        _mod.subagents.cmd_subagents(_subagents_args(branches="main", since="10d"))
+        subagents.cmd_subagents(_subagents_args(branches="main", since="10d"))
         main_cols = _table_cols(capsys.readouterr().out, header_contains="Thread", row_contains="main")
         assert main_cols["Opus"] == "1"
-        _mod.subagents.cmd_subagents(_subagents_args(branches="feat-y", since="10d"))
+        subagents.cmd_subagents(_subagents_args(branches="feat-y", since="10d"))
         feat_y_cols = _table_cols(capsys.readouterr().out, header_contains="Thread", row_contains="main")
         assert feat_y_cols["Opus"] == "1"  # its own turn only, not the second main's
 
@@ -443,7 +437,7 @@ class TestSubagentsSince:
             _asst("claude-opus-4-7", branch="feat-x", ts=days_ago(1), content=[_read_use("t2", "/y")]),
             _user_msg([_tool_result("t2", "x" * bytes_inside_window)], branch="feat-x", ts=days_ago(1)),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args(since="10d"))
+        subagents.cmd_subagents(_subagents_args(since="10d"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Thread", row_contains="main")
         assert cols["Bytes"] == str(bytes_inside_window)
@@ -458,7 +452,7 @@ class TestSubagentsSince:
             _asst("claude-opus-4-7", branch="main", ts=in_window_ts, content=[_read_use("t1", "/x")]),
             _user_msg([_tool_result("t1", "x" * 330)], branch="main"),  # no ts= given -> no timestamp key
         ])
-        _mod.subagents.cmd_subagents(_subagents_args(since="1d"))
+        subagents.cmd_subagents(_subagents_args(since="1d"))
         out = capsys.readouterr().out
         cols = _table_cols(out, header_contains="Thread", row_contains="main")
         assert cols["Opus"] == "1"
@@ -466,7 +460,7 @@ class TestSubagentsSince:
 
     def test_malformed_since_exits_nonzero_naming_subagents(self, fake_projects, capsys):
         with pytest.raises(SystemExit) as exc_info:
-            _mod.subagents.cmd_subagents(_subagents_args(since="not-a-window"))
+            subagents.cmd_subagents(_subagents_args(since="not-a-window"))
         assert exc_info.value.code == 1
         assert "subagents: --since" in capsys.readouterr().err
 
@@ -485,7 +479,7 @@ class TestSubagentsSince:
                 _agent_use("a1", "staff-backend-engineer"),
             ]),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args(since="1d"))
+        subagents.cmd_subagents(_subagents_args(since="1d"))
         assert "WARNING" in capsys.readouterr().err
 
 
@@ -501,7 +495,7 @@ class TestSubagentsMultiRoot:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="feat"),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         single_root_out = capsys.readouterr().out
         single_root_cols = _table_cols(single_root_out, header_contains="Thread", row_contains="feat")
         assert single_root_cols["Opus"] == "1"
@@ -512,7 +506,7 @@ class TestSubagentsMultiRoot:
         _write_jsonl(proj_b / "sess-b.jsonl", [
             _asst("claude-opus-4-7", branch="feat"),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args(extra_config_dirs=[str(acct_b)]))
+        subagents.cmd_subagents(_subagents_args(extra_config_dirs=[str(acct_b)]))
         multi_root_out = capsys.readouterr().out
         total_opus = _sum_column_across_rows(
             multi_root_out, header_contains="Thread", label="Opus", row_prefix="account-"
@@ -536,7 +530,7 @@ class TestSubagentsMultiRoot:
         _write_jsonl(proj_b / "sess-b.jsonl", [
             _asst("claude-opus-4-7", branch="main"),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args(extra_config_dirs=[str(acct_b)]))
+        subagents.cmd_subagents(_subagents_args(extra_config_dirs=[str(acct_b)]))
         out = capsys.readouterr().out
         assert "account-1/branch-1" in out
         assert "account-2/branch-1" in out
@@ -549,10 +543,10 @@ class TestSubagentsMultiRoot:
             _asst("claude-opus-4-7", branch="main"),
         ])
         acct_b = fake_config_dir_factory("acct-b")
-        _mod.subagents.cmd_subagents(_subagents_args(extra_config_dirs=[str(acct_b)]))
+        subagents.cmd_subagents(_subagents_args(extra_config_dirs=[str(acct_b)]))
         captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.out
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.err
 
     def test_single_root_omits_do_not_publish_banner(self, fake_projects, capsys):
         """The allow-path counterpart to the fire test above -- mirrors
@@ -562,10 +556,10 @@ class TestSubagentsMultiRoot:
         _write_jsonl(fake_projects / "sess.jsonl", [
             _asst("claude-opus-4-7", branch="main"),
         ])
-        _mod.subagents.cmd_subagents(_subagents_args())
+        subagents.cmd_subagents(_subagents_args())
         captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER not in captured.err
+        assert scope._DO_NOT_PUBLISH_BANNER not in captured.out
+        assert scope._DO_NOT_PUBLISH_BANNER not in captured.err
 
     def test_account_ordinal_is_resolved_path_sorted_not_scan_order(self, tmp_path, monkeypatch, capsys):
         """account-N is assigned by resolved-path sort (_redaction_ordinals),
@@ -581,11 +575,11 @@ class TestSubagentsMultiRoot:
         therefore always sorts first regardless — that shared setup cannot
         catch this regression class, the same blind spot PR #603's own
         pre-fix edit-format test had."""
-        monkeypatch.setattr(_mod.scope, "declared_transcript_roots", lambda: [])
+        monkeypatch.setattr(scope, "declared_transcript_roots", lambda: [])
         active = tmp_path / "zzz-active"
         active_proj = active / "projects" / "-home-user-active-repo"
         active_proj.mkdir(parents=True)
-        monkeypatch.setattr(_mod.scope, "config_dir", lambda: active)
+        monkeypatch.setattr(scope, "config_dir", lambda: active)
         _write_jsonl(active_proj / "sess-active.jsonl", [
             _asst("claude-opus-4-7", branch="feat"),
         ])
@@ -598,7 +592,7 @@ class TestSubagentsMultiRoot:
             _asst("claude-opus-4-7", branch="feat"),
         ])
 
-        _mod.subagents.cmd_subagents(_subagents_args(extra_config_dirs=[str(extra)]))
+        subagents.cmd_subagents(_subagents_args(extra_config_dirs=[str(extra)]))
         out = capsys.readouterr().out
         account_1 = _table_cols(out, header_contains="Thread", row_contains="account-1/branch-1")
         account_2 = _table_cols(out, header_contains="Thread", row_contains="account-2/branch-1")
@@ -630,10 +624,10 @@ class TestSubagentsDeclaredRootsMultiRoot:
                 _asst("claude-opus-4-7", branch="main", content=[_agent_use(f"a{idx}", "staff-sdet")]),
             ])
 
-        _mod.subagent_mix.cmd_subagent_mix(_subagent_mix_args())  # no extra_config_dirs passed
+        subagent_mix.cmd_subagent_mix(_subagent_mix_args())  # no extra_config_dirs passed
         captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.out
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.err
         assert "account-1/branch-1" in captured.out
         assert "account-2/branch-1" in captured.out
 
@@ -648,10 +642,10 @@ class TestSubagentsDeclaredRootsMultiRoot:
                 _asst("claude-opus-4-7", branch="main"),
             ])
 
-        _mod.subagents.cmd_subagents(_subagents_args())  # no extra_config_dirs passed
+        subagents.cmd_subagents(_subagents_args())  # no extra_config_dirs passed
         captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.out
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.err
         assert "account-1/branch-1" in captured.out
         assert "account-2/branch-1" in captured.out
 
@@ -666,7 +660,7 @@ class TestSubagentsDeclaredRootsMultiRoot:
             ])
         args = _subagents_args(this_repo=True)
         args._this_repo_slugs = [this_repo_slug]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert "account-1/feat-disclosed" in out
         assert "account-2/feat-disclosed" in out
@@ -690,7 +684,7 @@ class TestSubagentsDeclaredRootsMultiRoot:
             ])
         args = _subagent_mix_args(this_repo=True)
         args._this_repo_slugs = [this_repo_slug]
-        _mod.subagent_mix.cmd_subagent_mix(args)
+        subagent_mix.cmd_subagent_mix(args)
         out = capsys.readouterr().out
         assert "account-1/feat-disclosed" in out
         assert "account-2/feat-disclosed" in out
@@ -711,7 +705,7 @@ class TestSubagentsDeclaredRootsMultiRoot:
         ])
         args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert re.search(r"account-\d+/alpha\b", out)
         assert not re.search(r"account-\d+/branch-\d+", out)
@@ -734,7 +728,7 @@ class TestSubagentsDeclaredRootsMultiRoot:
         ])
         args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert re.search(r"account-\d+/feature-x\b", out)
         sidechain_cols = _table_cols(out, header_contains="Thread", row_contains="sidechain", drop_leading_labels=1)
@@ -756,7 +750,7 @@ class TestSubagentsDeclaredRootsMultiRoot:
         ])
         args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert "unrelated-repo-branch" not in out
         assert "worktree-agent" not in out
@@ -772,7 +766,7 @@ class TestSubagentsDeclaredRootsMultiRoot:
         _write_sidechain_tool_result_session(fake_projects, own_tag)
         args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert own_tag not in out
         assert not re.search(r"account-\d+/branch-\d+", out)
@@ -797,7 +791,7 @@ class TestSubagentsDeclaredRootsMultiRoot:
         ])
         args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert re.search(r"account-\d+/branch-\d+", out)
         assert "unattested-branch" not in out
@@ -820,7 +814,7 @@ class TestSubagentsDeclaredRootsMultiRoot:
         ])
         args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert re.search(r"account-\d+/branch-\d+", out)
         assert "unattested-branch" not in out
@@ -842,7 +836,7 @@ class TestSubagentsDeclaredRootsMultiRoot:
         ])
         args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert re.search(r"account-\d+/user-only-branch\b", out)
         assert not re.search(r"account-\d+/branch-\d+", out)
@@ -860,7 +854,7 @@ class TestSubagentsDeclaredRootsMultiRoot:
         ])
         args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert "No data found." in out
         assert "orphan-branch" not in out
@@ -889,7 +883,7 @@ class TestSubagentsDeclaredRootsMultiRoot:
         ])
         args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)], since="1d")
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert re.search(r"account-\d+/gamma\b", out)
 
@@ -918,7 +912,7 @@ class TestSubagentsDeclaredRootsMultiRoot:
         ])
         args = _subagents_args(this_repo=True)
         args._this_repo_slugs = [this_repo_slug]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert len(re.findall(r"account-\d+/main\b", out)) == 1, "only account A's row may print 'main' raw"
         assert not any("sidechain" in ln for ln in _branch_block(out, r"account-\d+/main\b"))
@@ -930,16 +924,16 @@ class TestSubagentsDeclaredRootsMultiRoot:
         acct_b = fake_config_dir_factory("acct-b")
         args = _subagents_args(this_repo=True, extra_config_dirs=[str(acct_b)])
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         captured = capsys.readouterr()
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.out
-        assert _mod._DO_NOT_PUBLISH_BANNER in captured.err
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.out
+        assert scope._DO_NOT_PUBLISH_BANNER in captured.err
 
     def test_this_repo_single_root_prints_raw_branch_with_no_account_prefix(self, fake_projects, capsys):
         _write_jsonl(fake_projects / "sess.jsonl", [_asst("claude-opus-4-7", branch="feat")])
         args = _subagents_args(this_repo=True)
         args._this_repo_slugs = ["-home-user-testrepo"]
-        _mod.subagents.cmd_subagents(args)
+        subagents.cmd_subagents(args)
         out = capsys.readouterr().out
         assert "feat" in out
         assert "account-" not in out
