@@ -70,7 +70,7 @@ Do not add a CLAUDE.md path or read instruction — `plan-architect` loads it au
 
 After every dispatch, `Read` the plan file. `plan-architect` writes its sections itself, so a successful return carries no `##` headings. When the return carries all four headings as heading lines, in order, splice it in with one `Edit` whose `old_string` is the file's region from its `## Approach` heading line to the end, replacing it with the return from its `## Approach` heading line on, verbatim. Every byte above that heading stays untouched; never use a whole-file `Write`. Relay the return's reason line to the engineer.
 
-**Check.** After any splice, re-run the hash command, apply the stop condition to it, and `Read` the plan file. With or without a splice, the dispatch is complete only when all three hold:
+**Check.** After any splice and its Context hash, `Read` the plan file. With or without a splice, the dispatch is complete only when all three hold:
 - the first non-blank line under `## Approach` is not `(pending: plan-architect)`;
 - the heading lines from `## Approach` on are exactly the four headings, in order;
 - each of the four headings has at least one non-blank line before the next heading or the end of the file.

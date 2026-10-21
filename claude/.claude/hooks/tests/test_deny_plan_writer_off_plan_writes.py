@@ -69,6 +69,7 @@ def _assert_silent_exit_zero(result: subprocess.CompletedProcess) -> None:
 
 
 def _assert_denied(result: subprocess.CompletedProcess) -> None:
+    """Parse all of stdout as one JSON document, so a hook that emits a second deny fails."""
     assert result.returncode == 0, result.stderr
     decision = json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"]
     assert decision == "deny"
