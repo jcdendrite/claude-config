@@ -281,6 +281,8 @@ class TestDenyPrivateProjectRefs:
             "Deprecate MD-5",
             "Support HTTP-2",
             "Disable TLS-1",
+            "Timestamps are UTC-07 in the fixture",
+            "Convert from GMT-05 to local time",
             "Licensed under AGPL-3.0",
             "Licensed under BSD-3-Clause",
             "See PROJ-123 for the placeholder convention",
@@ -289,7 +291,7 @@ class TestDenyPrivateProjectRefs:
         ids=[
             "cve", "cwe", "pep", "rfc", "gh", "bug", "iso", "ietf", "ieee",
             "w3c", "nist", "ecma", "ansi", "osc", "jep", "jdk", "llvm", "gcc", "gpt",
-            "sha", "md", "http", "tls",
+            "sha", "md", "http", "tls", "utc", "gmt",
             "agpl", "bsd",
             "proj_placeholder", "ticket_placeholder",
         ],
@@ -340,6 +342,27 @@ class TestDenyPrivateProjectRefs:
             == "allow"
         )
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Timestamps are UTC-123456 in the fixture",
+            "Convert from GMT-99999 to local time",
+        ],
+        ids=["utc", "gmt"],
+    )
+    def test_time_zone_allowlist_accepts_unbounded_digits_by_design(self, claude_config_repo, message):
+        """UTC and GMT are allowlisted by prefix, the same unbounded-digit
+        tradeoff GPT/AGPL/BSD in OSS_ALLOWLIST already accept — an implausible
+        offset is still allowed."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -m '{message}'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
+        )
+
     def test_synthetic_tracker_id_in_message_denied(self, claude_config_repo):
         assert (
             run_hook(
@@ -360,15 +383,20 @@ class TestDenyPrivateProjectRefs:
             "Fix MYAGPL-99 regression",
             "Bump SUPERBSD-1 dep",
             "Bump ACMEIEEE-5 dep",
+            "Land BIGGMT-9 follow-up",
+            "Bump SUPERUTC-3 dep",
         ],
-        ids=["myproj", "superticket", "bigproj", "ourticket", "myagpl", "superbsd", "acmeieee"],
+        ids=[
+            "myproj", "superticket", "bigproj", "ourticket", "myagpl", "superbsd", "acmeieee",
+            "biggmt", "superutc",
+        ],
     )
     def test_placeholder_prefix_substring_still_denied(self, claude_config_repo, message):
         """Anchor (`^`) on OSS_ALLOWLIST must keep prefixes that *contain*
-        but don't *equal* PROJ / TICKET / AGPL / BSD / IEEE in the deny path.
-        Without this test, a refactor that drops the anchor would pass CI
-        silently. The AGPL/BSD/IEEE cases also pair with this file's
-        AGPL/BSD/IEEE allow-path tests, giving each the same allow+deny
+        but don't *equal* PROJ / TICKET / AGPL / BSD / IEEE / UTC / GMT
+        in the deny path. Without this test, a refactor that drops the anchor
+        would pass CI silently. The AGPL/BSD/IEEE/UTC/GMT cases also pair
+        with this file's allow-path tests, giving each the same allow+deny
         symmetry the PROJ/TICKET cases already have."""
         assert (
             run_hook(
@@ -377,6 +405,90 @@ class TestDenyPrivateProjectRefs:
                 cwd=claude_config_repo,
             )
             == "deny"
+        )
+
+    def test_est_is_not_allowlisted(self, claude_config_repo):
+        """EST is deliberately left off OSS_ALLOWLIST: EST-05 is not a
+        conventional offset. Adding it to OSS_ALLOWLIST must fail this test."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input("git commit -m 'Schedule runs at EST-05'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Land UTCX-1 follow-up",
+            "Fix GMTX-2 regression",
+        ],
+        ids=["utcx", "gmtx"],
+    )
+    def test_allowlisted_prefix_with_longer_token_still_denied(self, claude_config_repo, message):
+        """The trailing `-` in OSS_ALLOWLIST pins a match to the whole token
+        prefix: a token that merely *starts with* UTC / GMT but
+        continues before the hyphen stays in the deny path. Without this
+        test, a refactor that drops the trailing `-` would pass CI silently."""
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -m '{message}'"),
+                cwd=claude_config_repo,
+            )
+            == "deny"
+        )
+
+    @pytest.mark.parametrize(
+        ("blocklist_entry", "message"),
+        [
+            ("UTC", "Land UTC-4821 follow-up"),
+            ("GMT", "Land GMT-77 follow-up"),
+        ],
+        ids=["utc", "gmt"],
+    )
+    def test_blocklist_entry_matching_allowlisted_prefix_still_denied(
+        self, claude_config_repo, private_projects_file, blocklist_entry, message
+    ):
+        """The blocklist tier runs independently of OSS_ALLOWLIST, so a
+        user-local entry equal to an allowlisted prefix still denies a token
+        using that prefix. It is the only backstop when a private tracker
+        key collides with an allowlisted prefix."""
+        private_projects_file(f"{blocklist_entry}\n")
+        reason = run_hook_reason(
+            DENY_PRIVATE_PROJECT_REFS_HOOK,
+            bash_input(f"git commit -m '{message}'"),
+            cwd=claude_config_repo,
+        )
+        assert reason is not None
+        assert "private-projects.md blocklist" in reason
+        assert f"  - {blocklist_entry}" in reason
+
+    @pytest.mark.parametrize(
+        ("blocklist_entry", "message"),
+        [
+            ("UTC-", "Land UTC-4821 follow-up"),
+            ("GMT-", "Land GMT-77 follow-up"),
+        ],
+        ids=["utc", "gmt"],
+    )
+    def test_hyphen_terminated_blocklist_entry_does_not_match_allowlisted_token(
+        self, claude_config_repo, private_projects_file, blocklist_entry, message
+    ):
+        """A blocklist entry ending in `-` never matches a token whose prefix
+        is allowlisted, because the whole-word match needs a non-word character
+        after the entry. The docs advise entering the bare word instead, which
+        holds only while this stays true."""
+        private_projects_file(f"{blocklist_entry}\n")
+        assert (
+            run_hook(
+                DENY_PRIVATE_PROJECT_REFS_HOOK,
+                bash_input(f"git commit -m '{message}'"),
+                cwd=claude_config_repo,
+            )
+            == "allow"
         )
 
     def test_multiple_tracker_ids_denied(self, claude_config_repo):
