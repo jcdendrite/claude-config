@@ -36,7 +36,9 @@ guessed personal convention does carry real false-positive risk, which is
 why it stays opt-in even though the built-ins do not.
 
 `<config-dir>/credential-file-guard.md` (checked by both path-based
-hooks, in addition to their built-in regex): one glob per line, same grammar as
+hooks, in addition to their built-in regex, and by `pr-diff-against-base.sh
+--context-files`, which matches each changed path's absolute form against it
+and withholds a hit from every lane file): one glob per line, same grammar as
 `data-file-read-guard.md` below — `#` comments and blank lines ignored,
 each remaining line a path glob. Optional — the built-in path shapes are
 already always on; this file only adds personal/org-specific ones.
@@ -516,6 +518,18 @@ the specific directories that hold real data in the config file:
 
 There is no bypass valve in the hook. If a specific file genuinely must be
 inspected, that is a deliberate human action outside Claude.
+
+`pr-diff-against-base.sh --context-files` reads this file too, whenever it is
+armed. It applies three of the hook's rules to every changed path and withholds
+a hit from every lane file, because a reviewer `Read`s those files under names
+this hook never matches: the data-file extensions, a `Downloads/` directory and
+the globs (the globs case-sensitively, against each changed path's absolute
+form). It does not copy the size rule: with the guard armed, the hook blocks any
+lane `.diff` larger than the threshold whole for its reviewer, as one big block
+or, in a whole-diff lane, many ordinary blocks. That block covers only a lane
+file over the threshold: a non-data-named file over the threshold with a small
+diff reaches the lane `.diff` unblocked, though a direct `Read` of that file is
+denied.
 
 ## Config file security
 

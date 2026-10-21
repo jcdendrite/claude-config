@@ -3855,3 +3855,179 @@ class TestLibMissingPluginIdsLocalOptOut:
 
         assert result.returncode == 3, repr(result)
         assert result.stdout == ""
+
+
+# --- _lib_path_ignore_status ---------------------------------------------------
+
+
+def _init_ignoring_repo(repo: Path, *, ignore_rules: str = "agent-reviews/\n") -> Path:
+    """A git repo whose info/exclude holds ignore_rules, with one committed file."""
+    init_git_repo_with_commit(repo, branch="main")
+    (repo / ".git" / "info" / "exclude").write_text(ignore_rules)
+    return repo
+
+
+def _path_ignore_status(
+    directory: str, path: str, *, env: dict | None = None, cwd: Path | None = None
+) -> subprocess.CompletedProcess:
+    """Run `_lib_path_ignore_status DIRECTORY PATH` in a fresh shell that sourced _lib.sh.
+
+    The status is printed to stderr after the call, so a test can tell the function's own status from the shell's.
+    """
+    harness = '. "$1"; _lib_path_ignore_status "$2" "$3"; printf "STATUS=%s" "$?" >&2'
+    return subprocess.run(
+        ["bash", "-c", harness, "bash", str(_LIB_SH), directory, path],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env if env is not None else dict(os.environ),
+        cwd=cwd,
+    )
+
+
+def _status_of(result: subprocess.CompletedProcess) -> int:
+    match = re.search(r"STATUS=(\d+)$", result.stderr)
+    assert match, repr(result.stderr)
+    return int(match.group(1))
+
+
+class TestLibPathIgnoreStatus:
+    def test_ignored_path_returns_0(self, tmp_path: Path) -> None:
+        repo = _init_ignoring_repo(tmp_path / "repo")
+
+        result = _path_ignore_status(str(repo), "agent-reviews/x.md")
+
+        assert _status_of(result) == 0
+        assert result.stdout == ""
+
+    def test_path_no_rule_ignores_returns_1(self, tmp_path: Path) -> None:
+        repo = _init_ignoring_repo(tmp_path / "repo")
+
+        result = _path_ignore_status(str(repo), "src/x.md")
+
+        assert _status_of(result) == 1
+        assert result.stdout == ""
+
+    def test_tracked_file_under_an_ignored_directory_returns_1(self, tmp_path: Path) -> None:
+        """git check-ignore reports a tracked path as not ignored whatever the rules say."""
+        repo = _init_ignoring_repo(tmp_path / "repo")
+        (repo / "agent-reviews").mkdir()
+        (repo / "agent-reviews" / "kept.md").write_text("x\n")
+        _run_git(repo, "add", "-f", "agent-reviews/kept.md")
+
+        result = _path_ignore_status(str(repo), "agent-reviews/kept.md")
+
+        assert _status_of(result) == 1
+
+    def test_path_a_negation_rule_re_includes_returns_1(self, tmp_path: Path) -> None:
+        repo = _init_ignoring_repo(tmp_path / "repo", ignore_rules="agent-reviews/*\n!agent-reviews/keep.md\n")
+
+        result = _path_ignore_status(str(repo), "agent-reviews/keep.md")
+
+        assert _status_of(result) == 1
+
+    def test_empty_directory_returns_3_even_from_inside_a_repo_that_ignores_the_path(self, tmp_path: Path) -> None:
+        """`cd ''` succeeds in place on bash 5.2, so a missing empty-directory guard would check the cwd's repo and return 0."""
+        repo = _init_ignoring_repo(tmp_path / "repo")
+
+        result = _path_ignore_status("", "agent-reviews/x.md", cwd=repo)
+
+        assert _status_of(result) == 3
+        assert result.stdout == ""
+
+    def test_nonexistent_directory_returns_3_with_no_output(self, tmp_path: Path) -> None:
+        result = _path_ignore_status(str(tmp_path / "missing"), "agent-reviews/x.md")
+
+        assert result.stdout == ""
+        assert result.stderr == "STATUS=3"
+
+    def test_symlinked_agent_reviews_returns_128(self, tmp_path: Path) -> None:
+        """git refuses to look beyond a symbolic link (probe P8 row, git 2.43.0)."""
+        repo = _init_ignoring_repo(tmp_path / "repo")
+        (tmp_path / "elsewhere").mkdir()
+        (repo / "agent-reviews").symlink_to(tmp_path / "elsewhere")
+
+        result = _path_ignore_status(str(repo), "agent-reviews/x.md")
+
+        assert _status_of(result) == 128
+
+    @pytest.mark.parametrize("shim_status", [3, 128])
+    def test_the_cap_or_gits_own_status_passes_through_the_function(self, tmp_path: Path, shim_status: int) -> None:
+        repo = _init_ignoring_repo(tmp_path / "repo")
+        shim_dir = tmp_path / "shim"
+        _make_git_exiting_with_status(shim_dir, "check-ignore", shim_status)
+        real_git = shutil.which("git")
+        assert real_git is not None
+        env = {**os.environ, "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}", "REAL_GIT": real_git}
+
+        result = _path_ignore_status(str(repo), "agent-reviews/x.md", env=env)
+
+        assert _status_of(result) == shim_status
+
+    def test_inherited_foreign_git_dir_does_not_launder_the_result(self, tmp_path: Path) -> None:
+        """A GIT_DIR naming a repo that ignores the path must not make a repo that does not ignore it report 0."""
+        target = _init_ignoring_repo(tmp_path / "target", ignore_rules="")
+        foreign = _init_ignoring_repo(tmp_path / "foreign")
+        env = {**os.environ, "GIT_DIR": str(foreign / ".git")}
+
+        result = _path_ignore_status(str(target), "agent-reviews/x.md", env=env)
+
+        assert _status_of(result) == 1
+
+    def test_stderr_is_empty_with_timeout_on_path(self, tmp_path: Path) -> None:
+        repo = _init_ignoring_repo(tmp_path / "repo")
+
+        result = _path_ignore_status(str(repo), "agent-reviews/x.md")
+
+        assert result.stderr == "STATUS=0"
+
+    def test_neither_timeout_nor_gtimeout_on_path_still_checks_and_stays_silent(self, tmp_path: Path) -> None:
+        """_lib_capped_for's uncapped-run notice goes to the git call's own 2>/dev/null, so the helper writes nothing."""
+        repo = _init_ignoring_repo(tmp_path / "repo")
+        farm = tmp_path / "farm"
+        farm.mkdir()
+        build_path_without("timeout", farm)
+        (farm / "gtimeout").unlink(missing_ok=True)
+        assert shutil.which("timeout", path=str(farm)) is None
+        assert shutil.which("gtimeout", path=str(farm)) is None
+        env = {**os.environ, "PATH": str(farm)}
+
+        result = _path_ignore_status(str(repo), "agent-reviews/x.md", env=env)
+
+        assert _status_of(result) == 0
+        assert result.stdout == ""
+        assert result.stderr == "STATUS=0"
+
+
+# --- _lib_dotenv_basename_is_secret ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("basename", "expected_secret"),
+    [
+        (".env", True),
+        (".env.local", True),
+        (".env.production", True),
+        (".env.ci", True),
+        (".env.vault", True),
+        (".env.", True),
+        (".env.example", False),
+        (".env.template", False),
+        (".env.sample", False),
+        (".envrc", False),
+        (".ENV", False),
+        ("env", False),
+        ("package.env", False),
+        ("", False),
+    ],
+)
+def test_dotenv_basename_is_secret_matrix(basename: str, expected_secret: bool) -> None:
+    result = subprocess.run(
+        ["bash", "-c", '. "$1"; _lib_dotenv_basename_is_secret "$2"', "bash", str(_LIB_SH), basename],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == (0 if expected_secret else 1), repr(result)
+    assert result.stdout == ""

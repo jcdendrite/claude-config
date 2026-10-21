@@ -116,6 +116,18 @@ class TestDenyDataFileReads:
         over.write_bytes(b"x" * 5242881)
         assert run_hook(DENY_DATA_FILE_READS_HOOK, read_input(str(over))) == "deny"
 
+    def test_oversized_review_lane_diff_denied(self, isolated_home, read_guard, tmp_path):
+        """A `.diff` lane input over the threshold is blocked whole at Read time: pr-diff-against-base.sh
+        --context-files copies the hook's name rules only, so this size rule is what covers the lane file.
+        Fails if the size rule ever exempts an `agent-reviews/` lane path, which the generic one-byte-over case would not
+        catch. The docs/security-hardening.md section on arming the data-file read hook states the lane-file
+        behavior that rests on it."""
+        read_guard()
+        lane_diff = tmp_path / "agent-reviews" / "staff-sdet-abc123.diff"
+        lane_diff.parent.mkdir()
+        lane_diff.write_bytes(b"x" * 5242881)
+        assert run_hook(DENY_DATA_FILE_READS_HOOK, read_input(str(lane_diff))) == "deny"
+
     # ------------------------------------------------------------------ #
     # Configured path globs                                               #
     # ------------------------------------------------------------------ #

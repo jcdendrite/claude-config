@@ -1150,6 +1150,23 @@ class TestSelectPytestTargets:
             _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR,
         }
 
+    def test_scripts_doc_md_change_selects_scripts_hooks_and_skills_tests(self):
+        """test_pr_diff_against_base.py (SCRIPTS_TESTS_DIR) reads docs/scripts.md's "When --context-files halts" section by
+        path, in addition to the docs/ blanket's HOOKS_TESTS_DIR and SKILLS_TESTS_DIR."""
+        result = _mod.select_pytest_targets([_mod.SCRIPTS_DOC_MD])
+        assert result.is_full_suite is False
+        assert set(result.target_paths) == {
+            _mod.SCRIPTS_TESTS_DIR, _mod.HOOKS_TESTS_DIR, _mod.SKILLS_TESTS_DIR,
+        }
+
+    def test_credential_bash_gate_and_hooks_lib_changes_select_skills_tests(self):
+        """The skills test that runs the real credential gate over code-review's recipe commands (SKILLS_TESTS_DIR) reads
+        the gate and the _lib.sh predicates it sources, beside the hooks and scripts tests a hooks-dir change selects."""
+        for path in (_mod.CREDENTIAL_BASH_READS_HOOK_SH, _mod.HOOKS_LIB_SH):
+            result = _mod.select_pytest_targets([path])
+            assert result.is_full_suite is False, path
+            assert {_mod.HOOKS_TESTS_DIR, _mod.SCRIPTS_TESTS_DIR, _mod.SKILLS_TESTS_DIR} <= set(result.target_paths), path
+
     def test_transcript_analysis_architecture_doc_md_change_selects_scripts_hooks_and_skills_tests(self):
         """test_transcript_analysis_architecture_doc.py (SCRIPTS_TESTS_DIR)
         reads this exact file's content by path to pin its module list, in
@@ -2051,6 +2068,9 @@ _EXACT_MATCH_LITERAL_PATH_CONSTANTS: tuple[str, ...] = (
     _mod.TRANSCRIPT_ANALYSIS_ARCHITECTURE_DOC_MD,
     _mod.TRANSCRIPT_ANALYSIS_DOC_MD,
     _mod.PRIVATE_PROJECT_REDACTION_DOC_MD,
+    _mod.SCRIPTS_DOC_MD,
+    _mod.CREDENTIAL_BASH_READS_HOOK_SH,
+    _mod.HOOKS_LIB_SH,
     _mod.GLOBAL_CLAUDE_MD,
     _mod.ROOT_CLAUDE_MD,
     _mod.ROOT_SETTINGS_JSON,

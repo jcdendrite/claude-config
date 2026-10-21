@@ -4184,7 +4184,8 @@ class TestMarkerScriptCumulativeReview:
         _lib_capped cap elsewhere."""
         _seed_session(isolated_home, self.SID)
         env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', sleep_seconds=20)
-        with assert_cap_engaged(tmp_path, production_cap=15):
+        # Two 15s caps fire: _lib_cumulative_diff_hash's on the whole script and the script's own on `gh pr view`.
+        with assert_cap_engaged(tmp_path, production_cap=15, killed_calls=2):
             result = _run(["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=env)
         assert result.returncode == 0, result.stderr
         assert "cumulative-review: absent" in result.stdout
@@ -4215,7 +4216,8 @@ class TestMarkerScriptCumulativeReview:
         assert write_result.returncode == 0, write_result.stderr
 
         timeout_env = gh_timeout_shim('[ "$1" = "pr" ] && [ "$2" = "view" ]', sleep_seconds=20)
-        with assert_cap_engaged(tmp_path, production_cap=15):
+        # Two 15s caps fire: _lib_cumulative_diff_hash's on the whole script and the script's own on `gh pr view`.
+        with assert_cap_engaged(tmp_path, production_cap=15, killed_calls=2):
             result = _run(
                 ["status"], cwd=cumulative_diff_repo, home=isolated_home, extra_env=timeout_env
             )

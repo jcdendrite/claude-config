@@ -608,6 +608,25 @@ _lib_repo_root() {
   printf '%s' "$root"
 }
 
+# _lib_path_ignore_status DIR PATH
+# Returns 0 when PATH is ignored in DIR's repository, 1 when it is not, else git's or the cap's status.
+# Status 3 is a sentinel for an empty or unenterable DIR that git never returns here.
+# Writes nothing to stdout, and the git call's own 2>/dev/null also swallows _lib_capped_for's uncapped-run notice.
+# Unsets GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE so an inherited value cannot point the check at another repository's ignore rules.
+# Uses cd and not git -C because the Write tool resolves a relative PATH against the caller's cwd, which can be a repository subdirectory.
+# Runs git through _lib_capped so a stalled call cannot hang the caller.
+# Checks an empty DIR first because `cd ''` succeeds in place on bash 5.2.
+# A cd failure exits 3 inside the subshell so it is not mistaken for git's status 1 ("not ignored").
+_lib_path_ignore_status() {
+  local dir="$1" path="$2"
+  [ -n "$dir" ] || return 3
+  (
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+    cd "$dir" 2>/dev/null || exit 3
+    _lib_capped git check-ignore -q -- "$path" 2>/dev/null
+  )
+}
+
 # Main-tree root: dirname of --git-common-dir, which points at the shared .git
 # directory from any linked worktree (git-worktree(1), "Details").
 # review-pr-checkout.sh, review-pr-finish.sh, and
@@ -4000,6 +4019,18 @@ _lib_has_unsafe_ssh_dir_reference() {
       return 0
     fi
   done < <(printf '%s' "$text" | grep -oEi '\.ssh([._-][A-Za-z0-9_.-]*)?/[^[:space:]"'"'"']+')
+  return 1
+}
+
+# _lib_dotenv_basename_is_secret BASENAME
+# Returns 0 for `.env` and any `.env.*` other than `.env.example`, `.env.template` and `.env.sample`, and 1 otherwise.
+# Mirrors deny-env-reads.sh's basename rule; test_deny_env_reads.py's parity test ties the two.
+# Case-sensitive like that hook, so `.ENV` is not secret here either.
+_lib_dotenv_basename_is_secret() {
+  case "$1" in
+    .env.example|.env.template|.env.sample) return 1 ;;
+    .env|.env.*) return 0 ;;
+  esac
   return 1
 }
 

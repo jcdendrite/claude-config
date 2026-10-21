@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 
 import pytest
@@ -210,3 +211,53 @@ class TestDenyEnvReads:
         assert result.stdout.strip()
         payload = json.loads(result.stdout)
         assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+# Near misses the hook's patterns do not name: `.env.vault` and `.env.` match `.env.*`; `.envrc` and `.ENV` do not.
+_DOTENV_NEAR_MISS_BASENAMES = [".env.local", ".env.production", ".env.ci", ".env.vault", ".envrc", ".ENV", ".env."]
+_PATTERN_SAMPLE_SUFFIX = "sample-suffix"
+_BASENAME_CASE_ARM_HEADER = re.compile(r"(?m)^  (\S+)\)$")
+_BASENAME_ARM_COUNT_FLOOR = 3
+_BASENAME_ALTERNATIVE_COUNT_FLOOR = 6
+
+
+def _hook_basename_corpus() -> list[str]:
+    """One basename per alternative of both arms (allow and deny) of the hook's first `case "$BASENAME" in`.
+
+    A literal alternative is used as is, and an `X*` alternative as `X` plus a sample suffix, so a pattern
+    added to either arm is covered without editing this file.
+    """
+    source = DENY_ENV_READS_HOOK.read_text()
+    case_body = source.partition('case "$BASENAME" in\n')[2].partition("\nesac")[0]
+    arm_headers = _BASENAME_CASE_ARM_HEADER.findall(case_body)
+    alternatives = [alternative for header in arm_headers for alternative in header.split("|")]
+    assert len(arm_headers) >= _BASENAME_ARM_COUNT_FLOOR, arm_headers
+    assert len(alternatives) >= _BASENAME_ALTERNATIVE_COUNT_FLOOR, alternatives
+    return [
+        alternative.removesuffix("*") + _PATTERN_SAMPLE_SUFFIX if alternative.endswith("*") else alternative
+        for alternative in alternatives
+    ]
+
+
+# Every basename the hook and _lib_dotenv_basename_is_secret must agree on.
+_DOTENV_PARITY_BASENAMES = list(dict.fromkeys([*_hook_basename_corpus(), *_DOTENV_NEAR_MISS_BASENAMES]))
+
+
+@pytest.mark.parametrize("basename", _DOTENV_PARITY_BASENAMES)
+def test_dotenv_helper_matches_hook_verdict(basename, tmp_path):
+    """pr-diff-against-base.sh withholds a changed path by _lib_dotenv_basename_is_secret, which copies this
+    hook's basename rule. A pattern the hook later adds fails this test until the helper follows.
+
+    Each basename gets its own tmp_path, so `.env` and `.ENV` never share a directory on a case-insensitive volume.
+    """
+    hook_denies = run_hook(DENY_ENV_READS_HOOK, read_input(str(tmp_path / basename))) == "deny"
+
+    helper = subprocess.run(
+        ["bash", "-c", '. "$1"; _lib_dotenv_basename_is_secret "$2"', "bash", str(HOOKS_DIR / "_lib.sh"), basename],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert helper.returncode in (0, 1), repr(helper)
+    assert (helper.returncode == 0) == hook_denies
