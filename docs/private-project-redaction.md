@@ -440,6 +440,19 @@ commits, PR bodies, or added diff lines. Case variants (`acmecorporation`,
 doesn't already cover, while introducing a small false-positive surface for
 legitimate standalone uses of the word.
 
+✅ **Do add the bare prefix when it equals an allowlisted one** — the tracker-ID
+tier drops any token whose prefix is in the hook's `OSS_ALLOWLIST` (the
+`OSS_ALLOWLIST` value in the hook is the authoritative list), so for a project
+key such as `UTC` the blocklist is the only backstop. Enter the bare word,
+because a trailing hyphen (`UTC-`) never matches `UTC-<digits>` under
+whole-word matching. The bare entry also denies every standalone use of the
+word, including legitimate ones like a UTC offset written with a hyphen. This
+advice applies only to allowlisted prefixes that are rare in ordinary prose.
+Under whole-word matching, a bare entry for a short or common prefix such as
+`MD`, `GH`, or `BUG` would match ordinary text (`.md` paths, the word `bug`,
+`gh` commands) and over-deny widely, so do not add those. For such a key, rely
+on reviewer discipline instead of mechanical match.
+
 ❌ **Avoid very short or common-word codenames as bare entries.** Whole-word
 matching shrinks the false-positive surface compared to substring match, but a
 3-letter codename like `ART` would still match commits mentioning the word
@@ -458,7 +471,9 @@ handles, and author lines naming `<username>`.
 **Rule of thumb:**
 
 - **Tracker prefixes** (`[A-Z]{2,}` + dash + digits): trust the tracker-ID
-  regex; don't blocklist the bare prefix.
+  regex; don't blocklist the bare prefix. Exception: a prefix that equals an
+  `OSS_ALLOWLIST` entry bypasses that tier, so for prefixes rare in ordinary
+  prose, blocklist the bare word (see the worked example above for the limits).
 - **Distinctive project names** (full names, codenames ≥ 5 chars and not common
   English words): blocklist them. Whole-word + case-insensitive handles casing
   variants automatically.
@@ -534,7 +549,12 @@ whole hook there: all three scans, with no per-scan switch.
   diff line, in PR/issue text, or in a commit message whose commit stages a
   non-empty diff. The scan covers the text typed into the gated command, so a
   tracker-shaped branch name or path typed there denies too, and dropping it
-  from the command is the only remedy.
+  from the command is the only remedy. This scan does not deny a repo whose
+  own tracker key equals an `OSS_ALLOWLIST` prefix. A bare-word blocklist entry
+  backstops that key only for a prefix the worked example in
+  [What to put in the file (and what NOT to)](#what-to-put-in-the-file-and-what-not-to)
+  allows. For any other allowlisted prefix, no mechanical control remains, and
+  reviewer discipline is the only control.
 - Every structural detector over added diff lines and command text. Long-hex
   hits include SHA-pinned workflow actions, image digests, lockfile hashes,
   full commit SHAs quoted in a PR body, and UUID fixtures. See
