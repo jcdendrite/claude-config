@@ -57,9 +57,11 @@ def _skip_regex_pattern() -> str:
 
 
 def _grep_e_matches(pattern: str, candidate: str) -> bool:
-    """Match via the real `grep -E` binary rather than `re.compile` — see
-    test_shellcheck.py's `TestCiGateCoversDiscovery._grep_e_matches` for why
-    (CI evaluates the pattern with `grep -E`'s POSIX ERE dialect)."""
+    """Match via the real `grep -E` binary rather than `re.compile`.
+
+    CI evaluates the pattern with `grep -E`'s POSIX ERE dialect, so a future
+    GNU-ERE-only construct would be silently reinterpreted by `re.compile`
+    and leave these tests green while CI diverges."""
     result = subprocess.run(
         ["grep", "-E", pattern],
         input=candidate,
@@ -81,8 +83,7 @@ def _tracked_files() -> list[str]:
 
 
 class TestSkipRegexBounded:
-    """Pattern-only checks against SKIP_REGEX, mirroring
-    test_shellcheck.py's `TestCiGateCoversDiscovery` shape."""
+    """Pattern-only checks against SKIP_REGEX."""
 
     def test_deny_list_paths_match(self):
         pattern = _skip_regex_pattern()
@@ -121,8 +122,7 @@ class TestSkipRegexBounded:
 
 class TestDetectStepFailOpenSetsChanged:
     """Executes the `detect` step's real `run:` body against the `changed`
-    output, reusing `test_shellcheck.py`'s extraction/execution helpers
-    (hoisted to `helpers.py`, shared by both files) for the same step.
+    output, using the extraction/execution helpers in `helpers.py`.
     `TestSkipRegexBounded` only sees SKIP_REGEX as a string; it cannot see
     the surrounding quantifier — "changed=true unless every changed path
     matches SKIP_REGEX" — which is the actual boolean this mechanism exists
@@ -171,12 +171,11 @@ class TestDetectStepFailOpenSetsChanged:
         )
 
     def test_zero_sha_base_sets_changed_true(self, tmp_path: Path):
-        """The exact regression this PR's CI path-filter mechanism targets.
+        """A zero-SHA BASE fails open to running the suite.
 
         The zero-SHA/unresolvable-BASE early-exit branch must set
-        changed=true — it is the fail-open path for the pytest suite, not
-        just for shellcheck (test_shellcheck.py's
-        `test_zero_sha_base_sets_shell_changed_true` covers that output).
+        changed=true — it is the fail-open path for the pytest suite, which
+        also carries the shellcheck lint (`test_shellcheck.py`).
         """
         repo, _base_sha, head_sha = init_ci_detect_step_test_repo(
             tmp_path, {"README.md": "second\n"}

@@ -6,10 +6,10 @@
 # is silently never linted while CI stays green, so discovery is computed
 # rather than hardcoded.
 #
-# Both the shellcheck step in .github/workflows/tests.yml and
-# claude/.claude/hooks/tests/test_shellcheck.py invoke this script, so the
-# linted set is defined in exactly one place. That test also re-derives the
-# set independently and asserts the two agree.
+# The CI lint runs through claude/.claude/hooks/tests/test_shellcheck.py,
+# which invokes this script, so the linted set is defined in exactly one
+# place. That test also scans independently with a looser shebang pattern and
+# asserts discovery returns everything that scan finds.
 #
 # Output is NUL-separated so paths containing whitespace survive; consume it
 # with `xargs -0` or `read -r -d ''`.
@@ -20,8 +20,9 @@ cd "$(git rev-parse --show-toplevel)"
 # This loop body runs in a subshell under set -e. Every command in it must be
 # exit-status-guarded (|| continue, or inside if/case) — an unguarded command
 # that fails would abort the subshell mid-enumeration and silently truncate
-# the file list, which is worse than the empty-list case: an empty list exits
-# 3 downstream and fails loudly, but a truncated list just under-lints.
+# the file list, which is worse than the empty-list case: an empty list fails
+# loudly (`xargs -0 shellcheck` exits non-zero on GNU xargs; `TestRepoIsClean` fails
+# through `assert files`), but a truncated list just under-lints.
 git ls-files -z | while IFS= read -r -d '' file; do
   case "$file" in
     *.sh)
