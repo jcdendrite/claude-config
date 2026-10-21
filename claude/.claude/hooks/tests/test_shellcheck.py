@@ -5,13 +5,12 @@ shell file that discovery never returns is never checked, and CI stays green
 while the file rots. `scripts/list-shell-files.sh` owns discovery for both the
 contributor lint command and these tests, so a bug in its shebang
 *classification* pattern would be invisible to a test that reused the same
-pattern — the tests below re-derive
-that classification independently rather than recompiling the production
-regex. This independence covers shebang matching only: both the production
-script and `_independently_expected_files()` enumerate via the same
-`git ls-files -z` and both read only the first line of each file, so a shared
-blind spot upstream of classification (e.g. a byte-order mark before the
-shebang) is invisible to both.
+pattern — the tests below re-derive that classification independently rather
+than recompiling the production regex. This independence covers shebang
+matching only: both the production script and `_independently_expected_files()`
+enumerate via the same `git ls-files -z` and both read only the first line of
+each file, so a shared blind spot upstream of classification (e.g. a
+byte-order mark before the shebang) is invisible to both.
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,12 +28,13 @@ from helpers import REPO_ROOT
 DISCOVERY_SCRIPT = REPO_ROOT / "scripts" / "list-shell-files.sh"
 
 # Tracked shell scripts that carry no .sh extension and are identifiable only
-# by shebang. Hardcoded on purpose: in CI an explicit list would rot into "did
-# the author remember?", but in a test it is the known floor that makes a
-# discovery regression fail loudly. This is a floor, not a ceiling — it only
-# fails when a currently-listed file stops being discovered; it does nothing
-# to catch a newly-added extensionless script that discovery also misses. Add
-# to this list when a new extensionless shell script is committed.
+# by shebang. Hardcoded on purpose: in the discovery script an explicit list
+# would rot into "did the author remember?", but in a test it is the known
+# floor that makes a discovery regression fail loudly. This is a floor, not a
+# ceiling — it only fails when a currently-listed file stops being discovered;
+# it does nothing to catch a newly-added extensionless script that discovery
+# also misses. Add to this list when a new extensionless shell script is
+# committed.
 KNOWN_EXTENSIONLESS_SHELL_FILES = frozenset(
     {
         "claude/.local/bin/analyze-context",
@@ -139,6 +140,27 @@ def _xargs_invokes_command_on_empty_input() -> bool:
         ["xargs", "-0", "false"], input="", capture_output=True, text=True
     )
     return result.returncode != 0
+
+
+class TestRequireShellcheck:
+    """Missing shellcheck fails in CI, not skips: a skip passes the lint vacuously."""
+
+    # Catch BaseException and compare the outcome type exactly: a guard
+    # collapsed to pytest.skip would otherwise escape pytest.raises(Failed)
+    # and report this test as skipped rather than failed.
+    def test_fails_in_ci_when_shellcheck_is_missing(self, monkeypatch):
+        monkeypatch.setattr(sys.modules[__name__], "_shellcheck_binary", lambda: None)
+        monkeypatch.setenv("CI", "true")
+        with pytest.raises(BaseException) as outcome:
+            _require_shellcheck()
+        assert outcome.type is pytest.fail.Exception
+
+    def test_skips_outside_ci_when_shellcheck_is_missing(self, monkeypatch):
+        monkeypatch.setattr(sys.modules[__name__], "_shellcheck_binary", lambda: None)
+        monkeypatch.delenv("CI", raising=False)
+        with pytest.raises(BaseException) as outcome:
+            _require_shellcheck()
+        assert outcome.type is pytest.skip.Exception
 
 
 class TestDiscovery:

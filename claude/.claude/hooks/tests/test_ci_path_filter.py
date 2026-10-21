@@ -61,7 +61,8 @@ def _grep_e_matches(pattern: str, candidate: str) -> bool:
 
     CI evaluates the pattern with `grep -E`'s POSIX ERE dialect, so a future
     GNU-ERE-only construct would be silently reinterpreted by `re.compile`
-    and leave these tests green while CI diverges."""
+    and leave these tests green while CI diverges.
+    """
     result = subprocess.run(
         ["grep", "-E", pattern],
         input=candidate,

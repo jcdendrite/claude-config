@@ -18,11 +18,11 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 # This loop body runs in a subshell under set -e. Every command in it must be
-# exit-status-guarded (|| continue, or inside if/case) — an unguarded command
-# that fails would abort the subshell mid-enumeration and silently truncate
-# the file list, which is worse than the empty-list case: an empty list fails
-# loudly (`xargs -0 shellcheck` exits non-zero on GNU xargs; `TestRepoIsClean` fails
-# through `assert files`), but a truncated list just under-lints.
+# exit-status-guarded (|| continue, or inside if/case).
+# An unguarded failure would abort the subshell and silently truncate the list.
+# An empty list fails loudly: `xargs -0 shellcheck` exits non-zero on GNU
+# xargs, and `TestRepoIsClean` asserts a non-empty list.
+# A truncated list, by contrast, only under-lints.
 git ls-files -z | while IFS= read -r -d '' file; do
   case "$file" in
     *.sh)
