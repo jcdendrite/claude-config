@@ -729,6 +729,9 @@ DOMAIN_RULES: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ...] = (
 # The hook's read closure is .sh files plus config-keys.psv. This rule and
 # the CONFIG_KEYS_PSV row both map to SCRIPTS_TESTS_DIR, so the test needs no
 # exact-path constant. A read of any other file type would need one.
+# test_skills.py's test_scripts_doc_claims_about_code_review_callers_hold
+# (SKILLS_TESTS_DIR) also scans claude/.claude/hooks/*.sh for a caller of
+# pr-diff-against-base.sh's legacy staged-artifact mode.
 # _is_plugin_hooks_change, _is_plugin_skills_change, _is_plugin_agents_change,
 # and _is_plugin_manifest_change match every plugin under plugins/, not only
 # lovable-cloud -- the test globs cited above are plugin-generic, so the
@@ -855,7 +858,7 @@ CROSS_DOMAIN_EXCEPTIONS: tuple[tuple[Callable[[str], bool], tuple[str, ...]], ..
     (lambda p: p == REVIEW_PR_AUDIT_SCRIPT, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == REVIEW_PR_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
     (lambda p: p == PERIOD_COST_REPORT_SKILL_MD, (SCRIPTS_TESTS_DIR,)),
-    (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR,)),
+    (_is_hooks_dir_shell_script_change, (SCRIPTS_TESTS_DIR, SKILLS_TESTS_DIR)),
     (
         lambda p: _is_under(p, AGENTS_DIR),
         (

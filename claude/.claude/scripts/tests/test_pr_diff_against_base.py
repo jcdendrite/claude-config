@@ -26,9 +26,11 @@ from pathlib import Path
 
 import pytest
 from helpers import (
+    CONTEXT_FILES_EXIT_ZERO_TOKEN_NAMES,
     GITLINK_AFTER,
     GITLINK_BEFORE,
     HOOKS_DIR,
+    LANE_INDEX_ROW_FIELDS,
     assert_cap_engaged,
     cumulative_review_value,
     isolated_git_diff,
@@ -1693,8 +1695,6 @@ _SUFFIX = "1700000000-gh1208"
 _HALT_POINTER = 'see docs/scripts.md § "When --context-files halts"'
 _HALT_HEADING = "When --context-files halts"
 
-# The index row's field order, as docs/scripts.md states it.
-_INDEX_ROW_FIELDS = ("status", "lane", "base", "history", "notes", "path")
 _INDEX_HEADER_KEYS = (
     "lane-index", "mode", "root", "base", "head", "generated", "lane", "diff-file", "base-file", "history-file",
 )
@@ -1728,10 +1728,7 @@ def _context_env(tmp_path: Path, *, base_ref: str | None = "main", extra_path: t
 
 
 def _is_token_line(line: str) -> bool:
-    return line.startswith((
-        "LISTING: ", "CHANGED_PATH: ", "LANE_ROW_COUNT: ", "LANE_INDEX: ", "LANE_DIFF: ", "LANE_ROW: ",
-        "CONTEXT_DEGRADED: ", "BASE_GUESSED: ", "DIFF_EMPTY: ",
-    ))
+    return line.startswith(tuple(f"{token_name} " for token_name in CONTEXT_FILES_EXIT_ZERO_TOKEN_NAMES))
 
 
 def _assert_exit_hygiene(result: subprocess.CompletedProcess, *, lane_agents: tuple[str, ...] | None) -> None:
@@ -1873,8 +1870,8 @@ def _parse_index(index_path: Path) -> tuple[dict[str, str], list[dict[str, str |
     rows = []
     for line in body.split("\n")[:-1]:
         fields = line.split("\t")
-        assert len(fields) in (len(_INDEX_ROW_FIELDS), len(_INDEX_ROW_FIELDS) + 1), line
-        row: dict[str, str | None] = dict(zip(_INDEX_ROW_FIELDS, fields, strict=False))
+        assert len(fields) in (len(LANE_INDEX_ROW_FIELDS), len(LANE_INDEX_ROW_FIELDS) + 1), line
+        row: dict[str, str | None] = dict(zip(LANE_INDEX_ROW_FIELDS, fields, strict=False))
         row["old_path"] = fields[6] if len(fields) == 7 else None
         rows.append(row)
     return header, rows
@@ -5711,6 +5708,7 @@ class TestScriptsDocHaltsSection:
         [
             "DIFF_MISMATCH:", "CONTEXT_NOT_IGNORED:", "LISTING_STALE:", "A `LANE_ROW:` mismatch", "A hook denial of either call",
             "A Bash-tool timeout", "A usage error",
+            "A refused permission prompt", "An unreconciled count", "A denied `Read` of a lane file",
         ],
     )
     def test_the_section_holds_an_entry_for_each_non_step_halt(self, token):

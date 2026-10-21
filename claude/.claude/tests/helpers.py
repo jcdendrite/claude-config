@@ -55,6 +55,46 @@ _CI_DETECT_STEP_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 
 _LIB_SH = HOOKS_DIR / "_lib.sh"
 
+# A reviewer finding requests a check with a line that begins with this label.
+FINDING_CHECK_LABEL = "Check:"
+
+# The field order of a lane index row, as docs/scripts.md states it; a rename or copy row appends its old path.
+LANE_INDEX_ROW_FIELDS = ("status", "lane", "base", "history", "notes", "path")
+
+# The token names pr-diff-against-base.sh --context-files prints to stderr on exit 0, each followed by a space and its
+# value; code-review/SKILL.md's resolving note names these tokens plus `LISTING_STALE:`, which only a failing run prints.
+CONTEXT_FILES_EXIT_ZERO_TOKEN_NAMES = (
+    "LISTING:",
+    "CHANGED_PATH:",
+    "LANE_ROW_COUNT:",
+    "LANE_INDEX:",
+    "LANE_DIFF:",
+    "LANE_ROW:",
+    "CONTEXT_DEGRADED:",
+    "BASE_GUESSED:",
+    "DIFF_EMPTY:",
+)
+
+# These three clauses appear word for word in code-writer.md's Check: bullet
+# and in code-review/SKILL.md's "Requested checks" subsection.
+CHECK_EFFECT_BOUND_SENTENCE = (
+    "Trace everything the run loads (the test, the code under test, and any runner config, fixture or setup file the "
+    "runner picks up) before each run, a re-run after correcting the test included: if running it on the unfixed "
+    "code would do more than return a verdict or write inside the test's own temporary directory (reach the network "
+    "or a credential, touch a process the test did not start or any state outside that directory, or use unbounded "
+    "resources), or you cannot establish that by tracing, do not run it."
+)
+CHECK_UNSUPPORTED_CLAUSE = (
+    "If the test passes on the unfixed code, remove the test you wrote, report this finding as unsupported under "
+    "**Still uncertain** with the test's path, the assertion it made and the test's source, change nothing else for "
+    "it, and continue with the other findings."
+)
+CHECK_NO_TEST_CLAUSE = (
+    "If you do not run the test, or no such test can be written or run, remove any test or file you created for it, "
+    "fix the code by reading and tracing it as for any finding, report `no regression test: <reason>` under "
+    "**Still uncertain**, and continue with the other findings."
+)
+
 # About 320 KB in 32 lines. Append it after a command whose first line matches.
 # `grep -q` exits on that match while the writer still has output.
 # A pipe into it then returns 141 under pipefail.

@@ -443,8 +443,17 @@ class TestSelectPytestTargets:
         assert result.is_full_suite is False
         assert set(result.target_paths) == {
             _mod.HOOKS_TESTS_DIR, _mod.TRANSCRIPT_ANALYSIS_TEST_GLOB, _mod.TRANSCRIPT_DENIALS_TEST_PATH,
-            _mod.SCRIPTS_TESTS_DIR,
+            _mod.SCRIPTS_TESTS_DIR, _mod.SKILLS_TESTS_DIR,
         }
+
+    def test_hooks_dir_shell_script_change_also_selects_skills_tests(self):
+        """test_skills.py's test_scripts_doc_claims_about_code_review_callers_hold
+        (SKILLS_TESTS_DIR) scans claude/.claude/hooks/*.sh for a caller of the
+        legacy staged-artifact mode docs/scripts.md says has none.
+        Without this cross-domain exception, a hook that adds such a caller
+        leaves that check unrun."""
+        result = _mod.select_pytest_targets(["claude/.claude/hooks/deny-example.sh"])
+        assert _mod.SKILLS_TESTS_DIR in result.target_paths
 
     def test_scripts_change_also_selects_ticket_reference_discipline_test(self):
         """test_ticket_reference_discipline.py statically scans every

@@ -36,6 +36,7 @@ Run with: pytest claude/.claude/
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -57,13 +58,21 @@ from _skill_auxiliary_files import SKILL_AUXILIARY_MD_NAMES
 # pyproject.toml's pythonpath also puts claude/.claude/tests on the import
 # path, where these shared test helpers live.
 from helpers import (
+    CHECK_EFFECT_BOUND_SENTENCE,
+    CHECK_NO_TEST_CLAUSE,
+    CHECK_UNSUPPORTED_CLAUSE,
     CLAUDE_DIR,
+    CONTEXT_FILES_EXIT_ZERO_TOKEN_NAMES,
+    FINDING_CHECK_LABEL,
+    HOOKS_DIR,
     REPO_ROOT,
     SCRIPTS_DIR,
     SKILLS_DIR,
+    bash_input,
     extract_skill_command,
     heading_texts,
     normalize_heading,
+    run_hook,
     run_skill_command,
 )
 
@@ -5308,57 +5317,502 @@ def test_claude_hook_review_section10_handoff_rules_present() -> None:
         )
 
 
-def test_code_review_staged_diff_instruction_lives_in_its_own_note_only() -> None:
-    """The comment-discipline-reviewer diff-artifact-resolution procedure
-    lives in its own subsection directly below the Change-type table, not
-    inside the row itself and not in Step 0. A file-wide `in` check would
-    pass just as well if a later edit moved the instruction back into the
-    row or into Step 0, so this locates the note's own text before also
-    checking the file-wide occurrence count.
+_RESOLVING_NOTE_HEADING = "**Resolving each spawn's inputs.**"
+
+# The note's own sentences, each pinned word for word so an edit that drops a halt, a re-list or a placement rule fails here.
+_RESOLVING_NOTE_PINNED_SENTENCES = (
+    "Run no script under your invoker's standing no-change override, such as `/review-pr`'s.",
+    "Run none when it handed you a diff file other than the cumulative diff file `ready-for-review/SKILL.md` "
+    '§ "3. Code review (halt on findings)" hands you.',
+    "Run none when the review is a pasted-snippet or ad-hoc review with no git diff behind it at all.",
+    "Otherwise, before the first spawn of the round, run "
+    "`~/.claude/scripts/pr-diff-against-base.sh <source> --context-files <suffix> --list` as its own Bash call with "
+    "`timeout: 600000`, then run the same command with `--listing <id> -- <lane>...` in place of `--list`, also as "
+    "its own Bash call with `timeout: 600000`.",
+    "When routing spawns nothing, run only the first call.",
+    "`<suffix>` is this round's `findings-path-suffix.sh` value, and `<id>` is the first value on the `LISTING:` line "
+    "the first call printed, not its count.",
+    "Quote every value by the single-quote rule under Review-narrative ledger below.",
+    "`<source>` is `--staged` for the staged diff, `--working-tree` for a presentation-path review of uncommitted "
+    "changes, `--expect-diff <path>` for the cumulative diff file `ready-for-review/SKILL.md` "
+    '§ "3. Code review (halt on findings)" handed you, and empty for this branch\'s cumulative diff; in args that '
+    "begin with the word `unrouted`, with or without quotation marks around it, the path is what follows that word, "
+    "and `unrouted` alone hands you no path.",
+    "Classify the changed paths for Step 0.6 from the first call's `CHANGED_PATH:` lines.",
+    "Each `<lane>` is `'<agent-name>'` for a spawn that reviews the whole diff, `'<agent-name>:diff'` for a spawn "
+    "handed only a diff (`comment-discipline-reviewer`), or `'<agent-name>=<n>,<n>'` for a spawn with a listed lane, "
+    "where each `<n>` is the number of one of its changed paths in those lines.",
+    "A matched row's directed causal-reach instruction puts every changed path it reaches in that spawn's lane",
+    "an agent two matched rows name spawns once with both rows' lanes and questions",
+    "After the second call, compare each `LANE_ROW: <agent-name> <n> <path>` line with the path you meant for that lane.",
+    "On a mismatch, correct the lane and run the second call once more with the same `<id>`, "
+    "and a second mismatch halts the review.",
+    "Hand each spawn the lane index path its `LANE_INDEX: <agent-name>` line names "
+    "(a header naming its `.diff`, base and history files, and one row per changed path), and "
+    "`comment-discipline-reviewer` its `LANE_DIFF:` path instead, plus the repository root, the directory that holds "
+    "`agent-reviews/` in that path.",
+    "When `ciso-reviewer` spawns, put every path the listing marks `withheld` in its lane; "
+    "when routing skips it, name every `withheld` path on the `Spawn decisions:` line as not reviewed.",
+    "Name no listing number in a spawn's prompt.",
+    "A `DIFF_EMPTY:` line from either call means there is nothing to review: spawn nothing and say so.",
+    "A `LISTING_STALE:` line means the changed paths moved between the two calls.",
+    "Run the first call again once; the new listing repeats the Step 0.6 classification, the spawn set and every lane, "
+    "from its numbers and never the old ones, and a path present in only one of the two listings goes through "
+    "classification like any other.",
+    "Run the second call again.",
+    "A second `LISTING_STALE:` halts the review.",
+    "Any other non-zero exit, or a Bash-tool timeout with no token line, halts the review: quote the script's "
+    "stderr when it printed one, and never rerun a halt.",
+    "After a timeout the script may still be running: treat a late completion as no success for the halted round, "
+    "and never start a second run into the same lane files.",
+    "A hook denial or a refused permission prompt for either call is a halt too: quote the denial and never re-form "
+    "the command.",
+    "When a tool result is a truncated preview, or the highest `CHANGED_PATH:` number you can see is not the "
+    "`LISTING:` count, or you see fewer `LANE_ROW:` lines than `LANE_ROW_COUNT:` gives, `Read` the full output file "
+    "the result names before classifying, numbering or comparing.",
+    "Halt the review, quoting both numbers, if that read fails, if the full file's highest `CHANGED_PATH:` number "
+    "still differs from the `LISTING:` count, or if its `LANE_ROW:` lines still number fewer than `LANE_ROW_COUNT:`.",
+    "Report any `CONTEXT_DEGRADED:` line, with its count, and any `BASE_GUESSED:` line on the `Spawn decisions:` line.",
+    "In the cases that run nothing, hand each spawn the invoker's diff-file path, else the diff text you do have, "
+    "verbatim, name its lane and any tree root the invoker names in the prompt, say in `/review-pr`'s `diff-only` "
+    "mode that no local tree exists, and name the missing files on the `Spawn decisions:` line.",
+    'Every halt in this note names `docs/scripts.md` § "When --context-files halts" to the engineer, and for a timeout '
+    "that section's timeout entry covers what the killed run leaves behind.",
+)
+
+# Literals of the retired staged-diff-file recipe; none may reappear in the note.
+_RESOLVING_NOTE_RETIRED_LITERALS = (
+    "--diff-file",
+    "CONTEXT_FALLBACK:",
+    "DIFF_FILE:",
+    "Neither is a write failure",
+    "quote the script's own stderr line",
+    "LANE_PATH_UNMATCHED:",
+    "correct it from the `CHANGED_PATH:` lines and rerun once",
+)
+
+
+def _code_review_resolving_note(skill_md_path: Path) -> str:
+    """The resolving note's text, from its bold run-in heading to the next note's heading."""
+    text = skill_md_path.read_text()
+    assert _RESOLVING_NOTE_HEADING in text, f"{skill_md_path}: the input-resolution note heading is missing"
+    note_start = text.index(_RESOLVING_NOTE_HEADING)
+    return text[note_start : text.index("**Invalid skip rationales.**", note_start)]
+
+
+def test_code_review_resolving_note_pins() -> None:
+    """The per-spawn input-resolution procedure lives in its own note directly
+    below the Change-type table, not inside the comment-discipline row and not
+    in Step 0. A file-wide `in` check would pass just as well if a later edit
+    moved the recipe back into the row, so this locates the note's own text
+    before also checking the file-wide occurrence count.
     """
     skill_md_path = _skill_file("code-review")
     text = skill_md_path.read_text()
+    note_text = _code_review_resolving_note(skill_md_path)
     row_text = _scope_exempt_change_type_row_text(skill_md_path)
 
-    note_heading = "**Resolving `comment-discipline-reviewer`'s diff artifact.**"
-    next_heading = "**Invalid skip rationales.**"
-    assert note_heading in text, (
-        f"{skill_md_path}: the diff-artifact-resolution note heading is missing"
+    recipe_literal = "pr-diff-against-base.sh <source> --context-files <suffix>"
+    assert recipe_literal in note_text, f"{skill_md_path}: the resolving note no longer carries the recipe"
+    assert text.count(recipe_literal) == 1, (
+        f"{skill_md_path}: {recipe_literal!r} must appear exactly once, inside the resolving note only -- "
+        "not duplicated into Step 0 or the row"
     )
-    note_start = text.index(note_heading)
-    note_end = text.index(next_heading, note_start)
-    note_text = text[note_start:note_end]
-
-    staged_diff_literal = "pr-diff-against-base.sh --staged --diff-file"
-    assert staged_diff_literal not in row_text, (
-        f"{skill_md_path}: the comment-discipline-reviewer row should point to "
-        "the resolution note below the table, not restate the procedure inline"
+    assert recipe_literal not in row_text, (
+        f"{skill_md_path}: the comment-discipline row should point to the resolving note below the table, "
+        "not restate the recipe inline"
     )
-    assert staged_diff_literal in note_text, (
-        f"{skill_md_path}: the resolution note no longer carries the "
-        "diff-artifact-resolution instruction"
-    )
-    assert text.count(staged_diff_literal) == 1, (
-        f"{skill_md_path}: {staged_diff_literal!r} must appear exactly once, inside "
-        "the resolution note only -- not duplicated into Step 0 or the row"
+    assert "naming it with that note's `:diff` form" in row_text, (
+        f"{skill_md_path}: the comment-discipline row must name the `:diff` lane form the note defines"
     )
 
-    for literal in (
-        "DIFF_EMPTY:",
-        "pasted-snippet or ad-hoc review with no git diff behind it at all",
-        "quote the script's own stderr line",
-        "halt the review",
+    # `LISTING_STALE:` is excluded: a rename fails closed into the note's "Any other non-zero exit" halt.
+    note_token_names = set(re.findall(r"`([A-Z][A-Z_]*:)", note_text)) - {"LISTING_STALE:"}
+    assert note_token_names == set(CONTEXT_FILES_EXIT_ZERO_TOKEN_NAMES), (
+        f"{skill_md_path}: the resolving note's token names differ from the ones the script prints on exit 0: "
+        f"{sorted(note_token_names ^ set(CONTEXT_FILES_EXIT_ZERO_TOKEN_NAMES))}"
+    )
+    for literal in _RESOLVING_NOTE_RETIRED_LITERALS:
+        assert literal not in note_text, f"{skill_md_path}: the resolving note still carries the retired {literal!r}"
+    for sentence in _RESOLVING_NOTE_PINNED_SENTENCES:
+        assert sentence in note_text, f"{skill_md_path}: the resolving note no longer carries {sentence!r}"
+    # The script's worst case runs past the Bash tool's 120 s default, so each call must pass the 600 s maximum.
+    assert note_text.count("as its own Bash call with `timeout: 600000`") == 2, (
+        f"{skill_md_path}: both calls must pass `timeout: 600000`"
+    )
+
+
+def test_code_review_spawn_step_halts_on_a_reviewer_that_could_not_read_its_inputs() -> None:
+    """A reviewer handed no readable input, or denied a `Read` of its lane
+    files, did not review; the spawn step halts instead of reconciling an
+    empty return. A denied lane `Read` is not worked around: the orchestrator
+    quotes the return, takes no recovery step, and names the docs' halts
+    section to the engineer. The test also pins the Withholding bullet's
+    remedy, which that section's denied-`Read` entry cites when the
+    repository root matches a withholding predicate.
+    """
+    text = _skill_file("code-review").read_text()
+    for sentence in (
+        "A reviewer whose return says it was handed no readable input did not review: "
+        "quote that return, halt the review, and tell the engineer to re-run it.",
+        "A denied `Read` of one of its lane files is a halt too: quote that return, halt the review, and "
+        "name `docs/scripts.md` § \"When --context-files halts\" to the engineer; take no recovery step yourself.",
+        "Spawn synchronously (not `run_in_background`)",
+        "The input script, or else the reviewer's `Write` call, creates the `agent-reviews/` directory.",
+        "Hand `staff-product-engineer` the spec as data: the text of the ticket or PR the branch, plan or PR names "
+        "and of every issue that text names as folded or parent, verbatim, fetching any you do not hold, only when it "
+        "is in this repository's own tracker, with one read-only call each by its bare identifier in single quotes "
+        "(for example `gh issue view` or `gh pr view`, or the tracker's equivalent), and say on the `Spawn decisions:` "
+        "line whether it got one and which other referenced issues were not fetched.",
+        "The boundary is passed as files the reviewer reads, never a ref expression, because a reviewer reads its "
+        "inputs rather than running `git`.",
     ):
-        assert literal in note_text, (
-            f"{skill_md_path}: the resolution note no longer carries "
-            f"the exact literal {literal!r}"
-        )
-
-    pr_diff_script_source = (SCRIPTS_DIR / "pr-diff-against-base.sh").read_text()
-    assert "--staged)" in pr_diff_script_source, (
-        "pr-diff-against-base.sh: expected the --staged case-arm label, not just "
-        "the flag name in the usage line or header comment"
+        assert sentence in text, f"code-review/SKILL.md no longer carries {sentence!r}"
+    scripts_doc_lines = (REPO_ROOT / "docs" / "scripts.md").read_text().splitlines()
+    withholding_bullet = next(line for line in scripts_doc_lines if line.lstrip().startswith("- **Withholding"))
+    assert "review from a checkout elsewhere" in withholding_bullet, (
+        "docs/scripts.md's Withholding bullet no longer names the remedy the halts section's denied-`Read` entry "
+        "cites for a matching root"
     )
+
+
+def test_scripts_doc_claims_about_code_review_callers_hold() -> None:
+    """docs/scripts.md states that `/code-review` runs `--context-files` and
+    that no in-repo caller uses `--staged --diff-file`. The first holds while
+    the skill's note carries the recipe; the second while no skill, agent,
+    hook or script invokes the legacy staged artifact mode.
+    """
+    scripts_doc = (REPO_ROOT / "docs" / "scripts.md").read_text()
+    assert "`/code-review` runs the `--context-files` mode below" in scripts_doc
+    assert "No in-repo caller uses `--staged --diff-file`" in scripts_doc
+    assert "--context-files" in _code_review_resolving_note(_skill_file("code-review"))
+
+    # The script parses either flag order, and a shell call may continue across lines with a trailing backslash.
+    staged_artifact_call = re.compile(
+        r"pr-diff-against-base\.sh[^\n]*(?:--staged[^\n]*--diff-file|--diff-file[^\n]*--staged)"
+    )
+    # The script's own header and the test files name the flags without invoking them.
+    caller_files = [
+        *SKILLS_DIR.rglob("*.md"),
+        *_PLUGINS_DIR.rglob("*.md"),
+        *_AGENTS_DIR.glob("*.md"),
+        *(CLAUDE_DIR / "hooks").glob("*.sh"),
+        *(path for path in SCRIPTS_DIR.glob("*.sh") if path.name != "pr-diff-against-base.sh"),
+    ]
+    callers = [
+        str(path.relative_to(REPO_ROOT))
+        for path in caller_files
+        if "/tests/" not in str(path) and staged_artifact_call.search(path.read_text().replace("\\\n", " "))
+    ]
+    assert callers == [], f"docs/scripts.md says no caller uses `--staged --diff-file`, but these do: {callers}"
+
+
+def _resolving_note_source_sentence(note_text: str) -> str:
+    source_match = re.search(r"`<source>` is (.*?), and empty for", note_text)
+    assert source_match, "the resolving note no longer states its `<source>` values"
+    return source_match.group(1)
+
+
+def _resolving_note_recipe_shapes(note_text: str) -> tuple[str, str, list[str]]:
+    """Return the note's list command, its lane-call command and its `<source>` flag values, each read from the note.
+
+    The lane call is the list command with `--list` replaced by the note's own `--listing <id> -- <lane>...` form.
+    """
+    list_match = re.search(r"`(~/\.claude/scripts/pr-diff-against-base\.sh <source> --context-files <suffix> --list)`", note_text)
+    tail_match = re.search(r"`(--listing <id> -- <lane>\.\.\.)`", note_text)
+    assert list_match and tail_match, "the resolving note no longer states its recipe shapes"
+    source_flags = re.findall(r"`(--[a-z-]+)(?: <path>)?` for ", _resolving_note_source_sentence(note_text))
+    list_command = list_match.group(1)
+    return list_command, list_command.replace(" --list", f" {tail_match.group(1)}"), source_flags
+
+
+def _resolving_note_lane_forms(note_text: str) -> list[str]:
+    """The note's three single-quoted `<lane>` forms: whole diff, diff-only and listed."""
+    lane_match = re.search(r"Each `<lane>` is (.*?) in those lines\.", note_text)
+    assert lane_match, "the resolving note no longer defines its `<lane>` forms"
+    lane_forms = re.findall(r"`('<agent-name>[^`]*')`", lane_match.group(1))
+    assert len(lane_forms) == 3, lane_forms
+    return lane_forms
+
+
+def _filled_lane_forms(note_text: str) -> list[str]:
+    """Each lane form with realistic values in place of its placeholders, still single-quoted as the note writes it.
+
+    The script rejects a repeated agent, so each form takes its own agent name.
+    """
+    filled = []
+    for lane_form in _resolving_note_lane_forms(note_text):
+        if ":diff" in lane_form:
+            agent_name = "comment-discipline-reviewer"
+        elif "=" in lane_form:
+            agent_name = "ciso-reviewer"
+        else:
+            agent_name = "staff-sdet"
+        filled.append(lane_form.replace("<agent-name>", agent_name).replace("<n>", "1", 1).replace("<n>", "2", 1))
+    return filled
+
+
+def test_resolving_note_flags_and_lane_forms_are_accepted_by_the_script(tmp_path: Path) -> None:
+    """Every flag the note's recipe names is one the script parses. A usage
+    error on an invalid suffix proves the flag was accepted; an unknown flag
+    would exit 2 with the unknown-argument message instead. A valid suffix with
+    every lane form the note names passes argument validation, and the same
+    run with a wrong separator in the listed form is rejected, so that pass
+    is a real validation pass.
+    """
+    note_text = _code_review_resolving_note(_skill_file("code-review"))
+    _, lane_command, source_flags = _resolving_note_recipe_shapes(note_text)
+    assert set(source_flags) == {"--staged", "--working-tree", "--expect-diff"}, source_flags
+    recipe_flags = set(re.findall(r"--[a-z][a-z-]*", note_text))
+    assert recipe_flags == {"--context-files", "--list", "--listing", *source_flags}, recipe_flags
+
+    invalid_suffix = "not-a-suffix"
+    valid_suffix = "1700000000-gh1208"
+    listing_id = hashlib.sha256(b"listing").hexdigest()
+    script = SCRIPTS_DIR / "pr-diff-against-base.sh"
+    # No GH_TOKEN and no GIT_* variables: a reordered validation must not reach `gh` or git with real credentials.
+    isolated_env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"], "TMPDIR": str(tmp_path)}
+
+    def run_script(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([str(script), *argv], capture_output=True, text=True, cwd=tmp_path, env=isolated_env, check=False)
+
+    forms = [
+        [flag, *(["handed-diff"] if flag == "--expect-diff" else []), "--context-files", invalid_suffix, *call]
+        for flag in source_flags
+        for call in (["--list"], ["--listing", listing_id, "--", "staff-sdet=1"])
+    ]
+    assert "<lane>..." in lane_command
+    for argv in forms:
+        result = run_script(argv)
+        assert result.returncode == 2, (argv, result.stderr)
+        assert "unknown argument" not in result.stderr, (argv, result.stderr)
+        assert "--context-files needs a suffix" in result.stderr, (argv, result.stderr)
+
+    # A valid suffix and listing id with every lane form the note names gets past argument validation. A non-git
+    # directory then ends the run at the repo-root step with exit 1, never a usage error (exit 2).
+    lane_args = [lane_form.strip("'") for lane_form in _filled_lane_forms(note_text)]
+    lane_call = ["--staged", "--context-files", valid_suffix, "--listing", listing_id, "--", *lane_args]
+    accepted = run_script(lane_call)
+    assert accepted.returncode != 2, (lane_call, accepted.stderr)
+    lane_usage_line = re.compile(r"^pr-diff-against-base\.sh: (lane |agent |unknown argument)", re.MULTILINE)
+    assert not lane_usage_line.search(accepted.stderr), accepted.stderr
+
+    # Control: the listed form with a wrong separator is a usage error, so the run above is a real validation pass.
+    listed_form = next(lane_arg for lane_arg in lane_args if "ciso-reviewer" in lane_arg)
+    wrong_separator = [listed_form.replace("=", ":") if lane_arg == listed_form else lane_arg for lane_arg in lane_args]
+    rejected = run_script(["--staged", "--context-files", valid_suffix, "--listing", listing_id, "--", *wrong_separator])
+    assert rejected.returncode == 2, rejected.stderr
+    assert "does not start with a valid agent name" in rejected.stderr, rejected.stderr
+
+
+_CREDENTIAL_BASH_GATE = HOOKS_DIR / "deny-credential-bash-reads.sh"
+
+
+def _credential_named_changed_paths() -> list[str]:
+    """Credential-shaped changed paths, assembled at runtime so no literal credential name sits in this file."""
+    return [".en" + "v.production", ".docker/con" + "fig.json", ".ss" + "h/deploy_" + "key"]
+
+
+def _credential_gate_verdict(command: str, home: Path, config_dir: Path) -> str:
+    return run_hook(
+        _CREDENTIAL_BASH_GATE,
+        bash_input(command),
+        home=home,
+        extra_env={"CLAUDE_CONFIG_DIR": str(config_dir)},
+    )
+
+
+def _filled_recipe_commands(note_text: str, expect_diff_path: str) -> dict[str, str]:
+    """Each recipe the note builds, with realistic single-quoted values in place of its placeholders."""
+    list_command, lane_command, source_flags = _resolving_note_recipe_shapes(note_text)
+    listing_id = hashlib.sha256(b"listing").hexdigest()
+    lanes = " ".join(_filled_lane_forms(note_text))
+    sources = {"": "", **{flag: flag for flag in source_flags if flag != "--expect-diff"}}
+    sources["--expect-diff"] = f"--expect-diff '{expect_diff_path}'"
+    commands = {}
+    for source_name, source_text in sources.items():
+        for call_name, template in (("list", list_command), ("lanes", lane_command)):
+            command = template.replace("<source> ", f"{source_text} " if source_text else "")
+            command = command.replace("<suffix>", "'1700000000-gh1208'").replace("<id>", f"'{listing_id}'")
+            commands[f"{call_name} {source_name or 'cumulative'}"] = command.replace("<lane>...", lanes)
+    return commands
+
+
+def test_resolving_note_placeholders_carry_no_changed_path_text() -> None:
+    """The recipe's only path-valued placeholder is `--expect-diff <path>`; every
+    other placeholder is a number, an id, a suffix, an agent name or a lane
+    built from those, so no changed-path text can reach a command line.
+    """
+    note_text = _code_review_resolving_note(_skill_file("code-review"))
+    list_command, lane_command, _ = _resolving_note_recipe_shapes(note_text)
+    recipe_text = " ".join(
+        [list_command, lane_command, _resolving_note_source_sentence(note_text), *_resolving_note_lane_forms(note_text)]
+    )
+    assert set(re.findall(r"<([^<>\s]+)>", recipe_text)) <= {"source", "suffix", "id", "lane", "agent-name", "n", "path"}
+    assert recipe_text.count("<path>") == recipe_text.count("--expect-diff <path>") >= 1
+
+
+@pytest.mark.parametrize(
+    "config_dir_parts",
+    [(".claude",), (".local", "state", "claude-accounts", "work-acct")],
+    ids=["default-config-dir", "account-config-dir"],
+)
+def test_recipe_command_allowed_by_real_credential_gate(tmp_path: Path, config_dir_parts: tuple[str, ...]) -> None:
+    """The commands the resolving note builds carry no changed-path text, so
+    the real credential Bash gate allows each, including an `--expect-diff`
+    path under the default config directory a default stow user's
+    `/ready-for-review` hands over and under a non-default account
+    directory. Substituting a credential-named path into a lane or into
+    `--expect-diff` is denied, so the allow verdict is not an artifact of a
+    gate that never fires.
+    """
+    note_text = _code_review_resolving_note(_skill_file("code-review"))
+    home = tmp_path / "home"
+    config_dir = home.joinpath(*config_dir_parts)
+    marker_name = f"{hashlib.sha256(b'repo').hexdigest()}.session-1"  # <repo-hash>.<session-id>, per docs/hooks.md
+    expect_diff_path = str(config_dir / "cumulative-review-diff-markers" / marker_name)
+    (config_dir / "cumulative-review-diff-markers").mkdir(parents=True)
+
+    commands = _filled_recipe_commands(note_text, expect_diff_path)
+    assert len(commands) == 8, sorted(commands)
+    for name, command in commands.items():
+        assert _credential_gate_verdict(command, home, config_dir) == "allow", (name, command)
+
+    listed_lane = next(lane_form for lane_form in _filled_lane_forms(note_text) if "=" in lane_form)
+    for credential_path in _credential_named_changed_paths():
+        in_lane = commands["lanes --staged"].replace(listed_lane, f"'ciso-reviewer' '{credential_path}'")
+        in_expect_diff = _filled_recipe_commands(note_text, f"{config_dir}/{credential_path}")["list --expect-diff"]
+        for name, command in (("lane", in_lane), ("expect-diff", in_expect_diff)):
+            assert _credential_gate_verdict(command, home, config_dir) == "deny", (name, credential_path)
+
+
+def test_user_glob_matching_the_expect_diff_path_denies_the_call(tmp_path: Path) -> None:
+    """An opt-in `credential-file-guard.md` glob that matches the handed
+    `--expect-diff` path denies the call carrying it. The note's rule for that
+    denial is a halt, never a re-formed command.
+    """
+    note_text = _code_review_resolving_note(_skill_file("code-review"))
+    home = tmp_path / "home"
+    config_dir = home / ".local" / "state" / "claude-accounts" / "work-acct"
+    config_dir.mkdir(parents=True)
+    expect_diff_path = str(config_dir / "cumulative-review-diff-markers" / "repo.session-1")
+    command = _filled_recipe_commands(note_text, expect_diff_path)["list --expect-diff"]
+
+    assert _credential_gate_verdict(command, home, config_dir) == "allow"
+    (config_dir / "credential-file-guard.md").write_text("*cumulative-review-diff-markers*\n")
+    assert _credential_gate_verdict(command, home, config_dir) == "deny"
+    assert (
+        "A hook denial or a refused permission prompt for either call is a halt too: quote the denial and never "
+        "re-form the command."
+    ) in note_text
+
+
+_REQUESTED_CHECKS_HEADING = "### Requested checks"
+
+
+def _code_review_requested_checks_section(text: str) -> str:
+    start = text.index(f"{_REQUESTED_CHECKS_HEADING}\n")
+    return text[start : text.index("\n## Reconciliation", start)].rstrip("\n")
+
+
+def test_requested_checks_subsection_pins() -> None:
+    """`### Requested checks` sits between the round-cap consult block and
+    `## Reconciliation` as heading, blank line, one-line paragraph, blank
+    line. It makes a `Check:` finding ordinary and counted, runs nothing for
+    it before the fix, and stops only on an unsupported report.
+    """
+    text = _skill_file("code-review").read_text()
+    consult_end = "<!-- DISPOSITION_RULE:code-review-round-cap-consult-verdict end -->\n\n"
+    assert f"{consult_end}{_REQUESTED_CHECKS_HEADING}\n\n" in text
+    section = _code_review_requested_checks_section(text)
+    assert f"{section}\n\n## Reconciliation" in text
+    paragraph = section.split("\n\n", 1)[1]
+    assert "\n" not in paragraph, "the subsection's paragraph must stay one physical line"
+
+    for sentence in (
+        f"A finding with a line that begins `{FINDING_CHECK_LABEL}` is an ordinary counted finding.",
+        "Reconcile and disposition it like any other, and run nothing for it before the fix.",
+        f"By whichever Fix route, copy its `{FINDING_CHECK_LABEL}` line into its fix prompt as reviewer-derived data, "
+        "and open that prompt with:",
+        '"Write the failing test for this finding first, run it and confirm it fails on an assertion about the '
+        "claimed behavior, fix the code, then confirm the test passes.",
+        "A fix report that names a finding unsupported is a blocking stop-and-ask to the human quoting the report.",
+        "That stop ends only that finding's handling: its fix is not re-dispatched while the other fixes land.",
+        "`--disposition SETTLED --decided-by engineer --engineer-quote '<their words>'`",
+        f'with a `--rationale` that begins "unsupported {FINDING_CHECK_LABEL}"',
+        "plus `--enforcement-invariant` for a finding the enforcement-invariant rule covers",
+        "after the stop-and-ask first tells the engineer, as that rule requires, that the answer is quoted in the "
+        "public PR body and, except for such a finding, that the keep applies without asking to same-failure-mode "
+        "repeats on the unchanged block",
+        "On the `inline` Fix route the session follows the same opening itself.",
+        "If the engineer says to fix it anyway, the row stays ADDRESS, nothing is logged, and its next fix prompt "
+        f"omits the `{FINDING_CHECK_LABEL}` line and quotes the engineer's words in place of the opening above",
+        "the orchestrator adds it as an ADDRESS row to that round's one fix dispatch whether or not a reviewer "
+        "re-raises it",
+    ):
+        assert sentence in section, f"the Requested checks subsection no longer carries {sentence!r}"
+    assert section.count("blocking stop-and-ask") == 1, "only the unsupported report may stop for the engineer"
+
+
+def _collapse_whitespace(text: str) -> str:
+    return " ".join(text.split())
+
+
+def test_effect_bound_and_report_clauses_match_code_writer() -> None:
+    """The effect-bound sentence, the unsupported clause and the no-test clause
+    are the same words in `code-writer.md`'s Check: bullet and in the skill's
+    fix-prompt opening, so the fix writer follows exactly what the
+    orchestrator tells it. Whitespace is collapsed first because the agent
+    file wraps its lines.
+    """
+    skill_section = _collapse_whitespace(
+        _code_review_requested_checks_section(_skill_file("code-review").read_text())
+    )
+    writer_body = _collapse_whitespace(_agent_body("code-writer"))
+    for clause in (CHECK_EFFECT_BOUND_SENTENCE, CHECK_UNSUPPORTED_CLAUSE, CHECK_NO_TEST_CLAUSE):
+        assert clause in skill_section, f"code-review/SKILL.md's Requested checks no longer carries {clause!r}"
+        assert clause in writer_body, f"code-writer.md's Check: bullet no longer carries {clause!r}"
+
+
+def test_finding_check_label_trigger_phrase_is_shared_by_the_dispatchers() -> None:
+    """The skill and the plan-review routing file trigger on the same phrase,
+    built from the shared label, because reviewer prose already uses "Check:"
+    mid-sentence and only a line that begins with it requests a check.
+    """
+    trigger = f"a line that begins `{FINDING_CHECK_LABEL}`"
+    assert trigger in _code_review_requested_checks_section(_skill_file("code-review").read_text())
+    assert trigger in _ROUTING_MD_PATH.read_text()
+
+
+def test_routing_hands_the_ticket_over_and_marks_check_findings() -> None:
+    """plan-review/ROUTING.md hands `staff-product-engineer` the ticket text,
+    and its `Check:` paragraph follows the findings-path paragraph on its own
+    line, resolving a challenged ledger row by the row's tag.
+    """
+    routing_lines = _ROUTING_MD_PATH.read_text().split("\n")
+    first_spawn_line = next(line for line in routing_lines if line.startswith("Before the first spawn this round"))
+    assert first_spawn_line.endswith(
+        "Hand `staff-product-engineer` the text of the plan's linked ticket and of every issue that ticket names "
+        "as folded or parent, verbatim, as data, fetching any the session does not hold read-only, only when it is "
+        "in this repository's own tracker, by its bare identifier in single quotes, and naming any other referenced "
+        "issue as not fetched in its report."
+    )
+
+    paragraph_index = next(i for i, line in enumerate(routing_lines) if line.startswith("A plan review runs no check;"))
+    assert routing_lines[paragraph_index - 2].startswith("A project-layer reviewer that lacks the contract")
+    assert routing_lines[paragraph_index - 1] == "" and routing_lines[paragraph_index + 1] == ""
+    paragraph = routing_lines[paragraph_index]
+    for sentence in (
+        '`code-review/SKILL.md` § "Requested checks" says how a code review settles one.',
+        f"A finding with a line that begins `{FINDING_CHECK_LABEL}` may challenge a ledger row.",
+        "If there is no such row, the finding stands.",
+        "If the row is untagged, the finding stands.",
+        "If the row is `[unverified]` with no Verification step that settles it, the finding stands.",
+        "keep the finding and mark it `settled by Verification step <n>`",
+        "keep the finding and mark it `reviewer could not re-verify`",
+        "No counted finding is dropped silently.",
+    ):
+        assert sentence in paragraph, f"plan-review/ROUTING.md no longer carries {sentence!r}"
 
 
 def test_comment_discipline_row_points_to_its_deferral() -> None:
@@ -6651,8 +7105,9 @@ _PINNED_FIX_PLAN_PILOT_CLAUSE = (
     "the numbered findings; each marked one's earlier finding and "
     "fix; the contradiction route's judgment standard; the DEFER "
     "criteria and invalid DEFER rationales below; this round's "
-    "findings-file paths; the diff artifact resolved as for "
-    "`comment-discipline-reviewer`; the plan file and ledger digest "
+    "findings-file paths; the diff each spawn was handed (the lane "
+    "index paths of this round's spawns, else the invoker's diff-file "
+    "path or diff text); the plan file and ledger digest "
     "paths when each exists; the bar on invoking "
     "`review-ledger.sh` or `marker.sh` stated above; "
     "and the project layer's path when Step 0.5 loaded one. Ask for "
