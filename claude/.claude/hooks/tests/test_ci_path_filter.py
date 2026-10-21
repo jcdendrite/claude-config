@@ -280,13 +280,16 @@ def _parallel_pytest_argv() -> list[str]:
 class TestParallelPassCollectsTheLint:
     """`test_shellcheck.py::TestRepoIsClean` is the repo shell lint's only CI home, so collecting
     the workflow's parallel pytest invocation and checking the lint is among the items judges every
-    selection route: options, PYTEST_ADDOPTS, addopts, ini files and conftest hooks. A skip marker
-    on the lint test itself is not caught, since skipped items still collect. The step's existence
-    and collected roots are pinned by `TestPytestTwoPassSplit` and `test_select_tests.py`. The probe
-    inherits its own process env rather than reading the workflow's `env:` blocks, so a PYTEST_ADDOPTS
-    set there is judged only when this test runs in CI. select-tests.py does not select this file for
-    a conftest.py edit outside this directory, so a collection hook added to such a conftest is judged
-    only by CI's full suite."""
+    selection route: options, PYTEST_ADDOPTS, addopts, ini files and conftest hooks. The step's
+    existence and collected roots are pinned by `TestPytestTwoPassSplit` and `test_select_tests.py`.
+
+    Gaps:
+    - A skip marker on the lint test itself is not caught, since skipped items still collect.
+    - A PYTEST_ADDOPTS set in the workflow's `env:` blocks is judged only when this test runs in
+      CI, since the probe inherits its own process env rather than reading those blocks.
+    - A collection hook added to a conftest.py outside this directory is judged only by CI's full
+      suite, since select-tests.py does not select this file for such an edit.
+    """
 
     def test_parallel_invocation_collects_the_repo_lint(self):
         lint_node_id = (
