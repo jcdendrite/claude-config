@@ -27,13 +27,11 @@ from helpers import (
 )
 from transcript_analysis import author_outcome as ao
 
-from .conftest import _dead_pid, _review_ledger_path, _seed_session
+from .conftest import _dead_pid, _review_ledger_path, _seed_session, requires_jq
 
 REVIEW_LEDGER_SCRIPT = SCRIPTS_DIR / "review-ledger.sh"
 
 SID = "test-session-abc"
-
-requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not found in PATH")
 
 
 def _run(

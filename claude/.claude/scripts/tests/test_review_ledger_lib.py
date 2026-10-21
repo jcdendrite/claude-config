@@ -2071,7 +2071,7 @@ class TestCheckOut:
     @pytest.fixture
     def target_name(self, subcommand) -> str:
         """A name `subcommand`'s grammar accepts."""
-        return {"render": "pr-body-1.md", "show": "review-history-1.md"}[subcommand]
+        return {"show": "review-history-1.md"}[subcommand]
 
     @pytest.mark.parametrize("form", ["relative", "dot-slash", "absolute"])
     def test_a_file_directly_under_agent_reviews_is_accepted(self, repo, agent_reviews, subcommand, target_name, form):

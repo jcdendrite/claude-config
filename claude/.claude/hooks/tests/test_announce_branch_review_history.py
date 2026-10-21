@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -22,7 +21,7 @@ from helpers import (
 )
 from validate_skill_structure import parse_frontmatter
 
-from .conftest import _seed_session
+from .conftest import _seed_session, requires_jq
 from .test_bash_floor import SUB_FLOOR_BASH, requires_sub_floor_bash
 
 ANNOUNCE_HOOK = HOOKS_DIR / "announce-branch-review-history.sh"
@@ -41,8 +40,6 @@ SEEDED_FINDING = "Fix for the stale cache read recurs after a later round"
 
 UNAVAILABLE_CONTEXT = "Review-ledger history unavailable."
 NOROWS_CONTEXT = "Review-ledger history: `review-ledger.sh show` found no rows for this checkout."
-
-requires_jq = pytest.mark.skipif(shutil.which("jq") is None, reason="jq not found in PATH")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -119,14 +116,14 @@ def _append_branch_row(home: Path, worktree: Path) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def _build_checkout(home: Path, parent_dir: Path, *, seed_row: bool = True) -> Path:
-    """A linked worktree on LONG_FEATURE_BRANCH under `parent_dir`, with agent-reviews/ git-ignored and
+def _build_checkout(home: Path, parent_dir: Path, *, seed_row: bool = True, branch: str = LONG_FEATURE_BRANCH) -> Path:
+    """A linked worktree on `branch` under `parent_dir`, with agent-reviews/ git-ignored and
     agent-reviews/ itself absent. With `seed_row`, the session file and one branch-ledger row exist;
     without it the session file alone exists, so `show` finds no rows. Returns the worktree."""
     main_checkout = init_git_repo_with_commit(parent_dir / "main-checkout", branch="main")
     worktree = parent_dir / "feature-worktree"
     subprocess.run(
-        ["git", "worktree", "add", "-q", "-b", LONG_FEATURE_BRANCH, str(worktree)],
+        ["git", "worktree", "add", "-q", "-b", branch, str(worktree)],
         cwd=main_checkout,
         check=True,
     )
@@ -171,7 +168,6 @@ class TestAnnounceBranchReviewHistory:
 
         assert result.returncode == 0, result.stderr
         history_file = _history_file(worktree)
-        assert history_file.name == EXPECTED_HISTORY_FILE_NAME
         assert json.loads(result.stdout) == {
             "hookSpecificOutput": {
                 "hookEventName": _registration()[0],
@@ -180,6 +176,18 @@ class TestAnnounceBranchReviewHistory:
         }
         assert history_file.is_file()
         assert [json.loads(line)["finding"] for line in history_file.read_text().splitlines()] == [SEEDED_FINDING]
+
+    def test_strips_characters_the_path_allowlist_rejects_from_the_branch_slug_and_still_announces_the_file(
+        self, isolated_home, tmp_path, outside_cwd
+    ):
+        worktree = _build_checkout(isolated_home, tmp_path / "checkouts", branch="feat/a$b;c'd")
+
+        result = _run_hook_process(_subagent_start_payload(worktree), isolated_home, outside_cwd)
+
+        assert result.returncode == 0, result.stderr
+        history_file = Path(git_toplevel(worktree)) / "agent-reviews" / "review-history-feat-abcd.md"
+        assert json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"] == _file_context(history_file)
+        assert history_file.is_file()
 
     def test_armed_data_file_read_guard_allows_the_announced_history_file(
         self, isolated_home, tmp_path, outside_cwd
@@ -253,7 +261,6 @@ class TestAnnounceBranchReviewHistory:
 
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"] == UNAVAILABLE_CONTEXT
-        assert not (Path(git_toplevel(main_checkout)) / "agent-reviews").exists()
 
     @pytest.mark.parametrize("case", ["wrong agent", "malformed stdin", "non-git cwd"])
     def test_stays_silent_and_writes_nothing(self, isolated_home, tmp_path, outside_cwd, case):

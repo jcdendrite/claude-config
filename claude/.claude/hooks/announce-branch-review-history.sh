@@ -42,7 +42,9 @@ CONFIG_DIR=$(_lib_config_dir) || exit 0
 TOP=$(_lib_capped git -C "$CWD" rev-parse --show-toplevel 2>/dev/null) || exit 0
 [ -n "$TOP" ] || exit 0
 
-BRANCH_SLUG=$(_lib_capped git -C "$TOP" rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-' | tr -cd 'A-Za-z0-9-' | cut -c1-20)
+# Matches SLUG_MAX_LENGTH in findings-path-suffix.sh.
+SLUG_MAX_LENGTH=20
+BRANCH_SLUG=$(_lib_capped git -C "$TOP" rev-parse --abbrev-ref HEAD 2>/dev/null | tr '/' '-' | tr -cd 'A-Za-z0-9-' | cut -c1-"$SLUG_MAX_LENGTH")
 HISTORY_REL="agent-reviews/review-history-${BRANCH_SLUG:-HEAD}.md"
 HISTORY_PATH="$TOP/$HISTORY_REL"
 
