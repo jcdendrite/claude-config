@@ -52,7 +52,7 @@ Each skill lives in `claude-skills/skills/<skill-name>/SKILL.md`. A skill direct
 
 ## Skills available by name (no description budget cost)
 
-Nineteen skills in this repo use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older Claude Code versions (pre-v2.1.129) the override is silently ignored and these skills fall back to `on` (description loaded). Twelve skills carry no TRIGGER blocks: ten of the eleven workflow utilities — all but `transcript-analysis` — one debugging playbook, and one user-invocable pipeline skill.
+Twenty skills in this repo use `skillOverrides: name-only` — the model can invoke them when referenced by name in conversation, but their descriptions are excluded from the always-loaded listing budget. These skills are also slash-invocable directly. Requires Claude Code **v2.1.129+**; on older Claude Code versions (pre-v2.1.129) the override is silently ignored and these skills fall back to `on` (description loaded). Thirteen skills carry no TRIGGER blocks: eleven of the twelve workflow utilities — all but `transcript-analysis` — one debugging playbook, and one user-invocable pipeline skill.
 
 The other seven carry TRIGGER blocks and may fire via description match on older versions:
 
