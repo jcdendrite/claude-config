@@ -5,7 +5,6 @@ write a file; docs/transcript-analysis.md lists both sets.
 """
 
 import argparse
-import contextlib
 import json
 import math
 import os
@@ -13,8 +12,7 @@ import random
 import re
 import subprocess
 import sys
-import tempfile
-import time
+import tempfile  # noqa: F401 -- test_transcript_ledger_common.py reads _mod.tempfile as a stdlib passthrough
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
@@ -58,6 +56,12 @@ from transcript_analysis.audit_routing import (
     cmd_audit_routing_shape,
 )
 from transcript_analysis.author_outcome import _AUTHORING_AGENT_CODE_WRITER, cmd_author_outcome
+from transcript_analysis.buckets import (
+    # _add_buckets_subparser is read bare by this file's own build_parser (the buckets
+    # subparser's registration). cmd_buckets is read only via _mod.cmd_buckets from test files.
+    _add_buckets_subparser,
+    cmd_buckets,  # noqa: F401
+)
 from transcript_analysis.cache_rebuild import (
     # Both names below are read bare by this file's own still-monolithic code:
     #   _CACHE_REBUILD_DEFAULT_SINCE/_CACHE_REBUILD_DEFAULT_THRESHOLD -> build_parser's own
@@ -71,7 +75,7 @@ from transcript_analysis.corpus import (
     SUBAGENT_SUBDIR,
     _parse_ts,
     _read_session_file_partitioned,
-    iter_sessions,
+    iter_sessions,  # noqa: F401 -- read only via _mod.iter_sessions from test files
 )
 from transcript_analysis.cost import (
     # The seven noqa'd names below are read only via _mod.<name> from test files (unit-testing
@@ -94,11 +98,24 @@ from transcript_analysis.cost_ledger import (
     cmd_cost_ledger,
 )
 from transcript_analysis.denials import (
-    # Both names below are read bare by this file's own still-monolithic code:
-    #   hook_denial_key                       -> _friction_denial_events
-    #   _drop_denial_command_flag_values      -> _command_segment_is_mutating_git
+    # Read bare by this file's own _command_segment_is_mutating_git.
     _drop_denial_command_flag_values,
-    hook_denial_key,
+)
+from transcript_analysis.duration import (
+    # _add_duration_subparser is read bare by this file's own build_parser (the duration
+    # subparser's registration). cmd_duration is read only via _mod.cmd_duration from test files.
+    _add_duration_subparser,
+    cmd_duration,  # noqa: F401
+)
+from transcript_analysis.fail_seq import (
+    # _add_fail_seq_subparser is read bare by this file's own build_parser (the fail-seq
+    # subparser's registration). cmd_fail_seq is read only via _mod.cmd_fail_seq from test files.
+    _add_fail_seq_subparser,
+    cmd_fail_seq,  # noqa: F401
+)
+from transcript_analysis.friction_count import (
+    # Read bare by this file's own build_parser (the friction-count subcommand's registration).
+    _add_friction_count_subparser,
 )
 from transcript_analysis.gh_cli import (
     # Read bare by pr-link: _classify_gh_error, _GH_ERROR_KIND_NETWORK, _gh_host_qualified_repo,
@@ -181,25 +198,23 @@ from transcript_analysis.rearm_backtest import (
 from transcript_analysis.redaction import (
     _BUILT_IN_AGENT_TYPES,  # noqa: F401 -- read only via _mod._BUILT_IN_AGENT_TYPES from test files
     _REDACT_MAP_MISS_TOKEN,  # noqa: F401 -- read only via _mod._REDACT_MAP_MISS_TOKEN from test files
-    _assign_session_redact_label,
-    _build_redact_map,
+    _build_redact_map,  # noqa: F401 -- read only via _mod._build_redact_map from test files
     _corpus_fingerprint,  # noqa: F401 -- read only via _mod._corpus_fingerprint from test files
-    _derive_proj_label,
-    _project_family,
-    _redact_proj_label,
-    _redact_session_id,
+    _project_family,  # noqa: F401 -- read only via _mod._project_family from test files
+    _redact_proj_label,  # noqa: F401 -- read only via _mod._redact_proj_label from test files
+    _redact_session_id,  # noqa: F401 -- read only via _mod._redact_session_id from test files
     _repo_tracked_agent_type_names,  # noqa: F401 -- read only via _mod._repo_tracked_agent_type_names from test files
 )
 from transcript_analysis.render import (
     _content_text,
     _context_distribution_rows,
     _fam,
-    _fmt_date,
+    _fmt_date,  # noqa: F401 -- read only via _mod._fmt_date from test files
     _fmt_usd,
     _is_fresh_user_prompt,  # noqa: F401 -- read only via _mod._is_fresh_user_prompt from test files
     _pct_of,
     _sanitize_table_cell,  # noqa: F401 -- read only via _mod._sanitize_table_cell from test files
-    _strip_task_notifications,
+    _strip_task_notifications,  # noqa: F401 -- read only via _mod._strip_task_notifications from test files
 )
 from transcript_analysis.review_rounds import (
     # REVIEW_SKILLS is read bare by build_parser's review-round-cost --skill choices.
@@ -225,7 +240,7 @@ from transcript_analysis.scope import (
     _branch_filter,
     _iso_date,
     _iter_scoped_sessions,  # noqa: F401 -- read only via _mod._iter_scoped_sessions from test files
-    _parse_absolute_window_args,
+    _parse_absolute_window_args,  # noqa: F401 -- read only via _mod._parse_absolute_window_args from test files
     _parse_since_nd_arg,
     _projects_glob,
     _redaction_ordinals,
@@ -258,6 +273,12 @@ from transcript_analysis.spend_over_threshold import (
     # subcommand's own set_defaults).
     cmd_spend_over_threshold,
 )
+from transcript_analysis.struggle import (
+    # _add_struggle_subparser is read bare by this file's own build_parser (the struggle
+    # subparser's registration). cmd_struggle is read only via _mod.cmd_struggle from test files.
+    _add_struggle_subparser,
+    cmd_struggle,  # noqa: F401
+)
 from transcript_analysis.subagent_mix import (
     # Both names below are read bare by this file's own still-monolithic build_parser
     # (the subagent-mix and cost-counts subcommands' own set_defaults).
@@ -271,611 +292,17 @@ from transcript_analysis.subagents import (
     _MCP_TOOL_BUCKET_LABEL,
     cmd_subagents,
 )
+from transcript_analysis.user_input import (
+    # _add_user_input_subparser is read bare by this file's own build_parser (the user-input
+    # subparser's registration). cmd_user_input is read only via _mod.cmd_user_input from test files.
+    _add_user_input_subparser,
+    cmd_user_input,  # noqa: F401
+)
 from transcript_analysis.workstream_cost import (
     # Read bare by this file's own still-monolithic build_parser (the workstream-cost
     # subcommand's own set_defaults).
     cmd_workstream_cost,
 )
-
-TEST_RUNNER_RE = re.compile(
-    r"\b(vitest|jest|pytest|deno\s+test|npm\s+run\s+(verify|test|lint)|ruff\s+check|cargo\s+test|go\s+test)\b"
-)
-FAILED_RE = re.compile(r"\b(\d+)\s+failed\b")
-
-STRUGGLE_PHRASES: list[str] = [
-    # attested in transcripts
-    "hold on",
-    "why did you",
-    "try again",
-    "no not that",
-    # predicted patterns
-    "no, that",
-    "that's wrong",
-    "not right",
-    "you're wrong",
-    "stop doing",
-    "don't do that",
-    "still broken",
-    "still failing",
-    "you missed",
-    "incorrect",
-    "not what i asked",
-    "not what i wanted",
-    "wrong approach",
-    "that doesn't work",
-    "please don't",
-    # attested in transcripts but missed by prior lexicon (see test_transcript_analysis.py)
-    # Excluded: bare "stale" — legitimate technical term with high false-positive risk
-    "hallucinat",  # matches "hallucinated", "hallucinating", etc.
-    "are you saying",
-    "you should be able to",
-    "that doesn't exist",
-    "that doesn't match",
-]
-
-
-def _longest_fail_streak(failed_flags: list[bool]) -> int:
-    """Return the longest consecutive run of True values in failed_flags."""
-    max_streak = current = 0
-    for flag in failed_flags:
-        if flag:
-            current += 1
-            max_streak = max(max_streak, current)
-        else:
-            current = 0
-    return max_streak
-
-
-def cmd_buckets(args: argparse.Namespace) -> None:
-    branch_filter = _branch_filter(args)
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "buckets", roots=roots)
-    _print_resolved_scope("buckets", scope_label, roots)
-
-    branch_data: dict[str, dict] = defaultdict(
-        lambda: {
-            "sessions": 0, "projects": set(), "opus": 0, "sonnet": 0, "haiku": 0, "other": 0,
-            "ts_min": float("inf"), "ts_max": float("-inf"),
-        }
-    )
-
-    for jsonl, records in session_iter:
-        file_branches: dict[str, dict] = defaultdict(
-            lambda: {"opus": 0, "sonnet": 0, "haiku": 0, "other": 0, "ts_min": float("inf"), "ts_max": float("-inf")}
-        )
-        branch_context = _session_branch_context(records)
-        for rec in records:
-            branch = _attributed_branch(rec, branch_context) or ""
-            if not branch or (branch_filter and branch not in branch_filter):
-                continue
-            ts = _parse_ts(rec.get("timestamp"))
-            if ts is not None:
-                file_branches[branch]["ts_min"] = min(file_branches[branch]["ts_min"], ts)
-                file_branches[branch]["ts_max"] = max(file_branches[branch]["ts_max"], ts)
-            if rec.get("type") == "assistant" and not bool(rec.get("isSidechain")):
-                fam = _fam((rec.get("message") or {}).get("model", ""))
-                file_branches[branch][fam] += 1
-
-        for branch, fb in file_branches.items():
-            d = branch_data[branch]
-            d["sessions"] += 1
-            d["projects"].add(_project_family(jsonl.parent.name))
-            for fam in ("opus", "sonnet", "haiku", "other"):
-                d[fam] += fb[fam]
-            if fb["ts_min"] < float("inf"):
-                d["ts_min"] = min(d["ts_min"], fb["ts_min"])
-            if fb["ts_max"] > float("-inf"):
-                d["ts_max"] = max(d["ts_max"], fb["ts_max"])
-
-    if not branch_data:
-        print("No data found.")
-        return
-
-    print(
-        f"{'Branch':<40} {'Proj':>4} {'Sess':>5} {'Total':>7} {'Opus':>6} {'Sonnet':>7} "
-        f"{'Haiku':>6} {'Other':>6}  Date range"
-    )
-    print("-" * 113)
-    for branch in sorted(branch_data):
-        d = branch_data[branch]
-        total = d["opus"] + d["sonnet"] + d["haiku"] + d["other"]
-        ts_min = _fmt_date(d["ts_min"]) if d["ts_min"] < float("inf") else "?"
-        ts_max = _fmt_date(d["ts_max"]) if d["ts_max"] > float("-inf") else "?"
-        print(
-            f"{branch:<40} {len(d['projects']):>4} {d['sessions']:>5} {total:>7} {d['opus']:>6} {d['sonnet']:>7} "
-            f"{d['haiku']:>6} {d['other']:>6}  {ts_min}..{ts_max}"
-        )
-
-
-def cmd_fail_seq(args: argparse.Namespace) -> None:
-    if not getattr(args, "branches", None):
-        print("--branches is required for fail-seq", file=sys.stderr)
-        sys.exit(1)
-    branches: set[str] = {b for b in args.branches.split(",") if b}
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "fail-seq", roots=roots)
-    _print_resolved_scope("fail-seq", scope_label, roots)
-
-    branch_runs: dict[str, list[tuple[str, int]]] = defaultdict(list)
-
-    for _jsonl, records in session_iter:
-        # Every attributed branch is some record's own tag, so a session with none in the
-        # filter set cannot contribute.
-        if not ({r.get("gitBranch", "") for r in records} & branches):
-            continue
-
-        pending: dict[str, str] = {}  # tool_use_id → model_family
-        current_branch: str = ""
-        branch_context = _session_branch_context(records)
-
-        for rec in records:
-            # The pending-pair reset follows the record's literal tag: it marks a physical
-            # checkout change, which attribution must not hide. Only the filter and the
-            # runs key take the attributed branch.
-            literal_branch = rec.get("gitBranch") or ""
-            if literal_branch != current_branch:
-                pending.clear()
-                current_branch = literal_branch
-            branch = _attributed_branch(rec, branch_context) or ""
-            if branch not in branches or bool(rec.get("isSidechain")):
-                continue
-
-            rtype = rec.get("type", "")
-            msg = rec.get("message") or {}
-
-            if rtype == "assistant":
-                fam = _fam(msg.get("model", ""))
-                for block in (msg.get("content") or []):
-                    if (
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_use"
-                        and block.get("name") == "Bash"
-                    ):
-                        cmd = (block.get("input") or {}).get("command", "")
-                        if TEST_RUNNER_RE.search(cmd):
-                            pending[block["id"]] = fam
-
-            elif rtype in ("user", "human"):
-                content = msg.get("content") or []
-                if not isinstance(content, list):
-                    continue
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    tid = block.get("tool_use_id", "")
-                    if block.get("type") == "tool_result" and tid in pending:
-                        fam = pending.pop(tid)
-                        result_text = _content_text(block.get("content", ""))
-                        counts = [int(m) for m in FAILED_RE.findall(result_text)]
-                        branch_runs[branch].append((fam, max(counts) if counts else 0))
-
-    if not branch_runs:
-        print("No test runs found for the specified branches.")
-        return
-
-    for branch in sorted(branch_runs):
-        runs = branch_runs[branch]
-        total = len(runs)
-        failing = sum(1 for _, f in runs if f > 0)
-        streak = _longest_fail_streak([f > 0 for _, f in runs])
-        fail_rate = f"{100 * failing / total:.1f}%" if total else "—"
-
-        fam_total: dict[str, int] = defaultdict(int)
-        fam_fail: dict[str, int] = defaultdict(int)
-        for fam, f in runs:
-            fam_total[fam] += 1
-            if f > 0:
-                fam_fail[fam] += 1
-
-        print(f"\n### {branch}")
-        print(f"Total runs: {total}  Failing: {failing} ({fail_rate})  Longest consecutive-failing streak: {streak}")
-        for fam in ("opus", "sonnet", "haiku", "other"):
-            if fam_total[fam]:
-                fr = f"{100 * fam_fail[fam] / fam_total[fam]:.1f}%"
-                print(f"  {fam:<8}: {fam_total[fam]} runs, {fam_fail[fam]} failing ({fr})")
-        print(f"Sequence: {' '.join(str(f) for _, f in runs)}")
-
-
-def cmd_struggle(args: argparse.Namespace) -> None:
-    branch_filter = _branch_filter(args)
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "struggle", roots=roots)
-    _print_resolved_scope("struggle", scope_label, roots)
-
-    branch_data: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-
-    for _jsonl, records in session_iter:
-        last_fam: dict[str, str] = {}
-        branch_context = _session_branch_context(records)
-        for rec in records:
-            branch = _attributed_branch(rec, branch_context) or ""
-            if not branch or (branch_filter and branch not in branch_filter):
-                continue
-            if bool(rec.get("isSidechain")):
-                continue
-            rtype = rec.get("type", "")
-            msg = rec.get("message") or {}
-
-            if rtype == "assistant":
-                last_fam[branch] = _fam(msg.get("model", ""))
-            elif rtype in ("user", "human"):
-                text = _strip_task_notifications(_content_text(msg.get("content", ""))).lower()
-                if any(phrase in text for phrase in STRUGGLE_PHRASES):
-                    branch_data[branch][last_fam.get(branch, "unknown")] += 1
-
-    if not branch_data:
-        print("No struggle signals found.")
-        return
-
-    print(f"{'Branch':<40} {'Opus':>6} {'Sonnet':>7} {'Haiku':>6} {'Other':>6} {'Unknown':>8}")
-    print("-" * 82)
-    for branch in sorted(branch_data):
-        d = branch_data[branch]
-        print(
-            f"{branch:<40} {d.get('opus', 0):>6} {d.get('sonnet', 0):>7} "
-            f"{d.get('haiku', 0):>6} {d.get('other', 0):>6} {d.get('unknown', 0):>8}"
-        )
-
-
-def _is_fresh_user_prompt_for_narrative(rec: dict) -> bool:
-    """Return True when rec is a genuine user keystroke — not a tool result or system injection.
-
-    Distinct from `_is_fresh_user_prompt` (judgment-pair's discriminator): this one excludes
-    on toolUseResult/sourceToolUseID/sourceToolAssistantUUID keys instead of tool_result content
-    blocks, and accepts promptId-bearing list content instead of requiring a bare string.
-
-    Accepts two content shapes:
-    - Plain string (the common case).
-    - List-of-blocks with extractable text and a promptId (text+image pastes, or list-shape
-      prompts from older Claude Code versions). promptId is the positive signal that
-      distinguishes these from isMeta injections that also use list-of-blocks content.
-    """
-    if rec.get("type") != "user":
-        return False
-    if rec.get("isMeta") or rec.get("isSidechain"):
-        return False
-    if "toolUseResult" in rec or "sourceToolUseID" in rec or "sourceToolAssistantUUID" in rec:
-        return False
-    content = (rec.get("message") or {}).get("content")
-    if isinstance(content, str):
-        return True
-    if isinstance(content, list) and "promptId" in rec:
-        return bool(_content_text(content).strip())
-    return False
-
-
-def _is_unrecognized_user_list_record(rec: dict) -> bool:
-    """Return True for user records with list-of-blocks content not handled by any known discriminator.
-
-    Known shapes explicitly excluded:
-    - isMeta=True: skill/system injections (correctly excluded from prompts).
-    - promptId present: accepted as fresh prompts by _is_fresh_user_prompt_for_narrative (list-content variant).
-    - toolUseResult / sourceToolUseID / sourceToolAssistantUUID: tool-result records.
-
-    A non-zero count from this function indicates a genuinely unexpected schema variant
-    that the fresh-prompt discriminator may be silently missing.
-    """
-    return (
-        rec.get("type") == "user"
-        and isinstance(rec.get("message", {}).get("content"), list)
-        and not rec.get("isMeta")
-        and "promptId" not in rec
-        and "toolUseResult" not in rec
-        and "sourceToolUseID" not in rec
-        and "sourceToolAssistantUUID" not in rec
-    )
-
-
-def _classify_prompt(text: str, is_initial: bool) -> tuple[str, str]:
-    """Classify a fresh prompt as INITIAL, FOLLOWUP, or EXPLICIT_CORRECTION.
-
-    Returns (classification, matched_phrase). matched_phrase is non-empty only
-    for EXPLICIT_CORRECTION. Phrase-matching runs on text with any forwarded
-    `<task-notification>` envelope stripped, so a STRUGGLE_PHRASES entry inside
-    one does not register.
-    """
-    if is_initial:
-        return "INITIAL", ""
-    lowered = _strip_task_notifications(text).lower()
-    for phrase in STRUGGLE_PHRASES:
-        if phrase in lowered:
-            return "EXPLICIT_CORRECTION", phrase
-    return "FOLLOWUP", ""
-
-
-def _attribute_model_to_prompt(records: list[dict], prompt_index: int, session_id: str) -> str:
-    """Scan forward from prompt_index for the next assistant record sharing the session's ID.
-
-    Returns the model family string, or 'unknown' when no attribution is found.
-    The session ID is read from the prompt record itself so cross-session attribution
-    is not possible.
-    """
-    prompt_rec = records[prompt_index]
-    prompt_session_id = prompt_rec.get("sessionId") or ""
-    for rec in records[prompt_index + 1 :]:
-        if rec.get("type") != "assistant":
-            continue
-        if prompt_session_id and rec.get("sessionId") != prompt_session_id:
-            continue
-        model = (rec.get("message") or {}).get("model", "")
-        if model:
-            return _fam(model)
-    return "unknown"
-
-
-def _truncate_prompt_text(text: str, limit: int) -> str:
-    """Truncate text to limit chars, appending an ellipsis annotation when truncated.
-
-    limit=0 disables truncation entirely.
-    """
-    if limit == 0 or len(text) <= limit:
-        return text
-    return text[:limit] + f"… (truncated, {len(text)} chars total)"
-
-
-def cmd_user_input(args: argparse.Namespace) -> None:
-    """Per-session fresh user prompts, classified as INITIAL / FOLLOWUP / EXPLICIT_CORRECTION."""
-    projects_glob = _projects_glob(args)
-    branch_filter = _branch_filter(args)
-    corrections_only: bool = bool(getattr(args, "corrections_only", False))
-    _truncate_raw = getattr(args, "truncate_chars", None)
-    truncate_chars: int = _truncate_raw if _truncate_raw is not None else 500
-    out_path: str | None = getattr(args, "out", None) or None
-    redact: bool = bool(getattr(args, "redact", False))
-
-    since_ts, until_epoch = _parse_absolute_window_args(args, "user-input")
-
-    redact_map: dict[str, str] = _build_redact_map() if redact else {}
-    session_redact_map: dict[str, str] = {}
-
-    # Shape-drift counter: user records with list content missing all tool-result keys.
-    unrecognized_shape_count = 0
-
-    # Collected session data for rendering, sorted by first-prompt timestamp.
-    # Each entry: {proj_label, branch, date, session_id_prefix, prompts: [...], first_ts}
-    session_entries: list[dict] = []
-
-    # Corpus-level counters.
-    total_projects_seen: set[str] = set()
-    total_session_count = 0
-    total_fresh_prompts = 0
-    initial_count = 0
-    followup_count = 0
-    correction_count = 0
-    phrase_hits: dict[str, int] = defaultdict(int)
-    earliest_ts: float | None = None
-    latest_ts: float | None = None
-
-    for jsonl, records in iter_sessions(scope.PROJECTS_DIR, projects_glob):
-        proj_label = _derive_proj_label(jsonl)
-        total_projects_seen.add(_project_family(jsonl.parent.name))
-
-        # Count unrecognized shapes regardless of other filters.
-        for rec in records:
-            if _is_unrecognized_user_list_record(rec):
-                unrecognized_shape_count += 1
-
-        # Collect fresh prompts for this session, applying all filters.
-        session_prompts: list[dict] = []
-        is_first_in_session = True
-        branch_context = _session_branch_context(records)
-
-        for idx, rec in enumerate(records):
-            if not _is_fresh_user_prompt_for_narrative(rec):
-                continue
-
-            # Branch filter
-            branch = _attributed_branch(rec, branch_context) or ""
-            if branch_filter and branch not in branch_filter:
-                continue
-
-            # Date filter
-            rec_ts = _parse_ts(rec.get("timestamp"))
-            if since_ts is not None or until_epoch is not None:
-                if rec_ts is None:
-                    continue
-                if since_ts is not None and rec_ts < since_ts:
-                    continue
-                if until_epoch is not None and rec_ts >= until_epoch:
-                    continue
-
-            text = _content_text(rec["message"]["content"])
-            classification, matched_phrase = _classify_prompt(text, is_first_in_session)
-            is_first_in_session = False
-
-            model_fam = _attribute_model_to_prompt(records, idx, rec.get("sessionId") or "")
-
-            date_str = _fmt_date(rec_ts) if rec_ts is not None else "?"
-            time_str = (
-                datetime.fromtimestamp(rec_ts, tz=UTC).strftime("%H:%M")
-                if rec_ts is not None
-                else "?"
-            )
-
-            session_prompts.append({
-                "text": text,
-                "date": date_str,
-                "time": time_str,
-                "ts": rec_ts,
-                "branch": branch,
-                "session_id": rec.get("sessionId") or jsonl.stem,
-                "classification": classification,
-                "matched_phrase": matched_phrase,
-                "model_fam": model_fam,
-            })
-
-        if not session_prompts:
-            continue
-
-        total_session_count += 1
-        first_ts = session_prompts[0]["ts"]
-        if first_ts is not None:
-            if earliest_ts is None or first_ts < earliest_ts:
-                earliest_ts = first_ts
-            last_ts = session_prompts[-1]["ts"]
-            if last_ts is not None and (latest_ts is None or last_ts > latest_ts):
-                latest_ts = last_ts
-
-        # Accumulate corpus counters.
-        for p in session_prompts:
-            total_fresh_prompts += 1
-            if p["classification"] == "INITIAL":
-                initial_count += 1
-            elif p["classification"] == "FOLLOWUP":
-                followup_count += 1
-            elif p["classification"] == "EXPLICIT_CORRECTION":
-                correction_count += 1
-                if p["matched_phrase"]:
-                    phrase_hits[p["matched_phrase"]] += 1
-
-        # Derive session-level metadata.
-        session_branch = session_prompts[0]["branch"]
-        session_date = session_prompts[0]["date"]
-        raw_session_id = session_prompts[0]["session_id"]
-        if redact:
-            _assign_session_redact_label(raw_session_id, session_redact_map)
-            session_id_prefix = _redact_session_id(raw_session_id, session_redact_map)
-        else:
-            session_id_prefix = raw_session_id[:8]
-        session_models = sorted({p["model_fam"] for p in session_prompts})
-        session_correction_count = sum(1 for p in session_prompts if p["classification"] == "EXPLICIT_CORRECTION")
-        session_followup_count = sum(1 for p in session_prompts if p["classification"] == "FOLLOWUP")
-        display_label = _redact_proj_label(proj_label, redact_map) if redact else proj_label
-
-        session_entries.append({
-            "proj_label": display_label,
-            "branch": session_branch,
-            "date": session_date,
-            "first_ts": first_ts,
-            "session_id_prefix": session_id_prefix,
-            "session_models": session_models,
-            "prompts": session_prompts,
-            "correction_count": session_correction_count,
-            "followup_count": session_followup_count,
-        })
-
-    # Sort sessions by first-prompt timestamp ascending.
-    session_entries.sort(key=lambda e: (e["first_ts"] or 0.0))
-
-    # Build top-5 struggle-phrase list.
-    top_phrases = sorted(phrase_hits.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
-    top_phrases_str = ", ".join(f'"{ph}" ({n})' for ph, n in top_phrases) if top_phrases else "none"
-
-    date_range_str = (
-        f"{_fmt_date(earliest_ts)} → {_fmt_date(latest_ts)}"
-        if earliest_ts is not None and latest_ts is not None
-        else "no data"
-    )
-
-    lines: list[str] = []
-    lines.append("# User Input — Conversation Narrative")
-    lines.append("")
-    lines.append(f"Generated: {_fmt_date(time.time())}")
-    lines.append(
-        f"Scope: {len(total_projects_seen)} projects, {total_session_count} sessions, "
-        f"{total_fresh_prompts} fresh prompts"
-    )
-    lines.append(f"Date range: {date_range_str}")
-    lines.append("")
-    lines.append("## Summary")
-    lines.append(f"- Fresh prompts: {total_fresh_prompts}")
-    lines.append(f"- Initial: {initial_count}")
-    lines.append(f"- Followups (quiet redirects): {followup_count}")
-    lines.append(f"- Explicit corrections (struggle-phrase match): {correction_count}")
-    lines.append(f"- Top struggle phrases: {top_phrases_str}")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    lines.append("## Sessions")
-
-    for entry in session_entries:
-        lines.append("")
-        lines.append(f"### {entry['proj_label']} · {entry['branch']} · {entry['date']}")
-        models_str = ", ".join(entry["session_models"])
-        prompt_count = len(entry["prompts"])
-        lines.append(
-            f"Session `{entry['session_id_prefix']}` · models: {models_str} · "
-            f"{prompt_count} prompt{'s' if prompt_count != 1 else ''} "
-            f"({entry['correction_count']} explicit correction{'s' if entry['correction_count'] != 1 else ''}, "
-            f"{entry['followup_count']} followup{'s' if entry['followup_count'] != 1 else ''})"
-        )
-
-        for prompt in entry["prompts"]:
-            classification = prompt["classification"]
-            if corrections_only and classification == "INITIAL":
-                continue
-
-            lines.append("")
-            if classification == "EXPLICIT_CORRECTION":
-                lines.append(
-                    f"**[{prompt['time']} · {classification} · {prompt['model_fam']}]**"
-                    f" (matched: \"{prompt['matched_phrase']}\")"
-                )
-            else:
-                lines.append(f"**[{prompt['time']} · {classification} · {prompt['model_fam']}]**")
-            lines.append("~~~text")
-            lines.append(_truncate_prompt_text(prompt["text"], truncate_chars))
-            lines.append("~~~")
-
-    output = "\n".join(lines) + "\n"
-
-    # Shape-audit line always printed to stderr so it doesn't pollute --out file content.
-    print(f"Shape audit: {unrecognized_shape_count} unrecognized user records skipped", file=sys.stderr)
-
-    if out_path:
-        try:
-            Path(out_path).write_text(output, encoding="utf-8")
-            print(f"Wrote output to {out_path}")
-        except OSError as exc:
-            print(f"user-input: failed to write {out_path}: {exc}", file=sys.stderr)
-            sys.exit(1)
-    else:
-        print(output, end="")
-
-
-def cmd_duration(args: argparse.Namespace) -> None:
-    """Per-branch span/active/idle time split and activity-burst count.
-
-    The "Bursts" column is len(idle_gaps) + 1. docs/transcript-analysis.md
-    explains what it counts.
-    """
-    branch_filter = _branch_filter(args)
-    gap_secs: int = (getattr(args, "gap_minutes", None) or 30) * 60
-    roots = _resolve_scan_roots(args)
-    session_iter, scope_label = _resolve_project_scope(args, "duration", roots=roots)
-    _print_resolved_scope("duration", scope_label, roots)
-
-    branch_timestamps: dict[str, list[float]] = defaultdict(list)
-
-    for _jsonl, records in session_iter:
-        branch_context = _session_branch_context(records)
-        for rec in records:
-            branch = _attributed_branch(rec, branch_context) or ""
-            if not branch or (branch_filter and branch not in branch_filter):
-                continue
-            ts = _parse_ts(rec.get("timestamp"))
-            if ts is not None:
-                branch_timestamps[branch].append(ts)
-
-    if not branch_timestamps:
-        print("No timestamp data found.")
-        return
-
-    print(f"{'Branch':<40} {'Span(min)':>10} {'Active(min)':>11} {'Idle(min)':>10} {'Bursts':>9} {'GapMin':>7}")
-    print("-" * 95)
-    for branch in sorted(branch_timestamps):
-        tss = sorted(branch_timestamps[branch])
-        if len(tss) < 2:
-            continue
-        span_secs = tss[-1] - tss[0]
-        idle_gaps = [tss[i + 1] - tss[i] for i in range(len(tss) - 1) if tss[i + 1] - tss[i] > gap_secs]
-        idle_secs = sum(idle_gaps)
-        active_secs = span_secs - idle_secs
-        burst_count = len(idle_gaps) + 1
-        print(
-            f"{branch:<40} {span_secs / 60:>10.0f} {active_secs / 60:>11.0f} "
-            f"{idle_secs / 60:>10.0f} {burst_count:>9} {gap_secs / 60:>7.0f}"
-        )
 
 
 def _pr_link_gh_failure_kind(exc: Exception) -> str:
@@ -3193,257 +2620,8 @@ def cmd_turn_shape_holdout_samples(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
-# friction-count
+# sessions
 # ---------------------------------------------------------------------------
-
-# All three friction signals are weighted equally (1) in the composite —
-# stated explicitly here rather than left implicit in the addition below.
-_FRICTION_SIGNAL_WEIGHT = 1
-
-
-def _friction_denial_events(records: list[dict]) -> int:
-    """Count hook-denial events in `records`, deduped by tool_use_id.
-
-    Flat, single-file count reusing hook_denial_key for both denial shapes
-    (mirrors cmd_review_trace's detection and seen-id dedup exactly), but
-    additionally skips isSidechain records — a friction-count-only filter;
-    cmd_review_trace's denial detection is not itself isSidechain-filtered.
-    """
-    seen_denial_ids: set[str] = set()
-    count = 0
-    for rec in records:
-        if bool(rec.get("isSidechain")):
-            continue
-        rec_type = rec.get("type", "")
-        if rec_type == "attachment":
-            denial = hook_denial_key(rec)
-            if denial is None:
-                continue
-            tool_use_id, _ = denial
-            if tool_use_id and tool_use_id in seen_denial_ids:
-                continue
-            if tool_use_id:
-                seen_denial_ids.add(tool_use_id)
-            count += 1
-        elif rec_type == "user":
-            for block in ((rec.get("message") or {}).get("content") or []):
-                if not isinstance(block, dict) or block.get("type") != "tool_result":
-                    continue
-                denial = hook_denial_key(block)
-                if denial is None:
-                    continue
-                tool_use_id, _ = denial
-                if tool_use_id and tool_use_id in seen_denial_ids:
-                    continue
-                if tool_use_id:
-                    seen_denial_ids.add(tool_use_id)
-                count += 1
-    return count
-
-
-def _friction_failed_test_run_events(records: list[dict]) -> int:
-    """Count failed test-run events: a Bash tool_use matching TEST_RUNNER_RE
-    paired (by tool_use_id) with a tool_result whose max FAILED_RE count > 0.
-
-    Flat, single-file pairing — re-implements the tool_use_id pairing state
-    machine independently of cmd_fail_seq (which is branch-grouped and not
-    modified), sharing only the TEST_RUNNER_RE/FAILED_RE constants. Counts
-    only failing runs (FAILED_RE count > 0), not every matched run — this is
-    cmd_fail_seq's "failing" subtotal, not its total run count. isSidechain
-    records are skipped.
-    """
-    pending: set[str] = set()
-    count = 0
-    for rec in records:
-        if bool(rec.get("isSidechain")):
-            continue
-        rec_type = rec.get("type", "")
-        msg = rec.get("message") or {}
-        if rec_type == "assistant":
-            for block in (msg.get("content") or []):
-                if (
-                    isinstance(block, dict)
-                    and block.get("type") == "tool_use"
-                    and block.get("name") == "Bash"
-                ):
-                    cmd = (block.get("input") or {}).get("command", "")
-                    if TEST_RUNNER_RE.search(cmd):
-                        pending.add(block["id"])
-        elif rec_type in ("user", "human"):
-            content = msg.get("content") or []
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                tid = block.get("tool_use_id", "")
-                if block.get("type") == "tool_result" and tid in pending:
-                    pending.discard(tid)
-                    result_text = _content_text(block.get("content", ""))
-                    counts = [int(m) for m in FAILED_RE.findall(result_text)]
-                    if counts and max(counts) > 0:
-                        count += 1
-    return count
-
-
-def _friction_struggle_turn_events(records: list[dict]) -> int:
-    """Count user turns whose lowercased text contains a STRUGGLE_PHRASES entry.
-
-    Flat, single-file count — no branch or model-family attribution.
-    isSidechain records are skipped.
-    """
-    count = 0
-    for rec in records:
-        if bool(rec.get("isSidechain")):
-            continue
-        if rec.get("type") not in ("user", "human"):
-            continue
-        msg = rec.get("message") or {}
-        text = _strip_task_notifications(_content_text(msg.get("content", ""))).lower()
-        if any(phrase in text for phrase in STRUGGLE_PHRASES):
-            count += 1
-    return count
-
-
-def _friction_signals(records: list[dict]) -> dict[str, int]:
-    """Return the per-signal friction breakdown plus the all-1-weighted composite."""
-    # Shadows the module-level `denials` import (transcript_analysis.denials) -- this
-    # function needs no denials.<name> access, only the count computed below.
-    denials = _friction_denial_events(records)  # noqa: F811
-    failed_test_runs = _friction_failed_test_run_events(records)
-    struggle_turns = _friction_struggle_turn_events(records)
-    composite = (
-        _FRICTION_SIGNAL_WEIGHT * denials
-        + _FRICTION_SIGNAL_WEIGHT * failed_test_runs
-        + _FRICTION_SIGNAL_WEIGHT * struggle_turns
-    )
-    signals = {
-        "denials": denials,
-        "failed_test_runs": failed_test_runs,
-        "struggle_turns": struggle_turns,
-        "composite": composite,
-    }
-    # Pinned invariant: composite must equal the sum of the three signals.
-    # An explicit raise (not `assert`) so the check survives python -O /
-    # PYTHONOPTIMIZE, which strips bare asserts.
-    if signals["composite"] != denials + failed_test_runs + struggle_turns:
-        raise AssertionError(
-            "friction-count: composite must equal the sum of denials + failed_test_runs + struggle_turns"
-        )
-    return signals
-
-
-# friction-count --checkpoint: incremental byte-offset scan. Avoids reparsing
-# the whole transcript on every hook fire — see the hook's own comment for
-# why this exists. The checkpoint is a small JSON blob (offset + the three
-# running per-signal totals); no cross-call dedup state is needed beyond the
-# offset, because each call starts exactly where the previous one stopped, so
-# every transcript line is read at most once across the checkpoint's lifetime.
-_FRICTION_CHECKPOINT_SIGNAL_KEYS = ("denials", "failed_test_runs", "struggle_turns")
-
-
-def _is_valid_checkpoint_int(value: object) -> bool:
-    """True if `value` is a non-negative int — explicitly excluding bool,
-    which subclasses int in Python (`isinstance(True, int)` is True), so an
-    unvalidated check would silently accept `{"offset": true}` as offset 1."""
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-
-
-def _read_friction_checkpoint(checkpoint_path: Path, transcript_path: Path) -> tuple[int, dict[str, int]]:
-    """Read a friction-count checkpoint: (byte_offset, running per-signal totals).
-
-    Fails open to a full rescan (offset 0, zero totals) on any absent or
-    malformed checkpoint — unreadable file, invalid JSON, wrong shape, a
-    non-int/negative/bool offset or totals value, or a stored offset beyond
-    the transcript's current size (a stale checkpoint from a transcript that
-    was truncated or rewritten while the session_id-keyed checkpoint
-    persisted — without this check, seeking past EOF would freeze friction
-    counting for that session permanently rather than resetting it). Never
-    raises.
-    """
-    zero_totals = {key: 0 for key in _FRICTION_CHECKPOINT_SIGNAL_KEYS}
-    try:
-        data = json.loads(checkpoint_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return 0, dict(zero_totals)
-    if not isinstance(data, dict):
-        return 0, dict(zero_totals)
-    offset = data.get("offset")
-    totals = data.get("totals")
-    if not _is_valid_checkpoint_int(offset) or not isinstance(totals, dict):
-        return 0, dict(zero_totals)
-    running_totals: dict[str, int] = {}
-    for key in _FRICTION_CHECKPOINT_SIGNAL_KEYS:
-        value = totals.get(key)
-        if not _is_valid_checkpoint_int(value):
-            return 0, dict(zero_totals)
-        running_totals[key] = value
-    try:
-        transcript_size = transcript_path.stat().st_size
-    except OSError:
-        # Transcript unreadable — let the caller's own transcript-read
-        # attempt raise/report; the checkpoint content isn't the problem.
-        return offset, running_totals
-    if offset > transcript_size:
-        return 0, dict(zero_totals)
-    return offset, running_totals
-
-
-def _write_friction_checkpoint(checkpoint_path: Path, offset: int, totals: dict[str, int]) -> None:
-    """Best-effort persist of the new byte offset + running per-signal totals.
-
-    Writes to a temp file in the checkpoint's own directory and atomically
-    renames it into place (`os.replace`), rather than truncating the
-    checkpoint file in place — an interrupted-and-resubmitted prompt can
-    leave two hook invocations for the same session_id alive within the
-    hook's 10s timeout, and an in-place write is a lost-update race between
-    them. A failed write (unwritable directory, disk full) is swallowed
-    rather than raised: the next call re-reads from the old offset and
-    rescans those bytes again — correct, just not incremental for that one
-    call — matching this subcommand's fail-open posture everywhere else.
-    """
-    with contextlib.suppress(OSError):
-        fd, tmp_name = tempfile.mkstemp(
-            dir=checkpoint_path.parent, prefix=f".{checkpoint_path.name}.", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(json.dumps({"offset": offset, "totals": totals}))
-            os.replace(tmp_name, checkpoint_path)
-        except OSError:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_name)
-            raise
-
-
-def _consume_new_transcript_lines(transcript_path: Path, offset: int) -> tuple[list[str], int]:
-    """Read complete JSONL lines appended to `transcript_path` since `offset`.
-
-    Returns (new_lines, new_offset). A trailing line with no terminating
-    newline — the transcript may be mid-write by the harness while the hook
-    reads it — is left unconsumed: new_offset stops at the end of the last
-    complete line, so the next call picks up the partial line's bytes whole
-    once it's terminated, rather than double-reading or losing them.
-    """
-    with open(transcript_path, "rb") as fh:
-        fh.seek(offset)
-        chunk = fh.read()
-    if not chunk:
-        return [], offset
-    pieces = chunk.split(b"\n")
-    complete_pieces = pieces[:-1]  # last piece is "" (chunk ended in \n) or a partial line
-    new_offset = offset + sum(len(piece) + 1 for piece in complete_pieces)
-    new_lines = [piece.decode("utf-8", errors="replace") for piece in complete_pieces]
-    return new_lines, new_offset
-
-
-def _emit_friction_result(signals: dict[str, int], *, as_json: bool) -> None:
-    """Print either the --json per-signal breakdown or the bare composite integer."""
-    if as_json:
-        print(json.dumps(signals))
-    else:
-        print(signals["composite"])
-
 
 def cmd_sessions(args: argparse.Namespace) -> None:
     """Emit transcript file paths for the resolved scope, one absolute path per line.
@@ -3482,72 +2660,6 @@ def cmd_sessions(args: argparse.Namespace) -> None:
                     print(sub_jsonl)
 
 
-def cmd_friction_count(args: argparse.Namespace) -> None:
-    """Composite friction-signal count for a single transcript file.
-
-    Reads exactly one JSONL file (no iter_sessions, no gh) and prints the
-    composite integer to stdout. --json prints the per-signal breakdown
-    instead of the composite.
-
-    --checkpoint <path> makes the scan incremental: only the bytes appended
-    to the transcript since the checkpoint's stored byte offset are parsed,
-    the resulting per-signal deltas are added to the checkpoint's running
-    totals, the new offset + totals are written back, and the *cumulative*
-    totals (not just this call's delta) are what gets printed. Without
-    --checkpoint, behavior is unchanged: a full scan every call, no state
-    read or written.
-    """
-    transcript_path = Path(args.transcript)
-    checkpoint_arg = getattr(args, "checkpoint", None)
-
-    if checkpoint_arg:
-        checkpoint_path = Path(checkpoint_arg)
-        offset, running_totals = _read_friction_checkpoint(checkpoint_path, transcript_path)
-        try:
-            new_lines, new_offset = _consume_new_transcript_lines(transcript_path, offset)
-        except OSError:
-            print(f"friction-count: cannot read transcript file: {transcript_path}", file=sys.stderr)
-            sys.exit(1)
-
-        records: list[dict] = []
-        for raw in new_lines:
-            try:
-                records.append(json.loads(raw))
-            except json.JSONDecodeError:
-                continue
-
-        deltas = _friction_signals(records)
-        for key in _FRICTION_CHECKPOINT_SIGNAL_KEYS:
-            running_totals[key] += deltas[key]
-        _write_friction_checkpoint(checkpoint_path, new_offset, running_totals)
-
-        composite = sum(running_totals[key] for key in _FRICTION_CHECKPOINT_SIGNAL_KEYS)
-        signals = {**running_totals, "composite": composite}
-        _emit_friction_result(signals, as_json=getattr(args, "json", False))
-        return
-
-    records = []
-    try:
-        # errors="replace" mirrors the --checkpoint branch's binary-read +
-        # decode tolerance: a transcript with invalid Unicode bytes must
-        # degrade to lossy decoding, not raise an uncaught
-        # UnicodeDecodeError (a ValueError subclass the `except OSError`
-        # below does not catch).
-        with open(transcript_path, encoding="utf-8", errors="replace") as fh:
-            for raw in fh:
-                try:
-                    rec = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                records.append(rec)
-    except OSError:
-        print(f"friction-count: cannot read transcript file: {transcript_path}", file=sys.stderr)
-        sys.exit(1)
-
-    signals = _friction_signals(records)
-    _emit_friction_result(signals, as_json=getattr(args, "json", False))
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Claude Code transcript analysis toolkit.")
     # Top-level (not per-subcommand) so main() can reassign PROJECTS_DIR before
@@ -3566,52 +2678,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
-    p_buckets = sub.add_parser("buckets", help="Assistant turns bucketed by branch × model family.")
-    _add_project_scope_args(p_buckets)
-    p_buckets.add_argument("--branches", metavar="B1,B2,...", help="Branch name filter (default: all)")
-    p_buckets.set_defaults(func=cmd_buckets)
-
-    p_fail = sub.add_parser("fail-seq", help="Ordered test-run failed-count sequence per branch/model.")
-    p_fail.add_argument("--branches", required=True, metavar="B1,B2,...")
-    _add_project_scope_args(p_fail)
-    p_fail.set_defaults(func=cmd_fail_seq)
-
-    p_struggle = sub.add_parser("struggle", help="Correction/frustration signal phrases in user turns, split by model.")
-    p_struggle.add_argument("--branches", metavar="B1,B2,...")
-    _add_project_scope_args(p_struggle)
-    p_struggle.set_defaults(func=cmd_struggle)
-
-    p_user_input = sub.add_parser(
-        "user-input",
-        help="All fresh user prompts per session, classified as initial / followup / explicit-correction.",
-    )
-    p_user_input.add_argument("--projects", default="*", metavar="GLOB")
-    p_user_input.add_argument("--branches", metavar="B1,B2,...")
-    p_user_input.add_argument("--since", metavar="DATE", type=_iso_date, help="Inclusive start date (YYYY-MM-DD)")
-    p_user_input.add_argument("--until", metavar="DATE", type=_iso_date, help="Inclusive end date (YYYY-MM-DD)")
-    p_user_input.add_argument(
-        "--corrections-only", action="store_true",
-        help="Show only non-initial prompts.",
-    )
-    p_user_input.add_argument(
-        "--truncate-chars", type=int, default=500, metavar="N",
-        help="Truncate prompt text at N chars (0 = no truncation).",
-    )
-    p_user_input.add_argument("--out", metavar="PATH", help="Write output to a file instead of stdout.")
-    p_user_input.add_argument(
-        "--redact", action="store_true",
-        help=(
-            "Anonymize project labels and session IDs for public reporting "
-            "(prompt text is not redacted — review before sharing)."
-        ),
-    )
-    p_user_input.set_defaults(func=cmd_user_input)
-
-    p_duration = sub.add_parser("duration", help="Active span vs idle-gap decomposition per branch.")
-    p_duration.add_argument("--branches", metavar="B1,B2,...")
-    _add_project_scope_args(p_duration)
-    p_duration.add_argument("--gap-minutes", type=int, default=30, metavar="N")
-    p_duration.set_defaults(func=cmd_duration)
+    _add_buckets_subparser(sub)
+    _add_fail_seq_subparser(sub)
+    _add_struggle_subparser(sub)
+    _add_user_input_subparser(sub)
+    _add_duration_subparser(sub)
 
     p_sub = sub.add_parser(
         "subagents",
@@ -4610,33 +3681,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sessions.set_defaults(func=cmd_sessions)
 
-    p_friction = sub.add_parser(
-        "friction-count",
-        help=(
-            "Composite friction-signal count (hook denials + failed test runs +"
-            " user-correction phrases) for a single transcript file."
-        ),
-    )
-    p_friction.add_argument(
-        "--transcript", required=True, metavar="PATH",
-        help="Path to one transcript .jsonl file.",
-    )
-    p_friction.add_argument(
-        "--checkpoint", metavar="PATH", default=None,
-        help=(
-            "Path to a checkpoint file for incremental scanning: only bytes"
-            " appended to the transcript since the checkpoint's stored offset"
-            " are parsed, and the cumulative composite (not just this call's"
-            " delta) is printed. An absent or malformed checkpoint fails open"
-            " to a full scan from offset 0. Without this flag, every call"
-            " does a full scan with no state read or written."
-        ),
-    )
-    p_friction.add_argument(
-        "--json", action="store_true",
-        help="Emit the per-signal breakdown as JSON instead of the composite integer.",
-    )
-    p_friction.set_defaults(func=cmd_friction_count)
+    _add_friction_count_subparser(sub)
 
     return parser
 
