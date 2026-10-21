@@ -392,6 +392,31 @@ class TestFileBasedOutputBlockConsistency:
             "agents atomically if the protocol is changing."
         )
 
+    def test_block_declares_per_finding_heading_template_with_severity(self):
+        """Each finding's H2 carries a numbered id and a severity tag.
+
+        The byte-identity test above spreads this to every canary agent. The
+        template is the only place a finding's severity is recorded, so the
+        parent reads it from the heading rather than a separate summary.
+        """
+        block = self._extract_file_based_output_block(AGENTS_DIR / CANARY_AGENTS[0])
+        assert "## R<n> [<severity>] <angle-name>" in block, (
+            f"{CANARY_AGENTS[0]}: ### File-based output block lacks the "
+            "'## R<n> [<severity>] <angle-name>' per-finding heading template."
+        )
+
+    def test_block_has_no_recommendations_section(self):
+        """Severity lives in each finding's heading; the block names no separate severity-summary section.
+
+        This pins one heading name; a summary under another name would pass.
+        """
+        block = self._extract_file_based_output_block(AGENTS_DIR / CANARY_AGENTS[0])
+        assert "## Recommendations" not in block, (
+            f"{CANARY_AGENTS[0]}: ### File-based output block still names a "
+            "'## Recommendations' section; severity lives in each finding's "
+            "heading."
+        )
+
 
 class TestAgentFrontmatter:
     """Validates YAML frontmatter structure and model-pin conventions for all agent files."""
