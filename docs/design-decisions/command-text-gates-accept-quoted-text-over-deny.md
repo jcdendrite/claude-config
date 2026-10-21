@@ -43,7 +43,7 @@ Adopting the sandbox is its own decision with its own companions: the escape hat
 
 ## What a denied reviewer does
 
-The deny reason tells the reviewer to use Read, Grep, or Glob for a read the hook misjudges (`SANCTIONED_ALTERNATIVE` in the hook).
+The deny reason tells the reviewer to use Read, Grep, or Glob for a read the hook misjudges (`SANCTIONED_ALTERNATIVE` in the hook). Read, Grep, and Glob cannot return git history, so a denied `git log`, `git show <ref>:<path>`, or `git blame` read has no sanctioned substitute.
 
 ## Reconsideration trigger
 

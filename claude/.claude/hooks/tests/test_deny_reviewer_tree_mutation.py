@@ -656,11 +656,10 @@ class TestWorktreeEnsureDeniedByName:
 class TestRawWriteTargetGap:
     """GH-751: a cp/mv/tee destination, or a `>`/`>>` shell redirect
     target, that is neither literally under /tmp/ nor /dev/null denies.
-    Regression tests proving the three examples in docs/hooks.md's GH-751
-    sentence (`cp scratch src/x`, `sed ... > src/x`, `tee src/x`) are caught,
+    Regression tests proving the three examples (`cp scratch src/x`,
+    `sed ... > src/x`, `tee src/x`) are caught,
     paired with the /tmp and /dev/null exemptions each must still permit.
-    The hook header's Known gaps lists the redirect shapes the gate does not
-    inspect, and TestKnownGapBypass pins them. A cp/mv/tee destination denies only
+    A cp/mv/tee destination denies only
     when that command is the fragment's sole or first command. GH-811 tracks
     the residual gap where the same destination is hidden behind a bare `&`
     in the same fragment — see
@@ -1119,10 +1118,8 @@ class TestKnownGapBypass:
         # not `-i`, so it is not caught. Pin the accepted allow.
         assert run_hook(HOOK, bash_input("sed --in-place s/a/b/ x.txt", agent_type="staff-sdet")) == "allow"
 
-    # The cases below pin the CURRENT (imperfect) allow verdicts for the git
-    # write shapes that the header's known-gaps list, or the docstring it points
-    # to for fd-numbered and `&>` redirects, names. When a fix lands, flip the
-    # matching case to "deny" instead of silently accepting the change.
+    # These pin the current allow verdicts for git write shapes the hook does not inspect.
+    # The header's Known gaps list names them, and `_fragment_raw_write_targets`'s docstring names the fd-numbered and `&>` redirects.
     @pytest.mark.parametrize(
         "command",
         [
